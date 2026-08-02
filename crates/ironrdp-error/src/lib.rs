@@ -111,6 +111,18 @@ impl<Kind> Error<Kind> {
         &self.kind
     }
 
+    /// Returns the static operation label supplied when this error was created.
+    pub fn context(&self) -> &'static str {
+        #[cfg(feature = "alloc")]
+        {
+            self.meta.context
+        }
+        #[cfg(not(feature = "alloc"))]
+        {
+            self.context
+        }
+    }
+
     /// Returns the source code location at which this error was constructed.
     ///
     /// Captured automatically by [`Error::new`] via [`core::panic::Location::caller`]
@@ -403,4 +415,16 @@ macro_rules! ensure {
             return ::core::result::Result::Err($crate::Error::new($context, $kind));
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn context_returns_static_error_label() {
+        let error = Error::new("test context", ());
+
+        assert_eq!(error.context(), "test context");
+    }
 }

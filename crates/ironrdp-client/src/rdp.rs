@@ -15,6 +15,7 @@ use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_echo::client::EchoClient;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::DecodedPointer;
+use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::input::MousePdu;
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
 use ironrdp_pdu::input::mouse::PointerFlags;
@@ -31,9 +32,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 #[cfg(any(feature = "clipboard", all(windows, feature = "dvc-com-plugin")))]
 use tracing::error;
-#[cfg(feature = "clipboard")]
-use tracing::warn;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 #[cfg(feature = "clipboard")]
 use crate::config::ClipboardType;
@@ -82,6 +81,10 @@ pub enum RdpOutputEvent {
         y: u16,
     },
     PointerBitmap(Arc<DecodedPointer>),
+    /// A full-desktop redraw was requested after the initial logon notification.
+    PostLogonDisplayRedraw,
+    /// A malformed bitmap update was discarded and a capability-gated full redraw was sent.
+    MalformedBitmapDisplayRedraw,
     /// Dynamic Display Control could not update the session in place.
     ///
     /// The next connection attempt uses the requested desktop size.
@@ -105,6 +108,10 @@ pub enum RdpInputEvent {
     SendDvcMessages {
         channel_id: u32,
         messages: Vec<SvcMessage>,
+    },
+    SendStaticChannelData {
+        channel_name: ChannelName,
+        data: Vec<u8>,
     },
 }
 
@@ -1091,6 +1098,7 @@ async fn active_session(
         fake_events_interval.map(|interval| tokio::time::interval(core::cmp::max(interval, Duration::from_secs(1))));
     let mut resize_queue = ResizeQueue::default();
     let mut graceful_shutdown_sent = false;
+    let mut post_logon_redraw_requested = false;
     let mut initial_outputs = if *graceful_close_receiver.borrow_and_update() {
         graceful_shutdown_sent = true;
         Some(active_stage.graceful_shutdown()?)
@@ -1108,6 +1116,7 @@ async fn active_session(
 
     let disconnect_reason = 'outer: loop {
         let resize_deadline = resize_queue.deadline();
+        let mut malformed_bitmap_redraw_queued = false;
         let clipboard_event = async {
             #[cfg(feature = "clipboard")]
             {
@@ -1144,6 +1153,7 @@ async fn active_session(
                             refresh_rect_support,
                             suppress_output_support,
                         )?;
+                        malformed_bitmap_redraw_queued = !redraw_frames.is_empty();
                         outputs.extend(redraw_frames.into_iter().map(ActiveStageOutput::ResponseFrame));
                     }
                     outputs
@@ -1221,6 +1231,15 @@ async fn active_session(
                         trace!(channel_id, ?messages, "Send DVC messages");
                         let frame = active_stage.encode_dvc_messages(messages)?;
                         vec![ActiveStageOutput::ResponseFrame(frame)]
+                    }
+                    RdpInputEvent::SendStaticChannelData { channel_name, data } => {
+                        match active_stage.process_svc_messages_by_name(&channel_name, vec![SvcMessage::from(data)]) {
+                            Ok(frame) => vec![ActiveStageOutput::ResponseFrame(frame)],
+                            Err(error) => {
+                                warn!(?channel_name, %error, "Unable to send static channel data");
+                                Vec::new()
+                            }
+                        }
                     }
                     }
                 }
@@ -1377,6 +1396,41 @@ async fn active_session(
                     }
                 }
                 ActiveStageOutput::SaveSessionInfo { logon_complete: true } => {
+                    if !post_logon_redraw_requested {
+                        post_logon_redraw_requested = true;
+                        let redraw_frames = active_stage.request_full_redraw(
+                            image.width(),
+                            image.height(),
+                            refresh_rect_support,
+                            suppress_output_support,
+                        )?;
+                        let redraw_requested = !redraw_frames.is_empty();
+
+                        for frame in redraw_frames {
+                            let Some(result) = cancelable_operation(writer.write_all(&frame), close_receiver).await
+                            else {
+                                return Ok(RdpControlFlow::TerminatedGracefully(
+                                    GracefulDisconnectReason::UserInitiated,
+                                ));
+                            };
+                            result.map_err(|error| {
+                                ironrdp_session::custom_err!("write post-logon redraw request", error)
+                            })?;
+                        }
+
+                        if redraw_requested
+                            && !send_active_output_event(
+                                output_event_sender,
+                                RdpOutputEvent::PostLogonDisplayRedraw,
+                                close_receiver,
+                            )
+                            .await?
+                        {
+                            return Ok(RdpControlFlow::TerminatedGracefully(
+                                GracefulDisconnectReason::UserInitiated,
+                            ));
+                        }
+                    }
                     if !send_active_output_event(output_event_sender, RdpOutputEvent::LoginComplete, close_receiver)
                         .await?
                     {
@@ -1478,6 +1532,19 @@ async fn active_session(
                 }
                 ActiveStageOutput::Terminate(reason) => break 'outer reason,
             }
+        }
+
+        if malformed_bitmap_redraw_queued
+            && !send_active_output_event(
+                output_event_sender,
+                RdpOutputEvent::MalformedBitmapDisplayRedraw,
+                close_receiver,
+            )
+            .await?
+        {
+            return Ok(RdpControlFlow::TerminatedGracefully(
+                GracefulDisconnectReason::UserInitiated,
+            ));
         }
 
         if resize_queue.in_flight.is_none()

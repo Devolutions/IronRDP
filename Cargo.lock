@@ -2422,6 +2422,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-activex"
+version = "0.1.0"
+dependencies = [
+ "embed-resource",
+ "ironrdp-cfg",
+ "ironrdp-client",
+ "ironrdp-cliprdr",
+ "ironrdp-cliprdr-native",
+ "ironrdp-connector",
+ "ironrdp-core 0.2.1",
+ "ironrdp-input",
+ "ironrdp-pdu",
+ "ironrdp-session",
+ "ironrdp-svc",
+ "ironrdp-tls",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "ironrdp-agent"
 version = "0.1.0"
 dependencies = [

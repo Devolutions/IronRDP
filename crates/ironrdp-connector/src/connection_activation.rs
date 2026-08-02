@@ -254,7 +254,7 @@ impl Sequence for ConnectionActivationSequence {
                 let share_id = share_control_ctx.share_id;
 
                 let client_confirm_active = rdp::headers::ShareControlPdu::ClientConfirmActive(
-                    create_client_confirm_active(&self.config, capability_sets, desktop_size),
+                    create_client_confirm_active(&self.config, capability_sets, desktop_size)?,
                 );
 
                 debug!(message = ?client_confirm_active, "Send");
@@ -385,7 +385,7 @@ fn create_client_confirm_active(
     config: &Config,
     mut server_capability_sets: Vec<CapabilitySet>,
     desktop_size: DesktopSize,
-) -> rdp::capability_sets::ClientConfirmActive {
+) -> ConnectorResult<rdp::capability_sets::ClientConfirmActive> {
     use ironrdp_pdu::rdp::capability_sets::{
         BITMAP_CACHE_ENTRIES_NUM, Bitmap, BitmapCache, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry,
         ClientConfirmActive, CmdFlags, DemandActive, FrameAcknowledge, GLYPH_CACHE_NUM, General, GeneralExtraFlags,
@@ -401,6 +401,7 @@ fn create_client_confirm_active(
         .as_ref()
         .map(|bitmap| bitmap.lossy_compression)
         .unwrap_or(false);
+    let pref_bits_per_pix = requested_bitmap_color_depth(config.bitmap.as_ref())?;
 
     let drawing_flags = if lossy_bitmap_compression {
         BitmapDrawingFlags::ALLOW_SKIP_ALPHA
@@ -417,7 +418,7 @@ fn create_client_confirm_active(
             ..Default::default()
         }),
         CapabilitySet::Bitmap(Bitmap {
-            pref_bits_per_pix: 32,
+            pref_bits_per_pix,
             desktop_width: desktop_size.width,
             desktop_height: desktop_size.height,
             // This is required to be true in order for the Microsoft::Windows::RDS::DisplayControl DVC to work.
@@ -507,11 +508,47 @@ fn create_client_confirm_active(
         }));
     }
 
-    ClientConfirmActive {
+    Ok(ClientConfirmActive {
         originator_id: SERVER_CHANNEL_ID,
         pdu: DemandActive {
             source_descriptor: "IRONRDP".to_owned(),
             capability_sets: server_capability_sets,
         },
+    })
+}
+
+/// Returns the color depth requested by the client configuration for the Bitmap Capability Set.
+///
+/// [MS-RDPBCGR] requires `preferredBitsPerPixel` to match the requested Client Core Data color
+/// depth. Keeping these values aligned is particularly important for 16-bpp clients: a 32-bpp
+/// Bitmap Capability Set permits the server to select RDP 6.0 bitmap compression instead.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/49e7bcb9-a8d7-46f5-987e-46c63c44b2c4
+fn requested_bitmap_color_depth(bitmap: Option<&crate::BitmapConfig>) -> ConnectorResult<u16> {
+    match bitmap.map_or(32, |bitmap| bitmap.color_depth) {
+        16 => Ok(16),
+        32 => Ok(32),
+        color_depth => Err(reason_err!(
+            "create client confirm active",
+            "unsupported bitmap color depth: {color_depth}"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requested_bitmap_color_depth;
+    use crate::BitmapConfig;
+
+    #[test]
+    fn bitmap_capability_uses_requested_color_depth() {
+        let bitmap = BitmapConfig {
+            color_depth: 16,
+            lossy_compression: false,
+            codecs: ironrdp_pdu::rdp::capability_sets::BitmapCodecs(Vec::new()),
+        };
+
+        assert_eq!(requested_bitmap_color_depth(None).unwrap(), 32);
+        assert_eq!(requested_bitmap_color_depth(Some(&bitmap)).unwrap(), 16);
     }
 }
