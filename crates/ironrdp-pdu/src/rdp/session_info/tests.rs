@@ -432,3 +432,48 @@ fn from_buffer_parsing_with_invalid_logon_error_type_fails() {
         res => panic!("Expected InvalidLogonErrorType error, got: {res:?}"),
     };
 }
+
+/// The auto-reconnect random must not reach logs.
+///
+/// It keys the HMAC that proves, on reconnect, that this client was the one
+/// last attached to the session ([MS-RDPBCGR] 5.5), which is why the spec has
+/// the client store the cookie "in memory, never allowing programmatic access
+/// to it". `Debug` is the way it would otherwise escape, since the containing
+/// PDU is logged by both the session layer and the server's event dispatch.
+///
+/// The containing types are checked too: redaction is only useful if it
+/// survives being nested inside a `Debug`-derived parent.
+#[test]
+fn auto_reconnect_random_is_redacted_from_debug_output() {
+    const SECRET: [u8; 16] = [0xAB; 16];
+
+    let cookie = ServerAutoReconnect {
+        logon_id: 42,
+        random_bits: SECRET,
+    };
+    let extended = LogonInfoExtended {
+        present_fields_flags: LogonExFlags::AUTO_RECONNECT_COOKIE,
+        auto_reconnect: Some(cookie.clone()),
+        errors_info: None,
+    };
+    let pdu = SaveSessionInfoPdu {
+        info_type: InfoType::LogonExtended,
+        info_data: InfoData::LogonExtended(extended.clone()),
+    };
+
+    // 0xAB renders as `171` in the derived byte-slice output.
+    for (label, rendered) in [
+        ("ServerAutoReconnect", format!("{cookie:?}")),
+        ("LogonInfoExtended", format!("{extended:?}")),
+        ("SaveSessionInfoPdu", format!("{pdu:?}")),
+    ] {
+        assert!(
+            !rendered.contains("171"),
+            "{label} leaked the auto-reconnect random: {rendered}"
+        );
+    }
+
+    // The session identifier is not secret and stays visible, so the output is
+    // still useful for diagnosis.
+    assert!(format!("{cookie:?}").contains("42"));
+}
