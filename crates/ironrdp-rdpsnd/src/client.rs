@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use ironrdp_core::{Decode as _, EncodeResult, ReadCursor, cast_length, impl_as_any};
 use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::{PduResult, decode_err, encode_err, pdu_other_err};
+use ironrdp_pdu::{PduResult, encode_err, pdu_other_err};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use tracing::{debug, error};
 
@@ -161,7 +161,13 @@ impl SvcProcessor for Rdpsnd {
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let pdu = pdu::ServerAudioOutputPdu::decode(&mut ReadCursor::new(payload)).map_err(|e| decode_err!(e))?;
+        let pdu = match pdu::ServerAudioOutputPdu::decode(&mut ReadCursor::new(payload)) {
+            Ok(pdu) => pdu,
+            Err(error) => {
+                error!(?error, "Ignoring malformed RDPSND PDU");
+                return Ok(vec![]);
+            }
+        };
 
         debug!(?pdu, ?self.state);
         let msg = match self.state {
