@@ -3,6 +3,9 @@
 
 use std::sync::Arc;
 
+#[cfg(any(feature = "native-tls", test))]
+use tokio_native_tls as _;
+
 #[cfg(feature = "rustls-no-provider")]
 #[path = "rustls.rs"]
 mod impl_;
