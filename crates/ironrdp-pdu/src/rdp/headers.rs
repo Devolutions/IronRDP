@@ -835,8 +835,9 @@ mod tests {
     use ironrdp_core::{decode, encode_vec};
 
     use super::{
-        CompressionFlags, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu, StreamPriority,
-        decode_share_data,
+        CompressionFlags, PADDING_FIELD_SIZE, PDU_TYPE_FIELD_SIZE, SHARE_CONTROL_HEADER_SIZE, STREAM_ID_FIELD_SIZE,
+        ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu, StreamPriority,
+        UNCOMPRESSED_LENGTH_FIELD_SIZE, decode_share_data,
     };
 
     fn zero_length_empty_data_pdu(pdu_type: u8) -> [u8; 18] {
@@ -902,17 +903,26 @@ mod tests {
 
     #[test]
     fn share_data_context_retains_compression_metadata() {
-        let user_data = encode_vec(&ShareControlHeader {
+        let mut user_data = encode_vec(&ShareControlHeader {
             share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
-                share_data_pdu: ShareDataPdu::Update(vec![0x10, 0x20]),
+                share_data_pdu: ShareDataPdu::ShutdownRequest,
                 stream_priority: StreamPriority::Medium,
-                compression_flags: CompressionFlags::COMPRESSED | CompressionFlags::FLUSHED,
+                compression_flags: CompressionFlags::empty(),
                 compression_type: crate::rdp::client_info::CompressionType::K64,
             }),
             pdu_source: 1002,
             share_id: 1,
         })
         .expect("encode Share Control PDU");
+        // ShareDataHeader does not encode compressed payloads. The decoder only
+        // needs the compression-control byte to verify metadata propagation.
+        const COMPRESSION_CONTROL_OFFSET: usize = SHARE_CONTROL_HEADER_SIZE
+            + PADDING_FIELD_SIZE
+            + STREAM_ID_FIELD_SIZE
+            + UNCOMPRESSED_LENGTH_FIELD_SIZE
+            + PDU_TYPE_FIELD_SIZE;
+        user_data[COMPRESSION_CONTROL_OFFSET] = (CompressionFlags::COMPRESSED | CompressionFlags::FLUSHED).bits()
+            | crate::rdp::client_info::CompressionType::K64.as_u8();
         let frame = encode_vec(&X224(McsMessage::SendDataIndication(SendDataIndication {
             initiator_id: 1002,
             channel_id: 1003,
