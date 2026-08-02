@@ -744,6 +744,8 @@ async fn active_session(
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let desktop_size = connection_result.desktop_size;
+    let mut refresh_rect_support = connection_result.refresh_rect_support;
+    let mut suppress_output_support = connection_result.suppress_output_support;
     let mut image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
 
     // We retain the factory to drive the Deactivation-Reactivation Sequence locally.
@@ -778,7 +780,17 @@ async fn active_session(
             frame = reader.read_pdu() => {
                 let (action, payload) = frame.map_err(|e| ironrdp_session::custom_err!("read frame", e))?;
                 trace!(?action, frame_length = payload.len(), "Frame received");
-                active_stage.process(&mut image, action, &payload)?
+                let mut outputs = active_stage.process(&mut image, action, &payload)?;
+                if active_stage.take_bitmap_recovery_request() {
+                    let redraw_frames = active_stage.request_full_redraw(
+                        image.width(),
+                        image.height(),
+                        refresh_rect_support,
+                        suppress_output_support,
+                    )?;
+                    outputs.extend(redraw_frames.into_iter().map(ActiveStageOutput::ResponseFrame));
+                }
+                outputs
             }
             input_event = input_event_receiver.recv() => {
                 let input_event = input_event.ok_or_else(|| ironrdp_session::general_err!("GUI is stopped"))?;
@@ -988,6 +1000,8 @@ async fn active_session(
                             input_flags: _,
                             enable_server_pointer,
                             pointer_software_rendering,
+                            refresh_rect_support: reactivated_refresh_rect_support,
+                            suppress_output_support: reactivated_suppress_output_support,
                         } = connection_activation.connection_activation_state()
                         {
                             debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
@@ -999,6 +1013,8 @@ async fn active_session(
                                 enable_server_pointer,
                                 pointer_software_rendering,
                             );
+                            refresh_rect_support = reactivated_refresh_rect_support;
+                            suppress_output_support = reactivated_suppress_output_support;
                             break 'activation_seq;
                         }
                     }

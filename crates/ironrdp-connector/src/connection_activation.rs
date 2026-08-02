@@ -202,14 +202,18 @@ impl Sequence for ConnectionActivationSequence {
                     ));
                 };
 
-                for c in &capability_sets {
-                    if let CapabilitySet::General(g) = c {
-                        if g.protocol_version != rdp::capability_sets::PROTOCOL_VER {
-                            warn!(version = g.protocol_version, "Unexpected protocol version");
+                let (refresh_rect_support, suppress_output_support) = capability_sets
+                    .iter()
+                    .find_map(|capability_set| {
+                        let CapabilitySet::General(general) = capability_set else {
+                            return None;
+                        };
+                        if general.protocol_version != rdp::capability_sets::PROTOCOL_VER {
+                            warn!(version = general.protocol_version, "Unexpected protocol version");
                         }
-                        break;
-                    }
-                }
+                        Some((general.refresh_rect_support, general.suppress_output_support))
+                    })
+                    .unwrap_or((false, false));
 
                 // Keep the server's Input capability flags so the session layer can tell whether
                 // fast-path input was negotiated: per [MS-RDPBCGR] 2.2.8.1.2, the client MUST NOT
@@ -270,6 +274,8 @@ impl Sequence for ConnectionActivationSequence {
                         desktop_size,
                         share_id,
                         input_flags,
+                        refresh_rect_support,
+                        suppress_output_support,
                         connection_finalization: ConnectionFinalizationSequence::new(
                             self.io_channel_id,
                             self.user_channel_id,
@@ -282,6 +288,8 @@ impl Sequence for ConnectionActivationSequence {
                 desktop_size,
                 share_id,
                 input_flags,
+                refresh_rect_support,
+                suppress_output_support,
                 mut connection_finalization,
             } => {
                 debug!("Connection Finalization");
@@ -293,6 +301,8 @@ impl Sequence for ConnectionActivationSequence {
                         desktop_size,
                         share_id,
                         input_flags,
+                        refresh_rect_support,
+                        suppress_output_support,
                         connection_finalization,
                     }
                 } else {
@@ -302,6 +312,8 @@ impl Sequence for ConnectionActivationSequence {
                         input_flags,
                         enable_server_pointer: self.config.enable_server_pointer,
                         pointer_software_rendering: self.config.pointer_software_rendering,
+                        refresh_rect_support,
+                        suppress_output_support,
                     }
                 };
 
@@ -325,6 +337,8 @@ pub enum ConnectionActivationState {
         share_id: u32,
         /// The server's Input capability flags from the Server Demand Active PDU.
         input_flags: InputFlags,
+        refresh_rect_support: bool,
+        suppress_output_support: bool,
         connection_finalization: ConnectionFinalizationSequence,
     },
     Finalized {
@@ -339,6 +353,10 @@ pub enum ConnectionActivationState {
         input_flags: InputFlags,
         enable_server_pointer: bool,
         pointer_software_rendering: bool,
+        /// Whether the server permits client Refresh Rect PDUs for visual recovery.
+        refresh_rect_support: bool,
+        /// Whether the server permits Suppress Output PDUs for visual recovery.
+        suppress_output_support: bool,
     },
 }
 

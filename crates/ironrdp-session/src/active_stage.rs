@@ -12,6 +12,8 @@ use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
+use ironrdp_pdu::rdp::refresh_rectangle::RefreshRectanglePdu;
+use ironrdp_pdu::rdp::suppress_output::SuppressOutputPdu;
 use ironrdp_pdu::slow_path::{self, GraphicsUpdateType};
 use ironrdp_pdu::{Action, mcs};
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
@@ -102,6 +104,13 @@ fn new_bulk_decompressor(compression_type: Option<CompressionType>) -> Option<Bu
 impl ActiveStage {
     pub fn update_mouse_pos(&mut self, x: u16, y: u16) {
         self.fast_path_processor.update_mouse_pos(x, y);
+    }
+
+    /// Returns whether a malformed Fast-Path bitmap was discarded and needs a full visual recovery.
+    ///
+    /// The caller decides whether the negotiated capabilities permit a recovery request.
+    pub fn take_bitmap_recovery_request(&mut self) -> bool {
+        self.fast_path_processor.take_bitmap_recovery_request()
     }
 
     /// Encodes outgoing input events and modifies image if necessary (e.g for client-side pointer
@@ -277,6 +286,68 @@ impl ActiveStage {
             .encode_static(&mut frame, ShareDataPdu::ShutdownRequest)?;
 
         Ok(vec![ActiveStageOutput::ResponseFrame(frame.into_inner())])
+    }
+
+    /// Requests a full redraw of the negotiated desktop.
+    fn request_full_refresh(&self, width: u16, height: u16) -> SessionResult<Vec<u8>> {
+        debug_assert!(width != 0 && height != 0);
+        let mut frame = WriteBuf::new();
+        self.x224_processor.encode_static(
+            &mut frame,
+            ShareDataPdu::RefreshRectangle(RefreshRectanglePdu {
+                areas_to_refresh: vec![InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: width.saturating_sub(1),
+                    bottom: height.saturating_sub(1),
+                }],
+            }),
+        )?;
+        Ok(frame.into_inner())
+    }
+
+    /// Requests a full redraw using a server-supported recovery PDU.
+    ///
+    /// A Suppress Output toggle is preferred when supported because it is the documented Refresh
+    /// Rect workaround for affected Microsoft RDP servers.
+    ///
+    /// [MS-RDPBCGR 2.2.11.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/0be71491-0b01-402c-947d-080706ccf91b
+    pub fn request_full_redraw(
+        &self,
+        width: u16,
+        height: u16,
+        refresh_rect_support: bool,
+        suppress_output_support: bool,
+    ) -> SessionResult<Vec<Vec<u8>>> {
+        debug_assert!(width != 0 && height != 0);
+        if suppress_output_support {
+            let mut suppress = WriteBuf::new();
+            self.x224_processor.encode_static(
+                &mut suppress,
+                ShareDataPdu::SuppressOutput(SuppressOutputPdu { desktop_rect: None }),
+            )?;
+
+            let mut resume = WriteBuf::new();
+            self.x224_processor.encode_static(
+                &mut resume,
+                ShareDataPdu::SuppressOutput(SuppressOutputPdu {
+                    desktop_rect: Some(InclusiveRectangle {
+                        left: 0,
+                        top: 0,
+                        right: width.saturating_sub(1),
+                        bottom: height.saturating_sub(1),
+                    }),
+                }),
+            )?;
+
+            return Ok(vec![suppress.into_inner(), resume.into_inner()]);
+        }
+
+        if refresh_rect_support {
+            return Ok(vec![self.request_full_refresh(width, height)?]);
+        }
+
+        Ok(Vec::new())
     }
 
     /// Send a pdu on the static global channel. Typically used to send input events
@@ -509,6 +580,28 @@ mod tests {
     use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
 
     use super::*;
+
+    #[test]
+    fn full_redraw_prefers_suppress_output_toggle_when_supported() {
+        let stage = ActiveStageBuilder {
+            static_channels: StaticChannelSet::new(),
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+        }
+        .build();
+
+        let suppress_output_frames = stage.request_full_redraw(1024, 768, true, true).unwrap();
+        assert_eq!(suppress_output_frames.len(), 2);
+        assert!(suppress_output_frames.iter().all(|frame| !frame.is_empty()));
+
+        assert_eq!(stage.request_full_redraw(1024, 768, true, false).unwrap().len(), 1);
+        assert!(stage.request_full_redraw(1024, 768, false, false).unwrap().is_empty());
+    }
 
     #[test]
     fn slow_path_palette_applies_to_indexed_pointer() {
