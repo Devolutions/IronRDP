@@ -552,12 +552,15 @@ impl StaticChannelSet {
 
     /// Inserts a [`StaticVirtualChannel`] into this [`StaticChannelSet`].
     ///
-    /// If a static virtual channel of this type already exists, it is returned.
+    /// If a static virtual channel of this type already exists, it is returned. A new channel is
+    /// not inserted after reaching [`MAX_STATIC_CHANNELS`].
     pub fn insert<T: SvcProcessor + 'static>(&mut self, val: T) -> Option<StaticVirtualChannel> {
-        self.channels.insert(
-            StaticChannelKey::Typed(TypeId::of::<T>()),
-            StaticVirtualChannel::new(val),
-        )
+        let key = StaticChannelKey::Typed(TypeId::of::<T>());
+        if !self.channels.contains_key(&key) && self.len() >= MAX_STATIC_CHANNELS {
+            return None;
+        }
+
+        self.channels.insert(key, StaticVirtualChannel::new(val))
     }
 
     /// Inserts a runtime-defined static virtual channel.

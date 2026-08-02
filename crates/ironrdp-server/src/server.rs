@@ -1440,7 +1440,7 @@ impl RdpServer {
 
         self.static_channels = result.static_channels;
         if !result.reactivation {
-            for (_type_id, channel, channel_id) in self.static_channels.iter_mut() {
+            for (_channel_key, channel, channel_id) in self.static_channels.iter_by_key_mut() {
                 debug!(?channel, ?channel_id, "Start");
                 let Some(channel_id) = channel_id else {
                     continue;

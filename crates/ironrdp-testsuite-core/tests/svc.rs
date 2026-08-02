@@ -43,6 +43,50 @@ impl SvcProcessor for RuntimeChannel {
 impl SvcClientProcessor for RuntimeChannel {}
 impl SvcServerProcessor for RuntimeChannel {}
 
+#[derive(Debug)]
+struct StartingRuntimeChannel;
+
+ironrdp_svc::impl_as_any!(StartingRuntimeChannel);
+
+impl SvcProcessor for StartingRuntimeChannel {
+    fn channel_name(&self) -> ChannelName {
+        ChannelName::from_utf8("start").expect("valid static channel name")
+    }
+
+    fn start(&mut self) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+        Ok(vec![SvcMessage::from(vec![1])])
+    }
+
+    fn process(&mut self, _payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
+impl SvcServerProcessor for StartingRuntimeChannel {}
+
+#[derive(Debug)]
+struct TypedChannel<const ID: usize>;
+
+impl<const ID: usize> ironrdp_core::AsAny for TypedChannel<ID> {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
+}
+
+impl<const ID: usize> SvcProcessor for TypedChannel<ID> {
+    fn channel_name(&self) -> ChannelName {
+        ChannelName::from_utf8("typed").expect("valid static channel name")
+    }
+
+    fn process(&mut self, _payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
 fn channel_chunk(data: &[u8], length: u32, flags: ChannelControlFlags) -> Vec<u8> {
     let mut chunk = encode_vec(&ChannelPduHeader { length, flags }).expect("channel header should encode");
     chunk.extend_from_slice(data);
@@ -113,6 +157,45 @@ fn runtime_channels_enforce_the_static_channel_limit() {
             .insert_dynamic(RuntimeChannel::new("overflow", ChannelOptions::empty()))
             .is_none()
     );
+}
+
+#[test]
+fn typed_channels_enforce_the_static_channel_limit() {
+    macro_rules! insert_typed_channels {
+        ($channels:expr; $($id:literal),+ $(,)?) => {
+            $(
+                assert!($channels.insert(TypedChannel::<$id>).is_none());
+            )+
+        };
+    }
+
+    let mut channels = StaticChannelSet::new();
+    insert_typed_channels!(
+        channels;
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30
+    );
+
+    assert!(channels.insert(TypedChannel::<31>).is_none());
+    assert_eq!(channels.len(), MAX_STATIC_CHANNELS);
+    assert!(channels.get_by_type::<TypedChannel<31>>().is_none());
+}
+
+#[test]
+fn dynamic_channels_are_included_in_startup_iteration() {
+    let mut channels = StaticChannelSet::new();
+    let key = channels.insert_dynamic(StartingRuntimeChannel).expect("dynamic key");
+    channels.attach_channel_id_by_key(key, 1005);
+
+    let startup_message_count = channels
+        .iter_by_key_mut()
+        .map(|(_, channel, channel_id)| {
+            assert_eq!(channel_id, Some(1005));
+            channel.start().expect("channel should start").len()
+        })
+        .sum::<usize>();
+
+    assert_eq!(startup_message_count, 1);
 }
 
 #[test]
