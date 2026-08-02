@@ -116,6 +116,30 @@ The local DVC endpoint is connected only on a NOW request. Its first readiness d
 seconds; a replacement after a worker/transport failure has a 10-second deadline. No Shell command,
 IPC request, capability, or execution mapping is exposed, even when a remote peer supports Shell.
 
+## Localhost RDP workflow
+
+The manual `.github/workflows/agentic-rdp.yml` workflow builds `ironrdp-agent`, enables localhost
+RDP on a Windows runner, connects at the requested desktop size, drives the desktop through the
+agent, and uploads logs and screenshots. Run the same scenario from an elevated Windows shell with:
+
+```powershell
+cargo build -p ironrdp-agent --release
+.\testing\agentic-rdp\Invoke-AgenticRdpTest.ps1 -DesktopSize 1920x1080
+```
+
+The script temporarily changes local RDP settings and the current user's password. Use it only on a
+disposable test machine.
+
+## Live end-to-end test
+
+The ignored live test uses `IRONRDP_AGENT_E2E_HOST`, `IRONRDP_AGENT_E2E_USERNAME`,
+`IRONRDP_AGENT_E2E_PASSWORD`, and optional `IRONRDP_AGENT_E2E_DOMAIN`:
+
+```powershell
+$env:IRONRDP_AGENT_E2E = '1'
+cargo test -p ironrdp-agent --test live_e2e -- --ignored
+```
+
 [`ironrdp-client`]: ../ironrdp-client
 [`ironrdp-core`]: ../ironrdp-core
 [`ironrdp-propertyset`]: ../ironrdp-propertyset
