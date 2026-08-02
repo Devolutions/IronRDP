@@ -39,7 +39,7 @@ pub struct Acceptor {
     pub(crate) creds: Option<Credentials>,
     received_credentials: Option<Credentials>,
     reactivation: bool,
-    honor_client_desktop_size: bool,
+    honor_client_desktop_size: Option<DesktopSize>,
 }
 
 /// Minimum and maximum desktop dimension honored from a client.
@@ -137,24 +137,36 @@ impl Acceptor {
             creds,
             received_credentials: None,
             reactivation: false,
-            honor_client_desktop_size: false,
+            honor_client_desktop_size: None,
         }
     }
 
     /// Adopt the desktop size requested by the client in its Client Core Data
-    /// instead of the size this acceptor was constructed with.
+    /// instead of the size this acceptor was constructed with, clamped to an
+    /// operator-configured maximum.
     ///
     /// The client's requested resolution is only carried in the GCC Client
     /// Core Data of the MCS Connect Initial PDU; the desktop size echoed back
     /// later in the client's Confirm Active is, per [MS-RDPBCGR] 2.2.1.13.2,
     /// the value the client copied from the *server's* Demand Active, so it
     /// cannot be used to discover what the client originally asked for. When
-    /// this is enabled and the client's request is within the protocol-legal
-    /// range, the acceptor negotiates that size from the start (it is written
-    /// into the server's Bitmap capability set before Demand Active is sent),
-    /// avoiding a Deactivation-Reactivation resize round trip.
+    /// this is enabled, the client's request is first clamped per dimension to
+    /// the operator maximum and then validated against the protocol-legal range;
+    /// if the clamped size is legal the acceptor negotiates it from the start (it
+    /// is written into the server's Bitmap capability set before Demand Active is
+    /// sent), avoiding a Deactivation-Reactivation resize round trip.
     ///
-    /// Disabled by default, preserving the previous behavior of always
+    /// Pass `Some(max)` to honor the client's request, clamped per dimension to
+    /// `max`: the client can ask for a *smaller* desktop than `max`, but never a
+    /// larger one. The desktop size is a client-controlled `u16` bounded only by
+    /// the protocol ([200, 8192]); without a ceiling, a client could request
+    /// e.g. 8192×8192 and drive the server's framebuffer/encoder allocation off
+    /// that untrusted number (~256 MiB per frame buffer). `max` is that ceiling
+    /// — set it to what the server is actually willing to render (for instance
+    /// the host display's native resolution). Pass `None` to disable honoring
+    /// entirely and always enforce the server-provided size.
+    ///
+    /// `None` is the default, preserving the previous behavior of always
     /// enforcing the server-provided size.
     ///
     /// # Precondition
@@ -169,8 +181,8 @@ impl Acceptor {
     /// handler, leave this disabled.
     ///
     /// [`RdpServerDisplay`]: <https://docs.rs/ironrdp-server/latest/ironrdp_server/trait.RdpServerDisplay.html>
-    pub fn set_honor_client_desktop_size(&mut self, honor: bool) {
-        self.honor_client_desktop_size = honor;
+    pub fn set_honor_client_desktop_size(&mut self, max: Option<DesktopSize>) {
+        self.honor_client_desktop_size = max;
     }
 
     pub fn new_deactivation_reactivation(
@@ -533,25 +545,33 @@ impl Sequence for Acceptor {
                 // Adopt the client's requested desktop size (from its Client
                 // Core Data) before Demand Active is sent, so the session is
                 // negotiated at that size without a Deactivation-Reactivation
-                // resize. See `set_honor_client_desktop_size`.
-                if self.honor_client_desktop_size {
-                    if let Some(client_size) =
-                        validate_desktop_size(gcc_blocks.core.desktop_width, gcc_blocks.core.desktop_height)
-                    {
+                // resize. The request is clamped to the operator-configured
+                // maximum first, so an untrusted client can't drive the
+                // framebuffer/encoder allocation past that ceiling. See
+                // `set_honor_client_desktop_size`.
+                if let Some(max) = self.honor_client_desktop_size {
+                    let requested_width = gcc_blocks.core.desktop_width;
+                    let requested_height = gcc_blocks.core.desktop_height;
+                    let clamped_width = requested_width.min(max.width);
+                    let clamped_height = requested_height.min(max.height);
+                    if let Some(client_size) = validate_desktop_size(clamped_width, clamped_height) {
                         if client_size != self.desktop_size {
                             debug!(
-                                requested = ?client_size,
+                                requested = ?DesktopSize { width: requested_width, height: requested_height },
+                                max = ?max,
+                                adopted = ?client_size,
                                 previous = ?self.desktop_size,
-                                "Honoring client-requested desktop size"
+                                "Honoring client-requested desktop size (clamped to operator maximum)"
                             );
                             self.desktop_size = client_size;
                             set_bitmap_desktop_size(&mut self.server_capabilities, client_size);
                         }
                     } else {
                         debug!(
-                            width = gcc_blocks.core.desktop_width,
-                            height = gcc_blocks.core.desktop_height,
-                            "Client requested an out-of-range desktop size; keeping the server-provided size"
+                            requested = ?DesktopSize { width: requested_width, height: requested_height },
+                            clamped = ?DesktopSize { width: clamped_width, height: clamped_height },
+                            max = ?max,
+                            "Client-requested desktop size is out of protocol range after clamping to the operator maximum; keeping the server-provided size"
                         );
                     }
                 }
