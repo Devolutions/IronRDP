@@ -272,10 +272,10 @@ impl Daemon {
             }
         };
         let certificate_validation = match properties.get::<&str>("ironrdp_certificate_validation") {
-            None | Some("strict") => CertificateValidation::Strict,
-            Some("dangerously_accept_invalid_certificate") => {
+            None | Some("dangerously_accept_invalid_certificate") => {
                 CertificateValidation::DangerouslyAcceptInvalidCertificate
             }
+            Some("strict") => CertificateValidation::Strict,
             Some(value) => {
                 return Response::typed_error(
                     crate::ipc::AgentErrorCategory::InvalidRequest,
