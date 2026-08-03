@@ -116,9 +116,9 @@ impl<'a> CompositePayload<'a> {
     pub fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_size!(ctx: Self::NAME, in: src, size: Self::HEADER_SIZE);
 
-        let residual_byte_count: usize = cast_length!("residualByteCount", src.read_u32())?;
-        let bands_byte_count: usize = cast_length!("bandsByteCount", src.read_u32())?;
-        let subcodec_byte_count: usize = cast_length!("subcodecByteCount", src.read_u32())?;
+        let residual_byte_count: usize = cast_length!("residualByteCount", src.read_u32(), in: src)?;
+        let bands_byte_count: usize = cast_length!("bandsByteCount", src.read_u32(), in: src)?;
+        let subcodec_byte_count: usize = cast_length!("subcodecByteCount", src.read_u32(), in: src)?;
 
         let total = residual_byte_count
             .checked_add(bands_byte_count)

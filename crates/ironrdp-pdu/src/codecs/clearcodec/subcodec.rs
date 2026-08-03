@@ -68,7 +68,7 @@ fn decode_single_subcodec<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<Subcodec
     let y_start = src.read_u16();
     let width = src.read_u16();
     let height = src.read_u16();
-    let bitmap_data_byte_count: usize = cast_length!("bitmapDataByteCount", src.read_u32())?;
+    let bitmap_data_byte_count: usize = cast_length!("bitmapDataByteCount", src.read_u32(), in: src)?;
     let codec_id_raw = src.read_u8();
     let codec_id = SubcodecId::from_u8(codec_id_raw)?;
 

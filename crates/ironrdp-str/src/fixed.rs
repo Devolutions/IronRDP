@@ -330,10 +330,8 @@ impl<const WCHAR_COUNT: usize> DecodeOwned for FixedString<WCHAR_COUNT> {
         // After stripping trailing nulls from WCHAR_COUNT units, the result must be
         // strictly shorter — if no null was present the field is malformed.
         if units.len() >= WCHAR_COUNT {
-            return Err(ironrdp_core::invalid_field_err!(
-                "content",
-                "fixed-size string field is missing its null terminator"
-            ));
+            return Err(ironrdp_core::invalid_field_err!( "content",
+                "fixed-size string field is missing its null terminator", in: src));
         }
 
         Ok(Self(StringRepr::from_wire_units(units)))
