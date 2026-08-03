@@ -164,8 +164,9 @@ impl<'de> Decode<'de> for ClientGccBlocks {
         }
 
         Ok(Self {
-            core: core.ok_or_else(|| invalid_field_err!("core", "required GCC core is absent"))?,
-            security: security.ok_or_else(|| invalid_field_err!("security", "required GCC security is absent"))?,
+            core: core.ok_or_else(|| invalid_field_err!("core", "required GCC core is absent", in: src))?,
+            security: security
+                .ok_or_else(|| invalid_field_err!("security", "required GCC security is absent", in: src))?,
             network,
             cluster,
             monitor,
@@ -262,9 +263,10 @@ impl<'de> Decode<'de> for ServerGccBlocks {
         }
 
         Ok(Self {
-            core: core.ok_or_else(|| invalid_field_err!("core", "required GCC core is absent"))?,
-            network: network.ok_or_else(|| invalid_field_err!("network", "required GCC network is absent"))?,
-            security: security.ok_or_else(|| invalid_field_err!("security", "required GCC security is absent"))?,
+            core: core.ok_or_else(|| invalid_field_err!("core", "required GCC core is absent", in: src))?,
+            network: network.ok_or_else(|| invalid_field_err!("network", "required GCC network is absent", in: src))?,
+            security: security
+                .ok_or_else(|| invalid_field_err!("security", "required GCC security is absent", in: src))?,
             message_channel,
             multi_transport_channel,
         })
@@ -331,7 +333,7 @@ impl UserDataHeader {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(block_type.into());
-        dst.write_u16(cast_length!("blockLen", block.size() + USER_DATA_HEADER_SIZE)?);
+        dst.write_u16(cast_length!("blockLen", block.size() + USER_DATA_HEADER_SIZE, in: dst)?);
         block.encode(dst)?;
 
         Ok(())
@@ -347,10 +349,10 @@ impl UserDataHeader {
         ensure_fixed_part_size!(in: src);
 
         let block_type = src.read_u16();
-        let block_length: usize = cast_length!("blockLen", src.read_u16())?;
+        let block_length: usize = cast_length!("blockLen", src.read_u16(), in: src)?;
 
         if block_length <= USER_DATA_HEADER_SIZE {
-            return Err(invalid_field_err!("blockLen", "invalid UserDataHeader length"));
+            return Err(invalid_field_err!("blockLen", "invalid UserDataHeader length", in: src));
         }
 
         let len = block_length - USER_DATA_HEADER_SIZE;
@@ -364,7 +366,8 @@ impl UserDataHeader {
         T: FromPrimitive,
     {
         let (raw_type, body) = Self::decode_raw(src)?;
-        let block_type = T::from_u16(raw_type).ok_or_else(|| invalid_field_err!("blockType", "invalid GCC type"))?;
+        let block_type =
+            T::from_u16(raw_type).ok_or_else(|| invalid_field_err!("blockType", "invalid GCC type", in: src))?;
 
         Ok((block_type, body))
     }

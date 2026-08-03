@@ -315,7 +315,8 @@ impl CorrelationInfo {
             return Err(invalid_field_err!(
                 "RDP_NEG_CORRELATION_INFO",
                 "header",
-                "contains invalid type, flags, or length"
+                "contains invalid type, flags, or length",
+                in: src
             ));
         }
 
@@ -325,7 +326,8 @@ impl CorrelationInfo {
             return Err(invalid_field_err!(
                 "RDP_NEG_CORRELATION_INFO",
                 "reserved",
-                "must be zero"
+                "must be zero",
+                in: src
             ));
         }
 
@@ -389,13 +391,13 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
             let msg_type = NegoMsgType::from(src.read_u8());
 
             if msg_type != NegoMsgType::REQUEST {
-                return Err(unexpected_message_type_err!(Self::NAME, u8::from(msg_type)));
+                return Err(unexpected_message_type_err!(Self::NAME, u8::from(msg_type), in: src));
             }
 
             let flags = RequestFlags::from_bits_retain(src.read_u8());
             let length = src.read_u16();
             if length != Self::RDP_NEG_REQ_SIZE {
-                return Err(invalid_field_err!(Self::NAME, "length", "must be eight bytes"));
+                return Err(invalid_field_err!(Self::NAME, "length", "must be eight bytes", in: src));
             }
 
             let protocol = SecurityProtocol::from_bits_retain(src.read_u32());
@@ -516,7 +518,7 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
 
                     Ok(Self::Failure { code })
                 }
-                unexpected => Err(unexpected_message_type_err!(Self::X224_NAME, u8::from(unexpected))),
+                unexpected => Err(unexpected_message_type_err!(Self::X224_NAME, u8::from(unexpected), in: src)),
             }
         } else {
             Ok(Self::Response {

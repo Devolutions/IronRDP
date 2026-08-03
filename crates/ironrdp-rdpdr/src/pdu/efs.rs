@@ -104,11 +104,9 @@ impl VersionAndIdPdu {
             PacketId::CoreServerAnnounce => VersionAndIdPduKind::ServerAnnounceRequest,
             PacketId::CoreClientidConfirm => VersionAndIdPduKind::ServerClientIdConfirm,
             _ => {
-                return Err(invalid_field_err!(
-                    "VersionAndIdPdu::decode",
+                return Err(invalid_field_err!( "VersionAndIdPdu::decode",
                     "PacketId",
-                    "invalid value"
-                ));
+                    "invalid value", in: src));
             }
         };
 
@@ -173,8 +171,7 @@ impl ClientNameRequest {
 
         let encoded_computer_name_length = cast_length!(
             "encoded computer name length",
-            encoded_str_len(self.computer_name(), self.unicode_flag().into(), true)
-        )?;
+            encoded_str_len(self.computer_name(), self.unicode_flag().into(), true), in: dst)?;
 
         dst.write_u32(self.unicode_flag().into());
         dst.write_u32(0); // // CodePage (4 bytes): it MUST be set to 0
@@ -246,8 +243,7 @@ impl CoreCapability {
         dst.write_u16(cast_length!(
             "CoreCapability",
             "numCapabilities",
-            self.capabilities.len()
-        )?);
+            self.capabilities.len(), in: dst)?);
         write_padding!(dst, 2); // 2-bytes padding
         for cap in self.capabilities.iter() {
             cap.encode(dst)?;
@@ -260,11 +256,9 @@ impl CoreCapability {
             PacketId::CoreServerCapability => CoreCapabilityKind::ServerCoreCapabilityRequest,
             PacketId::CoreClientCapability => CoreCapabilityKind::ClientCoreCapabilityResponse,
             _ => {
-                return Err(invalid_field_err!(
-                    "CoreCapability::decode",
+                return Err(invalid_field_err!( "CoreCapability::decode",
                     "PacketId",
-                    "invalid value"
-                ));
+                    "invalid value", in: src));
             }
         };
 
@@ -934,8 +928,7 @@ impl ClientDeviceListAnnounce {
         dst.write_u32(cast_length!(
             "ClientDeviceListAnnounce",
             "DeviceCount",
-            self.device_list.len()
-        )?);
+            self.device_list.len(), in: dst)?);
 
         for dev in self.device_list.iter() {
             dev.encode(dst)?;
@@ -974,8 +967,7 @@ impl ClientDeviceListRemove {
         dst.write_u32(cast_length!(
             "ClientDeviceListRemove",
             "DeviceCount",
-            self.device_list.len()
-        )?);
+            self.device_list.len(), in: dst)?);
 
         for dev in self.device_list.iter() {
             dst.write_u32(*dev)
@@ -1235,8 +1227,7 @@ impl DeviceAnnounceHeader {
         dst.write_u32(cast_length!(
             "DeviceAnnounceHeader",
             "DeviceDataLength",
-            self.device_data.len()
-        )?);
+            self.device_data.len(), in: dst)?);
         dst.write_slice(&self.device_data);
         Ok(())
     }
@@ -1691,7 +1682,13 @@ where
         let input_buffer_length = src.read_u32();
         let io_control_code = T::try_from(src.read_u32()).map_err(|e| {
             error!("Failed to parse IoCtlCode");
-            invalid_field_err_with_source("DeviceControlRequest", "IoCtlCode", "invalid IoCtlCode", None, e)
+            invalid_field_err_with_source(
+                "DeviceControlRequest",
+                "IoCtlCode",
+                "invalid IoCtlCode",
+                Some(src.pos()),
+                e,
+            )
         })?;
 
         // Padding (20 bytes): An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
@@ -1787,8 +1784,7 @@ impl DeviceControlResponse {
             dst.write_u32(cast_length!(
                 "DeviceControlResponse",
                 "OutputBufferLength",
-                output_buffer.size()
-            )?);
+                output_buffer.size(), in: dst)?);
             output_buffer.encode(dst)?;
         } else {
             dst.write_u32(0); // OutputBufferLength
@@ -1898,20 +1894,16 @@ impl ServerDriveIoRequest {
                     Ok(ServerDriveNotifyChangeDirectoryRequest::decode(dev_io_req, src)?.into())
                 }
                 // If MajorFunction is set to IRP_MJ_DIRECTORY_CONTROL and MinorFunction is set to any other value, we've encountered a server bug.
-                _ => Err(invalid_field_err!(
-                    "ServerDriveIoRequest::decode",
+                _ => Err(invalid_field_err!( "ServerDriveIoRequest::decode",
                     "MinorFunction",
-                    "invalid value"
-                )),
+                    "invalid value", in: src)),
             },
             MajorFunction::LockControl => Ok(ServerDriveLockControlRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::QuerySecurity => Ok(ServerDriveQuerySecurityRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::SetSecurity => Ok(ServerDriveSetSecurityRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::SetVolumeInformation => Err(unsupported_value_err!(
-                "ServerDriveIoRequest::decode",
+            MajorFunction::SetVolumeInformation => Err(unsupported_value_err!( "ServerDriveIoRequest::decode",
                 "MajorFunction",
-                "unsupported value".to_owned()
-            )),
+                "unsupported value".to_owned(), in: src)),
         }
     }
 }
@@ -2026,11 +2018,9 @@ impl PrinterIoRequest {
             MajorFunction::Create => Ok(Self::Create(DeviceCreateRequest::decode(dev_io_req, src)?)),
             MajorFunction::Write => Ok(Self::Write(DeviceWriteRequest::decode(dev_io_req, src)?)),
             MajorFunction::Close => Ok(Self::Close(DeviceCloseRequest::decode(dev_io_req))),
-            _ => Err(invalid_field_err!(
-                "PrinterIoRequest::decode",
+            _ => Err(invalid_field_err!( "PrinterIoRequest::decode",
                 "MajorFunction",
-                "unsupported value"
-            )),
+                "unsupported value", in: src)),
         }
     }
 
@@ -2078,7 +2068,7 @@ impl DeviceCreateRequest {
         let shared_access = SharedAccess::from_bits_retain(src.read_u32());
         let create_disposition = CreateDisposition::from(src.read_u32());
         let create_options = CreateOptions::from_bits_retain(src.read_u32());
-        let path_length: usize = cast_length!("DeviceCreateRequest", "path_length", src.read_u32())?;
+        let path_length: usize = cast_length!("DeviceCreateRequest", "path_length", src.read_u32(), in: src)?;
 
         ensure_size!(ctx: "DeviceCreateRequest", in: src, size: path_length);
         let path = from_utf16_bytes(src.read_slice(path_length))
@@ -2511,8 +2501,7 @@ impl ClientDriveQueryInformationResponse {
             dst.write_u32(cast_length!(
                 "ClientDriveQueryInformationResponse",
                 "buffer.size()",
-                buffer.size()
-            )?);
+                buffer.size(), in: dst)?);
             buffer.encode(dst)?;
         } else {
             dst.write_u32(0); // Length = 0
@@ -2730,11 +2719,9 @@ impl FileInformationClass {
             Self::Names(f) => f.encode(dst),
             Self::Directory(f) => f.encode(dst),
             Self::Stream(f) => f.encode(dst),
-            _ => Err(unsupported_value_err!(
-                "FileInformationClass::encode",
+            _ => Err(unsupported_value_err!( "FileInformationClass::encode",
                 "FileInformationClass",
-                self.to_string()
-            )),
+                self.to_string(), in: dst)),
         }
     }
 
@@ -2755,11 +2742,9 @@ impl FileInformationClass {
             FileInformationClassLevel::FILE_ALLOCATION_INFORMATION => {
                 Ok(FileAllocationInformation::decode(src)?.into())
             }
-            _ => Err(unsupported_value_err!(
-                "FileInformationClass::decode",
+            _ => Err(unsupported_value_err!( "FileInformationClass::decode",
                 "FileInformationClassLevel",
-                file_info_class_level.to_string()
-            )),
+                file_info_class_level.to_string(), in: src)),
         }
     }
 
@@ -3108,8 +3093,7 @@ impl FileBothDirectoryInformation {
         dst.write_u32(cast_length!(
             "FileBothDirectoryInformation::encode",
             "file_name_length",
-            encoded_str_len(&self.file_name, CharacterSet::Unicode, false)
-        )?);
+            encoded_str_len(&self.file_name, CharacterSet::Unicode, false), in: dst)?);
         dst.write_u32(self.ea_size);
         dst.write_i8(self.short_name_length);
         // reserved u8 MUST NOT be added,
@@ -3196,8 +3180,7 @@ impl FileFullDirectoryInformation {
         dst.write_u32(cast_length!(
             "FileFullDirectoryInformation::encode",
             "file_name_length",
-            encoded_str_len(&self.file_name, CharacterSet::Unicode, false)
-        )?);
+            encoded_str_len(&self.file_name, CharacterSet::Unicode, false), in: dst)?);
         dst.write_u32(self.ea_size);
         write_string_to_cursor(dst, &self.file_name, CharacterSet::Unicode, false)?;
         Ok(())
@@ -3247,8 +3230,7 @@ impl FileNamesInformation {
         dst.write_u32(cast_length!(
             "FileNamesInformation::encode",
             "file_name_length",
-            encoded_str_len(&self.file_name, CharacterSet::Unicode, false)
-        )?);
+            encoded_str_len(&self.file_name, CharacterSet::Unicode, false), in: dst)?);
         write_string_to_cursor(dst, &self.file_name, CharacterSet::Unicode, false)?;
         Ok(())
     }
@@ -3318,8 +3300,7 @@ impl FileDirectoryInformation {
         dst.write_u32(cast_length!(
             "FileDirectoryInformation::encode",
             "file_name_length",
-            encoded_str_len(&self.file_name, CharacterSet::Unicode, false)
-        )?);
+            encoded_str_len(&self.file_name, CharacterSet::Unicode, false), in: dst)?);
         write_string_to_cursor(dst, &self.file_name, CharacterSet::Unicode, false)?;
         Ok(())
     }
@@ -3453,16 +3434,14 @@ impl ServerDriveQueryDirectoryRequest {
             | FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION
             | FileInformationClassLevel::FILE_NAMES_INFORMATION => {}
             _ => {
-                return Err(invalid_field_err!(
-                    "ServerDriveQueryDirectoryRequest::decode",
+                return Err(invalid_field_err!( "ServerDriveQueryDirectoryRequest::decode",
                     "file_info_class_lvl",
-                    "received invalid level"
-                ));
+                    "received invalid level", in: src));
             }
         }
 
         let initial_query = src.read_u8();
-        let path_length = cast_length!("ServerDriveQueryDirectoryRequest", "path_length", src.read_u32())?;
+        let path_length = cast_length!("ServerDriveQueryDirectoryRequest", "path_length", src.read_u32(), in: src)?;
         // Padding (23 bytes): An array of 23 bytes. This field is unused and MUST be ignored.
         read_padding!(src, 23);
 
@@ -3535,8 +3514,7 @@ impl ClientDriveQueryDirectoryResponse {
         dst.write_u32(cast_length!(
             "ClientDriveQueryDirectoryResponse",
             "length",
-            self.buffer.as_ref().map_or(0, |buf| buf.size())
-        )?);
+            self.buffer.as_ref().map_or(0, |buf| buf.size()), in: dst)?);
         if let Some(buffer) = &self.buffer {
             buffer.encode(dst)?;
         } else {
@@ -3584,18 +3562,16 @@ impl ServerDriveQueryVolumeInformationRequest {
             | FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION
             | FileSystemInformationClassLevel::FILE_FS_DEVICE_INFORMATION => {}
             _ => {
-                return Err(invalid_field_err!(
-                    "ServerDriveQueryVolumeInformationRequest::decode",
-                    "fs_info_class_lvl",
-                    "received invalid level"
-                ));
+                return Err(invalid_field_err!( "ServerDriveQueryVolumeInformationRequest::decode",
+                        "fs_info_class_lvl",
+                        "received invalid level", in: src));
             }
         }
 
         // We only need to read the buffer up to the FileInformationClass to get the job done, so the rest of the fields in
         // this structure are discarded. See FreeRDP:
         // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L464
-        let length = cast_length!("ServerDriveQueryVolumeInformationRequest", "length", src.read_u32())?; // Length
+        let length = cast_length!("ServerDriveQueryVolumeInformationRequest", "length", src.read_u32(), in: src)?; // Length
         read_padding!(src, 24); // Padding
         ensure_size!(in: src, size: length);
         read_padding!(src, length); // QueryVolumeBuffer
@@ -3801,8 +3777,7 @@ impl FileFsVolumeInformation {
         dst.write_u32(cast_length!(
             "FileFsVolumeInformation::encode",
             "volume_label_length",
-            encoded_str_len(&self.volume_label, CharacterSet::Unicode, true)
-        )?);
+            encoded_str_len(&self.volume_label, CharacterSet::Unicode, true), in: dst)?);
         dst.write_u8(self.supports_objects.into());
         // MS-RDPEFS requires the FileFsVolumeInformation reserved byte to be
         // omitted from the RDPDR query-volume response.
@@ -3866,8 +3841,7 @@ impl FileFsAttributeInformation {
         dst.write_u32(cast_length!(
             "FileFsAttributeInformation::encode",
             "file_system_name_length",
-            encoded_str_len(&self.file_system_name, CharacterSet::Unicode, false)
-        )?);
+            encoded_str_len(&self.file_system_name, CharacterSet::Unicode, false), in: dst)?);
         write_string_to_cursor(dst, &self.file_system_name, CharacterSet::Unicode, false)?;
         Ok(())
     }
@@ -4025,8 +3999,7 @@ impl ClientDriveQueryVolumeInformationResponse {
         dst.write_u32(cast_length!(
             "ClientDriveQueryVolumeInformationResponse",
             "length",
-            self.buffer.as_ref().map_or(0, |buf| buf.size())
-        )?);
+            self.buffer.as_ref().map_or(0, |buf| buf.size()), in: dst)?);
         if let Some(buffer) = &self.buffer {
             buffer.encode(dst)?;
         }
@@ -4087,7 +4060,7 @@ impl DeviceReadResponse {
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.device_io_reply.encode(dst)?;
-        dst.write_u32(cast_length!("DeviceReadResponse", "length", self.read_data.len())?);
+        dst.write_u32(cast_length!("DeviceReadResponse", "length", self.read_data.len(), in: dst)?);
         dst.write_slice(&self.read_data);
         Ok(())
     }
@@ -4127,7 +4100,7 @@ impl DeviceWriteRequest {
 
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
-        let length = cast_length!("DeviceWriteRequest", "length", src.read_u32())?;
+        let length = cast_length!("DeviceWriteRequest", "length", src.read_u32(), in: src)?;
         let offset = src.read_u64();
         // Padding (20 bytes):  An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
         read_padding!(src, 20);
@@ -4208,15 +4181,13 @@ impl ServerDriveSetInformationRequest {
             | FileInformationClassLevel::FILE_RENAME_INFORMATION
             | FileInformationClassLevel::FILE_ALLOCATION_INFORMATION => {}
             _ => {
-                return Err(invalid_field_err!(
-                    "ServerDriveSetInformationRequest::decode",
+                return Err(invalid_field_err!( "ServerDriveSetInformationRequest::decode",
                     "file_information_class_level",
-                    "received invalid level"
-                ));
+                    "received invalid level", in: src));
             }
         };
 
-        let length = cast_length!("ServerDriveSetInformationRequest", "length", src.read_u32())?;
+        let length = cast_length!("ServerDriveSetInformationRequest", "length", src.read_u32(), in: src)?;
 
         read_padding!(src, 24); // Padding
 
@@ -4295,7 +4266,7 @@ impl FileRenameInformation {
         ensure_fixed_part_size!(in: src);
         let replace_if_exists = Boolean::from(src.read_u8());
         let _ = src.read_u8(); // RootDirectory
-        let file_name_length = cast_length!("FileRenameInformation", "file_name_length", src.read_u32())?;
+        let file_name_length = cast_length!("FileRenameInformation", "file_name_length", src.read_u32(), in: src)?;
 
         ensure_size!(in: src, size: file_name_length);
         let file_name = decode_string(src.read_slice(file_name_length), CharacterSet::Unicode, true)?;
