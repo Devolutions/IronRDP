@@ -76,8 +76,8 @@ pub struct NegotiatedTls {
 
 #[cfg(any(feature = "native-tls", feature = "rustls-no-provider"))]
 pub fn extract_tls_server_public_key(cert: &x509_cert::Certificate) -> Option<&[u8]> {
-    cert.tbs_certificate
-        .subject_public_key_info
+    cert.tbs_certificate()
+        .subject_public_key_info()
         .subject_public_key
         .as_bytes()
 }

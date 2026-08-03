@@ -1025,8 +1025,8 @@ where
             .map_err(|e| ironrdp_connector::custom_err!("server cert decode", e))?;
 
         let server_public_key = cert
-            .tbs_certificate
-            .subject_public_key_info
+            .tbs_certificate()
+            .subject_public_key_info()
             .subject_public_key
             .as_bytes()
             .ok_or_else(|| ironrdp_connector::general_err!("subject public key BIT STRING is not aligned"))?

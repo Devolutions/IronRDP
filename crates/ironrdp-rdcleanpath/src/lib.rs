@@ -255,7 +255,7 @@ impl RDCleanPathPdu {
 
         let (Ok(header_encoded_len), Ok(body_length)) = (
             header.encoded_len().and_then(usize::try_from),
-            usize::try_from(header.length),
+            usize::try_from(header.length()),
         ) else {
             return DetectionResult::Failed;
         };
@@ -264,7 +264,7 @@ impl RDCleanPathPdu {
             return DetectionResult::Failed;
         };
 
-        match der::asn1::ContextSpecific::<u64>::decode_explicit(&mut slice_reader, der::TagNumber::N0) {
+        match der::asn1::ContextSpecific::<u64>::decode_explicit(&mut slice_reader, der::TagNumber(0)) {
             Ok(Some(version)) if version.value == VERSION_1 => DetectionResult::Detected {
                 version: VERSION_1,
                 total_length,
