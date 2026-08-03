@@ -111,350 +111,6 @@ impl FastPathBulkDecompressionFailure {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use ironrdp_pdu::bitmap::{BitmapData, Compression};
-    use ironrdp_pdu::geometry::ExclusiveRectangle;
-    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute};
-    use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu};
-
-    use ironrdp_graphics::rdp6::{BitmapStreamEncoder, RgbChannels};
-
-    use super::*;
-
-    #[test]
-    fn raw_bitmap_removes_byte_padding_without_changing_source_stride() {
-        let mut processor = ProcessorBuilder {
-            io_channel_id: 0,
-            user_channel_id: 0,
-            share_id: 0,
-            enable_server_pointer: false,
-            pointer_software_rendering: false,
-        }
-        .build();
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
-
-        // Two bottom-up BGR rows of three source pixels each. The final source
-        // column is outside the destination and each row has three pad bytes.
-        let bitmap_data = [
-            3, 2, 1, 6, 5, 4, 9, 8, 7, 0xff, 0xff, 0xff, // bottom row
-            15, 14, 13, 18, 17, 16, 21, 20, 19, 0xff, 0xff, 0xff, // top row
-        ];
-        let bitmap_update = BitmapUpdateData {
-            rectangles: vec![BitmapData {
-                rectangle: InclusiveRectangle {
-                    left: 1,
-                    top: 0,
-                    right: 2,
-                    bottom: 1,
-                },
-                width: 3,
-                height: 2,
-                bits_per_pixel: 24,
-                compression_flags: Compression::empty(),
-                compressed_data_header: None,
-                bitmap_data: &bitmap_data,
-            }],
-        };
-
-        processor.process_bitmap_update(&mut image, bitmap_update).unwrap();
-
-        let pixel = |x: usize, y: usize| -> [u8; 4] {
-            let offset = (y * usize::from(image.width()) + x) * 4;
-            image.data()[offset..offset + 4]
-                .try_into()
-                .expect("pixel has four channels")
-        };
-        assert_eq!(pixel(1, 0), [13, 14, 15, 255]);
-        assert_eq!(pixel(2, 0), [16, 17, 18, 255]);
-        assert_eq!(pixel(1, 1), [1, 2, 3, 255]);
-        assert_eq!(pixel(2, 1), [4, 5, 6, 255]);
-        assert_eq!(pixel(3, 0), [0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn rdp6_bitmap_update_flips_bottom_up_scanlines_before_blitting() {
-        for rle in [false, true] {
-            let mut processor = ProcessorBuilder {
-                io_channel_id: 0,
-                user_channel_id: 0,
-                share_id: 0,
-                enable_server_pointer: false,
-                pointer_software_rendering: false,
-            }
-            .build();
-            let mut image = DecodedImage::new(PixelFormat::RgbA32, 2, 2);
-
-            // Keep the first stream row distinct from the last so the row flip is observable.
-            let wire_rgb = [
-                30, 31, 32, 40, 41, 42, // first stream row
-                10, 11, 12, 20, 21, 22, // last stream row
-            ];
-            let mut bitmap_data = vec![0; wire_rgb.len() + 8];
-            let written = BitmapStreamEncoder::new(2, 2)
-                .encode_bitmap::<RgbChannels>(&wire_rgb, &mut bitmap_data, rle)
-                .unwrap();
-
-            let bitmap_update = BitmapUpdateData {
-                rectangles: vec![BitmapData {
-                    rectangle: InclusiveRectangle {
-                        left: 0,
-                        top: 0,
-                        right: 1,
-                        bottom: 1,
-                    },
-                    width: 2,
-                    height: 2,
-                    bits_per_pixel: 32,
-                    compression_flags: Compression::BITMAP_COMPRESSION,
-                    compressed_data_header: None,
-                    bitmap_data: &bitmap_data[..written],
-                }],
-            };
-
-            processor.process_bitmap_update(&mut image, bitmap_update).unwrap();
-
-            let pixel = |x: usize, y: usize| -> [u8; 4] {
-                let offset = (y * usize::from(image.width()) + x) * 4;
-                image.data()[offset..offset + 4]
-                    .try_into()
-                    .expect("pixel has four channels")
-            };
-            assert_eq!(pixel(0, 0), [10, 11, 12, 255], "RLE: {rle}");
-            assert_eq!(pixel(1, 0), [20, 21, 22, 255], "RLE: {rle}");
-            assert_eq!(pixel(0, 1), [30, 31, 32, 255], "RLE: {rle}");
-            assert_eq!(pixel(1, 1), [40, 41, 42, 255], "RLE: {rle}");
-        }
-    }
-
-    #[test]
-    fn malformed_bitmap_requests_one_recovery_without_terminating_the_session() {
-        let mut processor = ProcessorBuilder {
-            io_channel_id: 1003,
-            user_channel_id: 1001,
-            share_id: 1,
-            enable_server_pointer: false,
-            pointer_software_rendering: false,
-        }
-        .build();
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
-        let mut frame = ironrdp_core::encode_vec(&FastPathHeader::new(
-            ironrdp_pdu::fast_path::EncryptionFlags::empty(),
-            1 /* update header */ + 2 /* update data length */ + 3_200, /* truncated update data */
-        ))
-        .unwrap();
-        frame.push(UpdateCode::Bitmap.as_u8());
-        frame.extend_from_slice(&48_788u16.to_le_bytes());
-        frame.resize(frame.len() + 3_200, 0);
-        let mut output = WriteBuf::new();
-        let mut bulk_decompressor = None;
-
-        assert!(
-            processor
-                .process(&mut image, &frame, &mut output, &mut bulk_decompressor)
-                .is_ok()
-        );
-        assert!(processor.take_bitmap_recovery_request());
-        assert!(!processor.take_bitmap_recovery_request());
-
-        assert!(
-            processor
-                .process(&mut image, &frame, &mut output, &mut bulk_decompressor)
-                .is_ok()
-        );
-        assert!(!processor.take_bitmap_recovery_request());
-    }
-
-    #[test]
-    fn malformed_bitmap_content_requests_recovery_without_terminating_the_session() {
-        let mut processor = ProcessorBuilder {
-            io_channel_id: 1003,
-            user_channel_id: 1001,
-            share_id: 1,
-            enable_server_pointer: false,
-            pointer_software_rendering: false,
-        }
-        .build();
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
-        let bitmap_update = BitmapUpdateData {
-            rectangles: vec![BitmapData {
-                rectangle: InclusiveRectangle {
-                    left: 0,
-                    top: 0,
-                    right: 0,
-                    bottom: 0,
-                },
-                width: 1,
-                height: 1,
-                bits_per_pixel: 16,
-                compression_flags: Compression::empty(),
-                compressed_data_header: None,
-                bitmap_data: &[],
-            }],
-        };
-
-        assert!(processor.process_bitmap_update(&mut image, bitmap_update).is_ok());
-        assert!(processor.take_bitmap_recovery_request());
-    }
-
-    #[test]
-    fn malformed_surface_bitmap_requests_recovery_without_terminating_the_session() {
-        let mut processor = ProcessorBuilder {
-            io_channel_id: 1003,
-            user_channel_id: 1001,
-            share_id: 1,
-            enable_server_pointer: false,
-            pointer_software_rendering: false,
-        }
-        .build();
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
-        let mut output = WriteBuf::new();
-        let surface_bits = SurfaceBitsPdu {
-            destination: ExclusiveRectangle {
-                left: 0,
-                top: 0,
-                right: 1,
-                bottom: 1,
-            },
-            extended_bitmap_data: ExtendedBitmapDataPdu {
-                bpp: 16,
-                codec_id: 0,
-                width: 1,
-                height: 1,
-                header: None,
-                data: &[],
-            },
-        };
-
-        assert!(
-            processor
-                .process_surface_commands(
-                    &mut image,
-                    &mut output,
-                    vec![SurfaceCommand::SetSurfaceBits(surface_bits)]
-                )
-                .is_ok()
-        );
-        assert!(processor.take_bitmap_recovery_request());
-    }
-
-    #[test]
-    fn truncated_fast_path_pointer_updates_do_not_terminate_the_session() {
-        let mut processor = ProcessorBuilder {
-            io_channel_id: 1003,
-            user_channel_id: 1001,
-            share_id: 1,
-            enable_server_pointer: true,
-            pointer_software_rendering: false,
-        }
-        .build();
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
-        let mut output = WriteBuf::new();
-        let mut bulk_decompressor = None;
-
-        let mut truncated_outer = ironrdp_core::encode_vec(&FastPathHeader::new(
-            ironrdp_pdu::fast_path::EncryptionFlags::empty(),
-            1 /* update header */ + 2 /* update data length */ + 3_200, /* truncated update data */
-        ))
-        .unwrap();
-        truncated_outer.push(UpdateCode::ColorPointer.as_u8());
-        truncated_outer.extend_from_slice(&48_788u16.to_le_bytes());
-        truncated_outer.resize(truncated_outer.len() + 3_200, 0);
-
-        assert!(
-            processor
-                .process(&mut image, &truncated_outer, &mut output, &mut bulk_decompressor)
-                .is_ok()
-        );
-        assert!(!processor.take_bitmap_recovery_request());
-
-        let truncated_pointer = ironrdp_core::encode_vec(&FastPathUpdatePdu {
-            fragmentation: Fragmentation::Single,
-            update_code: UpdateCode::ColorPointer,
-            compression_flags: None,
-            compression_type: None,
-            data: &[],
-        })
-        .unwrap();
-        let mut truncated_inner = ironrdp_core::encode_vec(&FastPathHeader::new(
-            ironrdp_pdu::fast_path::EncryptionFlags::empty(),
-            truncated_pointer.len(),
-        ))
-        .unwrap();
-        truncated_inner.extend_from_slice(&truncated_pointer);
-
-        assert!(
-            processor
-                .process(&mut image, &truncated_inner, &mut output, &mut bulk_decompressor)
-                .is_ok()
-        );
-        assert!(!processor.take_bitmap_recovery_request());
-    }
-
-    #[test]
-    fn unsupported_new_pointer_uses_default_and_evicts_cached_shape() {
-        let mut processor = ProcessorBuilder {
-            io_channel_id: 0,
-            user_channel_id: 0,
-            share_id: 0,
-            enable_server_pointer: true,
-            pointer_software_rendering: false,
-        }
-        .build();
-        processor
-            .pointer_cache
-            .insert(0, Arc::new(DecodedPointer::new_invisible()));
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
-        let pointer = PointerAttribute {
-            xor_bpp: 2,
-            color_pointer: ColorPointerAttribute {
-                cache_index: 0,
-                hot_spot: Point16 { x: 0, y: 0 },
-                width: 1,
-                height: 1,
-                xor_mask: &[],
-                and_mask: &[],
-            },
-        };
-        let updates = processor
-            .process_pointer_update(&mut image, PointerUpdateData::New(pointer))
-            .expect("unsupported pointer must not fail the session");
-
-        assert!(matches!(updates.as_slice(), [UpdateKind::PointerDefault]));
-        assert!(!processor.pointer_cache.is_cached(0));
-    }
-
-    #[test]
-    fn malformed_color_pointer_uses_default_and_evicts_cached_shape() {
-        let mut processor = ProcessorBuilder {
-            io_channel_id: 0,
-            user_channel_id: 0,
-            share_id: 0,
-            enable_server_pointer: true,
-            pointer_software_rendering: false,
-        }
-        .build();
-        processor
-            .pointer_cache
-            .insert(0, Arc::new(DecodedPointer::new_invisible()));
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
-        let pointer = ColorPointerAttribute {
-            cache_index: 0,
-            hot_spot: Point16 { x: 0, y: 0 },
-            width: 1,
-            height: 1,
-            xor_mask: &[],
-            and_mask: &[],
-        };
-
-        let updates = processor
-            .process_pointer_update(&mut image, PointerUpdateData::Color(pointer))
-            .expect("malformed pointer must not fail the session");
-
-        assert!(matches!(updates.as_slice(), [UpdateKind::PointerDefault]));
-        assert!(!processor.pointer_cache.is_cached(0));
-    }
-}
 
 #[derive(Debug)]
 pub enum UpdateKind {
@@ -1374,6 +1030,387 @@ fn is_visual_update_code(update_code: u8) -> bool {
         )
 }
 
+
+struct FrameMarkerProcessor {
+    user_channel_id: u16,
+    io_channel_id: u16,
+    share_id: u32,
+}
+
+impl FrameMarkerProcessor {
+    fn new(user_channel_id: u16, io_channel_id: u16, share_id: u32) -> Self {
+        Self {
+            user_channel_id,
+            io_channel_id,
+            share_id,
+        }
+    }
+
+    fn process(&mut self, marker: &FrameMarkerPdu, output: &mut WriteBuf) -> SessionResult<()> {
+        match marker.frame_action {
+            FrameAction::Begin => Ok(()),
+            FrameAction::End => {
+                ironrdp_pdu::rdp::headers::encode_share_data(
+                    self.user_channel_id,
+                    self.io_channel_id,
+                    self.share_id,
+                    ShareDataPdu::FrameAcknowledge(FrameAcknowledgePdu {
+                        frame_id: marker.frame_id.unwrap_or(0),
+                    }),
+                    output,
+                )
+                .map_err(SessionError::encode)?;
+
+                Ok(())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_pdu::bitmap::{BitmapData, Compression};
+    use ironrdp_pdu::geometry::ExclusiveRectangle;
+    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute};
+    use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu};
+
+    use ironrdp_graphics::rdp6::{BitmapStreamEncoder, RgbChannels};
+
+    use super::*;
+
+    #[test]
+    fn raw_bitmap_removes_byte_padding_without_changing_source_stride() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 0,
+            user_channel_id: 0,
+            share_id: 0,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
+
+        // Two bottom-up BGR rows of three source pixels each. The final source
+        // column is outside the destination and each row has three pad bytes.
+        let bitmap_data = [
+            3, 2, 1, 6, 5, 4, 9, 8, 7, 0xff, 0xff, 0xff, // bottom row
+            15, 14, 13, 18, 17, 16, 21, 20, 19, 0xff, 0xff, 0xff, // top row
+        ];
+        let bitmap_update = BitmapUpdateData {
+            rectangles: vec![BitmapData {
+                rectangle: InclusiveRectangle {
+                    left: 1,
+                    top: 0,
+                    right: 2,
+                    bottom: 1,
+                },
+                width: 3,
+                height: 2,
+                bits_per_pixel: 24,
+                compression_flags: Compression::empty(),
+                compressed_data_header: None,
+                bitmap_data: &bitmap_data,
+            }],
+        };
+
+        processor.process_bitmap_update(&mut image, bitmap_update).unwrap();
+
+        let pixel = |x: usize, y: usize| -> [u8; 4] {
+            let offset = (y * usize::from(image.width()) + x) * 4;
+            image.data()[offset..offset + 4]
+                .try_into()
+                .expect("pixel has four channels")
+        };
+        assert_eq!(pixel(1, 0), [13, 14, 15, 255]);
+        assert_eq!(pixel(2, 0), [16, 17, 18, 255]);
+        assert_eq!(pixel(1, 1), [1, 2, 3, 255]);
+        assert_eq!(pixel(2, 1), [4, 5, 6, 255]);
+        assert_eq!(pixel(3, 0), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rdp6_bitmap_update_flips_bottom_up_scanlines_before_blitting() {
+        for rle in [false, true] {
+            let mut processor = ProcessorBuilder {
+                io_channel_id: 0,
+                user_channel_id: 0,
+                share_id: 0,
+                enable_server_pointer: false,
+                pointer_software_rendering: false,
+            }
+            .build();
+            let mut image = DecodedImage::new(PixelFormat::RgbA32, 2, 2);
+
+            // Keep the first stream row distinct from the last so the row flip is observable.
+            let wire_rgb = [
+                30, 31, 32, 40, 41, 42, // first stream row
+                10, 11, 12, 20, 21, 22, // last stream row
+            ];
+            let mut bitmap_data = vec![0; wire_rgb.len() + 8];
+            let written = BitmapStreamEncoder::new(2, 2)
+                .encode_bitmap::<RgbChannels>(&wire_rgb, &mut bitmap_data, rle)
+                .unwrap();
+
+            let bitmap_update = BitmapUpdateData {
+                rectangles: vec![BitmapData {
+                    rectangle: InclusiveRectangle {
+                        left: 0,
+                        top: 0,
+                        right: 1,
+                        bottom: 1,
+                    },
+                    width: 2,
+                    height: 2,
+                    bits_per_pixel: 32,
+                    compression_flags: Compression::BITMAP_COMPRESSION,
+                    compressed_data_header: None,
+                    bitmap_data: &bitmap_data[..written],
+                }],
+            };
+
+            processor.process_bitmap_update(&mut image, bitmap_update).unwrap();
+
+            let pixel = |x: usize, y: usize| -> [u8; 4] {
+                let offset = (y * usize::from(image.width()) + x) * 4;
+                image.data()[offset..offset + 4]
+                    .try_into()
+                    .expect("pixel has four channels")
+            };
+            assert_eq!(pixel(0, 0), [10, 11, 12, 255], "RLE: {rle}");
+            assert_eq!(pixel(1, 0), [20, 21, 22, 255], "RLE: {rle}");
+            assert_eq!(pixel(0, 1), [30, 31, 32, 255], "RLE: {rle}");
+            assert_eq!(pixel(1, 1), [40, 41, 42, 255], "RLE: {rle}");
+        }
+    }
+
+    #[test]
+    fn malformed_bitmap_requests_one_recovery_without_terminating_the_session() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            share_id: 1,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let mut frame = ironrdp_core::encode_vec(&FastPathHeader::new(
+            ironrdp_pdu::fast_path::EncryptionFlags::empty(),
+            1 /* update header */ + 2 /* update data length */ + 3_200, /* truncated update data */
+        ))
+        .unwrap();
+        frame.push(UpdateCode::Bitmap.as_u8());
+        frame.extend_from_slice(&48_788u16.to_le_bytes());
+        frame.resize(frame.len() + 3_200, 0);
+        let mut output = WriteBuf::new();
+        let mut bulk_decompressor = None;
+
+        assert!(
+            processor
+                .process(&mut image, &frame, &mut output, &mut bulk_decompressor)
+                .is_ok()
+        );
+        assert!(processor.take_bitmap_recovery_request());
+        assert!(!processor.take_bitmap_recovery_request());
+
+        assert!(
+            processor
+                .process(&mut image, &frame, &mut output, &mut bulk_decompressor)
+                .is_ok()
+        );
+        assert!(!processor.take_bitmap_recovery_request());
+    }
+
+    #[test]
+    fn malformed_bitmap_content_requests_recovery_without_terminating_the_session() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            share_id: 1,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let bitmap_update = BitmapUpdateData {
+            rectangles: vec![BitmapData {
+                rectangle: InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+                width: 1,
+                height: 1,
+                bits_per_pixel: 16,
+                compression_flags: Compression::empty(),
+                compressed_data_header: None,
+                bitmap_data: &[],
+            }],
+        };
+
+        assert!(processor.process_bitmap_update(&mut image, bitmap_update).is_ok());
+        assert!(processor.take_bitmap_recovery_request());
+    }
+
+    #[test]
+    fn malformed_surface_bitmap_requests_recovery_without_terminating_the_session() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            share_id: 1,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let mut output = WriteBuf::new();
+        let surface_bits = SurfaceBitsPdu {
+            destination: ExclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 1,
+                bottom: 1,
+            },
+            extended_bitmap_data: ExtendedBitmapDataPdu {
+                bpp: 16,
+                codec_id: 0,
+                width: 1,
+                height: 1,
+                header: None,
+                data: &[],
+            },
+        };
+
+        assert!(
+            processor
+                .process_surface_commands(
+                    &mut image,
+                    &mut output,
+                    vec![SurfaceCommand::SetSurfaceBits(surface_bits)]
+                )
+                .is_ok()
+        );
+        assert!(processor.take_bitmap_recovery_request());
+    }
+
+    #[test]
+    fn truncated_fast_path_pointer_updates_do_not_terminate_the_session() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            share_id: 1,
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let mut output = WriteBuf::new();
+        let mut bulk_decompressor = None;
+
+        let mut truncated_outer = ironrdp_core::encode_vec(&FastPathHeader::new(
+            ironrdp_pdu::fast_path::EncryptionFlags::empty(),
+            1 /* update header */ + 2 /* update data length */ + 3_200, /* truncated update data */
+        ))
+        .unwrap();
+        truncated_outer.push(UpdateCode::ColorPointer.as_u8());
+        truncated_outer.extend_from_slice(&48_788u16.to_le_bytes());
+        truncated_outer.resize(truncated_outer.len() + 3_200, 0);
+
+        assert!(
+            processor
+                .process(&mut image, &truncated_outer, &mut output, &mut bulk_decompressor)
+                .is_ok()
+        );
+        assert!(!processor.take_bitmap_recovery_request());
+
+        let truncated_pointer = ironrdp_core::encode_vec(&FastPathUpdatePdu {
+            fragmentation: Fragmentation::Single,
+            update_code: UpdateCode::ColorPointer,
+            compression_flags: None,
+            compression_type: None,
+            data: &[],
+        })
+        .unwrap();
+        let mut truncated_inner = ironrdp_core::encode_vec(&FastPathHeader::new(
+            ironrdp_pdu::fast_path::EncryptionFlags::empty(),
+            truncated_pointer.len(),
+        ))
+        .unwrap();
+        truncated_inner.extend_from_slice(&truncated_pointer);
+
+        assert!(
+            processor
+                .process(&mut image, &truncated_inner, &mut output, &mut bulk_decompressor)
+                .is_ok()
+        );
+        assert!(!processor.take_bitmap_recovery_request());
+    }
+
+    #[test]
+    fn unsupported_new_pointer_uses_default_and_evicts_cached_shape() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 0,
+            user_channel_id: 0,
+            share_id: 0,
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+        }
+        .build();
+        processor
+            .pointer_cache
+            .insert(0, Arc::new(DecodedPointer::new_invisible()));
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
+        let pointer = PointerAttribute {
+            xor_bpp: 2,
+            color_pointer: ColorPointerAttribute {
+                cache_index: 0,
+                hot_spot: Point16 { x: 0, y: 0 },
+                width: 1,
+                height: 1,
+                xor_mask: &[],
+                and_mask: &[],
+            },
+        };
+        let updates = processor
+            .process_pointer_update(&mut image, PointerUpdateData::New(pointer))
+            .expect("unsupported pointer must not fail the session");
+
+        assert!(matches!(updates.as_slice(), [UpdateKind::PointerDefault]));
+        assert!(!processor.pointer_cache.is_cached(0));
+    }
+
+    #[test]
+    fn malformed_color_pointer_uses_default_and_evicts_cached_shape() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 0,
+            user_channel_id: 0,
+            share_id: 0,
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+        }
+        .build();
+        processor
+            .pointer_cache
+            .insert(0, Arc::new(DecodedPointer::new_invisible()));
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
+        let pointer = ColorPointerAttribute {
+            cache_index: 0,
+            hot_spot: Point16 { x: 0, y: 0 },
+            width: 1,
+            height: 1,
+            xor_mask: &[],
+            and_mask: &[],
+        };
+
+        let updates = processor
+            .process_pointer_update(&mut image, PointerUpdateData::Color(pointer))
+            .expect("malformed pointer must not fail the session");
+
+        assert!(matches!(updates.as_slice(), [UpdateKind::PointerDefault]));
+        assert!(!processor.pointer_cache.is_cached(0));
+    }
+}
 #[cfg(test)]
 mod compression_tests {
     use super::*;
@@ -1465,41 +1502,5 @@ mod compression_tests {
         assert_eq!(failure.fragmentation(), Fragmentation::First.as_u8());
         assert_eq!(failure.payload_length(), 1_024);
         assert_eq!(failure.error_kind(), BulkDecompressionErrorKind::InvalidCompressedData);
-    }
-}
-
-struct FrameMarkerProcessor {
-    user_channel_id: u16,
-    io_channel_id: u16,
-    share_id: u32,
-}
-
-impl FrameMarkerProcessor {
-    fn new(user_channel_id: u16, io_channel_id: u16, share_id: u32) -> Self {
-        Self {
-            user_channel_id,
-            io_channel_id,
-            share_id,
-        }
-    }
-
-    fn process(&mut self, marker: &FrameMarkerPdu, output: &mut WriteBuf) -> SessionResult<()> {
-        match marker.frame_action {
-            FrameAction::Begin => Ok(()),
-            FrameAction::End => {
-                ironrdp_pdu::rdp::headers::encode_share_data(
-                    self.user_channel_id,
-                    self.io_channel_id,
-                    self.share_id,
-                    ShareDataPdu::FrameAcknowledge(FrameAcknowledgePdu {
-                        frame_id: marker.frame_id.unwrap_or(0),
-                    }),
-                    output,
-                )
-                .map_err(SessionError::encode)?;
-
-                Ok(())
-            }
-        }
     }
 }
