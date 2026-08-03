@@ -655,13 +655,15 @@ impl Encode for UsbConfigDesc {
         if usize::from(self.length) != Self::FIXED_PART_SIZE {
             return Err(invalid_field_err!(
                 "USB_CONFIGURATION_DESCRIPTOR::bLength",
-                "must be the 9-byte configuration-descriptor header length"
+                "must be the 9-byte configuration-descriptor header length",
+                in: dst
             ));
         }
         if usize::from(self.total_length) != Self::FIXED_PART_SIZE + self.trailing.len() {
             return Err(invalid_field_err!(
                 "USB_CONFIGURATION_DESCRIPTOR::wTotalLength",
-                "must equal the 9-byte header plus the trailing descriptor bytes"
+                "must equal the 9-byte header plus the trailing descriptor bytes",
+                in: dst
             ));
         }
 

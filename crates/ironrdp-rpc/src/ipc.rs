@@ -1391,7 +1391,7 @@ impl_pdu_pod!(PropertyEntry);
 impl Encode for PropertyDump {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
-        let count: u32 = cast_length!("property count", self.entries.len())?;
+        let count: u32 = cast_length!("property count", self.entries.len(), in: dst)?;
         dst.write_u32(count);
         for entry in &self.entries {
             entry.encode(dst)?;
@@ -1925,7 +1925,7 @@ impl Encode for Payload {
             }
             Self::Logs(lines) => {
                 dst.write_u8(3);
-                let count: u32 = cast_length!("log line count", lines.len())?;
+                let count: u32 = cast_length!("log line count", lines.len(), in: dst)?;
                 dst.write_u32(count);
                 for line in lines {
                     write_string(dst, line)?;
@@ -1947,7 +1947,7 @@ impl Encode for Payload {
             }
             Self::NowOperations(operations) => {
                 dst.write_u8(7);
-                let count: u32 = cast_length!("operation count", operations.len())?;
+                let count: u32 = cast_length!("operation count", operations.len(), in: dst)?;
                 dst.write_u32(count);
                 for operation in operations {
                     operation.encode(dst)?;

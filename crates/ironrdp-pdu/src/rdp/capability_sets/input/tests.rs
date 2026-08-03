@@ -66,3 +66,43 @@ fn keyboard_type_unrecognized_value_round_trips() {
 
     assert_eq!(encode_vec(&input).unwrap(), buffer.as_ref());
 }
+
+/// The name occupies a fixed 64-byte slot, so an over-long one is truncated
+/// rather than allowed to run past it.
+///
+/// Computing the padding as `IME_FILE_NAME_SIZE - written` underflowed at 32 or
+/// more UTF-16 code units, and the resulting count reached `write_padding`.
+#[test]
+fn over_long_ime_file_name_is_truncated_to_the_field() {
+    let mut input = INPUT.clone();
+    input.keyboard_ime_filename = "A".repeat(64);
+
+    let buffer = encode_vec(&input).unwrap();
+
+    assert_eq!(buffer.len(), INPUT_BUFFER.len(), "the capability set is fixed width");
+
+    let decoded: Input = decode(buffer.as_slice()).unwrap();
+    assert_eq!(
+        decoded.keyboard_ime_filename,
+        "A".repeat(31),
+        "31 code units fit alongside the terminator"
+    );
+}
+
+/// 64 non-zero bytes decode to a 32-code-unit name, which is one more than the
+/// slot can re-encode. Such a name arrives from a peer, so the round trip has to
+/// terminate rather than panic.
+#[test]
+fn ime_file_name_filling_the_field_survives_a_round_trip() {
+    let mut buffer = INPUT_BUFFER;
+    for pair in buffer[20..84].chunks_exact_mut(2) {
+        pair[0] = b'A';
+        pair[1] = 0;
+    }
+
+    let decoded: Input = decode(buffer.as_ref()).unwrap();
+    assert_eq!(decoded.keyboard_ime_filename.chars().count(), 32);
+
+    let re_encoded = encode_vec(&decoded).unwrap();
+    assert_eq!(re_encoded.len(), INPUT_BUFFER.len());
+}
