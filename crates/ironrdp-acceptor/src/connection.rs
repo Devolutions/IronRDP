@@ -40,6 +40,7 @@ pub struct Acceptor {
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
     received_credentials: Option<ReceivedCredentials>,
+    credentials_handled: bool,
     received_auto_reconnect: Option<ClientAutoReconnect>,
     reactivation: bool,
     honor_client_desktop_size: Option<DesktopSize>,
@@ -100,7 +101,7 @@ pub enum CredentialOrigin {
 ///
 /// Keeping both values in one type makes it impossible to expose credentials
 /// without the provenance required to interpret their authentication status.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ReceivedCredentials {
     pub credentials: Credentials,
     pub origin: CredentialOrigin,
@@ -136,17 +137,15 @@ pub struct AcceptorResult {
     /// implement UDP multitransport can use it to decide whether to send a
     /// Server Initiate Multitransport Request.
     pub multitransport_flags: gcc::MultiTransportFlags,
-    /// Credentials received from the client together with their origin.
+    /// Credentials received from the client during SecureSettingsExchange.
     ///
-    /// For TLS/Standard connections, this contains credentials sent later in
-    /// the ClientInfoPdu and marks them as unauthenticated by the handshake.
-    /// For CredSSP/Hybrid connections, it contains the delegated TSPasswordCreds
-    /// decrypted by the CredSSP state machine and marks them as authenticated by
-    /// that exchange.
+    /// Present for TLS-mode connections where the client sends credentials
+    /// in the ClientInfoPdu. For CredSSP/Hybrid connections, credentials are
+    /// handled before capability exchange and are not exposed here.
     ///
-    /// Embedding servers can use the value for post-handshake validation or
-    /// authorization and for selecting per-user session resources.
-    pub received_credentials: Option<ReceivedCredentials>,
+    /// Servers that need to validate credentials (e.g., via PAM or LDAP)
+    /// should use a [`CredentialsHandler`](crate::CredentialsHandler).
+    pub credentials: Option<Credentials>,
     /// Client Auto-Reconnect Packet received in the Client Info PDU.
     ///
     /// This is present when the client resumes a session using an
@@ -177,6 +176,7 @@ impl Acceptor {
             saved_for_reactivation: Default::default(),
             creds,
             received_credentials: None,
+            credentials_handled: false,
             received_auto_reconnect: None,
             reactivation: false,
             honor_client_desktop_size: None,
@@ -263,6 +263,7 @@ impl Acceptor {
             saved_for_reactivation,
             creds: consumed.creds,
             received_credentials: consumed.received_credentials,
+            credentials_handled: consumed.credentials_handled,
             received_auto_reconnect: consumed.received_auto_reconnect,
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
@@ -327,6 +328,32 @@ impl Acceptor {
         matches!(self.state, AcceptorState::Credssp { .. })
     }
 
+    pub fn desktop_size(&self) -> DesktopSize {
+        self.desktop_size
+    }
+
+    pub fn is_reactivation(&self) -> bool {
+        self.reactivation
+    }
+
+    pub fn is_ready_for_capability_exchange(&self) -> bool {
+        matches!(self.state, AcceptorState::CapabilitiesSendServer { .. })
+    }
+
+    /// Returns credentials received during the current handshake, if any.
+    pub fn received_credentials(&self) -> Option<&ReceivedCredentials> {
+        self.received_credentials.as_ref()
+    }
+
+    /// Takes credentials received during the current handshake, if any.
+    pub fn credentials_need_handling(&self) -> bool {
+        self.received_credentials.is_some() && !self.credentials_handled
+    }
+
+    pub fn mark_credentials_handled(&mut self) {
+        self.credentials_handled = true;
+    }
+
     /// Store credentials delegated by CredSSP/NLA so server code can use the
     /// same post-handshake validation and binding path as TLS ClientInfo
     /// credentials.
@@ -339,6 +366,7 @@ impl Acceptor {
             },
             origin: CredentialOrigin::CredSspDelegated,
         });
+        self.credentials_handled = false;
     }
 
     /// # Panics
@@ -367,7 +395,7 @@ impl Acceptor {
                 keyboard_layout: self.keyboard_layout,
                 multitransport_flags: self.multitransport_flags,
                 reactivation: self.reactivation,
-                received_credentials: self.received_credentials.take(),
+                credentials: self.received_credentials.take().map(|received| received.credentials),
                 auto_reconnect: self.received_auto_reconnect.take(),
             }),
             previous_state => {
@@ -849,6 +877,7 @@ impl Sequence for Acceptor {
                         credentials: creds,
                         origin: CredentialOrigin::ClientInfo,
                     });
+                    self.credentials_handled = false;
                 }
 
                 (
