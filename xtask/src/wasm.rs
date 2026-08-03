@@ -65,7 +65,7 @@ fn install_wasm2wat(sh: &Shell) -> anyhow::Result<()> {
             println!("wasm2wat for macOS x64 is not supported");
             return Ok(());
         }
-    } else  {
+    } else {
         "linux-x64"
     };
 
