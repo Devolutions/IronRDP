@@ -5,7 +5,8 @@
 //! typed `ConfigBuilder` setters.
 //!
 //! For `connect`, property precedence from low to high is: `.rdp` file → `--prop` overrides →
-//! named flags (`--server`/`--username`/…). The daemon's own overlay (`daemon-start --overlay`,
+//! named flags (`--server`/`--username`/…). Environment-backed named flags use `RDP_HOSTNAME`,
+//! `RDP_USERNAME`, and `RDP_PASSWORD`. The daemon's own overlay (`daemon-start --overlay`,
 //! itself built from a `.rdp` file with `--prop` overrides layered on top) wins over all of that —
 //! see `Daemon::connect` in `daemon.rs`.
 
@@ -259,6 +260,7 @@ const MAX_JSON_STREAM_OUTPUT: usize = 2 * 1024 * 1024;
 pub enum Backend {
     Daemon,
     Viewer,
+    ActiveX,
 }
 
 /// A daemon-provided error that must be rendered according to the selected NOW output format.
@@ -302,13 +304,13 @@ struct ConnectArgs {
     #[arg(long = "prop", value_name = "KEY:TYPE:VALUE")]
     prop: Vec<PropOverride>,
     /// RDP server address (host[:port]). Overrides the .rdp file.
-    #[arg(long)]
+    #[arg(long, env = "RDP_HOSTNAME")]
     server: Option<String>,
     /// RDP account user name. Overrides the .rdp file.
-    #[arg(short, long)]
+    #[arg(short, long, env = "RDP_USERNAME")]
     username: Option<String>,
     /// RDP account password. Overrides the .rdp file.
-    #[arg(short, long)]
+    #[arg(short, long, env = "RDP_PASSWORD")]
     password: Option<String>,
     /// RDP account domain. Overrides the .rdp file.
     #[arg(short, long)]
@@ -1148,6 +1150,7 @@ fn endpoint_from_arg(arg: Option<String>, backend: Backend) -> Endpoint {
         None => match backend {
             Backend::Daemon => transport::default_endpoint_named("ironrdp-agent"),
             Backend::Viewer => transport::default_endpoint_named("ironrdp-viewer"),
+            Backend::ActiveX => transport::default_endpoint_named("ironrdp-activex"),
         },
     }
 }
@@ -1155,6 +1158,11 @@ fn endpoint_from_arg(arg: Option<String>, backend: Backend) -> Endpoint {
 async fn ensure_backend(endpoint: &Endpoint, backend: Backend) -> anyhow::Result<()> {
     if transport::send_request(endpoint, &Request::Status).await.is_ok() {
         return Ok(());
+    }
+    if backend == Backend::ActiveX {
+        anyhow::bail!(
+            "ActiveX RPC endpoint is unavailable at {endpoint}; start an ActiveX host with IRONRDP_ACTIVEX_RPC=1"
+        );
     }
 
     let mut child = spawn_backend(endpoint, backend)?;
@@ -1194,6 +1202,7 @@ fn spawn_backend(endpoint: &Endpoint, backend: Backend) -> anyhow::Result<std::p
             command.args(["--rpc", "--rpc-endpoint", &endpoint]);
             command
         }
+        Backend::ActiveX => unreachable!("ActiveX is not an auto-spawnable backend"),
     };
 
     command
@@ -1208,6 +1217,7 @@ fn backend_name(backend: Backend) -> &'static str {
     match backend {
         Backend::Daemon => "daemon",
         Backend::Viewer => "viewer",
+        Backend::ActiveX => "ActiveX",
     }
 }
 
@@ -1277,27 +1287,60 @@ fn property_description(key: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser as _;
+    use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Backend, Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution, endpoint_from_arg};
+    use super::{
+        Backend, Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution, endpoint_from_arg, ensure_backend,
+    };
 
     #[test]
     fn backend_endpoint_selection_is_distinct_and_overridable() {
         let daemon = endpoint_from_arg(None, Backend::Daemon).to_string();
         let viewer = endpoint_from_arg(None, Backend::Viewer).to_string();
+        let activex = endpoint_from_arg(None, Backend::ActiveX).to_string();
 
         assert_ne!(daemon, viewer);
         assert!(daemon.contains("ironrdp-agent"));
         assert!(viewer.contains("ironrdp-viewer"));
+        assert!(activex.contains("ironrdp-activex"));
         assert_eq!(
             endpoint_from_arg(Some("custom-rpc-endpoint".to_owned()), Backend::Viewer).to_string(),
             "custom-rpc-endpoint"
         );
     }
 
+    #[tokio::test]
+    async fn activex_backend_never_spawns_a_missing_host() {
+        let endpoint = crate::transport::endpoint_from_string(format!("ironrdp-activex-test-{}", std::process::id()));
+        let error = ensure_backend(&endpoint, Backend::ActiveX)
+            .await
+            .expect_err("a missing ActiveX host must not be spawned");
+        assert!(error.to_string().contains("IRONRDP_ACTIVEX_RPC=1"));
+    }
+
     #[test]
     fn shell_is_not_an_agent_command() {
         assert!(Cli::try_parse_from(["ironrdp-agent", "now", "shell"]).is_err());
+    }
+
+    #[test]
+    fn connect_arguments_use_standard_rdp_environment_variables() {
+        let command = Cli::command();
+        let connect = command
+            .find_subcommand("connect")
+            .expect("connect subcommand must be registered");
+
+        for (argument, variable) in [
+            ("server", "RDP_HOSTNAME"),
+            ("username", "RDP_USERNAME"),
+            ("password", "RDP_PASSWORD"),
+        ] {
+            let environment = connect
+                .get_arguments()
+                .find(|candidate| candidate.get_id() == argument)
+                .and_then(clap::Arg::get_env);
+            assert_eq!(environment, Some(variable.as_ref()));
+        }
     }
 
     #[test]

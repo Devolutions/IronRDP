@@ -39,32 +39,29 @@ than launching the real `mstsc.exe` child.
    cargo build -p ironrdp-activex --release
    ```
 
-2. Obtain an architecture-matched MsRdpEx build containing `mstscex.exe` and `MsRdpEx.dll`.
+2. Locate an architecture-matched MsRdpEx installation containing `mstscex.exe` and `MsRdpEx.dll`.
+   The [`scripts\Launch-NativeMstsc.ps1`](scripts/Launch-NativeMstsc.ps1) helper defaults to the
+   standard installer location, `C:\Program Files\Devolutions\MsRdpEx`. Use `-MsRdpExDirectory`
+   only when testing an explicit architecture-matched build elsewhere.
 3. Confirm the user authorized the test endpoint, the process-local `RDP_USERNAME` /
    `RDP_PASSWORD` credentials, and (if required) `AuthenticationLevel=0`.
 
 ## Launch the real native host
 
-Set the variables in a single PowerShell process before starting `mstscex.exe`. Do not supply
+Run [`scripts\Launch-NativeMstsc.ps1`](scripts/Launch-NativeMstsc.ps1) from the repository root.
+It validates the MsRdpEx installation and DLL, sets the process-local IronRDP/MsRdpEx environment,
+starts `mstscex.exe`, waits for its real `mstsc.exe` child, and returns both PIDs. Do not supply
 `/axhost`, `/v:`, or an `.rdp` file: the native credential bridge must read the visible MSTSC
 **Computer** field.
 
 ```powershell
-$env:MSRDPEX_MSTSCAX_DLL = (Resolve-Path .\target\release\ironrdpax.dll)
-$env:MSRDPEX_AX_BACKEND = 'ironrdp'
-$env:IRONRDP_ACTIVEX_NATIVE_MSTSC_CREDENTIAL_BRIDGE = '1'
-$env:IRONRDP_ACTIVEX_HOST_TRACE = '<session-artifacts>\mstsc.trace'
-
-$launcher = '<MsRdpEx-build>\Release\mstscex.exe'
-$launcherProcess = Start-Process -FilePath $launcher -PassThru
-Start-Sleep -Seconds 7
-$mstsc = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($launcherProcess.Id)" |
-    Where-Object Name -ieq 'mstsc.exe' |
-    Select-Object -First 1
-if ($null -eq $mstsc) { throw 'mstscex did not launch mstsc.exe' }
+$nativeHost = & .\.github\skills\ironrdp-activex-mstsc-testing\scripts\Launch-NativeMstsc.ps1 `
+    -TracePath '<session-artifacts>\mstsc.trace'
+$mstscPid = $nativeHost.MstscPid
 ```
 
-The target for UI Automation is the `mstsc.exe` child, not `mstscex.exe`.
+The helper sets `IRONRDP_ACTIVEX_RPC=1`; use `ironrdp-agent --backend active-x` to drive its
+listener. The target for UI Automation is the `mstsc.exe` child, not `mstscex.exe`.
 
 Before calling `Connect`, configure the launched control through its normal preconnect COM
 settings:

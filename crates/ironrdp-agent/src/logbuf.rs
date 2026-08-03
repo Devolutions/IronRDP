@@ -23,7 +23,8 @@ use tracing_subscriber::layer::Context;
 const DEFAULT_CAPACITY: usize = 100;
 
 /// A bounded ring buffer of formatted log lines.
-pub(crate) struct LogBuffer {
+#[doc(hidden)]
+pub struct LogBuffer {
     inner: Mutex<Inner>,
 }
 
@@ -33,11 +34,13 @@ struct Inner {
 }
 
 impl LogBuffer {
-    pub(crate) fn new() -> Arc<Self> {
+    #[doc(hidden)]
+    pub fn new() -> Arc<Self> {
         Self::with_capacity(DEFAULT_CAPACITY)
     }
 
-    pub(crate) fn with_capacity(capacity: usize) -> Arc<Self> {
+    #[doc(hidden)]
+    pub fn with_capacity(capacity: usize) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner {
                 capacity: capacity.max(1),
@@ -56,7 +59,8 @@ impl LogBuffer {
     }
 
     /// Returns retained lines, optionally filtered to those containing `substring`.
-    pub(crate) fn query(&self, substring: Option<&str>) -> Vec<String> {
+    #[doc(hidden)]
+    pub fn query(&self, substring: Option<&str>) -> Vec<String> {
         let inner = self.inner.lock().expect("log buffer poisoned");
         inner
             .lines
@@ -64,6 +68,12 @@ impl LogBuffer {
             .filter(|line| substring.is_none_or(|needle| line.contains(needle)))
             .cloned()
             .collect()
+    }
+
+    /// Removes all retained lines before a new session starts.
+    #[doc(hidden)]
+    pub fn clear(&self) {
+        self.inner.lock().expect("log buffer poisoned").lines.clear();
     }
 }
 
@@ -74,7 +84,8 @@ impl LogBuffer {
 /// in the ring buffer instead. The default level is `DEBUG`; `directive` (carried by
 /// `Request::Connect`) refines it per-session — a bare level sets the global session level, while a
 /// targeted directive (e.g. `ironrdp_connector=trace`) layers on top of the `DEBUG` default.
-pub(crate) fn session_dispatch(buffer: Arc<LogBuffer>, directive: Option<&str>) -> Dispatch {
+#[doc(hidden)]
+pub fn session_dispatch(buffer: Arc<LogBuffer>, directive: Option<&str>) -> Dispatch {
     use tracing::level_filters::LevelFilter;
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::prelude::*;

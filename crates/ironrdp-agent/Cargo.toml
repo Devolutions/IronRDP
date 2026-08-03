@@ -45,7 +45,7 @@ now-client = "0.1.0" # public
 uuid = { version = "1", features = ["v4"] }
 
 # CLI
-clap = { version = "4.6", features = ["derive", "cargo"] }
+clap = { version = "4.6", features = ["derive", "cargo", "env"] }
 
 # Logging (ring-buffer tracing layer)
 tracing = "0.1"

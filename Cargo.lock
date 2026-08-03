@@ -2424,7 +2424,9 @@ dependencies = [
 name = "ironrdp-activex"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "embed-resource",
+ "ironrdp-agent",
  "ironrdp-cfg",
  "ironrdp-client",
  "ironrdp-cliprdr",
@@ -2433,9 +2435,11 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-input",
  "ironrdp-pdu",
+ "ironrdp-propertyset",
  "ironrdp-session",
  "ironrdp-svc",
  "ironrdp-tls",
+ "png",
  "sha2 0.10.9",
  "tokio",
  "tracing",

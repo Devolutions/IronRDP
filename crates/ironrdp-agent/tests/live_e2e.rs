@@ -98,16 +98,12 @@ fn send_unicode_text(endpoint: &str, text: &str) {
 }
 
 #[test]
-#[ignore = "requires a reachable RDP host and IRONRDP_AGENT_E2E_* environment variables"]
+#[ignore = "requires a reachable RDP host and RDP_* environment variables"]
 fn connect_launch_browser_and_capture_screenshot() {
-    if env("IRONRDP_AGENT_E2E").as_deref() != Some("1") {
-        return;
-    }
-
-    let host = env("IRONRDP_AGENT_E2E_HOST").expect("IRONRDP_AGENT_E2E_HOST");
-    let username = env("IRONRDP_AGENT_E2E_USERNAME").expect("IRONRDP_AGENT_E2E_USERNAME");
-    let domain = env("IRONRDP_AGENT_E2E_DOMAIN");
-    let password = env("IRONRDP_AGENT_E2E_PASSWORD").expect("IRONRDP_AGENT_E2E_PASSWORD");
+    let _host = env("RDP_HOSTNAME").expect("RDP_HOSTNAME");
+    let _username = env("RDP_USERNAME").expect("RDP_USERNAME");
+    let domain = env("RDP_DOMAIN");
+    let _password = env("RDP_PASSWORD").expect("RDP_PASSWORD");
 
     let endpoint = test_endpoint("live");
     let mut daemon = spawn_daemon(&endpoint);
@@ -118,12 +114,6 @@ fn connect_launch_browser_and_capture_screenshot() {
 
         let mut connect_args = vec![
             "connect",
-            "--server",
-            host.as_str(),
-            "--username",
-            username.as_str(),
-            "--password",
-            password.as_str(),
             "--prop",
             "desktopwidth:i:1280",
             "--prop",

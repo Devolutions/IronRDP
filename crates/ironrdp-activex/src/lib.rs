@@ -29,6 +29,8 @@ mod control;
 mod mstsc;
 #[cfg(windows)]
 mod registration;
+#[cfg(windows)]
+mod rpc;
 
 #[cfg(windows)]
 pub use com::{

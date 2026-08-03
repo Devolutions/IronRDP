@@ -129,6 +129,9 @@ distinct per-user endpoints by default; `--endpoint` overrides either one. Run
 long-lived process. The viewer backend implements the same status, input, screenshot, and NOW
 operations while rendering the shared session in its GUI.
 
+`RDP_HOSTNAME`, `RDP_USERNAME`, and `RDP_PASSWORD` provide defaults for `connect`; explicit
+`--server`, `--username`, and `--password` options take precedence.
+
 `connect` fails with `missing required fields` unless credentials are available, so either preload
 them into the daemon with `daemon-start --overlay <FILE>` — which keeps secrets away from the IPC
 caller — or pass `--password` to `connect`.

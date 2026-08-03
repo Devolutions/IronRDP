@@ -26,6 +26,16 @@ Unsupported Automation and raw-interface members return `DISP_E_MEMBERNOTFOUND` 
 rather than a false success result. A small set of mstsc-compatible status and lifecycle defaults is
 provided where the published control accepts the operation without starting an unavailable feature.
 
+## Local agent RPC
+
+Set `IRONRDP_ACTIVEX_RPC=1` in the ActiveX host process before creating the control to expose the
+current-user-only `ironrdp-agent` RPC service from `ironrdpax.dll`. The shared transport applies a
+protected current-user DACL to its named pipe. Its default endpoint is
+`ironrdp-activex-<user>` on Windows; set `IRONRDP_ACTIVEX_RPC_ENDPOINT` to select another named
+pipe. The listener never accesses the STA control directly: connection, disconnect, input, resize,
+and configuration requests are dispatched through the control's message-only window. `Shutdown`
+stops only this listener after replying; it does not close the host or disconnect the RDP session.
+
 ## Registration
 
 Register a bitness-matching build with:

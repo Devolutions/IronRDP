@@ -3,11 +3,13 @@
 /// Structured guide printed by `ironrdp-agent --help-agent`.
 pub(crate) const AGENT_GUIDE: &str = r#"# ironrdp-agent
 
-A CLI-driven RDP client. One binary provides a short-lived CLI for two local RPC backends:
+A CLI-driven RDP client. One binary provides a short-lived CLI for three local RPC backends:
 
 - DAEMON: `ironrdp-agent daemon-start` runs a long-lived foreground process that owns the RDP
   engine and one RDP session. Background it yourself (e.g. `ironrdp-agent daemon-start &`).
 - VIEWER: `ironrdp-viewer --rpc` runs the same RPC server alongside the visible viewer window.
+- ACTIVEX: an existing `ironrdpax.dll` host runs the RPC server only when started with
+  `IRONRDP_ACTIVEX_RPC=1`. The CLI never starts an ActiveX host.
 - CLI: every operation opens the selected local IPC endpoint, sends one request, prints the response,
   and exits.
 
@@ -20,6 +22,8 @@ it is not already running, then reuse it across CLI invocations. One backend ser
 `/tmp/ironrdp-agent-<uid>.sock`); Windows `\\.\pipe\ironrdp-agent-<user>`.
 `--backend viewer`: Unix `$XDG_RUNTIME_DIR/ironrdp-viewer-<uid>.sock` (falls back to
 `/tmp/ironrdp-viewer-<uid>.sock`); Windows `\\.\pipe\ironrdp-viewer-<user>`.
+`--backend active-x`: Unix `$XDG_RUNTIME_DIR/ironrdp-activex-<uid>.sock` (falls back to
+`/tmp/ironrdp-activex-<uid>.sock`); Windows `\\.\pipe\ironrdp-activex-<user>`.
 Override with `--endpoint <PATH-OR-PIPE>` on any agent subcommand. A manually started viewer accepts
 `--rpc-endpoint <PATH-OR-PIPE>`.
 
@@ -40,9 +44,14 @@ Override with `--endpoint <PATH-OR-PIPE>` on any agent subcommand. A manually st
                                   The viewer is started automatically for normal operations and
                                   remains available for later commands; the GUI and CLI share one
                                   RDP session.
+- `--backend active-x <operation>`
+                                  Drive an existing opted-in ActiveX control. If its endpoint is
+                                  absent, start the owner with `IRONRDP_ACTIVEX_RPC=1`; the CLI
+                                  will not create or close the host process.
 - `stop`
                                   Stop the selected long-lived backend after replying. This does
-                                  not start a backend that is not already running.
+                                  not start a backend that is not already running. For ActiveX it
+                                  stops only the RPC listener, not the hosted RDP session.
 - `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. Precedence (low to high): .rdp file -> `--prop`

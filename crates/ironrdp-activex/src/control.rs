@@ -12,16 +12,17 @@ use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::Duration;
 
 use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
-use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, TransportKind};
+use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, Transport, TransportKind};
 use ironrdp_client::rdp::{CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent};
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp_cliprdr_native::WinClipboard;
-use ironrdp_connector::{ConnectorError, ConnectorErrorKind};
+use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
 use ironrdp_core::{DecodeError, DecodeErrorKind};
 use ironrdp_input::{Database as InputDatabase, MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::PduResult;
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions, ConnectionType, KeyboardType};
 use ironrdp_pdu::rdp::{capability_sets::MajorPlatformType, client_info::PerformanceFlags};
+use ironrdp_propertyset::PropertySet;
 use ironrdp_session::{GracefulDisconnectReason, SessionError, SessionErrorKind};
 use ironrdp_svc::{SvcClientProcessor, SvcMessage, SvcProcessor, impl_as_any};
 use ironrdp_tls::CertificateValidation;
@@ -111,6 +112,7 @@ use crate::mstsc::{
     IMsRdpExtendedSettings_Impl, IMsRdpPreferredRedirectionInfo, IMsRdpPreferredRedirectionInfo_Impl, IMsTscAx_Impl,
     IMsTscAx_Redist_Impl, IMsTscNonScriptable, IMsTscNonScriptable_Impl, InterfaceOut,
 };
+use crate::rpc::{self, ActiveXRpc, Command as RpcCommand};
 
 /// The IronRDP-owned class identifier registered by this DLL.
 pub(crate) const CLSID_IRONRDP_ACTIVEX: GUID = GUID::from_u128(0x5d3e_2b4c_6860_462e_8e9d_0c4d_2b09_4c5f);
@@ -3891,6 +3893,49 @@ pub(crate) struct Control {
     presentation_layout_generation: Cell<u64>,
     traced_frame_layout_generation: Cell<u64>,
     traced_paint_layout_generation: Cell<u64>,
+    rpc: Option<ActiveXRpc>,
+    rpc_properties: RefCell<Option<PropertySet>>,
+    rpc_log_directive: RefCell<Option<String>>,
+}
+
+fn rpc_control_error(error: Error) -> ironrdp_agent::ipc::Response {
+    let category = if error.code() == E_INVALIDARG || error.code() == E_NOTIMPL {
+        ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest
+    } else {
+        ironrdp_agent::ipc::AgentErrorCategory::Unavailable
+    };
+    ironrdp_agent::ipc::Response::typed_error(category, format!("ActiveX control rejected the request: {error}"))
+}
+
+fn active_x_property_snapshot(settings: &Settings, compatibility: &CompatibilitySettings) -> PropertySet {
+    let mut properties = PropertySet::new();
+    if !settings.server.is_empty() {
+        properties.insert("full address", settings.server.clone());
+    }
+    if !settings.username.is_empty() {
+        properties.insert("username", settings.username.clone());
+    }
+    if !settings.domain.is_empty() {
+        properties.insert("domain", settings.domain.clone());
+    }
+    properties.insert("desktopwidth", settings.desktop_width);
+    properties.insert("desktopheight", settings.desktop_height);
+    properties.insert("ironrdp_colordepth", settings.color_depth);
+    if let Some(value) = compatibility.enable_credssp {
+        properties.insert("enablecredsspsupport", value);
+    }
+    if let Some(value) = compatibility.enable_tls {
+        properties.insert("ironrdp_tls", value);
+    }
+    if let Some(value) = compatibility.autologon {
+        properties.insert("ironrdp_autologon", value);
+    }
+    if let Some(value) = compatibility.desktop_scale_factor {
+        properties.insert("desktopscalefactor", value);
+    }
+    properties.insert("redirectclipboard", compatibility.redirect_clipboard);
+    properties.insert("compression", compatibility.compression.unwrap_or(true));
+    properties
 }
 
 impl Control {
@@ -3956,11 +4001,20 @@ impl Control {
             presentation_layout_generation: Cell::new(0),
             traced_frame_layout_generation: Cell::new(0),
             traced_paint_layout_generation: Cell::new(0),
+            rpc: ActiveXRpc::from_environment(),
+            rpc_properties: RefCell::new(None),
+            rpc_log_directive: RefCell::new(None),
         }
     }
 
     fn remember_callback_owner(&self, owner: *const Control_Impl) {
         self.callback_owner.set(owner);
+        if let Some(rpc) = &self.rpc
+            && let Ok(dispatcher) = self.ensure_dispatcher()
+            && let Err(error) = rpc.start(dispatcher)
+        {
+            tracing::warn!(?error, "Unable to start ActiveX RPC listener");
+        }
     }
 
     fn connection_bar_owner(&self) -> Option<HWND> {
@@ -5749,6 +5803,9 @@ impl Control {
                 WorkerEvent::Connected { .. } => {
                     if self.state.get() == ConnectionState::Connecting {
                         self.state.set(ConnectionState::Connected);
+                        if let Some(rpc) = &self.rpc {
+                            rpc.session_connected();
+                        }
                         self.clipboard_state.connected.set(true);
                         self.fire_event(DISPID_ON_CONNECTED, &[]);
                         self.clear_connection_health_window();
@@ -5785,10 +5842,17 @@ impl Control {
                     {
                         self.fire_event(DISPID_ON_REMOTE_DESKTOP_SIZE_CHANGE, &[width, height]);
                     }
+                    if let (Some(rpc), Ok(width), Ok(height)) = (&self.rpc, u16::try_from(width), u16::try_from(height))
+                    {
+                        rpc.retain_frame(width, height, &buffer);
+                    }
                     self.present_frame(buffer, width, height);
                 }
                 WorkerEvent::DisplayResizeFallback { .. } => self.report_display_resize_fallback(),
                 WorkerEvent::FatalError { disconnect, .. } => {
+                    if let Some(rpc) = &self.rpc {
+                        rpc.session_failed(disconnect.description.to_owned());
+                    }
                     self.state.set(ConnectionState::Stopping);
                     self.clear_connection_health_window();
                     if let Err(error) = self.destroy_connection_bar() {
@@ -5806,6 +5870,9 @@ impl Control {
                     self.show_connection_failure_dialog();
                 }
                 WorkerEvent::Disconnected { disconnect, .. } => {
+                    if let Some(rpc) = &self.rpc {
+                        rpc.session_disconnected(disconnect.description.to_owned());
+                    }
                     self.state.set(ConnectionState::Stopping);
                     self.clear_connection_health_window();
                     if let Err(error) = self.destroy_connection_bar() {
@@ -5836,9 +5903,274 @@ impl Control {
                     self.state.set(ConnectionState::Disconnected);
                     self.native_mstsc_preflight.set(NativeMstscPreflight::Idle);
                     self.compatibility.borrow_mut().connection_settings_sealed = false;
+                    if let Some(rpc) = &self.rpc {
+                        rpc.session_stopped();
+                    }
                 }
             }
         }
+    }
+
+    fn dispatch_rpc_commands(&self) {
+        let Some(rpc) = &self.rpc else {
+            return;
+        };
+        rpc.drain_commands(|command| self.handle_rpc_command(command));
+    }
+
+    fn handle_rpc_command(&self, command: RpcCommand) {
+        match command {
+            RpcCommand::Connect {
+                properties,
+                log_directive,
+                response,
+            } => {
+                let _ = response.send(self.rpc_connect(properties, log_directive));
+            }
+            RpcCommand::Disconnect { response } => {
+                let response_value = if self.state.get() == ConnectionState::Disconnected {
+                    ironrdp_agent::ipc::Response::typed_error(
+                        ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                        "no active RDP session",
+                    )
+                } else {
+                    self.stop_connection()
+                        .map_or_else(rpc_control_error, |_| ironrdp_agent::ipc::Response::ok())
+                };
+                let _ = response.send(response_value);
+            }
+            RpcCommand::Input { operation, response } => {
+                let _ = response.send(self.rpc_input(operation));
+            }
+            RpcCommand::Resize {
+                width,
+                height,
+                response,
+            } => {
+                let response_value = if width == 0 || height == 0 {
+                    ironrdp_agent::ipc::Response::typed_error(
+                        ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                        "width and height must be non-zero",
+                    )
+                } else {
+                    self.update_display_layout(DisplayLayout {
+                        desktop_width: u32::from(width),
+                        desktop_height: u32::from(height),
+                        physical_width: 0,
+                        physical_height: 0,
+                        orientation: 0,
+                        desktop_scale_factor: 100,
+                        device_scale_factor: 100,
+                    })
+                    .map_or_else(rpc_control_error, |_| ironrdp_agent::ipc::Response::ok())
+                };
+                let _ = response.send(response_value);
+            }
+        }
+    }
+
+    fn rpc_connect(&self, properties: PropertySet, log_directive: Option<String>) -> ironrdp_agent::ipc::Response {
+        if self.state.get() != ConnectionState::Disconnected {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Conflict,
+                "a session is already active; disconnect first",
+            );
+        }
+        if [
+            "ironrdp_dvcpipeproxy",
+            "ironrdp_dvcplugin",
+            "ironrdp_rdcleanpathurl",
+            "ironrdp_rdcleanpathtoken",
+            "ironrdp_qoi",
+            "ironrdp_qoiz",
+            "ironrdp_rdpdr",
+            "ironrdp_smartcard",
+            "ironrdp_serverpointer",
+        ]
+        .into_iter()
+        .any(|key| properties.get::<&str>(key).is_some() || properties.get::<i64>(key).is_some())
+        {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                "the requested transport extension is not supported by the ActiveX host",
+            );
+        };
+
+        let certificate_validation = match properties.get::<&str>("ironrdp_certificate_validation") {
+            None | Some("strict") => CertificateValidation::Strict,
+            Some("dangerously_accept_invalid_certificate") => {
+                CertificateValidation::DangerouslyAcceptInvalidCertificate
+            }
+            Some(_) => {
+                return ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    "invalid certificate validation policy",
+                );
+            }
+        };
+        let builder = match ConfigBuilder::from_property_set(&properties) {
+            Ok(builder) => builder,
+            Err(error) => {
+                return ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    format!("invalid configuration: {error:#}"),
+                );
+            }
+        }
+        .with_client_build(self.compatibility.borrow().client_build)
+        .with_client_dir(self.compatibility.borrow().client_dir.clone())
+        .with_client_name(
+            self.compatibility
+                .borrow()
+                .client_name
+                .clone()
+                .unwrap_or_else(|| "IronRDP ActiveX".to_owned()),
+        )
+        .with_platform(MajorPlatformType::WINDOWS)
+        .with_certificate_validation(certificate_validation)
+        .with_pointer_software_rendering(true);
+        let missing = builder.missing();
+        if !missing.is_empty() {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                format!(
+                    "missing required fields: {}",
+                    missing
+                        .iter()
+                        .map(ironrdp_client::config::MissingField::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        }
+        let config = match builder.build() {
+            Ok(config) => config,
+            Err(error) => {
+                return ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    format!("{error:#}"),
+                );
+            }
+        };
+        if matches!(config.transport(), Transport::RDCleanPath(_)) {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                "RDCleanPath is not supported by the ActiveX host",
+            );
+        }
+        let Credentials::UsernamePassword { username, password } = &config.connector().credentials else {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                "smart card credentials are not supported by the ActiveX host",
+            );
+        };
+
+        {
+            let mut settings = self.settings.borrow_mut();
+            settings.server = config.destination().to_string();
+            settings.username = username.clone();
+            settings.password = Some(password.clone());
+            settings.domain = config.connector().domain.clone().unwrap_or_default();
+            settings.desktop_width = config.connector().desktop_size.width;
+            settings.desktop_height = config.connector().desktop_size.height;
+            settings.color_depth = config
+                .connector()
+                .bitmap
+                .as_ref()
+                .map(|bitmap| bitmap.color_depth)
+                .unwrap_or(32);
+        }
+        {
+            let connector = config.connector();
+            let mut compatibility = self.compatibility.borrow_mut();
+            compatibility.enable_credssp = Some(connector.enable_credssp);
+            compatibility.enable_tls = Some(connector.enable_tls);
+            compatibility.compression = Some(connector.compression_type.is_some());
+            compatibility.compression_level = connector.compression_type.map(|compression| match compression {
+                ironrdp_pdu::rdp::client_info::CompressionType::K8 => 0,
+                ironrdp_pdu::rdp::client_info::CompressionType::K64 => 1,
+                ironrdp_pdu::rdp::client_info::CompressionType::Rdp6 => 2,
+                ironrdp_pdu::rdp::client_info::CompressionType::Rdp61 => 3,
+            });
+            compatibility.redirect_clipboard = matches!(config.channels().clipboard, ClipboardType::Enable);
+            compatibility.performance_flags = connector.performance_flags;
+            compatibility.keyboard_type = connector.keyboard_type;
+            compatibility.keyboard_subtype = connector.keyboard_subtype;
+            compatibility.keyboard_functional_keys_count = connector.keyboard_functional_keys_count;
+            compatibility.keyboard_layout = connector.keyboard_layout;
+            compatibility.network_connection_type = connector.connection_type;
+            compatibility.desktop_scale_factor = Some(connector.desktop_scale_factor);
+            compatibility.client_build = connector.client_build;
+            compatibility.client_dir = connector.client_dir.clone();
+            compatibility.client_name = Some(connector.client_name.clone());
+            compatibility.ime_file_name = connector.ime_file_name.clone();
+            compatibility.digital_product_id = connector.dig_product_id.clone();
+            compatibility.autologon = Some(connector.autologon);
+            compatibility.fake_events_interval_minutes = config
+                .fake_events_interval()
+                .map(|interval| u32::try_from(interval.as_secs() / 60).unwrap_or(u32::MAX));
+            compatibility.audio_redirection_mode = if connector.enable_audio_playback { 0 } else { 2 };
+            compatibility.secured_start_program = connector.alternate_shell.clone();
+            compatibility.secured_work_dir = connector.work_dir.clone();
+            compatibility.authentication_level_set =
+                certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate;
+            compatibility.authentication_level = if compatibility.authentication_level_set { 0 } else { 1 };
+            match config.transport() {
+                Transport::Direct => {
+                    compatibility.gateway_usage_method = GatewayUsageMethod::Direct.as_i64() as u32;
+                }
+                Transport::Gateway(gateway) => {
+                    compatibility.gateway_hostname = gateway.endpoint.clone();
+                    compatibility.gateway_username = gateway.username.clone();
+                    compatibility.gateway_password = gateway.password.clone();
+                    compatibility.gateway_domain.clear();
+                    compatibility.gateway_usage_method = GatewayUsageMethod::UseAlways.as_i64() as u32;
+                    compatibility.gateway_creds_source = GatewayCredentialsSource::UseUserCredentials.as_i64() as u32;
+                }
+                Transport::RDCleanPath(_) => unreachable!("RDCleanPath was rejected above"),
+            }
+        }
+
+        *self.rpc_properties.borrow_mut() = Some(config.properties().clone());
+        *self.rpc_log_directive.borrow_mut() = log_directive;
+        match self.start_connection() {
+            Ok(()) => ironrdp_agent::ipc::Response::ok(),
+            Err(error) => {
+                self.rpc_properties.borrow_mut().take();
+                let _ = self.rpc_log_directive.borrow_mut().take();
+                rpc_control_error(error)
+            }
+        }
+    }
+
+    fn rpc_input(&self, operation: Operation) -> ironrdp_agent::ipc::Response {
+        if self.state.get() != ConnectionState::Connected {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "no active RDP session",
+            );
+        }
+        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            );
+        };
+        let permit = match sender.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        let fast_path = self.input_database.borrow_mut().apply([operation]);
+        if fast_path.is_empty() {
+            return ironrdp_agent::ipc::Response::ok();
+        }
+        permit.send(RdpInputEvent::FastPath(fast_path));
+        ironrdp_agent::ipc::Response::ok()
     }
 
     fn start_connection(&self) -> Result<()> {
@@ -5911,6 +6243,7 @@ impl Control {
         let authentication_level = compatibility.authentication_level;
         let authentication_level_set = compatibility.authentication_level_set;
         let public_mode = compatibility.public_mode;
+        let direct_rpc_properties = active_x_property_snapshot(&settings, &compatibility);
         drop(compatibility);
         if !self.confirm_connection_security_warnings(warn_about_credentials, warn_about_clipboard)? {
             return Ok(());
@@ -5984,6 +6317,15 @@ impl Control {
         let channel_events = Arc::clone(&self.events);
         let channel_event_posted = Arc::clone(&self.event_posted);
         let static_channel_dispatcher = hwnd.0 as isize;
+        let rpc_now_endpoint = self
+            .rpc
+            .as_ref()
+            .map(|_| ActiveXRpc::allocate_now_endpoint())
+            .transpose()
+            .map_err(|response| match response {
+                ironrdp_agent::ipc::Response::Err(error) => Error::new(E_FAIL, error.message),
+                ironrdp_agent::ipc::Response::Ok(_) => Error::from_hresult(E_FAIL),
+            })?;
         let builder = ConfigBuilder::new()
             .with_destination(destination)
             .with_username(settings.username.clone())
@@ -6092,9 +6434,15 @@ impl Control {
                 })
                 .collect()
         });
+        let builder = if let Some(now_endpoint) = &rpc_now_endpoint {
+            builder.with_dvc_pipe_proxy(now_endpoint.dvc_proxy_info())
+        } else {
+            builder
+        };
         let config = builder
             .build()
             .map_err(|error| Error::new(E_INVALIDARG, format!("invalid RDP configuration: {error}")))?;
+        let rpc_destination = config.destination().to_string();
         drop(settings);
         let (output_sender, mut output_receiver) = mpsc::channel(32);
         let client = RdpClient::new(config, output_sender);
@@ -6113,6 +6461,11 @@ impl Control {
         let events = Arc::clone(&self.events);
         let event_posted = Arc::clone(&self.event_posted);
         let hwnd_raw = hwnd.0 as isize;
+        let rpc_log_directive = self.rpc_log_directive.borrow().clone();
+        let rpc_dispatch = self
+            .rpc
+            .as_ref()
+            .map(|rpc| rpc.session_dispatch(rpc_log_directive.as_deref()));
         let module = match com::retain_module_for_worker() {
             Ok(module) => module,
             Err(error) => {
@@ -6122,6 +6475,12 @@ impl Control {
             }
         };
         let module_raw = module.0 as isize;
+
+        let rpc_properties = self.rpc_properties.borrow_mut().take().unwrap_or(direct_rpc_properties);
+        self.rpc_log_directive.borrow_mut().take();
+        if let (Some(rpc), Some(now_endpoint)) = (&self.rpc, rpc_now_endpoint.as_ref()) {
+            rpc.session_started(rpc_destination, rpc_properties, Arc::clone(now_endpoint));
+        }
 
         com::add_worker();
         let spawn = std::thread::Builder::new()
@@ -6139,7 +6498,7 @@ impl Control {
                         match runtime {
                             Ok(runtime) => {
                                 let local = tokio::task::LocalSet::new();
-                                runtime.block_on(local.run_until(async move {
+                                let worker = local.run_until(async move {
                                     let client_task = tokio::task::spawn_local(client.run());
                                     let mut connection_failed = false;
                                     let mut terminal_received = false;
@@ -6257,7 +6616,12 @@ impl Control {
                                         hwnd,
                                         WorkerEvent::Stopped { generation },
                                     );
-                                }));
+                                });
+                                if let Some(dispatch) = rpc_dispatch {
+                                    tracing::dispatcher::with_default(&dispatch, || runtime.block_on(worker));
+                                } else {
+                                    runtime.block_on(worker);
+                                }
                             }
                             Err(error) => {
                                 tracing::error!(?error, "Unable to create RDP worker runtime");
@@ -6302,7 +6666,12 @@ impl Control {
             com::release_module_reference(module);
             self.stop_clipboard_redirection();
             self.compatibility.borrow_mut().connection_settings_sealed = false;
-            return Err(Error::new(E_FAIL, format!("unable to start RDP worker: {error}")));
+            let message = format!("unable to start RDP worker: {error}");
+            if let Some(rpc) = &self.rpc {
+                rpc.session_failed(message.clone());
+                rpc.session_stopped();
+            }
+            return Err(Error::new(E_FAIL, message));
         }
 
         *self.input_sender.borrow_mut() = Some(input_sender);
@@ -6330,6 +6699,9 @@ impl Control {
         self.last_disconnect.set(DisconnectInfo::api_initiated());
         sender.request_close();
         self.state.set(ConnectionState::Stopping);
+        if let Some(rpc) = &self.rpc {
+            rpc.session_disconnecting();
+        }
         self.clear_connection_health_window();
         Ok(())
     }
@@ -7329,6 +7701,9 @@ impl Control {
 impl Drop for Control {
     fn drop(&mut self) {
         trace_host_call("Control::Drop");
+        if let Some(rpc) = &self.rpc {
+            rpc.stop();
+        }
         let _ = self.stop_connection();
         self.stop_clipboard_redirection();
         if let Err(error) = self.destroy_connection_bar() {
@@ -8808,7 +9183,9 @@ impl IViewObjectEx_Impl for Control_Impl {
 impl IOleObject_Impl for Control_Impl {
     fn SetClientSite(&self, site: Ref<'_, IOleClientSite>) -> Result<()> {
         trace_host_call("IOleObject::SetClientSite");
-        if site.is_none() {
+        if site.is_some() {
+            self.remember_callback_owner(self);
+        } else {
             self.release_input();
         }
         *self.client_site.borrow_mut() = site.cloned();
@@ -8888,6 +9265,7 @@ impl IOleObject_Impl for Control_Impl {
         position: *const RECT,
     ) -> Result<()> {
         trace_host_call("IOleObject::DoVerb");
+        self.remember_callback_owner(self);
         let action = ole_verb_action(verb)?;
         let active_site = active_site.cloned();
         let recorded_site = self.client_site.borrow().clone();
@@ -10938,6 +11316,14 @@ unsafe extern "system" fn dispatcher_window_proc(hwnd: HWND, message: u32, _wpar
                 let _keep_alive: IUnknown = owner.to_interface();
                 let control: &Control = owner;
                 control.dispatch_pending_events();
+            }
+            LRESULT(0)
+        }
+        rpc::WM_DISPATCH_RPC => {
+            if let Some(owner) = unsafe { control_from_window(hwnd).as_ref() } {
+                let _keep_alive: IUnknown = owner.to_interface();
+                let control: &Control = owner;
+                control.dispatch_rpc_commands();
             }
             LRESULT(0)
         }

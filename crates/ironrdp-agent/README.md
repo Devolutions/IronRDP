@@ -2,7 +2,7 @@
 
 A CLI-driven RDP client designed for programmatic (e.g. LLM) consumption.
 
-The single `ironrdp-agent` binary provides a short-lived CLI and can drive either of two
+The single `ironrdp-agent` binary provides a short-lived CLI and can drive one of three
 long-lived local RPC backends:
 
 - **Daemon** (`ironrdp-agent daemon-start`): a long-lived, foreground process that owns the
@@ -11,11 +11,16 @@ long-lived local RPC backends:
   Windows).
 - **Viewer** (`ironrdp-viewer --rpc`): the same RPC contract hosted by the visible
   [`ironrdp-viewer`]. The viewer window and CLI share one RDP session, framebuffer, and input path.
+- **ActiveX** (`ironrdpax.dll`): the same RPC contract hosted by an opted-in ActiveX control.
+  Set `IRONRDP_ACTIVEX_RPC=1` in the host process before creating the control, then select it with
+  `--backend active-x`. This backend is never auto-started because the control must remain hosted
+  by its owner.
 
 For normal CLI operations, the selected backend is started automatically when it is not already
 running and remains available for later invocations. The daemon is the default; select the visible
-viewer with `--backend viewer`. `--endpoint` overrides the selected backend's endpoint. Use
-`stop` to terminate the selected backend.
+viewer with `--backend viewer`, or an already-hosted control with `--backend active-x`. `--endpoint`
+overrides the selected backend's endpoint. Use `stop` to terminate the selected backend; for
+ActiveX, it stops only the listener and leaves the hosted session running.
 
 The CLI (`ironrdp-agent <op> …`) is a short-lived invocation that opens the selected endpoint, sends
 a single request, prints the response, and exits.
@@ -40,20 +45,24 @@ strictly-typed messages. `Request::Screenshot` returns the most recent frame as 
 mouse cursor composited in — the agent enables software pointer rendering), which the CLI writes to
 disk.
 
-Both backends implement the complete current RPC contract, including connection lifecycle, status,
+All backends implement the complete current RPC contract, including connection lifecycle, status,
 property and log inspection, screenshots, mouse/keyboard/resize input, and NOW operations. The
 default endpoints are `ironrdp-agent-<uid>.sock` (Unix) or `\\.\pipe\ironrdp-agent-<user>` (Windows)
 for the daemon, and the corresponding `ironrdp-viewer-<uid>.sock` or
 `\\.\pipe\ironrdp-viewer-<user>` endpoint for the viewer. A manually started viewer uses
 `ironrdp-viewer --rpc --rpc-endpoint <PATH-OR-PIPE>` when a non-default endpoint is required.
+The ActiveX endpoint is `ironrdp-activex-<uid>.sock` (Unix) or
+`\\.\pipe\ironrdp-activex-<user>` (Windows), and can be overridden in the host process with
+`IRONRDP_ACTIVEX_RPC_ENDPOINT`.
 
 ## Secrets
 
-The daemon never exposes secrets to the IPC reader. `ConfigBuilder::build` strips every
+The RPC backends never expose secrets to the IPC reader. `ConfigBuilder::build` strips every
 `ironrdp_cfg::is_secret_key` property (`ClearTextPassword`, `GatewayPassword`, the RDCleanPath
-token, …) before producing the `Config`, and the daemon seeds its live property bag from that
-post-build configuration. Secrets therefore never reach the live bag, so property dumps, status,
-and logs cannot leak them — no separate redaction pass is needed.
+token, …) before producing the `Config`, and daemon and ActiveX RPC sessions seed their live
+property bags from that post-build configuration. Direct ActiveX COM sessions use a separate
+secret-free snapshot. Secrets therefore never reach the live bag, so property dumps, status, and
+logs cannot leak them — no separate redaction pass is needed.
 
 ## Preloaded overlay
 
@@ -72,12 +81,14 @@ grammar as one `.rdp` file line (`TYPE` is `i` for integer or `s` for string, e.
 dedicated CLI flag existing for it. Final precedence, low to high:
 
 ```
-.rdp file → --prop overrides → named flags (--server/--username/…) → daemon's overlay
+.rdp file → --prop overrides → environment-backed or named flags (--server/--username/…) → daemon's overlay
 ```
 
-On `connect`, `--prop` overrides win over an optional `--rdp-file` but lose to the named flags. On
-`daemon-start`, `--prop` overrides win over an optional `--overlay` file, and the resulting overlay
-still wins over everything a `connect` request supplies (unchanged).
+On `connect`, `RDP_HOSTNAME`, `RDP_USERNAME`, and `RDP_PASSWORD` provide defaults for `--server`,
+`--username`, and `--password`. Explicit CLI flags override their corresponding environment value;
+both override `--prop` and an optional `--rdp-file`. On `daemon-start`, `--prop` overrides win over
+an optional `--overlay` file, and the resulting overlay still wins over everything a `connect`
+request supplies (unchanged).
 
 ## Logging
 
@@ -148,11 +159,11 @@ disposable test machine.
 
 ## Live end-to-end test
 
-The ignored live test uses `IRONRDP_AGENT_E2E_HOST`, `IRONRDP_AGENT_E2E_USERNAME`,
-`IRONRDP_AGENT_E2E_PASSWORD`, and optional `IRONRDP_AGENT_E2E_DOMAIN`:
+The ignored live test uses the normal `RDP_HOSTNAME`, `RDP_USERNAME`, `RDP_PASSWORD`, and optional
+`RDP_DOMAIN` environment variables. It remains ignored by default, so it runs only when explicitly
+selected:
 
 ```powershell
-$env:IRONRDP_AGENT_E2E = '1'
 cargo test -p ironrdp-agent --test live_e2e -- --ignored
 ```
 
