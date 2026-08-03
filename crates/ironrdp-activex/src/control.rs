@@ -436,6 +436,16 @@ fn native_mstsc_credential_bridge_enabled() -> bool {
     environment_flag_enabled("IRONRDP_ACTIVEX_NATIVE_MSTSC_CREDENTIAL_BRIDGE")
 }
 
+fn native_mstsc_autologon_enabled() -> bool {
+    environment_flag_enabled("RDP_AUTOLOGON")
+}
+
+fn autologon_credentials(username: Option<String>, password: Option<String>) -> Option<(String, String)> {
+    let username = username.filter(|value| !value.is_empty())?;
+    let password = password.filter(|value| !value.is_empty())?;
+    Some((username, password))
+}
+
 fn activex_dvc_plugins_enabled() -> bool {
     environment_flag_enabled(ACTIVEX_DVC_PLUGIN_OPT_IN)
 }
@@ -5187,6 +5197,25 @@ impl Control {
         if server.trim().is_empty() {
             trace_host_call("NativeMstscCredentialBridge::MissingServer");
             return Ok(false);
+        }
+        if native_mstsc_autologon_enabled() {
+            let Some((username, password)) =
+                autologon_credentials(std::env::var("RDP_USERNAME").ok(), std::env::var("RDP_PASSWORD").ok())
+            else {
+                trace_host_call("NativeMstscCredentialBridge::AutoLogonMissingCredentials");
+                return Ok(false);
+            };
+            {
+                let mut settings = self.settings.borrow_mut();
+                settings.server = server;
+                settings.domain.clear();
+                settings.username = username;
+                settings.password = Some(password);
+            }
+            self.compatibility.borrow_mut().autologon = Some(true);
+            trace_host_call("NativeMstscCredentialBridge::AutoLogon");
+            self.start_connection()?;
+            return Ok(self.state.get() != ConnectionState::Disconnected);
         }
         let target = HSTRING::from(format!("IronRDP:{server}"));
         let message = HSTRING::from(format!("Enter credentials for {server}"));
@@ -12654,6 +12683,24 @@ mod tests {
             [u16::from(b'l'), u16::from(b'o'), u16::from(b'n'), u16::from(b'g'), 0]
         );
         assert!(credential_prompt_buffer("ignored", 0).is_empty());
+    }
+
+    #[test]
+    fn autologon_credentials_require_nonempty_username_and_password() {
+        assert_eq!(
+            autologon_credentials(Some("user".to_owned()), Some("password".to_owned())),
+            Some(("user".to_owned(), "password".to_owned()))
+        );
+        assert_eq!(autologon_credentials(None, Some("password".to_owned())), None);
+        assert_eq!(autologon_credentials(Some("user".to_owned()), None), None);
+        assert_eq!(
+            autologon_credentials(Some(String::new()), Some("password".to_owned())),
+            None
+        );
+        assert_eq!(
+            autologon_credentials(Some("user".to_owned()), Some(String::new())),
+            None
+        );
     }
 
     #[test]

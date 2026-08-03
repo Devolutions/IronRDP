@@ -22,6 +22,9 @@ than launching the real `mstsc.exe` child.
 - Require `MSRDPEX_AX_BACKEND=ironrdp` so MsRdpEx enables its private-layout exclusion.
 - Put `RDP_USERNAME` and `RDP_PASSWORD` only in the launcher process environment. Never print,
   persist, pass as arguments, add to an `.rdp` file, or copy to artifacts.
+- `RDP_AUTOLOGON=1` is an explicit unattended-test opt-in. It requires nonempty
+  `RDP_USERNAME` and `RDP_PASSWORD`, bypasses CredUI, and must not be used for an interactive or
+  production connection.
 - A generated `.rdp` file may contain only the authorized destination and `prompt for credentials`;
   never add user names, passwords, tokens, or gateway credentials to it.
 - For an authorized isolated test endpoint with a self-signed certificate, set the standard
@@ -62,14 +65,17 @@ native bridge uses only when the `.rdp` launch has no visible Computer field. Do
 ```powershell
 $nativeHost = & .\.github\skills\ironrdp-activex-mstsc-testing\scripts\Launch-NativeMstsc.ps1 `
     -TracePath '<session-artifacts>\mstsc.trace' `
-    -Destination '<authorized-host[:port]>'
+    -Destination '<authorized-host[:port]>' `
+    -AutoLogon
 $mstscPid = $nativeHost.MstscPid
 ```
 
 The helper sets `IRONRDP_ACTIVEX_RPC=1`; use `ironrdp-agent --backend active-x` to drive its
-listener. The target for UI Automation is the `mstsc.exe` child, not `mstscex.exe`. The bridge
-still displays its non-persistent CredUI prompt. Confirm that the prompt belongs to this child
-before using UI Automation to invoke **OK**.
+listener. `-AutoLogon` requires the caller to have already set nonempty `RDP_USERNAME` and
+`RDP_PASSWORD`; it sets `RDP_AUTOLOGON=1` only for this explicit test path and requires
+`-Destination`. The target for UI Automation is the `mstsc.exe` child, not `mstscex.exe`. Without
+`-AutoLogon`, the bridge still displays its non-persistent CredUI prompt. Confirm that the prompt
+belongs to this child before using UI Automation to invoke **OK**.
 
 The `.rdp` launch initiates the IronRDP session without the native connection form, but native
 MSTSC can subsequently show its own nonfatal connection-error dialog because the bridge must halt
@@ -94,7 +100,8 @@ When launching without `-Destination`, use UI Automation to set the visible **Co
 control to the authorized endpoint and invoke **Connect**. The explicit bridge will receive native
 MSTSC's `put_StartProgram` preflight, display the IronRDP CredUI dialog, and pre-populate it from
 the process-local `RDP_USERNAME` / `RDP_PASSWORD` values. Invoke **OK** only after confirming the
-prompt belongs to the launched `mstsc.exe` process.
+prompt belongs to the launched `mstsc.exe` process. For unattended authorized testing, use
+`-Destination -AutoLogon` instead; it starts the bridge without the connection or CredUI dialogs.
 
 Expected value-free trace markers, in order:
 
@@ -109,6 +116,10 @@ ActiveXClipboard::Started
 Renderer::NativeMstscShellLayoutSynced
 RdpWorker::PostLogonDisplayRedraw
 ```
+
+With `-AutoLogon`, expect `NativeMstscCredentialBridge::AutoLogon` in place of
+`QualifiedUsername` and `CredentialsAccepted`; its presence confirms that CredUI was bypassed
+without tracing credentials.
 
 Fail the run if the child cannot be found, the trace contains `ConnectionFailure`, `Fatal`, or an
 unexpected `Disconnected` marker before test teardown.

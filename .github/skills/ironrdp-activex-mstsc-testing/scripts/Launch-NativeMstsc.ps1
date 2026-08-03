@@ -9,6 +9,8 @@ param(
 
     [string]$Destination,
 
+    [switch]$AutoLogon,
+
     [ValidateRange(1, 60)]
     [int]$StartupTimeoutSeconds = 7
 )
@@ -33,6 +35,17 @@ $env:MSRDPEX_AX_BACKEND = 'ironrdp'
 $env:IRONRDP_ACTIVEX_NATIVE_MSTSC_CREDENTIAL_BRIDGE = '1'
 $env:IRONRDP_ACTIVEX_HOST_TRACE = [System.IO.Path]::GetFullPath($TracePath)
 $env:IRONRDP_ACTIVEX_RPC = '1'
+
+if ($AutoLogon) {
+    if (!$Destination) {
+        throw 'AutoLogon requires Destination'
+    }
+    if ([string]::IsNullOrEmpty($env:RDP_USERNAME) -or [string]::IsNullOrEmpty($env:RDP_PASSWORD)) {
+        throw 'AutoLogon requires nonempty RDP_USERNAME and RDP_PASSWORD environment variables'
+    }
+
+    $env:RDP_AUTOLOGON = '1'
+}
 
 $rdpFile = $null
 $launcherArguments = @()

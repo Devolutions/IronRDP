@@ -105,12 +105,20 @@ operator must still approve it. These values are used only to initialize CredUI'
 are not traced or persisted, and should be supplied only through a suitably protected process
 environment.
 
+For an explicitly authorized unattended test, set `RDP_AUTOLOGON=1` together with nonempty
+`RDP_USERNAME` and `RDP_PASSWORD` in the `mstscex.exe` process environment. The bridge bypasses
+CredUI, provides these values directly to the in-memory session, and enables the RDP `INFO_AUTOLOGON`
+flag. Missing credentials fail closed without opening CredUI. This opt-in must not be used for
+interactive or production connections, and the values must never be written to `.rdp` files, traces,
+arguments, or persistent credential storage.
+
 For authorized automation tests, a credential-free `.rdp` file may provide the destination while
 the launcher supplies that same destination in `RDP_HOSTNAME`. When the native connection form is
 absent, the bridge uses that process-local value as its destination fallback; `RDP_USERNAME` and
-`RDP_PASSWORD` remain CredUI-only and must never be written to the file. This starts the IronRDP
-session, but native MSTSC can still show a nonfatal error after the bridge stops its proprietary
-continuation. Verify the session through the ActiveX RPC endpoint before dismissing that dialog.
+`RDP_PASSWORD` must never be written to the file. Combining those variables with `RDP_AUTOLOGON=1`
+starts the IronRDP session without either native connection or credential dialogs. Native MSTSC can
+still show a nonfatal error after the bridge stops its proprietary continuation. Verify the session
+through the ActiveX RPC endpoint before dismissing that dialog.
 
 In this explicit bridge mode, non-minimized native-shell container size changes become a 250 ms
 debounced `IMsRdpClient9::UpdateSessionDisplaySettings` request. IronRDP uses the negotiated Display
