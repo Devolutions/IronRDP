@@ -59,8 +59,13 @@ fn install_wasm2wat(sh: &Shell) -> anyhow::Result<()> {
     let platform_suffix = if cfg!(target_os = "windows") {
         "windows-x64"
     } else if cfg!(target_os = "macos") {
-        "macos-arm64"
-    } else {
+        if cfg!(target_arch = "aarch64") {
+            "macos-arm64"
+        } else {
+            println!("wasm2wat for macOS x64 is not supported");
+            return Ok(());
+        }
+    } else  {
         "linux-x64"
     };
 
