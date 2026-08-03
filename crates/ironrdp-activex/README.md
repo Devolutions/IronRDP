@@ -119,7 +119,9 @@ absent, the bridge uses that process-local value as its destination fallback; `R
 `RDP_PASSWORD` must never be written to the file. Combining those variables with `RDP_AUTOLOGON=1`
 starts the IronRDP session without either native connection or credential dialogs. Native MSTSC can
 still show a nonfatal error after the bridge stops its proprietary continuation. Verify the session
-through the ActiveX RPC endpoint before dismissing that dialog.
+through the ActiveX RPC endpoint, then leave that dialog open for the duration of the test: its
+**OK** action tears down the native host and the IronRDP session. The ActiveX RPC endpoint remains
+usable while the dialog is visible.
 
 In this explicit bridge mode, non-minimized native-shell container size changes become a 250 ms
 debounced `IMsRdpClient9::UpdateSessionDisplaySettings` request. IronRDP uses the negotiated Display

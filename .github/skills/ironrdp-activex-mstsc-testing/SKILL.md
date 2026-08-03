@@ -79,9 +79,11 @@ belongs to this child before using UI Automation to invoke **OK**.
 
 The `.rdp` launch initiates the IronRDP session without the native connection form, but native
 MSTSC can subsequently show its own nonfatal connection-error dialog because the bridge must halt
-MSTSC's proprietary continuation after accepting the public preflight. Only dismiss that dialog
-after `ironrdp-agent --backend active-x status` reports `Connected`; it must never be treated as a
-successful native-MSTSC connection on its own.
+MSTSC's proprietary continuation after accepting the public preflight. After
+`ironrdp-agent --backend active-x status` reports `Connected`, leave that dialog open: invoking
+its **OK** action tears down the native host and its IronRDP session. The ActiveX RPC endpoint
+remains usable while the dialog is visible; the dialog must never be treated as a successful
+native-MSTSC connection on its own.
 
 Before calling `Connect`, configure the launched control through its normal preconnect COM
 settings:
