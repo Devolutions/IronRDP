@@ -22,6 +22,8 @@ pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 /// incompressible RGB PNG within [`MAX_MESSAGE_LEN`].
 pub const MAX_SCREENSHOT_PIXELS: usize = 4_000_000;
 
+const _: () = assert!(MAX_SCREENSHOT_PIXELS * 3 < MAX_MESSAGE_LEN);
+
 /// Writes `message` to `stream`, length-delimited.
 pub async fn write_message<S, M>(stream: &mut S, message: &M) -> anyhow::Result<()>
 where
@@ -57,16 +59,6 @@ where
     let mut body = vec![0u8; len];
     stream.read_exact(&mut body).await.context("read frame body")?;
     ironrdp_core::decode_owned(&body).map_err(|e| anyhow::anyhow!("decode: {e}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{MAX_MESSAGE_LEN, MAX_SCREENSHOT_PIXELS};
-
-    #[test]
-    fn screenshot_pixel_limit_leaves_room_for_incompressible_rgb() {
-        assert!(MAX_SCREENSHOT_PIXELS * 3 < MAX_MESSAGE_LEN);
-    }
 }
 
 /// Opens the endpoint, sends one `request`, and returns the daemon's `Response`.
@@ -126,7 +118,7 @@ mod imp {
             return Ok(());
         }
 
-        if super::connect(endpoint).await.is_ok() {
+        if connect(endpoint).await.is_ok() {
             bail!("an RPC server already appears to be running at {endpoint}");
         }
 

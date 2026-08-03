@@ -18,7 +18,6 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
 tokio = { version = "1", features = ["net", "io-util"] }
 anyhow = "1"
-tracing = "0.1"
 
 [features]
 internal = []
@@ -27,6 +26,7 @@ internal = []
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+tracing = "0.1"
 whoami = "2.1"
 windows = { version = "0.62", features = [
     "Win32_Foundation",

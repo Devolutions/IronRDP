@@ -595,6 +595,10 @@ impl Daemon {
     /// Attempts to send a resize event without flattening temporary input-channel backpressure.
     ///
     /// Frontends that can retry a resize should call this rather than [`Self::resize`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
     pub fn try_resize(&self, width: u16, height: u16) -> Result<(), ResizeError> {
         if width == 0 || height == 0 {
             return Err(ResizeError::InvalidDimensions);
