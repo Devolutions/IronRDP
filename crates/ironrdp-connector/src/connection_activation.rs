@@ -520,13 +520,15 @@ fn create_client_confirm_active(
 /// Returns the color depth requested by the client configuration for the Bitmap Capability Set.
 ///
 /// [MS-RDPBCGR] requires `preferredBitsPerPixel` to match the requested Client Core Data color
-/// depth. Keeping these values aligned is particularly important for 16-bpp clients: a 32-bpp
+/// depth. Keeping these values aligned is particularly important for non-32-bpp clients: a 32-bpp
 /// Bitmap Capability Set permits the server to select RDP 6.0 bitmap compression instead.
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/49e7bcb9-a8d7-46f5-987e-46c63c44b2c4
 fn requested_bitmap_color_depth(bitmap: Option<&crate::BitmapConfig>) -> ConnectorResult<u16> {
     match bitmap.map_or(32, |bitmap| bitmap.color_depth) {
+        15 => Ok(15),
         16 => Ok(16),
+        24 => Ok(24),
         32 => Ok(32),
         color_depth => Err(reason_err!(
             "create client confirm active",
@@ -542,13 +544,18 @@ mod tests {
 
     #[test]
     fn bitmap_capability_uses_requested_color_depth() {
-        let bitmap = BitmapConfig {
-            color_depth: 16,
-            lossy_compression: false,
-            codecs: ironrdp_pdu::rdp::capability_sets::BitmapCodecs(Vec::new()),
-        };
-
         assert_eq!(requested_bitmap_color_depth(None).unwrap(), 32);
-        assert_eq!(requested_bitmap_color_depth(Some(&bitmap)).unwrap(), 16);
+        for expected_color_depth in [15, 16, 24, 32] {
+            let bitmap = BitmapConfig {
+                color_depth: u32::from(expected_color_depth),
+                lossy_compression: false,
+                codecs: ironrdp_pdu::rdp::capability_sets::BitmapCodecs(Vec::new()),
+            };
+
+            assert_eq!(
+                requested_bitmap_color_depth(Some(&bitmap)).unwrap(),
+                expected_color_depth
+            );
+        }
     }
 }

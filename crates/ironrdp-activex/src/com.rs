@@ -66,12 +66,27 @@ pub(crate) unsafe fn release_module_and_exit_worker(module: HMODULE) -> ! {
 }
 
 fn can_unload() -> bool {
-    OBJECT_COUNT.load(Ordering::Acquire) == 0
-        && WORKER_COUNT.load(Ordering::Acquire) == 0
-        && SERVER_LOCK_COUNT.load(Ordering::Acquire) == 0
-        && !OBJECT_COUNT_UNRELIABLE.load(Ordering::Acquire)
-        && !WORKER_COUNT_UNRELIABLE.load(Ordering::Acquire)
-        && !dispatcher_class_is_registered()
+    counts_allow_unloading(
+        OBJECT_COUNT.load(Ordering::Acquire),
+        WORKER_COUNT.load(Ordering::Acquire),
+        SERVER_LOCK_COUNT.load(Ordering::Acquire),
+        OBJECT_COUNT_UNRELIABLE.load(Ordering::Acquire),
+        WORKER_COUNT_UNRELIABLE.load(Ordering::Acquire),
+    ) && !dispatcher_class_is_registered()
+}
+
+fn counts_allow_unloading(
+    object_count: u32,
+    worker_count: u32,
+    server_lock_count: u32,
+    object_count_unreliable: bool,
+    worker_count_unreliable: bool,
+) -> bool {
+    object_count == 0
+        && worker_count == 0
+        && server_lock_count == 0
+        && !object_count_unreliable
+        && !worker_count_unreliable
 }
 
 #[implement(IClassFactory)]
@@ -332,8 +347,13 @@ mod tests {
     use crate::mstsc::{IMsRdpClient6, IMsRdpClient10};
 
     #[test]
-    fn a_server_with_no_references_can_unload() {
-        assert!(can_unload());
+    fn zero_tracked_references_allow_unloading() {
+        assert!(counts_allow_unloading(0, 0, 0, false, false));
+        assert!(!counts_allow_unloading(1, 0, 0, false, false));
+        assert!(!counts_allow_unloading(0, 1, 0, false, false));
+        assert!(!counts_allow_unloading(0, 0, 1, false, false));
+        assert!(!counts_allow_unloading(0, 0, 0, true, false));
+        assert!(!counts_allow_unloading(0, 0, 0, false, true));
     }
 
     #[test]

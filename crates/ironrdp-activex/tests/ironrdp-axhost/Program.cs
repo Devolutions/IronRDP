@@ -14,9 +14,12 @@ using Microsoft.Win32.SafeHandles;
 
 internal sealed class DirectActiveXHost : AxHost
 {
+    private static readonly object RetainedModulesLock = new();
+    private static readonly List<ComActivation.SafeLibraryHandle> RetainedModules = new();
+
     private readonly ComActivation.SafeLibraryHandle module;
     private bool hostDisposed;
-    private bool moduleDisposed;
+    private bool moduleLifetimeHandled;
 
     internal DirectActiveXHost(Guid classId, string libraryPath)
         : base(classId.ToString("B"))
@@ -31,14 +34,13 @@ internal sealed class DirectActiveXHost : AxHost
     internal int DisposeAndGetUnloadStatus()
     {
         DisposeHost();
-        try
-        {
-            return ComActivation.GetCanUnloadNow(module);
-        }
-        finally
-        {
+        int unloadStatus = ComActivation.GetCanUnloadNow(module);
+        if (unloadStatus == 0)
             DisposeModule();
-        }
+        else
+            RetainModuleUntilProcessExit();
+
+        return unloadStatus;
     }
 
     protected override void Dispose(bool disposing)
@@ -50,7 +52,7 @@ internal sealed class DirectActiveXHost : AxHost
         }
 
         DisposeHost();
-        DisposeModule();
+        RetainModuleUntilProcessExit();
     }
 
     private void DisposeHost()
@@ -64,11 +66,21 @@ internal sealed class DirectActiveXHost : AxHost
 
     private void DisposeModule()
     {
-        if (moduleDisposed)
+        if (moduleLifetimeHandled)
             return;
 
         module.Dispose();
-        moduleDisposed = true;
+        moduleLifetimeHandled = true;
+    }
+
+    private void RetainModuleUntilProcessExit()
+    {
+        if (moduleLifetimeHandled)
+            return;
+
+        lock (RetainedModulesLock)
+            RetainedModules.Add(module);
+        moduleLifetimeHandled = true;
     }
 }
 
@@ -1011,9 +1023,9 @@ registration. Every invocation exits after producing one result.
 ## Output contract
 
 Pass `--json` to receive exactly one JSON object on stdout. It has `operation`, `passed`,
-`exitCode`, `durationMilliseconds`, `hostHandle`, `connectedProperty`, `events`, `screenshot`, and
-`failure` fields. Event names and failure strings are bounded local diagnostics; credentials, server
-addresses, remote errors, and packet data are never written.
+`exitCode`, `durationMilliseconds`, `hostHandle`, `connectedProperty`, `events`, `screenshot`,
+`failure`, and `unloadStatus` fields. Event names and failure strings are bounded local diagnostics;
+credentials, server addresses, remote errors, and packet data are never written.
 
 Exit `0` means the requested assertions passed. Exit `1` means activation or lifecycle validation
 failed. Exit `64` means the command line was invalid.

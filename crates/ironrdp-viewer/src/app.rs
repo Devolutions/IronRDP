@@ -362,6 +362,10 @@ impl ApplicationHandler<RdpOutputEvent> for App {
         match event {
             RdpOutputEvent::Connected => info!("RDP session connected"),
             RdpOutputEvent::LoginComplete => info!("RDP login complete"),
+            RdpOutputEvent::PostLogonDisplayRedraw => info!("Requested post-logon display redraw"),
+            RdpOutputEvent::MalformedBitmapDisplayRedraw => {
+                warn!("Requested display redraw after discarding a malformed bitmap update");
+            }
             RdpOutputEvent::Image { buffer, width, height } => {
                 trace!(width = ?width, height = ?height, "Received image with size");
                 trace!(window_physical_size = ?window.inner_size(), "Drawing image to the window with size");

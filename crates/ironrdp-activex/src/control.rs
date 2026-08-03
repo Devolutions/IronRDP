@@ -1423,7 +1423,7 @@ macro_rules! advanced_settings_stubs {
         )+
 
         fn advanced_settings_stub_slots() -> [usize; 191] {
-            [$($stub as usize),+]
+            [$($stub as *const () as usize),+]
         }
     };
 }
@@ -2763,108 +2763,108 @@ fn advanced_vtable() -> &'static CompatibilitySettingsVtable<191> {
     static VTABLE: std::sync::OnceLock<CompatibilitySettingsVtable<191>> = std::sync::OnceLock::new();
     VTABLE.get_or_init(|| {
         let mut slots = advanced_settings_stub_slots();
-        slots[0] = advanced_put_compress as usize;
-        slots[1] = advanced_get_compress as usize;
-        slots[4] = advanced_put_allow_background_input as usize;
-        slots[5] = advanced_get_allow_background_input as usize;
-        slots[6] = advanced_put_keyboard_layout_str as usize;
-        slots[7] = advanced_put_plugin_dlls as usize;
-        slots[10] = advanced_put_container_handled_fullscreen as usize;
-        slots[11] = advanced_get_container_handled_fullscreen as usize;
-        slots[12] = advanced_put_disable_rdpdr as usize;
-        slots[13] = advanced_get_disable_rdpdr as usize;
-        slots[28] = advanced_put_rdp_port as usize;
-        slots[29] = advanced_get_rdp_port as usize;
-        slots[30] = advanced_put_enable_mouse as usize;
-        slots[31] = advanced_get_enable_mouse as usize;
-        slots[34] = advanced_put_enable_windows_key as usize;
-        slots[35] = advanced_get_enable_windows_key as usize;
-        slots[69] = advanced_put_min_input_send_interval as usize;
-        slots[70] = advanced_get_min_input_send_interval as usize;
-        slots[75] = advanced_put_keep_alive_interval as usize;
-        slots[76] = advanced_get_keep_alive_interval as usize;
-        slots[83] = advanced_put_keyboard_type as usize;
-        slots[84] = advanced_get_keyboard_type as usize;
-        slots[85] = advanced_put_keyboard_subtype as usize;
-        slots[86] = advanced_get_keyboard_subtype as usize;
-        slots[87] = advanced_put_keyboard_function_key as usize;
-        slots[88] = advanced_get_keyboard_function_key as usize;
-        slots[91] = advanced_put_connect_to_server_console as usize;
-        slots[92] = advanced_get_connect_to_server_console as usize;
-        slots[93] = advanced_put_bitmap_persistence as usize;
-        slots[94] = advanced_get_bitmap_persistence as usize;
-        slots[95] = advanced_put_minutes_to_idle_timeout as usize;
-        slots[96] = advanced_get_minutes_to_idle_timeout as usize;
-        slots[97] = advanced_put_smart_sizing as usize;
-        slots[98] = advanced_get_smart_sizing as usize;
-        slots[105] = advanced_put_clear_text_password as usize;
-        slots[106] = advanced_put_display_connection_bar as usize;
-        slots[107] = advanced_get_display_connection_bar as usize;
-        slots[108] = advanced_put_pin_connection_bar as usize;
-        slots[109] = advanced_get_pin_connection_bar as usize;
-        slots[110] = advanced_put_grab_focus_on_connect as usize;
-        slots[111] = advanced_get_grab_focus_on_connect as usize;
-        slots[112] = advanced_put_load_balance_info as usize;
-        slots[113] = advanced_get_load_balance_info as usize;
-        slots[114] = advanced_put_redirect_drives as usize;
-        slots[115] = advanced_get_redirect_drives as usize;
-        slots[116] = advanced_put_redirect_printers as usize;
-        slots[117] = advanced_get_redirect_printers as usize;
-        slots[118] = advanced_put_redirect_ports as usize;
-        slots[119] = advanced_get_redirect_ports as usize;
-        slots[120] = advanced_put_redirect_smart_cards as usize;
-        slots[121] = advanced_get_redirect_smart_cards as usize;
-        slots[126] = advanced_put_performance_flags as usize;
-        slots[127] = advanced_get_performance_flags as usize;
-        slots[132] = advanced_put_enable_auto_reconnect as usize;
-        slots[133] = advanced_get_enable_auto_reconnect as usize;
-        slots[134] = advanced_put_max_reconnect_attempts as usize;
-        slots[135] = advanced_get_max_reconnect_attempts as usize;
-        slots[136] = advanced_put_connection_bar_show_minimize_button as usize;
-        slots[137] = advanced_get_connection_bar_show_minimize_button as usize;
-        slots[138] = advanced_put_connection_bar_show_restore_button as usize;
-        slots[139] = advanced_get_connection_bar_show_restore_button as usize;
-        slots[140] = advanced_put_authentication_level as usize;
-        slots[141] = advanced_get_authentication_level as usize;
-        slots[142] = advanced_put_redirect_clipboard as usize;
-        slots[143] = advanced_get_redirect_clipboard as usize;
-        slots[144] = advanced_put_audio_redirection as usize;
-        slots[145] = advanced_get_audio_redirection as usize;
-        slots[146] = advanced_put_connection_bar_show_pin_button as usize;
-        slots[147] = advanced_get_connection_bar_show_pin_button as usize;
-        slots[148] = advanced_put_public_mode as usize;
-        slots[149] = advanced_get_public_mode as usize;
-        slots[150] = advanced_put_redirect_devices as usize;
-        slots[151] = advanced_get_redirect_devices as usize;
-        slots[160] = advanced_get_pcb as usize;
-        slots[161] = advanced_put_pcb as usize;
-        slots[162] = advanced_put_hotkey_focus_release_left as usize;
-        slots[163] = advanced_get_hotkey_focus_release_left as usize;
-        slots[164] = advanced_put_hotkey_focus_release_right as usize;
-        slots[165] = advanced_get_hotkey_focus_release_right as usize;
-        slots[166] = advanced_put_credssp as usize;
-        slots[167] = advanced_get_credssp as usize;
-        slots[168] = advanced_get_authentication_type as usize;
-        slots[169] = advanced_put_connect_to_administer_server as usize;
-        slots[170] = advanced_get_connect_to_administer_server as usize;
-        slots[171] = advanced_put_audio_capture_redirection_mode as usize;
-        slots[172] = advanced_get_audio_capture_redirection_mode as usize;
-        slots[173] = advanced_put_video_playback_mode as usize;
-        slots[174] = advanced_get_video_playback_mode as usize;
-        slots[175] = advanced_put_enable_super_pan as usize;
-        slots[176] = advanced_get_enable_super_pan as usize;
-        slots[179] = advanced_put_negotiate_security_layer as usize;
-        slots[180] = advanced_get_negotiate_security_layer as usize;
-        slots[181] = advanced_put_audio_quality_mode as usize;
-        slots[182] = advanced_get_audio_quality_mode as usize;
-        slots[183] = advanced_put_redirect_directx as usize;
-        slots[184] = advanced_get_redirect_directx as usize;
-        slots[185] = advanced_put_network_connection_type as usize;
-        slots[186] = advanced_get_network_connection_type as usize;
-        slots[187] = advanced_put_bandwidth_detection as usize;
-        slots[188] = advanced_get_bandwidth_detection as usize;
-        slots[189] = advanced_put_client_protocol_spec as usize;
-        slots[190] = advanced_get_client_protocol_spec as usize;
+        slots[0] = advanced_put_compress as *const () as usize;
+        slots[1] = advanced_get_compress as *const () as usize;
+        slots[4] = advanced_put_allow_background_input as *const () as usize;
+        slots[5] = advanced_get_allow_background_input as *const () as usize;
+        slots[6] = advanced_put_keyboard_layout_str as *const () as usize;
+        slots[7] = advanced_put_plugin_dlls as *const () as usize;
+        slots[10] = advanced_put_container_handled_fullscreen as *const () as usize;
+        slots[11] = advanced_get_container_handled_fullscreen as *const () as usize;
+        slots[12] = advanced_put_disable_rdpdr as *const () as usize;
+        slots[13] = advanced_get_disable_rdpdr as *const () as usize;
+        slots[28] = advanced_put_rdp_port as *const () as usize;
+        slots[29] = advanced_get_rdp_port as *const () as usize;
+        slots[30] = advanced_put_enable_mouse as *const () as usize;
+        slots[31] = advanced_get_enable_mouse as *const () as usize;
+        slots[34] = advanced_put_enable_windows_key as *const () as usize;
+        slots[35] = advanced_get_enable_windows_key as *const () as usize;
+        slots[69] = advanced_put_min_input_send_interval as *const () as usize;
+        slots[70] = advanced_get_min_input_send_interval as *const () as usize;
+        slots[75] = advanced_put_keep_alive_interval as *const () as usize;
+        slots[76] = advanced_get_keep_alive_interval as *const () as usize;
+        slots[83] = advanced_put_keyboard_type as *const () as usize;
+        slots[84] = advanced_get_keyboard_type as *const () as usize;
+        slots[85] = advanced_put_keyboard_subtype as *const () as usize;
+        slots[86] = advanced_get_keyboard_subtype as *const () as usize;
+        slots[87] = advanced_put_keyboard_function_key as *const () as usize;
+        slots[88] = advanced_get_keyboard_function_key as *const () as usize;
+        slots[91] = advanced_put_connect_to_server_console as *const () as usize;
+        slots[92] = advanced_get_connect_to_server_console as *const () as usize;
+        slots[93] = advanced_put_bitmap_persistence as *const () as usize;
+        slots[94] = advanced_get_bitmap_persistence as *const () as usize;
+        slots[95] = advanced_put_minutes_to_idle_timeout as *const () as usize;
+        slots[96] = advanced_get_minutes_to_idle_timeout as *const () as usize;
+        slots[97] = advanced_put_smart_sizing as *const () as usize;
+        slots[98] = advanced_get_smart_sizing as *const () as usize;
+        slots[105] = advanced_put_clear_text_password as *const () as usize;
+        slots[106] = advanced_put_display_connection_bar as *const () as usize;
+        slots[107] = advanced_get_display_connection_bar as *const () as usize;
+        slots[108] = advanced_put_pin_connection_bar as *const () as usize;
+        slots[109] = advanced_get_pin_connection_bar as *const () as usize;
+        slots[110] = advanced_put_grab_focus_on_connect as *const () as usize;
+        slots[111] = advanced_get_grab_focus_on_connect as *const () as usize;
+        slots[112] = advanced_put_load_balance_info as *const () as usize;
+        slots[113] = advanced_get_load_balance_info as *const () as usize;
+        slots[114] = advanced_put_redirect_drives as *const () as usize;
+        slots[115] = advanced_get_redirect_drives as *const () as usize;
+        slots[116] = advanced_put_redirect_printers as *const () as usize;
+        slots[117] = advanced_get_redirect_printers as *const () as usize;
+        slots[118] = advanced_put_redirect_ports as *const () as usize;
+        slots[119] = advanced_get_redirect_ports as *const () as usize;
+        slots[120] = advanced_put_redirect_smart_cards as *const () as usize;
+        slots[121] = advanced_get_redirect_smart_cards as *const () as usize;
+        slots[126] = advanced_put_performance_flags as *const () as usize;
+        slots[127] = advanced_get_performance_flags as *const () as usize;
+        slots[132] = advanced_put_enable_auto_reconnect as *const () as usize;
+        slots[133] = advanced_get_enable_auto_reconnect as *const () as usize;
+        slots[134] = advanced_put_max_reconnect_attempts as *const () as usize;
+        slots[135] = advanced_get_max_reconnect_attempts as *const () as usize;
+        slots[136] = advanced_put_connection_bar_show_minimize_button as *const () as usize;
+        slots[137] = advanced_get_connection_bar_show_minimize_button as *const () as usize;
+        slots[138] = advanced_put_connection_bar_show_restore_button as *const () as usize;
+        slots[139] = advanced_get_connection_bar_show_restore_button as *const () as usize;
+        slots[140] = advanced_put_authentication_level as *const () as usize;
+        slots[141] = advanced_get_authentication_level as *const () as usize;
+        slots[142] = advanced_put_redirect_clipboard as *const () as usize;
+        slots[143] = advanced_get_redirect_clipboard as *const () as usize;
+        slots[144] = advanced_put_audio_redirection as *const () as usize;
+        slots[145] = advanced_get_audio_redirection as *const () as usize;
+        slots[146] = advanced_put_connection_bar_show_pin_button as *const () as usize;
+        slots[147] = advanced_get_connection_bar_show_pin_button as *const () as usize;
+        slots[148] = advanced_put_public_mode as *const () as usize;
+        slots[149] = advanced_get_public_mode as *const () as usize;
+        slots[150] = advanced_put_redirect_devices as *const () as usize;
+        slots[151] = advanced_get_redirect_devices as *const () as usize;
+        slots[160] = advanced_get_pcb as *const () as usize;
+        slots[161] = advanced_put_pcb as *const () as usize;
+        slots[162] = advanced_put_hotkey_focus_release_left as *const () as usize;
+        slots[163] = advanced_get_hotkey_focus_release_left as *const () as usize;
+        slots[164] = advanced_put_hotkey_focus_release_right as *const () as usize;
+        slots[165] = advanced_get_hotkey_focus_release_right as *const () as usize;
+        slots[166] = advanced_put_credssp as *const () as usize;
+        slots[167] = advanced_get_credssp as *const () as usize;
+        slots[168] = advanced_get_authentication_type as *const () as usize;
+        slots[169] = advanced_put_connect_to_administer_server as *const () as usize;
+        slots[170] = advanced_get_connect_to_administer_server as *const () as usize;
+        slots[171] = advanced_put_audio_capture_redirection_mode as *const () as usize;
+        slots[172] = advanced_get_audio_capture_redirection_mode as *const () as usize;
+        slots[173] = advanced_put_video_playback_mode as *const () as usize;
+        slots[174] = advanced_get_video_playback_mode as *const () as usize;
+        slots[175] = advanced_put_enable_super_pan as *const () as usize;
+        slots[176] = advanced_get_enable_super_pan as *const () as usize;
+        slots[179] = advanced_put_negotiate_security_layer as *const () as usize;
+        slots[180] = advanced_get_negotiate_security_layer as *const () as usize;
+        slots[181] = advanced_put_audio_quality_mode as *const () as usize;
+        slots[182] = advanced_get_audio_quality_mode as *const () as usize;
+        slots[183] = advanced_put_redirect_directx as *const () as usize;
+        slots[184] = advanced_get_redirect_directx as *const () as usize;
+        slots[185] = advanced_put_network_connection_type as *const () as usize;
+        slots[186] = advanced_get_network_connection_type as *const () as usize;
+        slots[187] = advanced_put_bandwidth_detection as *const () as usize;
+        slots[188] = advanced_get_bandwidth_detection as *const () as usize;
+        slots[189] = advanced_put_client_protocol_spec as *const () as usize;
+        slots[190] = advanced_get_client_protocol_spec as *const () as usize;
         CompatibilitySettingsVtable {
             dispatch: dispatch_vtable::<191>(),
             slots,
@@ -2876,19 +2876,19 @@ fn secured_vtable() -> &'static CompatibilitySettingsVtable<SECURED_SETTINGS_SLO
     static VTABLE: std::sync::OnceLock<CompatibilitySettingsVtable<SECURED_SETTINGS_SLOTS>> =
         std::sync::OnceLock::new();
     VTABLE.get_or_init(|| {
-        let mut slots = [secured_put_pcb as usize; SECURED_SETTINGS_SLOTS];
-        slots[0] = secured_put_start_program as usize;
-        slots[1] = secured_get_start_program as usize;
-        slots[2] = secured_put_work_dir as usize;
-        slots[3] = secured_get_work_dir as usize;
-        slots[4] = secured_put_fullscreen as usize;
-        slots[5] = secured_get_fullscreen as usize;
-        slots[6] = secured_put_keyboard_hook as usize;
-        slots[7] = secured_get_keyboard_hook as usize;
-        slots[8] = secured_put_audio_redirection as usize;
-        slots[9] = secured_get_audio_redirection as usize;
-        slots[10] = secured_get_pcb as usize;
-        slots[11] = secured_put_pcb as usize;
+        let mut slots = [secured_put_pcb as *const () as usize; SECURED_SETTINGS_SLOTS];
+        slots[0] = secured_put_start_program as *const () as usize;
+        slots[1] = secured_get_start_program as *const () as usize;
+        slots[2] = secured_put_work_dir as *const () as usize;
+        slots[3] = secured_get_work_dir as *const () as usize;
+        slots[4] = secured_put_fullscreen as *const () as usize;
+        slots[5] = secured_get_fullscreen as *const () as usize;
+        slots[6] = secured_put_keyboard_hook as *const () as usize;
+        slots[7] = secured_get_keyboard_hook as *const () as usize;
+        slots[8] = secured_put_audio_redirection as *const () as usize;
+        slots[9] = secured_get_audio_redirection as *const () as usize;
+        slots[10] = secured_get_pcb as *const () as usize;
+        slots[11] = secured_put_pcb as *const () as usize;
         CompatibilitySettingsVtable {
             dispatch: dispatch_vtable::<SECURED_SETTINGS_SLOTS>(),
             slots,
@@ -2900,47 +2900,47 @@ fn transport_vtable() -> &'static CompatibilitySettingsVtable<TRANSPORT_SETTINGS
     static VTABLE: std::sync::OnceLock<CompatibilitySettingsVtable<TRANSPORT_SETTINGS_SLOTS>> =
         std::sync::OnceLock::new();
     VTABLE.get_or_init(|| {
-        let mut slots = [transport_put_u32_not_implemented as usize; TRANSPORT_SETTINGS_SLOTS];
-        slots[0] = transport_put_gateway_hostname as usize;
-        slots[1] = transport_get_gateway_hostname as usize;
-        slots[2] = transport_put_gateway_usage_method as usize;
-        slots[3] = transport_get_gateway_usage_method as usize;
-        slots[4] = transport_put_gateway_profile_usage_method as usize;
-        slots[5] = transport_get_gateway_profile_usage_method as usize;
-        slots[6] = transport_put_gateway_creds_source as usize;
-        slots[7] = transport_get_gateway_creds_source as usize;
-        slots[8] = transport_put_gateway_user_selected_creds_source as usize;
-        slots[9] = transport_get_gateway_user_selected_creds_source as usize;
-        slots[10] = transport_get_gateway_is_supported as usize;
-        slots[11] = transport_get_gateway_default_usage_method as usize;
-        slots[12] = transport_put_u32_not_implemented as usize;
-        slots[13] = transport_get_u32_not_implemented as usize;
-        slots[14] = transport_put_u32_not_implemented as usize;
-        slots[15] = transport_get_u32_not_implemented as usize;
-        slots[16] = transport_put_bstr_not_implemented as usize;
-        slots[17] = transport_get_bstr_not_implemented as usize;
-        slots[18] = transport_put_bstr_not_implemented as usize;
-        slots[19] = transport_get_bstr_not_implemented as usize;
-        slots[20] = transport_put_bstr_not_implemented as usize;
-        slots[21] = transport_get_bstr_not_implemented as usize;
-        slots[22] = transport_put_u32_not_implemented as usize;
-        slots[23] = transport_get_u32_not_implemented as usize;
-        slots[24] = transport_put_gateway_username as usize;
-        slots[25] = transport_get_gateway_username as usize;
-        slots[26] = transport_put_gateway_domain as usize;
-        slots[27] = transport_get_gateway_domain as usize;
-        slots[28] = transport_put_gateway_password as usize;
-        slots[29] = transport_put_u32_not_implemented as usize;
-        slots[30] = transport_get_u32_not_implemented as usize;
-        slots[31] = transport_put_bstr_not_implemented as usize;
-        slots[32] = transport_get_bstr_not_implemented as usize;
-        slots[33] = transport_put_bstr_not_implemented as usize;
-        slots[34] = transport_get_bstr_not_implemented as usize;
-        slots[35] = transport_put_u32_not_implemented as usize;
-        slots[36] = transport_get_u32_not_implemented as usize;
-        slots[37] = transport_put_bstr_not_implemented as usize;
-        slots[38] = transport_get_bstr_not_implemented as usize;
-        slots[39] = transport_put_u32_not_implemented as usize;
+        let mut slots = [transport_put_u32_not_implemented as *const () as usize; TRANSPORT_SETTINGS_SLOTS];
+        slots[0] = transport_put_gateway_hostname as *const () as usize;
+        slots[1] = transport_get_gateway_hostname as *const () as usize;
+        slots[2] = transport_put_gateway_usage_method as *const () as usize;
+        slots[3] = transport_get_gateway_usage_method as *const () as usize;
+        slots[4] = transport_put_gateway_profile_usage_method as *const () as usize;
+        slots[5] = transport_get_gateway_profile_usage_method as *const () as usize;
+        slots[6] = transport_put_gateway_creds_source as *const () as usize;
+        slots[7] = transport_get_gateway_creds_source as *const () as usize;
+        slots[8] = transport_put_gateway_user_selected_creds_source as *const () as usize;
+        slots[9] = transport_get_gateway_user_selected_creds_source as *const () as usize;
+        slots[10] = transport_get_gateway_is_supported as *const () as usize;
+        slots[11] = transport_get_gateway_default_usage_method as *const () as usize;
+        slots[12] = transport_put_u32_not_implemented as *const () as usize;
+        slots[13] = transport_get_u32_not_implemented as *const () as usize;
+        slots[14] = transport_put_u32_not_implemented as *const () as usize;
+        slots[15] = transport_get_u32_not_implemented as *const () as usize;
+        slots[16] = transport_put_bstr_not_implemented as *const () as usize;
+        slots[17] = transport_get_bstr_not_implemented as *const () as usize;
+        slots[18] = transport_put_bstr_not_implemented as *const () as usize;
+        slots[19] = transport_get_bstr_not_implemented as *const () as usize;
+        slots[20] = transport_put_bstr_not_implemented as *const () as usize;
+        slots[21] = transport_get_bstr_not_implemented as *const () as usize;
+        slots[22] = transport_put_u32_not_implemented as *const () as usize;
+        slots[23] = transport_get_u32_not_implemented as *const () as usize;
+        slots[24] = transport_put_gateway_username as *const () as usize;
+        slots[25] = transport_get_gateway_username as *const () as usize;
+        slots[26] = transport_put_gateway_domain as *const () as usize;
+        slots[27] = transport_get_gateway_domain as *const () as usize;
+        slots[28] = transport_put_gateway_password as *const () as usize;
+        slots[29] = transport_put_u32_not_implemented as *const () as usize;
+        slots[30] = transport_get_u32_not_implemented as *const () as usize;
+        slots[31] = transport_put_bstr_not_implemented as *const () as usize;
+        slots[32] = transport_get_bstr_not_implemented as *const () as usize;
+        slots[33] = transport_put_bstr_not_implemented as *const () as usize;
+        slots[34] = transport_get_bstr_not_implemented as *const () as usize;
+        slots[35] = transport_put_u32_not_implemented as *const () as usize;
+        slots[36] = transport_get_u32_not_implemented as *const () as usize;
+        slots[37] = transport_put_bstr_not_implemented as *const () as usize;
+        slots[38] = transport_get_bstr_not_implemented as *const () as usize;
+        slots[39] = transport_put_u32_not_implemented as *const () as usize;
         CompatibilitySettingsVtable {
             dispatch: dispatch_vtable::<TRANSPORT_SETTINGS_SLOTS>(),
             slots,
@@ -3034,13 +3034,13 @@ fn remote_program_vtable() -> &'static CompatibilitySettingsVtable<7> {
     VTABLE.get_or_init(|| CompatibilitySettingsVtable {
         dispatch: dispatch_vtable::<7>(),
         slots: [
-            remote_program_put_mode as usize,
-            remote_program_get_mode as usize,
-            remote_program_start_program as usize,
-            remote_program_put_application_name as usize,
-            remote_program_put_application_program as usize,
-            remote_program_put_application_args as usize,
-            remote_program_start_app as usize,
+            remote_program_put_mode as *const () as usize,
+            remote_program_get_mode as *const () as usize,
+            remote_program_start_program as *const () as usize,
+            remote_program_put_application_name as *const () as usize,
+            remote_program_put_application_program as *const () as usize,
+            remote_program_put_application_args as *const () as usize,
+            remote_program_start_app as *const () as usize,
         ],
     })
 }
@@ -11687,25 +11687,64 @@ mod tests {
 
         let vtable = transport_vtable();
         assert_eq!(vtable.slots.len(), TRANSPORT_SETTINGS_SLOTS);
-        assert_eq!(vtable.slots[0], transport_put_gateway_hostname as usize);
-        assert_eq!(vtable.slots[2], transport_put_gateway_usage_method as usize);
-        assert_eq!(vtable.slots[6], transport_put_gateway_creds_source as usize);
-        assert_eq!(vtable.slots[24], transport_put_gateway_username as usize);
-        assert_eq!(vtable.slots[25], transport_get_gateway_username as usize);
-        assert_eq!(vtable.slots[26], transport_put_gateway_domain as usize);
-        assert_eq!(vtable.slots[27], transport_get_gateway_domain as usize);
-        assert_eq!(vtable.slots[28], transport_put_gateway_password as usize);
-        assert_eq!(vtable.slots[29], transport_put_u32_not_implemented as usize);
-        assert_eq!(vtable.slots[30], transport_get_u32_not_implemented as usize);
-        assert_eq!(vtable.slots[31], transport_put_bstr_not_implemented as usize);
-        assert_eq!(vtable.slots[32], transport_get_bstr_not_implemented as usize);
-        assert_eq!(vtable.slots[33], transport_put_bstr_not_implemented as usize);
-        assert_eq!(vtable.slots[34], transport_get_bstr_not_implemented as usize);
-        assert_eq!(vtable.slots[35], transport_put_u32_not_implemented as usize);
-        assert_eq!(vtable.slots[36], transport_get_u32_not_implemented as usize);
-        assert_eq!(vtable.slots[37], transport_put_bstr_not_implemented as usize);
-        assert_eq!(vtable.slots[38], transport_get_bstr_not_implemented as usize);
-        assert_eq!(vtable.slots[39], transport_put_u32_not_implemented as usize);
+        assert_eq!(vtable.slots[0], transport_put_gateway_hostname as *const () as usize);
+        assert_eq!(
+            vtable.slots[2],
+            transport_put_gateway_usage_method as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[6],
+            transport_put_gateway_creds_source as *const () as usize
+        );
+        assert_eq!(vtable.slots[24], transport_put_gateway_username as *const () as usize);
+        assert_eq!(vtable.slots[25], transport_get_gateway_username as *const () as usize);
+        assert_eq!(vtable.slots[26], transport_put_gateway_domain as *const () as usize);
+        assert_eq!(vtable.slots[27], transport_get_gateway_domain as *const () as usize);
+        assert_eq!(vtable.slots[28], transport_put_gateway_password as *const () as usize);
+        assert_eq!(
+            vtable.slots[29],
+            transport_put_u32_not_implemented as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[30],
+            transport_get_u32_not_implemented as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[31],
+            transport_put_bstr_not_implemented as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[32],
+            transport_get_bstr_not_implemented as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[33],
+            transport_put_bstr_not_implemented as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[34],
+            transport_get_bstr_not_implemented as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[35],
+            transport_put_u32_not_implemented as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[36],
+            transport_get_u32_not_implemented as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[37],
+            transport_put_bstr_not_implemented as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[38],
+            transport_get_bstr_not_implemented as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[39],
+            transport_put_u32_not_implemented as *const () as usize
+        );
         assert!(settings_supports_interface::<TRANSPORT_SETTINGS_SLOTS>(
             &GUID::from_u128(0x3d5b21ac_748d_41de_8f30_e15169586bd4)
         ));
@@ -11991,39 +12030,90 @@ mod tests {
         assert_eq!(unsafe { advanced_put_client_protocol_spec(this, 1) }, E_NOTIMPL);
 
         let vtable = advanced_vtable();
-        assert_eq!(vtable.slots[0], advanced_put_compress as usize);
-        assert_eq!(vtable.slots[4], advanced_put_allow_background_input as usize);
-        assert_eq!(vtable.slots[5], advanced_get_allow_background_input as usize);
-        assert_eq!(vtable.slots[6], advanced_put_keyboard_layout_str as usize);
-        assert_eq!(vtable.slots[12], advanced_put_disable_rdpdr as usize);
-        assert_eq!(vtable.slots[28], advanced_put_rdp_port as usize);
-        assert_eq!(vtable.slots[30], advanced_put_enable_mouse as usize);
-        assert_eq!(vtable.slots[34], advanced_put_enable_windows_key as usize);
-        assert_eq!(vtable.slots[83], advanced_put_keyboard_type as usize);
-        assert_eq!(vtable.slots[85], advanced_put_keyboard_subtype as usize);
-        assert_eq!(vtable.slots[87], advanced_put_keyboard_function_key as usize);
-        assert_eq!(vtable.slots[110], advanced_put_grab_focus_on_connect as usize);
-        assert_eq!(vtable.slots[106], advanced_put_display_connection_bar as usize);
-        assert_eq!(vtable.slots[107], advanced_get_display_connection_bar as usize);
-        assert_eq!(vtable.slots[108], advanced_put_pin_connection_bar as usize);
-        assert_eq!(vtable.slots[109], advanced_get_pin_connection_bar as usize);
-        assert_eq!(vtable.slots[105], advanced_put_clear_text_password as usize);
-        assert_eq!(vtable.slots[168], advanced_get_authentication_type as usize);
-        assert_eq!(vtable.slots[126], advanced_put_performance_flags as usize);
-        assert_eq!(vtable.slots[140], advanced_put_authentication_level as usize);
-        assert_eq!(vtable.slots[142], advanced_put_redirect_clipboard as usize);
-        assert_eq!(vtable.slots[150], advanced_put_redirect_devices as usize);
-        assert_eq!(vtable.slots[160], advanced_get_pcb as usize);
-        assert_eq!(vtable.slots[162], advanced_put_hotkey_focus_release_left as usize);
-        assert_eq!(vtable.slots[163], advanced_get_hotkey_focus_release_left as usize);
-        assert_eq!(vtable.slots[164], advanced_put_hotkey_focus_release_right as usize);
-        assert_eq!(vtable.slots[165], advanced_get_hotkey_focus_release_right as usize);
-        assert_eq!(vtable.slots[144], advanced_put_audio_redirection as usize);
-        assert_eq!(vtable.slots[183], advanced_put_redirect_directx as usize);
-        assert_eq!(vtable.slots[185], advanced_put_network_connection_type as usize);
-        assert_eq!(vtable.slots[186], advanced_get_network_connection_type as usize);
-        assert_eq!(vtable.slots[187], advanced_put_bandwidth_detection as usize);
-        assert_eq!(vtable.slots[189], advanced_put_client_protocol_spec as usize);
+        assert_eq!(vtable.slots[0], advanced_put_compress as *const () as usize);
+        assert_eq!(
+            vtable.slots[4],
+            advanced_put_allow_background_input as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[5],
+            advanced_get_allow_background_input as *const () as usize
+        );
+        assert_eq!(vtable.slots[6], advanced_put_keyboard_layout_str as *const () as usize);
+        assert_eq!(vtable.slots[12], advanced_put_disable_rdpdr as *const () as usize);
+        assert_eq!(vtable.slots[28], advanced_put_rdp_port as *const () as usize);
+        assert_eq!(vtable.slots[30], advanced_put_enable_mouse as *const () as usize);
+        assert_eq!(vtable.slots[34], advanced_put_enable_windows_key as *const () as usize);
+        assert_eq!(vtable.slots[83], advanced_put_keyboard_type as *const () as usize);
+        assert_eq!(vtable.slots[85], advanced_put_keyboard_subtype as *const () as usize);
+        assert_eq!(
+            vtable.slots[87],
+            advanced_put_keyboard_function_key as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[110],
+            advanced_put_grab_focus_on_connect as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[106],
+            advanced_put_display_connection_bar as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[107],
+            advanced_get_display_connection_bar as *const () as usize
+        );
+        assert_eq!(vtable.slots[108], advanced_put_pin_connection_bar as *const () as usize);
+        assert_eq!(vtable.slots[109], advanced_get_pin_connection_bar as *const () as usize);
+        assert_eq!(
+            vtable.slots[105],
+            advanced_put_clear_text_password as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[168],
+            advanced_get_authentication_type as *const () as usize
+        );
+        assert_eq!(vtable.slots[126], advanced_put_performance_flags as *const () as usize);
+        assert_eq!(
+            vtable.slots[140],
+            advanced_put_authentication_level as *const () as usize
+        );
+        assert_eq!(vtable.slots[142], advanced_put_redirect_clipboard as *const () as usize);
+        assert_eq!(vtable.slots[150], advanced_put_redirect_devices as *const () as usize);
+        assert_eq!(vtable.slots[160], advanced_get_pcb as *const () as usize);
+        assert_eq!(
+            vtable.slots[162],
+            advanced_put_hotkey_focus_release_left as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[163],
+            advanced_get_hotkey_focus_release_left as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[164],
+            advanced_put_hotkey_focus_release_right as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[165],
+            advanced_get_hotkey_focus_release_right as *const () as usize
+        );
+        assert_eq!(vtable.slots[144], advanced_put_audio_redirection as *const () as usize);
+        assert_eq!(vtable.slots[183], advanced_put_redirect_directx as *const () as usize);
+        assert_eq!(
+            vtable.slots[185],
+            advanced_put_network_connection_type as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[186],
+            advanced_get_network_connection_type as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[187],
+            advanced_put_bandwidth_detection as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[189],
+            advanced_put_client_protocol_spec as *const () as usize
+        );
     }
 
     #[test]
@@ -12259,33 +12349,42 @@ mod tests {
         let stub_slots = advanced_settings_stub_slots();
         assert_eq!(stub_slots.len(), 191);
         assert_ne!(stub_slots[2], stub_slots[3]);
-        assert_eq!(stub_slots[2], advanced_settings_stub_2 as usize);
-        assert_eq!(stub_slots[82], advanced_settings_stub_82 as usize);
+        assert_eq!(stub_slots[2], advanced_settings_stub_2 as *const () as usize);
+        assert_eq!(stub_slots[82], advanced_settings_stub_82 as *const () as usize);
 
         let vtable = advanced_vtable();
-        assert_eq!(vtable.slots[2], advanced_settings_stub_2 as usize);
-        assert_eq!(vtable.slots[82], advanced_settings_stub_82 as usize);
-        assert_eq!(vtable.slots[0], advanced_put_compress as usize);
-        assert_eq!(vtable.slots[97], advanced_put_smart_sizing as usize);
+        assert_eq!(vtable.slots[2], advanced_settings_stub_2 as *const () as usize);
+        assert_eq!(vtable.slots[82], advanced_settings_stub_82 as *const () as usize);
+        assert_eq!(vtable.slots[0], advanced_put_compress as *const () as usize);
+        assert_eq!(vtable.slots[97], advanced_put_smart_sizing as *const () as usize);
         assert_eq!(
             vtable.slots[136],
-            advanced_put_connection_bar_show_minimize_button as usize
+            advanced_put_connection_bar_show_minimize_button as *const () as usize
         );
         assert_eq!(
             vtable.slots[137],
-            advanced_get_connection_bar_show_minimize_button as usize
+            advanced_get_connection_bar_show_minimize_button as *const () as usize
         );
         assert_eq!(
             vtable.slots[138],
-            advanced_put_connection_bar_show_restore_button as usize
+            advanced_put_connection_bar_show_restore_button as *const () as usize
         );
         assert_eq!(
             vtable.slots[139],
-            advanced_get_connection_bar_show_restore_button as usize
+            advanced_get_connection_bar_show_restore_button as *const () as usize
         );
-        assert_eq!(vtable.slots[146], advanced_put_connection_bar_show_pin_button as usize);
-        assert_eq!(vtable.slots[147], advanced_get_connection_bar_show_pin_button as usize);
-        assert_eq!(vtable.slots[185], advanced_put_network_connection_type as usize);
+        assert_eq!(
+            vtable.slots[146],
+            advanced_put_connection_bar_show_pin_button as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[147],
+            advanced_get_connection_bar_show_pin_button as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[185],
+            advanced_put_network_connection_type as *const () as usize
+        );
     }
 
     #[test]
@@ -12346,11 +12445,11 @@ mod tests {
 
         let vtable = secured_vtable();
         assert_eq!(vtable.slots.len(), SECURED_SETTINGS_SLOTS);
-        assert_eq!(vtable.slots[0], secured_put_start_program as usize);
-        assert_eq!(vtable.slots[2], secured_put_work_dir as usize);
-        assert_eq!(vtable.slots[8], secured_put_audio_redirection as usize);
-        assert_eq!(vtable.slots[10], secured_get_pcb as usize);
-        assert_eq!(vtable.slots[11], secured_put_pcb as usize);
+        assert_eq!(vtable.slots[0], secured_put_start_program as *const () as usize);
+        assert_eq!(vtable.slots[2], secured_put_work_dir as *const () as usize);
+        assert_eq!(vtable.slots[8], secured_put_audio_redirection as *const () as usize);
+        assert_eq!(vtable.slots[10], secured_get_pcb as *const () as usize);
+        assert_eq!(vtable.slots[11], secured_put_pcb as *const () as usize);
         assert!(settings_supports_interface::<SECURED_SETTINGS_SLOTS>(&GUID::from_u128(
             0x25f2ce20_8b1d_4971_a7cd_549dae201fc0
         )));
