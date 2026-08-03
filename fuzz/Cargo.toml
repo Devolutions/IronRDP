@@ -97,3 +97,10 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "egfx_avc420_decode"
+path = "fuzz_targets/egfx_avc420_decode.rs"
+test = false
+doc = false
+bench = false
+

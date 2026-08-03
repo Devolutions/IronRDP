@@ -7,6 +7,7 @@ use ironrdp_pdu::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
     ensure_size, invalid_field_err,
 };
+use tracing::warn;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuantQuality {
@@ -361,6 +362,86 @@ impl Avc420Region {
             progressive: false,
             quality: self.quality,
         }
+    }
+}
+
+/// Convert H.264 AVC format to Annex B format
+///
+/// OpenH264 and similar decoders consume Annex B format (start code prefixed),
+/// but MS-RDPEGFX delivers AVC format (length-prefixed NAL units). This helper
+/// converts between the two by replacing each 4-byte big-endian length prefix
+/// with the 4-byte Annex B start code `[0x00, 0x00, 0x00, 0x01]`.
+///
+/// ```text
+/// AVC:     <4-byte BE length> <NAL> <4-byte BE length> <NAL> ...
+/// Annex B: 00 00 00 01 <NAL> 00 00 00 01 <NAL> ...
+/// ```
+///
+/// On malformed input (a NAL length extending past the buffer, or arithmetic
+/// overflow on `offset + nal_len`), the conversion stops at the last
+/// well-formed NAL unit and discards the remaining bytes.
+///
+/// # Arguments
+///
+/// * `data` - H.264 bitstream in AVC format
+///
+/// # Returns
+///
+/// H.264 bitstream in Annex B format with 4-byte start codes
+///
+/// # Example
+///
+/// ```
+/// use ironrdp_egfx::pdu::avc_to_annex_b;
+///
+/// // Length-prefixed NAL unit (length 3, payload [0x67, 0x42, 0x00])
+/// let avc = [0x00, 0x00, 0x00, 0x03, 0x67, 0x42, 0x00];
+/// let annex_b = avc_to_annex_b(&avc);
+/// assert_eq!(annex_b, [0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00]);
+/// ```
+#[must_use]
+pub fn avc_to_annex_b(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    avc_to_annex_b_into(data, &mut out);
+    out
+}
+
+/// In-place variant of [`avc_to_annex_b`] that writes the conversion result
+/// into a caller-provided buffer.
+///
+/// The caller's buffer is cleared before the conversion begins. This shape
+/// lets the caller reuse one allocation across many calls in a hot loop
+/// (for example a per-frame decoder pipeline) without per-call allocation.
+///
+/// See [`avc_to_annex_b`] for the conversion semantics.
+pub fn avc_to_annex_b_into(data: &[u8], out: &mut Vec<u8>) {
+    out.clear();
+    let mut offset = 0;
+
+    while offset + 4 <= data.len() {
+        let nal_len = u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+
+        #[expect(clippy::as_conversions, reason = "NAL length from wire format")]
+        let nal_len = nal_len as usize;
+        offset += 4;
+
+        let Some(end) = offset.checked_add(nal_len) else {
+            warn!(nal_len, offset, "AVC NAL length overflow, discarding remaining data");
+            break;
+        };
+        if end > data.len() {
+            warn!(
+                nal_len,
+                offset,
+                data_len = data.len(),
+                "AVC NAL extends beyond buffer, discarding remaining data"
+            );
+            break;
+        }
+
+        out.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        out.extend_from_slice(&data[offset..offset + nal_len]);
+        offset += nal_len;
     }
 }
 
