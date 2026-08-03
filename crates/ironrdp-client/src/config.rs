@@ -62,7 +62,7 @@ pub struct Config {
     pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
-    pub(crate) use_legacy_rdp6_bitmap_order: bool,
+    pub(crate) use_bottom_up_rdp6_bitmap_order: bool,
     pub(crate) channels: ChannelConfig,
 
     /// DVC channel ↔ named-pipe proxy configuration.
@@ -555,7 +555,7 @@ pub struct ConfigBuilder {
     client_dir: Option<String>,
     client_name: Option<String>,
     platform: Option<ironrdp_pdu::rdp::capability_sets::MajorPlatformType>,
-    use_legacy_rdp6_bitmap_order: bool,
+    use_bottom_up_rdp6_bitmap_order: bool,
     gateway_username: Option<String>,
     gateway_password: Option<String>,
 
@@ -893,10 +893,10 @@ impl ConfigBuilder {
         self
     }
 
-    /// Use the legacy bottom-up RDP6 bitmap scanline order required by the ActiveX host.
+    /// Use the bottom-up RDP6 bitmap scanline order required by the ActiveX host.
     #[must_use]
-    pub fn with_legacy_rdp6_bitmap_order(mut self) -> Self {
-        self.use_legacy_rdp6_bitmap_order = true;
+    pub fn with_bottom_up_rdp6_bitmap_order(mut self) -> Self {
+        self.use_bottom_up_rdp6_bitmap_order = true;
         self
     }
 
@@ -1362,7 +1362,7 @@ impl ConfigBuilder {
             certificate_validation_callback: self.certificate_validation_callback,
             kerberos_config,
             fake_events_interval: self.fake_events_interval,
-            use_legacy_rdp6_bitmap_order: self.use_legacy_rdp6_bitmap_order,
+            use_bottom_up_rdp6_bitmap_order: self.use_bottom_up_rdp6_bitmap_order,
             channels: self.channels,
             #[cfg(feature = "dvc-pipe-proxy")]
             dvc_pipe_proxies: self.dvc_pipe_proxies,

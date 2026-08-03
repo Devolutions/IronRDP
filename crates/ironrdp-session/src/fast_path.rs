@@ -173,8 +173,8 @@ mod tests {
     }
 
     #[test]
-    fn rdp6_bitmap_update_uses_default_or_legacy_scanline_order() {
-        for (use_legacy_order, expected_top_row, expected_bottom_row) in [
+    fn rdp6_bitmap_update_uses_default_or_bottom_up_scanline_order() {
+        for (use_bottom_up_order, expected_top_row, expected_bottom_row) in [
             (
                 false,
                 [[30, 31, 32, 255], [40, 41, 42, 255]],
@@ -195,12 +195,12 @@ mod tests {
                     pointer_software_rendering: false,
                 }
                 .build();
-                if use_legacy_order {
-                    processor.enable_legacy_rdp6_bitmap_order();
+                if use_bottom_up_order {
+                    processor.use_bottom_up_rdp6_bitmap_order();
                 }
                 let mut image = DecodedImage::new(PixelFormat::RgbA32, 2, 2);
 
-                // Keep the first stream row distinct from the last so the legacy
+                // Keep the first stream row distinct from the last so the bottom-up
                 // interpretation is observable.
                 let wire_rgb = [
                     30, 31, 32, 40, 41, 42, // first stream row
@@ -239,22 +239,22 @@ mod tests {
                 assert_eq!(
                     pixel(0, 0),
                     expected_top_row[0],
-                    "legacy: {use_legacy_order}, RLE: {rle}"
+                    "bottom-up: {use_bottom_up_order}, RLE: {rle}"
                 );
                 assert_eq!(
                     pixel(1, 0),
                     expected_top_row[1],
-                    "legacy: {use_legacy_order}, RLE: {rle}"
+                    "bottom-up: {use_bottom_up_order}, RLE: {rle}"
                 );
                 assert_eq!(
                     pixel(0, 1),
                     expected_bottom_row[0],
-                    "legacy: {use_legacy_order}, RLE: {rle}"
+                    "bottom-up: {use_bottom_up_order}, RLE: {rle}"
                 );
                 assert_eq!(
                     pixel(1, 1),
                     expected_bottom_row[1],
-                    "legacy: {use_legacy_order}, RLE: {rle}"
+                    "bottom-up: {use_bottom_up_order}, RLE: {rle}"
                 );
             }
         }
@@ -504,7 +504,7 @@ pub struct Processor {
     rfx_handler: rfx::DecodingContext,
     marker_processor: FrameMarkerProcessor,
     bitmap_stream_decoder: BitmapStreamDecoder,
-    use_legacy_rdp6_bitmap_order: bool,
+    use_bottom_up_rdp6_bitmap_order: bool,
     pointer_cache: PointerCache,
     use_system_pointer: bool,
     mouse_pos_update: Option<(u16, u16)>,
@@ -527,9 +527,9 @@ impl Processor {
         self.mouse_pos_update = Some((x, y));
     }
 
-    /// Uses the legacy bottom-up RDP6 bitmap scanline order.
-    pub(crate) fn enable_legacy_rdp6_bitmap_order(&mut self) {
-        self.use_legacy_rdp6_bitmap_order = true;
+    /// Uses the bottom-up RDP6 bitmap scanline order.
+    pub(crate) fn use_bottom_up_rdp6_bitmap_order(&mut self) {
+        self.use_bottom_up_rdp6_bitmap_order = true;
     }
 
     /// Returns whether a malformed visual update requires a one-time full redraw request.
@@ -778,12 +778,12 @@ impl Processor {
                         usize::from(update.width),
                         usize::from(update.height),
                     ) {
-                        // The legacy compatibility mode maps bottom-up streams to framebuffer rows.
+                        // The bottom-up compatibility mode maps streams to framebuffer rows.
                         Ok(()) => apply_bitmap(image.apply_rgb24(
                             &buf,
                             &update_rectangle,
                             update.width,
-                            self.use_legacy_rdp6_bitmap_order,
+                            self.use_bottom_up_rdp6_bitmap_order,
                         ))?,
                         Err(err) => {
                             warn!("Invalid RDP6_BITMAP_STREAM: {err}");
@@ -1280,7 +1280,7 @@ impl ProcessorBuilder {
             rfx_handler: rfx::DecodingContext::new(),
             marker_processor: FrameMarkerProcessor::new(self.user_channel_id, self.io_channel_id, self.share_id),
             bitmap_stream_decoder: BitmapStreamDecoder::default(),
-            use_legacy_rdp6_bitmap_order: false,
+            use_bottom_up_rdp6_bitmap_order: false,
             pointer_cache: PointerCache::default(),
             use_system_pointer: true,
             mouse_pos_update: None,

@@ -6020,7 +6020,7 @@ impl Control {
             // The GDI presenter has no hardware-cursor overlay, so cursor updates must be
             // composited into the decoded framebuffer before it receives image events.
             .with_pointer_software_rendering(true)
-            .with_legacy_rdp6_bitmap_order()
+            .with_bottom_up_rdp6_bitmap_order()
             .with_clipboard(if clipboard {
                 ClipboardType::Enable
             } else {
@@ -11208,7 +11208,7 @@ mod tests {
             .with_client_dir("C:\\")
             .with_client_name("IronRDP ActiveX")
             .with_platform(MajorPlatformType::WINDOWS)
-            .with_legacy_rdp6_bitmap_order()
+            .with_bottom_up_rdp6_bitmap_order()
             .with_lossy_compression(ACTIVEX_LOSSY_COMPRESSION)
             .with_codecs(
                 ACTIVEX_CODEC_CONFIGURATION
