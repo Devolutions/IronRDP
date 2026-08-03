@@ -11,7 +11,10 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::Instant;
 
 use anyhow::{Context as _, Result, bail};
-use ironrdp_acceptor::{Acceptor, AcceptorResult, BeginResult, CredentialOrigin, DesktopSize, ReceivedCredentials};
+use ironrdp_acceptor::{
+    Acceptor, AcceptorResult, BeginResult, ConnectorError, ConnectorErrorExt as _, CredentialOrigin,
+    CredentialsHandler, DesktopSize, ReceivedCredentials,
+};
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_cliprdr::backend::ClipboardMessage;
@@ -909,6 +912,8 @@ pub struct RdpServer {
     creds: Option<Credentials>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     connection_binder: Option<Arc<dyn ConnectionBinder>>,
+    pending_authenticated_credentials: Option<Credentials>,
+    pending_bound_connection: Option<BoundConnection>,
     local_addr: Option<SocketAddr>,
     /// The local address the current client reached. See
     /// [`Self::set_connection_local_addr`].
@@ -1800,6 +1805,8 @@ impl RdpServer {
             creds: None,
             credential_validator: None,
             connection_binder: None,
+            pending_authenticated_credentials: None,
+            pending_bound_connection: None,
             local_addr: None,
             connection_local_addr: None,
             autodetect_enabled: false,
@@ -4361,6 +4368,44 @@ impl RdpServer {
         state
     }
 
+    async fn prepare_authenticated_connection(
+        &mut self,
+        received_credentials: Option<ReceivedCredentials>,
+    ) -> core::result::Result<(), ConnectorError> {
+        let authenticated_credentials =
+            resolve_authenticated_credentials(self.credential_validator.clone(), received_credentials.as_ref(), false)
+                .await
+                .map_err(|error| ConnectorError::reason("credential validation failed", format!("{error:#}")))?;
+
+        if self.credential_validator.is_some() && authenticated_credentials.is_none() {
+            return Err(ConnectorError::general("no credentials available for validation"));
+        }
+
+        if let Some(binder) = self.connection_binder.clone() {
+            if self.credential_validator.is_none()
+                && received_credentials.as_ref().map(|received| received.origin)
+                    != Some(CredentialOrigin::CredSspDelegated)
+            {
+                return Err(ConnectorError::general(
+                    "connection binder requires authenticated credentials from a validator or CredSSP",
+                ));
+            }
+
+            let credentials = authenticated_credentials
+                .as_ref()
+                .ok_or_else(|| ConnectorError::general("no authenticated credentials for connection binding"))?;
+            let bound = binder
+                .bind_connection(credentials)
+                .await
+                .map_err(|error| ConnectorError::reason("connection binder failed", format!("{error:#}")))?;
+
+            self.pending_bound_connection = Some(bound);
+        }
+
+        self.pending_authenticated_credentials = authenticated_credentials.cloned();
+        Ok(())
+    }
+
     async fn client_accepted<R, W>(
         &mut self,
         conn: &mut ConnectionState,
@@ -4395,62 +4440,15 @@ impl RdpServer {
             false
         };
 
-        // Validate credentials if a validator is configured. The validator runs here, in the
-        // async server layer, rather than in the sans-I/O acceptor, because real validators
-        // (PAM/LDAP/DB) are I/O-bound. On rejection, deny with a ServerSetErrorInfoPdu before
-        // closing, matching the acceptor's exact-match denial path. Reactivation still validates
-        // credentials again if the client resends them before channel state is reused.
-        // A verified auto-reconnect cookie bypasses the configured credential validator.
-        let credential_validator = if is_auto_reconnect {
-            None
-        } else {
-            self.credential_validator.clone()
-        };
-        let authenticated_credentials = match resolve_authenticated_credentials(
-            credential_validator,
-            result.received_credentials.as_ref(),
-            result.reactivation,
-        )
-        .await
+        if result.reactivation {
+            debug!("Reactivation reuses the authenticated connection binding");
+        } else if !is_auto_reconnect
+            && (self.credential_validator.is_some() || self.connection_binder.is_some())
+            && self.pending_authenticated_credentials.is_none()
         {
-            Ok(credentials) => credentials,
-            Err(e) => {
-                send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
-                return Err(e);
-            }
-        };
-
-        if !result.reactivation {
-            if let Some(binder) = self.connection_binder.clone() {
-                if self.credential_validator.is_none()
-                    && result.received_credentials.as_ref().map(|received| received.origin)
-                        != Some(CredentialOrigin::CredSspDelegated)
-                {
-                    warn!("Connection binder requires authenticated credentials from a validator or CredSSP");
-                    send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
-                    bail!("connection binder requires authenticated credentials");
-                }
-
-                let Some(credentials) = authenticated_credentials.as_ref() else {
-                    warn!("Connection binder configured but no authenticated credentials are available");
-                    send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
-                    bail!("no authenticated credentials for connection binding");
-                };
-
-                // Bound handlers are connection-local: install them into the dispatch slots
-                // for this client only, then clear the slots when the connection ends.
-                let bound = match binder.bind_connection(credentials).await {
-                    Ok(bound) => bound,
-                    Err(e) => {
-                        send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
-                        return Err(e).context("connection binder failed");
-                    }
-                };
-                self.install_bound_connection(bound).await;
-                debug!("Connection binder installed display/input handlers");
-            }
-        } else if self.connection_binder.is_some() {
-            debug!("Skipping connection binder during reactivation");
+            warn!("Initial acceptance reached activation without prepared credentials");
+            send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+            bail!("credentials were not prepared before activation");
         }
 
         if !result.reactivation {
@@ -5054,9 +5052,10 @@ impl RdpServer {
             // called, see `PendingConnection::new`), so the handler below
             // simply never runs and this is exactly `accept_finalize`'s own
             // behavior.
-            let finalize = ironrdp_acceptor::accept_finalize_with_multitransport(
+            let finalize = ironrdp_acceptor::accept_finalize_with_handlers(
                 framed,
                 &mut acceptor,
+                self,
                 async |request, _soft_sync| {
                     // Defensive only: reached only if the acceptor sent a
                     // request despite one of these being unset, which
@@ -5144,6 +5143,20 @@ impl RdpServer {
     /// Cleared when the connection ends.
     pub fn set_connection_local_addr(&mut self, addr: Option<SocketAddr>) {
         self.connection_local_addr = addr;
+    }
+}
+
+fn validate_bound_display_size(
+    negotiated_size: DesktopSize,
+    bound_size: DesktopSize,
+) -> core::result::Result<(), ConnectorError> {
+    if bound_size == negotiated_size {
+        Ok(())
+    } else {
+        Err(ConnectorError::reason(
+            "bound display dimensions differ from negotiated dimensions",
+            format!("negotiated {negotiated_size:?}, bound {bound_size:?}"),
+        ))
     }
 }
 
@@ -6225,6 +6238,45 @@ mod cliprdr_error_tests {
     }
 }
 
+#[async_trait::async_trait(?Send)]
+impl CredentialsHandler for RdpServer {
+    async fn handle_credentials(
+        &mut self,
+        credentials: Option<ReceivedCredentials>,
+    ) -> core::result::Result<(), ConnectorError> {
+        self.prepare_authenticated_connection(credentials).await
+    }
+
+    async fn prepare_capability_exchange(
+        &mut self,
+        desktop_size: DesktopSize,
+    ) -> core::result::Result<(), ConnectorError> {
+        if (self.credential_validator.is_some() || self.connection_binder.is_some())
+            && self.pending_authenticated_credentials.is_none()
+        {
+            return Err(ConnectorError::general(
+                "credentials were not prepared before capability exchange",
+            ));
+        }
+
+        let Some(bound) = self.pending_bound_connection.take() else {
+            return Ok(());
+        };
+
+        let mut bound_display = bound.display;
+        let bound_size = bound_display.size().await;
+        validate_bound_display_size(desktop_size, bound_size)?;
+
+        self.install_bound_connection(BoundConnection {
+            display: bound_display,
+            input: bound.input,
+        })
+        .await;
+        debug!(?bound_size, "Connection binder installed display/input handlers");
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod wrdp_reactivation_tests {
     use super::*;
@@ -6302,6 +6354,21 @@ mod wrdp_reactivation_tests {
             .expect("resent reactivation credentials should be validated")
             .expect("resent reactivation credentials should remain available");
         assert_eq!(reactivated.username, "alice");
+    }
+
+    #[test]
+    fn bound_display_size_must_match_negotiated_size() {
+        let negotiated = DesktopSize {
+            width: 1280,
+            height: 720,
+        };
+        assert!(validate_bound_display_size(negotiated, negotiated).is_ok());
+
+        let incompatible = DesktopSize {
+            width: 1920,
+            height: 1080,
+        };
+        assert!(validate_bound_display_size(negotiated, incompatible).is_err());
     }
 
     #[tokio::test]
