@@ -234,12 +234,14 @@ pub struct BoundConnection {
 /// install the returned handlers before static channels, display updates, or
 /// input dispatch begin.
 ///
-/// The binder runs once for the initial acceptance of a TCP connection. During
-/// Deactivation-Reactivation (for example, a client resize), the existing bound
-/// handlers remain installed and the binder is not called again.
+/// The binder runs once for the initial acceptance of a TCP connection, after
+/// the operational desktop size has been negotiated. `desktop_size` is the
+/// exact size the returned display must expose. During Deactivation-Reactivation
+/// (for example, a later client resize), the existing bound handlers remain
+/// installed and the binder is not called again.
 #[async_trait::async_trait]
 pub trait ConnectionBinder: Send + Sync {
-    async fn bind_connection(&self, credentials: &Credentials) -> Result<BoundConnection>;
+    async fn bind_connection(&self, credentials: &Credentials, desktop_size: DesktopSize) -> Result<BoundConnection>;
 }
 
 struct BoundDisplaySlot {
@@ -1826,25 +1828,13 @@ impl RdpServer {
             return Err(ConnectorError::general("no credentials available for validation"));
         }
 
-        if let Some(binder) = self.connection_binder.clone() {
-            if self.credential_validator.is_none()
-                && received_credentials.as_ref().map(|received| received.origin)
-                    != Some(CredentialOrigin::CredSspDelegated)
-            {
-                return Err(ConnectorError::general(
-                    "connection binder requires authenticated credentials from a validator or CredSSP",
-                ));
-            }
-
-            let credentials = authenticated_credentials
-                .as_ref()
-                .ok_or_else(|| ConnectorError::general("no authenticated credentials for connection binding"))?;
-            let bound = binder
-                .bind_connection(credentials)
-                .await
-                .map_err(|error| ConnectorError::reason("connection binder failed", format!("{error:#}")))?;
-
-            self.pending_bound_connection = Some(bound);
+        if self.connection_binder.is_some()
+            && self.credential_validator.is_none()
+            && received_credentials.as_ref().map(|received| received.origin) != Some(CredentialOrigin::CredSspDelegated)
+        {
+            return Err(ConnectorError::general(
+                "connection binder requires authenticated credentials from a validator or CredSSP",
+            ));
         }
 
         self.pending_authenticated_credentials = authenticated_credentials.cloned();
@@ -2489,6 +2479,20 @@ impl CredentialsHandler for RdpServer {
             return Err(ConnectorError::general(
                 "credentials were not prepared before capability exchange",
             ));
+        }
+
+        if self.pending_bound_connection.is_none()
+            && let Some(binder) = self.connection_binder.clone()
+        {
+            let credentials = self
+                .pending_authenticated_credentials
+                .as_ref()
+                .ok_or_else(|| ConnectorError::general("no authenticated credentials for connection binding"))?;
+            let bound = binder
+                .bind_connection(credentials, desktop_size)
+                .await
+                .map_err(|error| ConnectorError::reason("connection binder failed", format!("{error:#}")))?;
+            self.pending_bound_connection = Some(bound);
         }
 
         let Some(bound) = self.pending_bound_connection.take() else {
