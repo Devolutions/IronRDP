@@ -9,7 +9,7 @@ pub mod ffi {
     use super::{DvcPipeProxyMessageInner, DvcPipeProxyMessageQueueInner};
     use crate::error::ffi::IronRdpError;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct DvcPipeProxyMessage(pub DvcPipeProxyMessageInner);
 
     impl DvcPipeProxyMessage {
@@ -18,11 +18,11 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     #[derive(Clone)]
     pub struct DvcPipeProxyMessageSink(pub mpsc::SyncSender<DvcPipeProxyMessageInner>);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct DvcPipeProxyMessageQueue(DvcPipeProxyMessageQueueInner);
 
     impl DvcPipeProxyMessageQueue {

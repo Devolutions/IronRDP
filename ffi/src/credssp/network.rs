@@ -11,13 +11,13 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::utils::ffi::VecU8;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct CredsspProcessGenerator<'a>(pub ironrdp::connector::credssp::CredsspProcessGenerator<'a>);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct GeneratorState(pub CredsspGeneratorState);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct NetworkRequest<'a>(pub &'a sspi::generator::NetworkRequest);
 
     #[diplomat::enum_convert(sspi::network_client::NetworkProtocol)]
@@ -28,7 +28,7 @@ pub mod ffi {
         Https,
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ClientState(pub sspi::credssp::ClientState);
 
     impl<'a> CredsspProcessGenerator<'a> {
@@ -94,7 +94,7 @@ pub mod ffi {
             self.0.protocol.into()
         }
 
-        pub fn get_url(&self, writeable: &mut diplomat_runtime::DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+        pub fn get_url(&self, writeable: &mut diplomat_runtime::DiplomatWrite) -> Result<(), Box<IronRdpError>> {
             use core::fmt::Write as _;
             let url: &str = self.0.url.as_ref();
             write!(writeable, "{url}")?;

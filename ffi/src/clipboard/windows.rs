@@ -26,7 +26,7 @@ pub mod ffi {
     use crate::clipboard::message::ffi::ClipboardMessage;
     use crate::error::ffi::IronRdpError;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct WinCliprdr(WinCliprdrInner);
 
     impl WinCliprdr {

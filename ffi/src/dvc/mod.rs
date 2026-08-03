@@ -4,10 +4,10 @@ pub mod dvc_pipe_proxy_message_queue;
 pub mod ffi {
     use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessageSink;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct DrdynvcChannel(pub ironrdp::dvc::DrdynvcClient);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     #[derive(Clone)]
     pub struct DvcPipeProxyDescriptor {
         pub channel_name: String,
@@ -23,7 +23,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     #[derive(Clone)]
     pub struct DvcPipeProxyConfig {
         pub message_sink: DvcPipeProxyMessageSink,

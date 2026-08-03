@@ -12,8 +12,8 @@ test = false
 doctest = false
 
 [dependencies]
-diplomat = "0.7"
-diplomat-runtime = "0.7"
+diplomat = { git = "https://github.com/irvingoujAtDevolution/diplomat.git", rev = "822b0b3effd892ca5babae7c1872d8c6be0685de" }
+diplomat-runtime = { git = "https://github.com/irvingoujAtDevolution/diplomat.git", rev = "822b0b3effd892ca5babae7c1872d8c6be0685de" }
 ironrdp = { path = "../crates/ironrdp", features = ["session", "connector", "dvc", "svc", "rdpdr", "rdpsnd", "graphics", "input", "cliprdr", "displaycontrol"] }
 ironrdp-cliprdr-native.path = "../crates/ironrdp-cliprdr-native"
 ironrdp-dvc-pipe-proxy.path = "../crates/ironrdp-dvc-pipe-proxy"

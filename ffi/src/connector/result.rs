@@ -5,7 +5,7 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::utils::ffi::OptionalUsize;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct Written(pub ironrdp::connector::Written);
 
     pub enum WrittenType {
@@ -29,7 +29,7 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConnectionResult(pub Option<ironrdp::connector::ConnectionResult>);
 
     impl ConnectionResult {

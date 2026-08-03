@@ -13,16 +13,16 @@ pub mod ffi {
     use crate::pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle};
     use crate::utils::ffi::{BytesSlice, Position, VecU8};
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ActiveStage(
         pub ironrdp::session::ActiveStage,
         pub ironrdp::connector::connection_activation::ConnectionActivationFactory,
     );
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ActiveStageOutput(pub ironrdp::session::ActiveStageOutput);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ActiveStageOutputIterator(pub Vec<ironrdp::session::ActiveStageOutput>);
 
     impl ActiveStageOutputIterator {
@@ -253,7 +253,7 @@ pub mod ffi {
             }
         }
 
-        pub fn get_response_frame(&self) -> Result<Box<BytesSlice<'_>>, Box<IronRdpError>> {
+        pub fn get_response_frame<'a>(&'a self) -> Result<Box<BytesSlice<'a>>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Ok(Box::new(BytesSlice(frame))),
                 _ => Err(IncorrectEnumTypeError::on_variant("ResponseFrame")
@@ -370,6 +370,6 @@ pub mod ffi {
         pub requested_protocol: u16,
     }
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct GracefulDisconnectReason(pub ironrdp::session::GracefulDisconnectReason);
 }

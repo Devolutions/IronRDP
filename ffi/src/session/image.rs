@@ -2,7 +2,7 @@
 pub mod ffi {
     use crate::utils::ffi::BytesSlice;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct DecodedImage(pub ironrdp::session::image::DecodedImage);
 
     impl DecodedImage {
@@ -15,7 +15,7 @@ pub mod ffi {
         }
 
         // The bytes array lives as long as the DecodedImage
-        pub fn get_data(&self) -> Box<BytesSlice<'_>> {
+        pub fn get_data<'a>(&'a self) -> Box<BytesSlice<'a>> {
             Box::new(BytesSlice(self.0.data()))
         }
 

@@ -4,7 +4,7 @@ pub mod ffi {
 
     use crate::utils::ffi::BytesSlice;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct DecodedPointer(pub Arc<ironrdp::graphics::pointer::DecodedPointer>);
 
     impl DecodedPointer {
@@ -24,7 +24,7 @@ pub mod ffi {
             self.0.hotspot_y
         }
 
-        pub fn get_data(&self) -> Box<BytesSlice<'_>> {
+        pub fn get_data<'a>(&'a self) -> Box<BytesSlice<'a>> {
             Box::new(BytesSlice(&self.0.bitmap_data))
         }
     }
