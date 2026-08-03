@@ -17,19 +17,39 @@ param(
 
     [string] $StatePath = (Join-Path $ArtifactsDir 'agent-daemon.json'),
 
-    [string] $LogLevel = 'debug'
+    [string] $LogLevel = 'debug',
+
+    [ValidateRange(1, 30000)]
+    [int] $ProbeTimeoutMilliseconds = 3000
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Invoke-Agent {
+function Test-AgentReady {
     param(
-        [Parameter(ValueFromRemainingArguments)]
-        [string[]] $Arguments
+        [Parameter(Mandatory)]
+        [int] $TimeoutMilliseconds
     )
 
-    & $AgentPath --endpoint $Endpoint @Arguments
+    $probe = Start-Process `
+        -FilePath $AgentPath `
+        -ArgumentList @('--endpoint', $Endpoint, 'status') `
+        -PassThru
+    try {
+        if (-not $probe.WaitForExit($TimeoutMilliseconds)) {
+            Stop-Process -Id $probe.Id -Force
+            $probe.WaitForExit()
+            return $false
+        }
+
+        return $probe.ExitCode -eq 0
+    }
+    finally {
+        if (-not $probe.HasExited) {
+            Stop-Process -Id $probe.Id -Force
+        }
+    }
 }
 
 New-Item -Path $ArtifactsDir -ItemType Directory -Force | Out-Null
@@ -74,13 +94,15 @@ do {
     }
 
     try {
-        Invoke-Agent status | Out-Null
-        $state | ConvertTo-Json -Compress
-        return
+        if (Test-AgentReady -TimeoutMilliseconds $ProbeTimeoutMilliseconds) {
+            $state | ConvertTo-Json -Compress
+            return
+        }
     }
     catch {
-        Start-Sleep -Milliseconds 250
+        Write-Warning "Could not probe ironrdp-agent daemon: $($_.Exception.Message)"
     }
+    Start-Sleep -Milliseconds 250
 } while ((Get-Date) -lt $deadline)
 
 try {
