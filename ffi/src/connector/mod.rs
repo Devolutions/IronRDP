@@ -193,7 +193,7 @@ pub mod ffi {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            let written = connector.step(input, &mut write_buf.0)?;
+            let written = connector.step(input, ironrdp::connector::MonotonicInstant::ZERO, &mut write_buf.0)?;
             Ok(Box::new(Written(written)))
         }
 

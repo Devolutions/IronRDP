@@ -18,7 +18,7 @@ use crate::connection_activation::{
 };
 use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
-    Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize,
+    Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize, MonotonicInstant,
     NegotiationFailure, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
 };
 
@@ -26,6 +26,14 @@ use crate::{
 /// permitted to send during bootstrapping, per MS-RDPBCGR 2.2.15.1 (one per
 /// transport protocol: reliable + lossy UDP).
 const MAX_MULTITRANSPORT_REQUESTS: usize = 2;
+
+/// Reported as `timeDelta` when a connect-time bandwidth window cannot be timed.
+///
+/// One millisecond rather than zero, because a server computing
+/// `byteCount * 8 / timeDelta` divides by it. The result understates a fast link,
+/// which is the safe direction: the figure is an informational QoS hint, and the
+/// server proceeds on receipt either way.
+const UNMEASURABLE_INTERVAL_MS: u32 = 1;
 
 /// Outcome of a single multitransport bootstrapping request, passed to
 /// [`ClientConnector::complete_multitransport()`].
@@ -237,7 +245,7 @@ impl State for ClientConnectorState {
 
 #[expect(
     clippy::partial_pub_fields,
-    reason = "server response flags are negotiated internally and must not expand the public connector construction API"
+    reason = "server response flags are negotiated internally and must not expand the public connector construction API; the connect-time bandwidth accumulators are likewise internal to the measurement, and exposing them would let a caller break the Start/Payload/Stop invariant"
 )]
 #[derive(Debug)]
 pub struct ClientConnector {
@@ -260,6 +268,14 @@ pub struct ClientConnector {
     ///
     /// Set via [`ClientConnector::with_auto_reconnect_cookie`].
     pub auto_reconnect_cookie: Option<ServerAutoReconnect>,
+    /// Start of the in-flight connect-time bandwidth measurement window.
+    ///
+    /// Set when the server's Bandwidth Measure Start arrives and cleared when the
+    /// matching Stop is answered. `None` means no window is open, in which case the
+    /// Stop is answered with [`UNMEASURABLE_INTERVAL_MS`] rather than a measurement.
+    connect_time_bw_started_at: Option<MonotonicInstant>,
+    /// Bytes seen in the open window, accumulated across Payload messages.
+    connect_time_bw_bytes: u32,
 }
 
 impl ClientConnector {
@@ -273,6 +289,8 @@ impl ClientConnector {
             response_flags: nego::ResponseFlags::empty(),
             server_multitransport_flags: None,
             auto_reconnect_cookie: None,
+            connect_time_bw_started_at: None,
+            connect_time_bw_bytes: 0,
         }
     }
 
@@ -476,7 +494,8 @@ impl ClientConnector {
     /// Panics if state is not [ClientConnectorState::EnhancedSecurityUpgrade].
     pub fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.should_perform_security_upgrade());
-        self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
+        self.step(&[], MonotonicInstant::ZERO, &mut WriteBuf::new())
+            .expect("transition to next state");
         debug_assert!(!self.should_perform_security_upgrade());
     }
 
@@ -491,7 +510,9 @@ impl ClientConnector {
     /// Panics if state is not [ClientConnectorState::Credssp].
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
-        let res = self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
+        let res = self
+            .step(&[], MonotonicInstant::ZERO, &mut WriteBuf::new())
+            .expect("transition to next state");
         debug_assert!(!self.should_perform_credssp());
         assert_eq!(res, Written::Nothing);
     }
@@ -685,6 +706,91 @@ impl ClientConnector {
             Written::from_size(total_written)
         }
     }
+
+    fn respond_to_connect_time_autodetect(
+        &mut self,
+        request: rdp::autodetect::AutoDetectRequest,
+        received_at: MonotonicInstant,
+        message_channel_id: u16,
+        user_channel_id: u16,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
+        use ironrdp_pdu::rdp::autodetect::{
+            AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu, BW_RESULTS_CONNECT_TIME,
+        };
+
+        match request {
+            AutoDetectRequest::RttRequest { sequence_number, .. } => {
+                let response = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number });
+                let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
+                Written::from_size(written)
+            }
+            // Start opens the measurement window ([MS-RDPBCGR] 2.2.14.1.2). No reply is
+            // due; we only note when it arrived.
+            AutoDetectRequest::BandwidthMeasureStart { .. } => {
+                self.connect_time_bw_started_at = Some(received_at);
+                self.connect_time_bw_bytes = 0;
+                Ok(Written::Nothing)
+            }
+            // Payload carries the bytes whose transfer is being timed ([MS-RDPBCGR]
+            // 2.2.14.1.3). No reply is due; accumulate so Stop can report the total.
+            AutoDetectRequest::BandwidthMeasurePayload { payload, .. } => {
+                let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+                self.connect_time_bw_bytes = self.connect_time_bw_bytes.saturating_add(len);
+                Ok(Written::Nothing)
+            }
+            // A connect-time Bandwidth Measure Stop ([MS-RDPBCGR] 2.2.14.1.4) warrants a
+            // Bandwidth Measure Results reply ([MS-RDPBCGR] 2.2.14.2.2). This reply must
+            // be sent: FreeRDP-based servers (for example GNOME Remote Desktop) block in
+            // their AWAIT_BW_RESULT state until they receive it and never proceed to
+            // licensing without it, so omitting it stalls the whole connection.
+            //
+            // The interval is measured from the Start that opened the window to the
+            // arrival of this Stop, using the times the I/O driver observed rather than
+            // any clock this sequence could read for itself.
+            //
+            // Two cases yield no interval to report. Either no Start was seen, or the
+            // whole Start/Payload/Stop sequence arrived in a single socket read, which
+            // is the common case on a fast link because the payload is small enough to
+            // coalesce. Both are unmeasurable at read granularity rather than
+            // instantaneous, and the distinction matters on the wire: `timeDelta` of 0
+            // divides out to an unbounded bandwidth for a server that computes
+            // `byteCount * 8 / timeDelta`. Report the floor instead, which is the
+            // slowest rate consistent with what was observed.
+            AutoDetectRequest::BandwidthMeasureStop {
+                sequence_number,
+                payload,
+                ..
+            } => {
+                let stop_bytes = payload
+                    .as_ref()
+                    .map_or(0, |p| u32::try_from(p.len()).unwrap_or(u32::MAX));
+                let byte_count = self.connect_time_bw_bytes.saturating_add(stop_bytes);
+
+                let measured_ms = self
+                    .connect_time_bw_started_at
+                    .map(|started_at| {
+                        u32::try_from(received_at.duration_since(started_at).as_millis()).unwrap_or(u32::MAX)
+                    })
+                    .unwrap_or(0);
+                let time_delta_ms = measured_ms.max(UNMEASURABLE_INTERVAL_MS);
+
+                self.connect_time_bw_started_at = None;
+                self.connect_time_bw_bytes = 0;
+
+                let response = AutoDetectRspPdu::new(AutoDetectResponse::BandwidthMeasureResults {
+                    sequence_number,
+                    response_type: BW_RESULTS_CONNECT_TIME,
+                    time_delta_ms,
+                    byte_count,
+                });
+                let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
+                Written::from_size(written)
+            }
+            // The Network Characteristics Result is informational; nothing to send.
+            _ => Ok(Written::Nothing),
+        }
+    }
 }
 
 /// Build an Initiate Multitransport Response carrying `hr_response`.
@@ -708,9 +814,10 @@ fn advance_licensing_exchange(
     user_channel_id: u16,
     message_channel_id: Option<u16>,
     input: &[u8],
+    received_at: MonotonicInstant,
     output: &mut WriteBuf,
 ) -> ConnectorResult<(Written, ClientConnectorState)> {
-    let written = license_exchange.step(input, output)?;
+    let written = license_exchange.step(input, received_at, output)?;
 
     let next_state = if license_exchange.state.is_terminal() {
         ClientConnectorState::MultitransportBootstrapping {
@@ -773,7 +880,7 @@ impl Sequence for ClientConnector {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
+    fn step(&mut self, input: &[u8], received_at: MonotonicInstant, output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             // Invalid state
             ClientConnectorState::Consumed => {
@@ -954,7 +1061,7 @@ impl Sequence for ClientConnector {
                 mut channel_connection,
             } => {
                 debug!("Channel Connection");
-                let written = channel_connection.step(input, output)?;
+                let written = channel_connection.step(input, received_at, output)?;
 
                 let next_state = if let ChannelConnectionState::AllJoined { user_channel_id } = channel_connection.state
                 {
@@ -1035,8 +1142,9 @@ impl Sequence for ClientConnector {
 
                 if let Some((message_channel_id, data)) = message_channel_pdu {
                     if let Ok(autodetect) = decode::<rdp::autodetect::AutoDetectReqPdu>(&data.user_data) {
-                        let written = respond_to_connect_time_autodetect(
+                        let written = self.respond_to_connect_time_autodetect(
                             autodetect.request,
+                            received_at,
                             message_channel_id,
                             user_channel_id,
                             output,
@@ -1085,6 +1193,7 @@ impl Sequence for ClientConnector {
                             user_channel_id,
                             self.message_channel_id,
                             input,
+                            received_at,
                             output,
                         )?
                     } else {
@@ -1116,6 +1225,7 @@ impl Sequence for ClientConnector {
                     user_channel_id,
                     self.message_channel_id,
                     input,
+                    received_at,
                     output,
                 )?
             }
@@ -1184,7 +1294,7 @@ impl Sequence for ClientConnector {
                     // exchange with the PDU intact.
                     let mut connection_activation =
                         ConnectionActivationSequence::new(self.config.clone(), io_channel_id, user_channel_id);
-                    let written = connection_activation.step(input, output)?;
+                    let written = connection_activation.step(input, received_at, output)?;
 
                     (
                         written,
@@ -1221,7 +1331,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::CapabilitiesExchange {
                 mut connection_activation,
             } => {
-                let written = connection_activation.step(input, output)?;
+                let written = connection_activation.step(input, received_at, output)?;
                 match connection_activation.connection_activation_state() {
                     ConnectionActivationState::ConnectionFinalization { .. } => (
                         written,
@@ -1245,7 +1355,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectionFinalization {
                 mut connection_activation,
             } => {
-                let written = connection_activation.step(input, output)?;
+                let written = connection_activation.step(input, received_at, output)?;
 
                 let next_state = if !connection_activation.connection_activation_state().is_terminal() {
                     ClientConnectorState::ConnectionFinalization { connection_activation }
@@ -1326,54 +1436,6 @@ pub fn encode_send_data_request<T: Encode>(
     let written = ironrdp_core::encode_buf(&X224(pdu), buf).map_err(ConnectorError::encode)?;
 
     Ok(written)
-}
-
-fn respond_to_connect_time_autodetect(
-    request: rdp::autodetect::AutoDetectRequest,
-    message_channel_id: u16,
-    user_channel_id: u16,
-    output: &mut WriteBuf,
-) -> ConnectorResult<Written> {
-    use ironrdp_pdu::rdp::autodetect::{
-        AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu, BW_RESULTS_CONNECT_TIME,
-    };
-
-    match request {
-        AutoDetectRequest::RttRequest { sequence_number, .. } => {
-            let response = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number });
-            let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
-            Written::from_size(written)
-        }
-        // A connect-time Bandwidth Measure Stop ([MS-RDPBCGR] 2.2.14.1.4) warrants a
-        // Bandwidth Measure Results reply ([MS-RDPBCGR] 2.2.14.2.2). This reply must
-        // be sent: FreeRDP-based servers (for example GNOME Remote Desktop) block in
-        // their AWAIT_BW_RESULT state until they receive it and never proceed to
-        // licensing without it, so omitting it stalls the whole connection. We do not
-        // run a stateful connect-time measurement, so we report the payload the
-        // server handed us over a nominal interval; the figure is an informational
-        // QoS hint and the server proceeds on receipt. A precise measurement (timing
-        // the Start/Payload/Stop window) can refine the reported bandwidth later.
-        AutoDetectRequest::BandwidthMeasureStop {
-            sequence_number,
-            payload,
-            ..
-        } => {
-            let byte_count = payload
-                .as_ref()
-                .map_or(0, |p| u32::try_from(p.len()).unwrap_or(u32::MAX));
-            let response = AutoDetectRspPdu::new(AutoDetectResponse::BandwidthMeasureResults {
-                sequence_number,
-                response_type: BW_RESULTS_CONNECT_TIME,
-                time_delta_ms: 1,
-                byte_count,
-            });
-            let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
-            Written::from_size(written)
-        }
-        // Bandwidth Measure Start and Payload carry no client reply, and the Network
-        // Characteristics Result is informational; nothing to send for those.
-        _ => Ok(Written::Nothing),
-    }
 }
 
 #[expect(single_use_lifetimes)] // anonymous lifetimes in `impl Trait` are unstable

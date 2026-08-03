@@ -9,11 +9,12 @@
 
 use std::borrow::Cow;
 
+use ironrdp_connector::MonotonicInstant;
 use ironrdp_connector::{ClientConnector, ClientConnectorState, Credentials, DesktopSize, Sequence as _, Written};
 use ironrdp_core::{WriteBuf, encode_vec};
 use ironrdp_pdu::gcc;
 use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
-use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest};
+use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 use ironrdp_pdu::rdp::server_license::{
@@ -104,7 +105,7 @@ fn connect_time_autodetect_request_is_answered_and_phase_continues() {
     let frame = server_send_data_indication(MESSAGE_CHANNEL_ID, user_data);
 
     let mut output = WriteBuf::new();
-    let written = connector.step(&frame, &mut output).unwrap();
+    let written = connector.step(&frame, MonotonicInstant::ZERO, &mut output).unwrap();
 
     assert!(written.size().is_some(), "an RTT request must produce a response frame");
     assert!(
@@ -127,7 +128,7 @@ fn unrelated_message_channel_pdu_is_ignored_and_phase_continues() {
     let frame = server_send_data_indication(MESSAGE_CHANNEL_ID, user_data);
 
     let mut output = WriteBuf::new();
-    let written = connector.step(&frame, &mut output).unwrap();
+    let written = connector.step(&frame, MonotonicInstant::ZERO, &mut output).unwrap();
 
     assert_eq!(
         written,
@@ -166,7 +167,7 @@ fn first_licensing_pdu_leaves_autodetect_for_the_licensing_path() {
     let frame = server_send_data_indication(IO_CHANNEL_ID, user_data);
 
     let mut output = WriteBuf::new();
-    connector.step(&frame, &mut output).unwrap();
+    connector.step(&frame, MonotonicInstant::ZERO, &mut output).unwrap();
 
     assert!(
         matches!(
@@ -193,7 +194,7 @@ fn connect_time_bandwidth_measure_stop_is_answered_and_phase_continues() {
     let frame = server_send_data_indication(MESSAGE_CHANNEL_ID, user_data);
 
     let mut output = WriteBuf::new();
-    let written = connector.step(&frame, &mut output).unwrap();
+    let written = connector.step(&frame, MonotonicInstant::ZERO, &mut output).unwrap();
 
     assert!(
         written.size().is_some(),
@@ -203,4 +204,133 @@ fn connect_time_bandwidth_measure_stop_is_answered_and_phase_continues() {
         matches!(connector.state, ClientConnectorState::ConnectTimeAutoDetection { .. }),
         "the connector keeps listening after answering the bandwidth measurement"
     );
+}
+
+/// Unwrap a Bandwidth Measure Results response and return `(time_delta_ms, byte_count)`.
+///
+/// The response frame is X224 > MCS SendDataRequest > Auto-Detect Response PDU.
+fn decode_bandwidth_results(output: &WriteBuf) -> (u32, u32) {
+    let X224(McsMessage::SendDataRequest(send_data)) = ironrdp_core::decode(output.filled()).unwrap() else {
+        panic!("expected a SendDataRequest in the response frame");
+    };
+
+    let response = ironrdp_core::decode::<AutoDetectRspPdu>(&send_data.user_data).unwrap();
+    match response.response {
+        AutoDetectResponse::BandwidthMeasureResults {
+            time_delta_ms,
+            byte_count,
+            ..
+        } => (time_delta_ms, byte_count),
+        other => panic!("expected BandwidthMeasureResults, got {other:?}"),
+    }
+}
+
+/// The reported interval is the time between the Start that opened the window and
+/// the Stop that closed it, taken from the arrival times the driver observed.
+#[test]
+fn connect_time_bandwidth_reports_the_measured_interval_and_total_bytes() {
+    let mut connector = connect_time_autodetect_connector();
+    let mut output = WriteBuf::new();
+
+    let start = encode_vec(&AutoDetectReqPdu::new(AutoDetectRequest::bw_start_connect_time(0x1111))).unwrap();
+    connector
+        .step(
+            &server_send_data_indication(MESSAGE_CHANNEL_ID, start),
+            MonotonicInstant::from_millis(1_000),
+            &mut output,
+        )
+        .unwrap();
+
+    output.clear();
+    let stop = encode_vec(&AutoDetectReqPdu::new(AutoDetectRequest::bw_stop_connect_time(
+        0x1111,
+        vec![0u8; 4096],
+    )))
+    .unwrap();
+    connector
+        .step(
+            &server_send_data_indication(MESSAGE_CHANNEL_ID, stop),
+            MonotonicInstant::from_millis(1_250),
+            &mut output,
+        )
+        .unwrap();
+
+    let results = decode_bandwidth_results(&output);
+    assert_eq!(results.0, 250, "interval is Stop arrival minus Start arrival");
+    assert_eq!(results.1, 4096, "byte count is what the server sent in the window");
+}
+
+/// A Stop with no preceding Start has nothing to have measured. It is still
+/// answered, because the server blocks without a reply, but the interval reported
+/// is the unmeasurable floor rather than an invented figure.
+#[test]
+fn connect_time_bandwidth_stop_without_start_reports_the_floor() {
+    let mut connector = connect_time_autodetect_connector();
+    let mut output = WriteBuf::new();
+
+    let stop = encode_vec(&AutoDetectReqPdu::new(AutoDetectRequest::bw_stop_connect_time(
+        0x2222,
+        vec![0u8; 512],
+    )))
+    .unwrap();
+    let written = connector
+        .step(
+            &server_send_data_indication(MESSAGE_CHANNEL_ID, stop),
+            MonotonicInstant::from_millis(9_999),
+            &mut output,
+        )
+        .unwrap();
+
+    assert!(written.size().is_some(), "the server still needs its reply");
+    let results = decode_bandwidth_results(&output);
+    assert_eq!(results.0, 1, "no window was open, so no interval was measured");
+}
+
+/// Start, Payload and Stop delivered by one socket read carry the same arrival
+/// time, so there is no interval to measure. TCP coalescing makes this the common
+/// case on a fast link, since the connect-time payload is small.
+///
+/// Reporting `timeDelta` of 0 here would divide out to an unbounded bandwidth for
+/// a server computing `byteCount * 8 / timeDelta`, so the floor is reported and the
+/// bytes are still counted in full.
+#[test]
+fn connect_time_bandwidth_coalesced_into_one_read_reports_the_floor() {
+    let mut connector = connect_time_autodetect_connector();
+    let mut output = WriteBuf::new();
+
+    // One instant for all three, which is what `Framed` hands down when a single
+    // read filled the buffer that all three PDUs were then extracted from.
+    let arrival = MonotonicInstant::from_millis(7_000);
+
+    for request in [
+        AutoDetectRequest::bw_start_connect_time(0x3333),
+        AutoDetectRequest::bw_payload(0x3333, vec![0u8; 1024]),
+    ] {
+        output.clear();
+        connector
+            .step(
+                &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&AutoDetectReqPdu::new(request)).unwrap()),
+                arrival,
+                &mut output,
+            )
+            .unwrap();
+    }
+
+    output.clear();
+    let stop = encode_vec(&AutoDetectReqPdu::new(AutoDetectRequest::bw_stop_connect_time(
+        0x3333,
+        vec![0u8; 512],
+    )))
+    .unwrap();
+    connector
+        .step(
+            &server_send_data_indication(MESSAGE_CHANNEL_ID, stop),
+            arrival,
+            &mut output,
+        )
+        .unwrap();
+
+    let results = decode_bandwidth_results(&output);
+    assert_eq!(results.0, 1, "a window that arrived in one read cannot be timed");
+    assert_eq!(results.1, 1536, "every byte in the window is still counted");
 }
