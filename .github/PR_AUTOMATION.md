@@ -45,11 +45,13 @@ pull request context of its own, and `Bash` is denied, so a model cannot derive 
 The script therefore writes `pr-evidence/changed-files.txt` and `pr-evidence/pull-request.diff`,
 both computed against the merge base so that unrelated commits landing on `master` are not
 attributed to the pull request, and the head tree stays available in `pr-head` for surrounding
-context. It also removes contributor-controlled agent instruction files — `CLAUDE.md`,
-`CLAUDE.local.md`, `AGENTS.md`, `.claude`, `.cursor`, `.cursorrules` — recursively rather than only
-at the checkout root, because Claude Code discovers them in every directory it reads and a nested
-copy would otherwise escape the evidence-only boundary. Those files still appear in the diff, where
-they are reviewable data rather than instructions.
+context. Before exposing that tree to filesystem-reading tools, it removes all symlinks so a pull
+request cannot redirect a read outside the checkout. It also removes contributor-controlled agent
+instruction files — `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `.claude`, `.cursor`,
+`.cursorrules` — recursively rather than only at the checkout root, because Claude Code discovers
+them in every directory it reads and a nested copy would otherwise escape the evidence-only
+boundary. Those files still appear in the diff, where they are reviewable data rather than
+instructions.
 
 Model output is likewise treated as hostile on the way out. Text published in a bot comment or
 review is escaped so that HTML, code spans, mentions, issue references, and the Markdown constructs

@@ -27,6 +27,10 @@ git -C pr-head fetch --no-tags origin "+$head_sha:refs/remotes/origin/pull-reque
 git -C pr-head fetch --no-tags origin +master:refs/remotes/origin/master
 git -C pr-head checkout --detach origin/pull-request-head
 
+# The head tree is contributor-controlled. Remove symlinks before granting filesystem-reading tools
+# access so they cannot escape the checkout and disclose runner-local files or environment secrets.
+find pr-head -type l -delete
+
 # Claude Code discovers agent instruction files in every directory it reads, not just the root of
 # the tree it is given. These files are contributor-controlled here, so a nested pr-head/sub/CLAUDE.md
 # or pr-head/sub/.claude would otherwise escape the evidence-only boundary. The removal is recursive.
