@@ -98,7 +98,7 @@ impl DvcProcessor for DvcNamedPipeProxy {
             // TODO(@pacmancoder): Whatever buffer size we use here, we will hit buffer limit
             // eventually and fail if we are not send it in a blocking manner.
             //
-            // Architecturally, blocking whole IronRDP/async runitme is not ideal (even if we know
+            // Architecturally, blocking whole IronRDP/async runtime is not ideal (even if we know
             // that proxy worker is running on a separate thread and there should be no risk of
             // deadlock).
             //

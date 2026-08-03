@@ -223,7 +223,7 @@ impl Surface {
                         data.dimensions.0 as i32,
                         data.dimensions.1 as i32,
                     )
-                    .expect("Initiliazation of context failed"),
+                    .expect("Initialization of context failed"),
                 );
                 self.context.as_mut().unwrap()
             };
