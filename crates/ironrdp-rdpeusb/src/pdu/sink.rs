@@ -101,7 +101,14 @@ impl AddDevice {
 
         ensure_size!(in: src, size: InterfaceId::FIXED_PART_SIZE);
         let usb_device = match src.read_u32() {
-            0x0..=0x3 => {
+            // `1..=3` are the RDPEUSB default Device Sink / Channel Notification
+            // interface IDs; a device announced with one collides with this crate's
+            // fixed dispatch paths (later completion PDUs would decode as the wrong
+            // message type), so keep them rejected. `0` is the deliberate exception:
+            // a real Windows client (mstsc) assigns `UsbDevice == 0` to a redirected
+            // device, addressed by its own per-device DVC, and rejecting it made every
+            // mstsc ADD_DEVICE fail to parse.
+            0x1..=0x3 => {
                 return Err(invalid_field_err!("UsbDevice", "conflict with default interfaces"));
             }
             value => InterfaceId::try_from(value)?,
