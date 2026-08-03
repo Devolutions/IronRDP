@@ -571,7 +571,7 @@ impl<'a> Buf<'a> {
         u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0])
     }
 
-    fn rewinded(&'a self, len: usize) -> Buf<'a> {
+    fn rewound(&'a self, len: usize) -> Buf<'a> {
         Buf {
             inner: self.inner,
             pos: self.pos - len,
@@ -620,7 +620,7 @@ impl<'a> BufMut<'a> {
             inner: self.inner,
             pos: self.pos,
         };
-        let mut read_buf = read_buf.rewinded(row_delta);
+        let mut read_buf = read_buf.rewound(row_delta);
         Mode::read_pixel(&mut read_buf)
     }
 }
