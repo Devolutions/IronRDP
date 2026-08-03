@@ -55,6 +55,14 @@ Model output is likewise treated as hostile on the way out. Text published in a 
 review is escaped so that HTML, code spans, mentions, issue references, and the Markdown constructs
 that produce links, images, and emphasis all render as inert prose.
 
+Each workflow run writes a structured decision trace to its GitHub Actions logs. It records event
+resolution, all gate and deterministic-analysis results, normalized classification and review states,
+and the selected label additions, removals, comments, and check mutation. Jobs skipped by a gate are
+included in the final trace with their job outcome. After every LLM
+stage, the log also records the action outcome and its complete schema-bound structured output. These
+values are untrusted pull-request-derived evidence: they are emitted through `core.info`, never
+interpolated into a shell command or executed.
+
 The `risk` label states how much human scrutiny a change needs, not how much an automated review is
 worth. `risk:high` means the change substantially affects the public API surface of a core tier
 crate and needs maintainer-level scrutiny; `risk:medium` means a behavioural change that does not
