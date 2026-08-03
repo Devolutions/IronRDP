@@ -915,8 +915,11 @@ where
     let vm_id = config
         .vm_id()
         .ok_or_else(|| ironrdp_connector::general_err!("vmconnect path requires a VM ID"))?;
+    let mode = config
+        .vmconnect_mode()
+        .ok_or_else(|| ironrdp_connector::general_err!("vmconnect path requires a console mode"))?;
 
-    let pcb_sent = ironrdp_vmconnect::send_preconnection_blob(&mut framed, vm_id).await?;
+    let pcb_sent = ironrdp_vmconnect::send_preconnection_blob(&mut framed, vm_id, mode).await?;
 
     debug!("TLS upgrade");
 

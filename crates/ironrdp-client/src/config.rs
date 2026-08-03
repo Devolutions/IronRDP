@@ -10,6 +10,8 @@ use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_propertyset::PropertySet;
 use url::Url;
 
+pub use ironrdp_vmconnect::Mode as VmConnectMode;
+
 // ── Extension registry ────────────────────────────────────────────────────────
 
 type StaticChannelFn = Arc<dyn Fn(&mut ironrdp_connector::ClientConnector, &PropertySet) + Send + Sync>;
@@ -63,6 +65,7 @@ pub struct Config {
 
     /// Hyper-V VM ID when connecting to a VM console (port [`ironrdp_vmconnect::PORT`]).
     pub(crate) vm_id: Option<String>,
+    pub(crate) vmconnect_mode: VmConnectMode,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
@@ -120,6 +123,11 @@ impl Config {
         self.vm_id.as_deref()
     }
 
+    /// Hyper-V console mode for a vmconnect session, if any.
+    pub fn vmconnect_mode(&self) -> Option<VmConnectMode> {
+        self.vm_id.as_ref().map(|_| self.vmconnect_mode)
+    }
+
     /// Optional Kerberos/KDC proxy configuration.
     pub fn kerberos_config(&self) -> Option<&ironrdp_connector::credssp::KerberosConfig> {
         self.kerberos_config.as_ref()
@@ -165,6 +173,7 @@ impl fmt::Debug for Config {
             &self.certificate_validation_callback.as_ref().map(|_| "<configured>"),
         );
         s.field("vm_id", &self.vm_id);
+        s.field("vmconnect_mode", &self.vmconnect_mode);
         s.field("kerberos_config", &self.kerberos_config);
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
@@ -597,6 +606,7 @@ pub struct ConfigBuilder {
 
     transport: TransportKind,
     vm_id: Option<String>,
+    vmconnect_mode: VmConnectMode,
     rdcleanpath_token: Option<String>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     fake_events_interval: Option<Duration>,
@@ -991,6 +1001,14 @@ impl ConfigBuilder {
         self
     }
 
+    /// Connect to a Hyper-V VM console using the selected mode.
+    #[must_use]
+    pub fn with_vmconnect_mode(mut self, vm_id: impl Into<String>, mode: VmConnectMode) -> Self {
+        self.vm_id = Some(vm_id.into());
+        self.vmconnect_mode = mode;
+        self
+    }
+
     /// Set the RDCleanPath authentication token (only meaningful with an RDCleanPath transport).
     ///
     /// The token is a secret: like the gateway password, it is *not* mirrored into the PropertySet,
@@ -1374,6 +1392,7 @@ impl ConfigBuilder {
             certificate_validation,
             certificate_validation_callback: self.certificate_validation_callback,
             vm_id: self.vm_id,
+            vmconnect_mode: self.vmconnect_mode,
             kerberos_config,
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,

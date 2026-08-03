@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
-use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, Transport, TransportKind};
+use ironrdp_client::config::{
+    ClipboardType, ConfigBuilder, Destination, Transport, TransportKind, VmConnectMode,
+};
 use ironrdp_viewer::cli::parse_config_from;
 use uuid::Uuid;
 
@@ -87,6 +89,30 @@ fn no_credssp_cli_flag_overrides_rdp_enable_credssp_property() {
     );
 
     assert!(!config.connector().enable_credssp);
+}
+
+#[test]
+fn vmconnect_uses_enhanced_mode_by_default() {
+    let config = parse_config_from_rdp(
+        "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
+        &["--vmconnect", "efd1efab-c750-4262-b1bb-af0f7733bdd6"],
+    );
+
+    assert_eq!(config.vmconnect_mode(), Some(VmConnectMode::Enhanced));
+}
+
+#[test]
+fn vmconnect_basic_flag_selects_basic_mode() {
+    let config = parse_config_from_rdp(
+        "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
+        &[
+            "--vmconnect",
+            "efd1efab-c750-4262-b1bb-af0f7733bdd6",
+            "--vmconnect-basic",
+        ],
+    );
+
+    assert_eq!(config.vmconnect_mode(), Some(VmConnectMode::Basic));
 }
 
 #[test]

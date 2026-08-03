@@ -26,8 +26,17 @@ pub const PORT: u16 = 2179;
 // CredSSP runs before X.224, so HYBRID_EX cannot request an Early User Authorization Result yet.
 const PRE_X224_CREDSSP_PROTOCOL: SecurityProtocol = SecurityProtocol::HYBRID;
 
-/// PCB V2 payload always requests the enhanced RDP console stack.
 const ENHANCED_MODE_SUFFIX: &str = ";EnhancedMode=1";
+
+/// Hyper-V VM console connection mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// Use the guest's Enhanced Session RDP backend.
+    #[default]
+    Enhanced,
+    /// Use the Hyper-V synthetic video and input console.
+    Basic,
+}
 
 /// Receipt that the Preconnection Blob was written. Required by [`connect_front`].
 #[derive(Debug)]
@@ -35,9 +44,12 @@ const ENHANCED_MODE_SUFFIX: &str = ";EnhancedMode=1";
 #[non_exhaustive]
 pub struct PcbSent;
 
-/// Encode PCB V2 as `{vm_id};EnhancedMode=1`.
-pub fn encode_preconnection_blob(vm_id: &str) -> ConnectorResult<Vec<u8>> {
-    let payload = format!("{vm_id}{ENHANCED_MODE_SUFFIX}");
+/// Encode a PCB V2 for the selected console mode.
+pub fn encode_preconnection_blob(vm_id: &str, mode: Mode) -> ConnectorResult<Vec<u8>> {
+    let payload = match mode {
+        Mode::Enhanced => format!("{vm_id}{ENHANCED_MODE_SUFFIX}"),
+        Mode::Basic => vm_id.to_owned(),
+    };
     encode_vec(&PreconnectionBlob {
         id: 0,
         version: PcbVersion::V2,
@@ -47,12 +59,12 @@ pub fn encode_preconnection_blob(vm_id: &str) -> ConnectorResult<Vec<u8>> {
 }
 
 /// Write the Preconnection Blob on a pre-TLS stream. Returns a [`PcbSent`] for [`connect_front`].
-#[instrument(skip_all, fields(%vm_id))]
-pub async fn send_preconnection_blob<S>(framed: &mut Framed<S>, vm_id: &str) -> ConnectorResult<PcbSent>
+#[instrument(skip_all, fields(%vm_id, ?mode))]
+pub async fn send_preconnection_blob<S>(framed: &mut Framed<S>, vm_id: &str, mode: Mode) -> ConnectorResult<PcbSent>
 where
     S: FramedWrite,
 {
-    let bytes = encode_preconnection_blob(vm_id)?;
+    let bytes = encode_preconnection_blob(vm_id, mode)?;
 
     debug!(length = bytes.len(), "Send Preconnection Blob");
     framed
@@ -129,19 +141,21 @@ mod tests {
     use ironrdp_pdu::nego::SecurityProtocol;
     use ironrdp_pdu::pcb::PreconnectionBlob;
 
-    use super::{encode_preconnection_blob, ensure_selected_credssp};
+    use super::{Mode, encode_preconnection_blob, ensure_selected_credssp};
 
     #[test]
-    fn pcb_payload_always_requests_enhanced_mode() {
+    fn pcb_payload_selects_console_mode() {
         const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
 
-        let bytes = encode_preconnection_blob(VM_ID).expect("encode");
-        let pcb: PreconnectionBlob = decode(&bytes).expect("decode");
+        for (mode, expected) in [
+            (Mode::Enhanced, format!("{VM_ID};EnhancedMode=1")),
+            (Mode::Basic, VM_ID.to_owned()),
+        ] {
+            let bytes = encode_preconnection_blob(VM_ID, mode).expect("encode");
+            let pcb: PreconnectionBlob = decode(&bytes).expect("decode");
 
-        assert_eq!(
-            pcb.v2_payload.as_deref(),
-            Some("efd1efab-c750-4262-b1bb-af0f7733bdd6;EnhancedMode=1")
-        );
+            assert_eq!(pcb.v2_payload.as_deref(), Some(expected.as_str()));
+        }
     }
 
     #[test]
