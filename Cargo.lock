@@ -3173,6 +3173,7 @@ dependencies = [
  "ironrdp-rdcleanpath",
  "ironrdp-rdpfile",
  "ironrdp-svc",
+ "ironrdp-vmconnect",
  "js-sys",
  "png",
  "resize",

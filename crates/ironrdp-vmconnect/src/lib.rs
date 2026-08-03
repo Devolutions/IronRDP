@@ -4,12 +4,16 @@
 //! Hyper-V VM console front-end: **PCB → TLS → CredSSP → X.224**.
 //!
 //! ```text
-//! stream → send_preconnection_blob → PcbSent → TLS (caller) → connect_front → Upgraded
+//! Direct:      stream → send_preconnection_blob → PcbSent → TLS → connect_front → Upgraded
+//! RDCleanPath: encode_preconnection_blob → proxy (PCB+TLS) → pcb_sent_via_proxy → connect_front
 //! ```
 //!
 //! The post-CredSSP X.224 request advertises only `HYBRID`. `HYBRID_EX` is unnecessary for
 //! VMConnect and would imply an Early User Authorization Result exchange that this ordering does
 //! not perform.
+//!
+//! [`PcbSent`] is a receipt (same idea as [`ironrdp_async::ShouldUpgrade`]). CredSSP I/O is
+//! [`ironrdp_async::perform_credssp`].
 
 use core::time::Duration;
 
@@ -53,13 +57,19 @@ pub enum Mode {
     Basic,
 }
 
-/// Receipt that the Preconnection Blob was written. Required by [`connect_front`].
+/// Receipt that the Preconnection Blob reached the server path (direct write or RDCleanPath v2 proxy).
+///
+/// [`connect_front`] consumes it by value. Construct via [`send_preconnection_blob`] or
+/// [`pcb_sent_via_proxy`].
 #[derive(Debug)]
 #[must_use = "pass this to connect_front after TLS"]
 #[non_exhaustive]
 pub struct PcbSent;
 
-/// Encode a PCB V2 for the selected console mode.
+/// Encode a PCB V2 for the selected console mode without writing it.
+///
+/// Use when the bytes ride inside another envelope (RDCleanPath v2 `server_preconnection_pdu`).
+/// For a plain socket, prefer [`send_preconnection_blob`].
 pub fn encode_preconnection_blob(vm_id: &str, mode: Mode) -> ConnectorResult<Vec<u8>> {
     let payload = match mode {
         Mode::Enhanced => format!("{vm_id}{ENHANCED_MODE_SUFFIX}"),
@@ -90,6 +100,12 @@ where
         .map_err(|e| custom_err!("write preconnection blob", e))?;
 
     Ok(PcbSent)
+}
+
+/// Receipt after an RDCleanPath v2 proxy has written the PCB and established TLS to the host.
+#[must_use]
+pub fn pcb_sent_via_proxy() -> PcbSent {
+    PcbSent
 }
 
 /// After TLS: CredSSP, then X.224. Consumes [`PcbSent`]; returns [`Upgraded`] for

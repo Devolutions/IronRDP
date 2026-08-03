@@ -362,10 +362,7 @@ impl RDCleanPathPdu {
         })
     }
 
-    pub fn new_v2_response(
-        server_addr: String,
-        x509_chain: impl IntoIterator<Item = Vec<u8>>,
-    ) -> der::Result<Self> {
+    pub fn new_v2_response(server_addr: String, x509_chain: impl IntoIterator<Item = Vec<u8>>) -> der::Result<Self> {
         Ok(Self {
             version: VERSION_2,
             server_cert_chain: Some(
@@ -637,7 +634,7 @@ impl From<RDCleanPath> for RDCleanPathPdu {
                     error: Some(error),
                     ..Default::default()
                 },
-            }
+            },
         }
     }
 }
