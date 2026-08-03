@@ -113,6 +113,7 @@ fn request_variants_round_trip() {
             last: true,
         },
         Request::NowDiagnostics,
+        Request::Shutdown,
     ];
 
     for request in &requests {

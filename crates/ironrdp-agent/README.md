@@ -1,15 +1,24 @@
 # IronRDP Agent
 
-A CLI-driven, daemon-backed RDP client designed for programmatic (e.g. LLM) consumption.
+A CLI-driven RDP client designed for programmatic (e.g. LLM) consumption.
 
-The single `ironrdp-agent` binary bundles two roles:
+The single `ironrdp-agent` binary provides a short-lived CLI and can drive either of two
+long-lived local RPC backends:
 
 - **Daemon** (`ironrdp-agent daemon-start`): a long-lived, foreground process that owns the
   [`ironrdp-client`] engine and one RDP session. It stays alive across many CLI invocations and
   serves requests over a local IPC transport (a Unix domain socket on Unix, a named pipe on
   Windows).
-- **CLI** (`ironrdp-agent <op> …`): a short-lived invocation that opens the IPC endpoint, sends a
-  single request, prints the response, and exits.
+- **Viewer** (`ironrdp-viewer --rpc`): the same RPC contract hosted by the visible
+  [`ironrdp-viewer`]. The viewer window and CLI share one RDP session, framebuffer, and input path.
+
+For normal CLI operations, the selected backend is started automatically when it is not already
+running and remains available for later invocations. The daemon is the default; select the visible
+viewer with `--backend viewer`. `--endpoint` overrides the selected backend's endpoint. Use
+`stop` to terminate the selected backend.
+
+The CLI (`ironrdp-agent <op> …`) is a short-lived invocation that opens the selected endpoint, sends
+a single request, prints the response, and exits.
 
 Run `ironrdp-agent --help-agent` for a structured, machine-readable description of every operation.
 
@@ -30,6 +39,13 @@ strictly-typed `Request::Connect`. Runtime operations (mouse, keyboard, status, 
 strictly-typed messages. `Request::Screenshot` returns the most recent frame as PNG bytes (with the
 mouse cursor composited in — the agent enables software pointer rendering), which the CLI writes to
 disk.
+
+Both backends implement the complete current RPC contract, including connection lifecycle, status,
+property and log inspection, screenshots, mouse/keyboard/resize input, and NOW operations. The
+default endpoints are `ironrdp-agent-<uid>.sock` (Unix) or `\\.\pipe\ironrdp-agent-<user>` (Windows)
+for the daemon, and the corresponding `ironrdp-viewer-<uid>.sock` or
+`\\.\pipe\ironrdp-viewer-<user>` endpoint for the viewer. A manually started viewer uses
+`ironrdp-viewer --rpc --rpc-endpoint <PATH-OR-PIPE>` when a non-default endpoint is required.
 
 ## Secrets
 

@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use anyhow::Context as _;
 use ironrdp::client::rdp::{RdpInputEvent, RdpInputSender, RdpOutputEvent};
+use ironrdp_agent::daemon::Daemon;
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use smallvec::SmallVec;
 use tracing::{debug, error, info, trace, warn};
@@ -19,8 +20,25 @@ use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
 
 type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
 
+/// Events delivered from the RDP engine and the viewer-hosted RPC server to the window.
+pub enum ViewerEvent {
+    Output(RdpOutputEvent),
+    Frame {
+        buffer: Vec<u32>,
+        width: NonZeroU32,
+        height: NonZeroU32,
+    },
+    Shutdown,
+}
+
+/// Where local window input is sent.
+pub enum InputTarget {
+    Direct(RdpInputSender),
+    Rpc(Arc<Daemon>),
+}
+
 pub struct App {
-    input_event_sender: RdpInputSender,
+    input_target: InputTarget,
     context: softbuffer::Context<DisplayHandle<'static>>,
     initial_window_size: PhysicalSize<u32>,
     window: Option<WindowSurface>,
@@ -33,8 +51,20 @@ pub struct App {
 
 impl App {
     pub fn new(
-        event_loop: &EventLoop<RdpOutputEvent>,
+        event_loop: &EventLoop<ViewerEvent>,
         input_event_sender: &RdpInputSender,
+        initial_window_size: PhysicalSize<u32>,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_input_target(
+            event_loop,
+            InputTarget::Direct(input_event_sender.clone()),
+            initial_window_size,
+        )
+    }
+
+    pub fn new_with_input_target(
+        event_loop: &EventLoop<ViewerEvent>,
+        input_target: InputTarget,
         initial_window_size: PhysicalSize<u32>,
     ) -> anyhow::Result<Self> {
         // SAFETY: We drop the softbuffer context right before the event loop is stopped, thus making this safe.
@@ -49,7 +79,7 @@ impl App {
 
         let input_database = ironrdp::input::Database::new();
         Ok(Self {
-            input_event_sender: input_event_sender.clone(),
+            input_target,
             context,
             initial_window_size,
             window: None,
@@ -74,25 +104,49 @@ impl App {
         let width = u16::try_from(size.width).expect("reasonable width");
         let height = u16::try_from(size.height).expect("reasonable height");
 
-        match self.input_event_sender.try_send(RdpInputEvent::Resize {
-            width,
-            height,
-            scale_factor,
-            // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
-            // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
-            // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
-            // See also: https://github.com/rust-windowing/winit/issues/826
-            physical_size: None,
-        }) {
-            Ok(()) => self.last_size = None,
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                self.resize_timeout = Some(Instant::now() + Duration::from_millis(10));
-            }
-            Err(_) => {
-                self.last_size = None;
-                warn!("Unable to enqueue resize event because the RDP session is closed");
+        match &self.input_target {
+            InputTarget::Direct(input_event_sender) => match input_event_sender.try_send(RdpInputEvent::Resize {
+                width,
+                height,
+                scale_factor,
+                // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
+                // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
+                // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
+                // See also: https://github.com/rust-windowing/winit/issues/826
+                physical_size: None,
+            }) {
+                Ok(()) => self.last_size = None,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    self.resize_timeout = Some(Instant::now() + Duration::from_millis(10));
+                }
+                Err(_) => {
+                    self.last_size = None;
+                    warn!("Unable to enqueue resize event because the RDP session is closed");
+                }
+            },
+            InputTarget::Rpc(daemon) => {
+                if daemon.resize(width, height).is_ok() {
+                    self.last_size = None;
+                } else {
+                    self.last_size = None;
+                    warn!("Unable to resize the RPC-backed RDP session");
+                }
             }
         }
+    }
+
+    fn update_frame(&mut self, buffer: Vec<u32>, width: NonZeroU32, height: NonZeroU32) {
+        let Some((window, surface)) = self.window.as_mut() else {
+            return;
+        };
+        trace!(?width, ?height, "Received RPC-backed image");
+        self.buffer_size = (
+            u16::try_from(width.get()).expect("frame width fits in u16"),
+            u16::try_from(height.get()).expect("frame height fits in u16"),
+        );
+        self.buffer = buffer;
+        surface.resize(width, height).expect("surface resize");
+        window.request_redraw();
     }
 
     fn draw(&mut self) {
@@ -108,7 +162,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler<RdpOutputEvent> for App {
+impl ApplicationHandler<ViewerEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(timeout) = self.resize_timeout {
             if let Some(timeout) = timeout.checked_duration_since(Instant::now()) {
@@ -157,9 +211,12 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 self.last_size = Some(size);
                 self.resize_timeout = Some(Instant::now() + Duration::from_secs(1));
             }
-            WindowEvent::CloseRequested => {
-                self.input_event_sender.request_graceful_close();
-            }
+            WindowEvent::CloseRequested => match &self.input_target {
+                InputTarget::Direct(input_event_sender) => input_event_sender.request_graceful_close(),
+                InputTarget::Rpc(daemon) => {
+                    let _ = daemon.disconnect();
+                }
+            },
             WindowEvent::DroppedFile(_) => {
                 // TODO(#110): File upload
             }
@@ -198,7 +255,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                     };
 
                     apply_and_send_fast_path_events(
-                        &self.input_event_sender,
+                        &self.input_target,
                         &mut self.input_database,
                         core::iter::once(operation),
                     );
@@ -235,7 +292,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 add_operation(modifiers.state().alt_key(), ALT_LEFT);
                 add_operation(modifiers.state().super_key(), LOGO_LEFT);
 
-                apply_and_send_fast_path_events(&self.input_event_sender, &mut self.input_database, operations);
+                apply_and_send_fast_path_events(&self.input_target, &mut self.input_database, operations);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let win_size = window.inner_size();
@@ -246,7 +303,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 let operation = ironrdp::input::Operation::MouseMove(ironrdp::input::MousePosition { x, y });
 
                 apply_and_send_fast_path_events(
-                    &self.input_event_sender,
+                    &self.input_target,
                     &mut self.input_database,
                     core::iter::once(operation),
                 );
@@ -299,7 +356,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                     }
                 };
 
-                apply_and_send_fast_path_events(&self.input_event_sender, &mut self.input_database, operations);
+                apply_and_send_fast_path_events(&self.input_target, &mut self.input_database, operations);
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let mouse_button = match button {
@@ -323,7 +380,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 };
 
                 apply_and_send_fast_path_events(
-                    &self.input_event_sender,
+                    &self.input_target,
                     &mut self.input_database,
                     core::iter::once(operation),
                 );
@@ -355,7 +412,16 @@ impl ApplicationHandler<RdpOutputEvent> for App {
         }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: RdpOutputEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ViewerEvent) {
+        let ViewerEvent::Output(event) = event else {
+            match event {
+                ViewerEvent::Frame { buffer, width, height } => self.update_frame(buffer, width, height),
+                ViewerEvent::Shutdown => event_loop.exit(),
+                ViewerEvent::Output(_) => unreachable!(),
+            }
+            return;
+        };
+
         let Some((window, surface)) = self.window.as_mut() else {
             return;
         };
@@ -435,15 +501,24 @@ impl ApplicationHandler<RdpOutputEvent> for App {
 }
 
 fn apply_and_send_fast_path_events(
-    input_event_sender: &RdpInputSender,
+    input_target: &InputTarget,
     input_database: &mut ironrdp::input::Database,
     operations: impl IntoIterator<Item = ironrdp::input::Operation>,
 ) {
-    let Ok(permit) = input_event_sender.try_reserve() else {
-        return;
-    };
-    let input_events = input_database.apply(operations);
-    if !input_events.is_empty() {
-        permit.send(RdpInputEvent::FastPath(input_events));
+    match input_target {
+        InputTarget::Direct(input_event_sender) => {
+            let Ok(permit) = input_event_sender.try_reserve() else {
+                return;
+            };
+            let input_events = input_database.apply(operations);
+            if !input_events.is_empty() {
+                permit.send(RdpInputEvent::FastPath(input_events));
+            }
+        }
+        InputTarget::Rpc(daemon) => {
+            for operation in operations {
+                let _ = daemon.input(operation);
+            }
+        }
     }
 }

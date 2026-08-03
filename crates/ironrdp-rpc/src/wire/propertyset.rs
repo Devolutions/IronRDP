@@ -1,4 +1,4 @@
-//! Binary wire codec for [`PropertySet`].
+//! Binary wire codec for [`PropertySet`] used by the local RPC protocol.
 //!
 //! This mirrors the shape of [`ironrdp_rdpfile::load`]/[`ironrdp_rdpfile::write`] but is binary and
 //! cursor-based so it composes with [`ironrdp_core`]'s `Encode`/`DecodeOwned` traits.

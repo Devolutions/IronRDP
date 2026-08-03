@@ -2451,11 +2451,11 @@ dependencies = [
  "clap",
  "ironrdp-cfg",
  "ironrdp-client",
- "ironrdp-core 0.2.1",
  "ironrdp-input",
  "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
+ "ironrdp-rpc",
  "ironrdp-tls",
  "libc",
  "now-client",
@@ -2467,7 +2467,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "whoami",
- "windows",
 ]
 
 [[package]]
@@ -2897,6 +2896,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ironrdp-core 0.2.1",
+ "ironrdp-input",
+ "ironrdp-pdu",
+ "ironrdp-propertyset",
+ "libc",
+ "tokio",
+ "tracing",
+ "whoami",
+ "windows",
+]
+
+[[package]]
 name = "ironrdp-server"
 version = "0.13.0"
 dependencies = [
@@ -3070,6 +3085,7 @@ dependencies = [
  "clap",
  "inquire",
  "ironrdp",
+ "ironrdp-agent",
  "ironrdp-cfg",
  "ironrdp-propertyset",
  "ironrdp-rdpfile",

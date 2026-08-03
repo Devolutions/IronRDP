@@ -1,4 +1,4 @@
-//! Binary wire primitives shared by the IPC message codecs.
+//! Binary wire primitives shared by the local RPC message codecs.
 //!
 //! Everything is little-endian and cursor-based so it composes directly with [`ironrdp_core`]'s
 //! `Encode`/`Decode`/`DecodeOwned` traits. Strings (and string-shaped payloads) are length-delimited

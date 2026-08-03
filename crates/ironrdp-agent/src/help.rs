@@ -3,20 +3,25 @@
 /// Structured guide printed by `ironrdp-agent --help-agent`.
 pub(crate) const AGENT_GUIDE: &str = r#"# ironrdp-agent
 
-A CLI-driven, daemon-backed RDP client. One binary plays two roles:
+A CLI-driven RDP client. One binary provides a short-lived CLI for two local RPC backends:
 
 - DAEMON: `ironrdp-agent daemon-start` runs a long-lived foreground process that owns the RDP
   engine and one RDP session. Background it yourself (e.g. `ironrdp-agent daemon-start &`).
-- CLI: every other subcommand opens the local IPC endpoint, sends one request, prints the
-  response, and exits.
+- VIEWER: `ironrdp-viewer --rpc` runs the same RPC server alongside the visible viewer window.
+- CLI: every operation opens the selected local IPC endpoint, sends one request, prints the response,
+  and exits.
 
-The daemon stays alive across CLI invocations. One daemon serves one RDP session.
+The daemon is the default backend. Normal operations automatically start the selected backend when
+it is not already running, then reuse it across CLI invocations. One backend serves one RDP session.
 
 ## Endpoint
 
-Unix: `$XDG_RUNTIME_DIR/ironrdp-agent-<uid>.sock` (falls back to `/tmp/ironrdp-agent-<uid>.sock`).
-Windows: `\\.\pipe\ironrdp-agent-<user>`.
-Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
+`--backend daemon` (the default): Unix `$XDG_RUNTIME_DIR/ironrdp-agent-<uid>.sock` (falls back to
+`/tmp/ironrdp-agent-<uid>.sock`); Windows `\\.\pipe\ironrdp-agent-<user>`.
+`--backend viewer`: Unix `$XDG_RUNTIME_DIR/ironrdp-viewer-<uid>.sock` (falls back to
+`/tmp/ironrdp-viewer-<uid>.sock`); Windows `\\.\pipe\ironrdp-viewer-<user>`.
+Override with `--endpoint <PATH-OR-PIPE>` on any agent subcommand. A manually started viewer accepts
+`--rpc-endpoint <PATH-OR-PIPE>`.
 
 ## Lifecycle
 
@@ -30,6 +35,14 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  file line (TYPE is `i` for integer or `s` for string), e.g.
                                  `--prop ironrdp_autologon:i:1`. Check `status` to see whether
                                  credentials are already loaded before supplying any yourself.
+- `--backend viewer <operation>`
+                                  Drive a visible `ironrdp-viewer` RPC host instead of the daemon.
+                                  The viewer is started automatically for normal operations and
+                                  remains available for later commands; the GUI and CLI share one
+                                  RDP session.
+- `stop`
+                                  Stop the selected long-lived backend after replying. This does
+                                  not start a backend that is not already running.
 - `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. Precedence (low to high): .rdp file -> `--prop`

@@ -24,6 +24,4 @@ pub(crate) mod logbuf;
 // so they can be unit tested from the workspace test suite.
 #[cfg(feature = "internal")]
 #[doc(hidden)]
-pub mod wire;
-#[cfg(not(feature = "internal"))]
-pub(crate) mod wire;
+pub use ironrdp_rpc::wire;

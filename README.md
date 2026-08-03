@@ -99,7 +99,8 @@ rendering.
 ironrdp-viewer <HOSTNAME> --username <USERNAME> --password <PASSWORD>
 ```
 
-Omitted credentials are prompted for interactively. You can also load a `.rdp` file:
+Omitted connection values are prompted for interactively. You can also provide them through
+`RDP_HOSTNAME`, `RDP_USERNAME`, and `RDP_PASSWORD`, or load a `.rdp` file:
 
 ```shell
 ironrdp-viewer --rdp-file ./my-server.rdp
@@ -111,14 +112,22 @@ logging, and the full option list.
 
 ### `ironrdp-agent`
 
-`ironrdp-agent` combines a long-lived RDP daemon with short-lived CLI invocations, which makes it
-convenient for scripts and LLM-driven automation:
+`ironrdp-agent` combines a long-lived local RPC backend with short-lived CLI invocations, which makes
+it convenient for scripts and LLM-driven automation. The daemon backend remains the default; use
+`--backend viewer` to drive a visible `ironrdp-viewer` window instead:
 
 ```shell
 ironrdp-agent daemon-start --overlay ./credentials.rdp        # in one terminal
 ironrdp-agent connect --server <HOSTNAME> --username <USER>   # in another
 ironrdp-agent screenshot ./desktop.png
+ironrdp-agent --backend viewer connect --server <HOSTNAME> --username <USER> --password <PASS>
 ```
+
+Normal operations automatically start and reuse the selected backend. The daemon and viewer use
+distinct per-user endpoints by default; `--endpoint` overrides either one. Run
+`ironrdp-agent --backend viewer stop` (or `stop` with the default backend) to terminate the selected
+long-lived process. The viewer backend implements the same status, input, screenshot, and NOW
+operations while rendering the shared session in its GUI.
 
 `connect` fails with `missing required fields` unless credentials are available, so either preload
 them into the daemon with `daemon-start --overlay <FILE>` — which keeps secrets away from the IPC

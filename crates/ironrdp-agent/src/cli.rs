@@ -15,9 +15,12 @@ use core::fmt;
 use core::str::FromStr;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::process::{Command as ProcessCommand, Stdio};
+use std::time::Instant;
 
 use anyhow::Context as _;
 use clap::{Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
+use core::time::Duration as StdDuration;
 use ironrdp_cfg::{PropertySetExt as _, TargetAddr};
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
@@ -40,6 +43,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     endpoint: Option<String>,
 
+    /// Select the local RPC backend. The daemon remains the default.
+    #[arg(long, global = true, value_enum, default_value_t = Backend::Daemon)]
+    backend: Backend,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -52,6 +59,8 @@ enum Command {
     Connect(ConnectArgs),
     /// Tear down the current RDP session (the daemon keeps running).
     Disconnect,
+    /// Stop the selected long-lived RPC backend.
+    Stop,
     /// Report the current session status.
     Status,
     /// Query the live session properties.
@@ -246,6 +255,12 @@ enum OutputFormat {
 const MAX_JSON_STREAM_EVENTS: usize = 8 * 1024;
 const MAX_JSON_STREAM_OUTPUT: usize = 2 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Backend {
+    Daemon,
+    Viewer,
+}
+
 /// A daemon-provided error that must be rendered according to the selected NOW output format.
 #[derive(Debug)]
 struct NowRequestError(AgentError);
@@ -414,7 +429,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let endpoint = endpoint_from_arg(cli.endpoint);
+    let endpoint = endpoint_from_arg(cli.endpoint, cli.backend);
 
     let Some(command) = cli.command else {
         let _ = Cli::command().print_help();
@@ -422,11 +437,19 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return Ok(());
     };
 
+    if !matches!(&command, Command::DaemonStart(_) | Command::Stop) {
+        ensure_backend(&endpoint, cli.backend).await?;
+    }
+
     let request = match command {
         Command::DaemonStart(args) => {
+            if cli.backend != Backend::Daemon {
+                anyhow::bail!("daemon-start requires --backend daemon");
+            }
             let overlay = load_overlay(args.overlay.as_deref(), args.prop)?;
             return crate::daemon::run(endpoint, overlay).await;
         }
+        Command::Stop => Request::Shutdown,
         Command::Now(args) => {
             let format = args.format;
             let exit_code = match run_now(&endpoint, args).await {
@@ -1119,19 +1142,72 @@ fn write_screenshot(width: u16, height: u16, png: &[u8], path: &Path) -> anyhow:
     Ok(())
 }
 
-#[cfg(unix)]
-fn endpoint_from_arg(arg: Option<String>) -> Endpoint {
+fn endpoint_from_arg(arg: Option<String>, backend: Backend) -> Endpoint {
     match arg {
-        Some(value) => Endpoint(PathBuf::from(value)),
-        None => transport::default_endpoint(),
+        Some(value) => transport::endpoint_from_string(value),
+        None => match backend {
+            Backend::Daemon => transport::default_endpoint_named("ironrdp-agent"),
+            Backend::Viewer => transport::default_endpoint_named("ironrdp-viewer"),
+        },
     }
 }
 
-#[cfg(windows)]
-fn endpoint_from_arg(arg: Option<String>) -> Endpoint {
-    match arg {
-        Some(value) => Endpoint(value),
-        None => transport::default_endpoint(),
+async fn ensure_backend(endpoint: &Endpoint, backend: Backend) -> anyhow::Result<()> {
+    if transport::send_request(endpoint, &Request::Status).await.is_ok() {
+        return Ok(());
+    }
+
+    let mut child = spawn_backend(endpoint, backend)?;
+    let deadline = Instant::now() + StdDuration::from_secs(10);
+
+    loop {
+        if transport::send_request(endpoint, &Request::Status).await.is_ok() {
+            return Ok(());
+        }
+
+        if let Some(status) = child.try_wait().context("check RPC backend process")? {
+            anyhow::bail!(
+                "{} backend exited before becoming ready with status {status}",
+                backend_name(backend)
+            );
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for {} backend at {endpoint}", backend_name(backend));
+        }
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+    }
+}
+
+fn spawn_backend(endpoint: &Endpoint, backend: Backend) -> anyhow::Result<std::process::Child> {
+    let endpoint = endpoint.to_string();
+    let mut command = match backend {
+        Backend::Daemon => {
+            let executable = std::env::current_exe().context("resolve ironrdp-agent executable")?;
+            let mut command = ProcessCommand::new(executable);
+            command.args(["--endpoint", &endpoint, "daemon-start"]);
+            command
+        }
+        Backend::Viewer => {
+            let mut executable = std::env::current_exe().context("resolve ironrdp-agent executable")?;
+            executable.set_file_name(format!("ironrdp-viewer{}", std::env::consts::EXE_SUFFIX));
+            let mut command = ProcessCommand::new(executable);
+            command.args(["--rpc", "--rpc-endpoint", &endpoint]);
+            command
+        }
+    };
+
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("start {} backend", backend_name(backend)))
+}
+
+fn backend_name(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Daemon => "daemon",
+        Backend::Viewer => "viewer",
     }
 }
 
@@ -1203,7 +1279,21 @@ fn property_description(key: &str) -> Option<&'static str> {
 mod tests {
     use clap::Parser as _;
 
-    use super::{Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution};
+    use super::{Backend, Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution, endpoint_from_arg};
+
+    #[test]
+    fn backend_endpoint_selection_is_distinct_and_overridable() {
+        let daemon = endpoint_from_arg(None, Backend::Daemon).to_string();
+        let viewer = endpoint_from_arg(None, Backend::Viewer).to_string();
+
+        assert_ne!(daemon, viewer);
+        assert!(daemon.contains("ironrdp-agent"));
+        assert!(viewer.contains("ironrdp-viewer"));
+        assert_eq!(
+            endpoint_from_arg(Some("custom-rpc-endpoint".to_owned()), Backend::Viewer).to_string(),
+            "custom-rpc-endpoint"
+        );
+    }
 
     #[test]
     fn shell_is_not_an_agent_command() {

@@ -69,8 +69,25 @@ fn daemon_reports_no_active_session() {
         assert!(stdout.contains("state: NoSession"), "{stdout}");
     });
 
-    let _ = daemon.kill();
-    let _ = daemon.wait();
+    let stop = agent(&endpoint, &["stop"]);
+    if result.is_ok() {
+        assert!(stop.status.success(), "{}", String::from_utf8_lossy(&stop.stderr));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if daemon.try_wait().expect("check daemon exit").is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    if daemon.try_wait().expect("check daemon exit").is_none() {
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        if result.is_ok() {
+            panic!("daemon did not stop");
+        }
+    }
 
     if let Err(error) = result {
         std::panic::resume_unwind(error);

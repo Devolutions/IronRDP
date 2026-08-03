@@ -1,0 +1,42 @@
+[package]
+name = "ironrdp-rpc"
+version = "0.1.0"
+readme = "README.md"
+description = "Shared local RPC protocol and transport for IronRDP clients"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] }
+ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
+ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
+tokio = { version = "1", features = ["net", "io-util"] }
+anyhow = "1"
+tracing = "0.1"
+
+[features]
+internal = []
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+whoami = "2.1"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

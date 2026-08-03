@@ -33,32 +33,21 @@ use crate::transport::{Endpoint, Listener, read_message, write_message};
 /// (overlay wins), so any setting — credentials in particular — can be preconfigured without the
 /// caller ever supplying it. Pass an empty set when no overlay is desired.
 pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()> {
-    // On Unix a leftover socket file would make `bind` fail; clear it if no daemon is alive.
-    #[cfg(unix)]
-    if endpoint.0.exists() {
-        if crate::transport::connect(&endpoint).await.is_ok() {
-            anyhow::bail!("a daemon already appears to be running at {endpoint}");
-        }
-        // No daemon answered, so the path is a stale socket we can reclaim. Guard against deleting
-        // an unrelated regular file (or following a symlink) when `--endpoint` points elsewhere:
-        // inspect the path itself and only remove genuine sockets.
-        use std::os::unix::fs::FileTypeExt as _;
-        let metadata =
-            std::fs::symlink_metadata(&endpoint.0).with_context(|| format!("stat IPC endpoint {endpoint}"))?;
-        if !metadata.file_type().is_socket() {
-            anyhow::bail!("refusing to remove {endpoint}: path exists and is not a socket");
-        }
-        std::fs::remove_file(&endpoint.0).with_context(|| format!("remove stale socket {endpoint}"))?;
-    }
-
     init_daemon_logging();
-    let logs = LogBuffer::new();
+    let daemon = Arc::new(Daemon::with_overlay(overlay));
+    serve(endpoint, daemon).await
+}
 
+/// Serves `daemon` on `endpoint` until a [`Request::Shutdown`] is received.
+///
+/// The caller owns the daemon so it can share the same session state with another frontend, such
+/// as the viewer window.
+pub async fn serve(endpoint: Endpoint, daemon: Arc<Daemon>) -> anyhow::Result<()> {
+    crate::transport::prepare_endpoint(&endpoint).await?;
     let mut listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
-    let daemon = Arc::new(Daemon::new(logs, overlay));
-
     info!(%endpoint, "Daemon listening");
 
+    let mut shutdown = daemon.shutdown_receiver();
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -70,8 +59,14 @@ pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()>
                     }
                 });
             }
-            _ = tokio::signal::ctrl_c() => {
+            result = tokio::signal::ctrl_c() => {
+                result.context("wait for shutdown signal")?;
                 info!("Received shutdown signal, stopping");
+                break;
+            }
+            result = shutdown.changed() => {
+                result.context("wait for RPC shutdown")?;
+                info!("Received RPC shutdown request, stopping");
                 break;
             }
         }
@@ -80,11 +75,13 @@ pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()>
     Ok(())
 }
 
-async fn handle_connection<S>(mut stream: S, daemon: &Daemon) -> anyhow::Result<()>
+/// Handles one framed RPC request and writes its response, including streamed NOW events.
+pub async fn handle_connection<S>(mut stream: S, daemon: &Daemon) -> anyhow::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let request: Request = read_message(&mut stream).await?;
+    let shutdown = matches!(&request, Request::Shutdown);
     trace!(?request, "Handling IPC request");
     let response = daemon.handle(request).await;
     trace!(ok = response.response().is_ok(), "Replying to IPC request");
@@ -100,10 +97,13 @@ where
             }
         }
     }
+    if shutdown {
+        daemon.signal_shutdown();
+    }
     Ok(())
 }
 
-enum DaemonResponse {
+pub enum DaemonResponse {
     Single(Response),
     Stream(Response, OperationAttachment),
 }
@@ -117,7 +117,7 @@ impl DaemonResponse {
 }
 
 /// The daemon's mutable state: the (single) current session, plus the shared log buffer.
-struct Daemon {
+pub struct Daemon {
     state: Mutex<Option<Session>>,
     /// Serializes synchronous RDP session construction so concurrent IPC `connect` requests cannot
     /// both observe an empty session slot before either one installs its session.
@@ -129,6 +129,9 @@ struct Daemon {
     /// Whether [`Self::overlay`] contributes any secret (password/token) value, i.e. whether the
     /// caller can omit credentials of its own.
     credentials_loaded: bool,
+    /// Notifies an optional GUI frontend whenever retained live state changes.
+    notification: Option<mpsc::UnboundedSender<()>>,
+    shutdown: tokio::sync::watch::Sender<()>,
 }
 
 /// Per-session state owned by the request handler.
@@ -154,10 +157,11 @@ struct Live {
 
 /// A decoded frame retained for screenshots. `pixels` are `0x00RRGGBB` (`to_be_bytes()` yields
 /// `[0, R, G, B]`), row-major, `width * height` entries, with the remote cursor blended in.
-struct Frame {
-    width: u16,
-    height: u16,
-    pixels: Vec<u32>,
+#[derive(Clone)]
+pub struct Frame {
+    pub width: u16,
+    pub height: u16,
+    pub pixels: Vec<u32>,
 }
 
 impl Daemon {
@@ -165,22 +169,56 @@ impl Daemon {
         // Credentials are considered "loaded" when the overlay provides at least one secret value,
         // which is what frees the caller from supplying a password.
         let credentials_loaded = overlay.iter().any(|(key, _)| ironrdp_cfg::is_secret_key(key));
+        let (shutdown, _) = tokio::sync::watch::channel(());
         Self {
             state: Mutex::new(None),
             connect_lock: Mutex::new(()),
             logs,
             overlay,
             credentials_loaded,
+            notification: None,
+            shutdown,
         }
     }
 
-    async fn handle(&self, request: Request) -> DaemonResponse {
+    /// Creates a daemon with no preconfigured connection properties.
+    pub fn with_overlay(overlay: PropertySet) -> Self {
+        Self::new(LogBuffer::new(), overlay)
+    }
+
+    /// Adds a notification channel for frontends that render the retained session state.
+    #[must_use]
+    pub fn with_notification(mut self, notification: mpsc::UnboundedSender<()>) -> Self {
+        self.notification = Some(notification);
+        self
+    }
+
+    /// Returns a receiver that is notified when the server should stop.
+    pub fn shutdown_receiver(&self) -> tokio::sync::watch::Receiver<()> {
+        self.shutdown.subscribe()
+    }
+
+    /// Returns the latest cursor-composited framebuffer, if one is available.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon or session state mutex is poisoned.
+    pub fn current_frame(&self) -> Option<Frame> {
+        let guard = self.state.lock().expect("daemon state poisoned");
+        guard
+            .as_ref()
+            .and_then(|session| session.live.lock().expect("session live state poisoned").frame.clone())
+    }
+
+    /// Handles one typed RPC request.
+    pub async fn handle(&self, request: Request) -> DaemonResponse {
         match request {
             Request::Connect {
                 properties,
                 log_directive,
             } => DaemonResponse::Single(self.connect(properties, log_directive)),
             Request::Disconnect => DaemonResponse::Single(self.disconnect()),
+            Request::Shutdown => DaemonResponse::Single(Self::shutdown()),
             Request::Status => DaemonResponse::Single(self.status()),
             Request::QueryProps { filter } => DaemonResponse::Single(self.query_props(filter.as_ref())),
             Request::QueryLogs { substring, last } => {
@@ -370,7 +408,7 @@ impl Daemon {
             );
         }
 
-        tokio::spawn(consume_output(output_rx, Arc::clone(&live)));
+        tokio::spawn(consume_output(output_rx, Arc::clone(&live), self.notification.clone()));
 
         info!(%destination, "Started RDP session");
 
@@ -386,7 +424,12 @@ impl Daemon {
         Response::ok()
     }
 
-    fn disconnect(&self) -> Response {
+    /// Requests the active RDP session to disconnect.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon or session state mutex is poisoned.
+    pub fn disconnect(&self) -> Response {
         let mut guard = self.state.lock().expect("daemon state poisoned");
         match guard.as_mut() {
             None => {
@@ -512,7 +555,12 @@ impl Daemon {
         }
     }
 
-    fn resize(&self, width: u16, height: u16) -> Response {
+    /// Sends a resize event to the active RDP session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    pub fn resize(&self, width: u16, height: u16) -> Response {
         if width == 0 || height == 0 {
             return Response::typed_error(
                 crate::ipc::AgentErrorCategory::InvalidRequest,
@@ -538,7 +586,12 @@ impl Daemon {
         }
     }
 
-    fn input(&self, operation: Operation) -> Response {
+    /// Sends an input operation to the active RDP session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    pub fn input(&self, operation: Operation) -> Response {
         let mut guard = self.state.lock().expect("daemon state poisoned");
         let Some(session) = guard.as_mut() else {
             return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
@@ -558,6 +611,14 @@ impl Daemon {
         }
         permit.send(RdpInputEvent::FastPath(events));
         Response::ok()
+    }
+
+    fn shutdown() -> Response {
+        Response::ok()
+    }
+
+    fn signal_shutdown(&self) {
+        let _ = self.shutdown.send(());
     }
 
     fn operations(&self) -> Result<OperationManager, Response> {
@@ -697,7 +758,11 @@ impl Daemon {
 }
 
 /// Consumes the bounded output-event stream, keeping the live state current.
-async fn consume_output(mut output_rx: mpsc::Receiver<RdpOutputEvent>, live: Arc<Mutex<Live>>) {
+async fn consume_output(
+    mut output_rx: mpsc::Receiver<RdpOutputEvent>,
+    live: Arc<Mutex<Live>>,
+    notification: Option<mpsc::UnboundedSender<()>>,
+) {
     while let Some(event) = output_rx.recv().await {
         let mut guard = live.lock().expect("session live state poisoned");
         let previous = guard.state;
@@ -745,6 +810,10 @@ async fn consume_output(mut output_rx: mpsc::Receiver<RdpOutputEvent>, live: Arc
             // above; the remaining pointer events (default/hidden) carry no live state we track.
             _ => {}
         }
+        drop(guard);
+        if let Some(notification) = &notification {
+            let _ = notification.send(());
+        }
     }
 
     // The engine thread has ended (channel closed). Resolve any transient state so a subsequent
@@ -755,6 +824,10 @@ async fn consume_output(mut output_rx: mpsc::Receiver<RdpOutputEvent>, live: Arc
         ConnState::Connecting | ConnState::Connected | ConnState::Disconnecting
     ) {
         guard.state = ConnState::Disconnected;
+    }
+    drop(guard);
+    if let Some(notification) = &notification {
+        let _ = notification.send(());
     }
 }
 
@@ -830,5 +903,39 @@ fn current_platform() -> MajorPlatformType {
         whoami::Platform::Ios => MajorPlatformType::IOS,
         whoami::Platform::Android => MajorPlatformType::ANDROID,
         _ => MajorPlatformType::UNSPECIFIED,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{Daemon, handle_connection};
+    use crate::ipc::{Payload, Request, Response};
+    use crate::transport::{read_message, write_message};
+    use ironrdp_propertyset::PropertySet;
+
+    #[tokio::test]
+    async fn shutdown_reply_is_written_before_server_signal() {
+        let daemon = Arc::new(Daemon::with_overlay(PropertySet::new()));
+        let mut shutdown = daemon.shutdown_receiver();
+        let (mut client, server) = tokio::io::duplex(4096);
+        let handler_daemon = Arc::clone(&daemon);
+        let handler = tokio::spawn(async move { handle_connection(server, handler_daemon.as_ref()).await });
+
+        write_message(&mut client, &Request::Shutdown)
+            .await
+            .expect("write shutdown request");
+        let response: Response = read_message(&mut client).await.expect("read shutdown response");
+        assert_eq!(response, Response::Ok(Payload::Empty));
+
+        tokio::time::timeout(core::time::Duration::from_secs(1), shutdown.changed())
+            .await
+            .expect("shutdown signal timeout")
+            .expect("shutdown signal");
+        handler
+            .await
+            .expect("join shutdown handler")
+            .expect("handle shutdown request");
     }
 }

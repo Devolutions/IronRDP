@@ -1,8 +1,14 @@
 #![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
 
+use core::num::NonZeroU32;
+use std::sync::Arc;
+
 use anyhow::Context as _;
 use ironrdp::client::rdp::{RdpClient, RdpOutputEvent};
-use ironrdp_viewer::app::App;
+use ironrdp_agent::daemon::Daemon;
+use ironrdp_agent::transport;
+use ironrdp_propertyset::PropertySet;
+use ironrdp_viewer::app::{App, InputTarget, ViewerEvent};
 use ironrdp_viewer::cli::ViewerConfig;
 use tokio::runtime;
 use tokio::sync::mpsc;
@@ -15,6 +21,10 @@ fn main() -> anyhow::Result<()> {
 
     setup_logging(cli.log_file()).context("unable to initialize logging")?;
 
+    if cli.rpc_mode() {
+        return run_rpc(cli).context("RPC server");
+    }
+
     let dump_rdp = cli.dump_rdp().map(ToOwned::to_owned);
     let config = cli.into_config().context("configuration")?;
 
@@ -26,7 +36,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     debug!("Initialize App");
-    let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
+    let event_loop = EventLoop::<ViewerEvent>::with_user_event().build()?;
     let event_loop_proxy = event_loop.create_proxy();
     let (output_event_sender, mut output_event_receiver) = mpsc::channel::<RdpOutputEvent>(64);
     let initial_window_size = PhysicalSize::new(
@@ -51,7 +61,7 @@ fn main() -> anyhow::Result<()> {
     // `tokio::sync::mpsc` channel. Bridging onto the GUI event loop is the binary's job.
     rt.spawn(async move {
         while let Some(event) = output_event_receiver.recv().await {
-            if event_loop_proxy.send_event(event).is_err() {
+            if event_loop_proxy.send_event(ViewerEvent::Output(event)).is_err() {
                 // The event loop is gone; nothing left to forward.
                 break;
             }
@@ -66,6 +76,75 @@ fn main() -> anyhow::Result<()> {
     debug!("Run App");
     event_loop.run_app(&mut app)?;
 
+    Ok(())
+}
+
+fn run_rpc(cli: ViewerConfig) -> anyhow::Result<()> {
+    let endpoint = cli
+        .rpc_endpoint()
+        .map(|value| transport::endpoint_from_string(value.to_owned()))
+        .unwrap_or_else(|| transport::default_endpoint_named("ironrdp-viewer"));
+
+    debug!(%endpoint, "Initialize viewer RPC server");
+    let event_loop = EventLoop::<ViewerEvent>::with_user_event().build()?;
+    let event_loop_proxy = event_loop.create_proxy();
+    let (notification_sender, mut notification_receiver) = mpsc::unbounded_channel();
+    let daemon = Arc::new(Daemon::with_overlay(PropertySet::new()).with_notification(notification_sender));
+
+    let runtime = runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("unable to create tokio runtime")?;
+
+    let frame_daemon = Arc::clone(&daemon);
+    let frame_proxy = event_loop_proxy.clone();
+    runtime.spawn(async move {
+        while notification_receiver.recv().await.is_some() {
+            let Some(frame) = frame_daemon.current_frame() else {
+                continue;
+            };
+            let (Some(width), Some(height)) = (
+                NonZeroU32::new(u32::from(frame.width)),
+                NonZeroU32::new(u32::from(frame.height)),
+            ) else {
+                continue;
+            };
+            if frame_proxy
+                .send_event(ViewerEvent::Frame {
+                    buffer: frame.pixels,
+                    width,
+                    height,
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    let server_daemon = Arc::clone(&daemon);
+    let server_proxy = event_loop_proxy;
+    std::thread::Builder::new()
+        .name("ironrdp-viewer-rpc".to_owned())
+        .spawn(move || {
+            let server_runtime = runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("unable to create viewer RPC runtime");
+            server_runtime.block_on(async move {
+                if let Err(error) = ironrdp_agent::daemon::serve(endpoint, server_daemon).await {
+                    tracing::error!(error = format!("{error:#}"), "Viewer RPC server stopped with an error");
+                }
+                let _ = server_proxy.send_event(ViewerEvent::Shutdown);
+            });
+        })
+        .context("unable to spawn viewer RPC server")?;
+
+    let mut app = App::new_with_input_target(&event_loop, InputTarget::Rpc(daemon), PhysicalSize::new(1024, 768))
+        .context("unable to initialize App")?;
+
+    debug!("Run viewer RPC App");
+    event_loop.run_app(&mut app)?;
     Ok(())
 }
 
