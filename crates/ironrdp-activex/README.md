@@ -110,7 +110,8 @@ For an explicitly authorized unattended test, set `RDP_AUTOLOGON=1` together wit
 CredUI, provides these values directly to the in-memory session, and enables the RDP `INFO_AUTOLOGON`
 flag. Missing credentials fail closed without opening CredUI. This opt-in must not be used for
 interactive or production connections, and the values must never be written to `.rdp` files, traces,
-arguments, or persistent credential storage.
+arguments, or persistent credential storage. After the IronRDP worker starts successfully, the
+bridge reports preflight success so the native shell remains available for ActiveX RPC operations.
 
 For authorized automation tests, a credential-free `.rdp` file may provide the destination while
 the launcher supplies that same destination in `RDP_HOSTNAME`. When the native connection form is

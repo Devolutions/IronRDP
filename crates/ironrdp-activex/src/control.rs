@@ -1219,18 +1219,24 @@ struct NativeMstscCredentialBridge {
     control: *const Control_Impl,
 }
 
+enum NativeMstscStartProgramIntercept {
+    NotHandled,
+    Handled,
+    AutoLogonStarted,
+}
+
 impl NativeMstscCredentialBridge {
-    fn intercept_start_program(&self) -> bool {
+    fn intercept_start_program(&self) -> NativeMstscStartProgramIntercept {
         // SAFETY: `_owner` owns an IUnknown reference to the containing Control, whose immutable
         // implementation address remains valid until this bridge is dropped.
         let Some(control) = (unsafe { self.control.as_ref() }) else {
-            return false;
+            return NativeMstscStartProgramIntercept::NotHandled;
         };
         if !should_intercept_native_mstsc_start_program(
             native_mstsc_credential_bridge_enabled(),
             control.state.get() == ConnectionState::Disconnected,
         ) {
-            return false;
+            return NativeMstscStartProgramIntercept::NotHandled;
         }
 
         // Do not let the legacy empty-property fallback show a second prompt after this observed
@@ -1246,7 +1252,11 @@ impl NativeMstscCredentialBridge {
         if !started {
             trace_host_call("NativeMstscCredentialBridge::StartProgramNotStarted");
         }
-        true
+        if started && native_mstsc_autologon_enabled() {
+            NativeMstscStartProgramIntercept::AutoLogonStarted
+        } else {
+            NativeMstscStartProgramIntercept::Handled
+        }
     }
 }
 
@@ -2500,15 +2510,21 @@ unsafe extern "system" fn secured_put_start_program(this: *mut c_void, value: Bs
             "NativeMstscCredentialBridge::StartProgramBridgeUnavailable"
         });
     }
-    if object
-        .native_mstsc_credential_bridge
-        .as_ref()
-        .is_some_and(NativeMstscCredentialBridge::intercept_start_program)
-    {
-        // Native mstsc has been observed passing a preflight payload that is not a valid BSTR.
-        // The bridge uses this call solely as its explicit prompt trigger, so it must take
-        // ownership before deserializing that unrelated payload.
-        return E_INVALIDARG;
+    if let Some(bridge) = object.native_mstsc_credential_bridge.as_ref() {
+        match bridge.intercept_start_program() {
+            NativeMstscStartProgramIntercept::NotHandled => {}
+            NativeMstscStartProgramIntercept::Handled => {
+                // Native mstsc has been observed passing a preflight payload that is not a valid BSTR.
+                // The bridge uses this call solely as its explicit prompt trigger, so it must take
+                // ownership before deserializing that unrelated payload.
+                return E_INVALIDARG;
+            }
+            NativeMstscStartProgramIntercept::AutoLogonStarted => {
+                // The unattended bridge has already started IronRDP. Reporting success keeps the native
+                // shell alive long enough for its local RPC and NOW endpoints to become available.
+                return S_OK;
+            }
+        }
     }
 
     let value = match string_from_bstr(value) {
