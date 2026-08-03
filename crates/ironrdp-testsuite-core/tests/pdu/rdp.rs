@@ -123,6 +123,218 @@ fn from_header_only_buffer_rejects_rdp_pdu_client_font_list() {
     assert!(decode::<ironrdp_pdu::rdp::headers::ShareControlHeader>(&CLIENT_FONT_LIST_BUFFER[..18]).is_err());
 }
 
+fn data_pdu_declaring(total_length: u16, pdu_type: u8, payload_len: usize) -> Vec<u8> {
+    let mut encoded = vec![
+        0x00, 0x00, // totalLength
+        0x17, 0x00, // pduType (Data PDU) + protocolVersion
+        0xEA, 0x03, // pduSource
+        0xDD, 0xCC, 0xBB, 0xAA, // shareId
+        0x00, // pad1
+        0x04, // streamId (Medium)
+        0x00, 0x00,     // uncompressedLength
+        pdu_type, // pduType2
+        0x00,     // compressedType
+        0x00, 0x00, // compressedLength
+    ];
+    encoded[..2].copy_from_slice(&total_length.to_le_bytes());
+    encoded.resize(encoded.len() + payload_len, 0);
+    encoded
+}
+
+fn vrdp_pointer_pdu() -> Vec<u8> {
+    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute};
+
+    let xor_mask = [0x10, 0x20, 0x30, 0xFF].repeat(54 * 38);
+    let and_mask = vec![0x00; 8 * 38];
+    let pointer = PointerAttribute {
+        xor_bpp: 32,
+        color_pointer: ColorPointerAttribute {
+            cache_index: 0,
+            hot_spot: Point16 { x: 2, y: 3 },
+            width: 54,
+            height: 38,
+            xor_mask: &xor_mask,
+            and_mask: &and_mask,
+        },
+    };
+
+    let mut encoded = data_pdu_declaring(24, 0x1B, 0);
+    encoded.extend_from_slice(&[
+        0x08, 0x00, // messageType (TS_PTRMSGTYPE_POINTER)
+        0x00, 0x00, // pad2Octets
+    ]);
+    encoded.extend(encode_vec(&pointer).expect("encode complete pointer attribute"));
+    encoded
+}
+
+// VirtualBox's VRDP declares `totalLength` as 24 on a complete 8550-byte slow-path pointer update.
+// oracle: regression GlassHaven/Haven#422
+#[test]
+fn from_buffer_with_under_declared_total_length_parses_rdp_pdu_pointer() {
+    use ironrdp_core::ReadCursor;
+    use ironrdp_pdu::pointer::{Point16, PointerUpdateData};
+    use ironrdp_pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu};
+
+    let encoded = vrdp_pointer_pdu();
+    assert_eq!(encoded.len(), 8_550);
+
+    let decoded: ShareControlHeader =
+        decode(&encoded).expect("complete VRDP pointer update with under-declared totalLength");
+
+    let ShareControlPdu::Data(ShareDataHeader {
+        share_data_pdu: ShareDataPdu::Pointer(data),
+        ..
+    }) = decoded.share_control_pdu
+    else {
+        panic!("expected a Pointer Share Data PDU");
+    };
+    let mut cursor = ReadCursor::new(&data);
+    let pointer = ironrdp_pdu::slow_path::decode_slow_path_pointer(&mut cursor).expect("complete pointer payload");
+    assert!(matches!(
+        pointer,
+        PointerUpdateData::New(attr)
+            if attr.xor_bpp == 32
+                && attr.color_pointer.hot_spot == Point16 { x: 2, y: 3 }
+                && attr.color_pointer.width == 54
+                && attr.color_pointer.height == 38
+                && attr.color_pointer.xor_mask.len() == 8_208
+                && attr.color_pointer.and_mask.len() == 304
+    ));
+    assert!(cursor.is_empty());
+}
+
+// Color, New, and Large pointer attributes permit one trailing padding octet after `andMaskData`.
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.4.4
+#[test]
+fn from_buffer_with_optional_pad_and_under_declared_total_length_parses_rdp_pdu_pointer() {
+    use ironrdp_pdu::rdp::headers::ShareControlHeader;
+
+    let mut encoded = vrdp_pointer_pdu();
+    encoded.push(0x00);
+
+    decode::<ShareControlHeader>(&encoded).expect("one optional pointer padding octet is valid");
+}
+
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.4.4
+#[test]
+fn from_buffer_rejects_extra_trailing_bytes_on_under_declared_pointer() {
+    use ironrdp_pdu::rdp::headers::ShareControlHeader;
+
+    let mut encoded = vrdp_pointer_pdu();
+    encoded.extend_from_slice(&[0x00, 0x00]);
+
+    let error =
+        decode::<ShareControlHeader>(&encoded).expect_err("more than one trailing byte is not optional padding");
+
+    assert!(matches!(
+        error.kind(),
+        ironrdp_core::DecodeErrorKind::NotEnoughBytes {
+            received: 24,
+            expected: 8_552,
+            ..
+        }
+    ));
+}
+
+// oracle: spec MS-RDPBCGR §3.2.5.2
+#[rstest::rstest]
+#[case::zero(0)]
+#[case::header_only(18)]
+#[case::below_vrdp(23)]
+#[case::above_vrdp(25)]
+fn from_buffer_rejects_other_under_declared_total_lengths_for_pointer(#[case] total_length: u16) {
+    use ironrdp_pdu::rdp::headers::ShareControlHeader;
+
+    let mut encoded = vrdp_pointer_pdu();
+    encoded[..2].copy_from_slice(&total_length.to_le_bytes());
+
+    let error = decode::<ShareControlHeader>(&encoded).expect_err("unexpected under-declared pointer totalLength");
+
+    assert!(matches!(
+        error.kind(),
+        ironrdp_core::DecodeErrorKind::NotEnoughBytes {
+            received,
+            expected: 8_550,
+            ..
+        } if *received == usize::from(total_length)
+    ));
+}
+
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.4.4
+#[test]
+fn from_buffer_rejects_truncated_pointer_with_vrdp_total_length() {
+    use ironrdp_pdu::rdp::headers::ShareControlHeader;
+
+    let mut encoded = vrdp_pointer_pdu();
+    encoded.pop();
+
+    let error = decode::<ShareControlHeader>(&encoded).expect_err("truncated pointer mask must fail");
+
+    assert!(matches!(
+        error.kind(),
+        ironrdp_core::DecodeErrorKind::NotEnoughBytes {
+            received: 24,
+            expected: 8_549,
+            ..
+        }
+    ));
+}
+
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.4
+#[test]
+fn from_buffer_rejects_invalid_pointer_message_type_with_vrdp_total_length() {
+    use ironrdp_pdu::rdp::headers::ShareControlHeader;
+
+    let mut encoded = vrdp_pointer_pdu();
+    encoded[18..20].copy_from_slice(&0xFFFFu16.to_le_bytes());
+
+    decode::<ShareControlHeader>(&encoded).expect_err("unknown pointer messageType must fail");
+}
+
+// oracle: spec MS-RDPBCGR §3.2.5.2
+#[test]
+fn from_buffer_rejects_compressed_pointer_with_vrdp_total_length() {
+    use ironrdp_pdu::rdp::headers::{CompressionFlags, ShareControlHeader};
+
+    let mut encoded = vrdp_pointer_pdu();
+    encoded[15] = CompressionFlags::COMPRESSED.bits();
+
+    decode::<ShareControlHeader>(&encoded).expect_err("compressed pointer payload cannot be validated before decode");
+}
+
+// oracle: spec MS-RDPBCGR §3.2.5.2
+#[test]
+fn from_buffer_rejects_non_pointer_data_pdu_with_vrdp_total_length() {
+    use ironrdp_pdu::rdp::headers::ShareControlHeader;
+
+    let encoded = data_pdu_declaring(24, 0x22, 8);
+
+    decode::<ShareControlHeader>(&encoded).expect_err("Play Sound PDU must not use VRDP pointer exception");
+}
+
+// oracle: spec MS-RDPBCGR §2.2.8.1.1.1.1
+#[test]
+fn over_declared_total_length_consumes_trailing_padding() {
+    use ironrdp_core::{Decode as _, ReadCursor};
+    use ironrdp_pdu::rdp::headers::ShareControlHeader;
+
+    let with_padding = data_pdu_declaring(22, 0x25, 4);
+    let mut cursor = ReadCursor::new(&with_padding);
+
+    ShareControlHeader::decode(&mut cursor).expect("declared trailing padding is present");
+    assert!(cursor.is_empty(), "declared trailing padding must be consumed");
+}
+
+// oracle: spec MS-RDPBCGR §3.2.5.2
+#[test]
+fn over_declared_total_length_rejects_missing_padding() {
+    use ironrdp_pdu::rdp::headers::ShareControlHeader;
+
+    let missing_padding = data_pdu_declaring(22, 0x25, 0);
+
+    decode::<ShareControlHeader>(&missing_padding).expect_err("declared padding is missing from the buffer");
+}
+
 #[test]
 fn from_buffer_correctly_parses_rdp_pdu_server_monitor_layout() {
     let buf = MONITOR_LAYOUT_PDU_BUFFER.clone();

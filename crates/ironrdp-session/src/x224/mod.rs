@@ -325,7 +325,7 @@ impl Processor {
             }
 
             let total_length = usize::from(u16::from_le_bytes([data[offset], data[offset + 1]]));
-            if total_length == 0 || offset + total_length > data.len() {
+            if total_length == 0 || data.len() < offset + total_length {
                 if offset == 0 {
                     return self.process_io_channel(data_ctx, bulk_decompressor);
                 }
@@ -333,6 +333,16 @@ impl Processor {
                     "X224",
                     "invalid concatenated Share Control PDU length: {total_length}"
                 ));
+            }
+
+            // VirtualBox's VRDP sends complete slow-path pointer updates with an under-declared `totalLength`.
+            // Check for a single validated pointer update before splitting `data` as concatenated PDUs.
+            if offset == 0
+                && total_length < data.len()
+                && let Ok(IoChannelPdu::Data(ctx)) = ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx)
+                && matches!(ctx.pdu, ShareDataPdu::Pointer(_))
+            {
+                return Self::process_share_data(ctx, bulk_decompressor);
             }
 
             let part_ctx = SendDataIndicationCtx {

@@ -10,6 +10,7 @@ use num_traits::FromPrimitive as _;
 use crate::codecs::rfx::FrameAcknowledgePdu;
 use crate::input::InputEventPdu;
 use crate::mcs::SendDataIndicationCtx;
+use crate::pointer::PointerUpdateData;
 use crate::rdp::capability_sets::{ClientConfirmActive, ServerDemandActive};
 use crate::rdp::client_info;
 use crate::rdp::finalization_messages::{ControlPdu, FontPdu, MonitorLayoutPdu, SynchronizePdu};
@@ -21,6 +22,7 @@ use crate::rdp::server_redirection::{
 };
 use crate::rdp::session_info::SaveSessionInfoPdu;
 use crate::rdp::suppress_output::SuppressOutputPdu;
+use crate::slow_path;
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 pub const SHARE_DATA_HEADER_COMPRESSION_MASK: u8 = 0xF;
@@ -383,13 +385,48 @@ impl<'de> Decode<'de> for ShareControlHeader {
                     })
                 );
 
-            if total_length > header_length {
+            // VirtualBox's VRDP declares only the 24-byte pointer header on a complete slow-path
+            // Pointer Update PDU and omits the attribute body from `totalLength`.
+            // Accept that exact declaration only when the complete pointer payload decodes cleanly.
+            const VRDP_POINTER_DECLARED_LENGTH: usize = ShareControlHeader::FIXED_PART_SIZE
+                + ShareDataHeader::FIXED_PART_SIZE
+                + 2 /* messageType */
+                + 2 /* pad2Octets */
+                + 2 /* xorBpp */;
+            let is_vrdp_pointer_pdu = total_length == VRDP_POINTER_DECLARED_LENGTH
+                && matches!(
+                    &header.share_control_pdu,
+                    ShareControlPdu::Data(ShareDataHeader {
+                        share_data_pdu: ShareDataPdu::Pointer(data),
+                        ..
+                    }) if {
+                        let mut pointer_src = ReadCursor::new(data);
+                        slow_path::decode_slow_path_pointer(&mut pointer_src).is_ok_and(|pointer| {
+                            // Color, New, and Large pointer attributes allow one optional trailing
+                            // padding octet ([MS-RDPBCGR] 2.2.9.1.1.4.4, 2.2.9.1.1.4.5, 2.2.9.1.2.1.11).
+                            let has_optional_padding = pointer_src.len() == 1
+                                && matches!(
+                                    pointer,
+                                    PointerUpdateData::Color(_)
+                                        | PointerUpdateData::New(_)
+                                        | PointerUpdateData::Large(_)
+                                );
+                            pointer_src.is_empty() || has_optional_padding
+                        })
+                    }
+                );
+
+            if header_length < total_length {
                 // Over-declared: some Windows versions append padding past the inner unit.
                 // Unchanged, and still bounded by `ensure_size!`.
                 let padding = total_length - header_length;
                 ensure_size!(in: src, size: padding);
                 read_padding!(src, padding);
-            } else if total_length < header_length && !is_header_length_font_map && !is_zero_length_empty_output_pdu {
+            } else if total_length < header_length
+                && !is_header_length_font_map
+                && !is_vrdp_pointer_pdu
+                && !is_zero_length_empty_output_pdu
+            {
                 return Err(not_enough_bytes_err!(total_length, header_length));
             }
         }
@@ -1024,19 +1061,15 @@ mod tests {
         ));
     }
 
-    /// The under-declaration carve-out must not extend past the Server Font Map case.
-    ///
-    /// A `ShutdownDenied` PDU is header-only, so 18 bytes were read; declaring 17 is neither
-    /// self-consistent with the wire nor the VRDP Font Map, and MS-RDPBCGR 3.2.5.2 asks for it
-    /// to be rejected. Guards the exact example raised in review — "a header-only PDU declared
-    /// with 1–17 bytes" — which an earlier revision of this check accepted.
+    // A `ShutdownDenied` PDU is header-only, so 18 bytes were read.
+    // Declaring 17 is neither self-consistent with the wire nor a tolerated VRDP PDU.
+    // oracle: spec MS-RDPBCGR §3.2.5.2
     #[test]
     fn reject_under_declared_non_output_data_pdu() {
         let mut encoded = zero_length_empty_data_pdu(0x25);
         encoded[0] = 17;
 
-        let error = decode::<ShareControlHeader>(&encoded)
-            .expect_err("an under-declared length is only tolerated for a Server Font Map");
+        let error = decode::<ShareControlHeader>(&encoded).expect_err("under-declared ShutdownDenied is invalid");
 
         assert!(matches!(
             error.kind(),
