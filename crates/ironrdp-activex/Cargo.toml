@@ -1,6 +1,7 @@
 [package]
 name = "ironrdp-activex"
 version = "0.1.0"
+publish = false
 readme = "README.md"
 description = "Windows COM Automation server foundation for IronRDP"
 edition.workspace = true
