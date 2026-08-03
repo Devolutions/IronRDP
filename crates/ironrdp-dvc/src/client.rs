@@ -503,11 +503,11 @@ mod tests {
             "test"
         }
 
-        fn start(&mut self, _channel_id: u32) -> PduResult<Vec<crate::DvcMessage>> {
+        fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
             Ok(Vec::new())
         }
 
-        fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<crate::DvcMessage>> {
+        fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
             Ok(Vec::new())
         }
     }
