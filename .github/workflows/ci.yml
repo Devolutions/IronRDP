@@ -94,6 +94,10 @@ jobs:
       - name: Tests (run)
         run: cargo xtask check tests -v
 
+      - name: Build ActiveX host harness
+        if: matrix.os == 'windows'
+        run: dotnet build .\crates\ironrdp-activex\tests\ironrdp-axhost\IronRdpAxHost.csproj --configuration Release
+
       - name: Lints
         run: cargo xtask check lints -v
 

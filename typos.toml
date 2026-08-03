@@ -28,6 +28,10 @@ Imagesetter = "Imagesetter"
 # Windows Plug and Play field names use this abbreviation.
 Pn = "Pn"
 
+[default.extend-identifiers]
+# Windows TRACKMOUSEEVENT flag.
+TME_LEAVE = "TME_LEAVE"
+
 [default]
 extend-ignore-re = [
    # Ignore false-positives for auth tokens in the following file:
