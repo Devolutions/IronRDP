@@ -25,7 +25,7 @@ use crate::ipc::{
 use crate::logbuf::{self, LogBuffer};
 use crate::now::NowEndpoint;
 use crate::operations::{OperationAttachment, OperationManager};
-use crate::transport::{Endpoint, Listener, read_message, write_message};
+use crate::transport::{Endpoint, Listener, MAX_SCREENSHOT_PIXELS, read_message, write_message};
 
 /// Binds the IPC endpoint and serves requests until a shutdown signal is received.
 ///
@@ -106,6 +106,19 @@ where
 pub enum DaemonResponse {
     Single(Response),
     Stream(Response, OperationAttachment),
+}
+
+/// The reason a resize could not be queued for the active RDP session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeError {
+    /// The requested dimensions are invalid.
+    InvalidDimensions,
+    /// No RDP session is active.
+    NoSession,
+    /// The bounded RDP input channel is temporarily full.
+    Full,
+    /// The active RDP session has stopped accepting input.
+    Closed,
 }
 
 impl DaemonResponse {
@@ -534,6 +547,7 @@ impl Daemon {
         let Some(frame) = live.frame.as_ref() else {
             return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no frame available yet");
         };
+        let frame = downscale_frame(frame.clone(), MAX_SCREENSHOT_PIXELS);
         match encode_png(frame.width, frame.height, &frame.pixels) {
             Ok(png) => {
                 debug!(
@@ -561,15 +575,33 @@ impl Daemon {
     ///
     /// Panics if the daemon state mutex is poisoned.
     pub fn resize(&self, width: u16, height: u16) -> Response {
-        if width == 0 || height == 0 {
-            return Response::typed_error(
+        match self.try_resize(width, height) {
+            Ok(()) => Response::ok(),
+            Err(ResizeError::InvalidDimensions) => Response::typed_error(
                 crate::ipc::AgentErrorCategory::InvalidRequest,
                 "width and height must be non-zero",
-            );
+            ),
+            Err(ResizeError::NoSession | ResizeError::Closed) => Response::typed_error(
+                crate::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            ),
+            Err(ResizeError::Full) => Response::typed_error(
+                crate::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is full",
+            ),
+        }
+    }
+
+    /// Attempts to send a resize event without flattening temporary input-channel backpressure.
+    ///
+    /// Frontends that can retry a resize should call this rather than [`Self::resize`].
+    pub fn try_resize(&self, width: u16, height: u16) -> Result<(), ResizeError> {
+        if width == 0 || height == 0 {
+            return Err(ResizeError::InvalidDimensions);
         }
         let guard = self.state.lock().expect("daemon state poisoned");
         let Some(session) = guard.as_ref() else {
-            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+            return Err(ResizeError::NoSession);
         };
         match session.input_tx.try_send(RdpInputEvent::Resize {
             width,
@@ -578,11 +610,9 @@ impl Daemon {
             scale_factor: 100,
             physical_size: None,
         }) {
-            Ok(()) => Response::ok(),
-            Err(_) => Response::typed_error(
-                crate::ipc::AgentErrorCategory::Unavailable,
-                "session input channel is closed",
-            ),
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Err(ResizeError::Full),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(ResizeError::Closed),
         }
     }
 
@@ -852,6 +882,44 @@ fn encode_png(width: u16, height: u16, pixels: &[u32]) -> anyhow::Result<Vec<u8>
     Ok(png)
 }
 
+fn downscale_frame(frame: Frame, max_pixels: usize) -> Frame {
+    let source_width = usize::from(frame.width);
+    let source_height = usize::from(frame.height);
+    let source_pixels = source_width * source_height;
+    if source_pixels <= max_pixels {
+        return frame;
+    }
+
+    let mut lower = 1usize;
+    let mut upper = source_width;
+    while lower < upper {
+        let candidate = (lower + upper).div_ceil(2);
+        let candidate_height = (source_height * candidate / source_width).max(1);
+        if candidate * candidate_height <= max_pixels {
+            lower = candidate;
+        } else {
+            upper = candidate - 1;
+        }
+    }
+
+    let width = lower;
+    let height = (source_height * width / source_width).max(1);
+    let mut pixels = Vec::with_capacity(width * height);
+    for y in 0..height {
+        let source_y = y * source_height / height;
+        for x in 0..width {
+            let source_x = x * source_width / width;
+            pixels.push(frame.pixels[source_y * source_width + source_x]);
+        }
+    }
+
+    Frame {
+        width: u16::try_from(width).expect("scaled frame width fits source width"),
+        height: u16::try_from(height).expect("scaled frame height fits source height"),
+        pixels,
+    }
+}
+
 /// Installs the daemon's global tracing subscriber: a compact formatter to stderr, defaulting to
 /// `INFO` and tunable via `IRONRDP_LOG`.
 ///
@@ -910,7 +978,7 @@ fn current_platform() -> MajorPlatformType {
 mod tests {
     use std::sync::Arc;
 
-    use super::{Daemon, handle_connection};
+    use super::{Daemon, Frame, downscale_frame, handle_connection};
     use crate::ipc::{Payload, Request, Response};
     use crate::transport::{read_message, write_message};
     use ironrdp_propertyset::PropertySet;
@@ -937,5 +1005,19 @@ mod tests {
             .await
             .expect("join shutdown handler")
             .expect("handle shutdown request");
+    }
+
+    #[test]
+    fn downscale_frame_preserves_aspect_ratio_within_pixel_limit() {
+        let frame = Frame {
+            width: 4,
+            height: 2,
+            pixels: (0..8).collect(),
+        };
+
+        let scaled = downscale_frame(frame, 3);
+
+        assert_eq!((scaled.width, scaled.height), (3, 1));
+        assert_eq!(scaled.pixels, vec![0, 1, 2]);
     }
 }

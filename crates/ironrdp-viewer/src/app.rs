@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use anyhow::Context as _;
 use ironrdp::client::rdp::{RdpInputEvent, RdpInputSender, RdpOutputEvent};
-use ironrdp_agent::daemon::Daemon;
+use ironrdp_agent::daemon::{Daemon, ResizeError};
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use smallvec::SmallVec;
 use tracing::{debug, error, info, trace, warn};
@@ -124,14 +124,14 @@ impl App {
                     warn!("Unable to enqueue resize event because the RDP session is closed");
                 }
             },
-            InputTarget::Rpc(daemon) => {
-                if daemon.resize(width, height).is_ok() {
+            InputTarget::Rpc(daemon) => match daemon.try_resize(width, height) {
+                Ok(()) => self.last_size = None,
+                Err(ResizeError::Full) => self.resize_timeout = Some(Instant::now() + Duration::from_millis(10)),
+                Err(error) => {
                     self.last_size = None;
-                } else {
-                    self.last_size = None;
-                    warn!("Unable to resize the RPC-backed RDP session");
+                    warn!(?error, "Unable to resize the RPC-backed RDP session");
                 }
-            }
+            },
         }
     }
 
@@ -198,7 +198,7 @@ impl ApplicationHandler<ViewerEvent> for App {
         }
     }
 
-    fn window_event(&mut self, _event_loop: &ActiveEventLoop, window_id: winit::window::WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: winit::window::WindowId, event: WindowEvent) {
         let Some((window, _)) = self.window.as_mut() else {
             return;
         };
@@ -215,6 +215,7 @@ impl ApplicationHandler<ViewerEvent> for App {
                 InputTarget::Direct(input_event_sender) => input_event_sender.request_graceful_close(),
                 InputTarget::Rpc(daemon) => {
                     let _ = daemon.disconnect();
+                    event_loop.exit();
                 }
             },
             WindowEvent::DroppedFile(_) => {

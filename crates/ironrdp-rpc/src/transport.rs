@@ -16,7 +16,11 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use crate::ipc::{Request, Response};
 
 /// Upper bound on a single framed message, guarding against absurd length prefixes.
-const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
+pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
+
+/// Largest screenshot source frame that leaves enough room for the RPC envelope and an
+/// incompressible RGB PNG within [`MAX_MESSAGE_LEN`].
+pub const MAX_SCREENSHOT_PIXELS: usize = 4_000_000;
 
 /// Writes `message` to `stream`, length-delimited.
 pub async fn write_message<S, M>(stream: &mut S, message: &M) -> anyhow::Result<()>
@@ -25,6 +29,9 @@ where
     M: Encode,
 {
     let body = ironrdp_core::encode_vec(message).map_err(|e| anyhow::anyhow!("encode {}: {e}", message.name()))?;
+    if MAX_MESSAGE_LEN < body.len() {
+        bail!("message length {} exceeds the {MAX_MESSAGE_LEN}-byte limit", body.len());
+    }
     let len = u32::try_from(body.len()).context("message too large to frame")?;
     stream
         .write_all(&len.to_le_bytes())
@@ -50,6 +57,16 @@ where
     let mut body = vec![0u8; len];
     stream.read_exact(&mut body).await.context("read frame body")?;
     ironrdp_core::decode_owned(&body).map_err(|e| anyhow::anyhow!("decode: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_MESSAGE_LEN, MAX_SCREENSHOT_PIXELS};
+
+    #[test]
+    fn screenshot_pixel_limit_leaves_room_for_incompressible_rgb() {
+        assert!(MAX_SCREENSHOT_PIXELS * 3 < MAX_MESSAGE_LEN);
+    }
 }
 
 /// Opens the endpoint, sends one `request`, and returns the daemon's `Response`.

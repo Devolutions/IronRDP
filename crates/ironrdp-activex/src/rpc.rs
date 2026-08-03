@@ -17,7 +17,7 @@ use ironrdp_agent::ipc::{
 use ironrdp_agent::logbuf::{self, LogBuffer};
 use ironrdp_agent::now::NowEndpoint;
 use ironrdp_agent::operations::{OperationAttachment, OperationManager};
-use ironrdp_agent::transport::{self, Endpoint, Listener, read_message, write_message};
+use ironrdp_agent::transport::{self, Endpoint, Listener, MAX_SCREENSHOT_PIXELS, read_message, write_message};
 use ironrdp_input::Operation;
 use ironrdp_propertyset::{PropertySet, Value};
 use tokio::sync::{oneshot, watch};
@@ -26,9 +26,6 @@ use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 pub(crate) const WM_DISPATCH_RPC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x54;
 const COMMAND_QUEUE_CAPACITY: usize = 64;
-// A 16 MiB RPC frame also contains the message envelope and PNG stream. Keeping RGB source data
-// below 12 MiB leaves enough margin for a worst-case incompressible PNG.
-const MAX_SCREENSHOT_PIXELS: usize = 4_000_000;
 
 #[derive(Clone)]
 pub(crate) struct ActiveXRpc {

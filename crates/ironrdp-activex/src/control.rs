@@ -6118,7 +6118,7 @@ impl Control {
 
         {
             let mut settings = self.settings.borrow_mut();
-            settings.server = config.destination().to_string();
+            settings.server = config.destination().name().to_owned();
             settings.username = username.clone();
             settings.password = Some(password.clone());
             settings.domain = config.connector().domain.clone().unwrap_or_default();
@@ -6157,6 +6157,7 @@ impl Control {
             compatibility.ime_file_name = connector.ime_file_name.clone();
             compatibility.digital_product_id = connector.dig_product_id.clone();
             compatibility.autologon = Some(connector.autologon);
+            compatibility.rdp_port = Some(config.destination().port());
             compatibility.fake_events_interval_minutes = config
                 .fake_events_interval()
                 .map(|interval| u32::try_from(interval.as_secs() / 60).unwrap_or(u32::MAX));
@@ -6185,6 +6186,14 @@ impl Control {
         *self.rpc_properties.borrow_mut() = Some(config.properties().clone());
         *self.rpc_log_directive.borrow_mut() = log_directive;
         match self.start_connection() {
+            Ok(()) if self.state.get() == ConnectionState::Disconnected => {
+                self.rpc_properties.borrow_mut().take();
+                let _ = self.rpc_log_directive.borrow_mut().take();
+                ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                    "connection cancelled",
+                )
+            }
             Ok(()) => ironrdp_agent::ipc::Response::ok(),
             Err(error) => {
                 self.rpc_properties.borrow_mut().take();
