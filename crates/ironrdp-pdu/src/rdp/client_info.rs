@@ -300,13 +300,27 @@ impl ExtendedClientInfo {
 /// [2.2.4.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/2985e8e3-db10-4a92-9fd5-d5e742d2d0f2
 /// [2.2.1.11.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/05ada9e4-a468-494b-8694-eb806a0ecc89
 /// [`ServerAutoReconnect`]: crate::rdp::session_info::ServerAutoReconnect
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientAutoReconnect {
     /// Session identifier for reconnection, echoed from the server's cookie.
     pub logon_id: u32,
     /// Verifier derived from the server's auto-reconnect random.
     pub security_verifier: [u8; RECONNECT_SECURITY_VERIFIER_LEN],
+}
+
+impl fmt::Debug for ClientAutoReconnect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // NOTE: do not show secret (auto-reconnect security verifier)
+        //
+        // Under Enhanced RDP Security there is no client random, so [MS-RDPBCGR]
+        // 5.5 computes this verifier over 32 zero bytes. It is therefore constant
+        // for a given cookie, and replaying it is sufficient to resume the
+        // session: possession of the verifier alone is the credential.
+        f.debug_struct("ClientAutoReconnect")
+            .field("logon_id", &self.logon_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ClientAutoReconnect {
@@ -433,7 +447,7 @@ impl<'de> Decode<'de> for ClientAutoReconnect {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ExtendedClientOptionalInfo {
     timezone: Option<TimezoneInfo>,
@@ -442,6 +456,23 @@ pub struct ExtendedClientOptionalInfo {
     reconnect_cookie: Option<[u8; RECONNECT_COOKIE_LEN]>,
     auto_reconnect: Option<ClientAutoReconnect>,
     // other fields are read by RdpVersion::Ten+
+}
+
+impl fmt::Debug for ExtendedClientOptionalInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // NOTE: do not show secret (raw auto-reconnect cookie)
+        //
+        // `reconnect_cookie` is the wire form of `auto_reconnect` and carries the
+        // same security verifier in the clear, so redacting only the parsed field
+        // would leave the bytes readable here. `auto_reconnect` is safe to show
+        // because its own `Debug` elides the verifier.
+        f.debug_struct("ExtendedClientOptionalInfo")
+            .field("timezone", &self.timezone)
+            .field("session_id", &self.session_id)
+            .field("performance_flags", &self.performance_flags)
+            .field("auto_reconnect", &self.auto_reconnect)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ExtendedClientOptionalInfo {
@@ -606,6 +637,36 @@ mod tests {
         let mut invalid_version = reconnect_cookie();
         invalid_version[4..8].copy_from_slice(&2u32.to_le_bytes());
         assert!(ClientAutoReconnect::decode(&mut ReadCursor::new(&invalid_version)).is_err());
+    }
+
+    /// The security verifier must not reach logs, in either of its two forms.
+    ///
+    /// `ClientInfoPdu` is logged whole by the connector when it sends it, which
+    /// is why `Credentials` above hand-writes `Debug`. The verifier belongs in
+    /// the same category: 5.5 computes it over a constant client random under
+    /// Enhanced RDP Security, so replaying it resumes the session.
+    #[test]
+    fn security_verifier_is_redacted_from_debug_output() {
+        let cookie = reconnect_cookie();
+        let parsed = ClientAutoReconnect::decode(&mut ReadCursor::new(&cookie)).unwrap();
+        let optional_info = ExtendedClientOptionalInfo {
+            timezone: Some(TimezoneInfo::default()),
+            session_id: Some(0),
+            performance_flags: Some(PerformanceFlags::default()),
+            reconnect_cookie: Some(cookie),
+            auto_reconnect: Some(parsed.clone()),
+        };
+
+        // 0xA5 renders as `165` in the derived byte-slice output.
+        for (label, rendered) in [
+            ("ClientAutoReconnect", format!("{parsed:?}")),
+            ("ExtendedClientOptionalInfo", format!("{optional_info:?}")),
+        ] {
+            assert!(!rendered.contains("165"), "{label} leaked the verifier: {rendered}");
+        }
+
+        // The session identifier is not secret and stays visible for diagnosis.
+        assert!(format!("{parsed:?}").contains(&0x1234_5678u32.to_string()));
     }
 
     #[test]
