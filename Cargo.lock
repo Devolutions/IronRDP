@@ -2727,6 +2727,7 @@ dependencies = [
  "ironrdp-cliprdr-format",
  "ironrdp-core 0.2.1",
  "ironrdp-displaycontrol",
+ "ironrdp-dvc",
  "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-pdu",
