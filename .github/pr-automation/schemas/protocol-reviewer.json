@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "head_sha", "protocol_relevance", "relevance_reason", "protocols_consulted", "change_mappings", "potential_discrepancies", "required_or_valuable_tests", "uncertainty"],

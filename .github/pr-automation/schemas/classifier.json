@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Devolutions/IronRDP/pr-automation/classifier-v1",
   "type": "object",
   "additionalProperties": false,
