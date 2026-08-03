@@ -784,10 +784,10 @@ jobs:
           export GIT_CONFIG_GLOBAL=/dev/null
           # Validation must read the same corpus commit the review stage read, or a push to the
           # corpus between the two jobs would invalidate citations that were correct when made.
-          case "$OPENSPECS_SHA" in
-            [0-9a-f]??????????????????????????????????????) ;;
-            *) echo "protocol review did not report a corpus commit" >&2; exit 1 ;;
-          esac
+          if [[ ! "$OPENSPECS_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "protocol review did not report a corpus commit" >&2
+            exit 1
+          fi
           git -C "$RUNNER_TEMP" init openspecs
           git -C "$RUNNER_TEMP/openspecs" config --local core.hooksPath /dev/null
           git -C "$RUNNER_TEMP/openspecs" config --local core.sparseCheckout true
