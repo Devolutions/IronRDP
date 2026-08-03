@@ -260,6 +260,7 @@ jobs:
       CARGO_SEMVER_CHECKS_VERSION: "0.49.0"
       CARGO_SEMVER_CHECKS_SHA256: "72f6834d75d28a66e02c9fd6a230ce901bb30eee6067b85867a97445df040e4a"
       CARGO_SEMVER_CHECKS_FEATURES: "core,pdu,cliprdr,connector,acceptor,session,graphics,input,server,svc,dvc,rdpdr,rdpsnd,displaycontrol,echo,mstsgu,client,rustls,client-all,qoi,qoiz"
+      CARGO_SEMVER_CHECKS_DIR: /tmp/ironrdp-cargo-semver-checks-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - id: fetch
         shell: bash
@@ -278,61 +279,57 @@ jobs:
           git checkout --detach origin/pull-request-head
 
       - id: install
-        if: always() && steps.fetch.outcome == 'success'
-        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get -y install libasound2-dev
-          mkdir -p "$HOME/.local/bin"
+          install -d -m 700 "$CARGO_SEMVER_CHECKS_DIR"
           curl --fail --location \
             "https://github.com/obi1kenobi/cargo-semver-checks/releases/download/v${CARGO_SEMVER_CHECKS_VERSION}/cargo-semver-checks-x86_64-unknown-linux-gnu.tar.gz" \
             --output /tmp/cargo-semver-checks.tar.gz
           echo "$CARGO_SEMVER_CHECKS_SHA256  /tmp/cargo-semver-checks.tar.gz" | sha256sum --check --strict
-          tar -xzf /tmp/cargo-semver-checks.tar.gz -C "$HOME/.local/bin" cargo-semver-checks
+          tar -xzf /tmp/cargo-semver-checks.tar.gz -C "$CARGO_SEMVER_CHECKS_DIR" cargo-semver-checks
+          sudo chown -R nobody:nogroup "$CARGO_SEMVER_CHECKS_DIR"
+          sudo chmod 700 "$CARGO_SEMVER_CHECKS_DIR/cargo-semver-checks"
 
       - id: semver
-        if: always()
         shell: bash
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
-          FETCH_OUTCOME: ${{ steps.fetch.outcome }}
-          INSTALL_OUTCOME: ${{ steps.install.outcome }}
         run: |
-          set +e
-          status=unavailable
-          if [ "$FETCH_OUTCOME" = success ] && [ "$INSTALL_OUTCOME" = success ]; then
-            semver_home="$RUNNER_TEMP/semver-home"
-            semver_cargo="$RUNNER_TEMP/semver-cargo"
-            semver_target="$RUNNER_TEMP/semver-target"
-            semver_bin="$HOME/.local/bin/cargo-semver-checks"
-            install -d -m 700 "$semver_home" "$semver_cargo" "$semver_target"
-            chmod -R a+rX .
-            sudo chown -R nobody:nogroup . "$semver_home" "$semver_cargo" "$semver_target"
+          set -euo pipefail
+          semver_home="$RUNNER_TEMP/semver-home"
+          semver_cargo="$RUNNER_TEMP/semver-cargo"
+          semver_target="$RUNNER_TEMP/semver-target"
+          semver_bin="$CARGO_SEMVER_CHECKS_DIR/cargo-semver-checks"
+          install -d -m 700 "$semver_home" "$semver_cargo" "$semver_target"
+          chmod -R a+rX .
+          sudo chown -R nobody:nogroup . "$semver_home" "$semver_cargo" "$semver_target"
 
-            # Build scripts and proc macros run as nobody, which cannot read the runner command files.
-            export PATH="$HOME/.local/bin:$PATH"
-            sudo -u nobody env -i \
-              HOME="$semver_home" \
-              CARGO_HOME="$semver_cargo" \
-              CARGO_TARGET_DIR="$semver_target" \
-              RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
-              PATH="$PATH" \
-              "$semver_bin" \
-              --package ironrdp \
-              --only-explicit-features \
-              --features "$CARGO_SEMVER_CHECKS_FEATURES" \
-              --baseline-rev "$BASE_SHA"
-            case "$?" in
-              0) status=not-suspected ;;
-              100) status=suspected ;;
-            esac
-          fi
+          # Build scripts and proc macros run as nobody, which cannot read the runner command files.
+          set +e
+          sudo -u nobody env -i \
+            HOME="$semver_home" \
+            CARGO_HOME="$semver_cargo" \
+            CARGO_TARGET_DIR="$semver_target" \
+            RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+            PATH="$PATH" \
+            "$semver_bin" \
+            --package ironrdp \
+            --only-explicit-features \
+            --features "$CARGO_SEMVER_CHECKS_FEATURES" \
+            --baseline-rev "$BASE_SHA"
+          status=$?
+          set -e
+          case "$status" in
+            0) status=not-suspected ;;
+            100) status=suspected ;;
+            *) exit "$status" ;;
+          esac
           echo "result={\"head_sha\":\"$HEAD_SHA\",\"status\":\"$status\"}" >> "$GITHUB_OUTPUT"
           echo "::notice title=PR automation semver decision::head_sha=$HEAD_SHA status=$status"
-          test "$status" != unavailable || echo "::warning::cargo-semver-checks was unavailable"
 
   sspi-diff:
     name: Detect SSPI changes
