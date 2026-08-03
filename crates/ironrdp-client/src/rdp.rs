@@ -493,7 +493,6 @@ impl RdpClient {
                 &mut self.close_receiver,
                 &mut self.graceful_close_receiver,
                 self.config.fake_events_interval,
-                self.config.use_bottom_up_rdp6_bitmap_order,
             )
             .await
             {
@@ -1064,7 +1063,6 @@ async fn active_session(
     close_receiver: &mut watch::Receiver<bool>,
     graceful_close_receiver: &mut watch::Receiver<bool>,
     fake_events_interval: Option<Duration>,
-    use_bottom_up_rdp6_bitmap_order: bool,
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let desktop_size = connection_result.desktop_size;
@@ -1086,9 +1084,6 @@ async fn active_session(
         pointer_software_rendering: connection_result.pointer_software_rendering,
     }
     .build();
-    if use_bottom_up_rdp6_bitmap_order {
-        active_stage.use_bottom_up_rdp6_bitmap_order();
-    }
 
     // Timer interval for driving clipboard lock timeouts.
     let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));

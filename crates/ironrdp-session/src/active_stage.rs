@@ -39,7 +39,6 @@ pub struct ActiveStage {
     /// Shared server-to-client compression history across all output transports.
     bulk_decompressor: Option<BulkCompressor>,
     enable_server_pointer: bool,
-    use_bottom_up_rdp6_bitmap_order: bool,
 }
 
 /// Builder for [`ActiveStage`].
@@ -95,7 +94,6 @@ impl ActiveStageBuilder {
             fast_path_processor,
             bulk_decompressor: new_bulk_decompressor(compression_type),
             enable_server_pointer,
-            use_bottom_up_rdp6_bitmap_order: false,
         }
     }
 }
@@ -234,10 +232,7 @@ impl ActiveStage {
     ///
     /// Prefer [`ActiveStage::reactivate`] for a Deactivation-Reactivation Sequence: it also
     /// updates the share_id and the server-pointer setting, which a bare replacement does not.
-    pub fn set_fastpath_processor(&mut self, mut processor: fast_path::Processor) {
-        if self.use_bottom_up_rdp6_bitmap_order {
-            processor.use_bottom_up_rdp6_bitmap_order();
-        }
+    pub fn set_fastpath_processor(&mut self, processor: fast_path::Processor) {
         self.fast_path_processor = processor;
     }
 
@@ -251,12 +246,6 @@ impl ActiveStage {
 
     pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
         self.enable_server_pointer = enable_server_pointer;
-    }
-
-    /// Uses the bottom-up RDP6 bitmap scanline order.
-    pub fn use_bottom_up_rdp6_bitmap_order(&mut self) {
-        self.use_bottom_up_rdp6_bitmap_order = true;
-        self.fast_path_processor.use_bottom_up_rdp6_bitmap_order();
     }
 
     /// Rebuilds the fast-path processor for a [Deactivation-Reactivation Sequence].
@@ -273,7 +262,7 @@ impl ActiveStage {
         enable_server_pointer: bool,
         pointer_software_rendering: bool,
     ) {
-        let mut fast_path_processor = fast_path::ProcessorBuilder {
+        self.fast_path_processor = fast_path::ProcessorBuilder {
             io_channel_id,
             user_channel_id,
             share_id,
@@ -281,10 +270,6 @@ impl ActiveStage {
             pointer_software_rendering,
         }
         .build();
-        if self.use_bottom_up_rdp6_bitmap_order {
-            fast_path_processor.use_bottom_up_rdp6_bitmap_order();
-        }
-        self.fast_path_processor = fast_path_processor;
         // The x224 processor encodes ShareDataPdu with the server's (possibly new) share_id.
         self.x224_processor.set_share_id(share_id);
         self.enable_server_pointer = enable_server_pointer;
