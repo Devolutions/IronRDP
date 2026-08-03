@@ -178,18 +178,6 @@ pub trait PduHint: Send + Sync + fmt::Debug + 'static {
     fn find_size(&self, bytes: &[u8]) -> DecodeResult<Option<(bool, usize)>>;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn find_size_rejects_undersized_frames() {
-        assert!(find_size(&[0x00, 0x01]).is_err());
-        assert!(find_size(&[0x00, 0x80, 0x02]).is_err());
-        assert!(find_size(&[0x03, 0x00, 0x00, 0x06]).is_err());
-    }
-}
-
 // Matches both X224 and FastPath pdus
 #[derive(Clone, Copy, Debug)]
 pub struct RdpHint;
@@ -278,3 +266,15 @@ macro_rules! custom_err {
 #[doc(hidden)]
 #[deprecated(since = "0.1.0", note = "use ironrdp_core::other_err")]
 pub use crate::pdu_other_err as other_err;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_size_rejects_undersized_frames() {
+        assert!(find_size(&[0x00, 0x01]).is_err());
+        assert!(find_size(&[0x00, 0x80, 0x02]).is_err());
+        assert!(find_size(&[0x03, 0x00, 0x00, 0x06]).is_err());
+    }
+}
