@@ -488,18 +488,15 @@ fn native_mstsc_shell_integration_enabled() -> bool {
     native_mstsc_credential_bridge_enabled()
 }
 
-const fn certificate_validation_from_dangerous_override(dangerous_override: bool) -> CertificateValidation {
-    if dangerous_override {
+const fn certificate_validation_from_authentication_level(
+    authentication_level: u32,
+    authentication_level_set: bool,
+) -> CertificateValidation {
+    if authentication_level_set && authentication_level == 0 {
         CertificateValidation::DangerouslyAcceptInvalidCertificate
     } else {
         CertificateValidation::Strict
     }
-}
-
-fn active_x_certificate_validation() -> CertificateValidation {
-    certificate_validation_from_dangerous_override(environment_flag_enabled(
-        "IRONRDP_ACTIVEX_DANGEROUS_ACCEPT_INVALID_CERTIFICATE",
-    ))
 }
 
 fn certificate_prompt_enabled(
@@ -5918,7 +5915,8 @@ impl Control {
         if !self.confirm_connection_security_warnings(warn_about_credentials, warn_about_clipboard)? {
             return Ok(());
         }
-        let certificate_validation = active_x_certificate_validation();
+        let certificate_validation =
+            certificate_validation_from_authentication_level(authentication_level, authentication_level_set);
         let certificate_prompt_enabled = certificate_prompt_enabled(
             certificate_validation,
             authentication_level,
@@ -12333,14 +12331,22 @@ mod tests {
     }
 
     #[test]
-    fn dangerous_certificate_override_requires_an_explicit_opt_in() {
+    fn authentication_level_zero_requires_an_explicit_opt_in() {
         assert_eq!(
-            certificate_validation_from_dangerous_override(false),
+            certificate_validation_from_authentication_level(0, false),
             CertificateValidation::Strict
         );
         assert_eq!(
-            certificate_validation_from_dangerous_override(true),
+            certificate_validation_from_authentication_level(0, true),
             CertificateValidation::DangerouslyAcceptInvalidCertificate
+        );
+        assert_eq!(
+            certificate_validation_from_authentication_level(1, true),
+            CertificateValidation::Strict
+        );
+        assert_eq!(
+            certificate_validation_from_authentication_level(2, true),
+            CertificateValidation::Strict
         );
     }
 

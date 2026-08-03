@@ -261,17 +261,19 @@ signal rather than queueing a close request, so it interrupts stalled connection
 session even when ordinary renderer input is backpressured.
 
 TLS validates the server certificate chain and name by default. The public
-`IMsRdpClientAdvancedSettings4::AuthenticationLevel=2` enables the classic public
-certificate-warning lifecycle before connecting. The explicit native-mstsc credential-bridge mode
-also enables that lifecycle if the host leaves `AuthenticationLevel` unconfigured; an explicit
-non-2 value remains authoritative. On an otherwise-invalid certificate, the control fires
-`OnAuthenticationWarningDisplayed` (DISPID 18), shows a synchronous host-owned warning, then fires
-`OnAuthenticationWarningDismissed` (DISPID 19). Continuing accepts only that exact
-certificate fingerprint for the connection; the optional **Remember** choice stores its SHA-256
-fingerprint under the IronRDP-owned per-user key
+`IMsRdpClientAdvancedSettings4::AuthenticationLevel` selects the preconnect policy: an unset
+setting or `1` requires successful validation, `2` enables the classic public certificate-warning
+lifecycle, and an explicit `0` disables certificate and name validation. The explicit native-mstsc
+credential-bridge mode also enables the warning lifecycle if the host leaves `AuthenticationLevel`
+unconfigured; an explicit non-2 value remains authoritative. `AuthenticationLevel=0` is vulnerable
+to on-path attacks and is only appropriate for an isolated development or test endpoint. On an
+otherwise-invalid certificate, the control fires `OnAuthenticationWarningDisplayed` (DISPID 18),
+shows a synchronous host-owned warning, then fires `OnAuthenticationWarningDismissed` (DISPID 19).
+Continuing accepts only that exact certificate fingerprint for the connection; the optional
+**Remember** choice stores its SHA-256 fingerprint under the IronRDP-owned per-user key
 `HKCU\Software\Devolutions\IronRDP\ActiveX\TrustedCertificates`. `PublicMode` suppresses lookup of
-remembered exceptions. The control intentionally does not read or write Microsoft's
-`Terminal Server Client\Servers` registry values.
+remembered exceptions. The control intentionally does not read or write Microsoft's `Terminal
+Server Client\Servers` registry values.
 
 The warning is implemented with the operating system's `TaskDialogIndirect` UI when the host
 provides the Common Controls v6 entry point. Hosts without it reject the certificate rather than
@@ -290,11 +292,6 @@ dialog with no remote error text.
 RDPDR-style redirection warning UI remains unsupported: `ShowRedirectionWarningDialog`,
 printer/device/drive redirection warnings, and DirectX redirection continue to return `E_NOTIMPL`
 because this ActiveX backend does not advertise the corresponding protocol capabilities.
-
-For an isolated development or test endpoint with a self-signed certificate, setting the process-local
-`IRONRDP_ACTIVEX_DANGEROUS_ACCEPT_INVALID_CERTIFICATE=1` explicitly disables certificate and name
-validation. This opt-in is vulnerable to on-path attacks and must not be used for production
-connections.
 
 Every independently returned COM child object, including settings objects, empty capability
 collections, clipboard capabilities, connection points, and OLE or connection enumerators, keeps

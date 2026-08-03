@@ -1,6 +1,6 @@
 ---
 name: ironrdp-activex-mstsc-testing
-description: Launches the real mstsc.exe child through MsRdpEx mstscex.exe with ironrdpax.dll, process-local test credentials, certificate bypass, UI Automation, and bounded native window-event coverage. Use when testing IronRDP ActiveX through MSTSC/MsRdpEx, debugging the native credential bridge, validating CLIPRDR startup, or monkey-testing the TscShellContainerClass host.
+description: Launches the real mstsc.exe child through MsRdpEx mstscex.exe with ironrdpax.dll, process-local test credentials, standard ActiveX certificate configuration, UI Automation, and bounded native window-event coverage. Use when testing IronRDP ActiveX through MSTSC/MsRdpEx, debugging the native credential bridge, validating CLIPRDR startup, or monkey-testing the TscShellContainerClass host.
 ---
 
 # IronRDP ActiveX native MSTSC testing
@@ -22,8 +22,10 @@ than launching the real `mstsc.exe` child.
 - Require `MSRDPEX_AX_BACKEND=ironrdp` so MsRdpEx enables its private-layout exclusion.
 - Put `RDP_USERNAME` and `RDP_PASSWORD` only in the launcher process environment. Never print,
   persist, pass as arguments, add to an `.rdp` file, or copy to artifacts.
-- `IRONRDP_ACTIVEX_DANGEROUS_ACCEPT_INVALID_CERTIFICATE=1` bypasses certificate validation. Use it
-  only for an authorized test run, set it on that process only, and never make it a product default.
+- For an authorized isolated test endpoint with a self-signed certificate, set the standard
+  `IMsRdpClientAdvancedSettings4::AuthenticationLevel` property to `0` before `Connect`. This
+  disables certificate and hostname validation for that control instance; never use it for a
+  production connection.
 - Do not synthesize messages with pointer-bearing parameters, especially `WM_DPICHANGED`. Generate
   native resize, move, activation, minimization, and restoration through Win32 window APIs instead.
 - Store screenshots, traces, JSON reports, and temporary scripts under the session artifact
@@ -39,7 +41,7 @@ than launching the real `mstsc.exe` child.
 
 2. Obtain an architecture-matched MsRdpEx build containing `mstscex.exe` and `MsRdpEx.dll`.
 3. Confirm the user authorized the test endpoint, the process-local `RDP_USERNAME` /
-   `RDP_PASSWORD` credentials, and (if required) certificate bypass.
+   `RDP_PASSWORD` credentials, and (if required) `AuthenticationLevel=0`.
 
 ## Launch the real native host
 
@@ -51,7 +53,6 @@ Set the variables in a single PowerShell process before starting `mstscex.exe`. 
 $env:MSRDPEX_MSTSCAX_DLL = (Resolve-Path .\target\release\ironrdpax.dll)
 $env:MSRDPEX_AX_BACKEND = 'ironrdp'
 $env:IRONRDP_ACTIVEX_NATIVE_MSTSC_CREDENTIAL_BRIDGE = '1'
-$env:IRONRDP_ACTIVEX_DANGEROUS_ACCEPT_INVALID_CERTIFICATE = '1' # authorized test only
 $env:IRONRDP_ACTIVEX_HOST_TRACE = '<session-artifacts>\mstsc.trace'
 
 $launcher = '<MsRdpEx-build>\Release\mstscex.exe'
@@ -64,6 +65,17 @@ if ($null -eq $mstsc) { throw 'mstscex did not launch mstsc.exe' }
 ```
 
 The target for UI Automation is the `mstsc.exe` child, not `mstscex.exe`.
+
+Before calling `Connect`, configure the launched control through its normal preconnect COM
+settings:
+
+```text
+IMsRdpClientAdvancedSettings4::put_AuthenticationLevel(0)
+```
+
+This is the only permitted invalid-certificate test configuration. It must be set explicitly for
+the test control before connecting; do not use an environment variable, register the DLL, alter
+machine-wide settings, or change the product default.
 
 ## Connect without exposing credentials
 
