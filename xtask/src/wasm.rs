@@ -57,7 +57,7 @@ fn install_wasm2wat(sh: &Shell) -> anyhow::Result<()> {
     let _guard = sh.push_dir(crate::LOCAL_CARGO_ROOT);
 
     let platform_suffix = if cfg!(target_os = "windows") {
-        "windows"
+        "windows-x64"
     } else if cfg!(target_os = "macos") {
         "macos-arm64"
     } else {
