@@ -7,7 +7,6 @@
 //! [MS-RDPBCGR 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dc672839-4f4e-40b1-a71c-cd6a959baa38
 
 use std::collections::VecDeque;
-use std::time::Instant;
 
 use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
 
@@ -15,7 +14,7 @@ use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
 const RTT_WINDOW_SIZE: usize = 8;
 
 /// Probes older than this are discarded as unresponsive.
-pub(crate) const RTT_PROBE_MAX_AGE: core::time::Duration = core::time::Duration::from_secs(30);
+pub(crate) const RTT_PROBE_MAX_AGE_MS: u64 = 30_000;
 
 /// Server-side auto-detect state machine.
 ///
@@ -23,9 +22,18 @@ pub(crate) const RTT_PROBE_MAX_AGE: core::time::Duration = core::time::Duration:
 /// client responses. Call [`send_rtt_request()`](Self::send_rtt_request) to
 /// generate a probe, then [`handle_response()`](Self::handle_response) when
 /// the client replies.
+///
+/// The manager reads no clock of its own. Every method that needs the current time
+/// takes `now_ms`, a caller-supplied monotonic millisecond counter whose epoch is
+/// arbitrary as long as it is consistent across calls. Keeping time out of the state
+/// machine makes RTT measurement exactly testable, leaves the type usable from targets
+/// where the standard library has no clock (`std::time::Instant::now` panics on
+/// `wasm32-unknown-unknown`), and keeps the crate a candidate for the no-I/O rules the
+/// Core Tier crates follow.
 pub struct AutoDetectManager {
     next_sequence: u16,
-    pending_probes: Vec<(u16, Instant)>,
+    /// Outstanding probes as `(sequence_number, sent_at_ms)`.
+    pending_probes: Vec<(u16, u64)>,
     rtt_samples: VecDeque<u32>,
 }
 
@@ -41,12 +49,12 @@ impl AutoDetectManager {
     /// Generate an RTT Measure Request PDU for continuous detection.
     ///
     /// The caller must encode and send the returned [`AutoDetectRequest`] as
-    /// a Share Data PDU on the IO channel. Timing information is tracked
-    /// internally by [`AutoDetectManager`].
-    pub fn send_rtt_request(&mut self) -> AutoDetectRequest {
+    /// a Share Data PDU on the IO channel. `now_ms` is recorded as the send time and
+    /// is what [`handle_response()`](Self::handle_response) measures against.
+    pub fn send_rtt_request(&mut self, now_ms: u64) -> AutoDetectRequest {
         let seq = self.next_sequence;
         self.next_sequence = seq.wrapping_add(1);
-        self.pending_probes.push((seq, Instant::now()));
+        self.pending_probes.push((seq, now_ms));
         AutoDetectRequest::rtt_continuous(seq)
     }
 
@@ -54,20 +62,19 @@ impl AutoDetectManager {
     ///
     /// Returns the measured RTT in milliseconds if the sequence number
     /// matches an outstanding probe, or `None` if it was unexpected.
-    #[expect(
-        clippy::as_conversions,
-        clippy::cast_possible_truncation,
-        reason = "RTT in ms fits in u32 for any plausible network latency"
-    )]
-    pub fn handle_response(&mut self, response: &AutoDetectResponse) -> Option<u32> {
+    /// `now_ms` is the receipt time on the same clock passed to
+    /// [`send_rtt_request()`](Self::send_rtt_request).
+    pub fn handle_response(&mut self, response: &AutoDetectResponse, now_ms: u64) -> Option<u32> {
         let AutoDetectResponse::RttResponse { sequence_number } = response else {
             return None;
         };
 
         let idx = self.pending_probes.iter().position(|(s, _)| *s == *sequence_number)?;
-        let (_, sent_at) = self.pending_probes.remove(idx);
+        let (_, sent_at_ms) = self.pending_probes.remove(idx);
 
-        let rtt_ms = sent_at.elapsed().as_millis() as u32;
+        // Saturating rather than wrapping: a caller whose clock went backwards gets a
+        // zero sample, not a nonsense one near u32::MAX.
+        let rtt_ms = u32::try_from(now_ms.saturating_sub(sent_at_ms)).unwrap_or(u32::MAX);
 
         if self.rtt_samples.len() >= RTT_WINDOW_SIZE {
             self.rtt_samples.pop_front();
@@ -106,9 +113,13 @@ impl AutoDetectManager {
         self.pending_probes.len()
     }
 
-    /// Discard probes older than the given threshold to prevent unbounded growth.
-    pub fn expire_stale_probes(&mut self, max_age: core::time::Duration) {
-        self.pending_probes.retain(|(_, sent_at)| sent_at.elapsed() < max_age);
+    /// Discard probes older than `max_age_ms` to prevent unbounded growth.
+    ///
+    /// `now_ms` is on the same clock passed to
+    /// [`send_rtt_request()`](Self::send_rtt_request).
+    pub fn expire_stale_probes(&mut self, now_ms: u64, max_age_ms: u64) {
+        self.pending_probes
+            .retain(|(_, sent_at_ms)| now_ms.saturating_sub(*sent_at_ms) < max_age_ms);
     }
 }
 
@@ -138,8 +149,8 @@ mod tests {
     #[test]
     fn rtt_request_increments_sequence() {
         let mut mgr = AutoDetectManager::new();
-        let req1 = mgr.send_rtt_request();
-        let req2 = mgr.send_rtt_request();
+        let req1 = mgr.send_rtt_request(0);
+        let req2 = mgr.send_rtt_request(0);
         assert_eq!(req1.sequence_number(), 0);
         assert_eq!(req2.sequence_number(), 1);
         assert_eq!(mgr.pending_count(), 2);
@@ -148,23 +159,24 @@ mod tests {
     #[test]
     fn rtt_response_computes_latency() {
         let mut mgr = AutoDetectManager::new();
-        let req = mgr.send_rtt_request();
+        let req = mgr.send_rtt_request(0);
 
         let response = AutoDetectResponse::RttResponse {
             sequence_number: req.sequence_number(),
         };
-        let rtt = mgr.handle_response(&response);
-        assert!(rtt.is_some(), "should match the outstanding probe");
+        // Both timestamps come from the caller, so the measurement is exact rather than
+        // dependent on how fast the test happens to run.
+        assert_eq!(mgr.handle_response(&response, 20), Some(20));
         assert_eq!(mgr.pending_count(), 0);
     }
 
     #[test]
     fn unknown_sequence_returns_none() {
         let mut mgr = AutoDetectManager::new();
-        let _ = mgr.send_rtt_request();
+        let _ = mgr.send_rtt_request(0);
 
         let response = AutoDetectResponse::RttResponse { sequence_number: 999 };
-        assert!(mgr.handle_response(&response).is_none());
+        assert!(mgr.handle_response(&response, 20).is_none());
         assert_eq!(mgr.pending_count(), 1, "original probe should remain");
     }
 
@@ -178,37 +190,86 @@ mod tests {
     fn snapshot_reflects_measurements() {
         let mut mgr = AutoDetectManager::new();
 
-        for _ in 0..3 {
-            let req = mgr.send_rtt_request();
+        for (sent_at, rtt) in [(0u64, 10u64), (100, 20), (200, 30)] {
+            let req = mgr.send_rtt_request(sent_at);
             let response = AutoDetectResponse::RttResponse {
                 sequence_number: req.sequence_number(),
             };
-            let _ = mgr.handle_response(&response);
+            let _ = mgr.handle_response(&response, sent_at + rtt);
         }
 
         let snap = mgr.snapshot().expect("should have data after 3 measurements");
         assert_eq!(snap.sample_count, 3);
-        assert!(snap.avg_ms < 100);
+        assert_eq!(snap.min_ms, 10);
+        assert_eq!(snap.max_ms, 30);
+        assert_eq!(snap.avg_ms, 20);
+    }
+
+    /// A caller whose clock ran backwards between the request and the response must
+    /// produce a zero sample. Wrapping subtraction here would yield a value near
+    /// `u32::MAX` and poison every statistic drawn from the window.
+    #[test]
+    fn backwards_clock_yields_a_zero_sample() {
+        let mut mgr = AutoDetectManager::new();
+        let req = mgr.send_rtt_request(1000);
+
+        let response = AutoDetectResponse::RttResponse {
+            sequence_number: req.sequence_number(),
+        };
+        assert_eq!(mgr.handle_response(&response, 400), Some(0));
+
+        // The zero has to reach the window, not just the return value, since the
+        // snapshot is what the peer eventually sees.
+        let snap = mgr.snapshot().expect("one measurement was recorded");
+        assert_eq!(snap.min_ms, 0);
+        assert_eq!(snap.max_ms, 0);
+        assert_eq!(snap.avg_ms, 0);
+    }
+
+    /// The same backwards clock reaches expiry, where the saturation has the opposite
+    /// shape: an age of zero is below any maximum, so the probe stays pending.
+    /// Wrapping subtraction would make it look older than any limit and drop a probe
+    /// whose response is still in flight.
+    #[test]
+    fn backwards_clock_keeps_the_probe_pending() {
+        let mut mgr = AutoDetectManager::new();
+        let _ = mgr.send_rtt_request(1000);
+
+        mgr.expire_stale_probes(400, 100);
+        assert_eq!(mgr.pending_count(), 1, "a probe from the future is not stale");
+    }
+
+    /// A gap wider than `u32::MAX` milliseconds (about 49.7 days) clamps rather than
+    /// truncating to the low 32 bits, which would report a small RTT for an enormous one.
+    #[test]
+    fn an_enormous_gap_clamps_to_u32_max() {
+        let mut mgr = AutoDetectManager::new();
+        let req = mgr.send_rtt_request(0);
+
+        let response = AutoDetectResponse::RttResponse {
+            sequence_number: req.sequence_number(),
+        };
+        assert_eq!(mgr.handle_response(&response, u64::from(u32::MAX) + 1), Some(u32::MAX));
     }
 
     #[test]
     fn sequence_number_wraps() {
         let mut mgr = AutoDetectManager::new();
         mgr.next_sequence = u16::MAX;
-        let req = mgr.send_rtt_request();
+        let req = mgr.send_rtt_request(0);
         assert_eq!(req.sequence_number(), u16::MAX);
 
-        let req2 = mgr.send_rtt_request();
+        let req2 = mgr.send_rtt_request(0);
         assert_eq!(req2.sequence_number(), 0, "should wrap around");
     }
 
     #[test]
     fn stale_probe_expiry() {
         let mut mgr = AutoDetectManager::new();
-        let _ = mgr.send_rtt_request();
+        let _ = mgr.send_rtt_request(0);
         assert_eq!(mgr.pending_count(), 1);
 
-        mgr.expire_stale_probes(core::time::Duration::ZERO);
+        mgr.expire_stale_probes(1, 0);
         assert_eq!(mgr.pending_count(), 0);
     }
 }
