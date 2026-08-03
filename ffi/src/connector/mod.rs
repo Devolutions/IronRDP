@@ -37,22 +37,6 @@ pub mod ffi {
             ))))
         }
 
-        pub fn new_vmconnect(
-            config: &Config,
-            client_addr: &str,
-            vm_id: &str,
-        ) -> Result<Box<ClientConnector>, Box<IronRdpError>> {
-            let client_addr = client_addr.parse().map_err(|_| IronRdpErrorKind::Generic)?;
-
-            Ok(Box::new(ClientConnector(Some(
-                ironrdp::connector::ClientConnector::new_vmconnect(
-                    config.connector.clone(),
-                    client_addr,
-                    vm_id.to_owned(),
-                ),
-            ))))
-        }
-
         // FIXME: Naming: since this is not a builder pattern, use "attach"?
         // FIXME: We need to create opaque for ironrdp::svc::StaticChannelSet
         /// Must use

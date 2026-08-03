@@ -1004,13 +1004,20 @@ impl ConfigBuilder {
     }
 
     #[cfg(feature = "vmconnect")]
-    /// Connect to a Hyper-V VM console by VM GUID. Destination must use port
-    /// [`ironrdp_vmconnect::PORT`] (2179) unless the caller explicitly selects another port.
-    /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
+    /// Connect to a Hyper-V VM console via vmconnect, identified by its VM ID (a GUID string).
+    ///
+    /// The Hyper-V front (Preconnection Blob → TLS → CredSSP → X.224) is driven by
+    /// `ironrdp-vmconnect` outside the plain RDP connector. A console listens on port
+    /// [`ironrdp_vmconnect::PORT`] (2179), not 3389, so the destination must say so.
+    ///
+    /// Works over Direct and RDCleanPath v2 (proxy does PCB + TLS; client runs CredSSP then X.224).
+    /// Classic RDCleanPath v1 is used when no VM ID is set.
     ///
     /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
-    /// embedder (error if disabled). This builder only rejects transports that cannot target port
-    /// 2179 yet (RDCleanPath / RDS Gateway in [`build`](Self::build)).
+    /// embedder. RDS Gateway is rejected until it can propagate the VMConnect target port.
+    ///
+    /// Not mirrored into the [`PropertySet`]: `.rdp` files carry the VM ID in the `pcb` key, which
+    /// `ironrdp-cfg` does not model yet.
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
