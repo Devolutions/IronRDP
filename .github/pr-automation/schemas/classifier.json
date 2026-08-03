@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Devolutions/IronRDP/pr-automation/classifier-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "head_sha", "risk", "technical_debt", "documentation_only", "duplicate", "likely_non_legitimate", "non_legitimate_confidence", "non_legitimate_reason", "breaking_change_suspected", "breaking_change_rationale", "breaking_change_surface", "protocol_related", "summary"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "risk": { "enum": ["low", "medium", "high"] },
+    "technical_debt": { "type": "boolean" },
+    "documentation_only": { "type": "boolean" },
+    "likely_non_legitimate": { "type": "boolean" },
+    "non_legitimate_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "non_legitimate_reason": { "type": "string", "maxLength": 500 },
+    "duplicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["detected", "similar_pr_number", "similar_pr_url", "confidence", "rationale"],
+      "properties": {
+        "detected": { "type": "boolean" },
+        "similar_pr_number": { "type": ["integer", "null"], "minimum": 1 },
+        "similar_pr_url": { "type": ["string", "null"], "maxLength": 200, "pattern": "^https://github\\.com/Devolutions/IronRDP/pull/[1-9][0-9]*$" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "rationale": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "breaking_change_suspected": { "type": "boolean" },
+    "breaking_change_rationale": { "type": "string", "maxLength": 500 },
+    "breaking_change_surface": { "type": "string", "maxLength": 200 },
+    "protocol_related": { "type": "boolean" },
+    "summary": { "type": "string", "maxLength": 1000 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "likely_non_legitimate": { "const": true } } },
+      "then": {
+        "properties": {
+          "non_legitimate_confidence": { "minimum": 0.9 },
+          "non_legitimate_reason": { "minLength": 1 }
+        }
+      },
+      "else": {
+        "properties": {
+          "non_legitimate_confidence": { "const": 0 },
+          "non_legitimate_reason": { "const": "" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "duplicate": { "properties": { "detected": { "const": true } } } } },
+      "then": {
+        "properties": {
+          "duplicate": {
+            "properties": {
+              "similar_pr_number": { "type": "integer", "minimum": 1 },
+              "similar_pr_url": { "type": "string", "pattern": "^https://github\\.com/Devolutions/IronRDP/pull/[1-9][0-9]*$" },
+              "confidence": { "minimum": 0.85 },
+              "rationale": { "minLength": 1 }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "duplicate": {
+            "properties": {
+              "similar_pr_number": { "const": null },
+              "similar_pr_url": { "const": null },
+              "confidence": { "const": 0 },
+              "rationale": { "const": "" }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

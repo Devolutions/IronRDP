@@ -776,175 +776,6 @@ fn sanitize_capabilities_for_confirm(mut capabilities: CapabilitySet) -> Capabil
     capabilities
 }
 
-#[cfg(test)]
-mod capability_negotiation_tests {
-    use super::*;
-
-    #[test]
-    fn preserves_client_avc_disabled_constraint() {
-        let cases = [
-            (
-                CapabilitySet::V10 {
-                    flags: CapabilitiesV10Flags::AVC_DISABLED | CapabilitiesV10Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10 {
-                    flags: CapabilitiesV10Flags::SMALL_CACHE,
-                },
-            ),
-            (
-                CapabilitySet::V10_2 {
-                    flags: CapabilitiesV10Flags::AVC_DISABLED | CapabilitiesV10Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_2 {
-                    flags: CapabilitiesV10Flags::SMALL_CACHE,
-                },
-            ),
-            (
-                CapabilitySet::V10_3 {
-                    flags: CapabilitiesV103Flags::AVC_DISABLED,
-                },
-                CapabilitySet::V10_3 {
-                    flags: CapabilitiesV103Flags::empty(),
-                },
-            ),
-            (
-                CapabilitySet::V10_4 {
-                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_4 {
-                    flags: CapabilitiesV104Flags::SMALL_CACHE,
-                },
-            ),
-            (
-                CapabilitySet::V10_5 {
-                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_5 {
-                    flags: CapabilitiesV104Flags::SMALL_CACHE,
-                },
-            ),
-            (
-                CapabilitySet::V10_6 {
-                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_6 {
-                    flags: CapabilitiesV104Flags::SMALL_CACHE,
-                },
-            ),
-            (
-                CapabilitySet::V10_6Err {
-                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_6Err {
-                    flags: CapabilitiesV104Flags::SMALL_CACHE,
-                },
-            ),
-            (
-                CapabilitySet::V10_7 {
-                    flags: CapabilitiesV107Flags::AVC_DISABLED | CapabilitiesV107Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_7 {
-                    flags: CapabilitiesV107Flags::SMALL_CACHE,
-                },
-            ),
-        ];
-
-        for (client, server) in cases {
-            assert_eq!(
-                negotiate_capabilities(core::slice::from_ref(&client), &[server]),
-                Some(client)
-            );
-        }
-    }
-
-    #[test]
-    fn removes_avc_thin_client_from_malformed_avc_disabled_capabilities() {
-        let cases = [
-            (
-                CapabilitySet::V10_3 {
-                    flags: CapabilitiesV103Flags::AVC_DISABLED | CapabilitiesV103Flags::AVC_THIN_CLIENT,
-                },
-                CapabilitySet::V10_3 {
-                    flags: CapabilitiesV103Flags::AVC_THIN_CLIENT,
-                },
-                CapabilitySet::V10_3 {
-                    flags: CapabilitiesV103Flags::AVC_DISABLED,
-                },
-            ),
-            (
-                CapabilitySet::V10_4 {
-                    flags: CapabilitiesV104Flags::AVC_DISABLED
-                        | CapabilitiesV104Flags::AVC_THIN_CLIENT
-                        | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_4 {
-                    flags: CapabilitiesV104Flags::AVC_THIN_CLIENT | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_4 {
-                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-            ),
-            (
-                CapabilitySet::V10_5 {
-                    flags: CapabilitiesV104Flags::AVC_DISABLED
-                        | CapabilitiesV104Flags::AVC_THIN_CLIENT
-                        | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_5 {
-                    flags: CapabilitiesV104Flags::AVC_THIN_CLIENT | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_5 {
-                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-            ),
-            (
-                CapabilitySet::V10_6 {
-                    flags: CapabilitiesV104Flags::AVC_DISABLED
-                        | CapabilitiesV104Flags::AVC_THIN_CLIENT
-                        | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_6 {
-                    flags: CapabilitiesV104Flags::AVC_THIN_CLIENT | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_6 {
-                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-            ),
-            (
-                CapabilitySet::V10_6Err {
-                    flags: CapabilitiesV104Flags::AVC_DISABLED
-                        | CapabilitiesV104Flags::AVC_THIN_CLIENT
-                        | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_6Err {
-                    flags: CapabilitiesV104Flags::AVC_THIN_CLIENT | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_6Err {
-                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
-                },
-            ),
-            (
-                CapabilitySet::V10_7 {
-                    flags: CapabilitiesV107Flags::AVC_DISABLED
-                        | CapabilitiesV107Flags::AVC_THIN_CLIENT
-                        | CapabilitiesV107Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_7 {
-                    flags: CapabilitiesV107Flags::AVC_THIN_CLIENT | CapabilitiesV107Flags::SMALL_CACHE,
-                },
-                CapabilitySet::V10_7 {
-                    flags: CapabilitiesV107Flags::AVC_DISABLED | CapabilitiesV107Flags::SMALL_CACHE,
-                },
-            ),
-        ];
-
-        for (client, server, expected) in cases {
-            assert_eq!(sanitize_capabilities_for_confirm(client.clone()), expected);
-            assert_eq!(negotiate_capabilities(&[client], &[server]), Some(expected));
-        }
-    }
-}
-
 // ============================================================================
 // Handler Trait
 // ============================================================================
@@ -2082,4 +1913,173 @@ fn encode_avc444_bitmap_stream(stream: &Avc444BitmapStream<'_>) -> Vec<u8> {
         .expect("encode_avc444_bitmap_stream: encoding failed");
 
     buf
+}
+
+#[cfg(test)]
+mod capability_negotiation_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_client_avc_disabled_constraint() {
+        let cases = [
+            (
+                CapabilitySet::V10 {
+                    flags: CapabilitiesV10Flags::AVC_DISABLED | CapabilitiesV10Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10 {
+                    flags: CapabilitiesV10Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_2 {
+                    flags: CapabilitiesV10Flags::AVC_DISABLED | CapabilitiesV10Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_2 {
+                    flags: CapabilitiesV10Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_3 {
+                    flags: CapabilitiesV103Flags::AVC_DISABLED,
+                },
+                CapabilitySet::V10_3 {
+                    flags: CapabilitiesV103Flags::empty(),
+                },
+            ),
+            (
+                CapabilitySet::V10_4 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_4 {
+                    flags: CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_5 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_5 {
+                    flags: CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_6 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_6 {
+                    flags: CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_6Err {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_6Err {
+                    flags: CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::AVC_DISABLED | CapabilitiesV107Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::SMALL_CACHE,
+                },
+            ),
+        ];
+
+        for (client, server) in cases {
+            assert_eq!(
+                negotiate_capabilities(core::slice::from_ref(&client), &[server]),
+                Some(client)
+            );
+        }
+    }
+
+    #[test]
+    fn removes_avc_thin_client_from_malformed_avc_disabled_capabilities() {
+        let cases = [
+            (
+                CapabilitySet::V10_3 {
+                    flags: CapabilitiesV103Flags::AVC_DISABLED | CapabilitiesV103Flags::AVC_THIN_CLIENT,
+                },
+                CapabilitySet::V10_3 {
+                    flags: CapabilitiesV103Flags::AVC_THIN_CLIENT,
+                },
+                CapabilitySet::V10_3 {
+                    flags: CapabilitiesV103Flags::AVC_DISABLED,
+                },
+            ),
+            (
+                CapabilitySet::V10_4 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED
+                        | CapabilitiesV104Flags::AVC_THIN_CLIENT
+                        | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_4 {
+                    flags: CapabilitiesV104Flags::AVC_THIN_CLIENT | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_4 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_5 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED
+                        | CapabilitiesV104Flags::AVC_THIN_CLIENT
+                        | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_5 {
+                    flags: CapabilitiesV104Flags::AVC_THIN_CLIENT | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_5 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_6 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED
+                        | CapabilitiesV104Flags::AVC_THIN_CLIENT
+                        | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_6 {
+                    flags: CapabilitiesV104Flags::AVC_THIN_CLIENT | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_6 {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_6Err {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED
+                        | CapabilitiesV104Flags::AVC_THIN_CLIENT
+                        | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_6Err {
+                    flags: CapabilitiesV104Flags::AVC_THIN_CLIENT | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_6Err {
+                    flags: CapabilitiesV104Flags::AVC_DISABLED | CapabilitiesV104Flags::SMALL_CACHE,
+                },
+            ),
+            (
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::AVC_DISABLED
+                        | CapabilitiesV107Flags::AVC_THIN_CLIENT
+                        | CapabilitiesV107Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::AVC_THIN_CLIENT | CapabilitiesV107Flags::SMALL_CACHE,
+                },
+                CapabilitySet::V10_7 {
+                    flags: CapabilitiesV107Flags::AVC_DISABLED | CapabilitiesV107Flags::SMALL_CACHE,
+                },
+            ),
+        ];
+
+        for (client, server, expected) in cases {
+            assert_eq!(sanitize_capabilities_for_confirm(client.clone()), expected);
+            assert_eq!(negotiate_capabilities(&[client], &[server]), Some(expected));
+        }
+    }
 }

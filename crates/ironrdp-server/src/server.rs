@@ -3,7 +3,8 @@ use core::net::SocketAddr;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use std::time::Instant;
 
 use anyhow::{Context as _, Result, bail};
 use ironrdp_acceptor::{
@@ -51,6 +52,16 @@ use crate::{SoundServerFactory, builder, capabilities};
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
 const AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// Monotonic milliseconds since first use, for feeding the auto-detect state machine.
+///
+/// The clock lives here, in the I/O driver, rather than inside [`AutoDetectManager`]:
+/// the state machine takes timestamps as arguments so it stays free of ambient time.
+/// Only differences are meaningful, so the epoch is arbitrary.
+fn monotonic_now_ms() -> u64 {
+    static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
+    u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
 
 /// Action to take after a client disconnects.
 ///
@@ -1656,8 +1667,9 @@ impl RdpServer {
                     // ([MS-RDPBCGR] 2.2.14.3). With none negotiated (the client
                     // did not request it), there is nowhere to send them.
                     if let (Some(ad), Some(message_channel_id)) = (self.autodetect.as_mut(), message_channel_id) {
-                        ad.expire_stale_probes(crate::autodetect::RTT_PROBE_MAX_AGE);
-                        let request = ad.send_rtt_request();
+                        let now_ms = monotonic_now_ms();
+                        ad.expire_stale_probes(now_ms, crate::autodetect::RTT_PROBE_MAX_AGE_MS);
+                        let request = ad.send_rtt_request(now_ms);
                         let data = encode_autodetect_request(request, message_channel_id, user_channel_id)?;
                         writer.write_all(&data).await?;
                     }
@@ -2134,7 +2146,7 @@ impl RdpServer {
         match decode::<rdp::autodetect::AutoDetectRspPdu>(data.user_data.as_ref()) {
             Ok(pdu) => {
                 if let Some(ref mut ad) = self.autodetect {
-                    if let Some(rtt_ms) = ad.handle_response(&pdu.response) {
+                    if let Some(rtt_ms) = ad.handle_response(&pdu.response, monotonic_now_ms()) {
                         self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
                         debug!(rtt_ms, seq = pdu.response.sequence_number(), "RTT measured");
                     } else {

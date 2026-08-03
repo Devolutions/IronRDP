@@ -1,0 +1,32 @@
+[
+  {
+    "name": "risk:low",
+    "color": "0e8a16",
+    "description": "Self-contained change with no cross-crate behavioral effect"
+  },
+  {
+    "name": "risk:medium",
+    "color": "fbca04",
+    "description": "Behavioral change that does not substantially alter a core public API"
+  },
+  {
+    "name": "risk:high",
+    "color": "d93f0b",
+    "description": "Substantial core public API impact, or fail-closed triage; needs maintainer-level scrutiny"
+  },
+  {
+    "name": "human-required",
+    "color": "5319e7",
+    "description": "Human review is required"
+  },
+  {
+    "name": "ai-reviewed/1",
+    "color": "1d76db",
+    "description": "One automated review completed"
+  },
+  {
+    "name": "ai-reviewed/2",
+    "color": "1d76db",
+    "description": "Final automated review completed"
+  }
+]

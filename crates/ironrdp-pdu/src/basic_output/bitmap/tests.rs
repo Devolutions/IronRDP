@@ -57,7 +57,7 @@ static BITMAP: LazyLock<BitmapUpdateData<'static>> = LazyLock::new(|| BitmapUpda
 });
 
 #[test]
-fn from_buffer_bitmap_data_parsses_correctly() {
+fn from_buffer_bitmap_data_parses_correctly() {
     let actual = decode::<BitmapUpdateData<'_>>(BITMAP_BUFFER.as_ref()).unwrap();
     assert_eq!(*BITMAP, actual);
 }

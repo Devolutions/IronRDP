@@ -604,104 +604,6 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use ironrdp_core::{Decode as _, ReadCursor, decode, encode_vec};
-
-    use super::{ClientAutoReconnect, ExtendedClientOptionalInfo, PerformanceFlags, TimezoneInfo};
-
-    fn reconnect_cookie() -> [u8; 28] {
-        let mut cookie = [0; 28];
-        cookie[0..4].copy_from_slice(&28u32.to_le_bytes());
-        cookie[4..8].copy_from_slice(&1u32.to_le_bytes());
-        cookie[8..12].copy_from_slice(&0x1234_5678u32.to_le_bytes());
-        cookie[12..].copy_from_slice(&[0xA5; 16]);
-        cookie
-    }
-
-    #[test]
-    fn client_auto_reconnect_decodes() {
-        let cookie = reconnect_cookie();
-        let decoded = ClientAutoReconnect::decode(&mut ReadCursor::new(&cookie)).unwrap();
-
-        assert_eq!(decoded.logon_id, 0x1234_5678);
-        assert_eq!(decoded.security_verifier, [0xA5; 16]);
-    }
-
-    #[test]
-    fn client_auto_reconnect_rejects_invalid_length_and_version() {
-        let mut invalid_length = reconnect_cookie();
-        invalid_length[0..4].copy_from_slice(&27u32.to_le_bytes());
-        assert!(ClientAutoReconnect::decode(&mut ReadCursor::new(&invalid_length)).is_err());
-
-        let mut invalid_version = reconnect_cookie();
-        invalid_version[4..8].copy_from_slice(&2u32.to_le_bytes());
-        assert!(ClientAutoReconnect::decode(&mut ReadCursor::new(&invalid_version)).is_err());
-    }
-
-    /// The security verifier must not reach logs, in either of its two forms.
-    ///
-    /// `ClientInfoPdu` is logged whole by the connector when it sends it, which
-    /// is why `Credentials` above hand-writes `Debug`. The verifier belongs in
-    /// the same category: 5.5 computes it over a constant client random under
-    /// Enhanced RDP Security, so replaying it resumes the session.
-    #[test]
-    fn security_verifier_is_redacted_from_debug_output() {
-        let cookie = reconnect_cookie();
-        let parsed = ClientAutoReconnect::decode(&mut ReadCursor::new(&cookie)).unwrap();
-        let optional_info = ExtendedClientOptionalInfo {
-            timezone: Some(TimezoneInfo::default()),
-            session_id: Some(0),
-            performance_flags: Some(PerformanceFlags::default()),
-            reconnect_cookie: Some(cookie),
-            auto_reconnect: Some(parsed.clone()),
-        };
-
-        // 0xA5 renders as `165` in the derived byte-slice output.
-        for (label, rendered) in [
-            ("ClientAutoReconnect", format!("{parsed:?}")),
-            ("ExtendedClientOptionalInfo", format!("{optional_info:?}")),
-        ] {
-            assert!(!rendered.contains("165"), "{label} leaked the verifier: {rendered}");
-        }
-
-        // The session identifier is not secret and stays visible for diagnosis.
-        assert!(format!("{parsed:?}").contains(&0x1234_5678u32.to_string()));
-    }
-
-    #[test]
-    fn malformed_auto_reconnect_packet_is_preserved_but_not_offered() {
-        let mut reconnect_cookie = reconnect_cookie();
-        reconnect_cookie[4..8].copy_from_slice(&2u32.to_le_bytes());
-        let optional_info = ExtendedClientOptionalInfo {
-            timezone: Some(TimezoneInfo::default()),
-            session_id: Some(0),
-            performance_flags: Some(PerformanceFlags::default()),
-            reconnect_cookie: Some(reconnect_cookie),
-            auto_reconnect: None,
-        };
-
-        let decoded: ExtendedClientOptionalInfo = decode(&encode_vec(&optional_info).unwrap()).unwrap();
-        assert_eq!(decoded.reconnect_cookie(), Some(&reconnect_cookie));
-        assert!(decoded.auto_reconnect().is_none());
-    }
-
-    #[test]
-    fn builder_parses_valid_auto_reconnect_packet() {
-        let optional_info = ExtendedClientOptionalInfo::builder()
-            .timezone(TimezoneInfo::default())
-            .session_id(0)
-            .performance_flags(PerformanceFlags::default())
-            .reconnect_cookie(reconnect_cookie())
-            .build();
-
-        assert_eq!(
-            optional_info.auto_reconnect().map(|packet| packet.logon_id),
-            Some(0x1234_5678)
-        );
-    }
-}
-
 /// [2.2.1.11.1.1.1.1] Time Zone Information (TS_TIME_ZONE_INFORMATION)
 ///
 /// The timezone info struct contains client time zone information.
@@ -1170,5 +1072,103 @@ pub mod builder {
                 _phantom_data: Default::default(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_core::{Decode as _, ReadCursor, decode, encode_vec};
+
+    use super::{ClientAutoReconnect, ExtendedClientOptionalInfo, PerformanceFlags, TimezoneInfo};
+
+    fn reconnect_cookie() -> [u8; 28] {
+        let mut cookie = [0; 28];
+        cookie[0..4].copy_from_slice(&28u32.to_le_bytes());
+        cookie[4..8].copy_from_slice(&1u32.to_le_bytes());
+        cookie[8..12].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        cookie[12..].copy_from_slice(&[0xA5; 16]);
+        cookie
+    }
+
+    #[test]
+    fn client_auto_reconnect_decodes() {
+        let cookie = reconnect_cookie();
+        let decoded = ClientAutoReconnect::decode(&mut ReadCursor::new(&cookie)).unwrap();
+
+        assert_eq!(decoded.logon_id, 0x1234_5678);
+        assert_eq!(decoded.security_verifier, [0xA5; 16]);
+    }
+
+    #[test]
+    fn client_auto_reconnect_rejects_invalid_length_and_version() {
+        let mut invalid_length = reconnect_cookie();
+        invalid_length[0..4].copy_from_slice(&27u32.to_le_bytes());
+        assert!(ClientAutoReconnect::decode(&mut ReadCursor::new(&invalid_length)).is_err());
+
+        let mut invalid_version = reconnect_cookie();
+        invalid_version[4..8].copy_from_slice(&2u32.to_le_bytes());
+        assert!(ClientAutoReconnect::decode(&mut ReadCursor::new(&invalid_version)).is_err());
+    }
+
+    /// The security verifier must not reach logs, in either of its two forms.
+    ///
+    /// `ClientInfoPdu` is logged whole by the connector when it sends it, which
+    /// is why `Credentials` above hand-writes `Debug`. The verifier belongs in
+    /// the same category: 5.5 computes it over a constant client random under
+    /// Enhanced RDP Security, so replaying it resumes the session.
+    #[test]
+    fn security_verifier_is_redacted_from_debug_output() {
+        let cookie = reconnect_cookie();
+        let parsed = ClientAutoReconnect::decode(&mut ReadCursor::new(&cookie)).unwrap();
+        let optional_info = ExtendedClientOptionalInfo {
+            timezone: Some(TimezoneInfo::default()),
+            session_id: Some(0),
+            performance_flags: Some(PerformanceFlags::default()),
+            reconnect_cookie: Some(cookie),
+            auto_reconnect: Some(parsed.clone()),
+        };
+
+        // 0xA5 renders as `165` in the derived byte-slice output.
+        for (label, rendered) in [
+            ("ClientAutoReconnect", format!("{parsed:?}")),
+            ("ExtendedClientOptionalInfo", format!("{optional_info:?}")),
+        ] {
+            assert!(!rendered.contains("165"), "{label} leaked the verifier: {rendered}");
+        }
+
+        // The session identifier is not secret and stays visible for diagnosis.
+        assert!(format!("{parsed:?}").contains(&0x1234_5678u32.to_string()));
+    }
+
+    #[test]
+    fn malformed_auto_reconnect_packet_is_preserved_but_not_offered() {
+        let mut reconnect_cookie = reconnect_cookie();
+        reconnect_cookie[4..8].copy_from_slice(&2u32.to_le_bytes());
+        let optional_info = ExtendedClientOptionalInfo {
+            timezone: Some(TimezoneInfo::default()),
+            session_id: Some(0),
+            performance_flags: Some(PerformanceFlags::default()),
+            reconnect_cookie: Some(reconnect_cookie),
+            auto_reconnect: None,
+        };
+
+        let decoded: ExtendedClientOptionalInfo = decode(&encode_vec(&optional_info).unwrap()).unwrap();
+        assert_eq!(decoded.reconnect_cookie(), Some(&reconnect_cookie));
+        assert!(decoded.auto_reconnect().is_none());
+    }
+
+    #[test]
+    fn builder_parses_valid_auto_reconnect_packet() {
+        let optional_info = ExtendedClientOptionalInfo::builder()
+            .timezone(TimezoneInfo::default())
+            .session_id(0)
+            .performance_flags(PerformanceFlags::default())
+            .reconnect_cookie(reconnect_cookie())
+            .build();
+
+        assert_eq!(
+            optional_info.auto_reconnect().map(|packet| packet.logon_id),
+            Some(0x1234_5678)
+        );
     }
 }

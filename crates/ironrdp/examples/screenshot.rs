@@ -436,11 +436,11 @@ fn extract_tls_server_public_key(cert: &[u8]) -> anyhow::Result<Vec<u8>> {
 
     let cert = x509_cert::Certificate::from_der(cert)?;
 
-    debug!(%cert.tbs_certificate.subject);
+    debug!(subject = %cert.tbs_certificate().subject());
 
     let server_public_key = cert
-        .tbs_certificate
-        .subject_public_key_info
+        .tbs_certificate()
+        .subject_public_key_info()
         .subject_public_key
         .as_bytes()
         .context("subject public key BIT STRING is not aligned")?

@@ -143,6 +143,7 @@ Do not modify them unless specifically working on fixing their compilation.
 - **Doc comments:** link to spec sections using reference-style links.
 - **Avoid monomorphization:** use `&dyn` inner functions for large generic code; avoid `AsRef` polymorphism.
 - **No single-use helper functions:** use blocks instead; put nested helpers at end of enclosing function.
+- **Inline test modules:** place `#[cfg(test)] mod tests` (and other test-only modules) at the end of their enclosing source file or module, after all production items. Do not interleave them with normal source code.
 
 ### Dependency Policies
 
