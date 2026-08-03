@@ -111,7 +111,6 @@ impl FastPathBulkDecompressionFailure {
     }
 }
 
-
 #[derive(Debug)]
 pub enum UpdateKind {
     None,
@@ -1029,7 +1028,6 @@ fn is_visual_update_code(update_code: u8) -> bool {
                 || code == UpdateCode::LargePointer.as_u8()
         )
 }
-
 
 struct FrameMarkerProcessor {
     user_channel_id: u16,

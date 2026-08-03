@@ -776,7 +776,6 @@ fn sanitize_capabilities_for_confirm(mut capabilities: CapabilitySet) -> Capabil
     capabilities
 }
 
-
 // ============================================================================
 // Handler Trait
 // ============================================================================

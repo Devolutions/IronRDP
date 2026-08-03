@@ -604,7 +604,6 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
     }
 }
 
-
 /// [2.2.1.11.1.1.1.1] Time Zone Information (TS_TIME_ZONE_INFORMATION)
 ///
 /// The timezone info struct contains client time zone information.
