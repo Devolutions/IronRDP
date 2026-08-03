@@ -16,6 +16,9 @@ env:
   RUST_BACKTRACE: short
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   CARGO_PROFILE_DEV_DEBUG: 0
+  # The workflow generates a cryptographically random pipe name. Some hosted runners reject
+  # FILE_FLAG_FIRST_PIPE_INSTANCE despite no existing instance, so exclusivity is unnecessary here.
+  IRONRDP_RPC_DISABLE_FIRST_PIPE_INSTANCE: 1
 
 jobs:
   localhost-rdp:

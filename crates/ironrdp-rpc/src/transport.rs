@@ -394,7 +394,10 @@ mod imp {
         /// already owns the pipe, so two daemons cannot coexist on the same endpoint.
         pub fn bind(endpoint: &Endpoint) -> io::Result<Self> {
             let security = OwnedSecurityDescriptor::for_current_user()?;
-            let ready = create_server_instance(&endpoint.0, true, &security)?;
+            // Test harnesses with cryptographically random pipe names may opt out when a hosted
+            // runner rejects `FILE_FLAG_FIRST_PIPE_INSTANCE` despite no existing instance.
+            let first = std::env::var_os("IRONRDP_RPC_DISABLE_FIRST_PIPE_INSTANCE").is_none();
+            let ready = create_server_instance(&endpoint.0, first, &security)?;
             Ok(Self {
                 name: endpoint.0.clone(),
                 ready,

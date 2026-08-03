@@ -63,6 +63,16 @@ $state | ConvertTo-Json -Depth 4 | Set-Content -Path $StatePath -Encoding utf8No
 
 $deadline = (Get-Date).AddSeconds(30)
 do {
+    if ($process.HasExited) {
+        $errorOutput = if (Test-Path $stderrPath) {
+            Get-Content -Path $stderrPath -Raw
+        }
+        else {
+            ''
+        }
+        throw "ironrdp-agent daemon exited before it became ready: $errorOutput"
+    }
+
     try {
         Invoke-Agent status | Out-Null
         $state | ConvertTo-Json -Compress
