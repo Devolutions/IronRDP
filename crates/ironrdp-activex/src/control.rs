@@ -1222,7 +1222,6 @@ struct NativeMstscCredentialBridge {
 enum NativeMstscStartProgramIntercept {
     NotHandled,
     Handled,
-    AutoLogonStarted,
 }
 
 impl NativeMstscCredentialBridge {
@@ -1253,10 +1252,11 @@ impl NativeMstscCredentialBridge {
             trace_host_call("NativeMstscCredentialBridge::StartProgramNotStarted");
         }
         if started && native_mstsc_autologon_enabled() {
-            NativeMstscStartProgramIntercept::AutoLogonStarted
-        } else {
-            NativeMstscStartProgramIntercept::Handled
+            // CredUI normally supplies a modal delay before the native shell observes the bridge's
+            // preflight failure. Give the unattended worker the same bounded initialization window.
+            std::thread::sleep(Duration::from_secs(3));
         }
+        NativeMstscStartProgramIntercept::Handled
     }
 }
 
@@ -2518,11 +2518,6 @@ unsafe extern "system" fn secured_put_start_program(this: *mut c_void, value: Bs
                 // The bridge uses this call solely as its explicit prompt trigger, so it must take
                 // ownership before deserializing that unrelated payload.
                 return E_INVALIDARG;
-            }
-            NativeMstscStartProgramIntercept::AutoLogonStarted => {
-                // The unattended bridge has already started IronRDP. Reporting success keeps the native
-                // shell alive long enough for its local RPC and NOW endpoints to become available.
-                return S_OK;
             }
         }
     }

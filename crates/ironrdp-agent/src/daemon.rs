@@ -611,8 +611,8 @@ impl Daemon {
             physical_size: None,
         }) {
             Ok(()) => Ok(()),
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Err(ResizeError::Full),
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(ResizeError::Closed),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(ResizeError::Full),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(ResizeError::Closed),
         }
     }
 
