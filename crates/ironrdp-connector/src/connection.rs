@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
+use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
 use ironrdp_svc::{MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
@@ -241,6 +242,10 @@ pub struct ClientConnector {
     /// advertised `SOFTSYNC_TCP_TO_UDP`, so the outcome reported back depends on
     /// what both peers advertised.
     pub server_multitransport_flags: Option<gcc::MultiTransportFlags>,
+    /// Auto-reconnect cookie from a previous session, when reconnecting.
+    ///
+    /// Set via [`ClientConnector::with_auto_reconnect_cookie`].
+    pub auto_reconnect_cookie: Option<ServerAutoReconnect>,
 }
 
 impl ClientConnector {
@@ -252,7 +257,27 @@ impl ClientConnector {
             static_channels: StaticChannelSet::new(),
             message_channel_id: None,
             server_multitransport_flags: None,
+            auto_reconnect_cookie: None,
         }
+    }
+
+    /// Attempt to resume a previous session using its auto-reconnect cookie.
+    ///
+    /// The cookie is handed to the client by the server in a Save Session Info
+    /// PDU ([MS-RDPBCGR] 2.2.10.1) and is bound to one session. Supplying it here
+    /// makes the connector send the derived Client Auto-Reconnect Packet
+    /// ([MS-RDPBCGR] 2.2.4.3) in the Client Info PDU, which lets the server
+    /// reattach the session without prompting for credentials again
+    /// ([MS-RDPBCGR] 1.3.1.5).
+    ///
+    /// The server regenerates the cookie whenever a client connects and again at
+    /// hourly intervals ([MS-RDPBCGR] 3.3.6.2), so pass the most recent one
+    /// received. A stale or absent cookie is not an error: the server falls back
+    /// to a normal logon.
+    #[must_use]
+    pub fn with_auto_reconnect_cookie(mut self, cookie: ServerAutoReconnect) -> Self {
+        self.auto_reconnect_cookie = Some(cookie);
+        self
     }
 
     /// Whether Soft-Sync (`SOFTSYNC_TCP_TO_UDP`) was mutually advertised, meaning
@@ -893,7 +918,8 @@ impl Sequence for ClientConnector {
             } => {
                 debug!("Secure Settings Exchange");
 
-                let client_info = create_client_info_pdu(&self.config, &self.client_addr);
+                let client_info =
+                    create_client_info_pdu(&self.config, &self.client_addr, self.auto_reconnect_cookie.as_ref());
 
                 debug!(message = ?client_info, "Send");
 
@@ -1362,11 +1388,15 @@ fn create_gcc_blocks<'a>(
     })
 }
 
-fn create_client_info_pdu(config: &Config, client_addr: &SocketAddr) -> rdp::ClientInfoPdu {
+fn create_client_info_pdu(
+    config: &Config,
+    client_addr: &SocketAddr,
+    auto_reconnect_cookie: Option<&ServerAutoReconnect>,
+) -> rdp::ClientInfoPdu {
     use ironrdp_pdu::rdp::ClientInfoPdu;
     use ironrdp_pdu::rdp::client_info::{
-        AddressFamily, ClientInfo, ClientInfoFlags, CompressionType, Credentials, ExtendedClientInfo,
-        ExtendedClientOptionalInfo,
+        AddressFamily, ClientAutoReconnect, ClientInfo, ClientInfoFlags, CompressionType, Credentials,
+        ExtendedClientInfo, ExtendedClientOptionalInfo,
     };
     use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 
@@ -1424,11 +1454,22 @@ fn create_client_info_pdu(config: &Config, client_addr: &SocketAddr) -> rdp::Cli
             },
             address: client_addr.ip().to_string(),
             dir: config.client_dir.clone(),
-            optional_data: ExtendedClientOptionalInfo::builder()
-                .timezone(config.timezone_info.clone())
-                .session_id(0)
-                .performance_flags(config.performance_flags)
-                .build(),
+            optional_data: {
+                let builder = ExtendedClientOptionalInfo::builder()
+                    .timezone(config.timezone_info.clone())
+                    .session_id(0)
+                    .performance_flags(config.performance_flags);
+
+                // Resuming a session: prove we held the cookie the server issued
+                // for it ([MS-RDPBCGR] 2.2.4.3, derived per 5.5). Absent on a
+                // fresh connection, which is an ordinary logon.
+                match auto_reconnect_cookie {
+                    Some(cookie) => builder
+                        .reconnect_cookie(ClientAutoReconnect::from_server_cookie(cookie).to_bytes())
+                        .build(),
+                    None => builder.build(),
+                }
+            },
         },
     };
 

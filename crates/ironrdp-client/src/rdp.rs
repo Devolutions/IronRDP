@@ -1288,6 +1288,13 @@ async fn active_session(
 
         for out in outputs {
             match out {
+                ActiveStageOutput::AutoReconnectCookie(_cookie) => {
+                    // The connector can now return this to the server via
+                    // `with_auto_reconnect_cookie`. Holding it across a dropped
+                    // connection and reconnecting with it is the remaining part of
+                    // #271; see the TODO at the reconnect site.
+                    debug!("Received a Server Auto-Reconnect Cookie");
+                }
                 ActiveStageOutput::ResponseFrame(frame) => {
                     let Some(result) = cancelable_operation(writer.write_all(&frame), close_receiver).await else {
                         return Ok(RdpControlFlow::TerminatedGracefully(

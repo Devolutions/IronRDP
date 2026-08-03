@@ -228,6 +228,7 @@ pub mod ffi {
         /// RTT and bandwidth values for connection quality monitoring.
         AutoDetect,
         SaveSessionInfo,
+        AutoReconnectCookie,
     }
 
     impl ActiveStageOutput {
@@ -246,6 +247,9 @@ pub mod ffi {
                 }
                 ironrdp::session::ActiveStageOutput::AutoDetect { .. } => ActiveStageOutputType::AutoDetect,
                 ironrdp::session::ActiveStageOutput::SaveSessionInfo { .. } => ActiveStageOutputType::SaveSessionInfo,
+                ironrdp::session::ActiveStageOutput::AutoReconnectCookie { .. } => {
+                    ActiveStageOutputType::AutoReconnectCookie
+                }
             }
         }
 

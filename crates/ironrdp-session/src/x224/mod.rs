@@ -8,7 +8,7 @@ use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::{CompressionFlags, ShareDataCtx, ShareDataPdu};
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
-use ironrdp_pdu::rdp::session_info::{InfoData, SaveSessionInfoPdu};
+use ironrdp_pdu::rdp::session_info::{InfoData, SaveSessionInfoPdu, ServerAutoReconnect};
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages, client_encode_svc_messages};
 use tracing::debug;
@@ -42,6 +42,22 @@ pub enum ProcessorOutput {
     /// [\[MS-RDPBCGR\] 2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
     /// [`MultitransportResponsePdu`]: ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu
     MultitransportRequest(MultitransportRequestPdu),
+    /// Server Auto-Reconnect Cookie from a Save Session Info PDU
+    /// ([\[MS-RDPBCGR\] 2.2.4.2]).
+    ///
+    /// The client should hold onto this and pass it to
+    /// `ClientConnector::with_auto_reconnect_cookie` if the connection drops
+    /// ungracefully, which lets the server reattach the session without asking
+    /// for credentials again ([\[MS-RDPBCGR\] 1.3.1.5]).
+    ///
+    /// The server replaces the cookie whenever a client connects and again at
+    /// hourly intervals (MS-RDPBCGR 3.3.6.2, Auto-Reconnect Cookie Update), so
+    /// this can arrive more than once in a session; keep the most recent and
+    /// discard the previous one.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18f4f605-0ee3-4175-8a62-cf8775252547
+    /// [\[MS-RDPBCGR\] 1.3.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
+    AutoReconnectCookie(ServerAutoReconnect),
     /// Auto-detect network characteristics from server ([\[MS-RDPBCGR\] 2.2.14]).
     ///
     /// Currently only surfaces [`AutoDetectRequest::NetworkCharacteristicsResult`].
@@ -217,9 +233,20 @@ impl Processor {
         match pdu {
             ShareDataPdu::SaveSessionInfo(session_info) => {
                 debug!("Got Session Save Info PDU: {session_info:?}");
-                Ok(vec![ProcessorOutput::SaveSessionInfo {
+                let mut outputs = vec![ProcessorOutput::SaveSessionInfo {
                     logon_complete: is_logon_complete(&session_info),
-                }])
+                }];
+
+                // Surface the auto-reconnect cookie alongside the logon status so
+                // the consumer can keep it for a later reconnect. Both come out of
+                // this one PDU and neither supersedes the other.
+                if let InfoData::LogonExtended(extended) = &session_info.info_data {
+                    if let Some(cookie) = &extended.auto_reconnect {
+                        outputs.push(ProcessorOutput::AutoReconnectCookie(cookie.clone()));
+                    }
+                }
+
+                Ok(outputs)
             }
             // FIXME: workaround fix to not terminate the session on "unhandled PDU: Set Keyboard Indicators PDU"
             ShareDataPdu::SetKeyboardIndicators(data) => {
