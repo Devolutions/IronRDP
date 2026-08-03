@@ -477,16 +477,15 @@ impl<'de> Decode<'de> for AutoDetectRequest {
                 // Connect-time stop has payloadLength + payload.
                 ensure_size!(in: src, size: 2);
                 let payload_length = src.read_u16();
-                // Same rule as the encoder: 2.2.14.1.4 requires a value greater than
-                // zero here, so a zero length is a malformed PDU rather than an empty
-                // payload. Accepting what we refuse to emit would leave the two sides
-                // disagreeing about what the wire permits.
-                if payload_length == 0 {
-                    return Err(invalid_field_err!(
-                        "payloadLength",
-                        "connect-time Bandwidth Measure Stop requires a payload length greater than zero"
-                    ));
-                }
+                // A zero length does not conform: 2.2.14.1.4 requires a value greater
+                // than zero, which is why `encode` refuses to emit one. It is still
+                // accepted here, deliberately, because the two directions answer
+                // different questions. Emitting asks what we are permitted to put on the
+                // wire; accepting asks whether we can act on what a peer already sent.
+                // The sequence number and request type are intact, so the Bandwidth
+                // Measure Results reply this PDU asks for is fully determined, and
+                // rejecting it would drop a measurement a server is blocking on rather
+                // than correct anything.
                 ensure_size!(in: src, size: usize::from(payload_length));
                 let payload = src.read_slice(usize::from(payload_length)).to_vec();
                 Ok(Self::BandwidthMeasureStop {
