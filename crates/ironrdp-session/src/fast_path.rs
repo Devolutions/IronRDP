@@ -118,6 +118,8 @@ mod tests {
     use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute};
     use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu};
 
+    use ironrdp_graphics::rdp6::{BitmapStreamEncoder, RgbChannels};
+
     use super::*;
 
     #[test]
@@ -169,6 +171,95 @@ mod tests {
         assert_eq!(pixel(2, 1), [4, 5, 6, 255]);
         assert_eq!(pixel(3, 0), [0, 0, 0, 0]);
     }
+
+    #[test]
+    fn rdp6_bitmap_update_uses_default_or_legacy_scanline_order() {
+        for (use_legacy_order, expected_top_row, expected_bottom_row) in [
+            (
+                false,
+                [[30, 31, 32, 255], [40, 41, 42, 255]],
+                [[10, 11, 12, 255], [20, 21, 22, 255]],
+            ),
+            (
+                true,
+                [[10, 11, 12, 255], [20, 21, 22, 255]],
+                [[30, 31, 32, 255], [40, 41, 42, 255]],
+            ),
+        ] {
+            for rle in [false, true] {
+                let mut processor = ProcessorBuilder {
+                    io_channel_id: 0,
+                    user_channel_id: 0,
+                    share_id: 0,
+                    enable_server_pointer: false,
+                    pointer_software_rendering: false,
+                }
+                .build();
+                if use_legacy_order {
+                    processor.enable_legacy_rdp6_bitmap_order();
+                }
+                let mut image = DecodedImage::new(PixelFormat::RgbA32, 2, 2);
+
+                // Keep the first stream row distinct from the last so the legacy
+                // interpretation is observable.
+                let wire_rgb = [
+                    30, 31, 32, 40, 41, 42, // first stream row
+                    10, 11, 12, 20, 21, 22, // last stream row
+                ];
+                let mut bitmap_data = vec![0; wire_rgb.len() + 8];
+                let written = BitmapStreamEncoder::new(2, 2)
+                    .encode_bitmap::<RgbChannels>(&wire_rgb, &mut bitmap_data, rle)
+                    .unwrap();
+
+                let bitmap_update = BitmapUpdateData {
+                    rectangles: vec![BitmapData {
+                        rectangle: InclusiveRectangle {
+                            left: 0,
+                            top: 0,
+                            right: 1,
+                            bottom: 1,
+                        },
+                        width: 2,
+                        height: 2,
+                        bits_per_pixel: 32,
+                        compression_flags: Compression::BITMAP_COMPRESSION,
+                        compressed_data_header: None,
+                        bitmap_data: &bitmap_data[..written],
+                    }],
+                };
+
+                processor.process_bitmap_update(&mut image, bitmap_update).unwrap();
+
+                let pixel = |x: usize, y: usize| -> [u8; 4] {
+                    let offset = (y * usize::from(image.width()) + x) * 4;
+                    image.data()[offset..offset + 4]
+                        .try_into()
+                        .expect("pixel has four channels")
+                };
+                assert_eq!(
+                    pixel(0, 0),
+                    expected_top_row[0],
+                    "legacy: {use_legacy_order}, RLE: {rle}"
+                );
+                assert_eq!(
+                    pixel(1, 0),
+                    expected_top_row[1],
+                    "legacy: {use_legacy_order}, RLE: {rle}"
+                );
+                assert_eq!(
+                    pixel(0, 1),
+                    expected_bottom_row[0],
+                    "legacy: {use_legacy_order}, RLE: {rle}"
+                );
+                assert_eq!(
+                    pixel(1, 1),
+                    expected_bottom_row[1],
+                    "legacy: {use_legacy_order}, RLE: {rle}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn malformed_bitmap_requests_one_recovery_without_terminating_the_session() {
         let mut processor = ProcessorBuilder {
@@ -413,6 +504,7 @@ pub struct Processor {
     rfx_handler: rfx::DecodingContext,
     marker_processor: FrameMarkerProcessor,
     bitmap_stream_decoder: BitmapStreamDecoder,
+    use_legacy_rdp6_bitmap_order: bool,
     pointer_cache: PointerCache,
     use_system_pointer: bool,
     mouse_pos_update: Option<(u16, u16)>,
@@ -433,6 +525,11 @@ pub struct Processor {
 impl Processor {
     pub fn update_mouse_pos(&mut self, x: u16, y: u16) {
         self.mouse_pos_update = Some((x, y));
+    }
+
+    /// Uses the legacy bottom-up RDP6 bitmap scanline order.
+    pub(crate) fn enable_legacy_rdp6_bitmap_order(&mut self) {
+        self.use_legacy_rdp6_bitmap_order = true;
     }
 
     /// Returns whether a malformed visual update requires a one-time full redraw request.
@@ -681,8 +778,13 @@ impl Processor {
                         usize::from(update.width),
                         usize::from(update.height),
                     ) {
-                        // The RDP 6 decoder writes its planes in row-major (top-down) order.
-                        Ok(()) => apply_bitmap(image.apply_rgb24(&buf, &update_rectangle, update.width, false))?,
+                        // The legacy compatibility mode maps bottom-up streams to framebuffer rows.
+                        Ok(()) => apply_bitmap(image.apply_rgb24(
+                            &buf,
+                            &update_rectangle,
+                            update.width,
+                            self.use_legacy_rdp6_bitmap_order,
+                        ))?,
                         Err(err) => {
                             warn!("Invalid RDP6_BITMAP_STREAM: {err}");
                             None
@@ -1178,6 +1280,7 @@ impl ProcessorBuilder {
             rfx_handler: rfx::DecodingContext::new(),
             marker_processor: FrameMarkerProcessor::new(self.user_channel_id, self.io_channel_id, self.share_id),
             bitmap_stream_decoder: BitmapStreamDecoder::default(),
+            use_legacy_rdp6_bitmap_order: false,
             pointer_cache: PointerCache::default(),
             use_system_pointer: true,
             mouse_pos_update: None,
