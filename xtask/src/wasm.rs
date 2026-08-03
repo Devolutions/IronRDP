@@ -59,9 +59,9 @@ fn install_wasm2wat(sh: &Shell) -> anyhow::Result<()> {
     let platform_suffix = if cfg!(target_os = "windows") {
         "windows"
     } else if cfg!(target_os = "macos") {
-        "macos-14"
+        "macos-arm64"
     } else {
-        "ubuntu-20.04"
+        "linux-x64"
     };
 
     let url = format!(

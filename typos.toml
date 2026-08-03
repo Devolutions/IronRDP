@@ -51,6 +51,10 @@ extend-ignore-re = [
    "cll",
    "CLL",
 
+   # "writeable" is an accepted alternate spelling of "writable".
+   "Writeable",
+   "writeable",
+
    # False-positive fix for compression length variable in ironrdp-bulk benchmarks:
    "\\bclen\\b",
 

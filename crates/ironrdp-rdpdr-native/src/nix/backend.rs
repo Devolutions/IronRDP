@@ -627,13 +627,13 @@ pub(crate) fn query_directory(
 
 fn make_create_drive_resp(
     device_io_request: DeviceIoRequest,
-    create_disposation: CreateDisposition,
+    create_disposition: CreateDisposition,
     file_id: u32,
 ) -> PduResult<Vec<SvcMessage>> {
     let io_response = DeviceIoResponse::new(device_io_request, NtStatus::SUCCESS);
-    let information = if create_disposation == CreateDisposition::FILE_OPEN_IF {
+    let information = if create_disposition == CreateDisposition::FILE_OPEN_IF {
         Information::FILE_OPENED
-    } else if create_disposation == CreateDisposition::FILE_OVERWRITE_IF {
+    } else if create_disposition == CreateDisposition::FILE_OVERWRITE_IF {
         Information::FILE_OVERWRITTEN
     } else {
         Information::FILE_SUPERSEDED
