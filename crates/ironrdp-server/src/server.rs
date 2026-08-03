@@ -1,5 +1,5 @@
 use core::fmt;
-use core::net::SocketAddr;
+use core::net::{IpAddr, SocketAddr};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
 use std::rc::Rc;
@@ -31,11 +31,11 @@ use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, un
 use rand::RngCore as _;
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
-use tokio::net::TcpSocket;
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::autodetect::{AutoDetectManager, RttSnapshot};
 use crate::clipboard::CliprdrServerFactory;
@@ -247,6 +247,42 @@ pub struct RdpServerOptions {
     /// server-provided size. Set via
     /// [`RdpServerBuilder::with_honor_client_desktop_size`](crate::RdpServerBuilder::with_honor_client_desktop_size).
     pub honor_client_desktop_size: Option<DesktopSize>,
+    /// When `true`, a new connection accepted while [`RdpServer::run`] is
+    /// already serving another one PREEMPTS it: once the newcomer has
+    /// **completed authentication**, the existing connection is told why it is
+    /// going away and dropped, and the newcomer is served in its place.
+    ///
+    /// [`RdpServer`] serves one connection at a time. By default a second
+    /// connection accepted while one is live is left unserved in the OS listen
+    /// backlog — from that client's point of view, a silent hang until the
+    /// first session ends. That queue-behind behaviour suits a server expecting
+    /// many short-lived connections, but not one backing a single specific
+    /// session (e.g. mirroring one desktop), where a newly connecting client
+    /// should replace a stale or abandoned one.
+    ///
+    /// # Security
+    ///
+    /// Evicting a live session is disruptive, so the bar to do it is
+    /// **completed authentication**, not merely "looks like RDP": a candidate
+    /// runs the full negotiation — and, under [`RdpServerSecurity::Hybrid`],
+    /// CredSSP/NLA — before the live session is touched at all. A candidate
+    /// that fails at any step leaves the live session untouched. Concretely,
+    /// what a candidate must clear before it may preempt:
+    ///
+    /// | Security mode | Bar to preempt | Guarantee |
+    /// |---|---|---|
+    /// | [`Hybrid`](RdpServerSecurity::Hybrid) | CredSSP/NLA succeeds | an unauthenticated peer can never evict |
+    /// | [`Tls`](RdpServerSecurity::Tls) | TLS handshake completes | partial — a [`CredentialValidator`] still runs later, during finalization |
+    /// | [`None`](RdpServerSecurity::None) | X.224/MCS negotiation completes | none — this mode performs no authentication at all |
+    ///
+    /// Candidates are additionally gated through
+    /// [`ConnectionHandler::on_accept`] *before* they are allowed to
+    /// negotiate, so an IP allowlist or rate limiter bounds who may even
+    /// attempt a takeover.
+    ///
+    /// Defaults to `false` (queue-behind, the pre-existing behaviour). Set via
+    /// [`RdpServerBuilder::with_preempt_existing_session`](crate::RdpServerBuilder::with_preempt_existing_session).
+    pub preempt_existing_session: bool,
 }
 
 impl RdpServerOptions {
@@ -454,11 +490,17 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channels: StaticChannelSet,
-    sound_factory: Option<Box<dyn SoundServerFactory>>,
-    cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+    // `Rc`, not `Box`: with `preempt_existing_session`, a candidate connection
+    // negotiates concurrently with the live one, which holds `&mut self` for its
+    // whole lifetime. The candidate therefore builds its channels from a cheaply
+    // cloned `NegotiationContext` snapshot of these instead of reaching through
+    // `self`. Set once at construction and never reassigned, so sharing them
+    // costs nothing at steady state.
+    sound_factory: Option<Rc<dyn SoundServerFactory>>,
+    cliprdr_factory: Option<Rc<dyn CliprdrServerFactory>>,
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
-    gfx_factory: Option<Box<dyn GfxServerFactory>>,
+    gfx_factory: Option<Rc<dyn GfxServerFactory>>,
     #[cfg(feature = "egfx")]
     gfx_handle: Option<crate::gfx::GfxServerHandle>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
@@ -468,6 +510,20 @@ pub struct RdpServer {
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
+    /// Anti-storm net for [`RdpServerOptions::preempt_existing_session`]: the
+    /// peer most recently EVICTED by a takeover, and when it last tried to
+    /// come back.
+    ///
+    /// Telling the loser why it was evicted (see
+    /// [`ServerEvent::EvictedByOtherConnection`]) is the real fix for the
+    /// eviction loop, but whether a client honours it is client-dependent.
+    /// This bounds the damage if one doesn't: a just-evicted peer may not
+    /// immediately re-preempt, and each refused attempt RE-ARMS the window, so
+    /// an automatic reconnect storm can never win the session back, while a
+    /// human who closes the client and reconnects still can. Keyed on source
+    /// IP, since the source port changes on every reconnect. Cleared once a
+    /// session ends on its own terms rather than being replaced.
+    recently_evicted: Option<(IpAddr, Instant)>,
     /// True while the client has sent `SuppressOutput { desktop_rect: None }`
     /// — the standard RDP "I don't need display updates right now" signal
     /// (mstsc raises it on window minimize). Cleared on
@@ -532,6 +588,18 @@ impl AutoReconnectCookieHandle {
 
 pub enum ServerEvent {
     Quit(String),
+    /// End this connection because an authenticated candidate is taking the
+    /// session over — a preemption, not a plain quit.
+    ///
+    /// Unlike [`Self::Quit`], this sends a Server Set Error Info PDU carrying
+    /// `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` (MS-RDPBCGR 2.2.5.1.1 — the
+    /// code real Windows RDS uses for a session takeover) before
+    /// disconnecting. That distinction is load-bearing rather than cosmetic
+    /// whenever a Server Auto-Reconnect Cookie is in play: a client dropped
+    /// with no explanation auto-reconnects a second later, re-preempts the
+    /// client that replaced it, and the two ping-pong indefinitely. Telling
+    /// the loser WHY it was disconnected is what makes it stay away.
+    EvictedByOtherConnection,
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
     Echo(EchoServerMessage),
@@ -549,6 +617,7 @@ impl fmt::Debug for ServerEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Quit(reason) => f.debug_tuple("Quit").field(reason).finish(),
+            Self::EvictedByOtherConnection => f.write_str("EvictedByOtherConnection"),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
             Self::Echo(..) => f.write_str("Echo(..)"),
@@ -573,11 +642,349 @@ impl ServerEvent {
     }
 }
 
+/// What resolved first while a session was live, under
+/// [`RdpServerOptions::preempt_existing_session`]: the session itself ending, a
+/// new inbound connection, or the verdict on a candidate being negotiated. The
+/// race's `select!` yields one of these and must not otherwise mutate the probe
+/// slot, whose futures it still borrows.
+/// The in-flight [`negotiate_candidate`] call for a candidate connection, or a
+/// never-resolving placeholder while none is being negotiated. Borrows the
+/// [`NegotiationContext`] the race built.
+type PreemptProbe<'ctx> =
+    core::pin::Pin<Box<dyn Future<Output = Option<(Box<NegotiatedCandidate>, SocketAddr)>> + 'ctx>>;
+
+enum PreemptRace {
+    Ended(Result<()>),
+    Accepted(std::io::Result<(TcpStream, SocketAddr)>),
+    Probed(Option<(Box<NegotiatedCandidate>, SocketAddr)>),
+}
+
 #[derive(Debug, PartialEq)]
 enum RunState {
     Continue,
     Disconnect,
     DeactivationReactivation { desktop_size: DesktopSize },
+}
+
+/// The GFX server handle [`attach_channels_impl`] hands back, so the caller
+/// decides when to install it on `RdpServer::gfx_handle` — a type alias so the
+/// signature needs no `#[cfg]` variant of its own.
+#[cfg(feature = "egfx")]
+type AttachedGfxHandle = Option<crate::gfx::GfxServerHandle>;
+#[cfg(not(feature = "egfx"))]
+type AttachedGfxHandle = ();
+
+/// The channel-attaching half of connection setup, factored out of
+/// [`RdpServer::attach_channels`] so it can also run for a preempting
+/// candidate — which negotiates concurrently with the live connection's
+/// `&mut self` borrow and so cannot call a `&mut self` method.
+///
+/// Takes borrowed factories rather than reading `self`: the normal path passes
+/// `self`'s own, the candidate path passes a [`NegotiationContext`]'s clones.
+///
+/// Returns the GFX handle instead of writing it to a field — the normal path
+/// installs it immediately (nothing is racing it), while the candidate path
+/// holds it and only installs it if that candidate actually wins the race (see
+/// [`RdpServer::serve_negotiated`]), since only the winner should claim it.
+fn attach_channels_impl(
+    acceptor: &mut Acceptor,
+    cliprdr_factory: Option<&dyn CliprdrServerFactory>,
+    sound_factory: Option<&dyn SoundServerFactory>,
+    #[cfg(feature = "egfx")] gfx_factory: Option<&dyn GfxServerFactory>,
+    display: &Arc<Mutex<Box<dyn RdpServerDisplay>>>,
+    handler: &Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
+    echo_handle: &EchoServerHandle,
+) -> AttachedGfxHandle {
+    if let Some(cliprdr_factory) = cliprdr_factory {
+        let backend = cliprdr_factory.build_cliprdr_backend();
+
+        let cliprdr = CliprdrServer::new(backend);
+
+        acceptor.attach_static_channel(cliprdr);
+    }
+
+    if let Some(factory) = sound_factory {
+        let backend = factory.build_backend();
+
+        acceptor.attach_static_channel(RdpsndServer::new(backend));
+    }
+
+    let dcs_backend = DisplayControlBackend::new(Arc::clone(display));
+    let dvc = dvc::DrdynvcServer::new()
+        .with_dynamic_channel(AInputHandler {
+            handler: Arc::clone(handler),
+        })
+        .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
+
+    let dvc = {
+        let echo_handle = echo_handle.clone();
+        dvc.with_dynamic_channel(EchoDvcBridge::new(echo_handle))
+    };
+
+    #[cfg(feature = "egfx")]
+    let (dvc, gfx_handle) = {
+        let mut dvc = dvc;
+        let mut gfx_handle = None;
+        if let Some(gfx_factory) = gfx_factory {
+            if let Some((bridge, handle)) = gfx_factory.build_server_with_handle() {
+                gfx_handle = Some(handle);
+                dvc = dvc.with_dynamic_channel(bridge);
+            } else {
+                let handler = gfx_factory.build_gfx_handler();
+                let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(handler);
+                dvc = dvc.with_dynamic_channel(gfx_server);
+            }
+        }
+        (dvc, gfx_handle)
+    };
+    #[cfg(not(feature = "egfx"))]
+    let gfx_handle = ();
+
+    acceptor.attach_static_channel(dvc);
+
+    gfx_handle
+}
+
+/// Which transport a connection ended up on after
+/// [`negotiate_and_authenticate`], carrying the framed stream in the shape the
+/// finalize step needs. The three variants exist to preserve the three
+/// pre-existing finalize behaviours exactly.
+enum NegotiatedTransport<S> {
+    /// Never upgraded ([`RdpServerSecurity::None`]): finalize without a
+    /// stream shutdown, matching the old `BeginResult::Continue` arm.
+    Continued(TokioFramed<S>),
+    /// Upgraded in-band by us ([`TransportTls::Managed`]).
+    Tls(Box<TokioFramed<tokio_rustls::server::TlsStream<S>>>),
+    /// Already past TLS at a lower layer ([`TransportTls::AlreadyDone`]).
+    Offloaded(TokioFramed<S>),
+}
+
+/// Negotiate `stream` and, where the security mode provides it, AUTHENTICATE
+/// it — everything up to (but not including) `accept_finalize`.
+///
+/// Deliberately a free function taking `&RdpServerSecurity` + `&mut Acceptor`
+/// rather than `&mut self`: that is what lets a preempting candidate run this
+/// concurrently with the live connection's `&mut self` borrow. Both the normal
+/// path ([`RdpServer::run_connection_with`]) and the candidate path
+/// ([`negotiate_candidate`]) go through here, so there is exactly one
+/// negotiation implementation and the two cannot drift.
+///
+/// `Ok(None)` means the TLS handshake failed and was already logged — the
+/// caller should abandon the connection quietly rather than treat it as a
+/// connection error (preserving the pre-existing `return Ok(())` behaviour).
+async fn negotiate_and_authenticate<S>(
+    security: &RdpServerSecurity,
+    acceptor: &mut Acceptor,
+    stream: S,
+    tls: TransportTls,
+) -> Result<Option<NegotiatedTransport<S>>>
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    let framed = TokioFramed::new(stream);
+
+    let res = ironrdp_acceptor::accept_begin(framed, acceptor)
+        .await
+        .context("accept_begin failed")?;
+
+    match res {
+        // The only thing that varies between the two modes is who performs
+        // the TLS handshake; everything past it is identical.
+        BeginResult::ShouldUpgrade(stream) => {
+            let mut negotiated = match tls {
+                TransportTls::Managed => {
+                    let tls_acceptor = match security {
+                        RdpServerSecurity::Tls(acceptor) => acceptor,
+                        RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
+                        RdpServerSecurity::None => unreachable!(),
+                    };
+                    let accept = match tls_acceptor.accept(stream).await {
+                        Ok(accept) => accept,
+                        Err(e) => {
+                            warn!("Failed to TLS accept: {}", e);
+                            return Ok(None);
+                        }
+                    };
+                    NegotiatedTransport::Tls(Box::new(TokioFramed::new(accept)))
+                }
+                // The stream is already past TLS (terminated at a lower
+                // layer, e.g. a WSS terminator); do NOT call
+                // tls_acceptor.accept on it.
+                TransportTls::AlreadyDone => NegotiatedTransport::Offloaded(TokioFramed::new(stream)),
+            };
+
+            acceptor.mark_security_upgrade_as_done();
+
+            if let RdpServerSecurity::Hybrid((_, pub_key)) = security {
+                // Generic streams don't expose peer address. Use a neutral
+                // placeholder; it's unclear whether CredSSP/NTLM actually
+                // uses this value in practice.
+                let client_name = "rdp-client".to_owned();
+                let network_client = &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new();
+
+                match &mut negotiated {
+                    NegotiatedTransport::Tls(framed) => {
+                        ironrdp_acceptor::accept_credssp(
+                            framed.as_mut(),
+                            acceptor,
+                            network_client,
+                            client_name.into(),
+                            pub_key.clone(),
+                            None,
+                        )
+                        .await?;
+                    }
+                    NegotiatedTransport::Offloaded(framed) => {
+                        ironrdp_acceptor::accept_credssp(
+                            framed,
+                            acceptor,
+                            network_client,
+                            client_name.into(),
+                            pub_key.clone(),
+                            None,
+                        )
+                        .await?;
+                    }
+                    NegotiatedTransport::Continued(_) => unreachable!("ShouldUpgrade never yields Continued"),
+                }
+            }
+
+            Ok(Some(negotiated))
+        }
+
+        BeginResult::Continue(framed) => Ok(Some(NegotiatedTransport::Continued(framed))),
+    }
+}
+
+/// How long an evicted session gets to send its
+/// `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` and wind down on its own before
+/// it is cancelled outright. Short, because the preempting client is already
+/// authenticated and waiting and a half-dead peer must not stall the takeover;
+/// exceeding it is not an error, it just degrades to an abrupt drop.
+const EVICTION_GRACE: Duration = Duration::from_millis(750);
+
+/// How long a just-evicted peer is barred from preempting its way back in —
+/// see [`RdpServer::recently_evicted`].
+const REPREEMPT_COOLDOWN: Duration = Duration::from_secs(5);
+
+/// Should this candidate be refused because it is the peer that was just
+/// evicted, bouncing straight back to retake the session?
+///
+/// Each refused attempt RE-ARMS the window (that's the point): a client
+/// auto-reconnecting on a ~1 s cadence keeps resetting its own cooldown and so
+/// can never win the session back, while a human who closes the client and
+/// reconnects — a gap well beyond `cooldown` — still can.
+fn refuse_reconnect_from_evicted(
+    recently_evicted: &mut Option<(IpAddr, Instant)>,
+    peer: IpAddr,
+    now: Instant,
+    cooldown: Duration,
+) -> bool {
+    match recently_evicted {
+        Some((ip, last_try)) if *ip == peer => {
+            let within = now.duration_since(*last_try) < cooldown;
+            if within {
+                *last_try = now;
+            }
+            within
+        }
+        _ => false,
+    }
+}
+
+/// A cheap, `Rc`/`Arc`-cloned snapshot of everything a preempting candidate
+/// needs to negotiate, so it can do so WITHOUT `&mut self` and therefore
+/// concurrently with the live connection's borrow. Built per race via
+/// [`RdpServer::negotiation_context`].
+struct NegotiationContext {
+    opts: RdpServerOptions,
+    creds: Option<Credentials>,
+    display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
+    handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
+    echo_handle: EchoServerHandle,
+    cliprdr_factory: Option<Rc<dyn CliprdrServerFactory>>,
+    sound_factory: Option<Rc<dyn SoundServerFactory>>,
+    #[cfg(feature = "egfx")]
+    gfx_factory: Option<Rc<dyn GfxServerFactory>>,
+}
+
+/// A candidate that has negotiated AND authenticated, and so has earned the
+/// right to evict the live session. Everything needed to resume at
+/// finalization, which [`RdpServer::serve_negotiated`] does once it wins.
+struct NegotiatedCandidate {
+    transport: NegotiatedTransport<TcpStream>,
+    acceptor: Acceptor,
+    gfx_handle: AttachedGfxHandle,
+}
+
+/// Negotiate and authenticate a candidate connection against a cloned `ctx`,
+/// touching no `&mut self` — which is what lets this run inside
+/// [`RdpServer::run`]'s preemption race, concurrently with the live
+/// connection.
+///
+/// Returns `Some` only once the candidate has genuinely earned the session:
+/// negotiation completed and, where the security mode provides it,
+/// authentication succeeded (see the table on
+/// [`RdpServerOptions::preempt_existing_session`]). On any failure — a
+/// malformed or non-RDP handshake, TLS rejected, CredSSP rejected — returns
+/// `None` and the live session is left completely undisturbed.
+#[cfg_attr(
+    not(feature = "egfx"),
+    expect(
+        unit_bindings,
+        clippy::let_unit_value,
+        reason = "attach_channels_impl yields a GFX handle only when `egfx` is enabled"
+    )
+)]
+async fn negotiate_candidate(
+    ctx: &NegotiationContext,
+    stream: TcpStream,
+    peer: SocketAddr,
+) -> Option<(Box<NegotiatedCandidate>, SocketAddr)> {
+    let size = ctx.display.lock().await.size().await;
+    let capabilities = capabilities::capabilities(&ctx.opts, size);
+    let mut acceptor = Acceptor::new(ctx.opts.security.flag(), size, capabilities, ctx.creds.clone());
+    acceptor.set_honor_client_desktop_size(ctx.opts.honor_client_desktop_size);
+
+    let gfx_handle = attach_channels_impl(
+        &mut acceptor,
+        ctx.cliprdr_factory.as_deref(),
+        ctx.sound_factory.as_deref(),
+        #[cfg(feature = "egfx")]
+        ctx.gfx_factory.as_deref(),
+        &ctx.display,
+        &ctx.handler,
+        &ctx.echo_handle,
+    );
+
+    match negotiate_and_authenticate(&ctx.opts.security, &mut acceptor, stream, TransportTls::Managed).await {
+        Ok(Some(transport)) => {
+            debug!(?peer, "candidate authenticated -- eligible to preempt the live session");
+            Some((
+                Box::new(NegotiatedCandidate {
+                    transport,
+                    acceptor,
+                    gfx_handle,
+                }),
+                peer,
+            ))
+        }
+        Ok(None) => {
+            debug!(
+                ?peer,
+                "candidate TLS handshake failed -- not preempting the live session"
+            );
+            None
+        }
+        Err(error) => {
+            debug!(
+                ?peer,
+                %error,
+                "candidate did not negotiate/authenticate -- not preempting the live session"
+            );
+            None
+        }
+    }
 }
 
 impl RdpServer {
@@ -612,11 +1019,13 @@ impl RdpServer {
             handler: Arc::new(Mutex::new(handler)),
             display: Arc::new(Mutex::new(display)),
             static_channels: StaticChannelSet::new(),
-            sound_factory,
-            cliprdr_factory,
+            // Wrapped into `Rc` here, after the one-time `set_sender` wiring
+            // above, which needs `&mut` on the still-owned `Box`.
+            sound_factory: sound_factory.map(Rc::from),
+            cliprdr_factory: cliprdr_factory.map(Rc::from),
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
-            gfx_factory,
+            gfx_factory: gfx_factory.map(Rc::from),
             #[cfg(feature = "egfx")]
             gfx_handle: None,
             ev_sender,
@@ -626,6 +1035,7 @@ impl RdpServer {
             local_addr: None,
             autodetect: None,
             connection_handler,
+            recently_evicted: None,
             display_suppressed: display_suppressed.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
             autodetect_rtt: {
                 // Reset to the sentinel: an injected handle must not expose a stale value before the first measurement.
@@ -913,50 +1323,66 @@ impl RdpServer {
         self.gfx_handle.as_ref()
     }
 
+    #[cfg_attr(
+        not(feature = "egfx"),
+        expect(
+            unit_bindings,
+            clippy::let_unit_value,
+            reason = "attach_channels_impl yields a GFX handle only when `egfx` is enabled"
+        )
+    )]
     fn attach_channels(&mut self, acceptor: &mut Acceptor) {
-        if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
-            let backend = cliprdr_factory.build_cliprdr_backend();
-
-            let cliprdr = CliprdrServer::new(backend);
-
-            acceptor.attach_static_channel(cliprdr);
-        }
-
-        if let Some(factory) = self.sound_factory.as_deref() {
-            let backend = factory.build_backend();
-
-            acceptor.attach_static_channel(RdpsndServer::new(backend));
-        }
-
-        let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
-        let dvc = dvc::DrdynvcServer::new()
-            .with_dynamic_channel(AInputHandler {
-                handler: Arc::clone(&self.handler),
-            })
-            .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
-
-        let dvc = {
-            let echo_handle = self.echo_handle.clone();
-            dvc.with_dynamic_channel(EchoDvcBridge::new(echo_handle))
-        };
-
+        let gfx_handle = attach_channels_impl(
+            acceptor,
+            self.cliprdr_factory.as_deref(),
+            self.sound_factory.as_deref(),
+            #[cfg(feature = "egfx")]
+            self.gfx_factory.as_deref(),
+            &self.display,
+            &self.handler,
+            &self.echo_handle,
+        );
         #[cfg(feature = "egfx")]
-        let dvc = {
-            let mut dvc = dvc;
-            if let Some(gfx_factory) = self.gfx_factory.as_deref() {
-                if let Some((bridge, handle)) = gfx_factory.build_server_with_handle() {
-                    self.gfx_handle = Some(handle);
-                    dvc = dvc.with_dynamic_channel(bridge);
-                } else {
-                    let handler = gfx_factory.build_gfx_handler();
-                    let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(handler);
-                    dvc = dvc.with_dynamic_channel(gfx_server);
-                }
-            }
-            dvc
-        };
+        {
+            self.gfx_handle = gfx_handle;
+        }
+        // Without `egfx` there is no handle to install; consume the unit.
+        #[cfg(not(feature = "egfx"))]
+        let () = gfx_handle;
+    }
 
-        acceptor.attach_static_channel(dvc);
+    /// Build the cheap, cloned snapshot a preempting candidate negotiates
+    /// against — see [`NegotiationContext`].
+    fn negotiation_context(&self) -> NegotiationContext {
+        NegotiationContext {
+            opts: self.opts.clone(),
+            creds: self.creds.clone(),
+            display: Arc::clone(&self.display),
+            handler: Arc::clone(&self.handler),
+            echo_handle: self.echo_handle.clone(),
+            cliprdr_factory: self.cliprdr_factory.clone(),
+            sound_factory: self.sound_factory.clone(),
+            #[cfg(feature = "egfx")]
+            gfx_factory: self.gfx_factory.clone(),
+        }
+    }
+
+    /// Serve a candidate that already won the preemption race: negotiation and
+    /// authentication are done, so this installs the GFX handle it built
+    /// (deferred until now so only the actual winner claims it) and hands off
+    /// to the same finalization the normal path uses. From here on, a
+    /// preemption winner is indistinguishable from a normally-accepted
+    /// connection.
+    async fn serve_negotiated(&mut self, candidate: Box<NegotiatedCandidate>) -> Result<()> {
+        self.display_suppressed.store(false, Ordering::Relaxed);
+        #[cfg(feature = "egfx")]
+        {
+            self.gfx_handle = candidate.gfx_handle;
+        }
+        #[cfg(not(feature = "egfx"))]
+        let () = candidate.gfx_handle;
+
+        self.finalize_negotiated(candidate.transport, candidate.acceptor).await
     }
 
     /// Run a single RDP connection over `stream`, performing the
@@ -1056,8 +1482,6 @@ impl RdpServer {
         // `set_display_suppressed_handle()`.
         self.display_suppressed.store(false, Ordering::Relaxed);
 
-        let framed = TokioFramed::new(stream);
-
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
         let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities, self.creds.clone());
@@ -1065,80 +1489,56 @@ impl RdpServer {
 
         self.attach_channels(&mut acceptor);
 
-        let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
-            .await
-            .context("accept_begin failed")?;
+        // Shared with the preemption candidate path — see
+        // `negotiate_and_authenticate`.
+        let Some(negotiated) = negotiate_and_authenticate(&self.opts.security, &mut acceptor, stream, tls).await?
+        else {
+            return Ok(());
+        };
 
-        match res {
-            // The only thing that varies between the two modes is who performs
-            // the TLS handshake; everything past it is `finalize_after_upgrade`.
-            BeginResult::ShouldUpgrade(stream) => match tls {
-                TransportTls::Managed => {
-                    let tls_acceptor = match &self.opts.security {
-                        RdpServerSecurity::Tls(acceptor) => acceptor,
-                        RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
-                        RdpServerSecurity::None => unreachable!(),
-                    };
-                    let accept = match tls_acceptor.accept(stream).await {
-                        Ok(accept) => accept,
-                        Err(e) => {
-                            warn!("Failed to TLS accept: {}", e);
-                            return Ok(());
-                        }
-                    };
-                    self.finalize_after_upgrade(TokioFramed::new(accept), acceptor, "TLS connection")
-                        .await?;
-                }
-                TransportTls::AlreadyDone => {
-                    // The stream is already past TLS (terminated at a lower
-                    // layer, e.g. a WSS terminator); do NOT call
-                    // tls_acceptor.accept on it.
-                    self.finalize_after_upgrade(TokioFramed::new(stream), acceptor, "TLS-offloaded stream")
-                        .await?;
-                }
-            },
+        self.finalize_negotiated(negotiated, acceptor).await
+    }
 
-            BeginResult::Continue(framed) => {
+    /// Finalize a connection that has already negotiated (and, under Hybrid,
+    /// authenticated) via [`negotiate_and_authenticate`], then shut its stream
+    /// down. Single-sourcing this is what keeps the managed, TLS-offloaded and
+    /// no-security paths structurally identical past the handshake, so
+    /// per-connection state handling cannot drift between them.
+    async fn finalize_negotiated<S>(&mut self, negotiated: NegotiatedTransport<S>, acceptor: Acceptor) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
+    {
+        match negotiated {
+            // No security upgrade happened, so there is no TLS session to shut
+            // down — matches the pre-existing `BeginResult::Continue` arm.
+            NegotiatedTransport::Continued(framed) => {
                 self.accept_finalize(framed, acceptor).await?;
             }
-        };
+            NegotiatedTransport::Tls(framed) => {
+                self.finalize_and_shutdown(*framed, acceptor, "TLS connection").await?;
+            }
+            NegotiatedTransport::Offloaded(framed) => {
+                self.finalize_and_shutdown(framed, acceptor, "TLS-offloaded stream")
+                    .await?;
+            }
+        }
 
         Ok(())
     }
 
-    /// Shared post-handshake tail for both [`TransportTls`] modes: mark the
-    /// security upgrade complete, run the optional Hybrid CredSSP exchange,
-    /// finalize, and shut the stream down. Single-sourcing this is what keeps
-    /// the managed and TLS-offloaded paths structurally identical past the
-    /// handshake, so per-connection state handling cannot drift between them.
-    async fn finalize_after_upgrade<S>(
+    /// Finalize an upgraded stream and shut it down afterwards. The
+    /// negotiation and authentication that used to precede this now live in
+    /// [`negotiate_and_authenticate`], which the preemption candidate path
+    /// shares.
+    async fn finalize_and_shutdown<S>(
         &mut self,
-        mut framed: TokioFramed<S>,
-        mut acceptor: Acceptor,
+        framed: TokioFramed<S>,
+        acceptor: Acceptor,
         shutdown_label: &str,
     ) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
-        acceptor.mark_security_upgrade_as_done();
-
-        if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
-            // Generic streams don't expose peer address. Use a neutral
-            // placeholder; it's unclear whether CredSSP/NTLM actually
-            // uses this value in practice.
-            let client_name = "rdp-client".to_owned();
-
-            ironrdp_acceptor::accept_credssp(
-                &mut framed,
-                &mut acceptor,
-                &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
-                client_name.into(),
-                pub_key.clone(),
-                None,
-            )
-            .await?;
-        }
-
         let framed = self.accept_finalize(framed, acceptor).await?;
         debug!("Shutting down {}", shutdown_label);
         let (mut inner, _) = framed.into_inner();
@@ -1181,66 +1581,227 @@ impl RdpServer {
         debug!("Listening for connections on {local_addr}");
         self.local_addr = Some(local_addr);
 
+        // A candidate that wins a preemption race has ALREADY cleared
+        // `on_accept` and fully authenticated by the time it lands here, so it
+        // carries a negotiated candidate rather than a raw stream: the next
+        // iteration resumes it at finalization, with no second `on_accept`
+        // call (that hook is stateful for rate limiters) and no renegotiation.
+        let mut pending: Option<(Box<NegotiatedCandidate>, SocketAddr)> = None;
+
         loop {
-            let ev_receiver = Arc::clone(&self.ev_receiver);
-            let mut ev_receiver = ev_receiver.lock().await;
-            tokio::select! {
-                Some(event) = ev_receiver.recv() => {
-                    match event {
-                        ServerEvent::Quit(reason) => {
-                            debug!("Got quit event {reason}");
-                            break;
-                        }
-                        ServerEvent::GetLocalAddr(tx) => {
-                            let _ = tx.send(self.local_addr);
-                        }
-                        ServerEvent::SetCredentials(creds) => {
-                            self.set_credentials(Some(creds));
-                        }
-                        ServerEvent::SetAutoReconnectCookie(cookie) => {
-                            self.set_auto_reconnect_cookie(cookie);
-                        }
-                        ev => {
-                            debug!("Unexpected event {:?}", ev);
-                        }
-                    }
-                },
-                Ok((stream, peer)) = listener.accept() => {
-                    debug!(?peer, "Received connection");
-                    drop(ev_receiver);
+            enum Entry {
+                Fresh(TcpStream, SocketAddr),
+                Negotiated(Box<NegotiatedCandidate>, SocketAddr),
+            }
 
-                    let accepted = self.connection_handler
-                        .as_mut()
-                        .is_none_or(|h| h.on_accept(peer));
+            let entry = match pending.take() {
+                Some((candidate, peer)) => Entry::Negotiated(candidate, peer),
+                None => {
+                    let ev_receiver = Arc::clone(&self.ev_receiver);
+                    let mut ev_receiver = ev_receiver.lock().await;
+                    let accepted = tokio::select! {
+                        Some(event) = ev_receiver.recv() => {
+                            match event {
+                                ServerEvent::Quit(reason) => {
+                                    debug!("Got quit event {reason}");
+                                    break;
+                                }
+                                ServerEvent::GetLocalAddr(tx) => {
+                                    let _ = tx.send(self.local_addr);
+                                }
+                                ServerEvent::SetCredentials(creds) => {
+                                    self.set_credentials(Some(creds));
+                                }
+                                ServerEvent::SetAutoReconnectCookie(cookie) => {
+                                    self.set_auto_reconnect_cookie(cookie);
+                                }
+                                ev => {
+                                    debug!("Unexpected event {:?}", ev);
+                                }
+                            }
+                            continue;
+                        },
+                        Ok((stream, peer)) = listener.accept() => {
+                            drop(ev_receiver);
+                            (stream, peer)
+                        },
+                        else => break,
+                    };
+                    Entry::Fresh(accepted.0, accepted.1)
+                }
+            };
 
-                    if !accepted {
-                        debug!(?peer, "Connection rejected by handler");
-                        drop(stream);
-                    } else {
-                        let started = tokio::time::Instant::now();
-                        let result = self.run_connection(stream).await;
-                        let duration = started.elapsed();
+            let peer = match &entry {
+                Entry::Fresh(_, peer) | Entry::Negotiated(_, peer) => *peer,
+            };
+            debug!(?peer, "Received connection");
 
-                        if let Err(ref error) = result {
-                            error!(?error, "Connection error");
-                        }
+            // A `Negotiated` winner already passed `on_accept` as a candidate,
+            // inside the race below — its negotiation would not even have
+            // started otherwise. Re-running it here would double-count for a
+            // stateful handler (a rate limiter's window, an audit record).
+            let accepted = matches!(entry, Entry::Negotiated(..))
+                || self.connection_handler.as_mut().is_none_or(|h| h.on_accept(peer));
 
-                        self.static_channels = StaticChannelSet::new();
+            if !accepted {
+                debug!(?peer, "Connection rejected by handler");
+                if let Entry::Fresh(stream, _) = entry {
+                    drop(stream);
+                }
+                continue;
+            }
 
-                        if let Some(ref mut handler) = self.connection_handler {
-                            let action = handler.on_disconnected(
-                                peer,
-                                duration,
-                                result.as_ref().err(),
-                            );
-                            if action == PostConnectionAction::Stop {
-                                debug!(?peer, "Handler requested stop after disconnect");
-                                break;
+            let started = tokio::time::Instant::now();
+
+            let (result, preempted_by) = if self.opts.preempt_existing_session {
+                // Serve this connection while still accepting: a newcomer that
+                // clears `on_accept` AND fully authenticates
+                // (`negotiate_candidate`) takes over, instead of queuing behind
+                // the live session. Cancelling `conn` runs the same
+                // per-connection teardown a client-side disconnect does.
+                //
+                // `conn` borrows `self` for the whole race, so the candidate's
+                // `on_accept` and its negotiation work from clones taken here.
+                let handler = self.connection_handler.take();
+                let ctx = self.negotiation_context();
+                let ev_sender = self.ev_sender.clone();
+                let mut recently_evicted = self.recently_evicted.take();
+
+                let outcome = {
+                    let mut conn: core::pin::Pin<Box<dyn Future<Output = Result<()>> + '_>> = match entry {
+                        Entry::Fresh(stream, _) => Box::pin(self.run_connection(stream)),
+                        Entry::Negotiated(candidate, _) => Box::pin(self.serve_negotiated(candidate)),
+                    };
+                    let mut probe: PreemptProbe<'_> = Box::pin(core::future::pending());
+                    let mut handler = handler;
+                    let mut probing = false;
+
+                    loop {
+                        // This `select!` must only YIELD — never mutate
+                        // `probe`, whose futures it still borrows.
+                        let race = tokio::select! {
+                            res = &mut conn => PreemptRace::Ended(res),
+                            accepted = listener.accept(), if !probing => PreemptRace::Accepted(accepted),
+                            candidate = &mut probe => PreemptRace::Probed(candidate),
+                        };
+
+                        match race {
+                            // The session ended on its own. A candidate still
+                            // negotiating is NOT discarded — that would reset a
+                            // legitimate client that happened to connect just
+                            // as the old session ended; finish it and serve it
+                            // next if it authenticates.
+                            PreemptRace::Ended(res) => {
+                                if probing {
+                                    pending = probe.await;
+                                }
+                                break (res, None, handler, recently_evicted);
+                            }
+                            PreemptRace::Accepted(Ok((next_stream, next_peer))) => {
+                                // A peer evicted moments ago may not bounce
+                                // straight back and retake the session; each
+                                // attempt re-arms the window, so a reconnect
+                                // storm can never win. See `recently_evicted`.
+                                let bounced_back = refuse_reconnect_from_evicted(
+                                    &mut recently_evicted,
+                                    next_peer.ip(),
+                                    Instant::now(),
+                                    REPREEMPT_COOLDOWN,
+                                );
+                                // Gate the candidate through `on_accept` BEFORE
+                                // it may negotiate, and so before it can
+                                // preempt anything: otherwise a candidate the
+                                // rate limiter would reject could still evict
+                                // the live session and only be rejected
+                                // afterwards, once the damage was done.
+                                let candidate_accepted =
+                                    !bounced_back && handler.as_mut().is_none_or(|h| h.on_accept(next_peer));
+
+                                if candidate_accepted {
+                                    probing = true;
+                                    probe = Box::pin(negotiate_candidate(&ctx, next_stream, next_peer));
+                                } else if bounced_back {
+                                    info!(
+                                        ?next_peer,
+                                        "ignoring a reconnect from the peer just evicted -- it is \
+                                         auto-reconnecting into the session that replaced it"
+                                    );
+                                    drop(next_stream);
+                                } else {
+                                    debug!(?next_peer, "candidate rejected by handler while a session was live");
+                                    drop(next_stream);
+                                }
+                            }
+                            PreemptRace::Accepted(Err(error)) => {
+                                warn!(?error, "accept failed while a session was live");
+                            }
+                            PreemptRace::Probed(candidate) => {
+                                probing = false;
+                                probe = Box::pin(core::future::pending());
+                                // `negotiate_candidate` already logged the
+                                // reason when it declines, so there is nothing
+                                // to do in the `None` case.
+                                if let Some((candidate, new_peer)) = candidate {
+                                    info!(
+                                        old_peer = ?peer,
+                                        ?new_peer,
+                                        "an authenticated client connected -- evicting the existing session"
+                                    );
+                                    let _ = ev_sender.send(ServerEvent::EvictedByOtherConnection);
+                                    recently_evicted = Some((peer.ip(), Instant::now()));
+                                    // Let the incumbent observe the event and
+                                    // put the reason on the wire before it
+                                    // goes; bounded, so a wedged peer cannot
+                                    // stall the takeover.
+                                    match tokio::time::timeout(EVICTION_GRACE, &mut conn).await {
+                                        Ok(res) => {
+                                            break (res, Some((candidate, new_peer)), handler, recently_evicted);
+                                        }
+                                        Err(_) => {
+                                            debug!(old_peer = ?peer, "evicted session did not wind down in time");
+                                            break (Ok(()), Some((candidate, new_peer)), handler, recently_evicted);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
+                };
+
+                let (result, preempted_by, handler, evicted) = outcome;
+                self.connection_handler = handler;
+                // Only remember an eviction that actually replaced this
+                // session; a session that ended on its own terms leaves nobody
+                // barred from connecting.
+                self.recently_evicted = if preempted_by.is_some() { evicted } else { None };
+                (result, preempted_by)
+            } else {
+                let result = match entry {
+                    Entry::Fresh(stream, _) => self.run_connection(stream).await,
+                    // Unreachable in practice: `pending` is only ever populated
+                    // by the preemption branch above.
+                    Entry::Negotiated(candidate, _) => self.serve_negotiated(candidate).await,
+                };
+                (result, None)
+            };
+            let duration = started.elapsed();
+
+            if let Some((candidate, new_peer)) = preempted_by {
+                pending = Some((candidate, new_peer));
+            }
+
+            if let Err(ref error) = result {
+                error!(?error, "Connection error");
+            }
+
+            self.static_channels = StaticChannelSet::new();
+
+            if let Some(ref mut handler) = self.connection_handler {
+                let action = handler.on_disconnected(peer, duration, result.as_ref().err());
+                if action == PostConnectionAction::Stop {
+                    debug!(?peer, "Handler requested stop after disconnect");
+                    break;
                 }
-                else => break,
             }
         }
 
@@ -1353,6 +1914,30 @@ impl RdpServer {
             match event {
                 ServerEvent::Quit(reason) => {
                     debug!("Got quit event: {reason}");
+                    return Ok(RunState::Disconnect);
+                }
+                // Session takeover: tell the client WHY it is being
+                // disconnected before dropping it, so it does not read this as
+                // an unexpected drop and auto-reconnect (which ping-pongs
+                // against the preempting client — see the variant's docs).
+                ServerEvent::EvictedByOtherConnection => {
+                    debug!("evicting this connection -- another client took the session over");
+                    let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
+                        ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::DisconnectedByOtherconnection),
+                    ));
+                    // Best-effort: if the evicted peer's socket is already
+                    // half-dead the write fails, which is fine — it is leaving
+                    // either way, and the caller falls back to cancelling it.
+                    match encode_share_data_pdu(pdu, io_channel_id, user_channel_id) {
+                        Ok(bytes) => {
+                            if let Err(error) = writer.write_all(&bytes).await {
+                                debug!(%error, "could not send the eviction reason; disconnecting anyway");
+                            }
+                        }
+                        Err(error) => {
+                            warn!(%error, "could not encode the eviction reason; disconnecting anyway");
+                        }
+                    }
                     return Ok(RunState::Disconnect);
                 }
                 ServerEvent::GetLocalAddr(tx) => {
@@ -2192,5 +2777,276 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
         Self {
             writer: Rc::new(Mutex::new(writer)),
         }
+    }
+}
+
+#[cfg(test)]
+mod preempt_tests {
+    use core::net::Ipv4Addr;
+
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    fn ctx_with_no_security() -> NegotiationContext {
+        struct NoDisplay;
+        #[async_trait::async_trait]
+        impl RdpServerDisplay for NoDisplay {
+            async fn size(&mut self) -> DesktopSize {
+                DesktopSize {
+                    width: 1024,
+                    height: 768,
+                }
+            }
+            async fn updates(&mut self) -> Result<Box<dyn crate::RdpServerDisplayUpdates>> {
+                unreachable!("negotiation never asks for updates")
+            }
+        }
+
+        struct NoInput;
+        impl RdpServerInputHandler for NoInput {
+            fn keyboard(&mut self, _: crate::KeyboardEvent) {}
+            fn mouse(&mut self, _: crate::MouseEvent) {}
+        }
+
+        let (ev_sender, _rx) = ServerEvent::create_channel();
+        NegotiationContext {
+            opts: RdpServerOptions {
+                addr: (Ipv4Addr::LOCALHOST, 0).into(),
+                security: RdpServerSecurity::None,
+                codecs: BitmapCodecs(Vec::new()),
+                max_request_size: 8 * 1024 * 1024,
+                honor_client_desktop_size: None,
+                preempt_existing_session: true,
+            },
+            creds: None,
+            display: Arc::new(Mutex::new(Box::new(NoDisplay))),
+            handler: Arc::new(Mutex::new(Box::new(NoInput))),
+            echo_handle: EchoServerHandle::new(ev_sender),
+            cliprdr_factory: None,
+            sound_factory: None,
+            #[cfg(feature = "egfx")]
+            gfx_factory: None,
+        }
+    }
+
+    /// The invariant behind this feature: a connection that never completes a
+    /// real RDP negotiation must NOT be treated as an eligible candidate, and
+    /// so can never evict a live session. This is the case the earlier
+    /// two-byte `03 00` peek got wrong — it accepted anything whose first
+    /// bytes merely *looked* like a TPKT header.
+    #[tokio::test]
+    async fn a_candidate_sending_garbage_never_authenticates() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = tokio::spawn(async move {
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            // Starts with a plausible TPKT prefix — enough to fool a
+            // header peek — but is not a valid X.224 Connection Request.
+            stream.write_all(&[0x03, 0x00, 0xff, 0xff, 0x41, 0x41]).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let (stream, peer) = listener.accept().await.unwrap();
+        let ctx = ctx_with_no_security();
+        assert!(
+            negotiate_candidate(&ctx, stream, peer).await.is_none(),
+            "traffic that only looks like RDP must not become an eligible candidate"
+        );
+
+        client.await.unwrap();
+    }
+
+    /// The other half: a bare connect that sends nothing (a port scan, a
+    /// half-open probe) must not qualify either.
+    #[tokio::test]
+    async fn a_candidate_that_closes_immediately_never_authenticates() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = tokio::spawn(async move {
+            let stream = TcpStream::connect(addr).await.unwrap();
+            drop(stream);
+        });
+
+        let (stream, peer) = listener.accept().await.unwrap();
+        let ctx = ctx_with_no_security();
+        assert!(
+            negotiate_candidate(&ctx, stream, peer).await.is_none(),
+            "a connect-and-close must not become an eligible candidate"
+        );
+
+        client.await.unwrap();
+    }
+
+    /// The eviction notice must be a properly framed Share Data PDU carrying
+    /// `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` (MS-RDPBCGR 2.2.5.1.1) — that
+    /// exact code is what tells a client it was replaced rather than dropped,
+    /// and so what stops it auto-reconnecting into a ping-pong. Round-trips
+    /// the encoding a real eviction sends.
+    #[test]
+    fn the_eviction_notice_is_a_share_data_pdu_with_the_takeover_code() {
+        let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
+            ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::DisconnectedByOtherconnection),
+        ));
+        let bytes = encode_share_data_pdu(pdu, 1003, 1002).expect("encode eviction notice");
+
+        let x224: X224<mcs::McsMessage<'_>> = decode(&bytes).expect("decode X.224/MCS");
+        let mcs::McsMessage::SendDataIndication(data) = x224.0 else {
+            panic!("eviction notice must ride an MCS Send Data Indication");
+        };
+        let control: rdp::headers::ShareControlHeader =
+            decode(data.user_data.as_ref()).expect("decode Share Control header");
+        let ShareControlPdu::Data(header) = control.share_control_pdu else {
+            panic!("eviction notice must be a Share Data PDU");
+        };
+        match header.share_data_pdu {
+            rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
+                ErrorInfo::ProtocolIndependentCode(code),
+            )) => {
+                assert_eq!(code, ProtocolIndependentCode::DisconnectedByOtherconnection);
+            }
+            other => panic!("unexpected share data pdu: {other:?}"),
+        }
+    }
+
+    /// The anti-storm net: a just-evicted peer may not bounce straight back,
+    /// and — the load-bearing part — every refused attempt RE-ARMS the window,
+    /// so an automatic reconnect loop can never outlast it. A peer that goes
+    /// quiet for the cooldown (a human closing the client and reconnecting) is
+    /// let back in.
+    #[test]
+    fn a_just_evicted_peer_cannot_bounce_back_but_a_quiet_one_can() {
+        let cooldown = Duration::from_secs(5);
+        let evicted: IpAddr = Ipv4Addr::new(192, 168, 4, 46).into();
+        let other: IpAddr = Ipv4Addr::new(192, 168, 4, 44).into();
+
+        let t0 = Instant::now();
+        let mut state = Some((evicted, t0));
+
+        // An unrelated peer is never affected by someone else's eviction.
+        assert!(!refuse_reconnect_from_evicted(
+            &mut state,
+            other,
+            t0 + Duration::from_millis(500),
+            cooldown
+        ));
+
+        // The evicted peer auto-reconnecting ~1 s later is refused, and each
+        // attempt pushes the window out, so it never gets in no matter how
+        // long it keeps retrying.
+        let mut at = t0;
+        for _ in 0..20 {
+            at += Duration::from_secs(1);
+            assert!(
+                refuse_reconnect_from_evicted(&mut state, evicted, at, cooldown),
+                "an auto-reconnect storm must never win the session back"
+            );
+        }
+
+        // ...but once it stops hammering for the full cooldown, a deliberate
+        // reconnect is allowed through.
+        let quiet = at + cooldown + Duration::from_millis(1);
+        assert!(
+            !refuse_reconnect_from_evicted(&mut state, evicted, quiet, cooldown),
+            "a peer that waited out the cooldown must be able to connect again"
+        );
+    }
+
+    /// A `ConnectionHandler` that accepts the first connection and rejects
+    /// every one after, recording every peer it was consulted about.
+    struct RejectAfterFirst {
+        seen: Arc<std::sync::Mutex<Vec<SocketAddr>>>,
+        accepted_once: bool,
+    }
+
+    impl ConnectionHandler for RejectAfterFirst {
+        fn on_accept(&mut self, peer: SocketAddr) -> bool {
+            self.seen.lock().unwrap().push(peer);
+            !core::mem::replace(&mut self.accepted_once, true)
+        }
+    }
+
+    /// Drives a real `RdpServer::run()` accept loop over TCP with preemption
+    /// on. A candidate must be gated through `ConnectionHandler::on_accept`
+    /// *before* it is allowed to negotiate — so a rate limiter or IP allowlist
+    /// can stop a takeover, rather than only learning about it after the live
+    /// session was already evicted.
+    #[tokio::test]
+    async fn a_candidate_is_gated_through_on_accept_before_it_can_preempt() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_for_handler = Arc::clone(&seen);
+
+        let local = task::LocalSet::new();
+        local
+            .run_until(async move {
+                let mut server = RdpServer::builder()
+                    .with_addr((Ipv4Addr::LOCALHOST, 0))
+                    .with_no_security()
+                    .with_no_input()
+                    .with_no_display()
+                    .with_connection_handler(Some(Box::new(RejectAfterFirst {
+                        seen: seen_for_handler,
+                        accepted_once: false,
+                    })))
+                    .with_preempt_existing_session(true)
+                    .build();
+
+                let event_sender = server.event_sender().clone();
+                let run_task = task::spawn_local(async move {
+                    let _ = Box::pin(server.run()).await;
+                });
+
+                // Learn the ephemeral port (retrying while `run()` binds).
+                let addr = loop {
+                    let (tx, rx) = oneshot::channel();
+                    let _ = event_sender.send(ServerEvent::GetLocalAddr(tx));
+                    if let Ok(Some(addr)) = rx.await {
+                        break addr;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                };
+
+                // Client A: connect and go silent. `run_connection` parks
+                // reading the first PDU, which is all "a live session" needs
+                // to be here.
+                let mut client_a = TcpStream::connect(addr).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+
+                // Client B: the candidate. The handler rejects it, so it must
+                // never reach negotiation, let alone evict client A.
+                let mut client_b = TcpStream::connect(addr).await.unwrap();
+                client_b.write_all(&[0x03, 0x00]).await.unwrap();
+
+                let mut buf = [0u8; 1];
+                let client_b_read = tokio::time::timeout(Duration::from_secs(2), client_b.read(&mut buf)).await;
+                assert!(
+                    matches!(client_b_read, Ok(Ok(0)) | Ok(Err(_))),
+                    "the rejected candidate's connection should be closed, got {client_b_read:?}"
+                );
+
+                // Client A is untouched: a read TIMES OUT (no EOF, no data)
+                // rather than showing the server dropped it for client B.
+                let client_a_still_alive =
+                    tokio::time::timeout(Duration::from_millis(300), client_a.read(&mut buf)).await;
+                assert!(
+                    client_a_still_alive.is_err(),
+                    "the live session must survive a rejected preemption attempt, got {client_a_still_alive:?}"
+                );
+
+                // The handler was actually consulted about the candidate —
+                // the gate ran on B, not merely on A.
+                let seen = seen.lock().unwrap().clone();
+                assert_eq!(
+                    seen.len(),
+                    2,
+                    "on_accept should have been consulted for both peers: {seen:?}"
+                );
+
+                run_task.abort();
+            })
+            .await;
     }
 }
