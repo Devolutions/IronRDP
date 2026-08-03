@@ -22,6 +22,8 @@ than launching the real `mstsc.exe` child.
 - Require `MSRDPEX_AX_BACKEND=ironrdp` so MsRdpEx enables its private-layout exclusion.
 - Put `RDP_USERNAME` and `RDP_PASSWORD` only in the launcher process environment. Never print,
   persist, pass as arguments, add to an `.rdp` file, or copy to artifacts.
+- A generated `.rdp` file may contain only the authorized destination and `prompt for credentials`;
+  never add user names, passwords, tokens, or gateway credentials to it.
 - For an authorized isolated test endpoint with a self-signed certificate, set the standard
   `IMsRdpClientAdvancedSettings4::AuthenticationLevel` property to `0` before `Connect`. This
   disables certificate and hostname validation for that control instance; never use it for a
@@ -50,18 +52,30 @@ than launching the real `mstsc.exe` child.
 
 Run [`scripts\Launch-NativeMstsc.ps1`](scripts/Launch-NativeMstsc.ps1) from the repository root.
 It validates the MsRdpEx installation and DLL, sets the process-local IronRDP/MsRdpEx environment,
-starts `mstscex.exe`, waits for its real `mstsc.exe` child, and returns both PIDs. Do not supply
-`/axhost`, `/v:`, or an `.rdp` file: the native credential bridge must read the visible MSTSC
-**Computer** field.
+starts `mstscex.exe`, waits for its real `mstsc.exe` child, and returns both PIDs. To have MSTSC
+initiate the connection without the connection form, provide `-Destination <host[:port]>`; the
+helper creates a temporary credential-free `.rdp` file next to the trace and passes it to
+`mstscex.exe`. It also supplies the destination through process-local `RDP_HOSTNAME`, which the
+native bridge uses only when the `.rdp` launch has no visible Computer field. Do not supply
+`/axhost`, `/v:`, or a separate `.rdp` argument.
 
 ```powershell
 $nativeHost = & .\.github\skills\ironrdp-activex-mstsc-testing\scripts\Launch-NativeMstsc.ps1 `
-    -TracePath '<session-artifacts>\mstsc.trace'
+    -TracePath '<session-artifacts>\mstsc.trace' `
+    -Destination '<authorized-host[:port]>'
 $mstscPid = $nativeHost.MstscPid
 ```
 
 The helper sets `IRONRDP_ACTIVEX_RPC=1`; use `ironrdp-agent --backend active-x` to drive its
-listener. The target for UI Automation is the `mstsc.exe` child, not `mstscex.exe`.
+listener. The target for UI Automation is the `mstsc.exe` child, not `mstscex.exe`. The bridge
+still displays its non-persistent CredUI prompt. Confirm that the prompt belongs to this child
+before using UI Automation to invoke **OK**.
+
+The `.rdp` launch initiates the IronRDP session without the native connection form, but native
+MSTSC can subsequently show its own nonfatal connection-error dialog because the bridge must halt
+MSTSC's proprietary continuation after accepting the public preflight. Only dismiss that dialog
+after `ironrdp-agent --backend active-x status` reports `Connected`; it must never be treated as a
+successful native-MSTSC connection on its own.
 
 Before calling `Connect`, configure the launched control through its normal preconnect COM
 settings:
@@ -76,11 +90,11 @@ machine-wide settings, or change the product default.
 
 ## Connect without exposing credentials
 
-Use UI Automation to set the visible **Computer** edit control to the authorized endpoint and invoke
-**Connect**. The explicit bridge will receive native MSTSC's `put_StartProgram` preflight, display
-the IronRDP CredUI dialog, and pre-populate it from the process-local `RDP_USERNAME` /
-`RDP_PASSWORD` values. Invoke **OK** only after confirming the prompt belongs to the launched
-`mstsc.exe` process.
+When launching without `-Destination`, use UI Automation to set the visible **Computer** edit
+control to the authorized endpoint and invoke **Connect**. The explicit bridge will receive native
+MSTSC's `put_StartProgram` preflight, display the IronRDP CredUI dialog, and pre-populate it from
+the process-local `RDP_USERNAME` / `RDP_PASSWORD` values. Invoke **OK** only after confirming the
+prompt belongs to the launched `mstsc.exe` process.
 
 Expected value-free trace markers, in order:
 

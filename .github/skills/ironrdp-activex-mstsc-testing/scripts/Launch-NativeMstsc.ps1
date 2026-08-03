@@ -7,6 +7,8 @@ param(
 
     [string]$MsRdpExDirectory = (Join-Path $env:ProgramFiles 'Devolutions\MsRdpEx'),
 
+    [string]$Destination,
+
     [ValidateRange(1, 60)]
     [int]$StartupTimeoutSeconds = 7
 )
@@ -32,7 +34,23 @@ $env:IRONRDP_ACTIVEX_NATIVE_MSTSC_CREDENTIAL_BRIDGE = '1'
 $env:IRONRDP_ACTIVEX_HOST_TRACE = [System.IO.Path]::GetFullPath($TracePath)
 $env:IRONRDP_ACTIVEX_RPC = '1'
 
-$launcherProcess = Start-Process -FilePath $launcher -WorkingDirectory $MsRdpExDirectory -PassThru
+$rdpFile = $null
+$launcherArguments = @()
+if ($Destination) {
+    if ($Destination.IndexOfAny([char[]]"`r`n") -ge 0) {
+        throw 'Destination must not contain a newline'
+    }
+
+    $rdpFile = Join-Path $traceDirectory 'ironrdp-native-mstsc.rdp'
+    $rdp = "full address:s:$Destination`r`nprompt for credentials:i:1`r`n"
+    [System.IO.File]::WriteAllText($rdpFile, $rdp, [System.Text.Encoding]::ASCII)
+    # The native form is absent for .rdp launches, so the bridge resolves the destination from this
+    # process-local fallback. The temporary file itself contains no credentials.
+    $env:RDP_HOSTNAME = $Destination
+    $launcherArguments = @($rdpFile)
+}
+
+$launcherProcess = Start-Process -FilePath $launcher -WorkingDirectory $MsRdpExDirectory -ArgumentList $launcherArguments -PassThru
 Start-Sleep -Seconds $StartupTimeoutSeconds
 
 $mstsc = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($launcherProcess.Id)" |
@@ -48,4 +66,5 @@ if ($null -eq $mstsc) {
     Launcher = $launcher
     ActiveXDll = $env:MSRDPEX_MSTSCAX_DLL
     TracePath = $env:IRONRDP_ACTIVEX_HOST_TRACE
+    RdpFile = $rdpFile
 }

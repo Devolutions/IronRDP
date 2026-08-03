@@ -105,6 +105,13 @@ operator must still approve it. These values are used only to initialize CredUI'
 are not traced or persisted, and should be supplied only through a suitably protected process
 environment.
 
+For authorized automation tests, a credential-free `.rdp` file may provide the destination while
+the launcher supplies that same destination in `RDP_HOSTNAME`. When the native connection form is
+absent, the bridge uses that process-local value as its destination fallback; `RDP_USERNAME` and
+`RDP_PASSWORD` remain CredUI-only and must never be written to the file. This starts the IronRDP
+session, but native MSTSC can still show a nonfatal error after the bridge stops its proprietary
+continuation. Verify the session through the ActiveX RPC endpoint before dismissing that dialog.
+
 In this explicit bridge mode, non-minimized native-shell container size changes become a 250 ms
 debounced `IMsRdpClient9::UpdateSessionDisplaySettings` request. IronRDP uses the negotiated Display
 Control dynamic channel ([MS-RDPEDISP]) for the live resolution change and falls back to its

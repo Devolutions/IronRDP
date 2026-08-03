@@ -5172,7 +5172,13 @@ impl Control {
         let (server, configured_username) = {
             let settings = self.settings.borrow();
             let server = if settings.server.trim().is_empty() {
-                self.native_mstsc_server_from_host_ui().unwrap_or_default()
+                self.native_mstsc_server_from_host_ui().unwrap_or_else(|| {
+                    let server = std::env::var("RDP_HOSTNAME").unwrap_or_default();
+                    if !server.trim().is_empty() {
+                        trace_host_call("NativeMstscCredentialBridge::ServerFromEnvironment");
+                    }
+                    server
+                })
             } else {
                 settings.server.clone()
             };
