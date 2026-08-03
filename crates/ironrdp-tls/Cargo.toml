@@ -46,7 +46,7 @@ stub = []
 [dependencies]
 tokio = { version = "1.52" }
 rustls-native-certs = { version = "0.8", optional = true }
-x509-cert = { version = "0.2", default-features = false, features = ["std"], optional = true } # public
+x509-cert = { version = "0.3", default-features = false, features = ["std"], optional = true } # public
 tokio-native-tls = { version = "0.3", optional = true } # public
 tokio-rustls = { version = "0.26", default-features = false, optional = true } # public
 

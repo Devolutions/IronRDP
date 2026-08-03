@@ -47,8 +47,8 @@ impl TlsIdentityCtx {
 
             let cert = certs.first().ok_or_else(|| std::io::Error::other("invalid cert"))?;
             let cert = x509_cert::Certificate::from_der(cert).map_err(std::io::Error::other)?;
-            cert.tbs_certificate
-                .subject_public_key_info
+            cert.tbs_certificate()
+                .subject_public_key_info()
                 .subject_public_key
                 .as_bytes()
                 .ok_or_else(|| std::io::Error::other("subject public key BIT STRING is not aligned"))?

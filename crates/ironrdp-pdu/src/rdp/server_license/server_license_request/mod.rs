@@ -216,6 +216,7 @@ impl ServerCertificate {
     const FIXED_PART_SIZE: usize = CERT_VERSION_FIELD_SIZE;
 
     pub fn get_public_key(&self) -> Result<Vec<u8>, ServerLicenseError> {
+        use pkcs1::der::Encode as _;
         use x509_cert::der::Decode as _;
 
         match &self.certificate {
@@ -227,7 +228,7 @@ impl ServerCertificate {
                     public_exponent: pkcs1::UintRef::new(&public_exponent)?,
                 };
 
-                let public_key = pkcs1::der::Encode::to_der(&rsa_public_key)?;
+                let public_key = rsa_public_key.to_der()?;
 
                 Ok(public_key)
             }
@@ -245,8 +246,8 @@ impl ServerCertificate {
                 })?;
 
                 let public_key = cert
-                    .tbs_certificate
-                    .subject_public_key_info
+                    .tbs_certificate()
+                    .subject_public_key_info()
                     .subject_public_key
                     .raw_bytes()
                     .to_owned();

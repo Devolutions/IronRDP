@@ -8,6 +8,7 @@ use ironrdp_core::{
     Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
 };
 use md5::Digest as _;
+use sha1::Digest as _;
 
 use super::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA,

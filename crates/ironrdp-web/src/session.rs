@@ -1769,8 +1769,8 @@ where
             .context("failed to decode x509 certificate sent by proxy")?;
 
         let server_public_key = cert
-            .tbs_certificate
-            .subject_public_key_info
+            .tbs_certificate()
+            .subject_public_key_info()
             .subject_public_key
             .as_bytes()
             .context("subject public key BIT STRING is not aligned")?

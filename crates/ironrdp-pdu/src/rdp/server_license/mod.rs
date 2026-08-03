@@ -9,6 +9,7 @@ use ironrdp_core::{
 use md5::Digest as _;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
+use sha1::Digest as _;
 
 use crate::PduError;
 use crate::rdp::headers::{BASIC_SECURITY_HEADER_SIZE, BasicSecurityHeader, BasicSecurityHeaderFlags};
