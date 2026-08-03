@@ -324,15 +324,53 @@ impl Written {
     }
 }
 
+/// A point on a monotonic millisecond clock owned by the I/O driver.
+///
+/// The epoch is arbitrary and carries no meaning; only differences between two
+/// instants do. The clock deliberately lives outside the sans-I/O sequences:
+/// `std::time::Instant::now` panics on `wasm32-unknown-unknown`, which
+/// `ironrdp-connector` compiles for, and a sequence reading a clock itself would
+/// measure how quickly it drained an already-filled buffer rather than how long
+/// the bytes took to arrive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MonotonicInstant(u64);
+
+impl MonotonicInstant {
+    /// The clock's origin.
+    ///
+    /// Drivers that do not measure intervals pass this. Every duration computed
+    /// from it is then zero, which is a visibly inert value rather than a
+    /// plausible-looking measurement.
+    pub const ZERO: Self = Self(0);
+
+    /// Builds an instant from a monotonic millisecond reading.
+    #[must_use]
+    pub fn from_millis(milliseconds: u64) -> Self {
+        Self(milliseconds)
+    }
+
+    /// The time elapsed since `earlier`, saturating at zero if the clock went
+    /// backwards or the arguments were transposed.
+    #[must_use]
+    pub fn duration_since(self, earlier: Self) -> core::time::Duration {
+        core::time::Duration::from_millis(self.0.saturating_sub(earlier.0))
+    }
+}
+
 pub trait Sequence: Send {
     fn next_pdu_hint(&self) -> Option<&dyn PduHint>;
 
     fn state(&self) -> &dyn State;
 
-    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written>;
+    /// Advances the sequence.
+    ///
+    /// `received_at` is when `input` arrived on the wire, as observed by the I/O
+    /// driver. Sequences that do not measure intervals ignore it; drivers that do
+    /// not measure pass [`MonotonicInstant::ZERO`].
+    fn step(&mut self, input: &[u8], received_at: MonotonicInstant, output: &mut WriteBuf) -> ConnectorResult<Written>;
 
     fn step_no_input(&mut self, output: &mut WriteBuf) -> ConnectorResult<Written> {
-        self.step(&[], output)
+        self.step(&[], MonotonicInstant::ZERO, output)
     }
 }
 

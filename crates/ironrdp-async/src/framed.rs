@@ -1,6 +1,7 @@
 use std::io;
 
 use bytes::{Bytes, BytesMut};
+use ironrdp_connector::MonotonicInstant;
 use ironrdp_connector::{ConnectorResult, Sequence, Written};
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::PduHint;
@@ -56,11 +57,22 @@ pub trait StreamWrapper: Sized {
 pub struct Framed<S> {
     stream: S,
     buf: BytesMut,
+    /// When the most recent socket read completed.
+    ///
+    /// A PDU served entirely from `buf` arrived at the socket read that filled it,
+    /// not at the moment the caller happened to drain it, so this is the honest
+    /// arrival time for anything `read_by_hint` returns.
+    last_read_at: MonotonicInstant,
 }
 
 impl<S> Framed<S> {
     pub fn peek(&self) -> &[u8] {
         &self.buf
+    }
+
+    /// When the bytes currently buffered last arrived from the socket.
+    pub fn last_read_at(&self) -> MonotonicInstant {
+        self.last_read_at
     }
 }
 
@@ -76,6 +88,7 @@ where
         Self {
             stream: S::from_inner(stream),
             buf: leftover,
+            last_read_at: MonotonicInstant::ZERO,
         }
     }
 
@@ -197,7 +210,9 @@ where
     /// `tokio::select!` statement and some other branch
     /// completes first, then it is guaranteed that no data was read.
     async fn read(&mut self) -> io::Result<usize> {
-        self.stream.read(&mut self.buf).await
+        let len = self.stream.read(&mut self.buf).await?;
+        self.last_read_at = monotonic_now();
+        Ok(len)
     }
 }
 
@@ -261,7 +276,7 @@ where
 
         trace!(length = pdu.len(), "PDU received");
 
-        sequence.step(&pdu, buf)
+        sequence.step(&pdu, framed.last_read_at(), buf)
     } else {
         sequence.step_no_input(buf)
     }
@@ -286,4 +301,23 @@ where
     }
 
     Ok(())
+}
+
+/// Reads the driver-owned monotonic clock.
+///
+/// The epoch is the first call; only differences are meaningful.
+///
+/// `std::time::Instant::now` panics on `wasm32-unknown-unknown`, and this crate is
+/// reached from `ironrdp-web` through `ironrdp-futures`, so the browser build gets
+/// [`MonotonicInstant::ZERO`] instead. Intervals computed from it are zero, which
+/// the connector already treats as "not measured" rather than as a measurement.
+#[cfg(not(target_arch = "wasm32"))]
+fn monotonic_now() -> MonotonicInstant {
+    static EPOCH: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
+    MonotonicInstant::from_millis(u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn monotonic_now() -> MonotonicInstant {
+    MonotonicInstant::ZERO
 }

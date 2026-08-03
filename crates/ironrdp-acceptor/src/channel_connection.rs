@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use ironrdp_connector::{
-    ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written, reason_err,
+    ConnectorError, ConnectorErrorExt as _, ConnectorResult, MonotonicInstant, Sequence, State, Written, reason_err,
 };
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::mcs;
@@ -72,7 +72,12 @@ impl Sequence for ChannelConnectionSequence {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
+    fn step(
+        &mut self,
+        input: &[u8],
+        _received_at: MonotonicInstant,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
         let (written, next_state) = match core::mem::take(&mut self.state) {
             ChannelConnectionState::WaitErectDomainRequest => {
                 let erect_domain_request = ironrdp_core::decode::<X224<mcs::ErectDomainPdu>>(input)

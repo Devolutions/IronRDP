@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 
 use crate::{
     Config, ConnectionFinalizationSequence, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize,
-    Sequence, State, Written, general_err, reason_err,
+    MonotonicInstant, Sequence, State, Written, general_err, reason_err,
 };
 
 /// Represents the Capability Exchange and Connection Finalization phases
@@ -116,7 +116,12 @@ impl Sequence for ConnectionActivationSequence {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut ironrdp_core::WriteBuf) -> ConnectorResult<Written> {
+    fn step(
+        &mut self,
+        input: &[u8],
+        received_at: MonotonicInstant,
+        output: &mut ironrdp_core::WriteBuf,
+    ) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             ConnectionActivationState::Consumed | ConnectionActivationState::Finalized { .. } => {
                 return Err(general_err!(
@@ -294,7 +299,7 @@ impl Sequence for ConnectionActivationSequence {
             } => {
                 debug!("Connection Finalization");
 
-                let written = connection_finalization.step(input, output)?;
+                let written = connection_finalization.step(input, received_at, output)?;
 
                 let next_state = if !connection_finalization.state.is_terminal() {
                     ConnectionActivationState::ConnectionFinalization {
