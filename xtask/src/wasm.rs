@@ -62,7 +62,7 @@ fn install_wasm2wat(sh: &Shell) -> anyhow::Result<()> {
         if cfg!(target_arch = "aarch64") {
             "macos-arm64"
         } else {
-            println!("wasm2wat for macOS x64 is not supported");
+            println!("wasm2wat for macOS x64 is not supported!");
             return Ok(());
         }
     } else {
