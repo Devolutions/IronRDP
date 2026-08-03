@@ -8,6 +8,7 @@ const { validateReviewer } = require("./validate-reviewer");
 const RISK = ["risk:low", "risk:medium", "risk:high"];
 const AI_COUNTS = ["ai-reviewed/1", "ai-reviewed/2"];
 const LEGITIMACY_MARKER = "<!-- ironrdp-pr-automation:legitimacy:v1 -->";
+const DUPLICATE_MARKER = "<!-- ironrdp-pr-automation:duplicate -->";
 const XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
 const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -->";
@@ -82,6 +83,40 @@ function botClassification(expectedSha, deterministic) {
   };
 }
 
+// A size/XL pull request is excluded from automated review before any model runs, so the classifier
+// is never invoked and no model-derived label can be produced. The deterministic signals are still
+// published together with the split guidance, and the check title is deliberately not
+// "Classification complete" so the review gate refuses to open the review route.
+function xlClassification(expectedSha, deterministic, semverStatus, sspiStatus) {
+  return {
+    ok: true, mode: "classification", expectedSha, oversized: true,
+    labelSets: [
+      { owned: deterministic.ownedPathLabels || [], desired: deterministic.pathLabels || [] },
+      { owned: deterministic.sizeLabels || [], desired: [deterministic.sizeLabel].filter(Boolean) },
+      { owned: ["contributor/first-time"], desired: deterministic.firstTime ? ["contributor/first-time"] : [] },
+      // Only signals that were actually computed are asserted; an unavailable check must not be
+      // read as a negative result.
+      ...(sspiStatus === "unavailable"
+        ? [] : [{ owned: ["A-sspi"], desired: sspiStatus === "required" ? ["A-sspi"] : [] }]),
+      ...(semverStatus === "unavailable"
+        ? [] : [{ owned: ["breaking-change"], desired: semverStatus === "suspected" ? ["breaking-change"] : [] }]),
+      ...(semverStatus === "suspected" ? [{ owned: RISK, desired: ["risk:high"] }] : []),
+    ],
+    addLabels: ["human-required"],
+    comments: [{ kind: "xl", marker: XL_MARKER }],
+    // Duplicate and legitimacy verdicts are model-derived. No model ran, so a previously posted
+    // verdict is neither confirmed nor refuted here and is left untouched.
+    removeCommentMarkers: [],
+    check: {
+      name: "AI classification",
+      externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
+      title: "Deterministic labelling only",
+      summary: "This pull request is too large for automated review, so no model was invoked.",
+      machineState: { protocolRelated: false },
+    },
+  };
+}
+
 function resolveClassificationState({
   expectedSha, labels, deterministic, classifier, changedPaths, prNumber, semver, sspi, rateLimit,
   authorIsBot,
@@ -95,6 +130,11 @@ function resolveClassificationState({
   if (authorIsBot) return botClassification(expectedSha, deterministic);
   const semverStatus = boundStatus(semver, expectedSha, ["suspected", "not-suspected"]);
   const sspiStatus = boundStatus(sspi, expectedSha, ["required", "not-required"]);
+  // Checked before the classifier is consulted: an oversized pull request never reaches a model, so
+  // there is no classifier output to validate and no quota to charge.
+  if (deterministic?.ok && deterministic.sizeLabel === "size/XL") {
+    return xlClassification(expectedSha, deterministic, semverStatus, sspiStatus);
+  }
   const classifierResult = validateClassifier(classifier, {
     expectedSha, changedPaths, documentationOnlyPaths: deterministic?.documentationOnlyPaths, prNumber,
   });
@@ -133,7 +173,7 @@ function resolveClassificationState({
   const legitimacyStopped = model.likely_non_legitimate;
   const comments = [
     ...(duplicate ? [{
-      kind: "duplicate", marker: "<!-- ironrdp-pr-automation:duplicate -->",
+      kind: "duplicate", marker: DUPLICATE_MARKER,
       url: model.duplicate.similar_pr_url, rationale: model.duplicate.rationale,
     }] : []),
     ...(isXl ? [{ kind: "xl", marker: XL_MARKER }] : []),
@@ -145,8 +185,9 @@ function resolveClassificationState({
     ok: true, mode: "classification", expectedSha, labelSets, addLabels, comments,
     removeCommentMarkers: [
       ...(legitimacyStopped ? [] : [LEGITIMACY_MARKER]),
-      // A later push can drop the change below the XL threshold, and stale split guidance would
-      // then contradict the labels.
+      // A later push can make a previously reported duplicate or XL verdict wrong, and stale
+      // guidance would then contradict the labels this run just wrote.
+      ...(duplicate ? [] : [DUPLICATE_MARKER]),
       ...(isXl ? [] : [XL_MARKER]),
     ],
     legitimacyStopped,
@@ -252,7 +293,7 @@ function resolveReviewState({
 }
 
 module.exports = {
-  AI_COUNTS, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGITIMACY_MARKER, RISK, XL_MARKER,
-  ELIGIBLE_MERGED_PRS, contributorEligibility, isExcludedHistory, qualifyingMergedPrs,
+  AI_COUNTS, DUPLICATE_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGITIMACY_MARKER, RISK,
+  XL_MARKER, ELIGIBLE_MERGED_PRS, contributorEligibility, isExcludedHistory, qualifyingMergedPrs,
   resolveClassificationState, resolveReviewState, reviewPolicyEligible,
 };

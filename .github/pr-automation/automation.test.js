@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const { addedLinesByPath, analyzeFiles, parseLabelerRules } = require("./deterministic-analysis");
 const { validateClassifier } = require("./validate-classifier");
 const { validateReviewer } = require("./validate-reviewer");
-const { resolveClassificationState, resolveReviewState, reviewPolicyEligible, LEGITIMACY_MARKER, XL_MARKER } = require("./resolve-state");
+const { resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER, LEGITIMACY_MARKER, XL_MARKER } = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
 const { StaleHeadError, applyLabels, escapeMarkdown, markerBody, writeState } = require("./write-state");
 const { forkRateLimit } = require("./fork-rate-limit");
@@ -356,6 +356,72 @@ test("XL guidance is posted once and withdrawn when the change shrinks", () => {
   const shrunk = state("size/L");
   assert.deepEqual(shrunk.comments, []);
   assert.equal(shrunk.removeCommentMarkers.includes(XL_MARKER), true);
+});
+
+test("an oversized change is resolved without ever consulting a classifier", () => {
+  // The workflow skips the classifier job for size/XL, so no model output exists to validate here.
+  // Resolution must still succeed on deterministic evidence rather than degrading to a failure.
+  const deterministic = { ok: true, pathLabels: ["A-pdu"], ownedPathLabels: ["A-pdu", "A-session"],
+    sizeLabel: "size/XL", sizeLabels: ["size/L", "size/XL"], firstTime: true };
+  const state = resolveClassificationState({
+    expectedSha: SHA, labels: [], deterministic, classifier: undefined,
+    semver: { head_sha: SHA, status: "suspected" }, sspi: { head_sha: SHA, status: "required" },
+  });
+  assert.equal(state.failed, undefined);
+  assert.equal(state.oversized, true);
+  const desired = state.labelSets.flatMap((set) => set.desired);
+  assert.deepEqual(desired.sort(), ["A-pdu", "A-sspi", "breaking-change", "contributor/first-time",
+    "risk:high", "size/XL"]);
+  assert.deepEqual(state.addLabels, ["human-required"]);
+  assert.deepEqual(state.comments.map((comment) => comment.kind), ["xl"]);
+  // The review gate only trusts a check announcing a completed classification.
+  assert.notEqual(state.check.title, "Classification complete");
+  // No model ran, so a duplicate or legitimacy verdict from an earlier head is neither confirmed
+  // nor refuted and must be left in place.
+  assert.deepEqual(state.removeCommentMarkers, []);
+
+  const unavailable = resolveClassificationState({
+    expectedSha: SHA, labels: [], deterministic, classifier: undefined,
+    semver: { head_sha: SHA, status: "unavailable" }, sspi: { head_sha: SHA, status: "unavailable" },
+  });
+  // An unavailable deterministic check must not be published as a negative result.
+  const owned = unavailable.labelSets.flatMap((set) => set.owned);
+  assert.equal(owned.includes("A-sspi"), false);
+  assert.equal(owned.includes("breaking-change"), false);
+});
+
+test("a duplicate verdict is withdrawn once it no longer holds", () => {
+  const deterministic = { ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S",
+    sizeLabels: ["size/S"], firstTime: false };
+  const state = (duplicate) => resolveClassificationState({
+    expectedSha: SHA, labels: [], deterministic, semver: { head_sha: SHA, status: "not-suspected" },
+    sspi: { head_sha: SHA, status: "not-required" },
+    classifier: classifier({ duplicate: duplicate
+      ? { detected: true, similar_pr_number: 2,
+        similar_pr_url: "https://github.com/Devolutions/IronRDP/pull/2",
+        confidence: 0.99, rationale: "same change" }
+      : { detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "" } }),
+  });
+  const flagged = state(true);
+  assert.deepEqual(flagged.comments.map((comment) => comment.kind), ["duplicate"]);
+  assert.equal(flagged.removeCommentMarkers.includes(DUPLICATE_MARKER), false);
+  // Removing only the label would leave a comment contradicting the labels the same run wrote.
+  const cleared = state(false);
+  assert.deepEqual(cleared.comments, []);
+  assert.equal(cleared.removeCommentMarkers.includes(DUPLICATE_MARKER), true);
+});
+
+test("model text cannot smuggle active markup into a bot comment", () => {
+  // Validation treats model output as hostile, so publication must neutralize anything that would
+  // render as an active link, image, or disguised formatting.
+  const hostile = escapeMarkdown("[click](https://evil.invalid) ![img](x) __bold__ ~~s~~ a|b");
+  for (const active of ["](", "![", "__", "~~"]) {
+    assert.equal(hostile.includes(active), false, `${active} survived escaping`);
+  }
+  assert.match(hostile, /\\\[click\\\]\\\(https:\/\/evil\.invalid\\\)/);
+  // A backslash in the source must not consume the escape that follows it.
+  assert.equal(escapeMarkdown("\\"), "\\\\");
+  assert.equal(escapeMarkdown("<img src=x>"), "&lt;img src=x&gt;");
 });
 
 test("legitimacy stop is human-owned and clears only after a valid false result", () => {

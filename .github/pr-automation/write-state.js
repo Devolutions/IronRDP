@@ -6,10 +6,16 @@ class StaleHeadError extends Error {
   constructor() { super("pull request head is no longer current"); this.name = "StaleHeadError"; }
 }
 
+// Model output is treated as hostile, so it is neutralized before it reaches a bot-authored
+// comment or review. HTML, code spans, mentions, and issue references are defused, and the
+// Markdown constructs that would otherwise still render as active links, images, or formatting are
+// backslash-escaped so that text such as `[label](https://example.invalid)` stays inert prose.
 function escapeMarkdown(value) {
-  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  return String(value).replace(/\\/g, "\\\\")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/`/g, "&#96;")
-    .replace(/@(?=[\w-])/g, "`@`").replace(/(?<!&)#(?=\d)/g, "`#`");
+    .replace(/@(?=[\w-])/g, "`@`").replace(/(?<!&)#(?=\d)/g, "`#`")
+    .replace(/[[\]()!*_~|]/g, "\\$&");
 }
 
 async function assertCurrentHead(github, owner, repo, prNumber, expectedSha) {

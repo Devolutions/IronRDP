@@ -39,6 +39,22 @@ path and size labels plus `human-required`, and no model ever runs: no classifie
 SSPI heuristic, no risk label, and no review route. Bots are machine-generated and arrive in bulk,
 so model capacity spent on them buys no reviewable judgement.
 
+Every LLM stage is given the same evidence, prepared by `.github/pr-automation/fetch-pr-evidence.sh`
+running from the trusted base checkout. The action is used in explicit-prompt mode, which injects no
+pull request context of its own, and `Bash` is denied, so a model cannot derive a diff by itself.
+The script therefore writes `pr-evidence/changed-files.txt` and `pr-evidence/pull-request.diff`,
+both computed against the merge base so that unrelated commits landing on `master` are not
+attributed to the pull request, and the head tree stays available in `pr-head` for surrounding
+context. It also removes contributor-controlled agent instruction files — `CLAUDE.md`,
+`CLAUDE.local.md`, `AGENTS.md`, `.claude`, `.cursor`, `.cursorrules` — recursively rather than only
+at the checkout root, because Claude Code discovers them in every directory it reads and a nested
+copy would otherwise escape the evidence-only boundary. Those files still appear in the diff, where
+they are reviewable data rather than instructions.
+
+Model output is likewise treated as hostile on the way out. Text published in a bot comment or
+review is escaped so that HTML, code spans, mentions, issue references, and the Markdown constructs
+that produce links, images, and emphasis all render as inert prose.
+
 The `risk` label states how much human scrutiny a change needs, not how much an automated review is
 worth. `risk:high` means the change substantially affects the public API surface of a core tier
 crate and needs maintainer-level scrutiny; `risk:medium` means a behavioural change that does not
@@ -55,11 +71,16 @@ For everything else, `risk:low` without `breaking-change` skips the review. Dupl
 a legitimacy stop, and the terminal review count still stop every route.
 
 A `size/XL` pull request, meaning 800 or more changed source lines, is excluded from automated
-review deterministically, before any model runs. The workflow comments once to explain the
+review deterministically, before any model runs. The classifier is skipped along with the
+reviewers, so no LLM call is spent on a change that cannot be reviewed well anyway; classification
+falls back to the deterministic signals, publishing path, size, first-time-contributor, SSPI, and
+`cargo-semver-checks` results, and marking the check as deterministic labelling only so the review
+gate stays shut. The workflow comments once to explain the
 exclusion and to point at [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs)
 for splitting dependent work, noting that stacks require every branch to live in this repository so
 fork authors should open separate pull requests. The comment is removed automatically once a later
-push brings the change below the threshold.
+push brings the change below the threshold. Duplicate and legitimacy verdicts are model-derived, so
+an oversized run leaves any earlier verdict untouched rather than silently clearing it.
 
 Run **Bootstrap pull request automation labels** once before enabling the workflow. It creates the
 six labels defined in `.github/pr-automation/labels.json`. Existing labels for documentation,
