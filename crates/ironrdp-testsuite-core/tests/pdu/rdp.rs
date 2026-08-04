@@ -79,6 +79,16 @@ fn from_header_only_buffer_defaults_rdp_pdu_server_font_map() {
     assert_eq!(SERVER_FONT_MAP.clone(), decode(buf).unwrap());
 }
 
+/// VirtualBox's VRDP declares `totalLength` as the size of the two headers (18) and does not
+/// count the 8-byte Font Map body that follows it, so the PDU is complete but under-declared.
+#[test]
+fn from_buffer_with_under_declared_total_length_parses_rdp_pdu_server_font_map() {
+    let mut buf = SERVER_FONT_MAP_BUFFER;
+    buf[0] = 18;
+
+    assert_eq!(SERVER_FONT_MAP.clone(), decode(buf.as_ref()).unwrap());
+}
+
 #[test]
 fn from_header_only_buffer_rejects_rdp_pdu_client_font_list() {
     assert!(decode::<ironrdp_pdu::rdp::headers::ShareControlHeader>(&CLIENT_FONT_LIST_BUFFER[..18]).is_err());
