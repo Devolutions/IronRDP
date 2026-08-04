@@ -1,7 +1,6 @@
 name: Agentic RDP
 
 on:
-  push:
   workflow_dispatch:
     inputs:
       desktop_size:
