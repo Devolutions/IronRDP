@@ -124,7 +124,7 @@ async function findCheck(github, owner, repo, expectedSha, check) {
   for await (const response of github.paginate.iterator(github.rest.checks.listForRef, {
     owner, repo, ref: expectedSha, check_name: check.name, per_page: 100,
   })) {
-    for (const run of response.data.check_runs) {
+    for (const run of response.data) {
       if (run.external_id === check.externalId && (!found || run.id > found.id)) found = run;
     }
   }

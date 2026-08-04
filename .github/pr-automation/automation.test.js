@@ -611,6 +611,42 @@ test("writer batches the label delta and tolerates an absent label removal", asy
   }), false);
 });
 
+test("writer reads normalized check-run pages and updates the newest matching run", async () => {
+  let updatedCheckRun = null;
+  const github = {
+    paginate: { iterator: async function* () {
+      yield { data: [
+        { id: 1, external_id: `classifier-v2:${SHA}`, conclusion: "failure" },
+        { id: 4, external_id: "unrelated", conclusion: "failure" },
+      ] };
+      yield { data: [
+        { id: 3, external_id: `classifier-v2:${SHA}`, conclusion: "failure" },
+      ] };
+    } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        update: async ({ check_run_id }) => { updatedCheckRun = check_run_id; },
+      },
+      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+      issues: { get: async () => ({ data: { labels: [] } }) },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+    state: {
+      ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: [],
+      comments: [], removeCommentMarkers: [],
+      check: {
+        name: "AI classification", externalId: `classifier-v2:${SHA}`,
+        title: "Automation stopped", summary: "Maintainer review is required.",
+        machineState: { protocolRelated: false },
+      },
+    },
+  });
+  assert.equal(updatedCheckRun, 3);
+});
+
 function paginated(pages) {
   return {
     paginate: { iterator: async function* (_method, options) {
