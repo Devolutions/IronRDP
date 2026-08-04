@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteBuf, WriteCursor, cast_length, decode,
-    ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, read_padding,
+    ensure_fixed_part_size, ensure_size, invalid_field_err, not_enough_bytes_err, other_err, read_padding,
     unsupported_value_err, write_padding,
 };
 use num_derive::FromPrimitive;
@@ -325,14 +325,28 @@ impl<'de> Decode<'de> for ShareControlHeader {
             // padding past the inner unit; VirtualBox's VRDP declares only the two headers of a
             // Server Font Map PDU (18) and never counts its 8-byte body. An under-declared
             // length is not a truncation — the inner PDU above has already decoded from bytes
-            // that were really present, and a genuinely short buffer fails there instead — so
-            // only a server claiming *more* than we consumed leaves anything to skip.
+            // that were really present, and a genuinely short buffer fails there instead — so a
+            // server claiming *more* than we consumed is the only case with anything left to skip.
+            //
+            // Zero stays rejected. That is not a server undercounting its own body, it is a
+            // length field never filled in; the one legitimate use is the no-op empty Update /
+            // Pointer PDU, so that case is carved out rather than the check dropped.
             let header_length = header.size();
+
+            let is_empty_output_pdu = matches!(
+                &header.share_control_pdu,
+                ShareControlPdu::Data(ShareDataHeader {
+                    share_data_pdu: ShareDataPdu::Update(data) | ShareDataPdu::Pointer(data),
+                    ..
+                }) if data.is_empty()
+            );
 
             if total_length > header_length {
                 let padding = total_length - header_length;
                 ensure_size!(in: src, size: padding);
                 read_padding!(src, padding);
+            } else if total_length == 0 && !is_empty_output_pdu {
+                return Err(not_enough_bytes_err!(total_length, header_length));
             }
         }
 
