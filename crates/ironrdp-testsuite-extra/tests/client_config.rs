@@ -4,9 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
-use ironrdp_client::config::{
-    ClipboardType, ConfigBuilder, Destination, Transport, TransportKind, VmConnectMode,
-};
+use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, Transport, TransportKind, VmConnectMode};
 use ironrdp_viewer::cli::parse_config_from;
 use uuid::Uuid;
 
