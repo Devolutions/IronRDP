@@ -57,12 +57,13 @@ pub trait StreamWrapper: Sized {
 pub struct Framed<S> {
     stream: S,
     buf: BytesMut,
-    /// When the most recent socket read completed.
+    /// When the most recent socket read completed, if this build observes time.
     ///
     /// A PDU served entirely from `buf` arrived at the socket read that filled it,
     /// not at the moment the caller happened to drain it, so this is the honest
-    /// arrival time for anything `read_by_hint` returns.
-    last_read_at: MonotonicInstant,
+    /// arrival time for anything `read_by_hint` returns. `None` until the first
+    /// read, and always `None` on a build with no clock.
+    last_read_at: Option<MonotonicInstant>,
 }
 
 impl<S> Framed<S> {
@@ -70,8 +71,9 @@ impl<S> Framed<S> {
         &self.buf
     }
 
-    /// When the bytes currently buffered last arrived from the socket.
-    pub fn last_read_at(&self) -> MonotonicInstant {
+    /// When the bytes currently buffered last arrived from the socket, or `None`
+    /// if nothing has been read yet or this build cannot observe time.
+    pub fn last_read_at(&self) -> Option<MonotonicInstant> {
         self.last_read_at
     }
 }
@@ -88,7 +90,7 @@ where
         Self {
             stream: S::from_inner(stream),
             buf: leftover,
-            last_read_at: MonotonicInstant::ZERO,
+            last_read_at: None,
         }
     }
 
@@ -303,21 +305,24 @@ where
     Ok(())
 }
 
-/// Reads the driver-owned monotonic clock.
+/// Reads the driver-owned monotonic clock, if this build has one.
 ///
 /// The epoch is the first call; only differences are meaningful.
 ///
 /// `std::time::Instant::now` panics on `wasm32-unknown-unknown`, and this crate is
-/// reached from `ironrdp-web` through `ironrdp-futures`, so the browser build gets
-/// [`MonotonicInstant::ZERO`] instead. Intervals computed from it are zero, which
-/// the connector already treats as "not measured" rather than as a measurement.
+/// reached from `ironrdp-web` through `ironrdp-futures`, so the browser build has no
+/// clock to read and reports `None` rather than a fabricated reading. Giving it one
+/// means plumbing a clock in from the embedder, which has `Performance.now()`
+/// available to it.
 #[cfg(not(target_arch = "wasm32"))]
-fn monotonic_now() -> MonotonicInstant {
+fn monotonic_now() -> Option<MonotonicInstant> {
     static EPOCH: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
-    MonotonicInstant::from_millis(u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX))
+    Some(MonotonicInstant::from_millis(
+        u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX),
+    ))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn monotonic_now() -> MonotonicInstant {
-    MonotonicInstant::ZERO
+fn monotonic_now() -> Option<MonotonicInstant> {
+    None
 }

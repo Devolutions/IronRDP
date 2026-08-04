@@ -287,7 +287,7 @@ impl Acceptor {
     /// Panics if state is not [AcceptorState::SecurityUpgrade].
     pub fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.reached_security_upgrade().is_some());
-        self.step(&[], MonotonicInstant::ZERO, &mut WriteBuf::new())
+        self.step(&[], None, &mut WriteBuf::new())
             .expect("transition to next state");
         debug_assert!(self.reached_security_upgrade().is_none());
     }
@@ -302,7 +302,7 @@ impl Acceptor {
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
         let res = self
-            .step(&[], MonotonicInstant::ZERO, &mut WriteBuf::new())
+            .step(&[], None, &mut WriteBuf::new())
             .expect("transition to next state");
         debug_assert!(!self.should_perform_credssp());
         assert_eq!(res, Written::Nothing);
@@ -461,7 +461,12 @@ impl Sequence for Acceptor {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], received_at: MonotonicInstant, output: &mut WriteBuf) -> ConnectorResult<Written> {
+    fn step(
+        &mut self,
+        input: &[u8],
+        received_at: Option<MonotonicInstant>,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
         let prev_state = mem::take(&mut self.state);
 
         let (written, next_state) = match prev_state {

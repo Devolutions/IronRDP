@@ -1,5 +1,4 @@
 use ironrdp_acceptor::Acceptor;
-use ironrdp_connector::MonotonicInstant;
 use ironrdp_connector::{DesktopSize, Sequence as _, Written, encode_x224_packet};
 use ironrdp_core::{WriteBuf, decode};
 use ironrdp_pdu::gcc::ClientMessageChannelData;
@@ -38,14 +37,12 @@ fn neg_failure_on_protocol_mismatch() {
     // Step 1: feed the connection request (HYBRID | HYBRID_EX, no SSL)
     let request_bytes = encode_connection_request(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX);
     let mut output = WriteBuf::new();
-    let written = acceptor
-        .step(&request_bytes, MonotonicInstant::ZERO, &mut output)
-        .unwrap();
+    let written = acceptor.step(&request_bytes, None, &mut output).unwrap();
     assert!(matches!(written, Written::Nothing));
 
     // Step 2: acceptor tries to send confirm, finds no common protocol
     let mut output = WriteBuf::new();
-    let result = acceptor.step(&[], MonotonicInstant::ZERO, &mut output);
+    let result = acceptor.step(&[], None, &mut output);
 
     // Must be an error
     assert!(result.is_err(), "expected error on protocol mismatch");
@@ -81,12 +78,10 @@ fn neg_success_when_protocols_match() {
 
     let request_bytes = encode_connection_request(SecurityProtocol::SSL | SecurityProtocol::HYBRID);
     let mut output = WriteBuf::new();
-    acceptor
-        .step(&request_bytes, MonotonicInstant::ZERO, &mut output)
-        .unwrap();
+    acceptor.step(&request_bytes, None, &mut output).unwrap();
 
     let mut output = WriteBuf::new();
-    let written = acceptor.step(&[], MonotonicInstant::ZERO, &mut output).unwrap();
+    let written = acceptor.step(&[], None, &mut output).unwrap();
     assert!(!matches!(written, Written::Nothing));
 
     let response_bytes = output.filled();
@@ -124,12 +119,8 @@ fn message_channel_advertised_when_client_requests_it() {
 
     // Connection request -> confirm -> (TLS upgrade) -> ready for ConnectInitial.
     let request_bytes = encode_connection_request(SecurityProtocol::SSL);
-    acceptor
-        .step(&request_bytes, MonotonicInstant::ZERO, &mut WriteBuf::new())
-        .unwrap();
-    acceptor
-        .step(&[], MonotonicInstant::ZERO, &mut WriteBuf::new())
-        .unwrap();
+    acceptor.step(&request_bytes, None, &mut WriteBuf::new()).unwrap();
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
     acceptor.mark_security_upgrade_as_done();
 
     // Client GCC with the message channel block and no network channels, so the
@@ -141,12 +132,10 @@ fn message_channel_advertised_when_client_requests_it() {
     let mut initial_buf = WriteBuf::new();
     encode_x224_packet(&connect_initial, &mut initial_buf).unwrap();
 
-    acceptor
-        .step(initial_buf.filled(), MonotonicInstant::ZERO, &mut WriteBuf::new())
-        .unwrap();
+    acceptor.step(initial_buf.filled(), None, &mut WriteBuf::new()).unwrap();
 
     let mut output = WriteBuf::new();
-    acceptor.step(&[], MonotonicInstant::ZERO, &mut output).unwrap();
+    acceptor.step(&[], None, &mut output).unwrap();
 
     let payload = decode::<X224<X224Data<'_>>>(output.filled()).unwrap().0;
     let response = decode::<mcs::ConnectResponse>(payload.data.as_ref()).unwrap();
@@ -182,12 +171,10 @@ fn neg_failure_hybrid_required() {
 
     let request_bytes = encode_connection_request(SecurityProtocol::SSL);
     let mut output = WriteBuf::new();
-    acceptor
-        .step(&request_bytes, MonotonicInstant::ZERO, &mut output)
-        .unwrap();
+    acceptor.step(&request_bytes, None, &mut output).unwrap();
 
     let mut output = WriteBuf::new();
-    let result = acceptor.step(&[], MonotonicInstant::ZERO, &mut output);
+    let result = acceptor.step(&[], None, &mut output);
     assert!(result.is_err());
 
     let response_bytes = output.filled();

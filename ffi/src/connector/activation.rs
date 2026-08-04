@@ -27,11 +27,7 @@ pub mod ffi {
         }
 
         pub fn step(&mut self, pdu_hint: &[u8], buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {
-            let res = self
-                .0
-                .step(pdu_hint, ironrdp::connector::MonotonicInstant::ZERO, &mut buf.0)
-                .map(Written)
-                .map(Box::new)?;
+            let res = self.0.step(pdu_hint, None, &mut buf.0).map(Written).map(Box::new)?;
             Ok(res)
         }
 

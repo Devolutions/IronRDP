@@ -1866,11 +1866,7 @@ where
                 debug_assert!(connector.next_pdu_hint().is_some());
 
                 buf.clear();
-                let written = connector.step(
-                    x224_connection_response.as_bytes(),
-                    connector::MonotonicInstant::ZERO,
-                    &mut buf,
-                )?;
+                let written = connector.step(x224_connection_response.as_bytes(), None, &mut buf)?;
                 debug_assert!(written.is_nothing());
 
                 let should_upgrade = ironrdp_futures::skip_connect_begin(connector);
