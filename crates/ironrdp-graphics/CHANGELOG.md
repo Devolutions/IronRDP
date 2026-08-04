@@ -6,6 +6,115 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.9.0...ironrdp-graphics-v0.10.0)] - 2026-08-04
+
+### <!-- 1 -->Features
+
+- Add ClearCodec client-side decode dispatch ([#1175](https://github.com/Devolutions/IronRDP/issues/1175)) ([714dce4662](https://github.com/Devolutions/IronRDP/commit/714dce46627e299c57d82f4f6a5c18067a95bffa)) 
+
+  Follow-up to #1174. Supersedes #1195 (the standalone server-helper PR;
+  its 46-line `send_clearcodec_frame()` is included here).
+  
+  Wires ClearCodec into the EGFX client's WireToSurface1 codec dispatch,
+  matching the existing AVC420 and Uncompressed decode patterns.
+
+### <!-- 4 -->Bug Fixes
+
+- Correct progressive base quantization scale ([#1499](https://github.com/Devolutions/IronRDP/issues/1499)) ([ccfe5bb8b3](https://github.com/Devolutions/IronRDP/commit/ccfe5bb8b3b1ddf447776e056d27cd14e2399ab7)) 
+
+  ## Summary
+
+- Decode indexed pointers and foreground RLE runs ([#1519](https://github.com/Devolutions/IronRDP/issues/1519)) ([ad19280762](https://github.com/Devolutions/IronRDP/commit/ad192807620bcc3a0467eaeb07173a79cb1da257)) 
+
+  ## Summary
+  
+  4bpp and 8bpp New/Large pointer shapes previously could not use the
+  active session palette, and malformed or unsupported pointer data could
+  terminate the session. This decodes indexed XOR masks with the current
+  palette and falls back to the default cursor while evicting stale cached
+  data when decoding fails.
+  
+  It also corrects RLE foreground runs so only set-foreground variants
+  consume a foreground pixel.
+  
+  Palette updates now follow the RDP wire format (type, padding, 256
+  packed RGB triplets) and are applied from both fast- and slow-path
+  updates, ensuring indexed pointer decoding uses the negotiated palette.
+  
+  ## Tests
+  
+  - `cargo test -p ironrdp-graphics -p ironrdp-session`
+  - `cargo test -p ironrdp-session palette`
+  - `cargo clippy -p ironrdp-graphics -p ironrdp-session --all-targets --
+  -D warnings`
+  
+  ---------
+
+- Rename {Read,Write}Cursor::rewinded into rewound ([#1529](https://github.com/Devolutions/IronRDP/issues/1529)) ([c85b089b46](https://github.com/Devolutions/IronRDP/commit/c85b089b4617176240b41482be65a77c9ad76a07)) 
+
+### <!-- 5 -->Performance
+
+- Portable SIMD inverse DWT (wide + SWAR) ([#1383](https://github.com/Devolutions/IronRDP/issues/1383)) ([629154026d](https://github.com/Devolutions/IronRDP/commit/629154026de0eaaf16b93352b4cecbae49a87511)) 
+
+  ## Summary
+  
+  On the WASM web client, frame **decode** dominates (~93% of frame time
+  on a 1080p RemoteFX replay), and within decode the **RFX inverse DWT was
+  ~48%** (the YCbCr→RGBA convert is already SIMD via `yuv`; the
+  entropy/RLE stages are inherently sequential). This vectorizes the
+  inverse DWT with the portable [`wide`](https://crates.io/crates/wide)
+  crate (`i16x8`), so the same code lowers to **wasm `simd128`, x86
+  SSE/AVX, and ARM NEON** — desktop and browser both benefit.
+  
+  The encode path is unchanged.
+  
+  ## How it stays bit-exact (no `unsafe`, no `cfg` split)
+  
+  The lifting steps need i32 intermediates only for the averages.
+  Overflow-free SWAR identities let the whole kernel stay in `i16` lanes
+  (no widen/narrow):
+  
+  - `ceil_avg(a,b)  = (a|b) - ((a^b)>>1)`  ≡ `(a + b + 1) >> 1`
+  - `floor_avg(a,b) = (a&b) + ((a^b)>>1)`  ≡ `(a + b) >> 1`
+  
+  and `(2x+1)>>1 == x` / `(x+x)>>1 == x` simplify the first/last rows.
+  Every other op is wrapping `i16` arithmetic, identical to the old
+  `i32`-intermediate-then-`as i16` truncation.
+  
+  ## Performance
+  
+  1080p RemoteFX replay, headless Chromium, wasm release `+simd128`,
+  8-pass median:
+  
+  | inverse DWT | decode (ms) |
+  |---|--:|
+  | scalar (baseline) | ~1598 |
+  | **portable `wide` SIMD** | **~985** |
+  
+  → inverse DWT ~2×, **~39% off the decode stage**. (Absolute ms carry
+  ~±15% machine-load noise; the ratio is stable. Per-frame this is a
+  throughput win — decode was already within real-time budget.)
+  
+  ## Correctness
+  
+  Verified bit-exact three ways:
+  - the replay-bench **framebuffer CRC32** is unchanged,
+  - the existing **native DWT tests** pass (so it's exact on x86 too, not
+  just wasm),
+  - an **exhaustive** check of the SWAR identities over all `i16 × i16`
+  pairs (0 mismatches).
+  
+  ## Notes
+  
+  - `wide` is a single-user dep in `ironrdp-graphics`; chosen over
+  `std::simd` (still nightly-only) and over per-arch intrinsics (one
+  portable kernel vs three).
+  - Reproducible bench branches: `bench/draw-*` (renderer) and the DWT
+  measurements were taken on the replay-bench harness branch (the capture
+  corpus is gitignored).
+
+
+
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.8.1...ironrdp-graphics-v0.9.0)] - 2026-07-10
 
 ### <!-- 4 -->Bug Fixes
