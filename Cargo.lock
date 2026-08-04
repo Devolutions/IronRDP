@@ -2426,16 +2426,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "embed-resource",
- "ironrdp-agent",
  "ironrdp-cfg",
  "ironrdp-client",
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-native",
  "ironrdp-connector",
  "ironrdp-core 0.2.1",
+ "ironrdp-daemon",
  "ironrdp-input",
  "ironrdp-pdu",
  "ironrdp-propertyset",
+ "ironrdp-rpc",
  "ironrdp-session",
  "ironrdp-svc",
  "ironrdp-tls",
@@ -2454,23 +2455,13 @@ dependencies = [
  "anyhow",
  "clap",
  "ironrdp-cfg",
- "ironrdp-client",
+ "ironrdp-daemon",
  "ironrdp-input",
- "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
  "ironrdp-rpc",
- "ironrdp-tls",
- "libc",
- "now-client",
- "now-proto-pdu",
- "png",
  "serde_json",
  "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "whoami",
 ]
 
 [[package]]
@@ -2627,6 +2618,29 @@ name = "ironrdp-core"
 version = "0.2.1"
 dependencies = [
  "ironrdp-error 0.2.0",
+]
+
+[[package]]
+name = "ironrdp-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ironrdp-cfg",
+ "ironrdp-client",
+ "ironrdp-input",
+ "ironrdp-pdu",
+ "ironrdp-propertyset",
+ "ironrdp-rpc",
+ "ironrdp-tls",
+ "libc",
+ "now-client",
+ "now-proto-pdu",
+ "png",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "whoami",
 ]
 
 [[package]]
@@ -3044,10 +3058,12 @@ dependencies = [
  "ironrdp-bulk",
  "ironrdp-client",
  "ironrdp-core 0.2.1",
+ "ironrdp-daemon",
  "ironrdp-dvc",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-input",
  "ironrdp-propertyset",
+ "ironrdp-rpc",
  "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",
@@ -3089,10 +3105,11 @@ dependencies = [
  "clap",
  "inquire",
  "ironrdp",
- "ironrdp-agent",
  "ironrdp-cfg",
+ "ironrdp-daemon",
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
+ "ironrdp-rpc",
  "proc-exit",
  "raw-window-handle",
  "semver",

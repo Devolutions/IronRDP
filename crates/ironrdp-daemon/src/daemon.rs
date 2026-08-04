@@ -3,7 +3,7 @@
 //!
 //! One daemon serves one RDP session (multi-session is out of scope for V1). It is started
 //! explicitly with `daemon-start` and runs in the foreground; the caller is expected to background
-//! it. On a clean shutdown the Unix socket file is removed (see [`crate::transport`]).
+//! it. On a clean shutdown the Unix socket file is removed by [`ironrdp_rpc::transport`].
 
 use std::sync::{Arc, Mutex};
 
@@ -18,14 +18,15 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::ipc::{
+use ironrdp_rpc::ipc::{
     ConnState, KeyFilter, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response,
     StatusInfo,
 };
+use ironrdp_rpc::transport::{self, Endpoint, Listener, MAX_SCREENSHOT_PIXELS, read_message, write_message};
+
 use crate::logbuf::{self, LogBuffer};
 use crate::now::NowEndpoint;
 use crate::operations::{OperationAttachment, OperationManager};
-use crate::transport::{Endpoint, Listener, MAX_SCREENSHOT_PIXELS, read_message, write_message};
 
 /// Binds the IPC endpoint and serves requests until a shutdown signal is received.
 ///
@@ -43,7 +44,7 @@ pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()>
 /// The caller owns the daemon so it can share the same session state with another frontend, such
 /// as the viewer window.
 pub async fn serve(endpoint: Endpoint, daemon: Arc<Daemon>) -> anyhow::Result<()> {
-    crate::transport::prepare_endpoint(&endpoint).await?;
+    transport::prepare_endpoint(&endpoint).await?;
     let mut listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
     info!(%endpoint, "Daemon listening");
 

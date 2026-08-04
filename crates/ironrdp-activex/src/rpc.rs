@@ -10,16 +10,16 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use anyhow::Context as _;
-use ironrdp_agent::ipc::{
+use ironrdp_daemon::logbuf::{self, LogBuffer};
+use ironrdp_daemon::now::NowEndpoint;
+use ironrdp_daemon::operations::{OperationAttachment, OperationManager};
+use ironrdp_input::Operation;
+use ironrdp_propertyset::{PropertySet, Value};
+use ironrdp_rpc::ipc::{
     AgentErrorCategory, ConnState, KeyFilter, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry, Request,
     Response, StatusInfo,
 };
-use ironrdp_agent::logbuf::{self, LogBuffer};
-use ironrdp_agent::now::NowEndpoint;
-use ironrdp_agent::operations::{OperationAttachment, OperationManager};
-use ironrdp_agent::transport::{self, Endpoint, Listener, MAX_SCREENSHOT_PIXELS, read_message, write_message};
-use ironrdp_input::Operation;
-use ironrdp_propertyset::{PropertySet, Value};
+use ironrdp_rpc::transport::{self, Endpoint, Listener, MAX_SCREENSHOT_PIXELS, read_message, write_message};
 use tokio::sync::{oneshot, watch};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
@@ -544,7 +544,7 @@ async fn now_run(shared: &Shared, command: String, directory: Option<String>) ->
     }
 }
 
-async fn now_execute(shared: &Shared, request: ironrdp_agent::ipc::NowExecutionRequest) -> ConnectionResponse {
+async fn now_execute(shared: &Shared, request: ironrdp_rpc::ipc::NowExecutionRequest) -> ConnectionResponse {
     let operations = match operations(shared) {
         Ok(operations) => operations,
         Err(response) => return ConnectionResponse::Single(response),
@@ -620,7 +620,7 @@ async fn now_diagnostics(shared: &Shared) -> Response {
     Response::Ok(Payload::NowDiagnostics(NowDiagnostics {
         endpoint_allocated: true,
         connected,
-        capabilities: capabilities.map(|capabilities| ironrdp_agent::ipc::NowCapabilities {
+        capabilities: capabilities.map(|capabilities| ironrdp_rpc::ipc::NowCapabilities {
             version_major: capabilities.version_major,
             version_minor: capabilities.version_minor,
             heartbeat_ms: capabilities.heartbeat_ms,

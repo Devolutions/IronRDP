@@ -62,7 +62,7 @@ struct Args {
     #[clap(short, long, value_parser)]
     log_file: Option<String>,
 
-    /// Run as a visible GUI host for the ironrdp-agent RPC protocol.
+    /// Run as a visible GUI host for the IronRDP local RPC protocol.
     #[clap(long)]
     rpc: bool,
 

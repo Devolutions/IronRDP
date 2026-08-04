@@ -13,11 +13,11 @@ use now_client::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-use crate::ipc::{
+use crate::now::{Capabilities, NowEndpoint, NowEndpointError, invalidates_handle};
+use ironrdp_rpc::ipc::{
     AgentError, AgentErrorCategory, NowCapabilities, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent,
     OperationEventKind, OperationInfo, OperationState,
 };
-use crate::now::{Capabilities, NowEndpoint, NowEndpointError, invalidates_handle};
 
 const MAX_OPERATION_OUTPUT: usize = 8 * 1024 * 1024;
 const MAX_TERMINAL_OPERATIONS: usize = 32;

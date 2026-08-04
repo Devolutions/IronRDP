@@ -1,21 +1,21 @@
-//! Codec round-trip tests for the `ironrdp-agent` IPC and wire protocols.
+//! Codec round-trip tests for the shared RPC protocol and daemon NOW endpoint.
 //!
-//! These exercise the crate's private wire format through its public (and `internal`-feature)
-//! API. They live here, in the shared test suite, rather than inside `ironrdp-agent` itself, per
+//! These exercise the reusable protocol and daemon support. They live here, in the shared test
+//! suite, rather than inside the owning crates themselves, per
 //! the workspace convention of keeping unit tests for protocol codecs in `ironrdp-testsuite-extra`.
 
 use core::fmt::Debug;
 
-use ironrdp_agent::ipc::{
+use ironrdp_core::{Decode, DecodeOwned, Encode, decode, decode_owned, encode_vec};
+use ironrdp_daemon::now::{DVC_CHANNEL_NAME, INITIAL_ENDPOINT_TIMEOUT, NowEndpoint, RECONNECT_ENDPOINT_TIMEOUT};
+use ironrdp_input::MouseButton;
+use ironrdp_propertyset::PropertySet;
+use ironrdp_rpc::ipc::{
     AgentError, AgentErrorCategory, ConnState, KeyFilter, NowCapabilities, NowDiagnostics, NowExecutionKind,
     NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload,
     PropValue, PropertyDump, PropertyEntry, Request, Response, StatusInfo,
 };
-use ironrdp_agent::now::{DVC_CHANNEL_NAME, INITIAL_ENDPOINT_TIMEOUT, NowEndpoint, RECONNECT_ENDPOINT_TIMEOUT};
-use ironrdp_agent::wire;
-use ironrdp_core::{Decode, DecodeOwned, Encode, decode, decode_owned, encode_vec};
-use ironrdp_input::MouseButton;
-use ironrdp_propertyset::PropertySet;
+use ironrdp_rpc::wire;
 
 #[track_caller]
 fn round_trip<T>(value: &T)

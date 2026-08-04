@@ -29,7 +29,7 @@ provided where the published control accepts the operation without starting an u
 ## Local agent RPC
 
 Set `IRONRDP_ACTIVEX_RPC=1` in the ActiveX host process before creating the control to expose the
-current-user-only `ironrdp-agent` RPC service from `ironrdpax.dll`. The shared transport applies a
+current-user-only IronRDP RPC service from `ironrdpax.dll`. The shared transport applies a
 protected current-user DACL to its named pipe. Its default endpoint is
 `ironrdp-activex-<user>` on Windows; set `IRONRDP_ACTIVEX_RPC_ENDPOINT` to select another named
 pipe. The listener never accesses the STA control directly: connection, disconnect, input, resize,

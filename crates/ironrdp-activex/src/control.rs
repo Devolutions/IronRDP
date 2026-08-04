@@ -3920,13 +3920,13 @@ pub(crate) struct Control {
     rpc_log_directive: RefCell<Option<String>>,
 }
 
-fn rpc_control_error(error: Error) -> ironrdp_agent::ipc::Response {
+fn rpc_control_error(error: Error) -> ironrdp_rpc::ipc::Response {
     let category = if error.code() == E_INVALIDARG || error.code() == E_NOTIMPL {
-        ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest
+        ironrdp_rpc::ipc::AgentErrorCategory::InvalidRequest
     } else {
-        ironrdp_agent::ipc::AgentErrorCategory::Unavailable
+        ironrdp_rpc::ipc::AgentErrorCategory::Unavailable
     };
-    ironrdp_agent::ipc::Response::typed_error(category, format!("ActiveX control rejected the request: {error}"))
+    ironrdp_rpc::ipc::Response::typed_error(category, format!("ActiveX control rejected the request: {error}"))
 }
 
 fn active_x_property_snapshot(settings: &Settings, compatibility: &CompatibilitySettings) -> PropertySet {
@@ -5977,13 +5977,13 @@ impl Control {
             }
             RpcCommand::Disconnect { response } => {
                 let response_value = if self.state.get() == ConnectionState::Disconnected {
-                    ironrdp_agent::ipc::Response::typed_error(
-                        ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                    ironrdp_rpc::ipc::Response::typed_error(
+                        ironrdp_rpc::ipc::AgentErrorCategory::Unavailable,
                         "no active RDP session",
                     )
                 } else {
                     self.stop_connection()
-                        .map_or_else(rpc_control_error, |_| ironrdp_agent::ipc::Response::ok())
+                        .map_or_else(rpc_control_error, |_| ironrdp_rpc::ipc::Response::ok())
                 };
                 let _ = response.send(response_value);
             }
@@ -5996,8 +5996,8 @@ impl Control {
                 response,
             } => {
                 let response_value = if width == 0 || height == 0 {
-                    ironrdp_agent::ipc::Response::typed_error(
-                        ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    ironrdp_rpc::ipc::Response::typed_error(
+                        ironrdp_rpc::ipc::AgentErrorCategory::InvalidRequest,
                         "width and height must be non-zero",
                     )
                 } else {
@@ -6010,17 +6010,17 @@ impl Control {
                         desktop_scale_factor: 100,
                         device_scale_factor: 100,
                     })
-                    .map_or_else(rpc_control_error, |_| ironrdp_agent::ipc::Response::ok())
+                    .map_or_else(rpc_control_error, |_| ironrdp_rpc::ipc::Response::ok())
                 };
                 let _ = response.send(response_value);
             }
         }
     }
 
-    fn rpc_connect(&self, properties: PropertySet, log_directive: Option<String>) -> ironrdp_agent::ipc::Response {
+    fn rpc_connect(&self, properties: PropertySet, log_directive: Option<String>) -> ironrdp_rpc::ipc::Response {
         if self.state.get() != ConnectionState::Disconnected {
-            return ironrdp_agent::ipc::Response::typed_error(
-                ironrdp_agent::ipc::AgentErrorCategory::Conflict,
+            return ironrdp_rpc::ipc::Response::typed_error(
+                ironrdp_rpc::ipc::AgentErrorCategory::Conflict,
                 "a session is already active; disconnect first",
             );
         }
@@ -6038,8 +6038,8 @@ impl Control {
         .into_iter()
         .any(|key| properties.get::<&str>(key).is_some() || properties.get::<i64>(key).is_some())
         {
-            return ironrdp_agent::ipc::Response::typed_error(
-                ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+            return ironrdp_rpc::ipc::Response::typed_error(
+                ironrdp_rpc::ipc::AgentErrorCategory::InvalidRequest,
                 "the requested transport extension is not supported by the ActiveX host",
             );
         };
@@ -6050,8 +6050,8 @@ impl Control {
                 CertificateValidation::DangerouslyAcceptInvalidCertificate
             }
             Some(_) => {
-                return ironrdp_agent::ipc::Response::typed_error(
-                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                return ironrdp_rpc::ipc::Response::typed_error(
+                    ironrdp_rpc::ipc::AgentErrorCategory::InvalidRequest,
                     "invalid certificate validation policy",
                 );
             }
@@ -6059,8 +6059,8 @@ impl Control {
         let builder = match ConfigBuilder::from_property_set(&properties) {
             Ok(builder) => builder,
             Err(error) => {
-                return ironrdp_agent::ipc::Response::typed_error(
-                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                return ironrdp_rpc::ipc::Response::typed_error(
+                    ironrdp_rpc::ipc::AgentErrorCategory::InvalidRequest,
                     format!("invalid configuration: {error:#}"),
                 );
             }
@@ -6079,8 +6079,8 @@ impl Control {
         .with_pointer_software_rendering(true);
         let missing = builder.missing();
         if !missing.is_empty() {
-            return ironrdp_agent::ipc::Response::typed_error(
-                ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+            return ironrdp_rpc::ipc::Response::typed_error(
+                ironrdp_rpc::ipc::AgentErrorCategory::InvalidRequest,
                 format!(
                     "missing required fields: {}",
                     missing
@@ -6094,21 +6094,21 @@ impl Control {
         let config = match builder.build() {
             Ok(config) => config,
             Err(error) => {
-                return ironrdp_agent::ipc::Response::typed_error(
-                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                return ironrdp_rpc::ipc::Response::typed_error(
+                    ironrdp_rpc::ipc::AgentErrorCategory::InvalidRequest,
                     format!("{error:#}"),
                 );
             }
         };
         if matches!(config.transport(), Transport::RDCleanPath(_)) {
-            return ironrdp_agent::ipc::Response::typed_error(
-                ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+            return ironrdp_rpc::ipc::Response::typed_error(
+                ironrdp_rpc::ipc::AgentErrorCategory::InvalidRequest,
                 "RDCleanPath is not supported by the ActiveX host",
             );
         }
         let Credentials::UsernamePassword { username, password } = &config.connector().credentials else {
-            return ironrdp_agent::ipc::Response::typed_error(
-                ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+            return ironrdp_rpc::ipc::Response::typed_error(
+                ironrdp_rpc::ipc::AgentErrorCategory::InvalidRequest,
                 "smart card credentials are not supported by the ActiveX host",
             );
         };
@@ -6188,12 +6188,12 @@ impl Control {
                 self.rpc_properties.borrow_mut().take();
                 self.rpc_kerberos_config.borrow_mut().take();
                 let _ = self.rpc_log_directive.borrow_mut().take();
-                ironrdp_agent::ipc::Response::typed_error(
-                    ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                ironrdp_rpc::ipc::Response::typed_error(
+                    ironrdp_rpc::ipc::AgentErrorCategory::Unavailable,
                     "connection cancelled",
                 )
             }
-            Ok(()) => ironrdp_agent::ipc::Response::ok(),
+            Ok(()) => ironrdp_rpc::ipc::Response::ok(),
             Err(error) => {
                 self.rpc_properties.borrow_mut().take();
                 self.rpc_kerberos_config.borrow_mut().take();
@@ -6203,34 +6203,34 @@ impl Control {
         }
     }
 
-    fn rpc_input(&self, operation: Operation) -> ironrdp_agent::ipc::Response {
+    fn rpc_input(&self, operation: Operation) -> ironrdp_rpc::ipc::Response {
         if self.state.get() != ConnectionState::Connected {
-            return ironrdp_agent::ipc::Response::typed_error(
-                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+            return ironrdp_rpc::ipc::Response::typed_error(
+                ironrdp_rpc::ipc::AgentErrorCategory::Unavailable,
                 "no active RDP session",
             );
         }
         let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
-            return ironrdp_agent::ipc::Response::typed_error(
-                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+            return ironrdp_rpc::ipc::Response::typed_error(
+                ironrdp_rpc::ipc::AgentErrorCategory::Unavailable,
                 "session input channel is unavailable",
             );
         };
         let permit = match sender.try_reserve() {
             Ok(permit) => permit,
             Err(_) => {
-                return ironrdp_agent::ipc::Response::typed_error(
-                    ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                return ironrdp_rpc::ipc::Response::typed_error(
+                    ironrdp_rpc::ipc::AgentErrorCategory::Unavailable,
                     "session input channel is unavailable",
                 );
             }
         };
         let fast_path = self.input_database.borrow_mut().apply([operation]);
         if fast_path.is_empty() {
-            return ironrdp_agent::ipc::Response::ok();
+            return ironrdp_rpc::ipc::Response::ok();
         }
         permit.send(RdpInputEvent::FastPath(fast_path));
-        ironrdp_agent::ipc::Response::ok()
+        ironrdp_rpc::ipc::Response::ok()
     }
 
     fn start_connection(&self) -> Result<()> {
@@ -6383,8 +6383,8 @@ impl Control {
             .map(|_| ActiveXRpc::allocate_now_endpoint())
             .transpose()
             .map_err(|response| match response {
-                ironrdp_agent::ipc::Response::Err(error) => Error::new(E_FAIL, error.message),
-                ironrdp_agent::ipc::Response::Ok(_) => Error::from_hresult(E_FAIL),
+                ironrdp_rpc::ipc::Response::Err(error) => Error::new(E_FAIL, error.message),
+                ironrdp_rpc::ipc::Response::Ok(_) => Error::from_hresult(E_FAIL),
             })?;
         let builder = ConfigBuilder::new()
             .with_destination(destination)

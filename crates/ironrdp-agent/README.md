@@ -105,10 +105,10 @@ Two logging concerns are kept separate:
 
 ## NOW remote execution
 
-After an RDP session connects, the daemon injects a per-session `Devolutions::Now::Agent` DVC
+After an RDP session connects, the daemon support injects a per-session `Devolutions::Now::Agent` DVC
 endpoint. The endpoint is local to the daemon and is not shared between RDP sessions. NOW protocol
 framing, negotiation, heartbeats, capability gates, and command PDU handling are owned by the
-`now-client` dependency; the agent owns only the endpoint/reconnect boundary and durable operation
+`now-client` dependency; `ironrdp-daemon` owns only the endpoint/reconnect boundary and durable operation
 state.
 
 Use the supported commands below after `connect`:

@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use ironrdp::client::rdp::{RdpClient, RdpOutputEvent};
-use ironrdp_agent::daemon::Daemon;
-use ironrdp_agent::transport;
+use ironrdp_daemon::daemon::{self, Daemon};
 use ironrdp_propertyset::PropertySet;
+use ironrdp_rpc::transport;
 use ironrdp_viewer::app::{App, InputTarget, ViewerEvent};
 use ironrdp_viewer::cli::ViewerConfig;
 use tokio::runtime;
@@ -132,7 +132,7 @@ fn run_rpc(cli: ViewerConfig) -> anyhow::Result<()> {
                 .build()
                 .expect("unable to create viewer RPC runtime");
             server_runtime.block_on(async move {
-                if let Err(error) = ironrdp_agent::daemon::serve(endpoint, server_daemon).await {
+                if let Err(error) = daemon::serve(endpoint, server_daemon).await {
                     tracing::error!(error = format!("{error:#}"), "Viewer RPC server stopped with an error");
                 }
                 let _ = server_proxy.send_event(ViewerEvent::Shutdown);

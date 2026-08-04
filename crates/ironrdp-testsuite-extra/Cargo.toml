@@ -26,7 +26,8 @@ anyhow = "1.0"
 async-trait = "0.1"
 ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo"] }
 ironrdp-async.path = "../ironrdp-async"
-ironrdp-agent = { path = "../ironrdp-agent", features = ["internal"] }
+ironrdp-agent.path = "../ironrdp-agent"
+ironrdp-daemon.path = "../ironrdp-daemon"
 ironrdp-bulk.path = "../ironrdp-bulk"
 ironrdp-client.path = "../ironrdp-client"
 ironrdp-core.path = "../ironrdp-core"
@@ -35,6 +36,7 @@ ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
 ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-input.path = "../ironrdp-input"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
+ironrdp-rpc.path = "../ironrdp-rpc"
 ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }

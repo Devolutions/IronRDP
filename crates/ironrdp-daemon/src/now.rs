@@ -1,4 +1,4 @@
-//! Agent-owned boundary between the RDP DVC proxy and `now-client`.
+//! Daemon-owned boundary between the RDP DVC proxy and `now-client`.
 //!
 //! NOW framing, negotiation, heartbeats, request encoding, and execution lifecycle all belong to
 //! `now-client`. This module deliberately only creates a per-session local endpoint, waits for the

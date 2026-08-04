@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use anyhow::Context as _;
 use ironrdp::client::rdp::{RdpInputEvent, RdpInputSender, RdpOutputEvent};
-use ironrdp_agent::daemon::{Daemon, ResizeError};
+use ironrdp_daemon::daemon::{Daemon, ResizeError};
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use smallvec::SmallVec;
 use tracing::{debug, error, info, trace, warn};
