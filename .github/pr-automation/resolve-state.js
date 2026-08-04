@@ -60,6 +60,9 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
     labelSets: [
       ...deterministicLabelSets(deterministic),
       { owned: RISK, desired: [semverStatus === "suspected" ? "risk/high" : "risk/unknown"] },
+      ...(semverStatus === "suspected"
+        ? [{ owned: ["breaking-change"], desired: ["breaking-change"] }]
+        : []),
     ],
     addLabels: ["maintainer-required"], comments: comment ? [comment] : [],
   };

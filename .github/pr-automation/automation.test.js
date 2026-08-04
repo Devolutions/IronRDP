@@ -291,7 +291,10 @@ test("deterministic semver outranks the model and a model-only break cannot stay
     classifier: "",
     semver: { head_sha: SHA, status: "suspected" },
   });
-  assert.deepEqual(failedWithSemverBreak.labelSets.at(-1).desired, ["risk/high"]);
+  assert.deepEqual(failedWithSemverBreak.labelSets.find((set) => set.owned.includes("risk/high")).desired,
+    ["risk/high"]);
+  assert.deepEqual(failedWithSemverBreak.labelSets.find((set) => set.owned.includes("breaking-change")).desired,
+    ["breaking-change"]);
 });
 
 test("cross-cutting scope is model-owned while path scopes can coexist", () => {
