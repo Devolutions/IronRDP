@@ -83,7 +83,7 @@ impl Sequence for FinalizationSequence {
     fn step(
         &mut self,
         input: &[u8],
-        _received_at: MonotonicInstant,
+        _received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
         let (written, next_state) = match core::mem::take(&mut self.state) {

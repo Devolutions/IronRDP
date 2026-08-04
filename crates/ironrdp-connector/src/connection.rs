@@ -26,12 +26,12 @@ use crate::{
 /// transport protocol: reliable + lossy UDP).
 const MAX_MULTITRANSPORT_REQUESTS: usize = 2;
 
-/// Reported as `timeDelta` when a connect-time bandwidth window cannot be timed.
+/// Reported as `timeDelta` when a connect-time bandwidth window was not timed.
 ///
 /// One millisecond rather than zero, because a server computing
-/// `byteCount * 8 / timeDelta` divides by it. The result understates a fast link,
-/// which is the safe direction: the figure is an informational QoS hint, and the
-/// server proceeds on receipt either way.
+/// `byteCount * 8 / timeDelta` divides by it ([MS-RDPBCGR] 3.3.5.14). It also
+/// floors a window that was timed and elapsed in under a millisecond, where it is
+/// a real bound rather than a stand-in.
 const UNMEASURABLE_INTERVAL_MS: u32 = 1;
 
 /// Outcome of a single multitransport bootstrapping request, passed to
@@ -260,11 +260,15 @@ pub struct ClientConnector {
     pub auto_reconnect_cookie: Option<ServerAutoReconnect>,
     /// Start of the in-flight connect-time bandwidth measurement window.
     ///
-    /// Set when the server's Bandwidth Measure Start arrives and cleared when the
-    /// matching Stop is answered. `None` means no window is open, in which case the
-    /// Stop is answered with [`UNMEASURABLE_INTERVAL_MS`] rather than a measurement.
+    /// Set when the server's Bandwidth Measure Start arrives, and only when the
+    /// driver reported an arrival time for it. Cleared when the matching Stop is
+    /// answered. `None` therefore means no window is open, whether because no Start
+    /// was seen or because this driver does not observe time at all.
     connect_time_bw_started_at: Option<MonotonicInstant>,
     /// Bytes seen in the open window, accumulated across Payload messages.
+    ///
+    /// Only accumulated while a window is open, since a total with no interval to
+    /// divide it by is not a measurement of anything.
     connect_time_bw_bytes: u32,
 }
 
@@ -405,7 +409,7 @@ impl ClientConnector {
     /// Panics if state is not [ClientConnectorState::EnhancedSecurityUpgrade].
     pub fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.should_perform_security_upgrade());
-        self.step(&[], MonotonicInstant::ZERO, &mut WriteBuf::new())
+        self.step(&[], None, &mut WriteBuf::new())
             .expect("transition to next state");
         debug_assert!(!self.should_perform_security_upgrade());
     }
@@ -420,7 +424,7 @@ impl ClientConnector {
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
         let res = self
-            .step(&[], MonotonicInstant::ZERO, &mut WriteBuf::new())
+            .step(&[], None, &mut WriteBuf::new())
             .expect("transition to next state");
         debug_assert!(!self.should_perform_credssp());
         assert_eq!(res, Written::Nothing);
@@ -619,7 +623,7 @@ impl ClientConnector {
     fn respond_to_connect_time_autodetect(
         &mut self,
         request: rdp::autodetect::AutoDetectRequest,
-        received_at: MonotonicInstant,
+        received_at: Option<MonotonicInstant>,
         message_channel_id: u16,
         user_channel_id: u16,
         output: &mut WriteBuf,
@@ -636,16 +640,25 @@ impl ClientConnector {
             }
             // Start opens the measurement window ([MS-RDPBCGR] 2.2.14.1.2). No reply is
             // due; we only note when it arrived.
+            //
+            // A driver that reports no arrival time cannot time this window, so it does
+            // not open one. That keeps the two unmeasurable situations distinct: a
+            // window that was timed and turned out to be short is still a measurement,
+            // while a driver with no clock never took one.
             AutoDetectRequest::BandwidthMeasureStart { .. } => {
-                self.connect_time_bw_started_at = Some(received_at);
+                self.connect_time_bw_started_at = received_at;
                 self.connect_time_bw_bytes = 0;
                 Ok(Written::Nothing)
             }
             // Payload carries the bytes whose transfer is being timed ([MS-RDPBCGR]
             // 2.2.14.1.3). No reply is due; accumulate so Stop can report the total.
+            // With no window open there is nothing for the total to be divided by, so
+            // there is nothing worth accumulating.
             AutoDetectRequest::BandwidthMeasurePayload { payload, .. } => {
-                let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
-                self.connect_time_bw_bytes = self.connect_time_bw_bytes.saturating_add(len);
+                if self.connect_time_bw_started_at.is_some() {
+                    let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+                    self.connect_time_bw_bytes = self.connect_time_bw_bytes.saturating_add(len);
+                }
                 Ok(Written::Nothing)
             }
             // A connect-time Bandwidth Measure Stop ([MS-RDPBCGR] 2.2.14.1.4) warrants a
@@ -654,18 +667,28 @@ impl ClientConnector {
             // their AWAIT_BW_RESULT state until they receive it and never proceed to
             // licensing without it, so omitting it stalls the whole connection.
             //
-            // The interval is measured from the Start that opened the window to the
-            // arrival of this Stop, using the times the I/O driver observed rather than
-            // any clock this sequence could read for itself.
+            // [MS-RDPBCGR] 3.2.5.14 has the client increment its Network Characteristics
+            // Byte Count store on each Payload and on this Stop, then send the store
+            // together with the elapsed timer. That is what a timed window reports here,
+            // measured from the Start that opened it using the times the I/O driver
+            // observed rather than any clock this sequence could read for itself.
             //
-            // Two cases yield no interval to report. Either no Start was seen, or the
-            // whole Start/Payload/Stop sequence arrived in a single socket read, which
-            // is the common case on a fast link because the payload is small enough to
-            // coalesce. Both are unmeasurable at read granularity rather than
-            // instantaneous, and the distinction matters on the wire: `timeDelta` of 0
-            // divides out to an unbounded bandwidth for a server that computes
-            // `byteCount * 8 / timeDelta`. Report the floor instead, which is the
-            // slowest rate consistent with what was observed.
+            // The spec does not contemplate a window it could not time, and two arise in
+            // practice. No Start was seen, so no window exists. Or the driver reports no
+            // arrival times at all, as the wasm32 and FFI drivers do for the whole
+            // connection, so no window was opened to accumulate into.
+            //
+            // Both still owe the server a reply, and `timeDelta` of 0 divides out to an
+            // unbounded bandwidth for a server computing `byteCount * 8 / timeDelta`
+            // (3.2.5.14 again, and [MS-RDPBCGR] 3.3.5.14 for the server side). They
+            // report the floor against this Stop's payload alone, which is the smallest
+            // claim that answers the question asked.
+            //
+            // A window that was timed reports its full count even when the elapsed time
+            // rounds down to the floor, which happens when one socket read delivered the
+            // whole exchange. The bytes did arrive within that millisecond, so the floor
+            // is a real bound on a real measurement rather than a stand-in for a missing
+            // one, and the quotient it yields is honest.
             AutoDetectRequest::BandwidthMeasureStop {
                 sequence_number,
                 payload,
@@ -674,15 +697,20 @@ impl ClientConnector {
                 let stop_bytes = payload
                     .as_ref()
                     .map_or(0, |p| u32::try_from(p.len()).unwrap_or(u32::MAX));
-                let byte_count = self.connect_time_bw_bytes.saturating_add(stop_bytes);
 
-                let measured_ms = self
-                    .connect_time_bw_started_at
-                    .map(|started_at| {
-                        u32::try_from(received_at.duration_since(started_at).as_millis()).unwrap_or(u32::MAX)
-                    })
-                    .unwrap_or(0);
-                let time_delta_ms = measured_ms.max(UNMEASURABLE_INTERVAL_MS);
+                // A window only opens when the Start carried a reading, so the same
+                // driver stamps this Stop. The `None` arm covers the unopened window.
+                let (time_delta_ms, byte_count) = match (self.connect_time_bw_started_at, received_at) {
+                    (Some(started_at), Some(stopped_at)) => {
+                        let measured_ms =
+                            u32::try_from(stopped_at.duration_since(started_at).as_millis()).unwrap_or(u32::MAX);
+                        (
+                            measured_ms.max(UNMEASURABLE_INTERVAL_MS),
+                            self.connect_time_bw_bytes.saturating_add(stop_bytes),
+                        )
+                    }
+                    _ => (UNMEASURABLE_INTERVAL_MS, stop_bytes),
+                };
 
                 self.connect_time_bw_started_at = None;
                 self.connect_time_bw_bytes = 0;
@@ -723,7 +751,7 @@ fn advance_licensing_exchange(
     user_channel_id: u16,
     message_channel_id: Option<u16>,
     input: &[u8],
-    received_at: MonotonicInstant,
+    received_at: Option<MonotonicInstant>,
     output: &mut WriteBuf,
 ) -> ConnectorResult<(Written, ClientConnectorState)> {
     let written = license_exchange.step(input, received_at, output)?;
@@ -789,7 +817,12 @@ impl Sequence for ClientConnector {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], received_at: MonotonicInstant, output: &mut WriteBuf) -> ConnectorResult<Written> {
+    fn step(
+        &mut self,
+        input: &[u8],
+        received_at: Option<MonotonicInstant>,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             // Invalid state
             ClientConnectorState::Consumed => {

@@ -10,7 +10,8 @@ pub struct Framed<S> {
     buf: BytesMut,
     /// When the most recent socket read completed. A PDU served from `buf`
     /// arrived at the read that filled it, not when the caller drained it.
-    last_read_at: MonotonicInstant,
+    /// `None` until the first read.
+    last_read_at: Option<MonotonicInstant>,
 }
 
 impl<S> Framed<S> {
@@ -22,7 +23,7 @@ impl<S> Framed<S> {
         Self {
             stream,
             buf: leftover,
-            last_read_at: MonotonicInstant::ZERO,
+            last_read_at: None,
         }
     }
 
@@ -45,7 +46,7 @@ impl<S> Framed<S> {
     }
 
     /// When the bytes currently buffered last arrived from the socket.
-    pub fn last_read_at(&self) -> MonotonicInstant {
+    pub fn last_read_at(&self) -> Option<MonotonicInstant> {
         self.last_read_at
     }
 
@@ -150,7 +151,9 @@ where
 
 /// Reads the driver-owned monotonic clock. Epoch is the first call; only
 /// differences are meaningful.
-fn monotonic_now() -> MonotonicInstant {
+fn monotonic_now() -> Option<MonotonicInstant> {
     static EPOCH: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
-    MonotonicInstant::from_millis(u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX))
+    Some(MonotonicInstant::from_millis(
+        u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX),
+    ))
 }

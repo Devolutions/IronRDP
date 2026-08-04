@@ -336,13 +336,6 @@ impl Written {
 pub struct MonotonicInstant(u64);
 
 impl MonotonicInstant {
-    /// The clock's origin.
-    ///
-    /// Drivers that do not measure intervals pass this. Every duration computed
-    /// from it is then zero, which is a visibly inert value rather than a
-    /// plausible-looking measurement.
-    pub const ZERO: Self = Self(0);
-
     /// Builds an instant from a monotonic millisecond reading.
     #[must_use]
     pub fn from_millis(milliseconds: u64) -> Self {
@@ -365,12 +358,20 @@ pub trait Sequence: Send {
     /// Advances the sequence.
     ///
     /// `received_at` is when `input` arrived on the wire, as observed by the I/O
-    /// driver. Sequences that do not measure intervals ignore it; drivers that do
-    /// not measure pass [`MonotonicInstant::ZERO`].
-    fn step(&mut self, input: &[u8], received_at: MonotonicInstant, output: &mut WriteBuf) -> ConnectorResult<Written>;
+    /// driver, or `None` from a driver that does not observe arrival times. The
+    /// absence of a reading is deliberately not expressible as an instant: a
+    /// driver that cannot measure has taken no measurement, which is a different
+    /// thing from one that measured no elapsed time, and only the sequence
+    /// knows which of the two its reply may be derived from.
+    fn step(
+        &mut self,
+        input: &[u8],
+        received_at: Option<MonotonicInstant>,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written>;
 
     fn step_no_input(&mut self, output: &mut WriteBuf) -> ConnectorResult<Written> {
-        self.step(&[], MonotonicInstant::ZERO, output)
+        self.step(&[], None, output)
     }
 }
 

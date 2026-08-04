@@ -1013,11 +1013,7 @@ where
         debug_assert!(connector.next_pdu_hint().is_some());
 
         buf.clear();
-        let written = connector.step(
-            x224_connection_response.as_bytes(),
-            ironrdp_connector::MonotonicInstant::ZERO,
-            &mut buf,
-        )?;
+        let written = connector.step(x224_connection_response.as_bytes(), None, &mut buf)?;
         debug_assert!(written.is_nothing());
 
         let server_cert = server_cert_chain

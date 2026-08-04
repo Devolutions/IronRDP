@@ -119,7 +119,7 @@ impl Sequence for ConnectionActivationSequence {
     fn step(
         &mut self,
         input: &[u8],
-        received_at: MonotonicInstant,
+        received_at: Option<MonotonicInstant>,
         output: &mut ironrdp_core::WriteBuf,
     ) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
