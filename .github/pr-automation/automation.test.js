@@ -17,6 +17,7 @@ const {
 const SHA = "a".repeat(40);
 const classifier = (changes = {}) => ({
   schema_version: "1", head_sha: SHA, risk: "low", technical_debt: false, documentation_only: false,
+  cross_cutting: false,
   duplicate: { detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "" },
   likely_non_legitimate: false, non_legitimate_confidence: 0, non_legitimate_reason: "",
   breaking_change_suspected: false, breaking_change_rationale: "", breaking_change_surface: "",
@@ -37,10 +38,12 @@ const review = (changes = {}) => ({
   ...changes,
 });
 
-test("deterministic analysis applies trusted paths and source size", () => {
-  const rules = parseLabelerRules('rust:\n  - changed-files:\n      - any-glob-to-any-file: "**/*.rs"\n');
+test("deterministic analysis applies trusted scopes and source size", () => {
+  const rules = parseLabelerRules('scope/core:\n  - changed-files:\n      - any-glob-to-any-file: "crates/ironrdp-core/**"\n');
   const result = analyzeFiles([{ filename: "crates/a/src/lib.rs", additions: 29, deletions: 0 }], { labelerRules: rules });
-  assert.deepEqual(result.pathLabels, ["rust"]);
+  assert.deepEqual(result.pathLabels, []);
+  assert.equal(analyzeFiles([{ filename: "crates/ironrdp-core/src/lib.rs", additions: 29, deletions: 0 }],
+    { labelerRules: rules }).pathLabels[0], "scope/core");
   assert.equal(result.sizeLabel, "size/XS");
 });
 
@@ -55,6 +58,9 @@ test("classifier rejects injection, malformed duplicate, and executable document
   assert.equal(validateClassifier(classifier({ documentation_only: true }), {
     expectedSha: SHA, changedPaths: ["src/lib.rs"],
   }).ok, false);
+  const missingCrossCutting = classifier();
+  delete missingCrossCutting.cross_cutting;
+  assert.equal(validateClassifier(missingCrossCutting, { expectedSha: SHA }).ok, false);
 });
 
 test("classifier accepts a SHA-bound qualifying duplicate", () => {
@@ -226,12 +232,12 @@ test("classification check state survives a round trip and fails closed when abs
   const encoded = `Validated AI classification is bound to this commit.\n\n${encodeCheckState({ protocolRelated: true })}`;
   assert.deepEqual(parseCheckState(encoded), { protocolRelated: true });
   assert.equal(parseCheckState("Validated AI classification is bound to this commit."), null);
-  assert.equal(parseCheckState("ironrdp-pr-automation-state: {\"schema_version\":\"classifier-v2\",\"protocol_related\":true}"), null);
-  assert.equal(parseCheckState("ironrdp-pr-automation-state: {\"schema_version\":\"classifier-v1\"}"), null);
+  assert.equal(parseCheckState("ironrdp-pr-automation-state: {\"schema_version\":\"classifier-v1\",\"protocol_related\":true}"), null);
+  assert.equal(parseCheckState("ironrdp-pr-automation-state: {\"schema_version\":\"classifier-v2\"}"), null);
   assert.throws(() => encodeCheckState({}));
 });
 
-test("a bot author never opens the review route", async () => {
+test("bot authors are excluded from automation", async () => {
   const pr = (user) => ({
     number: 7, draft: false, state: "open", labels: [], user,
     head: { sha: SHA, repo: { full_name: "Devolutions/IronRDP" } }, base: { sha: "b".repeat(40) },
@@ -248,36 +254,11 @@ test("a bot author never opens the review route", async () => {
     inputs: {},
   });
   const bot = await resolve({ node_id: "U_1", login: "dependabot[bot]", type: "Bot" });
-  assert.equal(bot.ok, true);
-  assert.equal(bot.authorIsBot, true);
-  assert.equal(bot.reviewRoute, false);
+  assert.equal(bot.ok, false);
+  assert.equal(bot.reason, "bot-authored pull request");
   const human = await resolve({ node_id: "U_2", login: "contributor", type: "User" });
-  assert.equal(human.authorIsBot, false);
+  assert.equal(human.ok, true);
   assert.equal(human.reviewRoute, true);
-});
-
-test("bot pull requests stop at deterministic labelling", () => {
-  const deterministic = { ok: true, pathLabels: ["dependencies"], ownedPathLabels: ["dependencies", "rust"],
-    sizeLabel: "size/S", sizeLabels: ["size/S"], firstTime: false };
-  const state = resolveClassificationState({
-    expectedSha: SHA, labels: [], deterministic, authorIsBot: true,
-  });
-  assert.equal(state.botAuthor, true);
-  assert.deepEqual(state.labelSets, [
-    { owned: ["dependencies", "rust"], desired: ["dependencies"] },
-    { owned: ["size/S"], desired: ["size/S"] },
-  ]);
-  assert.deepEqual(state.addLabels, ["human-required"]);
-  // A risk label would imply a model verdict that never happened, and the check title must not be
-  // the one the review gate accepts.
-  assert.equal(state.labelSets.some((set) => set.owned.includes("risk:low")), false);
-  assert.equal(state.check.title, "Deterministic labelling only");
-  assert.equal(resolveClassificationState({
-    expectedSha: SHA, labels: [], deterministic: { ok: false }, authorIsBot: true,
-  }).failed, true);
-  assert.equal(resolveClassificationState({
-    expectedSha: SHA, labels: ["ai-reviewed/2"], deterministic, authorIsBot: true,
-  }).terminal, true);
 });
 
 test("deterministic semver outranks the model and a model-only break cannot stay low", () => {
@@ -285,37 +266,100 @@ test("deterministic semver outranks the model and a model-only break cannot stay
     firstTime: false };
   const risk = (model, semverStatus) => resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic, classifier: classifier(model),
-    semver: { head_sha: SHA, status: semverStatus }, sspi: { head_sha: SHA, status: "not-required" },
+    semver: { head_sha: SHA, status: semverStatus },
   }).labelSets[0].desired;
   // cargo-semver-checks runs against the ironrdp facade, so any incompatibility it reports is a
   // core public API break regardless of what the model concluded.
-  assert.deepEqual(risk({ risk: "low" }, "suspected"), ["risk:high"]);
-  assert.deepEqual(risk({ risk: "medium" }, "suspected"), ["risk:high"]);
+  assert.deepEqual(risk({ risk: "low" }, "suspected"), ["risk/high"]);
+  assert.deepEqual(risk({ risk: "medium" }, "suspected"), ["risk/high"]);
   // A break only the model suspects keeps the model's judgement, except that "low" contradicts the
   // model's own breaking-change signal.
-  assert.deepEqual(risk({ risk: "low", breaking_change_suspected: true }, "not-suspected"), ["risk:medium"]);
-  assert.deepEqual(risk({ risk: "high", breaking_change_suspected: true }, "not-suspected"), ["risk:high"]);
-  assert.deepEqual(risk({ risk: "low" }, "not-suspected"), ["risk:low"]);
+  assert.deepEqual(risk({ risk: "low", breaking_change_suspected: true }, "not-suspected"), ["risk/medium"]);
+  assert.deepEqual(risk({ risk: "high", breaking_change_suspected: true }, "not-suspected"), ["risk/high"]);
+  assert.deepEqual(risk({ risk: "low" }, "not-suspected"), ["risk/low"]);
   const unavailable = resolveClassificationState({
     expectedSha: SHA, labels: ["breaking-change"], deterministic, classifier: classifier(),
-    semver: { head_sha: SHA, status: "unavailable" }, sspi: { head_sha: SHA, status: "not-required" },
+    semver: { head_sha: SHA, status: "unavailable" },
   });
   assert.equal(unavailable.failed, true);
-  assert.deepEqual(unavailable.addLabels, ["human-required"]);
+  assert.deepEqual(unavailable.addLabels, ["maintainer-required"]);
+  assert.deepEqual(unavailable.labelSets.at(-1).desired, ["risk/unknown"]);
+  const failedWithSemverBreak = resolveClassificationState({
+    expectedSha: SHA,
+    labels: [],
+    deterministic,
+    classifier: "",
+    semver: { head_sha: SHA, status: "suspected" },
+  });
+  assert.deepEqual(failedWithSemverBreak.labelSets.find((set) => set.owned.includes("risk/high")).desired,
+    ["risk/high"]);
+  assert.deepEqual(failedWithSemverBreak.labelSets.find((set) => set.owned.includes("breaking-change")).desired,
+    ["breaking-change"]);
+});
+
+test("cross-cutting scope is model-owned while path scopes can coexist", () => {
+  const deterministic = {
+    ok: true,
+    pathLabels: ["scope/core", "scope/web"],
+    ownedPathLabels: ["scope/core", "scope/web", "scope/ffi", "scope/tooling"],
+    sizeLabel: "size/S",
+    sizeLabels: ["size/XS", "size/S", "size/M", "size/L", "size/XL"],
+    firstTime: false,
+  };
+  const classified = resolveClassificationState({
+    expectedSha: SHA,
+    labels: [],
+    deterministic,
+    classifier: classifier({ cross_cutting: true, technical_debt: true }),
+    semver: { head_sha: SHA, status: "not-suspected" },
+  });
+  const desired = classified.labelSets.flatMap((set) => set.desired);
+  assert.deepEqual(desired.sort(), [
+    "kind/technical-debt", "risk/low", "scope/core", "scope/cross-cutting", "scope/web", "size/S",
+  ]);
+
+  const narrow = resolveClassificationState({
+    expectedSha: SHA,
+    labels: ["scope/cross-cutting"],
+    deterministic,
+    classifier: classifier({ cross_cutting: false }),
+    semver: { head_sha: SHA, status: "not-suspected" },
+  });
+  assert.deepEqual(narrow.labelSets.find((set) => set.owned.includes("scope/cross-cutting")).desired, []);
+});
+
+test("successful classification preserves the first-time contributor label", () => {
+  const deterministic = {
+    ok: true,
+    pathLabels: [],
+    ownedPathLabels: ["scope/core"],
+    sizeLabel: "size/XS",
+    sizeLabels: ["size/XS", "size/S", "size/M", "size/L", "size/XL"],
+    firstTime: true,
+  };
+  const state = resolveClassificationState({
+    expectedSha: SHA,
+    labels: [],
+    deterministic,
+    classifier: classifier(),
+    semver: { head_sha: SHA, status: "not-suspected" },
+  });
+  assert.deepEqual(state.labelSets.find((set) => set.owned.includes("contributor/first-time")).desired,
+    ["contributor/first-time"]);
 });
 
 test("protocol relevance overrides risk suppression but no other exclusion", () => {
   // Risk measures the human scrutiny a change needs, so it must not decide whether a protocol
   // change is worth reviewing.
-  assert.equal(reviewPolicyEligible({ labels: ["risk:low"], protocolRelated: true }), true);
-  assert.equal(reviewPolicyEligible({ labels: ["risk:low"], protocolRelated: false }), false);
-  assert.equal(reviewPolicyEligible({ labels: ["risk:low", "breaking-change"] }), true);
-  assert.equal(reviewPolicyEligible({ labels: ["risk:medium"] }), true);
+  assert.equal(reviewPolicyEligible({ labels: ["risk/low"], protocolRelated: true }), true);
+  assert.equal(reviewPolicyEligible({ labels: ["risk/low"], protocolRelated: false }), false);
+  assert.equal(reviewPolicyEligible({ labels: ["risk/low", "breaking-change"] }), true);
+  assert.equal(reviewPolicyEligible({ labels: ["risk/medium"] }), true);
   for (const blocking of ["size/XL", "duplicate", "ai-reviewed/2"]) {
-    assert.equal(reviewPolicyEligible({ labels: ["risk:high", blocking], protocolRelated: true }), false);
+    assert.equal(reviewPolicyEligible({ labels: ["risk/high", blocking], protocolRelated: true }), false);
   }
   assert.equal(reviewPolicyEligible({
-    labels: ["risk:high"], protocolRelated: true, legitimacyStopped: true,
+    labels: ["risk/high"], protocolRelated: true, legitimacyStopped: true,
   }), false);
 });
 
@@ -329,13 +373,13 @@ test("review publication applies the same policy the workflow spent its call on"
   };
   const gate = (changes) => ({ ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true, ...changes });
   assert.equal(resolveReviewState({
-    ...args, labels: ["risk:low"], gate: gate({ protocolRelated: true }),
+    ...args, labels: ["risk/low"], gate: gate({ protocolRelated: true }),
   }).failed, undefined);
   assert.equal(resolveReviewState({
-    ...args, labels: ["risk:low"], gate: gate({ protocolRelated: false }),
+    ...args, labels: ["risk/low"], gate: gate({ protocolRelated: false }),
   }).failed, true);
   assert.equal(resolveReviewState({
-    ...args, labels: ["risk:low", "size/XL"], gate: gate({ protocolRelated: true }),
+    ...args, labels: ["risk/low", "size/XL"], gate: gate({ protocolRelated: true }),
   }).failed, true);
 });
 
@@ -344,7 +388,7 @@ test("XL guidance is posted once and withdrawn when the change shrinks", () => {
     sizeLabel, sizeLabels: ["size/L", "size/XL"], firstTime: false });
   const state = (sizeLabel) => resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic: deterministic(sizeLabel), classifier: classifier(),
-    semver: { head_sha: SHA, status: "not-suspected" }, sspi: { head_sha: SHA, status: "not-required" },
+    semver: { head_sha: SHA, status: "not-suspected" },
   });
   const xl = state("size/XL");
   assert.deepEqual(xl.comments.map((comment) => comment.kind), ["xl"]);
@@ -358,21 +402,22 @@ test("XL guidance is posted once and withdrawn when the change shrinks", () => {
   assert.equal(shrunk.removeCommentMarkers.includes(XL_MARKER), true);
 });
 
-test("an oversized change is resolved without ever consulting a classifier", () => {
+test("an oversized change retains deterministic labels without a classifier", () => {
   // The workflow skips the classifier job for size/XL, so no model output exists to validate here.
   // Resolution must still succeed on deterministic evidence rather than degrading to a failure.
-  const deterministic = { ok: true, pathLabels: ["A-pdu"], ownedPathLabels: ["A-pdu", "A-session"],
+  const deterministic = { ok: true, pathLabels: ["scope/core", "scope/web"],
+    ownedPathLabels: ["scope/core", "scope/web", "scope/ffi"],
     sizeLabel: "size/XL", sizeLabels: ["size/L", "size/XL"], firstTime: true };
   const state = resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic, classifier: undefined,
-    semver: { head_sha: SHA, status: "suspected" }, sspi: { head_sha: SHA, status: "required" },
+    semver: { head_sha: SHA, status: "suspected" },
   });
   assert.equal(state.failed, undefined);
   assert.equal(state.oversized, true);
   const desired = state.labelSets.flatMap((set) => set.desired);
-  assert.deepEqual(desired.sort(), ["A-pdu", "A-sspi", "breaking-change", "contributor/first-time",
-    "risk:high", "size/XL"]);
-  assert.deepEqual(state.addLabels, ["human-required"]);
+  assert.deepEqual(desired.sort(), ["breaking-change", "contributor/first-time", "risk/high",
+    "scope/core", "scope/web", "size/XL"]);
+  assert.deepEqual(state.addLabels, ["maintainer-required"]);
   assert.deepEqual(state.comments.map((comment) => comment.kind), ["xl"]);
   // The review gate only trusts a check announcing a completed classification.
   assert.notEqual(state.check.title, "Classification complete");
@@ -382,12 +427,10 @@ test("an oversized change is resolved without ever consulting a classifier", () 
 
   const unavailable = resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic, classifier: undefined,
-    semver: { head_sha: SHA, status: "unavailable" }, sspi: { head_sha: SHA, status: "unavailable" },
+    semver: { head_sha: SHA, status: "unavailable" },
   });
-  // An unavailable deterministic check must not be published as a negative result.
-  const owned = unavailable.labelSets.flatMap((set) => set.owned);
-  assert.equal(owned.includes("A-sspi"), false);
-  assert.equal(owned.includes("breaking-change"), false);
+  assert.equal(unavailable.oversized, true);
+  assert.deepEqual(unavailable.labelSets.at(-1).desired, ["risk/unknown"]);
 });
 
 test("a duplicate verdict is withdrawn once it no longer holds", () => {
@@ -395,7 +438,6 @@ test("a duplicate verdict is withdrawn once it no longer holds", () => {
     sizeLabels: ["size/S"], firstTime: false };
   const state = (duplicate) => resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic, semver: { head_sha: SHA, status: "not-suspected" },
-    sspi: { head_sha: SHA, status: "not-required" },
     classifier: classifier({ duplicate: duplicate
       ? { detected: true, similar_pr_number: 2,
         similar_pr_url: "https://github.com/Devolutions/IronRDP/pull/2",
@@ -431,7 +473,7 @@ test("legitimacy stop is human-owned and clears only after a valid false result"
     expectedSha: SHA, labels: [], deterministic, classifier: classifier({
       likely_non_legitimate: true, non_legitimate_confidence: 0.9, non_legitimate_reason: "irrelevant advertising",
     }),
-    semver: { head_sha: SHA, status: "not-suspected" }, sspi: { head_sha: SHA, status: "not-required" },
+    semver: { head_sha: SHA, status: "not-suspected" },
   });
   assert.equal(stopped.legitimacyStopped, true);
   assert.equal(stopped.check.title, "Automation stopped");
@@ -440,7 +482,7 @@ test("legitimacy stop is human-owned and clears only after a valid false result"
 
   const cleared = resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic, classifier: classifier(),
-    semver: { head_sha: SHA, status: "not-suspected" }, sspi: { head_sha: SHA, status: "not-required" },
+    semver: { head_sha: SHA, status: "not-suspected" },
   });
   assert.equal(cleared.check.title, "Classification complete");
   assert.equal(cleared.removeCommentMarkers.includes(LEGITIMACY_MARKER), true);
@@ -451,7 +493,7 @@ test("quota decisions stop classification and review with a bounded human handof
     firstTime: false };
   const classification = resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic, classifier: classifier(),
-    semver: { head_sha: SHA, status: "not-suspected" }, sspi: { head_sha: SHA, status: "not-required" },
+    semver: { head_sha: SHA, status: "not-suspected" },
     rateLimit: { status: "limited", scope: "author", quota: 5, count: 6 },
   });
   assert.equal(classification.failed, true);
@@ -460,7 +502,7 @@ test("quota decisions stop classification and review with a bounded human handof
   }]);
 
   const review = resolveReviewState({
-    expectedSha: SHA, labels: ["risk:high"],
+    expectedSha: SHA, labels: ["risk/high"],
     gate: { ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true },
     contributor: { status: "eligible" }, protocolStatus: "not_applicable",
     rateLimit: { status: "limited", scope: "global", quota: 30, count: 31 },
@@ -475,11 +517,11 @@ test("review transition is terminal-safe and preserves human triage on no findin
     protocol_handoff: { received: false, disposition: "not_applicable", rationale: "" }, findings: [],
   };
   const state = resolveReviewState({
-    expectedSha: SHA, labels: ["risk:high"], reviewer, protocolStatus: "not_applicable",
+    expectedSha: SHA, labels: ["risk/high"], reviewer, protocolStatus: "not_applicable",
     gate: { ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true }, contributor: { status: "eligible" },
   });
   assert.deepEqual(state.labelSets[0].desired, ["ai-reviewed/1"]);
-  assert.deepEqual(state.addLabels, ["human-required"]);
+  assert.deepEqual(state.addLabels, ["maintainer-required"]);
   assert.equal(resolveReviewState({
     expectedSha: SHA, labels: ["ai-reviewed/2"], reviewer, protocolStatus: "not_applicable",
     gate: { ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true }, contributor: { status: "eligible" },
@@ -492,12 +534,12 @@ test("an unavailable protocol handoff blocks the review count", () => {
     protocol_handoff: { received: true, disposition: "accepted", rationale: "citations hold" }, findings: [],
   };
   const args = {
-    expectedSha: SHA, labels: ["risk:high"], reviewer,
+    expectedSha: SHA, labels: ["risk/high"], reviewer,
     gate: { ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true }, contributor: { status: "eligible" },
   };
   const failed = resolveReviewState({ ...args, protocolStatus: "unavailable" });
   assert.equal(failed.failed, true);
-  assert.deepEqual(failed.addLabels, ["human-required"]);
+  assert.deepEqual(failed.addLabels, ["maintainer-required"]);
   assert.deepEqual(failed.labelSets, []);
   assert.equal(resolveReviewState(args).failed, true);
   assert.deepEqual(resolveReviewState({ ...args, protocolStatus: "valid" }).labelSets[0].desired, ["ai-reviewed/1"]);
@@ -511,7 +553,7 @@ test("writer stops before mutations when the head is stale", async () => {
   } };
   await assert.rejects(writeState({
     github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
-    state: { ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: ["human-required"] },
+    state: { ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: ["maintainer-required"] },
   }), StaleHeadError);
   assert.equal(writes, 0);
 });
@@ -523,20 +565,20 @@ test("writer batches the label delta and tolerates an absent label removal", asy
   const github = { rest: {
     pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
     issues: {
-      get: async () => { reads += 1; return { data: { labels: ["obsolete", "risk:low"] } }; },
+      get: async () => { reads += 1; return { data: { labels: ["obsolete", "risk/low"] } }; },
       addLabels: async ({ labels }) => { added.push(...labels); },
       removeLabel: async () => { const error = new Error("not found"); error.status = 404; throw error; },
     },
   } };
   assert.equal(await applyLabels(github, "Devolutions", "IronRDP", 1, {
     expectedSha: SHA,
-    labelSets: [{ owned: ["risk:low", "risk:high"], desired: ["risk:high"] }],
-    addLabels: ["human-required"], removeLabels: ["obsolete"],
+    labelSets: [{ owned: ["risk/low", "risk/high", "risk/unknown"], desired: ["risk/high"] }],
+    addLabels: ["maintainer-required"], removeLabels: ["obsolete"],
   }), true);
-  assert.deepEqual(added, ["risk:high", "human-required"]);
+  assert.deepEqual(added, ["risk/high", "maintainer-required"]);
   assert.equal(reads, 1);
   assert.equal(await applyLabels(github, "Devolutions", "IronRDP", 1, {
-    expectedSha: SHA, labelSets: [], addLabels: ["risk:low"],
+    expectedSha: SHA, labelSets: [], addLabels: ["risk/low"],
   }), false);
 });
 

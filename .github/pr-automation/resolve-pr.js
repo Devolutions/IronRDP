@@ -83,13 +83,13 @@ async function resolvePr({ github, context, inputs = {} }) {
   }
   if (!pr) return noResult("pull request is closed or stale", route);
   if (pr.draft) return noResult("pull request is draft", route);
-  // Bot pull requests (dependabot and friends) stop at deterministic labelling: they are
-  // machine-generated, arrive in bulk, and would spend LLM capacity for no reviewable judgement.
+  // Dependabot owns dependency and language labels. This automation must not mutate bot-authored
+  // pull requests, because its path-based classification would otherwise overwrite that taxonomy.
   const authorIsBot = pr.user?.type === "Bot" || /\[bot\]$/i.test(pr.user?.login || "");
+  if (authorIsBot) return noResult("bot-authored pull request", route);
   return {
     ok: true, route, prNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha,
     labels: (pr.labels || []).map((label) => typeof label === "string" ? label : label.name).filter(Boolean),
-    authorIsBot,
     author: {
       nodeId: pr.user?.node_id || null, login: pr.user?.login || null, type: pr.user?.type || null,
       association: pr.author_association || null,
@@ -100,8 +100,8 @@ async function resolvePr({ github, context, inputs = {} }) {
       inputs.review ?? context.payload.inputs?.review),
     classificationRequested: route === "classification" ||
       (route === "dispatch" && !["true", true].includes(inputs.review ?? context.payload.inputs?.review)),
-    reviewRoute: !authorIsBot && (route === "ci" || route === "classification-complete" ||
-      (route === "dispatch" && ["true", true].includes(inputs.review ?? context.payload.inputs?.review))),
+    reviewRoute: route === "ci" || route === "classification-complete" ||
+      (route === "dispatch" && ["true", true].includes(inputs.review ?? context.payload.inputs?.review)),
   };
 }
 
