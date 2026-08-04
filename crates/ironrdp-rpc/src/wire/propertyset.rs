@@ -8,8 +8,6 @@
 //!
 //! [`ironrdp_rdpfile::load`]: https://docs.rs/ironrdp-rdpfile
 
-#![cfg_attr(not(feature = "internal"), allow(unreachable_pub))]
-
 use ironrdp_core::{DecodeResult, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_size};
 use ironrdp_propertyset::{PropertySet, Value};
 

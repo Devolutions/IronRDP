@@ -2450,24 +2450,13 @@ dependencies = [
  "anyhow",
  "clap",
  "ironrdp-cfg",
- "ironrdp-client",
- "ironrdp-core 0.2.1",
+ "ironrdp-daemon",
  "ironrdp-input",
- "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
- "ironrdp-tls",
- "libc",
- "now-client",
- "now-proto-pdu",
- "png",
+ "ironrdp-rpc",
  "serde_json",
  "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "whoami",
- "windows",
 ]
 
 [[package]]
@@ -2624,6 +2613,29 @@ name = "ironrdp-core"
 version = "0.2.1"
 dependencies = [
  "ironrdp-error 0.2.0",
+]
+
+[[package]]
+name = "ironrdp-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ironrdp-cfg",
+ "ironrdp-client",
+ "ironrdp-input",
+ "ironrdp-pdu",
+ "ironrdp-propertyset",
+ "ironrdp-rpc",
+ "ironrdp-tls",
+ "libc",
+ "now-client",
+ "now-proto-pdu",
+ "png",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "whoami",
 ]
 
 [[package]]
@@ -2897,6 +2909,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ironrdp-core 0.2.1",
+ "ironrdp-input",
+ "ironrdp-pdu",
+ "ironrdp-propertyset",
+ "libc",
+ "tokio",
+ "tracing",
+ "whoami",
+ "windows",
+]
+
+[[package]]
 name = "ironrdp-server"
 version = "0.13.0"
 dependencies = [
@@ -3025,10 +3053,12 @@ dependencies = [
  "ironrdp-bulk",
  "ironrdp-client",
  "ironrdp-core 0.2.1",
+ "ironrdp-daemon",
  "ironrdp-dvc",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-input",
  "ironrdp-propertyset",
+ "ironrdp-rpc",
  "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",

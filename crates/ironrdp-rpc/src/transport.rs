@@ -20,7 +20,7 @@ use crate::ipc::{Request, Response};
 const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 
 /// Writes `message` to `stream`, length-delimited.
-pub(crate) async fn write_message<S, M>(stream: &mut S, message: &M) -> anyhow::Result<()>
+pub async fn write_message<S, M>(stream: &mut S, message: &M) -> anyhow::Result<()>
 where
     S: AsyncWrite + Unpin,
     M: Encode,
@@ -37,14 +37,14 @@ where
 }
 
 /// Reads a single length-delimited message from `stream`.
-pub(crate) async fn read_message<S, M>(stream: &mut S) -> anyhow::Result<M>
+pub async fn read_message<S, M>(stream: &mut S) -> anyhow::Result<M>
 where
     S: AsyncRead + Unpin,
     M: DecodeOwned,
 {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await.context("read frame length")?;
-    let len = usize::try_from(u32::from_le_bytes(len_buf)).expect("u32 fits in usize on supported platforms");
+    let len = usize::try_from(u32::from_le_bytes(len_buf)).context("frame length does not fit in usize")?;
     if MAX_MESSAGE_LEN < len {
         bail!("frame length {len} exceeds the {MAX_MESSAGE_LEN}-byte limit");
     }

@@ -4,13 +4,8 @@
 //! `Encode`/`Decode`/`DecodeOwned` traits. Strings (and string-shaped payloads) are length-delimited
 //! with a `u32` byte-count prefix.
 //!
-//! These helpers are `pub` so the [`internal`](crate) feature can expose them for unit testing in
-//! the workspace test suite; the [`wire`](crate::wire) module itself is only public under that
-//! feature.
-
-// The helpers are unconditionally `pub`; their effective visibility is the `wire` module's, which is
-// `pub(crate)` unless the `internal` feature exposes it.
-#![cfg_attr(not(feature = "internal"), allow(unreachable_pub))]
+//! These helpers are public so the shared test suite can validate the codec independently from an
+//! RPC client or daemon.
 
 pub mod propertyset;
 

@@ -1,10 +1,11 @@
 # IronRDP Agent
 
-A CLI-driven, daemon-backed RDP client designed for programmatic (e.g. LLM) consumption.
+A CLI-driven RDP client designed for programmatic (e.g. LLM) consumption.
 
-The single `ironrdp-agent` binary bundles two roles:
+The `ironrdp-agent` binary is the CLI for the persistent daemon support:
 
-- **Daemon** (`ironrdp-agent daemon-start`): a long-lived, foreground process that owns the
+- **Daemon** (`ironrdp-agent daemon-start`): a long-lived, foreground process implemented by
+  [`ironrdp-daemon`] that owns the
   [`ironrdp-client`] engine and one RDP session. It stays alive across many CLI invocations and
   serves requests over a local IPC transport (a Unix domain socket on Unix, a named pipe on
   Windows).
@@ -81,7 +82,7 @@ Two logging concerns are kept separate:
 After an RDP session connects, the daemon injects a per-session `Devolutions::Now::Agent` DVC
 endpoint. The endpoint is local to the daemon and is not shared between RDP sessions. NOW protocol
 framing, negotiation, heartbeats, capability gates, and command PDU handling are owned by the
-`now-client` dependency; the agent owns only the endpoint/reconnect boundary and durable operation
+`now-client` dependency; `ironrdp-daemon` owns only the endpoint/reconnect boundary and durable operation
 state.
 
 Use the supported commands below after `connect`:
@@ -142,5 +143,6 @@ cargo test -p ironrdp-agent --test live_e2e -- --ignored
 
 [`ironrdp-client`]: ../ironrdp-client
 [`ironrdp-core`]: ../ironrdp-core
+[`ironrdp-daemon`]: ../ironrdp-daemon
 [`ironrdp-propertyset`]: ../ironrdp-propertyset
 [`ironrdp-viewer`]: ../ironrdp-viewer

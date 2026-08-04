@@ -660,7 +660,7 @@ impl Encode for KeyFilter {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::KeyFilter"
+        "ironrdp_rpc::ipc::KeyFilter"
     }
 
     fn size(&self) -> usize {
@@ -703,7 +703,7 @@ impl Encode for PropValue {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::PropValue"
+        "ironrdp_rpc::ipc::PropValue"
     }
 
     fn size(&self) -> usize {
@@ -739,7 +739,7 @@ impl Encode for PropertyEntry {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::PropertyEntry"
+        "ironrdp_rpc::ipc::PropertyEntry"
     }
 
     fn size(&self) -> usize {
@@ -769,7 +769,7 @@ impl Encode for PropertyDump {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::PropertyDump"
+        "ironrdp_rpc::ipc::PropertyDump"
     }
 
     fn size(&self) -> usize {
@@ -805,7 +805,7 @@ impl Encode for StatusInfo {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::StatusInfo"
+        "ironrdp_rpc::ipc::StatusInfo"
     }
 
     fn size(&self) -> usize {
@@ -898,7 +898,7 @@ impl Encode for Payload {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::Payload"
+        "ironrdp_rpc::ipc::Payload"
     }
 
     fn size(&self) -> usize {
@@ -979,7 +979,7 @@ impl Encode for Response {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::Response"
+        "ironrdp_rpc::ipc::Response"
     }
 
     fn size(&self) -> usize {
@@ -1115,7 +1115,7 @@ impl Encode for Request {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::Request"
+        "ironrdp_rpc::ipc::Request"
     }
 
     fn size(&self) -> usize {
@@ -1302,7 +1302,7 @@ impl Encode for AgentError {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::AgentError"
+        "ironrdp_rpc::ipc::AgentError"
     }
 
     fn size(&self) -> usize {
@@ -1362,7 +1362,7 @@ impl Encode for NowExecutionRequest {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::NowExecutionRequest"
+        "ironrdp_rpc::ipc::NowExecutionRequest"
     }
 
     fn size(&self) -> usize {
@@ -1458,7 +1458,7 @@ impl Encode for OperationInfo {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::OperationInfo"
+        "ironrdp_rpc::ipc::OperationInfo"
     }
 
     fn size(&self) -> usize {
@@ -1560,7 +1560,7 @@ impl Encode for OperationEventKind {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::OperationEventKind"
+        "ironrdp_rpc::ipc::OperationEventKind"
     }
 
     fn size(&self) -> usize {
@@ -1609,7 +1609,7 @@ impl Encode for OperationEvent {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::OperationEvent"
+        "ironrdp_rpc::ipc::OperationEvent"
     }
 
     fn size(&self) -> usize {
@@ -1651,7 +1651,7 @@ impl Encode for NowCapabilities {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::NowCapabilities"
+        "ironrdp_rpc::ipc::NowCapabilities"
     }
 
     fn size(&self) -> usize {
@@ -1700,7 +1700,7 @@ impl Encode for NowDiagnostics {
     }
 
     fn name(&self) -> &'static str {
-        "ironrdp_agent::NowDiagnostics"
+        "ironrdp_rpc::ipc::NowDiagnostics"
     }
 
     fn size(&self) -> usize {

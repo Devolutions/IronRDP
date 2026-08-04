@@ -22,11 +22,11 @@ use ironrdp_cfg::{PropertySetExt as _, TargetAddr};
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
-use crate::ipc::{
+use ironrdp_rpc::ipc::{
     AgentError, KeyFilter, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind,
     OperationInfo, OperationState, Payload, PropValue, Request, Response,
 };
-use crate::transport::{self, Endpoint};
+use ironrdp_rpc::transport::{self, Endpoint};
 
 /// IronRDP agent: a CLI-driven, daemon-backed RDP client.
 #[derive(Parser, Debug)]
@@ -425,7 +425,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let request = match command {
         Command::DaemonStart(args) => {
             let overlay = load_overlay(args.overlay.as_deref(), args.prop)?;
-            return crate::daemon::run(endpoint, overlay).await;
+            return ironrdp_daemon::daemon::run(endpoint, overlay).await;
         }
         Command::Now(args) => {
             let format = args.format;
