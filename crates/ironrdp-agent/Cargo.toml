@@ -32,7 +32,7 @@ ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.1" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 # CLI
-clap = { version = "4.6", features = ["derive", "cargo"] }
+clap = { version = "4.6", features = ["derive", "cargo", "env"] }
 
 # Utils
 anyhow = "1"

@@ -14,6 +14,18 @@ The `ironrdp-agent` binary is the CLI for the persistent daemon support:
 
 Run `ironrdp-agent --help-agent` for a structured, machine-readable description of every operation.
 
+## ActiveX backend
+
+On Windows, an ActiveX host can expose its session through the same local RPC protocol. Start the
+host with `IRONRDP_ACTIVEX_RPC=1`, then use `--backend active-x` for agent operations. The agent
+uses the per-user `ironrdp-activex` endpoint by default and never attempts to start an ActiveX host.
+Use `--endpoint` when the host selected `IRONRDP_ACTIVEX_RPC_ENDPOINT`.
+
+`connect` accepts `RDP_HOSTNAME`, `RDP_USERNAME`, and `RDP_PASSWORD` as defaults for its named
+connection flags. Explicit flags override those process-local values. The native MSTSC bridge uses
+these only when it is explicitly enabled; `RDP_AUTOLOGON` is active only when its value is exactly
+`1`, and requires nonempty username and password values.
+
 ## Prebuilt binaries
 
 Prebuilt, checksummed archives are attached to each GitHub Release under the `ironrdp-agent-v*`

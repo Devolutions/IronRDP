@@ -18,6 +18,14 @@ Unix: `$XDG_RUNTIME_DIR/ironrdp-agent-<uid>.sock` (falls back to `/tmp/ironrdp-a
 Windows: `\\.\pipe\ironrdp-agent-<user>`.
 Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
+## Backends
+
+- `--backend daemon` (default) uses `ironrdp-agent daemon-start` and its per-user endpoint.
+- `--backend active-x` attaches to an already-hosted ActiveX control at its per-user
+  `ironrdp-activex` endpoint. The host must set `IRONRDP_ACTIVEX_RPC=1` before creating the
+  control; the agent never starts an ActiveX host. Use `--endpoint` when the host uses
+  `IRONRDP_ACTIVEX_RPC_ENDPOINT`.
+
 ## Lifecycle
 
 - `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]...`
@@ -33,16 +41,19 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 - `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. Precedence (low to high): .rdp file -> `--prop`
-                                 overrides -> named flags (`--server`/`-u`/`-p`/`-d`). `--prop` is
-                                 repeatable and lets you set any property without a dedicated flag
-                                 existing for it, e.g. `--prop username:s:admin`. The config is
-                                 validated by the daemon, which replies with an error listing any
-                                 missing or invalid fields. If `status` reports
-                                 `credentials loaded: true`, omit `-p/--password` (and any other
-                                 preloaded secret) -- the daemon supplies it. `--log-directive`
-                                 refines this session's log capture (e.g. `ironrdp_connector=trace`)
-                                 on top of the default `debug` level; use it to troubleshoot a
-                                 connection, then read the result with `query-logs`.
+                                 overrides -> named flags (`--server`/`-u`/`-p`/`-d`). When those
+                                 flags are omitted, `RDP_HOSTNAME`, `RDP_USERNAME`, and
+                                 `RDP_PASSWORD` supply their respective values; explicit flags
+                                 override the environment. `--prop` is repeatable and lets you set
+                                 any property without a dedicated flag existing for it, e.g.
+                                 `--prop username:s:admin`. The config is validated by the daemon,
+                                 which replies with an error listing any missing or invalid fields.
+                                 If `status` reports `credentials loaded: true`, omit
+                                 `-p/--password` (and any other preloaded secret) -- the daemon
+                                 supplies it. `--log-directive` refines this session's log capture
+                                 (e.g. `ironrdp_connector=trace`) on top of the default `debug`
+                                 level; use it to troubleshoot a connection, then read the result
+                                 with `query-logs`.
 - `disconnect`                   Tear down the current session (daemon keeps running).
 - `status`                       Report connection state, destination, last frame size, and whether
                                  credentials are preloaded (`credentials loaded: true|false`). Query
