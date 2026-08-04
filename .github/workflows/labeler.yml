@@ -304,10 +304,16 @@ jobs:
           semver_target="$SEMVER_STATE_DIR/target"
           semver_bin="$CARGO_SEMVER_CHECKS_DIR/cargo-semver-checks"
           workspace="$SEMVER_WORKSPACE"
-          rust_bin_dir="$(dirname "$(rustup which rustc)")"
+          rustc_bin="$(rustup which rustc)"
+          rust_toolchain_dir="$(dirname "$(dirname "$rustc_bin")")"
+          rust_bin_dir="$rust_toolchain_dir/bin"
           install -d -m 700 "$semver_home" "$semver_cargo" "$semver_target"
           chmod -R a+rX "$workspace"
           sudo chown -R nobody:nogroup "$workspace" "$semver_home" "$semver_cargo" "$semver_target"
+          # The resolved Rust toolchain is under the runner-owned rustup home. Expose only enough
+          # traversal and toolchain access for the untrusted build to invoke cargo and rustc.
+          sudo chmod o+x "$HOME" "$HOME/.rustup" "$HOME/.rustup/toolchains"
+          sudo chmod -R a+rX "$rust_toolchain_dir"
           cd "$workspace"
 
           # Build scripts and proc macros run as nobody, which cannot read the runner command files.
