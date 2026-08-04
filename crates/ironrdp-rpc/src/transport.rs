@@ -26,6 +26,9 @@ where
     M: Encode,
 {
     let body = ironrdp_core::encode_vec(message).map_err(|e| anyhow::anyhow!("encode {}: {e}", message.name()))?;
+    if MAX_MESSAGE_LEN < body.len() {
+        bail!("message length {} exceeds the {MAX_MESSAGE_LEN}-byte limit", body.len());
+    }
     let len = u32::try_from(body.len()).context("message too large to frame")?;
     stream
         .write_all(&len.to_le_bytes())
@@ -494,3 +497,51 @@ pub use imp::{Endpoint, Listener, connect, default_endpoint};
 pub type ClientStream = tokio::net::UnixStream;
 #[cfg(windows)]
 pub type ClientStream = tokio::net::windows::named_pipe::NamedPipeClient;
+
+#[cfg(test)]
+mod tests {
+    use core::pin::Pin;
+    use core::task::{Context, Poll};
+    use std::io;
+
+    use tokio::io::AsyncWrite;
+
+    use super::{MAX_MESSAGE_LEN, write_message};
+
+    #[derive(Default)]
+    struct RecordingWriter(Vec<u8>);
+
+    impl AsyncWrite for RecordingWriter {
+        fn poll_write(mut self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+            self.0.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn write_message_rejects_oversized_messages_before_writing() {
+        let message = vec![0; MAX_MESSAGE_LEN + 1];
+        let mut stream = RecordingWriter::default();
+
+        let error = write_message(&mut stream, &message)
+            .await
+            .expect_err("message should exceed frame limit");
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "message length {} exceeds the {MAX_MESSAGE_LEN}-byte limit",
+                message.len()
+            )
+        );
+        assert!(stream.0.is_empty());
+    }
+}
