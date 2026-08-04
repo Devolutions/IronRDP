@@ -33,32 +33,20 @@ use crate::transport::{Endpoint, Listener, read_message, write_message};
 /// (overlay wins), so any setting — credentials in particular — can be preconfigured without the
 /// caller ever supplying it. Pass an empty set when no overlay is desired.
 pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()> {
-    // On Unix a leftover socket file would make `bind` fail; clear it if no daemon is alive.
-    #[cfg(unix)]
-    if endpoint.0.exists() {
-        if crate::transport::connect(&endpoint).await.is_ok() {
-            anyhow::bail!("a daemon already appears to be running at {endpoint}");
-        }
-        // No daemon answered, so the path is a stale socket we can reclaim. Guard against deleting
-        // an unrelated regular file (or following a symlink) when `--endpoint` points elsewhere:
-        // inspect the path itself and only remove genuine sockets.
-        use std::os::unix::fs::FileTypeExt as _;
-        let metadata =
-            std::fs::symlink_metadata(&endpoint.0).with_context(|| format!("stat IPC endpoint {endpoint}"))?;
-        if !metadata.file_type().is_socket() {
-            anyhow::bail!("refusing to remove {endpoint}: path exists and is not a socket");
-        }
-        std::fs::remove_file(&endpoint.0).with_context(|| format!("remove stale socket {endpoint}"))?;
-    }
-
     init_daemon_logging();
-    let logs = LogBuffer::new();
+    let daemon = Arc::new(Daemon::with_overlay(overlay));
+    serve(endpoint, daemon).await
+}
 
+/// Serves `daemon` on `endpoint` until its owner requests shutdown.
+///
+/// The caller owns the daemon so it can share the same session state with another frontend, such
+/// as the viewer window.
+pub async fn serve(endpoint: Endpoint, daemon: Arc<Daemon>) -> anyhow::Result<()> {
+    crate::transport::prepare_endpoint(&endpoint).await?;
     let mut listener = Listener::bind(&endpoint).with_context(|| format!("bind IPC endpoint {endpoint}"))?;
-    let daemon = Arc::new(Daemon::new(logs, overlay));
-
     info!(%endpoint, "Daemon listening");
-
+    let mut shutdown = daemon.shutdown_receiver();
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -69,6 +57,11 @@ pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()>
                         debug!(error = format!("{error:#}"), "IPC connection error");
                     }
                 });
+            }
+            result = shutdown.changed() => {
+                result.context("wait for shutdown signal")?;
+                info!("Received shutdown request, stopping");
+                break;
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("Received shutdown signal, stopping");
@@ -116,8 +109,21 @@ impl DaemonResponse {
     }
 }
 
+/// The reason a resize could not be queued for the active RDP session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeError {
+    /// The requested dimensions are invalid.
+    InvalidDimensions,
+    /// No RDP session is active.
+    NoSession,
+    /// The bounded RDP input channel is temporarily full.
+    Full,
+    /// The active RDP session has stopped accepting input.
+    Closed,
+}
+
 /// The daemon's mutable state: the (single) current session, plus the shared log buffer.
-struct Daemon {
+pub struct Daemon {
     state: Mutex<Option<Session>>,
     /// Serializes synchronous RDP session construction so concurrent IPC `connect` requests cannot
     /// both observe an empty session slot before either one installs its session.
@@ -129,6 +135,9 @@ struct Daemon {
     /// Whether [`Self::overlay`] contributes any secret (password/token) value, i.e. whether the
     /// caller can omit credentials of its own.
     credentials_loaded: bool,
+    /// Notifies an optional GUI frontend whenever retained live state changes.
+    notification: Option<mpsc::Sender<()>>,
+    shutdown: tokio::sync::watch::Sender<()>,
 }
 
 /// Per-session state owned by the request handler.
@@ -154,10 +163,11 @@ struct Live {
 
 /// A decoded frame retained for screenshots. `pixels` are `0x00RRGGBB` (`to_be_bytes()` yields
 /// `[0, R, G, B]`), row-major, `width * height` entries, with the remote cursor blended in.
-struct Frame {
-    width: u16,
-    height: u16,
-    pixels: Vec<u32>,
+#[derive(Clone)]
+pub struct Frame {
+    pub width: u16,
+    pub height: u16,
+    pub pixels: Vec<u32>,
 }
 
 impl Daemon {
@@ -165,13 +175,48 @@ impl Daemon {
         // Credentials are considered "loaded" when the overlay provides at least one secret value,
         // which is what frees the caller from supplying a password.
         let credentials_loaded = overlay.iter().any(|(key, _)| ironrdp_cfg::is_secret_key(key));
+        let (shutdown, _) = tokio::sync::watch::channel(());
         Self {
             state: Mutex::new(None),
             connect_lock: Mutex::new(()),
             logs,
             overlay,
             credentials_loaded,
+            notification: None,
+            shutdown,
         }
+    }
+
+    /// Creates a daemon with no preconfigured connection properties.
+    pub fn with_overlay(overlay: PropertySet) -> Self {
+        Self::new(LogBuffer::new(), overlay)
+    }
+
+    /// Adds a capacity-one notification channel for frontends that render retained live state.
+    ///
+    /// The caller must provide a channel with capacity one. Notifications are coalesced because a
+    /// frontend always reads the latest retained framebuffer.
+    #[must_use]
+    pub fn with_notification(mut self, notification: mpsc::Sender<()>) -> Self {
+        self.notification = Some(notification);
+        self
+    }
+
+    /// Returns a receiver that is notified when the server should stop.
+    pub fn shutdown_receiver(&self) -> tokio::sync::watch::Receiver<()> {
+        self.shutdown.subscribe()
+    }
+
+    /// Returns the latest cursor-composited framebuffer, if one is available.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon or session state mutex is poisoned.
+    pub fn current_frame(&self) -> Option<Frame> {
+        let guard = self.state.lock().expect("daemon state poisoned");
+        guard
+            .as_ref()
+            .and_then(|session| session.live.lock().expect("session live state poisoned").frame.clone())
     }
 
     async fn handle(&self, request: Request) -> DaemonResponse {
@@ -370,7 +415,7 @@ impl Daemon {
             );
         }
 
-        tokio::spawn(consume_output(output_rx, Arc::clone(&live)));
+        tokio::spawn(consume_output(output_rx, Arc::clone(&live), self.notification.clone()));
 
         info!(%destination, "Started RDP session");
 
@@ -386,7 +431,12 @@ impl Daemon {
         Response::ok()
     }
 
-    fn disconnect(&self) -> Response {
+    /// Tears down the active RDP session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    pub fn disconnect(&self) -> Response {
         let mut guard = self.state.lock().expect("daemon state poisoned");
         match guard.as_mut() {
             None => {
@@ -512,16 +562,40 @@ impl Daemon {
         }
     }
 
-    fn resize(&self, width: u16, height: u16) -> Response {
-        if width == 0 || height == 0 {
-            return Response::typed_error(
+    /// Requests that the active RDP session resize.
+    pub fn resize(&self, width: u16, height: u16) -> Response {
+        match self.try_resize(width, height) {
+            Ok(()) => Response::ok(),
+            Err(ResizeError::InvalidDimensions) => Response::typed_error(
                 crate::ipc::AgentErrorCategory::InvalidRequest,
                 "width and height must be non-zero",
-            );
+            ),
+            Err(ResizeError::NoSession) => {
+                Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session")
+            }
+            Err(ResizeError::Closed) => Response::typed_error(
+                crate::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            ),
+            Err(ResizeError::Full) => Response::typed_error(
+                crate::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is full",
+            ),
+        }
+    }
+
+    /// Attempts to enqueue a resize without flattening temporary input-channel backpressure.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    pub fn try_resize(&self, width: u16, height: u16) -> Result<(), ResizeError> {
+        if width == 0 || height == 0 {
+            return Err(ResizeError::InvalidDimensions);
         }
         let guard = self.state.lock().expect("daemon state poisoned");
         let Some(session) = guard.as_ref() else {
-            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+            return Err(ResizeError::NoSession);
         };
         match session.input_tx.try_send(RdpInputEvent::Resize {
             width,
@@ -530,15 +604,27 @@ impl Daemon {
             scale_factor: 100,
             physical_size: None,
         }) {
-            Ok(()) => Response::ok(),
-            Err(_) => Response::typed_error(
-                crate::ipc::AgentErrorCategory::Unavailable,
-                "session input channel is closed",
-            ),
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(ResizeError::Full),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(ResizeError::Closed),
         }
     }
 
-    fn input(&self, operation: Operation) -> Response {
+    /// Sends an input operation to the active RDP session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    pub fn input(&self, operation: Operation) -> Response {
+        self.input_operations([operation])
+    }
+
+    /// Sends input operations to the active RDP session in one FastPath message.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    pub fn input_operations(&self, operations: impl IntoIterator<Item = Operation>) -> Response {
         let mut guard = self.state.lock().expect("daemon state poisoned");
         let Some(session) = guard.as_mut() else {
             return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
@@ -552,12 +638,17 @@ impl Daemon {
                 );
             }
         };
-        let events = session.input_db.apply([operation]);
+        let events = session.input_db.apply(operations);
         if events.is_empty() {
             return Response::ok();
         }
         permit.send(RdpInputEvent::FastPath(events));
         Response::ok()
+    }
+
+    /// Stops an in-process RPC server that shares this daemon.
+    pub fn shutdown(&self) {
+        let _ = self.shutdown.send(());
     }
 
     fn operations(&self) -> Result<OperationManager, Response> {
@@ -697,7 +788,11 @@ impl Daemon {
 }
 
 /// Consumes the bounded output-event stream, keeping the live state current.
-async fn consume_output(mut output_rx: mpsc::Receiver<RdpOutputEvent>, live: Arc<Mutex<Live>>) {
+async fn consume_output(
+    mut output_rx: mpsc::Receiver<RdpOutputEvent>,
+    live: Arc<Mutex<Live>>,
+    notification: Option<mpsc::Sender<()>>,
+) {
     while let Some(event) = output_rx.recv().await {
         let mut guard = live.lock().expect("session live state poisoned");
         let previous = guard.state;
@@ -745,6 +840,8 @@ async fn consume_output(mut output_rx: mpsc::Receiver<RdpOutputEvent>, live: Arc
             // above; the remaining pointer events (default/hidden) carry no live state we track.
             _ => {}
         }
+        drop(guard);
+        notify(&notification);
     }
 
     // The engine thread has ended (channel closed). Resolve any transient state so a subsequent
@@ -755,6 +852,15 @@ async fn consume_output(mut output_rx: mpsc::Receiver<RdpOutputEvent>, live: Arc
         ConnState::Connecting | ConnState::Connected | ConnState::Disconnecting
     ) {
         guard.state = ConnState::Disconnected;
+    }
+    drop(guard);
+    notify(&notification);
+}
+
+fn notify(notification: &Option<mpsc::Sender<()>>) {
+    // A single queued signal is sufficient: the frontend always reads the latest frame.
+    if let Some(notification) = notification {
+        let _ = notification.try_send(());
     }
 }
 
@@ -830,5 +936,45 @@ fn current_platform() -> MajorPlatformType {
         whoami::Platform::Ios => MajorPlatformType::IOS,
         whoami::Platform::Android => MajorPlatformType::ANDROID,
         _ => MajorPlatformType::UNSPECIFIED,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    use ironrdp_propertyset::PropertySet;
+
+    use super::{Daemon, ResizeError, notify};
+    use crate::ipc::Response;
+
+    #[test]
+    fn framebuffer_notifications_are_coalesced() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let notification = Some(sender);
+
+        notify(&notification);
+        notify(&notification);
+
+        assert_eq!(receiver.try_recv(), Ok(()));
+        assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn resize_without_session_reports_no_active_session() {
+        let daemon = Daemon::with_overlay(PropertySet::new());
+
+        assert_eq!(daemon.try_resize(1024, 768), Err(ResizeError::NoSession));
+        assert!(matches!(daemon.resize(1024, 768), Response::Err(error) if error.message == "no active session"));
+    }
+
+    #[test]
+    fn shutdown_notification_stops_the_server() {
+        let daemon = Daemon::with_overlay(PropertySet::new());
+        let shutdown = daemon.shutdown_receiver();
+
+        daemon.shutdown();
+
+        assert!(shutdown.has_changed().expect("shutdown sender is live"));
     }
 }

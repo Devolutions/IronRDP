@@ -28,6 +28,8 @@ qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
 
 [dependencies]
+ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" } # public
+ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.1" }
 ironrdp = { path = "../ironrdp", version = "0.17", features = ["connector", "cliprdr", "input", "pdu", "client", "client-all"] }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
@@ -38,7 +40,7 @@ winit = { version = "0.30", features = ["rwh_06"] }
 softbuffer = "0.4"
 
 # CLI
-clap = { version = "4.6", features = ["derive", "cargo"] }
+clap = { version = "4.6", features = ["derive", "cargo", "env"] }
 inquire = "0.9"
 proc-exit = "2"
 

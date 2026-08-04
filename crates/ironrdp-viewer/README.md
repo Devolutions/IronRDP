@@ -18,6 +18,27 @@ download and verification instructions.
 ironrdp-viewer <HOSTNAME> --username <USERNAME> --password <PASSWORD>
 ```
 
+You can provide the hostname and credentials through environment variables instead:
+
+```shell
+RDP_HOSTNAME=<HOSTNAME> RDP_USERNAME=<USERNAME> RDP_PASSWORD=<PASSWORD> ironrdp-viewer
+```
+
+## Agent RPC host
+
+The viewer can host the same local RPC protocol used by `ironrdp-agent`, while keeping its visible
+window. Start the viewer before the agent so it claims the agent's default local endpoint:
+
+```shell
+ironrdp-viewer --rpc
+ironrdp-agent connect --server <HOSTNAME> --username <USERNAME> --password <PASSWORD>
+```
+
+The RPC host uses the default `ironrdp-agent-<uid>.sock` endpoint on Unix or
+`\\.\pipe\ironrdp-agent-<user>` on Windows. Override it with `--rpc-endpoint` on the viewer and
+the same `--endpoint` value on the agent. The GUI and agent share one RDP session, including its
+framebuffer and input. Close the viewer window to stop the host.
+
 ## `.rdp` file support
 
 You can load a `.rdp` file with `--rdp-file <PATH>`.
@@ -50,8 +71,9 @@ Currently supported properties:
 Property precedence is:
 
 1. CLI options
-2. `.rdp` file values
-3. Defaults and interactive prompts
+2. Environment variables
+3. `.rdp` file values
+4. Defaults and interactive prompts
 
 Unknown or unsupported `.rdp` properties are ignored and do not cause parsing failures. Parse
 issues are reported to stderr.
