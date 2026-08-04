@@ -6,6 +6,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -118,28 +119,49 @@ impl ActiveXRpc {
 
     pub(crate) fn start(&self, dispatcher: HWND) -> anyhow::Result<()> {
         let mut listener = lock(&self.listener);
-        if listener.is_some() {
+        if listener.as_ref().is_some_and(|handle| !handle.join.is_finished()) {
             return Ok(());
+        }
+        if let Some(handle) = listener.take()
+            && handle.join.join().is_err()
+        {
+            tracing::warn!("ActiveX RPC listener thread panicked");
         }
 
         let endpoint = endpoint_from_environment();
         let shared = Arc::clone(&self.shared);
         let dispatcher = dispatcher.0 as isize;
         let (shutdown, shutdown_rx) = watch::channel(());
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let join = std::thread::Builder::new()
             .name("ironrdp-activex-rpc".to_owned())
             .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build();
-                match runtime {
-                    Ok(runtime) => {
-                        if let Err(error) = runtime.block_on(serve(endpoint, shared, dispatcher, shutdown_rx)) {
-                            tracing::warn!(?error, "ActiveX RPC listener stopped with an error");
-                        }
+                let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error.into()));
+                        return;
                     }
-                    Err(error) => tracing::warn!(?error, "Unable to create ActiveX RPC runtime"),
+                };
+                let listener = match runtime.block_on(async {
+                    transport::prepare_endpoint(&endpoint).await?;
+                    Listener::bind(&endpoint).with_context(|| format!("bind ActiveX RPC endpoint {endpoint}"))
+                }) {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error));
+                        return;
+                    }
+                };
+                if ready_tx.send(Ok(())).is_err() {
+                    return;
+                }
+                if let Err(error) = runtime.block_on(serve(endpoint, listener, shared, dispatcher, shutdown_rx)) {
+                    tracing::warn!(?error, "ActiveX RPC listener stopped with an error");
                 }
             })
             .context("start ActiveX RPC listener")?;
+        ready_rx.recv().context("wait for ActiveX RPC listener startup")??;
         *listener = Some(ListenerHandle { shutdown, join });
         Ok(())
     }
@@ -252,12 +274,11 @@ impl ActiveXRpc {
 
 async fn serve(
     endpoint: Endpoint,
+    mut listener: Listener,
     shared: Arc<Shared>,
     dispatcher: isize,
     mut shutdown: watch::Receiver<()>,
 ) -> anyhow::Result<()> {
-    transport::prepare_endpoint(&endpoint).await?;
-    let mut listener = Listener::bind(&endpoint).with_context(|| format!("bind ActiveX RPC endpoint {endpoint}"))?;
     tracing::info!(%endpoint, "ActiveX RPC listener started");
 
     loop {
