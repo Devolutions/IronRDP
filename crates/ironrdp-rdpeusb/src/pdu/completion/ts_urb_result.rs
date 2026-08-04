@@ -17,7 +17,9 @@ use crate::pdu::{
     header::SharedMsgHeader,
     usb_dev::{
         InternalIoControl, IoControl, RegisterRequestCallback, TransferInRequest, TransferOutRequest,
-        ts_urb::{TsUrb, TsUrbGetCurrFrameNum, TsUrbIsochTransfer, TsUrbSelectConfig, TsUrbSelectInterface},
+        ts_urb::{
+            TsUrbGetCurrFrameNum, TsUrbIn, TsUrbIsochTransfer, TsUrbOut, TsUrbSelectConfig, TsUrbSelectInterface,
+        },
     },
 };
 
@@ -29,12 +31,100 @@ use crate::pdu::{
 /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/5a797c73-8ea0-46db-901c-cfb56f1a04a0
 #[doc(alias = "TS_URB_RESULT")]
 #[derive(Debug, PartialEq, Clone)]
-pub struct TsUrbResult {
+pub struct TsUrbResult<P> {
     pub header: TsUrbResultHeader,
-    pub payload: TsUrbResultPayload,
+    pub payload: Option<P>,
 }
 
-impl Decode<'_> for TsUrbResult {
+#[derive(Debug, PartialEq, Clone)]
+pub struct Raw(Vec<u8>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExpectedTsUrbResult {
+    HeaderOnly,
+    SelectConfig,
+    SelectIface,
+    FrameNum,
+    Isoch,
+}
+
+impl Raw {
+    fn into_option(self) -> Option<Self> {
+        if self.0.is_empty() { None } else { Some(self) }
+    }
+}
+
+impl Decode<'_> for Raw {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        Ok(Self(src.remaining().into()))
+    }
+}
+
+fn decode_exact<T>(raw: Raw, decode: impl FnOnce(&mut ReadCursor<'_>) -> DecodeResult<T>) -> DecodeResult<T> {
+    let mut src = ReadCursor::new(&raw.0);
+    let value = decode(&mut src)?;
+    if !src.is_empty() {
+        return Err(invalid_field_err!("TS_URB_RESULT::Payload", "contains trailing bytes"));
+    }
+
+    Ok(value)
+}
+
+impl TsUrbResult<Raw> {
+    pub(crate) fn into_isoch(self) -> DecodeResult<TsUrbResult<TsUrbIsochTransferResult>> {
+        let payload = self
+            .payload
+            .map(|raw| decode_exact(raw, TsUrbIsochTransferResult::decode))
+            .transpose()?;
+
+        Ok(TsUrbResult {
+            header: self.header,
+            payload,
+        })
+    }
+
+    pub(crate) fn into_expected(self, expected: ExpectedTsUrbResult) -> DecodeResult<TsUrbResult<TsUrbResultPayload>> {
+        let Self { header, payload } = self;
+
+        if expected == ExpectedTsUrbResult::HeaderOnly {
+            if payload.is_some() {
+                return Err(invalid_field_err!(
+                    "TS_URB_RESULT::Payload",
+                    "expected a header-only result"
+                ));
+            }
+
+            return Ok(TsUrbResult { header, payload: None });
+        }
+
+        let raw = payload.ok_or_else(|| {
+            invalid_field_err!("TS_URB_RESULT::Payload", "operation-specific result payload is missing")
+        })?;
+
+        let payload = match expected {
+            ExpectedTsUrbResult::SelectConfig => {
+                TsUrbResultPayload::SelectConfig(decode_exact(raw, TsUrbSelectConfigResult::decode)?)
+            }
+            ExpectedTsUrbResult::SelectIface => {
+                TsUrbResultPayload::SelectIface(decode_exact(raw, TsUrbSelectInterfaceResult::decode)?)
+            }
+            ExpectedTsUrbResult::FrameNum => {
+                TsUrbResultPayload::FrameNum(decode_exact(raw, TsUrbGetCurrFrameNumResult::decode)?)
+            }
+            ExpectedTsUrbResult::Isoch => {
+                TsUrbResultPayload::Isoch(decode_exact(raw, TsUrbIsochTransferResult::decode)?)
+            }
+            ExpectedTsUrbResult::HeaderOnly => unreachable!("handled above"),
+        };
+
+        Ok(TsUrbResult {
+            header,
+            payload: Some(payload),
+        })
+    }
+}
+
+impl Decode<'_> for TsUrbResult<Raw> {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: size_of::<u16>(/* TS_URB_RESULT_HEADER::Size */));
         let urb_size: usize = src.read_u16().into();
@@ -45,17 +135,54 @@ impl Decode<'_> for TsUrbResult {
         }
         let payload_size = urb_size - ACTUAL_HEADER_SIZE;
         ensure_size!(in: src, size: payload_size);
-        let payload = TsUrbResultPayload::decode(&mut ReadCursor::new(src.read_slice(payload_size)))?;
+        let payload = Raw::decode(&mut ReadCursor::new(src.read_slice(payload_size)))?.into_option();
         Ok(Self { header, payload })
     }
 }
 
-impl Encode for TsUrbResult {
+impl TsUrbResult<TsUrbIsochTransferResult> {
+    pub(crate) fn into_expected(self, expected: ExpectedTsUrbResult) -> DecodeResult<TsUrbResult<TsUrbResultPayload>> {
+        let payload = match (expected, self.payload) {
+            (ExpectedTsUrbResult::HeaderOnly, None) => None,
+            (ExpectedTsUrbResult::Isoch, Some(payload)) => Some(TsUrbResultPayload::Isoch(payload)),
+            _ => {
+                return Err(invalid_field_err!(
+                    "URB_COMPLETION::TsUrbResult",
+                    "result payload does not match the original TS_URB request"
+                ));
+            }
+        };
+
+        Ok(TsUrbResult {
+            header: self.header,
+            payload,
+        })
+    }
+}
+
+impl TsUrbResult<TsUrbResultPayload> {
+    pub(crate) fn try_into_isoch(self) -> Result<TsUrbResult<TsUrbIsochTransferResult>, Self> {
+        let Self { header, payload } = self;
+        match payload {
+            None => Ok(TsUrbResult { header, payload: None }),
+            Some(TsUrbResultPayload::Isoch(payload)) => Ok(TsUrbResult {
+                header,
+                payload: Some(payload),
+            }),
+            payload => Err(TsUrbResult { header, payload }),
+        }
+    }
+}
+
+impl<P: Encode> Encode for TsUrbResult<P> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u16(self.size().try_into().map_err(|e| other_err!(source: e))?);
         self.header.encode(dst)?;
-        self.payload.encode(dst)
+        if let Some(p) = &self.payload {
+            p.encode(dst)?;
+        }
+        Ok(())
     }
 
     fn name(&self) -> &'static str {
@@ -63,7 +190,9 @@ impl Encode for TsUrbResult {
     }
 
     fn size(&self) -> usize {
-        size_of::<u16>(/* TS_URB_RESULT_HEADER::Size */) + self.header.size() + self.payload.size()
+        size_of::<u16>(/* TS_URB_RESULT_HEADER::Size */)
+            + self.header.size()
+            + self.payload.as_ref().map_or(0, Encode::size)
     }
 }
 
@@ -111,21 +240,11 @@ impl Encode for TsUrbResultHeader {
     }
 }
 
-/// Extra payload for (any of) the [`TsUrbResult`] structures in addition to the header.
+/// Operation-specific payload for a [`TsUrbResult`].
 ///
-/// While encoding, any of the non-[`Raw`][1] variants should be used. On decoding, always gives a
-/// [`Raw`][1] variant. The raw bytes will have to be decoded to any of the non-raw variants
-/// depending upon the `RequestId` field of the outer [`UrbCompletionNoData`] packet. For a
-/// [`UrbCompletion`] packet, the payload can, and should, always be decoded to
-/// [`TsUrbIsochTransferResult`]. In the case there's no extra payload, this will decode to a
-/// `Raw(vec![])`.
-///
-/// [1]: TsUrbResultPayload::Raw
-//
-// The Raw variant exists cause successfully decoding to an actual result variant will require
-// request id's for all four variants, passed by the state machine from outside mod pdu. Instead,
-// we could return Raw variant by default while decoding (or merely "reading" in this case) and
-// using request ID the raw bytes can be synthesized into actual variants.
+/// A result with no operation-specific fields is represented by `TsUrbResult::payload == None`.
+/// A raw [`UrbCompletionNoData`] payload is resolved to one of these variants by correlating its
+/// request ID with the original TS_URB request.
 #[non_exhaustive]
 #[doc(alias = "TS_URB_RESULT")]
 #[derive(Debug, PartialEq, Clone)]
@@ -134,14 +253,6 @@ pub enum TsUrbResultPayload {
     SelectIface(TsUrbSelectInterfaceResult),
     FrameNum(TsUrbGetCurrFrameNumResult),
     Isoch(TsUrbIsochTransferResult),
-    Raw(Vec<u8>),
-}
-
-impl Decode<'_> for TsUrbResultPayload {
-    /// Reads all remaining bytes. Decode to the [`Raw`][TsUrbResultPayload::Raw] variant.
-    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        Ok(Self::Raw(src.remaining().into()))
-    }
 }
 
 impl Encode for TsUrbResultPayload {
@@ -151,11 +262,6 @@ impl Encode for TsUrbResultPayload {
             Self::SelectIface(select_iface_res_payload) => select_iface_res_payload.encode(dst),
             Self::FrameNum(frame_num_res_payload) => frame_num_res_payload.encode(dst),
             Self::Isoch(isoch_transfer_res_payload) => isoch_transfer_res_payload.encode(dst),
-            Self::Raw(bytes) => {
-                ensure_size!(in: dst, size: bytes.len());
-                dst.write_slice(bytes);
-                Ok(())
-            }
         }
     }
 
@@ -165,7 +271,6 @@ impl Encode for TsUrbResultPayload {
             Self::SelectIface(payload) => payload.name(),
             Self::FrameNum(payload) => payload.name(),
             Self::Isoch(payload) => payload.name(),
-            Self::Raw(_) => "TS_URB_RESULT (raw payload)",
         }
     }
 
@@ -175,7 +280,6 @@ impl Encode for TsUrbResultPayload {
             Self::SelectIface(payload) => payload.size(),
             Self::FrameNum(payload) => payload.size(),
             Self::Isoch(payload) => payload.size(),
-            Self::Raw(bytes) => bytes.len(),
         }
     }
 }

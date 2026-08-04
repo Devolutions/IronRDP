@@ -464,11 +464,16 @@ fn build_transfer_in_completion(
             output_buffer_size,
         }))
     } else {
+        let ts_urb_result = response
+            .ts_urb_result
+            .try_into_isoch()
+            .map_err(|_| pdu_other_err!("URB_COMPLETION result payload must be header-only or isochronous"))?;
+
         Ok(Box::new(UrbCompletion {
             msg_id: pending.msg_id,
             completion_iface,
             req_id,
-            ts_urb_result: response.ts_urb_result,
+            ts_urb_result,
             hresult: response.hresult,
             output_buffer: response.output_buffer,
         }))

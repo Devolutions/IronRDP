@@ -35,6 +35,7 @@ pub use crate::pdu::{
     utils::{HResult, RequestId},
 };
 use crate::pdu::{
+    completion::ts_urb_result::TsUrbResultPayload,
     header::{InterfaceId, MessageId},
     sink::{AddDevice, NoAckIsochWriteJitterBufSizeInMs},
     usb_dev::ts_urb::{TsUrbIn, TsUrbOut, utils::TsUrbHeader},
@@ -79,7 +80,7 @@ pub struct IoControlCompletionResult {
 #[derive(Debug, Clone)]
 pub struct TransferInCompletionResult {
     /// USB request-block result, including the USBD status and any operation-specific result.
-    pub ts_urb_result: TsUrbResult,
+    pub ts_urb_result: TsUrbResult<TsUrbResultPayload>,
     /// HRESULT returned by the transfer operation.
     pub hresult: HResult,
     /// Data read from the USB device.
@@ -95,7 +96,7 @@ pub struct TransferInCompletionResult {
 #[derive(Debug, Clone)]
 pub struct TransferOutCompletionResult {
     /// USB request-block result, including the USBD status and any operation-specific result.
-    pub ts_urb_result: TsUrbResult,
+    pub ts_urb_result: TsUrbResult<TsUrbResultPayload>,
     /// HRESULT returned by the transfer operation.
     pub hresult: HResult,
     /// Number of bytes written to the USB device.

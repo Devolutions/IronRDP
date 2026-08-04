@@ -13,10 +13,10 @@ use rstest::rstest;
 
 use super::{CHANNEL_ID, ClientEvent, ConnectedDevice, ServerEvent};
 
-fn successful_urb_result() -> TsUrbResult {
+fn successful_urb_result() -> TsUrbResult<TsUrbResultPayload> {
     TsUrbResult {
         header: TsUrbResultHeader { usbd_status: 0 },
-        payload: TsUrbResultPayload::Raw(Vec::new()),
+        payload: None,
     }
 }
 
