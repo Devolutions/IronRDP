@@ -143,7 +143,7 @@ pub struct Daemon {
     /// caller can omit credentials of its own.
     credentials_loaded: bool,
     /// Notifies an optional GUI frontend whenever retained live state changes.
-    notification: Option<mpsc::UnboundedSender<()>>,
+    notification: Option<mpsc::Sender<()>>,
     shutdown: tokio::sync::watch::Sender<()>,
 }
 
@@ -201,7 +201,7 @@ impl Daemon {
 
     /// Adds a notification channel for frontends that render the retained session state.
     #[must_use]
-    pub fn with_notification(mut self, notification: mpsc::UnboundedSender<()>) -> Self {
+    pub fn with_notification(mut self, notification: mpsc::Sender<()>) -> Self {
         self.notification = Some(notification);
         self
     }
@@ -795,7 +795,7 @@ impl Daemon {
 async fn consume_output(
     mut output_rx: mpsc::Receiver<RdpOutputEvent>,
     live: Arc<Mutex<Live>>,
-    notification: Option<mpsc::UnboundedSender<()>>,
+    notification: Option<mpsc::Sender<()>>,
 ) {
     while let Some(event) = output_rx.recv().await {
         let mut guard = live.lock().expect("session live state poisoned");
@@ -846,7 +846,7 @@ async fn consume_output(
         }
         drop(guard);
         if let Some(notification) = &notification {
-            let _ = notification.send(());
+            let _ = notification.try_send(());
         }
     }
 
@@ -861,7 +861,7 @@ async fn consume_output(
     }
     drop(guard);
     if let Some(notification) = &notification {
-        let _ = notification.send(());
+        let _ = notification.try_send(());
     }
 }
 

@@ -88,7 +88,7 @@ fn run_rpc(cli: ViewerConfig) -> anyhow::Result<()> {
     debug!(%endpoint, "Initialize viewer RPC server");
     let event_loop = EventLoop::<ViewerEvent>::with_user_event().build()?;
     let event_loop_proxy = event_loop.create_proxy();
-    let (notification_sender, mut notification_receiver) = mpsc::unbounded_channel();
+    let (notification_sender, mut notification_receiver) = mpsc::channel(1);
     let daemon = Arc::new(Daemon::with_overlay(PropertySet::new()).with_notification(notification_sender));
 
     let runtime = runtime::Builder::new_multi_thread()

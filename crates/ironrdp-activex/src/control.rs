@@ -3916,6 +3916,7 @@ pub(crate) struct Control {
     traced_paint_layout_generation: Cell<u64>,
     rpc: Option<ActiveXRpc>,
     rpc_properties: RefCell<Option<PropertySet>>,
+    rpc_kerberos_config: RefCell<Option<ironrdp_connector::credssp::KerberosConfig>>,
     rpc_log_directive: RefCell<Option<String>>,
 }
 
@@ -4024,6 +4025,7 @@ impl Control {
             traced_paint_layout_generation: Cell::new(0),
             rpc: ActiveXRpc::from_environment(),
             rpc_properties: RefCell::new(None),
+            rpc_kerberos_config: RefCell::new(None),
             rpc_log_directive: RefCell::new(None),
         }
     }
@@ -6179,10 +6181,12 @@ impl Control {
         }
 
         *self.rpc_properties.borrow_mut() = Some(config.properties().clone());
+        *self.rpc_kerberos_config.borrow_mut() = config.kerberos_config().cloned();
         *self.rpc_log_directive.borrow_mut() = log_directive;
         match self.start_connection() {
             Ok(()) if self.state.get() == ConnectionState::Disconnected => {
                 self.rpc_properties.borrow_mut().take();
+                self.rpc_kerberos_config.borrow_mut().take();
                 let _ = self.rpc_log_directive.borrow_mut().take();
                 ironrdp_agent::ipc::Response::typed_error(
                     ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
@@ -6192,6 +6196,7 @@ impl Control {
             Ok(()) => ironrdp_agent::ipc::Response::ok(),
             Err(error) => {
                 self.rpc_properties.borrow_mut().take();
+                self.rpc_kerberos_config.borrow_mut().take();
                 let _ = self.rpc_log_directive.borrow_mut().take();
                 rpc_control_error(error)
             }
@@ -6422,6 +6427,11 @@ impl Control {
             } else {
                 ClipboardType::Disable
             });
+        let builder = if let Some(kerberos_config) = self.rpc_kerberos_config.borrow_mut().take() {
+            builder.with_kerberos_config(kerberos_config)
+        } else {
+            builder
+        };
         let builder = if let Some(callback) = certificate_validation_callback {
             builder.with_certificate_validation_callback(callback)
         } else {
