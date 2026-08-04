@@ -134,7 +134,7 @@ function resolveClassificationState({
   ];
   const labelSets = [
     { owned: RISK, desired: [`risk/${risk}`] },
-    ...deterministicLabelSets(deterministic).slice(0, 2),
+    ...deterministicLabelSets(deterministic),
     { owned: ["scope/cross-cutting"], desired: model.cross_cutting ? ["scope/cross-cutting"] : [] },
     ...optional.map(([label, enabled]) => ({ owned: [label], desired: enabled ? [label] : [] })),
     { owned: ["breaking-change"], desired: breaking ? ["breaking-change"] : [] },

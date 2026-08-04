@@ -325,6 +325,26 @@ test("cross-cutting scope is model-owned while path scopes can coexist", () => {
   assert.deepEqual(narrow.labelSets.find((set) => set.owned.includes("scope/cross-cutting")).desired, []);
 });
 
+test("successful classification preserves the first-time contributor label", () => {
+  const deterministic = {
+    ok: true,
+    pathLabels: [],
+    ownedPathLabels: ["scope/core"],
+    sizeLabel: "size/XS",
+    sizeLabels: ["size/XS", "size/S", "size/M", "size/L", "size/XL"],
+    firstTime: true,
+  };
+  const state = resolveClassificationState({
+    expectedSha: SHA,
+    labels: [],
+    deterministic,
+    classifier: classifier(),
+    semver: { head_sha: SHA, status: "not-suspected" },
+  });
+  assert.deepEqual(state.labelSets.find((set) => set.owned.includes("contributor/first-time")).desired,
+    ["contributor/first-time"]);
+});
+
 test("protocol relevance overrides risk suppression but no other exclusion", () => {
   // Risk measures the human scrutiny a change needs, so it must not decide whether a protocol
   // change is worth reviewing.

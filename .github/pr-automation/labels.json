@@ -47,22 +47,22 @@
   {
     "name": "size/S",
     "color": "f9d0c4",
-    "description": "Size: 30-150 lines of code"
+    "description": "Size: 30-149 lines of code"
   },
   {
     "name": "size/M",
     "color": "f9d0c4",
-    "description": "Size: 150-400 lines of code"
+    "description": "Size: 150-399 lines of code"
   },
   {
     "name": "size/L",
     "color": "f9d0c4",
-    "description": "Size: 400-800 lines of code"
+    "description": "Size: 400-799 lines of code"
   },
   {
     "name": "size/XL",
     "color": "f9d0c4",
-    "description": "Size: Above 800 lines of code"
+    "description": "Size: 800 or more lines of code"
   },
   {
     "name": "risk/low",
