@@ -269,9 +269,6 @@ jobs:
           BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
         run: |
           set -euo pipefail
-          workspace="$RUNNER_TEMP/semver-workspace"
-          install -d -m 755 "$workspace"
-          cd "$workspace"
           export GIT_CONFIG_NOSYSTEM=1
           export GIT_CONFIG_GLOBAL=/dev/null
           git init .
@@ -307,12 +304,9 @@ jobs:
           semver_cargo="$RUNNER_TEMP/semver-cargo"
           semver_target="$RUNNER_TEMP/semver-target"
           semver_bin="$CARGO_SEMVER_CHECKS_DIR/cargo-semver-checks"
-          workspace="$RUNNER_TEMP/semver-workspace"
-          rust_bin_dir="$(dirname "$(rustup which rustc)")"
           install -d -m 700 "$semver_home" "$semver_cargo" "$semver_target"
-          chmod -R a+rX "$workspace"
-          sudo chown -R nobody:nogroup "$workspace" "$semver_home" "$semver_cargo" "$semver_target"
-          cd "$workspace"
+          chmod -R a+rX .
+          sudo chown -R nobody:nogroup . "$semver_home" "$semver_cargo" "$semver_target"
 
           # Build scripts and proc macros run as nobody, which cannot read the runner command files.
           set +e
@@ -320,7 +314,8 @@ jobs:
             HOME="$semver_home" \
             CARGO_HOME="$semver_cargo" \
             CARGO_TARGET_DIR="$semver_target" \
-            PATH="$rust_bin_dir:$PATH" \
+            RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+            PATH="$PATH" \
             "$semver_bin" \
             --package ironrdp \
             --only-explicit-features \
