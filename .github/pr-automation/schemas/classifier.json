@@ -30,49 +30,5 @@
     "breaking_change_surface": { "type": "string", "maxLength": 200 },
     "protocol_related": { "type": "boolean" },
     "summary": { "type": "string", "maxLength": 1000 }
-  },
-  "allOf": [
-    {
-      "if": { "properties": { "likely_non_legitimate": { "const": true } } },
-      "then": {
-        "properties": {
-          "non_legitimate_confidence": { "minimum": 0.9 },
-          "non_legitimate_reason": { "minLength": 1 }
-        }
-      },
-      "else": {
-        "properties": {
-          "non_legitimate_confidence": { "const": 0 },
-          "non_legitimate_reason": { "const": "" }
-        }
-      }
-    },
-    {
-      "if": { "properties": { "duplicate": { "properties": { "detected": { "const": true } } } } },
-      "then": {
-        "properties": {
-          "duplicate": {
-            "properties": {
-              "similar_pr_number": { "type": "integer", "minimum": 1 },
-              "similar_pr_url": { "type": "string", "pattern": "^https://github\\.com/Devolutions/IronRDP/pull/[1-9][0-9]*$" },
-              "confidence": { "minimum": 0.85 },
-              "rationale": { "minLength": 1 }
-            }
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "duplicate": {
-            "properties": {
-              "similar_pr_number": { "const": null },
-              "similar_pr_url": { "const": null },
-              "confidence": { "const": 0 },
-              "rationale": { "const": "" }
-            }
-          }
-        }
-      }
-    }
-  ]
+  }
 }
