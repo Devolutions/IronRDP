@@ -1,8 +1,10 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { addedLinesByPath, analyzeFiles, parseLabelerRules } = require("./deterministic-analysis");
+const { SIZE_LABELS, addedLinesByPath, analyzeFiles, parseLabelerRules } = require("./deterministic-analysis");
 const { validateClassifier } = require("./validate-classifier");
 const { validateReviewer } = require("./validate-reviewer");
 const { resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER, LEGITIMACY_MARKER, XL_MARKER } = require("./resolve-state");
@@ -36,6 +38,33 @@ const review = (changes = {}) => ({
   protocol_handoff: { received: false, disposition: "not_applicable", rationale: "" },
   findings: [finding()],
   ...changes,
+});
+
+test("workflow does not overwrite github-script result outputs", () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  assert.doesNotMatch(workflow, /core\.setOutput\("result"/);
+  assert.doesNotMatch(workflow, /^\s{6}result:\s+\$\{\{\s*steps\./m);
+  assert.doesNotMatch(workflow, /needs\.[\w-]+\.outputs\.result\b/);
+});
+
+test("every deterministic label is declared and the repository rules classify tooling changes", () => {
+  const githubDirectory = path.join(__dirname, "..");
+  const rules = parseLabelerRules(fs.readFileSync(path.join(githubDirectory, "labeler.yml"), "utf8"));
+  const declaredLabels = new Set(JSON.parse(
+    fs.readFileSync(path.join(__dirname, "labels.json"), "utf8"),
+  ).map((label) => label.name));
+  for (const label of [...Object.keys(rules), ...SIZE_LABELS, "contributor/first-time"]) {
+    assert.equal(declaredLabels.has(label), true, `${label} is missing from labels.json`);
+  }
+  for (const [label, patterns] of Object.entries(rules)) {
+    assert.notEqual(patterns.length, 0, `${label} has no path patterns`);
+  }
+  const result = analyzeFiles([
+    { filename: ".github/workflows/labeler.yml", additions: 5, deletions: 1 },
+  ], { labelerRules: rules, authorAssociation: "MEMBER" });
+  assert.deepEqual(result.pathLabels, ["scope/tooling"]);
+  assert.equal(result.sizeLabel, "size/XS");
+  assert.equal(result.firstTime, false);
 });
 
 test("deterministic analysis applies trusted scopes and source size", () => {
