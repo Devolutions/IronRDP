@@ -26,6 +26,19 @@ Unsupported Automation and raw-interface members return `DISP_E_MEMBERNOTFOUND` 
 rather than a false success result. A small set of mstsc-compatible status and lifecycle defaults is
 provided where the published control accepts the operation without starting an unavailable feature.
 
+## Local agent RPC
+
+Set `IRONRDP_ACTIVEX_RPC=1` in the ActiveX host process before creating the control to expose the
+current-user-only RPC service from `ironrdpax.dll`. On Windows, the named pipe has a protected DACL
+that permits only the current user. Its default endpoint is `\\.\pipe\ironrdp-activex-<user>`; set
+`IRONRDP_ACTIVEX_RPC_ENDPOINT` to select another endpoint. The listener dispatches connection,
+disconnect, input, resize, and configuration requests through the control's message-only window,
+never directly from its listener thread.
+
+Use an already-hosted control from the agent with `ironrdp-agent --backend active-x <operation>`.
+The ActiveX backend is never auto-started: its owner must create the control with the opt-in
+environment variable before the agent connects.
+
 ## Registration
 
 Register a bitness-matching build with:
@@ -94,6 +107,17 @@ the bridge pre-populates the corresponding CredUI fields. It never auto-submits 
 operator must still approve it. These values are used only to initialize CredUI's local buffers,
 are not traced or persisted, and should be supplied only through a suitably protected process
 environment.
+
+For an explicitly authorized unattended test, set `RDP_AUTOLOGON=1` together with nonempty
+`RDP_USERNAME` and `RDP_PASSWORD` in the `mstscex.exe` process environment. This exact opt-in
+bypasses CredUI, provides the values directly to the in-memory connection, and enables RDP
+autologon. Missing credentials fail closed without opening CredUI. The values must not be written
+to `.rdp` files, traces, arguments, or persistent credential storage.
+
+For an authorized RDP-file launch, `RDP_HOSTNAME` supplies the destination only when the native
+Computer form is unavailable; credentials remain process-local. With `RDP_AUTOLOGON=1`, the native
+host can display a nonfatal post-preflight error. Leave that dialog open while using the ActiveX
+RPC endpoint because its **OK** action closes the host and session.
 
 In this explicit bridge mode, non-minimized native-shell container size changes become a 250 ms
 debounced `IMsRdpClient9::UpdateSessionDisplaySettings` request. IronRDP uses the negotiated Display

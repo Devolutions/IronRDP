@@ -40,6 +40,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     endpoint: Option<String>,
 
+    /// Select the local RPC backend.
+    #[arg(long, global = true, value_enum, default_value_t = Backend::Daemon)]
+    backend: Backend,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -104,6 +108,12 @@ enum Command {
     },
     /// Execute commands over the session's NOW DVC endpoint.
     Now(NowArgs),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Backend {
+    Daemon,
+    ActiveX,
 }
 
 #[derive(Args, Debug)]
@@ -287,13 +297,13 @@ struct ConnectArgs {
     #[arg(long = "prop", value_name = "KEY:TYPE:VALUE")]
     prop: Vec<PropOverride>,
     /// RDP server address (host[:port]). Overrides the .rdp file.
-    #[arg(long)]
+    #[arg(long, env = "RDP_HOSTNAME")]
     server: Option<String>,
     /// RDP account user name. Overrides the .rdp file.
-    #[arg(short, long)]
+    #[arg(short, long, env = "RDP_USERNAME")]
     username: Option<String>,
     /// RDP account password. Overrides the .rdp file.
-    #[arg(short, long)]
+    #[arg(short, long, env = "RDP_PASSWORD", hide_env_values = true)]
     password: Option<String>,
     /// RDP account domain. Overrides the .rdp file.
     #[arg(short, long)]
@@ -414,7 +424,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let endpoint = endpoint_from_arg(cli.endpoint);
+    let endpoint = endpoint_from_arg(cli.endpoint, cli.backend);
 
     let Some(command) = cli.command else {
         let _ = Cli::command().print_help();
@@ -422,8 +432,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return Ok(());
     };
 
+    if cli.backend == Backend::ActiveX && !matches!(&command, Command::DaemonStart(_)) {
+        ensure_activex_backend(&endpoint).await?;
+    }
+
     let request = match command {
         Command::DaemonStart(args) => {
+            if cli.backend != Backend::Daemon {
+                anyhow::bail!("daemon-start requires --backend daemon");
+            }
             let overlay = load_overlay(args.overlay.as_deref(), args.prop)?;
             return ironrdp_daemon::daemon::run(endpoint, overlay).await;
         }
@@ -1119,19 +1136,23 @@ fn write_screenshot(width: u16, height: u16, png: &[u8], path: &Path) -> anyhow:
     Ok(())
 }
 
-#[cfg(unix)]
-fn endpoint_from_arg(arg: Option<String>) -> Endpoint {
+fn endpoint_from_arg(arg: Option<String>, backend: Backend) -> Endpoint {
     match arg {
-        Some(value) => Endpoint(PathBuf::from(value)),
-        None => transport::default_endpoint(),
+        Some(value) => transport::endpoint_from_string(value),
+        None => match backend {
+            Backend::Daemon => transport::default_endpoint_named("ironrdp-agent"),
+            Backend::ActiveX => transport::default_endpoint_named("ironrdp-activex"),
+        },
     }
 }
 
-#[cfg(windows)]
-fn endpoint_from_arg(arg: Option<String>) -> Endpoint {
-    match arg {
-        Some(value) => Endpoint(value),
-        None => transport::default_endpoint(),
+async fn ensure_activex_backend(endpoint: &Endpoint) -> anyhow::Result<()> {
+    match transport::send_request(endpoint, &Request::Status).await {
+        Ok(Response::Ok(_)) => Ok(()),
+        Ok(Response::Err(error)) => anyhow::bail!("ActiveX RPC endpoint at {endpoint} rejected status: {error}"),
+        Err(_) => anyhow::bail!(
+            "ActiveX RPC endpoint is unavailable at {endpoint}; start an ActiveX host with IRONRDP_ACTIVEX_RPC=1"
+        ),
     }
 }
 
@@ -1201,9 +1222,50 @@ fn property_description(key: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser as _;
+    use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution};
+    use super::{Backend, Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution, endpoint_from_arg};
+
+    #[test]
+    fn backend_endpoint_selection_is_distinct_and_overridable() {
+        let daemon = endpoint_from_arg(None, Backend::Daemon).to_string();
+        let activex = endpoint_from_arg(None, Backend::ActiveX).to_string();
+
+        assert_ne!(daemon, activex);
+        assert!(daemon.contains("ironrdp-agent"));
+        assert!(activex.contains("ironrdp-activex"));
+        #[cfg(windows)]
+        assert_eq!(
+            endpoint_from_arg(Some("custom-rpc-endpoint".to_owned()), Backend::ActiveX).to_string(),
+            r"\\.\pipe\custom-rpc-endpoint"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            endpoint_from_arg(Some("custom-rpc-endpoint".to_owned()), Backend::ActiveX).to_string(),
+            "custom-rpc-endpoint"
+        );
+    }
+
+    #[test]
+    fn connection_flags_use_process_local_environment_defaults() {
+        let command = Cli::command();
+        let connect = command
+            .get_subcommands()
+            .find(|command| command.get_name() == "connect")
+            .expect("connect subcommand must be registered");
+
+        for (argument, variable) in [
+            ("server", "RDP_HOSTNAME"),
+            ("username", "RDP_USERNAME"),
+            ("password", "RDP_PASSWORD"),
+        ] {
+            let environment = connect
+                .get_arguments()
+                .find(|candidate| candidate.get_id() == argument)
+                .and_then(clap::Arg::get_env);
+            assert_eq!(environment, Some(variable.as_ref()));
+        }
+    }
 
     #[test]
     fn shell_is_not_an_agent_command() {

@@ -88,14 +88,46 @@ mod imp {
         }
     }
 
-    /// Returns the default per-user endpoint.
-    pub fn default_endpoint() -> Endpoint {
+    /// Returns a per-user endpoint for `name`.
+    pub fn default_endpoint_named(name: &str) -> Endpoint {
         // SAFETY: `getuid` has no preconditions and is always safe to call.
         let uid = unsafe { libc::getuid() };
         let dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp"));
-        Endpoint(dir.join(format!("ironrdp-agent-{uid}.sock")))
+        Endpoint(dir.join(format!("{name}-{uid}.sock")))
+    }
+
+    /// Returns the default per-user endpoint.
+    pub fn default_endpoint() -> Endpoint {
+        default_endpoint_named("ironrdp-agent")
+    }
+
+    /// Resolves an explicit endpoint supplied by a local client.
+    pub fn endpoint_from_string(value: String) -> Endpoint {
+        Endpoint(PathBuf::from(value))
+    }
+
+    /// Removes a stale socket endpoint while refusing to touch non-socket paths.
+    pub async fn prepare_endpoint(endpoint: &Endpoint) -> io::Result<()> {
+        if !endpoint.0.exists() {
+            return Ok(());
+        }
+        if connect(endpoint).await.is_ok() {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("an RPC listener already appears to be running at {endpoint}"),
+            ));
+        }
+        use std::os::unix::fs::FileTypeExt as _;
+        let metadata = std::fs::symlink_metadata(&endpoint.0)?;
+        if !metadata.file_type().is_socket() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("refusing to remove {endpoint}: path exists and is not a socket"),
+            ));
+        }
+        std::fs::remove_file(&endpoint.0)
     }
 
     /// Connects to a listening daemon.
@@ -164,10 +196,29 @@ mod imp {
         }
     }
 
+    /// Returns a per-user endpoint for `name`.
+    pub fn default_endpoint_named(name: &str) -> Endpoint {
+        let user = whoami::username().unwrap_or_else(|_| "user".to_owned());
+        Endpoint(format!(r"\\.\pipe\{name}-{user}"))
+    }
+
     /// Returns the default per-user endpoint.
     pub fn default_endpoint() -> Endpoint {
-        let user = whoami::username().unwrap_or_else(|_| "user".to_owned());
-        Endpoint(format!(r"\\.\pipe\ironrdp-agent-{user}"))
+        default_endpoint_named("ironrdp-agent")
+    }
+
+    /// Resolves an explicit endpoint supplied by a local client.
+    pub fn endpoint_from_string(value: String) -> Endpoint {
+        if value.starts_with(r"\\.\pipe\") {
+            Endpoint(value)
+        } else {
+            Endpoint(format!(r"\\.\pipe\{value}"))
+        }
+    }
+
+    /// Named pipes require no stale-path cleanup.
+    pub async fn prepare_endpoint(_endpoint: &Endpoint) -> io::Result<()> {
+        Ok(())
     }
 
     /// Connects to a listening daemon.
@@ -491,7 +542,9 @@ mod imp {
     }
 }
 
-pub use imp::{Endpoint, Listener, connect, default_endpoint};
+pub use imp::{
+    Endpoint, Listener, connect, default_endpoint, default_endpoint_named, endpoint_from_string, prepare_endpoint,
+};
 
 #[cfg(unix)]
 pub type ClientStream = tokio::net::UnixStream;
