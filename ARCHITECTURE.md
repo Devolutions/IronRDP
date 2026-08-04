@@ -178,6 +178,13 @@ Portable RDP client binary without GPU acceleration. A thin wrapper around `iron
 that adds the winit/softbuffer GUI event loop, the clap CLI, the inquire prompts and the
 `.rdp` file / PropertySet plumbing.
 
+#### [`crates/ironrdp-daemon`](./crates/ironrdp-daemon)
+
+Internal reusable persistent RDP-session support. It provides local RPC daemon lifecycle and
+server handling, retained framebuffer, input and screenshot handling, session log buffering, NOW
+endpoint management, and durable NOW operations. Its RPC schema and transport dependency is
+[`ironrdp-rpc`](./crates/ironrdp-rpc); it is not published.
+
 #### [`crates/ironrdp-web`](./crates/ironrdp-web)
 
 WebAssembly high-level bindings targeting web browsers.
