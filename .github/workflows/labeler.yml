@@ -155,7 +155,8 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      result: ${{ steps.analyze.outputs.result }}
+      # github-script owns the result output and overwrites it with the script return value.
+      analysis: ${{ steps.analyze.outputs.analysis }}
       ok: ${{ steps.analyze.outputs.ok }}
       size-label: ${{ steps.analyze.outputs.size-label }}
     steps:
@@ -184,7 +185,7 @@ jobs:
               authorAssociation: pullRequest.author_association,
               labelerPath: "./.github/labeler.yml",
             });
-            core.setOutput("result", JSON.stringify(result));
+            core.setOutput("analysis", JSON.stringify(result));
             core.setOutput("ok", result.ok === true);
             core.setOutput("size-label", result.sizeLabel || "");
             core.info(JSON.stringify({ event: "pr-automation.deterministic-analysis", decision: result }));
@@ -198,7 +199,7 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      result: ${{ steps.limit.outputs.result }}
+      quota: ${{ steps.limit.outputs.quota }}
       allowed: ${{ steps.limit.outputs.allowed }}
     steps:
       - uses: actions/checkout@v6
@@ -233,7 +234,7 @@ jobs:
             } catch {
               result = { status: "unavailable", scope: "unknown", reason: "GitHub API unavailable" };
             }
-            core.setOutput("result", JSON.stringify(result));
+            core.setOutput("quota", JSON.stringify(result));
             core.setOutput("allowed", result.status === "allowed");
             core.info(JSON.stringify({ event: "pr-automation.fork-rate-limit", decision: result }));
 
@@ -249,7 +250,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions: {}
     outputs:
-      result: ${{ steps.semver.outputs.result }}
+      compatibility: ${{ steps.semver.outputs.compatibility }}
     env:
       CARGO_SEMVER_CHECKS_VERSION: "0.49.0"
       CARGO_SEMVER_CHECKS_SHA256: "72f6834d75d28a66e02c9fd6a230ce901bb30eee6067b85867a97445df040e4a"
@@ -333,7 +334,7 @@ jobs:
             100) status=suspected ;;
             *) exit "$status" ;;
           esac
-          echo "result={\"head_sha\":\"$HEAD_SHA\",\"status\":\"$status\"}" >> "$GITHUB_OUTPUT"
+          echo "compatibility={\"head_sha\":\"$HEAD_SHA\",\"status\":\"$status\"}" >> "$GITHUB_OUTPUT"
           echo "::notice title=PR automation semver decision::head_sha=$HEAD_SHA status=$status"
 
   classifier:
@@ -498,10 +499,10 @@ jobs:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
           PR_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
-          DETERMINISTIC: ${{ needs.deterministic-analysis.outputs.result }}
+          DETERMINISTIC: ${{ needs.deterministic-analysis.outputs.analysis }}
           CLASSIFIER: ${{ needs.classifier.outputs.output }}
-          FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.result }}
-          SEMVER: ${{ needs.semver.outputs.result }}
+          FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
+          SEMVER: ${{ needs.semver.outputs.compatibility }}
         with:
           script: |
             const { resolveClassificationState } = require("./.github/pr-automation/resolve-state");
@@ -629,7 +630,7 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      result: ${{ steps.history.outputs.result }}
+      history: ${{ steps.history.outputs.history }}
       eligible: ${{ steps.history.outputs.eligible }}
     steps:
       - uses: actions/checkout@v6
@@ -651,7 +652,7 @@ jobs:
               github, owner: context.repo.owner, repo: context.repo.repo, author,
               currentPrNumber: Number(process.env.PULL_REQUEST_NUMBER),
             });
-            core.setOutput("result", JSON.stringify(result));
+            core.setOutput("history", JSON.stringify(result));
             core.setOutput("eligible", result.status === "eligible");
             core.info(JSON.stringify({ event: "pr-automation.contributor-history", decision: result }));
 
@@ -1012,8 +1013,8 @@ jobs:
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           GATE: ${{ needs.review-gate.outputs.gate }}
-          CONTRIBUTOR: ${{ needs.contributor-history.outputs.result }}
-          FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.result }}
+          CONTRIBUTOR: ${{ needs.contributor-history.outputs.history }}
+          FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
           PROTOCOL_STATUS: ${{ needs.validate-protocol-review.outputs.status }}
           RAW_OUTPUT: ${{ needs.skeptical-reviewer.outputs.output }}
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
