@@ -83,9 +83,11 @@ async function resolvePr({ github, context, inputs = {} }) {
   }
   if (!pr) return noResult("pull request is closed or stale", route);
   if (pr.draft) return noResult("pull request is draft", route);
-  // Dependabot owns dependency and language labels. This automation must not mutate bot-authored
-  // pull requests, because its path-based classification would otherwise overwrite that taxonomy.
-  const authorIsBot = pr.user?.type === "Bot" || /\[bot\]$/i.test(pr.user?.login || "");
+  // Dependabot owns dependency and language labels, while devolutionsbot opens release-plz PRs.
+  // This automation must not mutate either kind of automated pull request.
+  const authorLogin = pr.user?.login || "";
+  const authorIsBot = pr.user?.type === "Bot" || /\[bot\]$/i.test(authorLogin) ||
+    authorLogin.toLowerCase() === "devolutionsbot";
   if (authorIsBot) return noResult("bot-authored pull request", route);
   return {
     ok: true, route, prNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha,
