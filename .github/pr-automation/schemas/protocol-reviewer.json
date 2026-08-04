@@ -67,19 +67,5 @@
       "maxItems": 20,
       "items": { "type": "string", "minLength": 1, "maxLength": 300 }
     }
-  },
-  "allOf": [
-    {
-      "if": { "properties": { "protocol_relevance": { "const": "none" } }, "required": ["protocol_relevance"] },
-      "then": {
-        "properties": {
-          "protocols_consulted": { "maxItems": 0 },
-          "change_mappings": { "maxItems": 0 },
-          "potential_discrepancies": { "maxItems": 0 },
-          "required_or_valuable_tests": { "maxItems": 0 }
-        }
-      },
-      "else": { "properties": { "protocols_consulted": { "minItems": 1 } } }
-    }
-  ]
+  }
 }
