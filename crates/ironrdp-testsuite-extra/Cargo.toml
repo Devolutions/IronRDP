@@ -36,7 +36,7 @@ ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
 ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-input.path = "../ironrdp-input"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
-ironrdp-rpc.path = "../ironrdp-rpc"
+ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }
 ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }

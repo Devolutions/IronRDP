@@ -12,6 +12,11 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# Internal (PRIVATE!) feature used to expose codec helpers to the shared integration tests.
+# Don't rely on this whatsoever. It may disappear at any time.
+__test = []
+
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" } # public
