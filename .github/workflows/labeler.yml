@@ -488,6 +488,37 @@ jobs:
               structuredOutput: process.env.STRUCTURED_OUTPUT || null,
             }));
 
+      - name: Log classifier failure diagnostics
+        if: steps.claude.outcome == 'failure'
+        uses: actions/github-script@v8
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        with:
+          script: |
+            const fs = require("fs/promises");
+            const redact = (value) => String(value)
+              .replace(/\b(?:sk-ant-|sk-)[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+              .replace(/\b(?:gh[pous]_[A-Za-z0-9_]+)\b/g, "[REDACTED]")
+              .slice(0, 2_000);
+            if (!process.env.EXECUTION_FILE) {
+              core.warning("Classifier failed without an execution file");
+              return;
+            }
+            const messages = JSON.parse(await fs.readFile(process.env.EXECUTION_FILE, "utf8"));
+            const result = [...messages].reverse().find((message) => message.type === "result");
+            if (!result) {
+              core.warning("Classifier execution file contains no result message");
+              return;
+            }
+            core.info(JSON.stringify({
+              event: "pr-automation.llm-failure",
+              stage: "classifier",
+              subtype: result.subtype,
+              isError: result.is_error === true,
+              errors: Array.isArray(result.errors) ? result.errors.map(redact) : [],
+              result: typeof result.result === "string" ? redact(result.result) : null,
+            }));
+
   resolve-classification-state:
     name: Resolve classification state
     needs: [resolve-pr, classification-gate, deterministic-analysis, fork-rate-limit, semver, sspi-diff, classifier]
