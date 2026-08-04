@@ -280,6 +280,69 @@ impl ClientConnector {
         self
     }
 
+    /// Send the initial X.224 request with an explicit security protocol set.
+    pub fn initiate_with_security_protocol(
+        &mut self,
+        security_protocol: nego::SecurityProtocol,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
+        if !matches!(self.state, ClientConnectorState::ConnectionInitiationSendRequest) {
+            return Err(reason_err!("Initiation", "connection initiation has already started"));
+        }
+
+        let enabled_protocols = self.enabled_security_protocols()?;
+        if !enabled_protocols.contains(security_protocol) {
+            return Err(reason_err!(
+                "Initiation",
+                "requested security protocols {security_protocol} are not enabled by connector configuration",
+            ));
+        }
+
+        self.state = ClientConnectorState::Consumed;
+        self.encode_connection_request(security_protocol, output)
+    }
+
+    fn enabled_security_protocols(&self) -> ConnectorResult<nego::SecurityProtocol> {
+        let mut security_protocol = nego::SecurityProtocol::empty();
+
+        if self.config.enable_tls {
+            security_protocol.insert(nego::SecurityProtocol::SSL);
+        }
+        if self.config.enable_credssp {
+            security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
+        }
+        if security_protocol.is_standard_rdp_security() {
+            return Err(reason_err!("Initiation", "standard RDP security is not supported"));
+        }
+
+        Ok(security_protocol)
+    }
+
+    fn encode_connection_request(
+        &mut self,
+        security_protocol: nego::SecurityProtocol,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
+        let connection_request = nego::ConnectionRequest {
+            nego_data: self.config.request_data.clone().or_else(|| {
+                self.config
+                    .credentials
+                    .username()
+                    .map(|username| nego::NegoRequestData::cookie(username.to_owned()))
+            }),
+            flags: nego::RequestFlags::empty(),
+            protocol: security_protocol,
+        };
+
+        debug!(message = ?connection_request, "Send");
+
+        let written = ironrdp_core::encode_buf(&X224(connection_request), output).map_err(ConnectorError::encode)?;
+        self.state = ClientConnectorState::ConnectionInitiationWaitConfirm {
+            requested_protocol: security_protocol,
+        };
+        Written::from_size(written)
+    }
+
     /// Whether Soft-Sync (`SOFTSYNC_TCP_TO_UDP`) was mutually advertised, meaning
     /// both peers set the flag in their GCC `MultiTransportChannelData` block.
     ///
@@ -693,52 +756,9 @@ impl Sequence for ClientConnector {
             // Exchange supported security protocols and a few other connection flags.
             ClientConnectorState::ConnectionInitiationSendRequest => {
                 debug!("Connection Initiation");
-
-                let mut security_protocol = nego::SecurityProtocol::empty();
-
-                if self.config.enable_tls {
-                    security_protocol.insert(nego::SecurityProtocol::SSL);
-                }
-
-                if self.config.enable_credssp {
-                    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
-                    // The spec is stating that `PROTOCOL_SSL` "SHOULD" also be set when using `PROTOCOL_HYBRID`.
-                    // > PROTOCOL_HYBRID (0x00000002)
-                    // > Credential Security Support Provider protocol (CredSSP) (section 5.4.5.2).
-                    // > If this flag is set, then the PROTOCOL_SSL (0x00000001) flag SHOULD also be set
-                    // > because Transport Layer Security (TLS) is a subset of CredSSP.
-                    // However, crucially, it’s not strictly required (not "MUST").
-                    // In fact, we purposefully choose to not set `PROTOCOL_SSL` unless `enable_winlogon` is `true`.
-                    // This tells the server that we are not going to accept downgrading NLA to TLS security.
-                    security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
-                }
-
-                if security_protocol.is_standard_rdp_security() {
-                    return Err(reason_err!("Initiation", "standard RDP security is not supported",));
-                }
-
-                let connection_request = nego::ConnectionRequest {
-                    nego_data: self.config.request_data.clone().or_else(|| {
-                        self.config
-                            .credentials
-                            .username()
-                            .map(|username| nego::NegoRequestData::cookie(username.to_owned()))
-                    }),
-                    flags: nego::RequestFlags::empty(),
-                    protocol: security_protocol,
-                };
-
-                debug!(message = ?connection_request, "Send");
-
-                let written =
-                    ironrdp_core::encode_buf(&X224(connection_request), output).map_err(ConnectorError::encode)?;
-
-                (
-                    Written::from_size(written)?,
-                    ClientConnectorState::ConnectionInitiationWaitConfirm {
-                        requested_protocol: security_protocol,
-                    },
-                )
+                let security_protocol = self.enabled_security_protocols()?;
+                let written = self.encode_connection_request(security_protocol, output)?;
+                (written, mem::take(&mut self.state))
             }
             ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
                 let connection_confirm = decode::<X224<nego::ConnectionConfirm>>(input)

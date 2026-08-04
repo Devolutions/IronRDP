@@ -748,6 +748,7 @@ async fn connect_direct(
     let stream = TcpStream::connect(&dest)
         .await
         .map_err(|e| ironrdp_connector::custom_err!("TCP connect", e))?;
+    let pcb_deadline = tokio::time::Instant::now() + ironrdp_vmconnect::PCB_TRANSMIT_DEADLINE;
     let client_addr = stream
         .local_addr()
         .map_err(|e| ironrdp_connector::custom_err!("get socket local address", e))?;
@@ -755,7 +756,7 @@ async fn connect_direct(
 
     let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
     if config.vm_id().is_some() {
-        vmconnect_handshake_and_finalize(framed, connector, config).await
+        vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await
     } else {
         tls_handshake_and_finalize(framed, connector, config).await
     }
@@ -770,6 +771,13 @@ async fn connect_gateway(
     cliprdr_factory: CliprdrFactoryRef<'_>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     use ironrdp_mstsgu::GwConnectTarget;
+
+    // VMConnect needs destination port 2179; GwConnectTarget does not carry it yet (TODO below).
+    if config.vm_id().is_some() {
+        return Err(ironrdp_connector::general_err!(
+            "vmconnect cannot be used over an RDS gateway until the target port is propagated"
+        ));
+    }
 
     // Build the GwConnectTarget.  `server` is the RDP target derived from `config.destination`.
     // TODO: preserve the destination port; ironrdp-mstsgu may currently hard-code 3389.
@@ -787,11 +795,7 @@ async fn connect_gateway(
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
     let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
-    if config.vm_id().is_some() {
-        vmconnect_handshake_and_finalize(framed, connector, config).await
-    } else {
-        tls_handshake_and_finalize(framed, connector, config).await
-    }
+    tls_handshake_and_finalize(framed, connector, config).await
 }
 
 /// RDCleanPath WebSocket → RDCleanPath handshake connection.
@@ -908,6 +912,7 @@ async fn vmconnect_handshake_and_finalize<S>(
     mut framed: ironrdp_tokio::TokioFramed<S>,
     mut connector: ironrdp_connector::ClientConnector,
     config: &Config,
+    pcb_deadline: tokio::time::Instant,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
@@ -919,7 +924,13 @@ where
         .vmconnect_mode()
         .ok_or_else(|| ironrdp_connector::general_err!("vmconnect path requires a console mode"))?;
 
-    let pcb_sent = ironrdp_vmconnect::send_preconnection_blob(&mut framed, vm_id, mode).await?;
+    // MS-RDPEPS: complete PCB within ten seconds of TCP connection creation.
+    let pcb_sent = tokio::time::timeout_at(
+        pcb_deadline,
+        ironrdp_vmconnect::send_preconnection_blob(&mut framed, vm_id, mode),
+    )
+    .await
+    .map_err(|_| ironrdp_connector::general_err!("timed out writing preconnection blob"))??;
 
     debug!("TLS upgrade");
 

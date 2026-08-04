@@ -109,7 +109,9 @@ struct Args {
 
     /// Connect to a Hyper-V VM console instead of an RDP host, by VM ID (`Get-VM | Select Id`).
     ///
-    /// The destination is the Hyper-V host, which listens on port 2179.
+    /// The destination is the Hyper-V host, which listens on port 2179. TLS and CredSSP are
+    /// required (do not combine with `--no-tls` / `--no-credssp`). Not supported with
+    /// `--gw-endpoint` / RDCleanPath until those transports can target port 2179.
     #[clap(long, value_name = "VM_ID")]
     vmconnect: Option<String>,
 

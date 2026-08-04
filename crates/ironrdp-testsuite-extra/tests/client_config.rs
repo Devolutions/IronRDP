@@ -32,7 +32,7 @@ impl Drop for TempRdpFile {
     }
 }
 
-fn parse_config_from_rdp(content: &str, extra_args: &[&str]) -> ironrdp_client::config::Config {
+fn parse_config_from_rdp_result(content: &str, extra_args: &[&str]) -> anyhow::Result<ironrdp_client::config::Config> {
     let rdp_file = TempRdpFile::new(content);
 
     let mut args = vec![
@@ -43,7 +43,11 @@ fn parse_config_from_rdp(content: &str, extra_args: &[&str]) -> ironrdp_client::
 
     args.extend(extra_args.iter().map(|arg| (*arg).to_owned()));
 
-    parse_config_from(args).expect("failed to parse client config")
+    parse_config_from(args)
+}
+
+fn parse_config_from_rdp(content: &str, extra_args: &[&str]) -> ironrdp_client::config::Config {
+    parse_config_from_rdp_result(content, extra_args).expect("failed to parse client config")
 }
 
 #[test]
@@ -113,6 +117,42 @@ fn vmconnect_basic_flag_selects_basic_mode() {
     );
 
     assert_eq!(config.vmconnect_mode(), Some(VmConnectMode::Basic));
+}
+
+#[test]
+fn vmconnect_rejects_rds_gateway() {
+    let err = parse_config_from_rdp_result(
+        "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
+        &[
+            "--vmconnect",
+            "efd1efab-c750-4262-b1bb-af0f7733bdd6",
+            "--gw-endpoint",
+            "gw.example.com:443",
+            "--gw-user",
+            "gw-user",
+            "--gw-pass",
+            "gw-pass",
+        ],
+    )
+    .expect_err("vmconnect + RDS gateway must fail");
+
+    assert!(err.to_string().contains("gateway"), "unexpected error: {err:#}");
+}
+
+#[test]
+fn vmconnect_rejects_disabled_security() {
+    for disabled_security in ["--no-tls", "--no-credssp"] {
+        let err = parse_config_from_rdp_result(
+            "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
+            &["--vmconnect", "efd1efab-c750-4262-b1bb-af0f7733bdd6", disabled_security],
+        )
+        .expect_err("vmconnect security requirements must fail during configuration");
+
+        assert!(
+            err.to_string().contains("requires"),
+            "unexpected error for {disabled_security}: {err:#}"
+        );
+    }
 }
 
 #[test]

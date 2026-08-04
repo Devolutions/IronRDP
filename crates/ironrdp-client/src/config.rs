@@ -994,7 +994,11 @@ impl ConfigBuilder {
     }
 
     /// Connect to a Hyper-V VM console by VM GUID. Destination must use port
-    /// [`ironrdp_vmconnect::PORT`] (2179). Not supported over RDCleanPath.
+    /// [`ironrdp_vmconnect::PORT`] (2179).
+    ///
+    /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
+    /// embedder (error if disabled). This builder only rejects transports that cannot target port
+    /// 2179 yet (RDCleanPath / RDS Gateway in [`build`](Self::build)).
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
@@ -1002,6 +1006,8 @@ impl ConfigBuilder {
     }
 
     /// Connect to a Hyper-V VM console using the selected mode.
+    ///
+    /// See [`with_vmconnect`](Self::with_vmconnect) for transport notes.
     #[must_use]
     pub fn with_vmconnect_mode(mut self, vm_id: impl Into<String>, mode: VmConnectMode) -> Self {
         self.vm_id = Some(vm_id.into());
@@ -1300,8 +1306,20 @@ impl ConfigBuilder {
             }),
         };
 
-        if self.vm_id.is_some() && matches!(transport, Transport::RDCleanPath(_)) {
-            anyhow::bail!("vmconnect cannot be used over an RDCleanPath proxy");
+        if self.vm_id.is_some() {
+            if !self.enable_tls.unwrap_or(true) {
+                anyhow::bail!("vmconnect requires TLS");
+            }
+            if !self.enable_credssp.unwrap_or(true) {
+                anyhow::bail!("vmconnect requires CredSSP");
+            }
+            if matches!(transport, Transport::RDCleanPath(_)) {
+                anyhow::bail!("vmconnect cannot be used over an RDCleanPath proxy");
+            }
+            #[cfg(feature = "gateway")]
+            if matches!(transport, Transport::Gateway(_)) {
+                anyhow::bail!("vmconnect cannot be used over an RDS gateway until the target port is propagated");
+            }
         }
 
         let client_name = self.client_name.unwrap_or_default();
