@@ -24,11 +24,21 @@ jobs:
             const labels = require("./.github/pr-automation/labels.json");
             for (const label of labels) {
               try {
-                await github.rest.issues.getLabel({
+                const { data: existing } = await github.rest.issues.getLabel({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   name: label.name,
                 });
+                if (existing.color !== label.color || existing.description !== label.description) {
+                  await github.rest.issues.updateLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: label.name,
+                    new_name: label.name,
+                    color: label.color,
+                    description: label.description,
+                  });
+                }
               } catch (error) {
                 if (error.status !== 404) throw error;
                 await github.rest.issues.createLabel({

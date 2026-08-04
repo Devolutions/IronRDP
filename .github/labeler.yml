@@ -1,61 +1,4 @@
-".NET":
-  - changed-files:
-      - any-glob-to-any-file: "**/*.cs"
-
-rust:
-  - changed-files:
-      - any-glob-to-any-file:
-          - "**/*.rs"
-          - "Cargo.toml"
-          - "**/Cargo.toml"
-
-javascript:
-  - changed-files:
-      - any-glob-to-any-file: "**/*.{js,cjs,mjs,jsx,ts,cts,mts,tsx}"
-
-dependencies:
-  - changed-files:
-      - any-glob-to-any-file:
-          - "Cargo.toml"
-          - "Cargo.lock"
-          - "**/Cargo.toml"
-          - "**/Cargo.lock"
-          - "**/package.json"
-          - "**/package-lock.json"
-          - "**/npm-shrinkwrap.json"
-          - "**/pnpm-lock.yaml"
-          - "**/yarn.lock"
-          - "**/bun.lockb"
-          - "**/*.{csproj,fsproj,vbproj,props,targets}"
-          - "**/packages.lock.json"
-          - ".github/dependabot.yml"
-
-A-CI:
-  - changed-files:
-      - any-glob-to-any-file: ".github/**"
-
-A-tooling:
-  - changed-files:
-      - any-glob-to-any-file: "xtask/**"
-
-A-codec:
-  - changed-files:
-      - any-glob-to-any-file:
-          - "crates/ironrdp-bulk/**"
-          - "crates/ironrdp-nscodec/**"
-          - "crates/ironrdp-pdu/src/codecs/**"
-
-A-community:
-  - changed-files:
-      - any-glob-to-any-file:
-          - "crates/ironrdp-acceptor/**"
-          - "crates/ironrdp-server/**"
-          - "crates/ironrdp-mstsgu/**"
-          - "crates/ironrdp-glutin-renderer/**"
-          - "crates/ironrdp-client-glutin/**"
-          - "crates/ironrdp-replay-client/**"
-
-A-core:
+scope/core:
   - changed-files:
       - any-glob-to-any-file:
           - "crates/ironrdp/**"
@@ -65,6 +8,7 @@ A-core:
           - "crates/ironrdp-svc/**"
           - "crates/ironrdp-dvc/**"
           - "crates/ironrdp-cliprdr/**"
+          - "crates/ironrdp-cliprdr-format/**"
           - "crates/ironrdp-rdpdr/**"
           - "crates/ironrdp-rdpsnd/**"
           - "crates/ironrdp-connector/**"
@@ -75,78 +19,34 @@ A-core:
           - "crates/ironrdp-propertyset/**"
           - "crates/ironrdp-rdpfile/**"
           - "crates/ironrdp-str/**"
-
-A-extra:
-  - changed-files:
-      - any-glob-to-any-file:
-          - "crates/ironrdp-blocking/**"
-          - "crates/ironrdp-async/**"
-          - "crates/ironrdp-tokio/**"
-          - "crates/ironrdp-futures/**"
-          - "crates/ironrdp-tls/**"
-          - "crates/ironrdp-client/**"
-          - "crates/ironrdp-viewer/**"
-          - "crates/ironrdp-web/**"
-          - "crates/iron-remote-desktop/**"
-          - "crates/ironrdp-cliprdr-native/**"
-          - "crates/ironrdp-cfg/**"
-
-A-internal:
-  - changed-files:
-      - any-glob-to-any-file:
-          - "crates/ironrdp-pdu-generators/**"
-          - "crates/ironrdp-session-generators/**"
-          - "crates/ironrdp-testsuite-core/**"
-          - "crates/ironrdp-testsuite-extra/**"
-          - "crates/ironrdp-fuzzing/**"
-          - "fuzz/**"
-
-A-native-client:
-  - changed-files:
-      - any-glob-to-any-file: "crates/ironrdp-viewer/**"
-
-A-agent:
-  - changed-files:
-      - any-glob-to-any-file: "crates/ironrdp-agent/**"
-
-A-server:
-  - changed-files:
-      - any-glob-to-any-file:
-          - "crates/ironrdp-connector/**"
-          - "crates/ironrdp-server/**"
-          - "crates/ironrdp-acceptor/**"
-          - "crates/ironrdp-mstsgu/**"
-
-A-virtual-channel:
-  - changed-files:
-      - any-glob-to-any-file:
-          - "crates/ironrdp-svc/**"
-          - "crates/ironrdp-dvc/**"
-          - "crates/ironrdp-cliprdr/**"
-          - "crates/ironrdp-cliprdr-format/**"
-          - "crates/ironrdp-cliprdr-native/**"
-          - "crates/ironrdp-rdpdr/**"
-          - "crates/ironrdp-rdpdr-native/**"
-          - "crates/ironrdp-rdpsnd/**"
-          - "crates/ironrdp-rdpsnd-native/**"
           - "crates/ironrdp-displaycontrol/**"
           - "crates/ironrdp-ainput/**"
           - "crates/ironrdp-egfx/**"
           - "crates/ironrdp-rdpeusb/**"
-          - "crates/ironrdp-dvc-com-plugin/**"
-          - "crates/ironrdp-dvc-pipe-proxy/**"
           - "crates/ironrdp-echo/**"
+          - "crates/ironrdp-bulk/**"
+          - "crates/ironrdp-nscodec/**"
 
-A-web-client:
+scope/web:
   - changed-files:
       - any-glob-to-any-file:
           - "crates/ironrdp-web/**"
           - "crates/iron-remote-desktop/**"
           - "web-client/**"
-          - "**/*.{js,cjs,mjs,jsx,ts,cts,mts,tsx}"
 
-fuzzing:
+scope/ffi:
   - changed-files:
       - any-glob-to-any-file:
-          - "fuzz/**"
-          - "crates/ironrdp-fuzzing/**"
+          - "ffi/**"
+          - "crates/ironrdp-activex/**"
+
+scope/tooling:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - ".cargo/**"
+          - "xtask/**"
+          - "rust-toolchain.toml"
+          - "rustfmt.toml"
+          - "clippy.toml"
+          - "typos.toml"

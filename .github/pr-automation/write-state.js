@@ -38,19 +38,19 @@ async function comments(github, owner, repo, prNumber) {
 
 function markerBody(comment, owner, repo) {
   if (comment.kind === "duplicate") {
-    return `${comment.marker}\n\nPotential duplicate detected: ${escapeMarkdown(comment.url)}.\n\n${escapeMarkdown(comment.rationale)}\n\nHuman review is required.`;
+    return `${comment.marker}\n\nPotential duplicate detected: ${escapeMarkdown(comment.url)}.\n\n${escapeMarkdown(comment.rationale)}\n\nMaintainer review is required.`;
   }
   if (comment.kind === "xl") {
     return `${comment.marker}\n\nThis pull request is \`size/XL\`, so automated review is disabled for it: a change this large is hard to review well in one piece, whether by a human or a model.\n\nPlease split it into focused pull requests that can each be reviewed on their own. When the parts build on each other, [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) let you open each one on top of the last without waiting for the one below to merge. Stacks require every branch to live in this repository, so from a fork, please open separate pull requests instead.\n\nAutomated review resumes once the change is below the \`size/XL\` threshold.`;
   }
   if (comment.kind === "legitimacy") {
-    return `${comment.marker}\n\nAutomated review stopped because this pull request has strong indicators requiring human triage.\n\n${escapeMarkdown(comment.reason)}\n\nHuman review is required.`;
+    return `${comment.marker}\n\nAutomated review stopped because this pull request has strong indicators requiring maintainer triage.\n\n${escapeMarkdown(comment.reason)}\n\nMaintainer review is required.`;
   }
   if (comment.kind === "fork-quota") {
-    return `${comment.marker}\n\nAutomated classification and review capacity is unavailable because this fork account has reached its daily UTC quota of ${comment.quota} pull requests.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Human review is required.`;
+    return `${comment.marker}\n\nAutomated classification and review capacity is unavailable because this fork account has reached its daily UTC quota of ${comment.quota} pull requests.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Maintainer review is required.`;
   }
   if (comment.kind === "global-quota") {
-    return `${comment.marker}\n\nAutomated classification and review capacity for fork pull requests has reached its daily UTC limit.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Human review is required.`;
+    return `${comment.marker}\n\nAutomated classification and review capacity for fork pull requests has reached its daily UTC limit.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Maintainer review is required.`;
   }
   throw new Error("unsupported issue comment");
 }
@@ -206,7 +206,7 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
   }
   await assertCurrentHead(github, owner, repo, prNumber, state.expectedSha);
   // Labels come first in both modes: they are the durable record of the outcome, and a later
-  // comment or review failure must not leave the pull request without its human-required triage.
+  // comment or review failure must not leave the pull request without its maintainer-required triage.
   await applyLabels(github, owner, repo, prNumber, state);
   if (state.mode === "review") {
     for (const comment of state.comments || []) {

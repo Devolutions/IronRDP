@@ -21,7 +21,7 @@ the review body instead.
 Protocol-related reviews therefore consume two calls against `ANTHROPIC_API_KEY_REVIEWER`;
 non-protocol reviews consume one. If the protocol stage fails, is cancelled, is malformed, or cites
 a specification section that does not exist, the skeptical stage does not run, the AI review count
-is unchanged, and the PR stays `human-required`. A classification check that predates the
+is unchanged, and the PR stays `maintainer-required`. A classification check that predates the
 machine-readable protocol state is treated as unavailable; the next classification event rewrites
 it.
 
@@ -34,10 +34,9 @@ twice per pull request. `haiku` is cheaper than Sonnet at `low` effort but suppo
 at all, which is why the classifier does not use it. The model names are floating aliases, so each
 stage tracks the latest model of its tier.
 
-Bot-authored pull requests, such as dependabot's, stop at deterministic labelling. They receive
-path and size labels plus `human-required`, and no model ever runs: no classifier, no semver or
-SSPI heuristic, no risk label, and no review route. Bots are machine-generated and arrive in bulk,
-so model capacity spent on them buys no reviewable judgement.
+Bot-authored pull requests, including Dependabot's, are excluded from this workflow. Dependabot is
+the sole owner of dependency and language labels, so this automation never adds, removes, or
+reconciles labels on bot pull requests.
 
 Every LLM stage is given the same evidence, prepared by `.github/pr-automation/fetch-pr-evidence.sh`
 running from the trusted base checkout. The action is used in explicit-prompt mode, which injects no
@@ -65,36 +64,43 @@ stage, the log also records the action outcome and its complete schema-bound str
 values are untrusted pull-request-derived evidence: they are emitted through `core.info`, never
 interpolated into a shell command or executed.
 
-The `risk` label states how much human scrutiny a change needs, not how much an automated review is
-worth. `risk:high` means the change substantially affects the public API surface of a core tier
-crate and needs maintainer-level scrutiny; `risk:medium` means a behavioural change that does not
-substantially alter a core public API; `risk:low` means a self-contained change with no cross-crate
-behavioural effect. Two deterministic rules override the classifier: a `cargo-semver-checks`
-incompatibility always produces `risk:high`, because that check runs against the `ironrdp` facade
-and every incompatibility it reports is a core public API break, and a breaking change that only the
-classifier suspects raises its own `low` verdict to `risk:medium` rather than lowering its
-`medium` or `high` judgement.
+The `risk/*` label states how much maintainer scrutiny a change needs, not how much an automated
+review is worth. Every classified pull request has exactly one risk label. `risk/high` means the
+change substantially affects the public API surface of a core tier crate; `risk/medium` means a
+behavioural change that does not substantially alter a core public API; `risk/low` means a
+self-contained change with no cross-crate behavioural effect; and `risk/unknown` means the
+classifier could not produce a valid judgement. A `cargo-semver-checks` incompatibility always
+produces `risk/high`, even when the classifier is unavailable, because that check runs against the
+`ironrdp` facade and every incompatibility it reports is a core public API break. A breaking change
+that only the classifier suspects raises its own `low` verdict to `risk/medium` rather than lowering
+its `medium` or `high` judgement.
 
-Because risk measures human scrutiny, it does not decide whether a protocol change is worth
+Because risk measures maintainer scrutiny, it does not decide whether a protocol change is worth
 reviewing: a `protocol_related` classification always earns an automated review, at any risk level.
-For everything else, `risk:low` without `breaking-change` skips the review. Duplicates, `size/XL`,
+For everything else, `risk/low` without `breaking-change` skips the review. Duplicates, `size/XL`,
 a legitimacy stop, and the terminal review count still stop every route.
 
 A `size/XL` pull request, meaning 800 or more changed source lines, is excluded from automated
 review deterministically, before any model runs. The classifier is skipped along with the
 reviewers, so no LLM call is spent on a change that cannot be reviewed well anyway; classification
-falls back to the deterministic signals, publishing path, size, first-time-contributor, SSPI, and
-`cargo-semver-checks` results, and marking the check as deterministic labelling only so the review
-gate stays shut. The workflow comments once to explain the
+falls back to deterministic scope, size, first-time-contributor, and `cargo-semver-checks` results.
+Every classified pull request has exactly one `size/*` label. The workflow comments once to explain the
 exclusion and to point at [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs)
 for splitting dependent work, noting that stacks require every branch to live in this repository so
 fork authors should open separate pull requests. The comment is removed automatically once a later
 push brings the change below the threshold. Duplicate and legitimacy verdicts are model-derived, so
 an oversized run leaves any earlier verdict untouched rather than silently clearing it.
 
-Run **Bootstrap pull request automation labels** once before enabling the workflow. It creates the
-six labels defined in `.github/pr-automation/labels.json`. Existing labels for documentation,
-duplicates, breaking changes, technical debt, SSPI, and PR size are reused.
+Run **Bootstrap pull request automation labels** once before enabling the workflow. It creates any
+missing labels and synchronizes the descriptions and colors declared in
+`.github/pr-automation/labels.json`; it never deletes repository labels.
+
+Trusted changed paths can independently add `scope/core`, `scope/web`, `scope/ffi`, and
+`scope/tooling`. The classifier alone controls `scope/cross-cutting`, which requires a material
+behavioral, interface, or ownership boundary; multiple files, tests, generated companions, and
+manifest updates alone do not qualify. The classifier also controls `kind/technical-debt` and
+documentation-only labels. `origin/fuzzing` remains manual because paths cannot establish how a
+defect was discovered.
 
 The first heavy review requires a successful `CI` run for the exact classified head. A second
 review requires a later push and its matching successful CI run. Manual dispatch can bypass only
