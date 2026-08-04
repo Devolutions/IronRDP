@@ -255,6 +255,8 @@ jobs:
       CARGO_SEMVER_CHECKS_SHA256: "72f6834d75d28a66e02c9fd6a230ce901bb30eee6067b85867a97445df040e4a"
       CARGO_SEMVER_CHECKS_FEATURES: "core,pdu,cliprdr,connector,acceptor,session,graphics,input,server,svc,dvc,rdpdr,rdpsnd,displaycontrol,echo,mstsgu,client,rustls,client-all,qoi,qoiz"
       CARGO_SEMVER_CHECKS_DIR: /tmp/ironrdp-cargo-semver-checks-${{ github.run_id }}-${{ github.run_attempt }}
+      SEMVER_WORKSPACE: /tmp/ironrdp-semver-workspace-${{ github.run_id }}-${{ github.run_attempt }}
+      SEMVER_STATE_DIR: /tmp/ironrdp-semver-state-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - id: fetch
         shell: bash
@@ -263,7 +265,7 @@ jobs:
           BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
         run: |
           set -euo pipefail
-          workspace="$RUNNER_TEMP/semver-workspace"
+          workspace="$SEMVER_WORKSPACE"
           install -d -m 755 "$workspace"
           cd "$workspace"
           export GIT_CONFIG_NOSYSTEM=1
@@ -297,11 +299,11 @@ jobs:
           BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
         run: |
           set -euo pipefail
-          semver_home="$RUNNER_TEMP/semver-home"
-          semver_cargo="$RUNNER_TEMP/semver-cargo"
-          semver_target="$RUNNER_TEMP/semver-target"
+          semver_home="$SEMVER_STATE_DIR/home"
+          semver_cargo="$SEMVER_STATE_DIR/cargo"
+          semver_target="$SEMVER_STATE_DIR/target"
           semver_bin="$CARGO_SEMVER_CHECKS_DIR/cargo-semver-checks"
-          workspace="$RUNNER_TEMP/semver-workspace"
+          workspace="$SEMVER_WORKSPACE"
           rust_bin_dir="$(dirname "$(rustup which rustc)")"
           install -d -m 700 "$semver_home" "$semver_cargo" "$semver_target"
           chmod -R a+rX "$workspace"
