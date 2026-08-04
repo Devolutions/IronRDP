@@ -4,6 +4,7 @@ use ironrdp_rdpeusb::io::device::{
     UsbDeviceLocation, UsbInterfaceInfo, add_device_from_info,
 };
 use ironrdp_rdpeusb::pdu::UrbdrcClientDevicePdu;
+use ironrdp_rdpeusb::pdu::completion::ts_urb_result::Raw;
 use ironrdp_rdpeusb::pdu::header::InterfaceId;
 use rstest::rstest;
 
@@ -137,6 +138,6 @@ fn add_device_rejects_reserved_default_interface(#[case] reserved: u32) {
     let add_device = add_device_from_info(iface, &simple_device_info()).expect("ADD_DEVICE should be generated");
     let encoded = encode_vec(&add_device).expect("ADD_DEVICE should encode");
 
-    let decoded: DecodeResult<UrbdrcClientDevicePdu> = decode(&encoded);
+    let decoded: DecodeResult<UrbdrcClientDevicePdu<Raw>> = decode(&encoded);
     assert!(decoded.is_err(), "UsbDevice == {reserved} must be rejected");
 }
