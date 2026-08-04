@@ -303,7 +303,7 @@ struct ConnectArgs {
     #[arg(short, long, env = "RDP_USERNAME")]
     username: Option<String>,
     /// RDP account password. Overrides the .rdp file.
-    #[arg(short, long, env = "RDP_PASSWORD")]
+    #[arg(short, long, env = "RDP_PASSWORD", hide_env_values = true)]
     password: Option<String>,
     /// RDP account domain. Overrides the .rdp file.
     #[arg(short, long)]

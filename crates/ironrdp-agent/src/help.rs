@@ -46,10 +46,10 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  `RDP_PASSWORD` supply their respective values; explicit flags
                                  override the environment. `--prop` is repeatable and lets you set
                                  any property without a dedicated flag existing for it, e.g.
-                                 `--prop username:s:admin`. The config is validated by the daemon,
-                                 which replies with an error listing any missing or invalid fields.
+                                 `--prop username:s:admin`. The selected backend validates the
+                                 config and replies with an error listing any missing or invalid fields.
                                  If `status` reports `credentials loaded: true`, omit
-                                 `-p/--password` (and any other preloaded secret) -- the daemon
+                                 `-p/--password` (and any other preloaded secret) -- the backend
                                  supplies it. `--log-directive` refines this session's log capture
                                  (e.g. `ironrdp_connector=trace`) on top of the default `debug`
                                  level; use it to troubleshoot a connection, then read the result

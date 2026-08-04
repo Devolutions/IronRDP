@@ -6030,14 +6030,18 @@ impl Control {
             "ironrdp_dvcplugin",
             "ironrdp_rdcleanpathurl",
             "ironrdp_rdcleanpathtoken",
-            "ironrdp_qoi",
-            "ironrdp_qoiz",
-            "ironrdp_rdpdr",
-            "ironrdp_smartcard",
-            "ironrdp_serverpointer",
         ]
         .into_iter()
-        .any(|key| properties.get::<&str>(key).is_some() || properties.get::<i64>(key).is_some())
+        .any(|key| properties.get::<&str>(key).is_some())
+            || [
+                "ironrdp_qoi",
+                "ironrdp_qoiz",
+                "ironrdp_rdpdr",
+                "ironrdp_smartcard",
+                "ironrdp_serverpointer",
+            ]
+            .into_iter()
+            .any(|key| properties.get::<i64>(key).is_some_and(|value| value != 0))
         {
             return ironrdp_agent::ipc::Response::typed_error(
                 ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,

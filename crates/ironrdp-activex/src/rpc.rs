@@ -213,8 +213,6 @@ impl ActiveXRpc {
             live.state = ConnState::Disconnected;
         }
         live.frame = None;
-        live.now_endpoint = None;
-        live.operations = None;
     }
 
     pub(crate) fn retain_frame(&self, width: u16, height: u16, pixels: &[u32]) {
