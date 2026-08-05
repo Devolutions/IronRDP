@@ -26,6 +26,42 @@ use crate::{
 /// transport protocol: reliable + lossy UDP).
 const MAX_MULTITRANSPORT_REQUESTS: usize = 2;
 
+/// Size of the auto-detect header that precedes a Bandwidth Measure payload.
+///
+/// `headerLength` + `headerTypeId` + `sequenceNumber` + `requestType` +
+/// `payloadLength`, which [MS-RDPBCGR] 2.2.14.1.3 pins by requiring
+/// `headerLength` to be 0x08.
+const AUTO_DETECT_HEADER_LEN: u32 = 8;
+
+/// What one Bandwidth Measure message contributes to the Network Characteristics
+/// Byte Count store.
+///
+/// [MS-RDPBCGR] 3.2.5.14 gives connect-time detection exactly two accumulation
+/// steps, one on the Bandwidth Measure Payload and one on the 0x002B Stop, both
+/// reading "increment ... by the value specified in the **payloadLength** field
+/// plus the size of the header fields (8 bytes)".
+///
+/// The section's other accumulation rule, the one that counts every byte received
+/// while the window is open, belongs to the 0x0014 and 0x0114 Starts. Those are
+/// the reliable and lossy UDP variants, not connect-time, which is 0x1014 and
+/// whose step list contains no such clause. So on this path the two per-message
+/// increments are the whole of the byte count.
+///
+/// **This deliberately does not match FreeRDP.** FreeRDP counts the whole PDU
+/// length at the framing layer, `bandwidthMeasureByteCount += length` in
+/// `libfreerdp/core/rdp.c` after `rdp_read_header`, for any window including
+/// connect-time, and then adds `payloadLength` again in
+/// `libfreerdp/core/autodetect.c` for the Payload and the Stop. On the
+/// connect-time path that counts the payload twice and adds framing bytes the
+/// spec does not ask for. The figure is an informational QoS hint and the server
+/// proceeds either way, so following the spec costs no interop and is easier to
+/// justify than reproducing the reference's arithmetic.
+fn counted_len(payload_len: usize) -> u32 {
+    u32::try_from(payload_len)
+        .unwrap_or(u32::MAX)
+        .saturating_add(AUTO_DETECT_HEADER_LEN)
+}
+
 /// Reported as `timeDelta` when a connect-time bandwidth window was not timed.
 ///
 /// One millisecond rather than zero, because a server computing
@@ -629,7 +665,8 @@ impl ClientConnector {
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
         use ironrdp_pdu::rdp::autodetect::{
-            AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu, BW_RESULTS_CONNECT_TIME,
+            AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu, BW_RESULTS_CONNECT_TIME, BW_START_CONNECT_TIME,
+            BW_STOP_CONNECT_TIME,
         };
 
         match request {
@@ -641,11 +678,19 @@ impl ClientConnector {
             // Start opens the measurement window ([MS-RDPBCGR] 2.2.14.1.2). No reply is
             // due; we only note when it arrived.
             //
+            // Only the connect-time variant belongs to this phase. [MS-RDPBCGR]
+            // 3.2.5.14 gives 0x0014 and 0x0114, the reliable and lossy UDP Starts, a
+            // different procedure: they accumulate every byte received rather than
+            // just the Bandwidth Measure messages, and they are answered on a
+            // multitransport channel. Opening a connect-time window for one would
+            // measure the wrong thing and answer on the wrong channel, so they are
+            // left alone here.
+            //
             // A driver that reports no arrival time cannot time this window, so it does
             // not open one. That keeps the two unmeasurable situations distinct: a
             // window that was timed and turned out to be short is still a measurement,
             // while a driver with no clock never took one.
-            AutoDetectRequest::BandwidthMeasureStart { .. } => {
+            AutoDetectRequest::BandwidthMeasureStart { request_type, .. } if request_type == BW_START_CONNECT_TIME => {
                 self.connect_time_bw_started_at = received_at;
                 self.connect_time_bw_bytes = 0;
                 Ok(Written::Nothing)
@@ -656,7 +701,7 @@ impl ClientConnector {
             // there is nothing worth accumulating.
             AutoDetectRequest::BandwidthMeasurePayload { payload, .. } => {
                 if self.connect_time_bw_started_at.is_some() {
-                    let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+                    let len = counted_len(payload.len());
                     self.connect_time_bw_bytes = self.connect_time_bw_bytes.saturating_add(len);
                 }
                 Ok(Written::Nothing)
@@ -689,14 +734,20 @@ impl ClientConnector {
             // whole exchange. The bytes did arrive within that millisecond, so the floor
             // is a real bound on a real measurement rather than a stand-in for a missing
             // one, and the quotient it yields is honest.
+            //
+            // Only the 0x002B Stop is answered. 3.2.5.14 keys this whole step to that
+            // request type, gives 0x0429 and 0x0629 their own procedures on a
+            // multitransport channel, and requires a sequence-number correlation for
+            // 0x0629 that this phase does not track. The header size follows the same
+            // split: 2.2.14.1.4 sets `headerLength` to 0x08 for 0x002B and 0x06
+            // otherwise, so the fixed addend in `counted_len` is only right for the
+            // connect-time Stop.
             AutoDetectRequest::BandwidthMeasureStop {
                 sequence_number,
+                request_type,
                 payload,
-                ..
-            } => {
-                let stop_bytes = payload
-                    .as_ref()
-                    .map_or(0, |p| u32::try_from(p.len()).unwrap_or(u32::MAX));
+            } if request_type == BW_STOP_CONNECT_TIME => {
+                let stop_bytes = payload.as_ref().map_or(0, |p| counted_len(p.len()));
 
                 // A window only opens when the Start carried a reading, so the same
                 // driver stamps this Stop. The `None` arm covers the unopened window.
@@ -725,6 +776,12 @@ impl ClientConnector {
                 Written::from_size(written)
             }
             // The Network Characteristics Result is informational; nothing to send.
+            //
+            // This also catches the continuous-detection Bandwidth Measure variants,
+            // whose Starts and Stops are answered on a multitransport channel under a
+            // different procedure. Reaching them here means a server sent a
+            // continuous request during connect-time detection, which [MS-RDPBCGR]
+            // 3.2.5.14 does not provide for; ignoring is the conservative response.
             _ => Ok(Written::Nothing),
         }
     }
