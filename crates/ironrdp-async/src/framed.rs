@@ -170,6 +170,18 @@ where
         loop {
             match hint.find_size(self.peek()).map_err(io::Error::other)? {
                 Some((matched, length)) => {
+                    // Guard against a zero-length unmatched PDU. Skipping it (the `else`
+                    // branch below) consumes nothing via `read_exact(0)` and performs no
+                    // I/O, so the loop would spin forever at 100% CPU — never yielding to
+                    // the runtime and never observing EOF. This is reachable from a single
+                    // malformed frame if any `PduHint` reports `Some((false, 0))`, so fail
+                    // instead of hanging rather than relying on every hint to avoid it.
+                    if length == 0 && !matched {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "PduHint reported a zero-length unmatched PDU; cannot make progress",
+                        ));
+                    }
                     let bytes = self.read_exact(length).await?.freeze();
                     if matched {
                         return Ok(bytes);
