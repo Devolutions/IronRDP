@@ -34,9 +34,9 @@ twice per pull request. `haiku` is cheaper than Sonnet at `low` effort but suppo
 at all, which is why the classifier does not use it. The model names are floating aliases, so each
 stage tracks the latest model of its tier.
 
-Bot-authored pull requests, including Dependabot's, are excluded from this workflow. Dependabot is
-the sole owner of dependency and language labels, so this automation never adds, removes, or
-reconciles labels on bot pull requests.
+Bot-authored pull requests, including Dependabot's and `devolutionsbot`'s release-plz PRs, are
+excluded from this workflow. Dependabot is the sole owner of dependency and language labels, so
+this automation never adds, removes, or reconciles labels on bot pull requests.
 
 Every LLM stage is given the same evidence, prepared by `.github/pr-automation/fetch-pr-evidence.sh`
 running from the trusted base checkout. The action is used in explicit-prompt mode, which injects no

@@ -285,7 +285,10 @@ test("bot authors are excluded from automation", async () => {
   const bot = await resolve({ node_id: "U_1", login: "dependabot[bot]", type: "Bot" });
   assert.equal(bot.ok, false);
   assert.equal(bot.reason, "bot-authored pull request");
-  const human = await resolve({ node_id: "U_2", login: "contributor", type: "User" });
+  const releaseBot = await resolve({ node_id: "U_2", login: "devolutionsbot", type: "User" });
+  assert.equal(releaseBot.ok, false);
+  assert.equal(releaseBot.reason, "bot-authored pull request");
+  const human = await resolve({ node_id: "U_3", login: "contributor", type: "User" });
   assert.equal(human.ok, true);
   assert.equal(human.reviewRoute, true);
 });
