@@ -155,6 +155,50 @@ fn encode_correctly_encodes_rlgr1() {
     assert_eq!(expected.as_ref(), output.as_slice());
 }
 
+/// A tile whose entropy coding does not fit the caller's buffer, which RLGR
+/// gives no guarantee it will. Callers size the buffer on an assumed
+/// compression ratio, so the encoder has to say when the assumption fails
+/// rather than run off the end of it.
+#[test]
+fn encode_reports_an_undersized_output_buffer() {
+    // Full-range coefficients: nothing to run-length code, so the output is
+    // comfortably larger than the two bytes offered.
+    let input: Vec<i16> = (0..4096)
+        .map(|i| if i % 2 == 0 { i16::MAX } else { i16::MIN })
+        .collect();
+
+    for mode in [EntropyAlgorithm::Rlgr1, EntropyAlgorithm::Rlgr3] {
+        let mut output = vec![0; 2];
+        let err = encode(mode, input.as_ref(), output.as_mut_slice()).unwrap_err();
+
+        let RlgrError::OutputTooSmall { needed, available } = err else {
+            panic!("expected OutputTooSmall for {mode:?}, got {err:?}");
+        };
+        assert_eq!(available, 2, "the reported capacity is the buffer the caller passed");
+        assert!(
+            needed > available,
+            "the reported requirement must exceed the buffer, got {needed} against {available}"
+        );
+    }
+}
+
+/// The overflow check must not fire on a tile that fits exactly, which is the
+/// boundary a naive `>=` would get wrong.
+#[test]
+fn encode_accepts_an_output_buffer_of_exactly_the_required_size() {
+    let input = [0, 1, 4, 0];
+    let mode = EntropyAlgorithm::Rlgr1;
+
+    let mut probe = vec![0; 64];
+    let needed = encode(mode, input.as_ref(), probe.as_mut_slice()).unwrap();
+
+    let mut exact = vec![0; needed];
+    let written = encode(mode, input.as_ref(), exact.as_mut_slice()).unwrap();
+
+    assert_eq!(written, needed);
+    assert_eq!(exact.as_slice(), &probe[..needed]);
+}
+
 const Y_DATA_ENCODED: [u8; 942] = [
     0xc0, 0x01, 0x01, 0x15, 0x48, 0x99, 0xc7, 0x41, 0xa1, 0x12, 0x68, 0x11, 0xdc, 0x22, 0x29, 0x74, 0xef, 0xfd, 0x20,
     0x92, 0xe0, 0x4e, 0xa8, 0x69, 0x3b, 0xfd, 0x41, 0x83, 0xbf, 0x28, 0x53, 0x0c, 0x1f, 0xe2, 0x54, 0x0c, 0x77, 0x7c,
