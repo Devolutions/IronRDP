@@ -132,6 +132,7 @@ function resolveClassificationState({
   const isXl = deterministic.sizeLabel === "size/XL";
   const optional = [
     ["kind/technical-debt", model.technical_debt],
+    ["kind/protocol", model.protocol_related],
     ["documentation", model.documentation_only],
     ["duplicate", duplicate],
   ];

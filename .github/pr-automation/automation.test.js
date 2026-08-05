@@ -53,7 +53,7 @@ test("every deterministic label is declared and the repository rules classify to
   const declaredLabels = new Set(JSON.parse(
     fs.readFileSync(path.join(__dirname, "labels.json"), "utf8"),
   ).map((label) => label.name));
-  for (const label of [...Object.keys(rules), ...SIZE_LABELS, "contributor/first-time"]) {
+  for (const label of [...Object.keys(rules), ...SIZE_LABELS, "contributor/first-time", "kind/protocol"]) {
     assert.equal(declaredLabels.has(label), true, `${label} is missing from labels.json`);
   }
   for (const [label, patterns] of Object.entries(rules)) {
@@ -326,7 +326,7 @@ test("deterministic semver outranks the model and a model-only break cannot stay
     ["breaking-change"]);
 });
 
-test("cross-cutting scope is model-owned while path scopes can coexist", () => {
+test("model-owned labels coexist with path scopes and are withdrawn when no longer applicable", () => {
   const deterministic = {
     ok: true,
     pathLabels: ["scope/core", "scope/web"],
@@ -339,22 +339,23 @@ test("cross-cutting scope is model-owned while path scopes can coexist", () => {
     expectedSha: SHA,
     labels: [],
     deterministic,
-    classifier: classifier({ cross_cutting: true, technical_debt: true }),
+    classifier: classifier({ cross_cutting: true, technical_debt: true, protocol_related: true }),
     semver: { head_sha: SHA, status: "not-suspected" },
   });
   const desired = classified.labelSets.flatMap((set) => set.desired);
   assert.deepEqual(desired.sort(), [
-    "kind/technical-debt", "risk/low", "scope/core", "scope/cross-cutting", "scope/web", "size/S",
+    "kind/protocol", "kind/technical-debt", "risk/low", "scope/core", "scope/cross-cutting", "scope/web", "size/S",
   ]);
 
   const narrow = resolveClassificationState({
     expectedSha: SHA,
-    labels: ["scope/cross-cutting"],
+    labels: ["kind/protocol", "scope/cross-cutting"],
     deterministic,
     classifier: classifier({ cross_cutting: false }),
     semver: { head_sha: SHA, status: "not-suspected" },
   });
   assert.deepEqual(narrow.labelSets.find((set) => set.owned.includes("scope/cross-cutting")).desired, []);
+  assert.deepEqual(narrow.labelSets.find((set) => set.owned.includes("kind/protocol")).desired, []);
 });
 
 test("successful classification preserves the first-time contributor label", () => {

@@ -30,6 +30,11 @@
     "description": "Internal cleanup work"
   },
   {
+    "name": "kind/protocol",
+    "color": "fef2c0",
+    "description": "Affects RDP or related protocol behavior"
+  },
+  {
     "name": "documentation",
     "color": "0075ca",
     "description": "Improvements or additions to documentation"
