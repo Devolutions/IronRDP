@@ -5,7 +5,7 @@ use core::any::TypeId;
 use core::fmt;
 
 use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, impl_as_any, invalid_field_err};
-use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
+use ironrdp_pdu::{self as pdu, PduError, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcServerProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
@@ -73,18 +73,30 @@ impl DynamicChannelAllocator {
         }
     }
 
-    fn insert_channel<T>(&mut self, processor: T, state: ChannelState) -> u32
-    where
-        T: DvcServerProcessor + 'static,
-    {
+    fn reserve_channel(&mut self) -> u32 {
         let channel_id = self.next_channel_id;
-        self.dynamic_channels
-            .insert(channel_id, DynamicChannel::new(processor, channel_id, state));
         self.next_channel_id = self
             .next_channel_id
             .checked_add(1)
             .expect("dynamic channels reaches `u32::MAX`");
         channel_id
+    }
+
+    fn insert_channel<T>(&mut self, processor: T, state: ChannelState) -> u32
+    where
+        T: DvcServerProcessor + 'static,
+    {
+        let channel_id = self.reserve_channel();
+        self.insert_channel_with_id(processor, state, channel_id);
+        channel_id
+    }
+
+    fn insert_channel_with_id<T>(&mut self, processor: T, state: ChannelState, channel_id: u32)
+    where
+        T: DvcServerProcessor + 'static,
+    {
+        self.dynamic_channels
+            .insert(channel_id, DynamicChannel::new(processor, channel_id, state));
     }
 
     fn get(&self, channel_id: u32) -> Option<&DynamicChannel> {
@@ -221,11 +233,39 @@ impl DrdynvcServer {
     where
         T: DvcServerProcessor + 'static,
     {
-        let channel_name = channel.channel_name().into();
+        let channel_id = self.dynamic_channels.reserve_channel();
+        self.create_channel_with_id(channel, channel_id)
+    }
 
-        let channel_id = self.dynamic_channels.insert_channel(channel, ChannelState::Creation);
+    /// Creates a new DVC using a processor built with its assigned channel ID.
+    ///
+    /// The next channel ID is reserved and passed to `build`, allowing the
+    /// processor or one of its dependencies to use the ID during construction.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number of registered dynamic channels reaches `u32::MAX`.
+    pub fn create_channel_with<T, E, F>(&mut self, build: F) -> Result<SvcMessage, E>
+    where
+        T: DvcServerProcessor + 'static,
+        E: From<PduError>,
+        F: FnOnce(u32) -> Result<T, E>,
+    {
+        let channel_id = self.dynamic_channels.reserve_channel();
+        let channel = build(channel_id)?;
+        self.create_channel_with_id(channel, channel_id).map_err(E::from)
+    }
+
+    fn create_channel_with_id<T>(&mut self, channel: T, channel_id: u32) -> PduResult<SvcMessage>
+    where
+        T: DvcServerProcessor + 'static,
+    {
+        let channel_name = channel.channel_name().into();
         let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(channel_id, channel_name));
-        as_svc_msg_with_flag(req)
+        let svc_msg = as_svc_msg_with_flag(req)?;
+        self.dynamic_channels
+            .insert_channel_with_id(channel, ChannelState::Creation, channel_id);
+        Ok(svc_msg)
     }
 
     fn remove_by_channel_id(&mut self, id: u32) -> Option<DynamicChannel> {
