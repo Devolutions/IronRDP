@@ -473,6 +473,7 @@ impl RdpServerSecurity {
 
 struct AInputHandler {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
+    active: Arc<AtomicBool>,
 }
 
 impl_as_any!(AInputHandler);
@@ -485,12 +486,15 @@ impl dvc::DvcProcessor for AInputHandler {
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::{ServerPdu, VersionPdu};
 
+        self.active.store(true, Ordering::Release);
         let pdu = ServerPdu::Version(VersionPdu::default());
 
         Ok(vec![Box::new(pdu)])
     }
 
-    fn close(&mut self, _channel_id: u32) {}
+    fn close(&mut self, _channel_id: u32) {
+        self.active.store(false, Ordering::Release);
+    }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::ClientPdu;
@@ -607,6 +611,9 @@ pub struct RdpServer {
     // FIXME: replace with a channel and poll/process the handler?
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
+    /// Advanced Input owns mouse delivery while its DVC is active. Core mouse
+    /// events from the overlapping FastPath path are then suppressed.
+    advanced_input_active: Arc<AtomicBool>,
     // ConnectionBinder installs per-user handlers into these slots. The
     // default handler/display above stay stable for the server lifetime, while
     // the slots are cleared at connection entry and after each connection to
@@ -783,6 +790,7 @@ impl RdpServer {
                 display,
                 Arc::clone(&bound_display),
             )))),
+            advanced_input_active: Arc::new(AtomicBool::new(false)),
             bound_handler,
             bound_display,
             static_channels: StaticChannelSet::new(),
@@ -1023,6 +1031,7 @@ impl RdpServer {
     async fn clear_bound_connection(&mut self) {
         self.bound_display.lock().expect("bound display lock poisoned").take();
         self.bound_handler.lock().expect("bound input lock poisoned").take();
+        self.advanced_input_active.store(false, Ordering::Release);
     }
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
@@ -1149,6 +1158,7 @@ impl RdpServer {
         let dvc = dvc
             .with_dynamic_channel(AInputHandler {
                 handler: Arc::clone(&self.handler),
+                active: Arc::clone(&self.advanced_input_active),
             })
             .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
         let echo_handle = self.echo_handle.clone();
@@ -2056,15 +2066,21 @@ impl RdpServer {
                 }
 
                 FastPathInputEvent::MouseEvent(mouse) => {
-                    handler.mouse(mouse.into());
+                    if !self.advanced_input_active.load(Ordering::Acquire) {
+                        handler.mouse(mouse.into());
+                    }
                 }
 
                 FastPathInputEvent::MouseEventEx(mouse) => {
-                    handler.mouse(mouse.into());
+                    if !self.advanced_input_active.load(Ordering::Acquire) {
+                        handler.mouse(mouse.into());
+                    }
                 }
 
                 FastPathInputEvent::MouseEventRel(mouse) => {
-                    handler.mouse(mouse.into());
+                    if !self.advanced_input_active.load(Ordering::Acquire) {
+                        handler.mouse(mouse.into());
+                    }
                 }
 
                 FastPathInputEvent::QoeEvent(quality) => {
@@ -2216,15 +2232,21 @@ impl RdpServer {
                 }
 
                 ironrdp_pdu::input::InputEvent::Mouse(mouse) => {
-                    handler.mouse(mouse.into());
+                    if !self.advanced_input_active.load(Ordering::Acquire) {
+                        handler.mouse(mouse.into());
+                    }
                 }
 
                 ironrdp_pdu::input::InputEvent::MouseX(mouse) => {
-                    handler.mouse(mouse.into());
+                    if !self.advanced_input_active.load(Ordering::Acquire) {
+                        handler.mouse(mouse.into());
+                    }
                 }
 
                 ironrdp_pdu::input::InputEvent::MouseRel(mouse) => {
-                    handler.mouse(mouse.into());
+                    if !self.advanced_input_active.load(Ordering::Acquire) {
+                        handler.mouse(mouse.into());
+                    }
                 }
 
                 ironrdp_pdu::input::InputEvent::Unused(_) => {}
