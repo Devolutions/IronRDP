@@ -216,18 +216,27 @@ impl DecodedImage {
         source_width: u16,
         bytes_per_pixel: usize,
     ) -> SessionResult<()> {
-        let pixel_count = usize::from(source_width)
-            .checked_mul(usize::from(update_rectangle.height()))
-            .ok_or_else(|| SessionError::general("bitmap rectangle dimensions overflow"))?;
-        let expected_length = pixel_count
+        let stride = usize::from(source_width)
             .checked_mul(bytes_per_pixel)
             .ok_or_else(|| SessionError::general("bitmap source dimensions overflow"))?;
-
-        if data.len() != expected_length {
-            return Err(SessionError::new(
+        let short = || {
+            Err(SessionError::new(
                 "ApplyBitmap",
                 SessionErrorKind::InvalidBitmapSourceLength,
-            ));
+            ))
+        };
+        if stride == 0 || data.len() % stride != 0 {
+            return short();
+        }
+        // A bitmap may carry MORE rows than its destination needs; the surplus
+        // is discarded, which is what the reference client does — it decodes at
+        // the bitmap's own size and then blits only the destination rectangle
+        // from the source origin (`gdi_Bitmap_Paint`). This used to demand the
+        // exact number of rows the rectangle wanted, which is why
+        // `bitmap_destination` had to reject any such bitmap outright before it
+        // ever got here. Too FEW rows is still a genuinely short buffer.
+        if data.len() / stride < usize::from(update_rectangle.height()) {
+            return short();
         }
 
         Ok(())
@@ -239,7 +248,15 @@ impl DecodedImage {
         width: u16,
         height: u16,
     ) -> Option<InclusiveRectangle> {
-        (self.rect_fits(update_rectangle) && width >= update_rectangle.width() && update_rectangle.height() == height)
+        // Height mirrors width: the bitmap must cover the destination, not match
+        // it. Demanding equality on height while allowing a wider bitmap was
+        // inconsistent, stricter than the code behind it needs — `apply_*`
+        // already takes only `update_rectangle.height()` rows — and stricter
+        // than the reference client, which validates neither. A VirtualBox
+        // session was discarding 51% of everything the server sent (#422).
+        (self.rect_fits(update_rectangle)
+            && width >= update_rectangle.width()
+            && height >= update_rectangle.height())
             .then_some(update_rectangle.clone())
     }
 
@@ -1076,6 +1093,65 @@ mod tests {
         assert_eq!(pixel(&image, 3, 0), [0, 0, 0, 0]);
     }
 
+    /// #422: a bitmap taller than its destination is applied, and the rows
+    /// that land are the ones the reference client would have used.
+    ///
+    /// This was rejected outright — 51% of everything one VirtualBox server
+    /// sent went in the bin. The interesting half is not that it is now
+    /// accepted but *which* rows arrive: for a bottom-up bitmap the surplus
+    /// scanlines are at the start of the wire data, so taking the first N would
+    /// paint the bottom of the image into the top of the rectangle. FreeRDP
+    /// decodes at the bitmap's own size and blits the destination rectangle
+    /// from the source origin, i.e. the top-left of the flipped image, and that
+    /// is what these pixel values pin.
+    #[test]
+    fn a_bottom_up_bitmap_taller_than_its_destination_paints_its_top_rows() {
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 2, 4);
+        // Destination is 2 rows tall; the bitmap declares 4.
+        let rectangle = InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 1,
+            bottom: 1,
+        };
+        // Bottom-up: wire order is image row 3, 2, 1, 0. Each pixel is tagged
+        // with its image row so the assertions cannot pass by accident.
+        let bgr: Vec<u8> = vec![
+            30, 30, 30, 31, 31, 31, // wire row 0 = image row 3 (bottom)
+            20, 20, 20, 21, 21, 21, // wire row 1 = image row 2
+            10, 10, 10, 11, 11, 11, // wire row 2 = image row 1
+            0, 0, 0, 1, 1, 1, // wire row 3 = image row 0 (top)
+        ];
+
+        image.apply_bgr24_bitmap(&bgr, &rectangle, 2).unwrap();
+
+        // Image rows 0 and 1 — the top of the picture — not the wire's first rows.
+        assert_eq!(pixel(&image, 0, 0), [0, 0, 0, 255], "dest row 0 is image row 0");
+        assert_eq!(pixel(&image, 1, 0), [1, 1, 1, 255]);
+        assert_eq!(pixel(&image, 0, 1), [10, 10, 10, 255], "dest row 1 is image row 1");
+        assert_eq!(pixel(&image, 1, 1), [11, 11, 11, 255]);
+        // The surplus rows are discarded, not painted below the rectangle.
+        assert_eq!(pixel(&image, 0, 2), [0, 0, 0, 0], "outside the destination");
+    }
+
+    /// The gate has to keep rejecting a bitmap that cannot fill its
+    /// destination — relaxing height must not turn a short buffer into a read
+    /// of rows that are not there.
+    #[test]
+    fn a_bitmap_shorter_than_its_destination_is_still_rejected() {
+        let image = DecodedImage::new(PixelFormat::RgbA32, 8, 8);
+        let rect = InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 3,
+            bottom: 3,
+        };
+        assert!(image.bitmap_destination(&rect, 4, 4).is_some(), "exact size is fine");
+        assert!(image.bitmap_destination(&rect, 4, 9).is_some(), "taller is fine");
+        assert!(image.bitmap_destination(&rect, 4, 3).is_none(), "one row short is not");
+        assert!(image.bitmap_destination(&rect, 3, 4).is_none(), "narrower is not");
+    }
+
     #[test]
     fn rgb24_bitmap_crops_source_stride_and_preserves_top_down_orientation() {
         let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
@@ -1123,9 +1199,19 @@ mod tests {
             bottom: 1,
         };
         assert_eq!(image.bitmap_destination(&encoded_rectangle, 1, 1), None);
+        // Too few rows for the destination — still a short buffer. (A bitmap
+        // with *more* rows than the destination is now applied and its surplus
+        // discarded, which is what #422 was about; `[0; 6]` used to be rejected
+        // here for being 3 rows against a 2-row rectangle.)
         assert!(
-            image.apply_rgb16_bitmap(&[0; 6], &encoded_rectangle, 1).is_err(),
-            "oversized bitmap data must not be applied"
+            image.apply_rgb16_bitmap(&[0; 2], &encoded_rectangle, 1).is_err(),
+            "a buffer with fewer rows than the destination must not be applied"
+        );
+        // Not a whole number of scanlines — the stride says this cannot be a
+        // bitmap of this width at all.
+        assert!(
+            image.apply_rgb16_bitmap(&[0; 5], &encoded_rectangle, 1).is_err(),
+            "a partial scanline must not be applied"
         );
     }
 }

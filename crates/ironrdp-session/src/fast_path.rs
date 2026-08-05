@@ -1111,7 +1111,7 @@ fn invalid_destination_reason(rect: &InclusiveRectangle, width: u16, height: u16
     } else if width < rect.width() {
         "bitmap narrower than its destination"
     } else {
-        "bitmap height != destination height"
+        "bitmap shorter than its destination"
     }
 }
 
@@ -1151,8 +1151,8 @@ mod tests {
             (rect(90, 10, 100, 20), 16, 11, "outside the framebuffer"),
             (rect(10, 10, 20, 60), 16, 51, "outside the framebuffer"),
             (rect(10, 10, 30, 20), 8, 11, "bitmap narrower than its destination"),
-            (rect(10, 10, 20, 20), 16, 13, "bitmap height != destination height"),
-            (rect(10, 10, 20, 20), 16, 9, "bitmap height != destination height"),
+            (rect(10, 10, 20, 20), 16, 9, "bitmap shorter than its destination"),
+            (rect(10, 10, 20, 20), 16, 0, "bitmap shorter than its destination"),
         ];
         for (r, w, h, expected) in cases {
             assert!(
@@ -1165,8 +1165,14 @@ mod tests {
                 "wrong reason for {r:?} against a {w}x{h} bitmap",
             );
         }
-        // A rectangle the gate accepts must not reach the reporter at all.
+        // Rectangles the gate accepts must not reach the reporter at all —
+        // including a bitmap taller than its destination, which #422 changed
+        // from a discard into a normal update.
         assert!(image.bitmap_destination(&rect(10, 10, 20, 20), 16, 11).is_some());
+        assert!(
+            image.bitmap_destination(&rect(10, 10, 20, 20), 16, 13).is_some(),
+            "a taller bitmap is applied now, so it is not a discard",
+        );
     }
 
     /// The counter that decides whether anything is printed at all has to be
@@ -1204,13 +1210,16 @@ mod tests {
             }],
         };
 
-        // Destination is 4 rows tall, the bitmap declares 8 — the VirtualBox
-        // shape from #422.
-        assert!(processor.process_bitmap_update(&mut image, update(3, 8)).is_ok());
+        // Destination is 4 rows tall and the bitmap declares 2 — it cannot fill
+        // it. (A bitmap *taller* than its destination was the original example
+        // here; #422 made that a normal update, so it is no longer a discard.)
+        assert!(processor.process_bitmap_update(&mut image, update(3, 2)).is_ok());
         assert_eq!(processor.invalid_destinations, 1, "the discard path must count it");
 
-        // A rectangle the gate accepts must not touch the counter.
+        // Rectangles the gate accepts must not touch the counter — the exact
+        // size, and one row of surplus.
         assert!(processor.process_bitmap_update(&mut image, update(3, 4)).is_ok());
+        assert!(processor.process_bitmap_update(&mut image, update(3, 5)).is_ok());
         assert_eq!(processor.invalid_destinations, 1, "an accepted rectangle is not a discard");
     }
 
