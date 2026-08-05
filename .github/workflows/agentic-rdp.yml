@@ -1,7 +1,7 @@
 name: Agentic RDP
 
+# Fork policy: expensive RDP automation runs only when explicitly requested.
 on:
-  push:
   workflow_dispatch:
     inputs:
       desktop_size:
