@@ -1169,6 +1169,51 @@ mod tests {
         assert!(image.bitmap_destination(&rect(10, 10, 20, 20), 16, 11).is_some());
     }
 
+    /// The counter that decides whether anything is printed at all has to be
+    /// driven by the real discard path, not just by calling the classifier.
+    ///
+    /// Rate limiting means a broken counter prints nothing rather than
+    /// printing something wrong, which is the failure mode that would go
+    /// unnoticed for a release — so this goes through `process_bitmap_update`
+    /// and checks the count moved, and that a valid rectangle leaves it alone.
+    #[test]
+    fn a_rejected_rectangle_is_counted_by_the_real_discard_path() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            share_id: 1,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 64, 64);
+        let update = |bottom, height| BitmapUpdateData {
+            rectangles: vec![BitmapData {
+                rectangle: InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 3,
+                    bottom,
+                },
+                width: 4,
+                height,
+                bits_per_pixel: 32,
+                compression_flags: Compression::empty(),
+                compressed_data_header: None,
+                bitmap_data: &[0u8; 4 * 4 * 4],
+            }],
+        };
+
+        // Destination is 4 rows tall, the bitmap declares 8 — the VirtualBox
+        // shape from #422.
+        assert!(processor.process_bitmap_update(&mut image, update(3, 8)).is_ok());
+        assert_eq!(processor.invalid_destinations, 1, "the discard path must count it");
+
+        // A rectangle the gate accepts must not touch the counter.
+        assert!(processor.process_bitmap_update(&mut image, update(3, 4)).is_ok());
+        assert_eq!(processor.invalid_destinations, 1, "an accepted rectangle is not a discard");
+    }
+
     #[test]
     fn raw_bitmap_removes_byte_padding_without_changing_source_stride() {
         let mut processor = ProcessorBuilder {
