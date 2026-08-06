@@ -223,6 +223,29 @@ The `IDispatch` implementation supports these classic MSTSCLib DISPIDs:
 alongside the public `IMsTscSecuredSettings` raw interface. Reading it fails rather than returning a
 secret.
 
+### `IMsRdpClient8::SendRemoteAction`
+
+`SendRemoteAction` is supported only for an active session and translates the documented `RemoteSessionActionType` shell actions into the corresponding complete RDP scancode shortcut.
+It does not use a local keyboard hook, so these actions are sent to the remote session regardless of host focus.
+IronRDP sends each key press and release as a Fast-Path keyboard event as specified by [MS-RDPBCGR 2.2.8.1.2.2.1].
+
+| Action | Value | Remote shortcut |
+| --- | ---: | --- |
+| `RemoteSessionActionCharms` | 0 | `Win+C` |
+| `RemoteSessionActionAppbar` | 1 | `Win+Z` |
+| `RemoteSessionActionStartScreen` | 3 | `Win` |
+| `RemoteSessionActionAppSwitch` | 4 | `Alt+Tab` |
+| `RemoteSessionActionActionCenter` | 5 | `Win+A` |
+| `RemoteSessionActionTaskManager` | 6 | `Ctrl+Shift+Esc` |
+
+`RemoteSessionActionSnap` (2) is deprecated by Microsoft and returns `E_NOTIMPL`.
+Unknown action values return `E_INVALIDARG`.
+An inactive session returns `E_UNEXPECTED`.
+`RemoteSessionActionType` contains remote shell UI actions only; it does not include session shutdown, reconnect, or other lifecycle requests.
+
+[RemoteSessionActionType]: https://learn.microsoft.com/windows/win32/termserv/remotesessionactiontype
+[MS-RDPBCGR 2.2.8.1.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+
 For the native `mstsc.exe` host, `FullScreen` and `Ctrl`+`Alt`+`Break` (or `Pause`) return
 `E_NOTIMPL` without changing the outer `TscShellContainerClass` window. Directly manipulating that
 Microsoft-owned shell from the in-process control causes native host termination, so the shell's own

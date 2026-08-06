@@ -281,6 +281,13 @@ const DISPID_FULLSCREEN: i32 = 104;
 const DISPID_CONNECTED_STATUS_TEXT: i32 = 201;
 const DISPID_IRONRDP_PASSWORD: i32 = 0x10000;
 const DISPID_PROPERTYPUT: i32 = -3;
+const REMOTE_SESSION_ACTION_CHARMS: i32 = 0;
+const REMOTE_SESSION_ACTION_APPBAR: i32 = 1;
+const REMOTE_SESSION_ACTION_SNAP: i32 = 2;
+const REMOTE_SESSION_ACTION_START_SCREEN: i32 = 3;
+const REMOTE_SESSION_ACTION_APP_SWITCH: i32 = 4;
+const REMOTE_SESSION_ACTION_ACTION_CENTER: i32 = 5;
+const REMOTE_SESSION_ACTION_TASK_MANAGER: i32 = 6;
 
 const DISPID_ON_CONNECTING: i32 = 1;
 const DISPID_ON_CONNECTED: i32 = 2;
@@ -7495,6 +7502,7 @@ impl Control {
 
         let key_up = unsafe { slice::from_raw_parts(key_up, key_count) };
         let key_data = unsafe { slice::from_raw_parts(key_data, key_count) };
+        let permit = sender.try_reserve().map_err(|_| Error::from_hresult(E_UNEXPECTED))?;
         let operations = key_up.iter().zip(key_data).map(|(key_up, key_data)| {
             let key_data = *key_data as u32;
             let scancode = Scancode::from_u8(key_data & (1 << 24) != 0, (key_data >> 16) as u8);
@@ -7508,9 +7516,61 @@ impl Control {
         if fast_path.is_empty() {
             return Ok(());
         }
-        sender
-            .try_send(RdpInputEvent::FastPath(fast_path))
-            .map_err(|_| Error::from_hresult(E_UNEXPECTED))
+        permit.send(RdpInputEvent::FastPath(fast_path));
+        Ok(())
+    }
+
+    fn send_remote_action(&self, action: i32) -> Result<()> {
+        // The action is expressed as its documented remote shell shortcut. The high byte of
+        // each key-data value is the Win32 extended-key flag accepted by SendKeys.
+        match action {
+            REMOTE_SESSION_ACTION_CHARMS => {
+                let key_up = [VARIANT_FALSE.0, VARIANT_FALSE.0, VARIANT_TRUE.0, VARIANT_TRUE.0];
+                let key_data = [0x015b_0001, 0x002e_0001, 0x002e_0001, 0x015b_0001];
+                self.send_keys(4, key_up.as_ptr(), key_data.as_ptr())
+            }
+            REMOTE_SESSION_ACTION_APPBAR => {
+                let key_up = [VARIANT_FALSE.0, VARIANT_FALSE.0, VARIANT_TRUE.0, VARIANT_TRUE.0];
+                let key_data = [0x015b_0001, 0x002c_0001, 0x002c_0001, 0x015b_0001];
+                self.send_keys(4, key_up.as_ptr(), key_data.as_ptr())
+            }
+            REMOTE_SESSION_ACTION_SNAP => Err(Error::from_hresult(E_NOTIMPL)),
+            REMOTE_SESSION_ACTION_START_SCREEN => {
+                let key_up = [VARIANT_FALSE.0, VARIANT_TRUE.0];
+                let key_data = [0x015b_0001, 0x015b_0001];
+                self.send_keys(2, key_up.as_ptr(), key_data.as_ptr())
+            }
+            REMOTE_SESSION_ACTION_APP_SWITCH => {
+                let key_up = [VARIANT_FALSE.0, VARIANT_FALSE.0, VARIANT_TRUE.0, VARIANT_TRUE.0];
+                let key_data = [0x0038_0001, 0x000f_0001, 0x000f_0001, 0x0038_0001];
+                self.send_keys(4, key_up.as_ptr(), key_data.as_ptr())
+            }
+            REMOTE_SESSION_ACTION_ACTION_CENTER => {
+                let key_up = [VARIANT_FALSE.0, VARIANT_FALSE.0, VARIANT_TRUE.0, VARIANT_TRUE.0];
+                let key_data = [0x015b_0001, 0x001e_0001, 0x001e_0001, 0x015b_0001];
+                self.send_keys(4, key_up.as_ptr(), key_data.as_ptr())
+            }
+            REMOTE_SESSION_ACTION_TASK_MANAGER => {
+                let key_up = [
+                    VARIANT_FALSE.0,
+                    VARIANT_FALSE.0,
+                    VARIANT_FALSE.0,
+                    VARIANT_TRUE.0,
+                    VARIANT_TRUE.0,
+                    VARIANT_TRUE.0,
+                ];
+                let key_data = [
+                    0x001d_0001,
+                    0x002a_0001,
+                    0x0001_0001,
+                    0x0001_0001,
+                    0x002a_0001,
+                    0x001d_0001,
+                ];
+                self.send_keys(6, key_up.as_ptr(), key_data.as_ptr())
+            }
+            _ => Err(Error::from_hresult(E_INVALIDARG)),
+        }
     }
 
     fn release_input(&self) {
@@ -8261,9 +8321,8 @@ impl IMsRdpClient7_Impl for Control_Impl {
 }
 
 impl IMsRdpClient8_Impl for Control_Impl {
-    unsafe fn SendRemoteAction(&self, _action: i32) -> Result<()> {
-        // TODO(activex): map RemoteSessionActionType to IronRDP session operations.
-        Err(Error::from_hresult(E_NOTIMPL))
+    unsafe fn SendRemoteAction(&self, action: i32) -> Result<()> {
+        self.send_remote_action(action)
     }
 
     unsafe fn get_AdvancedSettings9(&self, settings: InterfaceOut) -> Result<()> {
@@ -13529,6 +13588,108 @@ mod tests {
     }
 
     #[test]
+    fn send_remote_action_forwards_supported_remote_shell_shortcuts() {
+        let actions = [
+            (
+                REMOTE_SESSION_ACTION_CHARMS,
+                &[
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 0x5b),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x2e),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x2e),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED | KeyboardFlags::RELEASE, 0x5b),
+                ][..],
+            ),
+            (
+                REMOTE_SESSION_ACTION_APPBAR,
+                &[
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 0x5b),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x2c),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x2c),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED | KeyboardFlags::RELEASE, 0x5b),
+                ][..],
+            ),
+            (
+                REMOTE_SESSION_ACTION_START_SCREEN,
+                &[
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 0x5b),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED | KeyboardFlags::RELEASE, 0x5b),
+                ][..],
+            ),
+            (
+                REMOTE_SESSION_ACTION_APP_SWITCH,
+                &[
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x38),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x0f),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x0f),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x38),
+                ][..],
+            ),
+            (
+                REMOTE_SESSION_ACTION_ACTION_CENTER,
+                &[
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 0x5b),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1e),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x1e),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED | KeyboardFlags::RELEASE, 0x5b),
+                ][..],
+            ),
+            (
+                REMOTE_SESSION_ACTION_TASK_MANAGER,
+                &[
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1d),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x2a),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x01),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x01),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x2a),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x1d),
+                ][..],
+            ),
+        ];
+
+        for (action, expected) in actions {
+            let control = Control::new();
+            let (sender, mut receiver) = RdpInputSender::channel(16);
+            *control.input_sender.borrow_mut() = Some(sender);
+            control.state.set(ConnectionState::Connected);
+            let client: IMsRdpClient8 = control.into();
+
+            unsafe { client.SendRemoteAction(action) }.expect("supported remote action is forwarded");
+
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(RdpInputEvent::FastPath(events)) if events.as_slice() == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn send_remote_action_rejects_unsupported_and_inactive_actions() {
+        let control = Control::new();
+
+        assert_eq!(
+            control
+                .send_remote_action(REMOTE_SESSION_ACTION_SNAP)
+                .expect_err("deprecated snap action is unavailable")
+                .code(),
+            E_NOTIMPL
+        );
+        assert_eq!(
+            control
+                .send_remote_action(-1)
+                .expect_err("unknown action is invalid")
+                .code(),
+            E_INVALIDARG
+        );
+        assert_eq!(
+            control
+                .send_remote_action(REMOTE_SESSION_ACTION_CHARMS)
+                .expect_err("supported actions require an active session")
+                .code(),
+            E_UNEXPECTED
+        );
+    }
+
+    #[test]
     fn active_display_updates_queue_ironrdp_resize_events() {
         let control = Control::new();
         let (sender, mut receiver) = RdpInputSender::channel(16);
@@ -15016,7 +15177,11 @@ mod tests {
         let error = unsafe { client.SyncSessionDisplaySettings() }
             .expect_err("display synchronization requires an active session");
         assert_eq!(error.code(), E_UNEXPECTED);
-        let error = unsafe { client.SendRemoteAction(0) }.expect_err("remote actions are unavailable");
+        let error = unsafe { client.SendRemoteAction(REMOTE_SESSION_ACTION_CHARMS) }
+            .expect_err("remote actions require an active session");
+        assert_eq!(error.code(), E_UNEXPECTED);
+        let error = unsafe { client.SendRemoteAction(REMOTE_SESSION_ACTION_SNAP) }
+            .expect_err("deprecated remote snap action is unavailable");
         assert_eq!(error.code(), E_NOTIMPL);
 
         let preferred = control
