@@ -3963,10 +3963,11 @@ impl ClipboardDataObject {
                         .ok_or_else(|| Error::from_hresult(E_OUTOFMEMORY))?;
                     Ok(Some(data[..text_byte_count].to_vec()))
                 })();
-                if let Err(error) = unsafe { GlobalUnlock(handle) } {
-                    tracing::debug!(?error, "Unable to unlock OLE clipboard snapshot");
+                match (snapshot, unlock_global_memory(handle)) {
+                    (Err(error), _) => Err(error),
+                    (Ok(_), Err(error)) => Err(error),
+                    (Ok(data), Ok(())) => Ok(data),
                 }
-                snapshot
             })();
 
             let close_result = unsafe { CloseClipboard() };
@@ -4036,9 +4037,7 @@ impl IDataObject_Impl for ClipboardDataObject_Impl {
         unsafe {
             ptr::copy_nonoverlapping(data.as_ptr(), destination, data.len());
         }
-        if let Err(error) = unsafe { GlobalUnlock(memory) } {
-            tracing::debug!(?error, "Unable to unlock OLE clipboard medium");
-        }
+        unlock_global_memory(memory)?;
 
         Ok(STGMEDIUM {
             tymed: TYMED_HGLOBAL.0 as u32,
@@ -4067,7 +4066,14 @@ impl IDataObject_Impl for ClipboardDataObject_Impl {
         if canonical.is_null() {
             return E_POINTER;
         }
-        if let Err(error) = self.validate_format(format) {
+        if format.is_null() {
+            unsafe {
+                canonical.write(FORMATETC::default());
+            }
+            return E_POINTER;
+        }
+        let format = unsafe { format.read() };
+        if let Err(error) = self.validate_format(&format) {
             unsafe {
                 canonical.write(FORMATETC::default());
             }
@@ -4075,7 +4081,10 @@ impl IDataObject_Impl for ClipboardDataObject_Impl {
         }
 
         unsafe {
-            canonical.write(unicode_text_format());
+            canonical.write(FORMATETC {
+                ptd: ptr::null_mut(),
+                ..format
+            });
         }
         DATA_S_SAMEFORMATETC
     }
@@ -4117,6 +4126,14 @@ fn unicode_text_format() -> FORMATETC {
         dwAspect: DVASPECT_CONTENT.0,
         lindex: -1,
         tymed: TYMED_HGLOBAL.0 as u32,
+    }
+}
+
+fn unlock_global_memory(memory: HGLOBAL) -> Result<()> {
+    match unsafe { GlobalUnlock(memory) } {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == S_OK => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -14017,6 +14034,27 @@ mod tests {
         assert_eq!(unsafe { enumerator.Next(&mut formats, Some(&mut fetched)) }, S_FALSE);
         assert_eq!(fetched, 0);
 
+        let alternate_tymed = FORMATETC {
+            tymed: TYMED_HGLOBAL.0 as u32 | windows::Win32::System::Com::TYMED_FILE.0 as u32,
+            ..format
+        };
+        let mut canonical = FORMATETC::default();
+        assert_eq!(
+            unsafe { data_object.GetCanonicalFormatEtc(&alternate_tymed, &mut canonical) },
+            DATA_S_SAMEFORMATETC
+        );
+        assert_eq!(canonical.tymed, alternate_tymed.tymed);
+        assert!(canonical.ptd.is_null());
+
+        let mut aliasing_format = alternate_tymed;
+        let aliasing_format_pointer = &mut aliasing_format as *mut FORMATETC;
+        assert_eq!(
+            unsafe { data_object.GetCanonicalFormatEtc(aliasing_format_pointer, aliasing_format_pointer) },
+            DATA_S_SAMEFORMATETC
+        );
+        assert_eq!(aliasing_format.tymed, alternate_tymed.tymed);
+        assert!(aliasing_format.ptd.is_null());
+
         let mut medium = unsafe { data_object.GetData(&format) }.expect("retrieve clipboard snapshot");
         assert_eq!(medium.tymed, TYMED_HGLOBAL.0 as u32);
         let memory = unsafe { medium.u.hGlobal };
@@ -14024,7 +14062,7 @@ mod tests {
         assert!(!source.is_null());
         let copied = unsafe { slice::from_raw_parts(source, GlobalSize(memory)) };
         assert_eq!(copied, [b'i', 0, b'r', 0, b'o', 0, b'n', 0, 0, 0]);
-        let _ = unsafe { GlobalUnlock(memory) };
+        unlock_global_memory(memory).expect("unlock returned clipboard medium");
         unsafe {
             ReleaseStgMedium(&mut medium);
         }
