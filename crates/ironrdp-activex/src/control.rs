@@ -3945,24 +3945,10 @@ impl ClipboardDataObject {
                 if source.is_null() {
                     return Ok(None);
                 }
-                let snapshot = (|| {
+                let snapshot = {
                     let data = unsafe { slice::from_raw_parts(source, byte_count) };
-                    let units = data
-                        .chunks_exact(2)
-                        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
-                        .collect::<Vec<_>>();
-
-                    let Some(terminator) = units.iter().position(|unit| *unit == 0) else {
-                        return Ok(None);
-                    };
-                    if !char::decode_utf16(units[..terminator].iter().copied()).all(|character| character.is_ok()) {
-                        return Ok(None);
-                    }
-                    let text_byte_count = (terminator + 1)
-                        .checked_mul(2)
-                        .ok_or_else(|| Error::from_hresult(E_OUTOFMEMORY))?;
-                    Ok(Some(data[..text_byte_count].to_vec()))
-                })();
+                    validated_unicode_text_snapshot(data)
+                };
                 match (snapshot, unlock_global_memory(handle)) {
                     (Err(error), _) => Err(error),
                     (Ok(_), Err(error)) => Err(error),
@@ -4037,7 +4023,12 @@ impl IDataObject_Impl for ClipboardDataObject_Impl {
         unsafe {
             ptr::copy_nonoverlapping(data.as_ptr(), destination, data.len());
         }
-        unlock_global_memory(memory)?;
+        if let Err(error) = unlock_global_memory(memory) {
+            unsafe {
+                GlobalFree(Some(memory))?;
+            }
+            return Err(error);
+        }
 
         Ok(STGMEDIUM {
             tymed: TYMED_HGLOBAL.0 as u32,
@@ -4135,6 +4126,28 @@ fn unlock_global_memory(memory: HGLOBAL) -> Result<()> {
         Err(error) if error.code() == S_OK => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+fn validated_unicode_text_snapshot(data: &[u8]) -> Result<Option<Vec<u8>>> {
+    if !(2..=MAX_OLE_CLIPBOARD_TEXT_BYTES).contains(&data.len()) || !data.len().is_multiple_of(2) {
+        return Ok(None);
+    }
+
+    let Some(terminator) = data.chunks_exact(2).position(|unit| unit == [0, 0]) else {
+        return Ok(None);
+    };
+    let utf16 = data[..terminator * 2]
+        .chunks_exact(2)
+        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]));
+    if !char::decode_utf16(utf16).all(|character| character.is_ok()) {
+        return Ok(None);
+    }
+
+    let text_byte_count = terminator
+        .checked_add(1)
+        .and_then(|units| units.checked_mul(2))
+        .ok_or_else(|| Error::from_hresult(E_OUTOFMEMORY))?;
+    Ok(Some(data[..text_byte_count].to_vec()))
 }
 
 #[implement(
@@ -14089,6 +14102,39 @@ mod tests {
                 .code(),
             E_NOTIMPL
         );
+    }
+
+    #[test]
+    fn ole_clipboard_snapshot_validation_rejects_malformed_text() {
+        assert_eq!(
+            validated_unicode_text_snapshot(&[0]).expect("reject undersized text"),
+            None
+        );
+        assert_eq!(
+            validated_unicode_text_snapshot(&[b'i', 0, 0]).expect("reject odd-length text"),
+            None
+        );
+        assert_eq!(
+            validated_unicode_text_snapshot(&vec![0; MAX_OLE_CLIPBOARD_TEXT_BYTES + 2]).expect("reject oversized text"),
+            None
+        );
+        assert_eq!(
+            validated_unicode_text_snapshot(&[b'i', 0, b'r', 0]).expect("reject unterminated text"),
+            None
+        );
+        assert_eq!(
+            validated_unicode_text_snapshot(&[0, 0xd8, 0, 0]).expect("reject invalid UTF-16"),
+            None
+        );
+    }
+
+    #[test]
+    fn ole_clipboard_snapshot_stops_at_first_terminator() {
+        let snapshot = validated_unicode_text_snapshot(&[b'i', 0, 0, 0, b'r', 0])
+            .expect("accept valid Unicode text")
+            .expect("return the text before the terminator");
+
+        assert_eq!(snapshot, [b'i', 0, 0, 0]);
     }
 
     #[test]
