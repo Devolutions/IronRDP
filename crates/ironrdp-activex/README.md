@@ -183,16 +183,13 @@ The public OLE `EnableModeless` notification enables or disables only the bar's 
 commands while a container-owned modal dialog is active; it neither hides the bar nor changes the
 RDP session. The setting is retained for a subsequently created bar.
 
-While an IronRDP connection is genuinely starting, the control also presents an IronRDP-owned,
+While an IronRDP connection is genuinely starting or retrying after an eligible transport loss, the control presents an IronRDP-owned,
 modeless, non-activating connection-health popup owned by the renderer. It is centered over the
 renderer, scales from that child window's DPI, and polls only its own owner-relative geometry; it
-does not subclass or otherwise modify an embedding host window. The generic worker currently has
-no truthful reconnect-progress transition, so the popup shows only **Connecting...** and is removed
-after actual connection, final disconnect/error, OLE close/deactivation, or renderer destruction.
-An internal hook accepts future worker retry progress only when both a positive attempt and its
-maximum are known; only then may it display **Reconnecting...** and `Attempt N of M`. It has no
-Cancel action, never includes endpoints, credentials, certificates, or error detail, and never
-raises a COM event.
+does not subclass or otherwise modify an embedding host window. During a real automatic reconnect it
+shows **Reconnecting...** and `Attempt N of M`; it is removed only after a successful reconnect, final
+disconnect/error, OLE close/deactivation, or renderer destruction. It has no Cancel action and never
+includes endpoints, credentials, certificates, cookie values, or error detail.
 
 When an actual Display Control update cannot complete in-session, IronRDP's worker reports that it
 is reconnecting with the requested display size. The same popup then shows **Updating remote
@@ -287,9 +284,12 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, and writable confirm-close events are delivered on the creating apartment. Warning and auto-reconnect events remain unfired until an IronRDP worker produces their real state. |
 | Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. Non-filesystem device, camera, monitor, and preferred-redirection capabilities remain unavailable. |
 
-The audit also identified RDM settings with no IronRDP ActiveX backend: input throttling, automatic reconnect, authentication policy, printer/port/smart-card and non-filesystem device redirection, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
-Their audited AdvancedSettings vtable slots use their exact published ABI signatures, initialize out parameters, and return `E_NOTIMPL`.
-The control does not report success for settings that cannot affect the connection.
+The audit also identified RDM settings that have no IronRDP ActiveX backend: input throttling,
+authentication policy, device/printer/port/smart-card
+redirection, RemoteApp, audio capture, video policy, PCB, load balancing, and Microsoft workspace
+extensions. Their audited AdvancedSettings vtable slots use their exact published ABI signatures,
+initialize out parameters, and return `E_NOTIMPL`; the control does not report success for settings
+that cannot affect the connection.
 
 The control exposes a standard `IConnectionPointContainer` and an event connection point for the
 published `IMsTscAxEvents` IID `{336D5562-EFA8-482E-8CB3-C5C0FC7A7DB6}`. Lifecycle events are delivered
@@ -298,19 +298,21 @@ COM sink from its background thread. Implemented event DISPIDs are `OnConnecting
 `OnLoginComplete`, `OnDisconnected`, `OnEnterFullScreenMode`, `OnLeaveFullScreenMode`, `OnRequestGoFullScreen`,
 `OnRequestLeaveFullScreen`, `OnFatalError`, `OnAuthenticationWarningDisplayed`,
 `OnAuthenticationWarningDismissed`,
-`OnRemoteDesktopSizeChange`, `OnConnectionBarPullDown`, and `OnConfirmClose`. `IMsRdpClient::RequestClose` raises
+`OnRemoteDesktopSizeChange`, `OnConnectionBarPullDown`, `OnConfirmClose`,
+`OnAutoReconnecting`, `OnAutoReconnecting2`, and `OnAutoReconnected`. `IMsRdpClient::RequestClose` raises
 `OnConfirmClose` synchronously on the creating apartment with its documented `VT_BOOL | VT_BYREF`
 argument. A sink can veto closing; the control then returns `controlCloseWaitForEvents` instead of
 `controlCloseCanProceed`. `OnConnected` follows completed IronRDP connection activation, and
 `OnLoginComplete` follows the server's value-free Save Session Info notification rather than the
 first decoded framebuffer. The connection-health popup follows only those actual lifecycle
 transitions and preserves their ordering: it is shown after `OnConnecting` (`0x01`) and removed
-after `OnConnected` (`0x02`) or `OnDisconnected(long)` (`0x04`). It does not synthesize
-`OnAutoReconnecting(long,long,AutoReconnectContinueState*)` (`0x11`),
-`OnAutoReconnected()` (`0x21`), or
-`OnAutoReconnecting2(long,VARIANT_BOOL,long,long)` (`0x22`). Those events and their public
-automatic (`0`), stop (`1`), and manual (`2`) continuation values remain unavailable until an
-IronRDP worker produces the corresponding real state.
+after `OnConnected` (`0x02`) or `OnDisconnected(long)` (`0x04`). When the server supplied a
+cookie and an active session actually fails, `AdvancedSettings.EnableAutoReconnect` (default
+enabled) and `MaxReconnectAttempts` (default `20`) bound retry attempts. Each real attempt raises
+`OnAutoReconnecting` (`0x11`) and `OnAutoReconnecting2` (`0x22`); a completed retry raises
+`OnAutoReconnected()` (`0x21`) without a second `OnConnected`. The continuation pointer exposed
+by `OnAutoReconnecting` is currently advisory: hosts can cancel by calling `Disconnect`, but its
+automatic (`0`), stop (`1`), and manual (`2`) value does not otherwise alter the active retry.
 
 Worker-to-apartment events are bounded to 64 pending entries. Frame updates coalesce to the latest
 frame, while lifecycle and terminal state evict only frames or static-channel data. A full queue

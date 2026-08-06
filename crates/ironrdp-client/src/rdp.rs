@@ -32,6 +32,7 @@ use ironrdp_rdpei::RdpeiClient;
 use ironrdp_rdpei::pdu::TouchEventPdu;
 #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
 use ironrdp_session::ActiveStage;
+use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp_svc::SvcMessage;
@@ -156,6 +157,15 @@ pub enum RdpOutputEvent {
     ///
     /// The next connection attempt uses the requested desktop size.
     DisplayResizeFallback(DisplayResizeFallbackReason),
+    /// An active session was interrupted and a cookie-based reconnect is about to start.
+    ///
+    /// `attempt` is one-based and never exceeds `maximum_attempts`.
+    AutoReconnecting {
+        attempt: u32,
+        maximum_attempts: u32,
+    },
+    /// A cookie-based reconnect has completed successfully.
+    AutoReconnected,
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
@@ -376,6 +386,7 @@ pub struct RdpClient {
     clipboard_event_receiver: mpsc::UnboundedReceiver<RdpInputEvent>,
     close_receiver: watch::Receiver<bool>,
     graceful_close_receiver: watch::Receiver<bool>,
+    auto_reconnect_maximum_attempts: Option<u32>,
     #[cfg(feature = "clipboard")]
     cliprdr_backend_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
     #[cfg(feature = "rdpdr")]
@@ -399,6 +410,7 @@ impl RdpClient {
             clipboard_event_receiver,
             close_receiver,
             graceful_close_receiver,
+            auto_reconnect_maximum_attempts: None,
             #[cfg(feature = "clipboard")]
             cliprdr_backend_factory: None,
             #[cfg(feature = "rdpdr")]
@@ -429,6 +441,16 @@ impl RdpClient {
     /// events from the GUI thread.
     pub fn input_sender(&self) -> RdpInputSender {
         self.input_event_sender.clone()
+    }
+
+    /// Enables automatic reconnection after an active-session interruption.
+    ///
+    /// A reconnect is attempted only when the server has supplied an auto-reconnect cookie.
+    /// A value of zero disables retries.
+    #[must_use]
+    pub fn with_auto_reconnect(mut self, maximum_attempts: u32) -> Self {
+        self.auto_reconnect_maximum_attempts = Some(maximum_attempts);
+        self
     }
 
     pub async fn run(mut self) {
@@ -526,6 +548,10 @@ impl RdpClient {
         let rdpdr_factory: RdpdrFactoryRef<'_> = core::marker::PhantomData;
 
         // ── Connection + session loop ─────────────────────────────────────────
+        let auto_reconnect_policy = self.auto_reconnect_maximum_attempts.map(AutoReconnectPolicy::new);
+        let mut auto_reconnect_cookie = None;
+        let mut reconnect_attempt = 0;
+
         loop {
             if *self.close_receiver.borrow_and_update() {
                 self.emit_user_initiated_termination();
@@ -534,13 +560,35 @@ impl RdpClient {
 
             let (connection_result, framed) = match &self.config.transport {
                 Transport::Direct => match Box::pin(cancelable_operation(
-                    connect_direct(&self.config, &self.input_event_sender, cliprdr_factory, rdpdr_factory),
+                    connect_direct(
+                        &self.config,
+                        &self.input_event_sender,
+                        cliprdr_factory,
+                        rdpdr_factory,
+                        auto_reconnect_cookie.as_ref(),
+                    ),
                     &mut self.close_receiver,
                 ))
                 .await
                 {
                     Some(Ok(result)) => result,
                     Some(Err(error)) => {
+                        if let Some(attempt) = next_auto_reconnect_attempt(
+                            auto_reconnect_policy,
+                            reconnect_attempt,
+                            auto_reconnect_cookie.as_ref(),
+                        ) {
+                            reconnect_attempt = attempt;
+                            if self
+                                .send_output_event(RdpOutputEvent::AutoReconnecting {
+                                    attempt,
+                                    maximum_attempts: auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
+                                })
+                                .await
+                            {
+                                continue;
+                            }
+                        }
                         if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
                             self.emit_user_initiated_termination();
                         }
@@ -560,6 +608,7 @@ impl RdpClient {
                         &self.input_event_sender,
                         cliprdr_factory,
                         rdpdr_factory,
+                        auto_reconnect_cookie.as_ref(),
                     ),
                     &mut self.close_receiver,
                 ))
@@ -567,6 +616,22 @@ impl RdpClient {
                 {
                     Some(Ok(result)) => result,
                     Some(Err(error)) => {
+                        if let Some(attempt) = next_auto_reconnect_attempt(
+                            auto_reconnect_policy,
+                            reconnect_attempt,
+                            auto_reconnect_cookie.as_ref(),
+                        ) {
+                            reconnect_attempt = attempt;
+                            if self
+                                .send_output_event(RdpOutputEvent::AutoReconnecting {
+                                    attempt,
+                                    maximum_attempts: auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
+                                })
+                                .await
+                            {
+                                continue;
+                            }
+                        }
                         if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
                             self.emit_user_initiated_termination();
                         }
@@ -585,6 +650,7 @@ impl RdpClient {
                         &self.input_event_sender,
                         cliprdr_factory,
                         rdpdr_factory,
+                        auto_reconnect_cookie.as_ref(),
                     ),
                     &mut self.close_receiver,
                 ))
@@ -592,6 +658,22 @@ impl RdpClient {
                 {
                     Some(Ok(result)) => result,
                     Some(Err(error)) => {
+                        if let Some(attempt) = next_auto_reconnect_attempt(
+                            auto_reconnect_policy,
+                            reconnect_attempt,
+                            auto_reconnect_cookie.as_ref(),
+                        ) {
+                            reconnect_attempt = attempt;
+                            if self
+                                .send_output_event(RdpOutputEvent::AutoReconnecting {
+                                    attempt,
+                                    maximum_attempts: auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
+                                })
+                                .await
+                            {
+                                continue;
+                            }
+                        }
                         if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
                             self.emit_user_initiated_termination();
                         }
@@ -611,6 +693,7 @@ impl RdpClient {
                         &self.input_event_sender,
                         cliprdr_factory,
                         rdpdr_factory,
+                        auto_reconnect_cookie.as_ref(),
                     ),
                     &mut self.close_receiver,
                 ))
@@ -618,6 +701,22 @@ impl RdpClient {
                 {
                     Some(Ok(result)) => result,
                     Some(Err(error)) => {
+                        if let Some(attempt) = next_auto_reconnect_attempt(
+                            auto_reconnect_policy,
+                            reconnect_attempt,
+                            auto_reconnect_cookie.as_ref(),
+                        ) {
+                            reconnect_attempt = attempt;
+                            if self
+                                .send_output_event(RdpOutputEvent::AutoReconnecting {
+                                    attempt,
+                                    maximum_attempts: auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
+                                })
+                                .await
+                            {
+                                continue;
+                            }
+                        }
                         if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
                             self.emit_user_initiated_termination();
                         }
@@ -630,10 +729,17 @@ impl RdpClient {
                 },
             };
 
-            if !self.send_output_event(RdpOutputEvent::Connected).await {
+            let reconnected = reconnect_attempt != 0;
+            let connected_event = if !reconnected {
+                RdpOutputEvent::Connected
+            } else {
+                RdpOutputEvent::AutoReconnected
+            };
+            if !self.send_output_event(connected_event).await {
                 self.emit_user_initiated_termination();
                 break;
             }
+            reconnect_attempt = 0;
 
             match active_session(
                 framed,
@@ -645,6 +751,7 @@ impl RdpClient {
                 &mut self.close_receiver,
                 &mut self.graceful_close_receiver,
                 self.config.fake_events_interval,
+                &mut auto_reconnect_cookie,
             )
             .await
             {
@@ -666,9 +773,26 @@ impl RdpClient {
                     break;
                 }
                 Err(e) => {
+                    if let Some(attempt) = next_auto_reconnect_attempt(
+                        auto_reconnect_policy,
+                        reconnect_attempt,
+                        auto_reconnect_cookie.as_ref(),
+                    ) {
+                        reconnect_attempt = attempt;
+                        if self
+                            .send_output_event(RdpOutputEvent::AutoReconnecting {
+                                attempt,
+                                maximum_attempts: auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
+                            })
+                            .await
+                        {
+                            continue;
+                        }
+                    }
                     if !self.send_output_event(RdpOutputEvent::Terminated(Err(e))).await {
                         self.emit_user_initiated_termination();
                     }
+
                     break;
                 }
             }
@@ -686,6 +810,33 @@ impl RdpClient {
             .output_event_sender
             .try_send(RdpOutputEvent::Terminated(Ok(GracefulDisconnectReason::UserInitiated)));
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AutoReconnectPolicy {
+    maximum_attempts: u32,
+}
+
+impl AutoReconnectPolicy {
+    const fn new(maximum_attempts: u32) -> Self {
+        Self { maximum_attempts }
+    }
+
+    const fn next_attempt(self, previous_attempt: u32, has_cookie: bool) -> Option<u32> {
+        if has_cookie && previous_attempt < self.maximum_attempts {
+            Some(previous_attempt + 1)
+        } else {
+            None
+        }
+    }
+}
+
+fn next_auto_reconnect_attempt(
+    policy: Option<AutoReconnectPolicy>,
+    previous_attempt: u32,
+    cookie: Option<&ServerAutoReconnect>,
+) -> Option<u32> {
+    policy.and_then(|policy| policy.next_attempt(previous_attempt, cookie.is_some()))
 }
 
 async fn cancelable_operation<T>(
@@ -837,6 +988,7 @@ fn build_connector(
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
+    auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<ironrdp_connector::ClientConnector> {
     // `input_sender` is only consumed by the optional DVC wirings below, and `cliprdr_factory`
     // only by the optional CLIPRDR attachment; discard them explicitly when those are compiled out.
@@ -1124,6 +1276,10 @@ fn build_connector(
         attach_sc(&mut connector, &config.properties);
     }
 
+    if let Some(cookie) = auto_reconnect_cookie {
+        connector = connector.with_auto_reconnect_cookie(cookie.clone());
+    }
+
     Ok(connector)
 }
 
@@ -1139,6 +1295,7 @@ async fn connect_direct(
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
+    auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let dest = config.destination.to_string();
     let stream = TcpStream::connect(&dest)
@@ -1151,7 +1308,14 @@ async fn connect_direct(
         .map_err(|e| ironrdp_connector::custom_err!("get socket local address", e))?;
     let framed = ironrdp_tokio::TokioFramed::new(stream);
 
-    let connector = build_connector(config, client_addr, input_sender, cliprdr_factory, rdpdr_factory)?;
+    let connector = build_connector(
+        config,
+        client_addr,
+        input_sender,
+        cliprdr_factory,
+        rdpdr_factory,
+        auto_reconnect_cookie,
+    )?;
     #[cfg(feature = "vmconnect")]
     if config.vm_id().is_some() {
         return vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await;
@@ -1170,6 +1334,7 @@ async fn connect_named_pipe(
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
+    auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     use tokio::net::windows::named_pipe::ClientOptions;
 
@@ -1190,7 +1355,14 @@ async fn connect_named_pipe(
     // Named pipes have no socket address; use a dummy loopback address for Client Info.
     let client_addr = SocketAddr::from(([127, 0, 0, 1], 0));
     let framed = ironrdp_tokio::TokioFramed::new(stream);
-    let connector = build_connector(config, client_addr, input_sender, cliprdr_factory, rdpdr_factory)?;
+    let connector = build_connector(
+        config,
+        client_addr,
+        input_sender,
+        cliprdr_factory,
+        rdpdr_factory,
+        auto_reconnect_cookie,
+    )?;
 
     security_upgrade_and_finalize(framed, connector, config).await
 }
@@ -1203,6 +1375,7 @@ async fn connect_gateway(
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
+    auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     use ironrdp_mstsgu::GwConnectTarget;
 
@@ -1229,7 +1402,14 @@ async fn connect_gateway(
 
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
-    let connector = build_connector(config, client_addr, input_sender, cliprdr_factory, rdpdr_factory)?;
+    let connector = build_connector(
+        config,
+        client_addr,
+        input_sender,
+        cliprdr_factory,
+        rdpdr_factory,
+        auto_reconnect_cookie,
+    )?;
     security_upgrade_and_finalize(framed, connector, config).await
 }
 
@@ -1240,6 +1420,7 @@ async fn connect_rdcleanpath_transport(
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
+    auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let hostname = rdcp
         .url
@@ -1263,7 +1444,14 @@ async fn connect_rdcleanpath_transport(
     let ws = crate::ws::websocket_compat(ws);
     let mut framed = ironrdp_tokio::TokioFramed::new(ws);
 
-    let mut connector = build_connector(config, client_addr, input_sender, cliprdr_factory, rdpdr_factory)?;
+    let mut connector = build_connector(
+        config,
+        client_addr,
+        input_sender,
+        cliprdr_factory,
+        rdpdr_factory,
+        auto_reconnect_cookie,
+    )?;
 
     let destination = config.destination.to_string();
     let mut network_client = ReqwestNetworkClient::new();
@@ -1738,6 +1926,7 @@ async fn active_session(
     close_receiver: &mut watch::Receiver<bool>,
     graceful_close_receiver: &mut watch::Receiver<bool>,
     fake_events_interval: Option<Duration>,
+    auto_reconnect_cookie: &mut Option<ServerAutoReconnect>,
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let desktop_size = connection_result.desktop_size;
@@ -2184,11 +2373,8 @@ async fn active_session(
 
         for out in outputs {
             match out {
-                ActiveStageOutput::AutoReconnectCookie(_cookie) => {
-                    // The connector can now return this to the server via
-                    // `with_auto_reconnect_cookie`. Holding it across a dropped
-                    // connection and reconnecting with it is the remaining part of
-                    // #271; see the TODO at the reconnect site.
+                ActiveStageOutput::AutoReconnectCookie(cookie) => {
+                    *auto_reconnect_cookie = Some(cookie);
                     debug!("Received a Server Auto-Reconnect Cookie");
                 }
                 ActiveStageOutput::ResponseFrame(frame) => {
@@ -2772,6 +2958,21 @@ mod tests {
             queue.timed_out_request(deadline),
             Some((request, DisplayResizeFallbackReason::CapabilitiesTimedOut))
         );
+    }
+
+    #[test]
+    fn auto_reconnect_policy_requires_a_cookie_and_respects_its_limit() {
+        let policy = AutoReconnectPolicy::new(2);
+
+        assert_eq!(policy.next_attempt(0, false), None);
+        assert_eq!(policy.next_attempt(0, true), Some(1));
+        assert_eq!(policy.next_attempt(1, true), Some(2));
+        assert_eq!(policy.next_attempt(2, true), None);
+    }
+
+    #[test]
+    fn zero_auto_reconnect_limit_disables_retries() {
+        assert_eq!(AutoReconnectPolicy::new(0).next_attempt(0, true), None);
     }
 
     #[test]
