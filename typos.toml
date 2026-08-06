@@ -31,6 +31,8 @@ Pn = "Pn"
 writeable = "writeable"
 
 [default.extend-identifiers]
+# COM FORMATETC target-device field.
+ptd = "ptd"
 # Windows TRACKMOUSEEVENT flag.
 TME_LEAVE = "TME_LEAVE"
 
