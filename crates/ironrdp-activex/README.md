@@ -39,6 +39,18 @@ Use an already-hosted control from the agent with `ironrdp-agent --backend activ
 The ActiveX backend is never auto-started: its owner must create the control with the opt-in
 environment variable before the agent connects.
 
+### RDCleanPath
+
+RDCleanPath is supported through this opt-in local RPC configuration path, not through the classic MSTSCLib Automation interfaces.
+Those published interfaces have no RDCleanPath URL or token members, so adding an unrelated Automation property would not provide a portable ActiveX contract.
+Supply `ironrdp_rdcleanpathurl` and `ironrdp_rdcleanpathtoken` in the RPC `connect` property set together with the normal destination and RDP credentials.
+Both values are required; the URL must use `ws` or `wss` and is validated as part of the connection configuration before it selects the WebSocket-based RDCleanPath transport.
+
+The token is write-only connection input.
+It is held only for the active connection, is not copied to the ActiveX persistence state or host trace, and is removed before `query-props` exposes the live session properties.
+Do not place it in an `.rdp` file, command line, or log directive.
+Certificate validation continues to use the same ActiveX `AuthenticationLevel` policy as direct and gateway sessions.
+
 ## Registration
 
 Register a bitness-matching build with:

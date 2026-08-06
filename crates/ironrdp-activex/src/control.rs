@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::Duration;
 
 use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
-use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, Transport, TransportKind};
+use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind};
 use ironrdp_client::rdp::{CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent};
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp_cliprdr_native::WinClipboard;
@@ -2318,6 +2318,7 @@ fn is_fullscreen_hotkey(virtual_key: VIRTUAL_KEY, control_and_alt_pressed: bool)
     control_and_alt_pressed && matches!(virtual_key, VK_CANCEL | VK_PAUSE)
 }
 
+#[derive(Clone)]
 enum ActiveXTransport {
     Direct,
     Gateway {
@@ -2325,6 +2326,31 @@ enum ActiveXTransport {
         username: String,
         password: String,
     },
+    RDCleanPath(RDCleanPathConfig),
+}
+
+fn active_x_transport_from_client_transport(transport: &Transport) -> ActiveXTransport {
+    match transport {
+        Transport::Direct => ActiveXTransport::Direct,
+        Transport::Gateway(gateway) => ActiveXTransport::Gateway {
+            endpoint: gateway.endpoint.clone(),
+            username: gateway.username.clone(),
+            password: gateway.password.clone(),
+        },
+        Transport::RDCleanPath(rdcleanpath) => ActiveXTransport::RDCleanPath(rdcleanpath.clone()),
+    }
+}
+
+fn rdcleanpath_rpc_configuration_error(properties: &PropertySet) -> Option<&'static str> {
+    match (
+        properties.get::<&str>("ironrdp_rdcleanpathurl"),
+        properties.get::<&str>("ironrdp_rdcleanpathtoken"),
+    ) {
+        (Some(_), None) => Some("RDCleanPath token is required when an RDCleanPath URL is configured"),
+        (None, Some(_)) => Some("RDCleanPath URL is required when an RDCleanPath token is configured"),
+        (_, Some("")) => Some("RDCleanPath token must not be empty"),
+        _ => None,
+    }
 }
 
 fn domain_qualified_username(domain: &str, username: &str) -> String {
@@ -4250,6 +4276,7 @@ pub(crate) struct Control {
     traced_paint_layout_generation: Cell<u64>,
     rpc: Option<ActiveXRpc>,
     rpc_properties: RefCell<Option<PropertySet>>,
+    rpc_transport: RefCell<Option<ActiveXTransport>>,
     rpc_kerberos_config: RefCell<Option<ironrdp_connector::credssp::KerberosConfig>>,
     rpc_log_directive: RefCell<Option<String>>,
 }
@@ -4359,6 +4386,7 @@ impl Control {
             traced_paint_layout_generation: Cell::new(0),
             rpc: ActiveXRpc::from_environment(),
             rpc_properties: RefCell::new(None),
+            rpc_transport: RefCell::new(None),
             rpc_kerberos_config: RefCell::new(None),
             rpc_log_directive: RefCell::new(None),
         }
@@ -6358,14 +6386,15 @@ impl Control {
                 "a session is already active; disconnect first",
             );
         }
-        if [
-            "ironrdp_dvcpipeproxy",
-            "ironrdp_dvcplugin",
-            "ironrdp_rdcleanpathurl",
-            "ironrdp_rdcleanpathtoken",
-        ]
-        .into_iter()
-        .any(|key| properties.get::<&str>(key).is_some())
+        if let Some(message) = rdcleanpath_rpc_configuration_error(&properties) {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                message,
+            );
+        }
+        if ["ironrdp_dvcpipeproxy", "ironrdp_dvcplugin"]
+            .into_iter()
+            .any(|key| properties.get::<&str>(key).is_some())
             || [
                 "ironrdp_qoi",
                 "ironrdp_qoiz",
@@ -6438,10 +6467,12 @@ impl Control {
                 );
             }
         };
-        if matches!(config.transport(), Transport::RDCleanPath(_)) {
+        if let Transport::RDCleanPath(rdcleanpath) = config.transport()
+            && !matches!(rdcleanpath.url.scheme(), "ws" | "wss")
+        {
             return ironrdp_agent::ipc::Response::typed_error(
                 ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
-                "RDCleanPath is not supported by the ActiveX host",
+                "RDCleanPath URL must use the ws or wss scheme",
             );
         }
         let Credentials::UsernamePassword { username, password } = &config.connector().credentials else {
@@ -6451,6 +6482,7 @@ impl Control {
             );
         };
 
+        let rpc_transport = active_x_transport_from_client_transport(config.transport());
         {
             let mut settings = self.settings.borrow_mut();
             settings.server = config.destination().name().to_owned();
@@ -6514,16 +6546,25 @@ impl Control {
                     compatibility.gateway_usage_method = GatewayUsageMethod::UseAlways.as_i64() as u32;
                     compatibility.gateway_creds_source = GatewayCredentialsSource::UseUserCredentials.as_i64() as u32;
                 }
-                Transport::RDCleanPath(_) => unreachable!("RDCleanPath was rejected above"),
+                Transport::RDCleanPath(_) => {
+                    compatibility.gateway_hostname.clear();
+                    compatibility.gateway_username.clear();
+                    compatibility.gateway_password.clear();
+                    compatibility.gateway_domain.clear();
+                    compatibility.gateway_usage_method = GatewayUsageMethod::Direct.as_i64() as u32;
+                    compatibility.gateway_creds_source = GatewayCredentialsSource::UseServerCredentials.as_i64() as u32;
+                }
             }
         }
 
         *self.rpc_properties.borrow_mut() = Some(config.properties().clone());
+        *self.rpc_transport.borrow_mut() = Some(rpc_transport);
         *self.rpc_kerberos_config.borrow_mut() = config.kerberos_config().cloned();
         *self.rpc_log_directive.borrow_mut() = log_directive;
         match self.start_connection() {
             Ok(()) if self.state.get() == ConnectionState::Disconnected => {
                 self.rpc_properties.borrow_mut().take();
+                self.rpc_transport.borrow_mut().take();
                 self.rpc_kerberos_config.borrow_mut().take();
                 let _ = self.rpc_log_directive.borrow_mut().take();
                 ironrdp_agent::ipc::Response::typed_error(
@@ -6534,6 +6575,7 @@ impl Control {
             Ok(()) => ironrdp_agent::ipc::Response::ok(),
             Err(error) => {
                 self.rpc_properties.borrow_mut().take();
+                self.rpc_transport.borrow_mut().take();
                 self.rpc_kerberos_config.borrow_mut().take();
                 let _ = self.rpc_log_directive.borrow_mut().take();
                 rpc_control_error(error)
@@ -6620,7 +6662,10 @@ impl Control {
         let keyboard_functional_keys_count = compatibility.keyboard_functional_keys_count;
         let alternate_shell = compatibility.secured_start_program.clone();
         let work_dir = compatibility.secured_work_dir.clone();
-        let transport = active_x_transport(&settings, &compatibility)?;
+        let transport = match self.rpc_transport.borrow_mut().take() {
+            Some(transport) => transport,
+            None => active_x_transport(&settings, &compatibility)?,
+        };
         let performance_flags = compatibility.performance_flags;
         let keyboard_layout = compatibility.keyboard_layout;
         let connection_type = compatibility.network_connection_type;
@@ -6820,6 +6865,9 @@ impl Control {
                 .with_transport(TransportKind::Gateway { endpoint })
                 .with_gateway_username(username)
                 .with_gateway_password(password),
+            ActiveXTransport::RDCleanPath(rdcleanpath) => builder
+                .with_transport(TransportKind::RDCleanPath { url: rdcleanpath.url })
+                .with_rdcleanpath_token(rdcleanpath.auth_token),
         };
         let builder = dvc_plugin_paths
             .into_iter()
@@ -12058,6 +12106,59 @@ mod tests {
             .expect("ActiveX config includes bitmap capabilities");
         assert_eq!(bitmap.color_depth, 32);
         assert!(!bitmap.lossy_compression);
+    }
+
+    #[test]
+    fn activex_maps_client_rdcleanpath_transport() {
+        let config = ConfigBuilder::new()
+            .with_destination(Destination::from_parts("rdp.example.test", 3389))
+            .with_username("user")
+            .with_password("password")
+            .with_client_build(10_000)
+            .with_client_dir("C:\\")
+            .with_client_name("IronRDP ActiveX")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_transport(TransportKind::RDCleanPath {
+                url: "wss://rdcleanpath.example.test/rdp"
+                    .parse()
+                    .expect("RDCleanPath URL is valid"),
+            })
+            .with_rdcleanpath_token("test-token")
+            .build()
+            .expect("ActiveX RDCleanPath configuration is valid");
+
+        let ActiveXTransport::RDCleanPath(rdcleanpath) = active_x_transport_from_client_transport(config.transport())
+        else {
+            panic!("client RDCleanPath transport must be retained");
+        };
+        assert_eq!(rdcleanpath.url.as_str(), "wss://rdcleanpath.example.test/rdp");
+        assert_eq!(rdcleanpath.auth_token, "test-token");
+    }
+
+    #[test]
+    fn activex_rpc_rdcleanpath_configuration_requires_a_url_and_token() {
+        let mut properties = PropertySet::new();
+        properties.insert("ironrdp_rdcleanpathurl", "wss://rdcleanpath.example.test/rdp");
+        assert_eq!(
+            rdcleanpath_rpc_configuration_error(&properties),
+            Some("RDCleanPath token is required when an RDCleanPath URL is configured")
+        );
+
+        properties.remove("ironrdp_rdcleanpathurl");
+        properties.insert("ironrdp_rdcleanpathtoken", "test-token");
+        assert_eq!(
+            rdcleanpath_rpc_configuration_error(&properties),
+            Some("RDCleanPath URL is required when an RDCleanPath token is configured")
+        );
+
+        properties.insert("ironrdp_rdcleanpathurl", "wss://rdcleanpath.example.test/rdp");
+        assert_eq!(rdcleanpath_rpc_configuration_error(&properties), None);
+
+        properties.insert("ironrdp_rdcleanpathtoken", "");
+        assert_eq!(
+            rdcleanpath_rpc_configuration_error(&properties),
+            Some("RDCleanPath token must not be empty")
+        );
     }
 
     #[implement(IDispatch)]

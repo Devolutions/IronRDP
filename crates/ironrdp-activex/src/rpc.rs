@@ -192,7 +192,8 @@ impl ActiveXRpc {
         }
     }
 
-    pub(crate) fn session_started(&self, destination: String, properties: PropertySet, endpoint: Arc<NowEndpoint>) {
+    pub(crate) fn session_started(&self, destination: String, mut properties: PropertySet, endpoint: Arc<NowEndpoint>) {
+        properties.remove("ironrdp_rdcleanpathtoken");
         self.shared.logs.clear();
         let mut live = lock(&self.shared.live);
         live.state = ConnState::Connecting;
@@ -779,6 +780,33 @@ mod tests {
         };
         assert_eq!(stopped_status.state, ConnState::Disconnected);
         assert!(!screenshot(&rpc.shared).is_ok());
+    }
+
+    #[test]
+    fn rdcleanpath_token_is_not_exposed_in_session_properties() {
+        let rpc = rpc();
+        let mut properties = PropertySet::new();
+        properties.insert("ironrdp_rdcleanpathurl", "wss://rdcleanpath.example.test/rdp");
+        properties.insert("ironrdp_rdcleanpathtoken", "test-token");
+        let endpoint = Arc::new(NowEndpoint::new().expect("allocate NOW endpoint"));
+
+        rpc.session_started("server.example:3389".to_owned(), properties, endpoint);
+
+        let Response::Ok(Payload::Properties(properties)) = query_props(&rpc.shared, None) else {
+            panic!("session properties must be available");
+        };
+        assert!(
+            properties
+                .entries
+                .iter()
+                .any(|entry| entry.key == "ironrdp_rdcleanpathurl")
+        );
+        assert!(
+            !properties
+                .entries
+                .iter()
+                .any(|entry| entry.key == "ironrdp_rdcleanpathtoken")
+        );
     }
 
     #[test]
