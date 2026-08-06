@@ -659,6 +659,8 @@ pub enum ActiveStageOutput {
     ///
     /// [\[MS-RDPBCGR\] 2.2.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18f4f605-0ee3-4175-8a62-cf8775252547
     AutoReconnectCookie(ServerAutoReconnect),
+    /// Server rejected the automatic reconnection attempt.
+    AutoReconnectFailed,
 }
 
 impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
@@ -684,6 +686,7 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
             x224::ProcessorOutput::MultitransportRequest(pdu) => Ok(Self::MultitransportRequest(pdu)),
             x224::ProcessorOutput::AutoDetect(request) => Ok(Self::AutoDetect(request)),
             x224::ProcessorOutput::AutoReconnectCookie(cookie) => Ok(Self::AutoReconnectCookie(cookie)),
+            x224::ProcessorOutput::AutoReconnectFailed => Ok(Self::AutoReconnectFailed),
             // GraphicsUpdate and PointerUpdate are consumed in ActiveStage::process()
             // before reaching this conversion.
             x224::ProcessorOutput::GraphicsUpdate(_) | x224::ProcessorOutput::PointerUpdate(_) => Err(

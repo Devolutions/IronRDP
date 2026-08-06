@@ -309,12 +309,16 @@ transitions and preserves their ordering: it is shown after `OnConnecting` (`0x0
 after `OnConnected` (`0x02`) or `OnDisconnected(long)` (`0x04`). When the server supplied a
 cookie and an active session actually fails, `AdvancedSettings.EnableAutoReconnect` (default
 enabled) and `MaxReconnectAttempts` (default `20`) bound retry attempts. Each real attempt raises
-`OnAutoReconnecting` (`0x11`); `OnAutoReconnecting2` (`0x22`) follows only when the original event
-permits continuation. A completed retry raises `OnAutoReconnected()` (`0x21`) without a second
-`OnConnected`. The continuation pointer exposed
-by `OnAutoReconnecting` controls the pending retry: automatic (`0`) continues, while stop (`1`)
-and manual (`2`) suppress further automatic reconnect attempts. Calling `Disconnect` also stops
-a pending retry.
+`OnAutoReconnecting(disconnectReason, attemptCount, AutoReconnectContinueState*)` (`0x11`);
+`OnAutoReconnecting2(disconnectReason, networkAvailable, attemptCount, maximumAttempts)` (`0x22`)
+follows only when the original event permits continuation. IronRDP uses `disconnectReason == 0`
+and `networkAvailable == false` when the transport disappears without a server-provided reason.
+The continuation pointer exposed by `OnAutoReconnecting` controls the pending retry: automatic
+(`0`) continues, while stop (`1`) and manual (`2`) suppress further automatic reconnect attempts.
+A completed retry raises `OnAutoReconnected()` (`0x21`) only after post-reconnect active-session
+traffic confirms the session is usable; a server ARC-status rejection clears the cookie and does
+not raise that success event. Display-size fallback reconnects deliberately start a new session
+without reusing the session-bound ARC cookie. Calling `Disconnect` also stops a pending retry.
 
 Worker-to-apartment events are bounded to 64 pending entries. Frame updates coalesce to the latest
 frame, while lifecycle and terminal state evict only frames or static-channel data. A full queue

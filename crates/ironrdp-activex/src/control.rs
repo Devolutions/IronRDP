@@ -3501,6 +3501,7 @@ enum WorkerEvent {
     },
     AutoReconnecting {
         generation: u64,
+        disconnect_reason: u32,
         attempt: u32,
         maximum_attempts: u32,
         response: oneshot::Sender<AutoReconnectDecision>,
@@ -7449,7 +7450,7 @@ impl Control {
         }
     }
 
-    fn fire_auto_reconnecting_event(&self, attempt: i32, maximum_attempts: i32) -> i32 {
+    fn fire_auto_reconnecting_event(&self, disconnect_reason: i32, attempt: i32) -> i32 {
         if self.events_are_frozen() {
             return 0;
         }
@@ -7457,8 +7458,8 @@ impl Control {
         let mut continuation = 0;
         let mut variants = [
             variant_i32_byref(&mut continuation),
-            variant_i32(maximum_attempts),
             variant_i32(attempt),
+            variant_i32(disconnect_reason),
         ];
         let params = DISPPARAMS {
             rgvarg: variants.as_mut_ptr(),
@@ -7495,7 +7496,13 @@ impl Control {
         continuation
     }
 
-    fn fire_auto_reconnecting2_event(&self, attempt: i32, maximum_attempts: i32) {
+    fn fire_auto_reconnecting2_event(
+        &self,
+        disconnect_reason: i32,
+        network_available: bool,
+        attempt: i32,
+        maximum_attempts: i32,
+    ) {
         if self.events_are_frozen() {
             return;
         }
@@ -7503,8 +7510,8 @@ impl Control {
         let mut variants = [
             variant_i32(maximum_attempts),
             variant_i32(attempt),
-            variant_bool_value(false),
-            variant_i32(0),
+            variant_bool_value(network_available),
+            variant_i32(disconnect_reason),
         ];
         let params = DISPPARAMS {
             rgvarg: variants.as_mut_ptr(),
@@ -8009,17 +8016,19 @@ impl Control {
                     }
                 }
                 WorkerEvent::AutoReconnecting {
+                    disconnect_reason,
                     attempt,
                     maximum_attempts,
                     response,
                     ..
                 } => {
                     self.report_reconnect_worker_progress(attempt, maximum_attempts);
+                    let disconnect_reason = i32::try_from(disconnect_reason).unwrap_or(i32::MAX);
                     let attempt = i32::try_from(attempt).unwrap_or(i32::MAX);
                     let maximum_attempts = i32::try_from(maximum_attempts).unwrap_or(i32::MAX);
-                    let decision = match self.fire_auto_reconnecting_event(attempt, maximum_attempts) {
+                    let decision = match self.fire_auto_reconnecting_event(disconnect_reason, attempt) {
                         0 => {
-                            self.fire_auto_reconnecting2_event(attempt, maximum_attempts);
+                            self.fire_auto_reconnecting2_event(disconnect_reason, false, attempt, maximum_attempts);
                             AutoReconnectDecision::Continue
                         }
                         _ => AutoReconnectDecision::Stop,
@@ -9020,6 +9029,7 @@ impl Control {
                                                 );
                                             }
                                             RdpOutputEvent::AutoReconnecting {
+                                                disconnect_reason,
                                                 attempt,
                                                 maximum_attempts,
                                                 response,
@@ -9030,6 +9040,7 @@ impl Control {
                                                     hwnd,
                                                     WorkerEvent::AutoReconnecting {
                                                         generation,
+                                                        disconnect_reason,
                                                         attempt,
                                                         maximum_attempts,
                                                         response,
@@ -13379,10 +13390,23 @@ fn queue_worker_event(
                 false
             }
         }
+        WorkerEvent::AutoReconnecting { .. } => {
+            while queue.len() >= MAX_PENDING_WORKER_EVENTS {
+                if let Some(index) = queue
+                    .iter()
+                    .position(|pending| matches!(pending, WorkerEvent::Image { .. } | WorkerEvent::StaticChannelData { .. }))
+                {
+                    queue.remove(index);
+                } else {
+                    return false;
+                }
+            }
+            queue.push(event);
+            true
+        }
         WorkerEvent::Connected { .. }
         | WorkerEvent::LoginComplete { .. }
         | WorkerEvent::DisplayResizeFallback { .. }
-        | WorkerEvent::AutoReconnecting { .. }
         | WorkerEvent::AutoReconnected { .. } => {
             if queue.iter().any(|pending| {
                 pending.generation() == event.generation()
@@ -19137,6 +19161,76 @@ mod tests {
                 .iter()
                 .all(|event| matches!(event, WorkerEvent::StaticChannelData { .. }))
         );
+    }
+
+    #[test]
+    fn worker_event_queue_preserves_auto_reconnect_decisions() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(true));
+        let dispatcher = HWND(ptr::null_mut());
+        let (first_sender, mut first_receiver) = oneshot::channel();
+        let (second_sender, mut second_receiver) = oneshot::channel();
+
+        for (attempt, response) in [(1, first_sender), (2, second_sender)] {
+            assert!(queue_worker_event(
+                &events,
+                &event_posted,
+                dispatcher,
+                WorkerEvent::AutoReconnecting {
+                    generation: 7,
+                    disconnect_reason: 0,
+                    attempt,
+                    maximum_attempts: 2,
+                    response,
+                },
+            ));
+        }
+        assert_eq!(
+            events
+                .events
+                .lock()
+                .expect("event queue is available")
+                .iter()
+                .filter(|event| matches!(event, WorkerEvent::AutoReconnecting { .. }))
+                .count(),
+            2
+        );
+        assert!(first_receiver.try_recv().is_err());
+        assert!(second_receiver.try_recv().is_err());
+
+        events.events.lock().expect("event queue is available").clear();
+        for index in 0..MAX_PENDING_WORKER_EVENTS {
+            assert!(queue_worker_event(
+                &events,
+                &event_posted,
+                dispatcher,
+                WorkerEvent::StaticChannelData {
+                    generation: 7,
+                    channel_name: "alpha".to_owned(),
+                    data: vec![u8::try_from(index).expect("queue capacity fits in u8")],
+                },
+            ));
+        }
+        let (sender, mut receiver) = oneshot::channel();
+        assert!(queue_worker_event(
+            &events,
+            &event_posted,
+            dispatcher,
+            WorkerEvent::AutoReconnecting {
+                generation: 7,
+                disconnect_reason: 0,
+                attempt: 1,
+                maximum_attempts: 1,
+                response: sender,
+            },
+        ));
+        assert!(receiver.try_recv().is_err());
+        assert!(events
+            .events
+            .lock()
+            .expect("event queue is available")
+            .iter()
+            .any(|event| matches!(event, WorkerEvent::AutoReconnecting { .. })));
     }
 
     #[test]
