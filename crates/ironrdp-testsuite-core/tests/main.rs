@@ -12,6 +12,7 @@
 //! Cargo will run all tests from a single binary in parallel, but
 //! binaries themselves are run sequentially.
 
+mod async_framed;
 mod cfg;
 mod clipboard;
 mod connector;

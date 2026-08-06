@@ -407,3 +407,37 @@ fn connect_time_bandwidth_measured_window_reports_every_payload() {
         "both Payload messages and the Stop payload are counted"
     );
 }
+
+#[test]
+fn connect_time_bandwidth_second_start_discards_the_first_window() {
+    let mut connector = connect_time_autodetect_connector();
+    let mut output = WriteBuf::new();
+
+    // [MS-RDPBCGR] 3.2.5.14 has the client clear both stores and restart the
+    // timer on each Bandwidth Measure Start, so the 4096 bytes counted into the
+    // abandoned window must not survive into the reported total, and the
+    // interval must be measured from the second Start rather than the first.
+    for (request, arrival) in [
+        (AutoDetectRequest::bw_start_connect_time(0x5555), 1_000),
+        (AutoDetectRequest::bw_payload(0x5555, vec![0u8; 4096]), 1_100),
+        (AutoDetectRequest::bw_start_connect_time(0x5555), 2_000),
+        (AutoDetectRequest::bw_payload(0x5555, vec![0u8; 1024]), 2_100),
+        (AutoDetectRequest::bw_stop_connect_time(0x5555, vec![0u8; 512]), 2_500),
+    ] {
+        output.clear();
+        connector
+            .step(
+                &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&AutoDetectReqPdu::new(request)).unwrap()),
+                Some(MonotonicInstant::from_millis(arrival)),
+                &mut output,
+            )
+            .unwrap();
+    }
+
+    let results = decode_bandwidth_results(&output);
+    assert_eq!(results.0, 500, "interval runs from the second Start, not the first");
+    assert_eq!(
+        results.1, 1536,
+        "the 4096 bytes counted before the second Start are discarded"
+    );
+}
