@@ -1239,6 +1239,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::pdu::Codec2Type;
+    use ironrdp_pdu::codecs::rfx::RfxRectangle;
 
     struct TestHandler;
     impl GraphicsPipelineHandler for TestHandler {
@@ -1251,6 +1253,78 @@ mod tests {
         fn on_frame_complete(&mut self, _frame_id: u32) {}
         fn on_close(&mut self) {}
         fn on_unhandled_pdu(&mut self, _pdu: &GfxPdu) {}
+    }
+
+    fn reset_graphics(client: &mut GraphicsPipelineClient, width: u32, height: u32) {
+        client
+            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                width,
+                height,
+                monitors: vec![],
+            }))
+            .unwrap();
+    }
+
+    fn create_surface(client: &mut GraphicsPipelineClient, width: u16, height: u16) {
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 1,
+                width,
+                height,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .unwrap();
+    }
+
+    fn progressive_client(width: u16, height: u16) -> GraphicsPipelineClient {
+        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        reset_graphics(&mut client, u32::from(width), u32::from(height));
+        create_surface(&mut client, width, height);
+        client
+    }
+
+    fn start_frame(client: &mut GraphicsPipelineClient, frame_id: u32) {
+        client
+            .handle_pdu(GfxPdu::StartFrame(crate::pdu::StartFramePdu {
+                timestamp: crate::pdu::Timestamp {
+                    milliseconds: 0,
+                    seconds: 0,
+                    minutes: 0,
+                    hours: 0,
+                },
+                frame_id,
+            }))
+            .unwrap();
+    }
+
+    fn end_frame(client: &mut GraphicsPipelineClient, frame_id: u32) {
+        client
+            .handle_pdu(GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id }))
+            .unwrap();
+    }
+
+    fn wire_progressive(client: &mut GraphicsPipelineClient, bitmap_data: Vec<u8>) -> PduResult<Vec<DvcMessage>> {
+        client.handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
+            surface_id: 1,
+            codec_id: Codec2Type::RemoteFxProgressive,
+            codec_context_id: 7,
+            pixel_format: PixelFormat::XRgb,
+            bitmap_data,
+        }))
+    }
+
+    fn assert_progressive_context_cleared(operation: &str, clear: impl FnOnce(&mut GraphicsPipelineClient)) {
+        let mut client = progressive_client(640, 480);
+        wire_progressive(&mut client, build_progressive_stream(true)).unwrap();
+        clear(&mut client);
+        assert!(
+            wire_progressive(&mut client, build_progressive_stream(false)).is_err(),
+            "progressive decoder context must not survive {operation}"
+        );
+    }
+
+    fn rect(x: u16, y: u16, width: u16, height: u16) -> RfxRectangle {
+        RfxRectangle { x, y, width, height }
     }
 
     /// Captures bitmap updates and unhandled PDUs so a test can tell decode from
@@ -1505,7 +1579,6 @@ mod tests {
     /// Builds a minimal single-tile RFX Progressive stream, optionally opening a codec
     /// context (SYNC+CONTEXT) first.
     fn build_progressive_stream(with_context: bool) -> Vec<u8> {
-        use ironrdp_pdu::codecs::rfx::RfxRectangle;
         use ironrdp_pdu::codecs::rfx::progressive::{
             ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
             ProgressiveRegion, ProgressiveSyncPdu, encode_progressive_stream,
@@ -1513,12 +1586,7 @@ mod tests {
 
         let region = ProgressiveRegion {
             tile_size: 0x40,
-            rects: vec![RfxRectangle {
-                x: 0,
-                y: 0,
-                width: 64,
-                height: 64,
-            }],
+            rects: vec![rect(0, 0, 64, 64)],
             quant_vals: vec![],
             quant_prog_vals: vec![],
             flags: 0,
@@ -1546,10 +1614,7 @@ mod tests {
 
     #[test]
     fn wire_to_surface2_clips_compositor_output_to_region() {
-        use crate::pdu::Codec2Type;
-
         use ironrdp_graphics::progressive::{COEFFICIENTS_PER_COMPONENT, encode_first_pass};
-        use ironrdp_pdu::codecs::rfx::RfxRectangle;
         use ironrdp_pdu::codecs::rfx::progressive::{
             ComponentCodecQuant, ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu,
             ProgressiveFrameEndPdu, ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileSimple,
@@ -1559,18 +1624,7 @@ mod tests {
         // Send one real, neutral-gray TILE_SIMPLE, then reference it from a
         // second Progressive payload in the same RDPGFX frame.
         let (first_bitmap_data, shared_bitmap_data) = {
-            let base_quant = ComponentCodecQuant {
-                ll3: 6,
-                hl3: 6,
-                lh3: 6,
-                hh3: 6,
-                hl2: 6,
-                lh2: 6,
-                hh2: 6,
-                hl1: 6,
-                lh1: 6,
-                hh1: 6,
-            };
+            let base_quant = ComponentCodecQuant::LOSSLESS;
             let mut component = [0i16; COEFFICIENTS_PER_COMPONENT];
             let mut component_data = [0u8; 8192];
             let component_len = encode_first_pass(
@@ -1585,12 +1639,7 @@ mod tests {
 
             let region = ProgressiveRegion {
                 tile_size: 0x40,
-                rects: vec![RfxRectangle {
-                    x: 8,
-                    y: 12,
-                    width: 16,
-                    height: 20,
-                }],
+                rects: vec![rect(8, 12, 16, 20)],
                 quant_vals: vec![base_quant],
                 quant_prog_vals: vec![],
                 flags: 0,
@@ -1609,12 +1658,7 @@ mod tests {
             };
             let shared_tile_region = ProgressiveRegion {
                 tile_size: 0x40,
-                rects: vec![RfxRectangle {
-                    x: 32,
-                    y: 40,
-                    width: 8,
-                    height: 10,
-                }],
+                rects: vec![rect(32, 40, 8, 10)],
                 quant_vals: vec![],
                 quant_prog_vals: vec![],
                 flags: 0,
@@ -1649,36 +1693,11 @@ mod tests {
             (first_bitmap_data, shared_bitmap_data)
         };
 
-        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
-        client
-            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
-                width: 64,
-                height: 64,
-                monitors: vec![],
-            }))
-            .unwrap();
-        client
-            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-                surface_id: 1,
-                width: 64,
-                height: 64,
-                pixel_format: PixelFormat::XRgb,
-            }))
-            .unwrap();
+        let mut client = progressive_client(64, 64);
 
         // Commit and drain the initial map separately so the next output can
         // only have been produced by WireToSurface2.
-        client
-            .handle_pdu(GfxPdu::StartFrame(crate::pdu::StartFramePdu {
-                timestamp: crate::pdu::Timestamp {
-                    milliseconds: 0,
-                    seconds: 0,
-                    minutes: 0,
-                    hours: 0,
-                },
-                frame_id: 1,
-            }))
-            .unwrap();
+        start_frame(&mut client, 1);
         client
             .handle_pdu(GfxPdu::MapSurfaceToOutput(crate::pdu::MapSurfaceToOutputPdu {
                 surface_id: 1,
@@ -1686,43 +1705,13 @@ mod tests {
                 output_origin_y: 0,
             }))
             .unwrap();
-        client
-            .handle_pdu(GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id: 1 }))
-            .unwrap();
+        end_frame(&mut client, 1);
         let _ = client.drain_output();
 
-        client
-            .handle_pdu(GfxPdu::StartFrame(crate::pdu::StartFramePdu {
-                timestamp: crate::pdu::Timestamp {
-                    milliseconds: 0,
-                    seconds: 0,
-                    minutes: 0,
-                    hours: 0,
-                },
-                frame_id: 2,
-            }))
-            .unwrap();
-        client
-            .handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
-                surface_id: 1,
-                codec_id: Codec2Type::RemoteFxProgressive,
-                codec_context_id: 7,
-                pixel_format: PixelFormat::XRgb,
-                bitmap_data: first_bitmap_data,
-            }))
-            .unwrap();
-        client
-            .handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
-                surface_id: 1,
-                codec_id: Codec2Type::RemoteFxProgressive,
-                codec_context_id: 7,
-                pixel_format: PixelFormat::XRgb,
-                bitmap_data: shared_bitmap_data.clone(),
-            }))
-            .unwrap();
-        client
-            .handle_pdu(GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id: 2 }))
-            .unwrap();
+        start_frame(&mut client, 2);
+        wire_progressive(&mut client, first_bitmap_data).unwrap();
+        wire_progressive(&mut client, shared_bitmap_data.clone()).unwrap();
+        end_frame(&mut client, 2);
 
         let output = client.drain_output();
         assert_eq!(output.len(), 2);
@@ -1750,51 +1739,16 @@ mod tests {
         assert!(output[1].data.iter().any(|&value| value != 0));
 
         // A later RDPGFX frame cannot reference tiles from this completed frame.
-        client
-            .handle_pdu(GfxPdu::StartFrame(crate::pdu::StartFramePdu {
-                timestamp: crate::pdu::Timestamp {
-                    milliseconds: 0,
-                    seconds: 0,
-                    minutes: 0,
-                    hours: 0,
-                },
-                frame_id: 3,
-            }))
-            .unwrap();
-        client
-            .handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
-                surface_id: 1,
-                codec_id: Codec2Type::RemoteFxProgressive,
-                codec_context_id: 7,
-                pixel_format: PixelFormat::XRgb,
-                bitmap_data: shared_bitmap_data,
-            }))
-            .unwrap();
-        client
-            .handle_pdu(GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id: 3 }))
-            .unwrap();
+        start_frame(&mut client, 3);
+        wire_progressive(&mut client, shared_bitmap_data).unwrap();
+        end_frame(&mut client, 3);
         assert!(client.drain_output().is_empty());
     }
 
     #[test]
     fn wire_to_surface2_decode_failure_propagates_error() {
-        use crate::pdu::Codec2Type;
-
-        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
-        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-            surface_id: 1,
-            width: 640,
-            height: 480,
-            pixel_format: PixelFormat::XRgb,
-        }));
-
-        let result = client.handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
-            surface_id: 1,
-            codec_id: Codec2Type::RemoteFxProgressive,
-            codec_context_id: 7,
-            pixel_format: PixelFormat::XRgb,
-            bitmap_data: build_progressive_stream(false),
-        }));
+        let mut client = progressive_client(640, 480);
+        let result = wire_progressive(&mut client, build_progressive_stream(false));
 
         assert!(
             result.is_err(),
@@ -1804,137 +1758,29 @@ mod tests {
 
     #[test]
     fn reset_graphics_clears_progressive_decoder_context() {
-        use crate::pdu::Codec2Type;
-
-        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
-        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-            surface_id: 1,
-            width: 640,
-            height: 480,
-            pixel_format: PixelFormat::XRgb,
-        }));
-
-        let result = client.handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
-            surface_id: 1,
-            codec_id: Codec2Type::RemoteFxProgressive,
-            codec_context_id: 7,
-            pixel_format: PixelFormat::XRgb,
-            bitmap_data: build_progressive_stream(true),
-        }));
-        assert!(
-            result.is_ok(),
-            "establishing the context should succeed: {:?}",
-            result.as_ref().err()
-        );
-
-        let _ = client.handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
-            width: 1920,
-            height: 1080,
-            monitors: vec![],
-        }));
-        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-            surface_id: 1,
-            width: 640,
-            height: 480,
-            pixel_format: PixelFormat::XRgb,
-        }));
-
-        let result = client.handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
-            surface_id: 1,
-            codec_id: Codec2Type::RemoteFxProgressive,
-            codec_context_id: 7,
-            pixel_format: PixelFormat::XRgb,
-            bitmap_data: build_progressive_stream(false),
-        }));
-        assert!(
-            result.is_err(),
-            "progressive decoder context must not survive ResetGraphics"
-        );
+        assert_progressive_context_cleared("ResetGraphics", |client| {
+            reset_graphics(client, 1920, 1080);
+            create_surface(client, 640, 480);
+        });
     }
 
     #[test]
     fn delete_encoding_context_clears_progressive_decoder_context() {
-        use crate::pdu::Codec2Type;
-
-        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
-        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-            surface_id: 1,
-            width: 640,
-            height: 480,
-            pixel_format: PixelFormat::XRgb,
-        }));
-
-        let result = client.handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
-            surface_id: 1,
-            codec_id: Codec2Type::RemoteFxProgressive,
-            codec_context_id: 7,
-            pixel_format: PixelFormat::XRgb,
-            bitmap_data: build_progressive_stream(true),
-        }));
-        assert!(
-            result.is_ok(),
-            "establishing the context should succeed: {:?}",
-            result.as_ref().err()
-        );
-
-        let _ = client.handle_pdu(GfxPdu::DeleteEncodingContext(DeleteEncodingContextPdu {
-            surface_id: 1,
-            codec_context_id: 7,
-        }));
-
-        let result = client.handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
-            surface_id: 1,
-            codec_id: Codec2Type::RemoteFxProgressive,
-            codec_context_id: 7,
-            pixel_format: PixelFormat::XRgb,
-            bitmap_data: build_progressive_stream(false),
-        }));
-        assert!(
-            result.is_err(),
-            "progressive decoder context must not survive DeleteEncodingContext"
-        );
+        assert_progressive_context_cleared("DeleteEncodingContext", |client| {
+            let _ = client.handle_pdu(GfxPdu::DeleteEncodingContext(DeleteEncodingContextPdu {
+                surface_id: 1,
+                codec_context_id: 7,
+            }));
+        });
     }
 
     #[test]
     fn delete_surface_clears_progressive_decoder_context() {
-        use crate::pdu::Codec2Type;
-
-        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
-        let create_surface = || {
-            GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-                surface_id: 1,
-                width: 640,
-                height: 480,
-                pixel_format: PixelFormat::XRgb,
-            })
-        };
-        client.handle_pdu(create_surface()).unwrap();
-
-        client
-            .handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
-                surface_id: 1,
-                codec_id: Codec2Type::RemoteFxProgressive,
-                codec_context_id: 7,
-                pixel_format: PixelFormat::XRgb,
-                bitmap_data: build_progressive_stream(true),
-            }))
-            .unwrap();
-
-        client
-            .handle_pdu(GfxPdu::DeleteSurface(crate::pdu::DeleteSurfacePdu { surface_id: 1 }))
-            .unwrap();
-        client.handle_pdu(create_surface()).unwrap();
-
-        let result = client.handle_pdu(GfxPdu::WireToSurface2(WireToSurface2Pdu {
-            surface_id: 1,
-            codec_id: Codec2Type::RemoteFxProgressive,
-            codec_context_id: 7,
-            pixel_format: PixelFormat::XRgb,
-            bitmap_data: build_progressive_stream(false),
-        }));
-        assert!(
-            result.is_err(),
-            "progressive decoder context must not survive DeleteSurface"
-        );
+        assert_progressive_context_cleared("DeleteSurface", |client| {
+            client
+                .handle_pdu(GfxPdu::DeleteSurface(crate::pdu::DeleteSurfacePdu { surface_id: 1 }))
+                .unwrap();
+            create_surface(client, 640, 480);
+        });
     }
 }

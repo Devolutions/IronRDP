@@ -1552,6 +1552,43 @@ impl Default for ProgressiveDecoder {
 #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 mod tests {
     use super::*;
+    use ironrdp_pdu::codecs::rfx::RfxRectangle;
+
+    fn rect(x: u16, y: u16, width: u16, height: u16) -> RfxRectangle {
+        RfxRectangle { x, y, width, height }
+    }
+
+    fn minimal_progressive_stream() -> Vec<u8> {
+        use ironrdp_pdu::codecs::rfx::progressive::{
+            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
+            ProgressiveRegion, ProgressiveSyncPdu, encode_progressive_stream,
+        };
+
+        let region = ProgressiveRegion {
+            tile_size: 0x40,
+            rects: vec![rect(0, 0, 64, 64)],
+            quant_vals: vec![],
+            quant_prog_vals: vec![],
+            flags: 0,
+            tiles: vec![],
+        };
+        let blocks = [
+            ProgressiveBlock::Sync(ProgressiveSyncPdu),
+            ProgressiveBlock::Context(ProgressiveContextPdu {
+                context_id: 0,
+                tile_size: 0x0040,
+                flags: 0,
+            }),
+            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+                frame_index: 0,
+                region_count: 1,
+            }),
+            ProgressiveBlock::Region(region),
+            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+        ];
+
+        encode_progressive_stream(&blocks).unwrap()
+    }
 
     #[test]
     fn surface_tiles_rejects_over_cap_dimensions() {
@@ -1856,43 +1893,7 @@ mod tests {
         let mut decoder = ProgressiveDecoder::new();
 
         // Decode a minimal valid stream to create a context
-        use ironrdp_pdu::codecs::rfx::RfxRectangle;
-        use ironrdp_pdu::codecs::rfx::progressive::{
-            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
-            ProgressiveRegion, ProgressiveSyncPdu, encode_progressive_stream,
-        };
-
-        let region = ProgressiveRegion {
-            tile_size: 0x40,
-            rects: vec![RfxRectangle {
-                x: 0,
-                y: 0,
-                width: 64,
-                height: 64,
-            }],
-            quant_vals: vec![],
-            quant_prog_vals: vec![],
-            flags: 0,
-            tiles: vec![],
-        };
-
-        let blocks = vec![
-            ProgressiveBlock::Sync(ProgressiveSyncPdu),
-            ProgressiveBlock::Context(ProgressiveContextPdu {
-                context_id: 0,
-                tile_size: 0x0040,
-                flags: 0,
-            }),
-            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
-                frame_index: 0,
-                region_count: 1,
-            }),
-            ProgressiveBlock::Region(region),
-            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
-        ];
-
-        let encoded = encode_progressive_stream(&blocks).unwrap();
-        let result = decoder.decode_bitmap(1, 1, 640, 480, &encoded);
+        let result = decoder.decode_bitmap(1, 1, 640, 480, &minimal_progressive_stream());
         assert!(result.is_ok());
         assert_eq!(decoder.contexts.len(), 1);
 
@@ -1902,48 +1903,11 @@ mod tests {
 
     #[test]
     fn decoder_contexts_scoped_by_surface() {
-        use ironrdp_pdu::codecs::rfx::RfxRectangle;
-        use ironrdp_pdu::codecs::rfx::progressive::{
-            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
-            ProgressiveRegion, ProgressiveSyncPdu, encode_progressive_stream,
-        };
-
-        fn minimal_stream() -> Vec<u8> {
-            let region = ProgressiveRegion {
-                tile_size: 0x40,
-                rects: vec![RfxRectangle {
-                    x: 0,
-                    y: 0,
-                    width: 64,
-                    height: 64,
-                }],
-                quant_vals: vec![],
-                quant_prog_vals: vec![],
-                flags: 0,
-                tiles: vec![],
-            };
-            let blocks = vec![
-                ProgressiveBlock::Sync(ProgressiveSyncPdu),
-                ProgressiveBlock::Context(ProgressiveContextPdu {
-                    context_id: 0,
-                    tile_size: 0x0040,
-                    flags: 0,
-                }),
-                ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
-                    frame_index: 0,
-                    region_count: 1,
-                }),
-                ProgressiveBlock::Region(region),
-                ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
-            ];
-            encode_progressive_stream(&blocks).unwrap()
-        }
-
         let mut decoder = ProgressiveDecoder::new();
 
         // Two different surfaces reusing the same codec_context_id must not collide.
-        let result_a = decoder.decode_bitmap(1, 0, 640, 480, &minimal_stream());
-        let result_b = decoder.decode_bitmap(2, 0, 800, 600, &minimal_stream());
+        let result_a = decoder.decode_bitmap(1, 0, 640, 480, &minimal_progressive_stream());
+        let result_b = decoder.decode_bitmap(2, 0, 800, 600, &minimal_progressive_stream());
         assert!(result_a.is_ok());
         assert!(result_b.is_ok());
         assert_eq!(decoder.contexts.len(), 2);
@@ -1955,8 +1919,16 @@ mod tests {
 
         // Deleting a surface removes all of its contexts without disturbing
         // contexts owned by another surface.
-        assert!(decoder.decode_bitmap(1, 0, 640, 480, &minimal_stream()).is_ok());
-        assert!(decoder.decode_bitmap(1, 1, 640, 480, &minimal_stream()).is_ok());
+        assert!(
+            decoder
+                .decode_bitmap(1, 0, 640, 480, &minimal_progressive_stream())
+                .is_ok()
+        );
+        assert!(
+            decoder
+                .decode_bitmap(1, 1, 640, 480, &minimal_progressive_stream())
+                .is_ok()
+        );
         assert_eq!(decoder.contexts.len(), 3);
 
         decoder.delete_surface(1);
@@ -1966,7 +1938,6 @@ mod tests {
 
     #[test]
     fn decoder_ignores_regions_outside_frame() {
-        use ironrdp_pdu::codecs::rfx::RfxRectangle;
         use ironrdp_pdu::codecs::rfx::progressive::{
             ComponentCodecQuant, ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu,
             ProgressiveFrameEndPdu, ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileSimple,
@@ -1974,27 +1945,10 @@ mod tests {
         };
 
         fn invalid_region() -> ProgressiveRegion<'static> {
-            let base_quant = ComponentCodecQuant {
-                ll3: 6,
-                hl3: 6,
-                lh3: 6,
-                hh3: 6,
-                hl2: 6,
-                lh2: 6,
-                hh2: 6,
-                hl1: 6,
-                lh1: 6,
-                hh1: 6,
-            };
             ProgressiveRegion {
                 tile_size: 0x40,
-                rects: vec![RfxRectangle {
-                    x: 0,
-                    y: 0,
-                    width: 64,
-                    height: 64,
-                }],
-                quant_vals: vec![base_quant],
+                rects: vec![rect(0, 0, 64, 64)],
+                quant_vals: vec![ComponentCodecQuant::LOSSLESS],
                 quant_prog_vals: vec![],
                 flags: 0,
                 tiles: vec![ProgressiveTile::Simple(TileSimple {
