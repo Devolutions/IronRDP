@@ -780,7 +780,7 @@ impl RdpClient {
                     }
                     break;
                 }
-                Err(e) => {
+                Ok(RdpControlFlow::TransportFailure(error)) => {
                     if let Some(attempt) = next_auto_reconnect_attempt(
                         auto_reconnect_policy,
                         reconnect_attempt,
@@ -797,6 +797,12 @@ impl RdpClient {
                             continue;
                         }
                     }
+                    if !self.send_output_event(RdpOutputEvent::Terminated(Err(error))).await {
+                        self.emit_user_initiated_termination();
+                    }
+                    break;
+                }
+                Err(e) => {
                     if !self.send_output_event(RdpOutputEvent::Terminated(Err(e))).await {
                         self.emit_user_initiated_termination();
                     }
@@ -1919,6 +1925,7 @@ enum RdpControlFlow {
         height: u16,
         reason: DisplayResizeFallbackReason,
     },
+    TransportFailure(ironrdp_session::SessionError),
     TerminatedGracefully(GracefulDisconnectReason),
 }
 
@@ -2053,7 +2060,14 @@ async fn active_session(
                     }
                 }
                 frame = reader.read_pdu() => {
-                    let (action, payload) = frame.map_err(|e| ironrdp_session::custom_err!("read frame", e))?;
+                    let (action, payload) = match frame {
+                        Ok(frame) => frame,
+                        Err(error) => {
+                            return Ok(RdpControlFlow::TransportFailure(
+                                ironrdp_session::custom_err!("read frame", error),
+                            ));
+                        }
+                    };
                     trace!(?action, frame_length = payload.len(), "Frame received");
                     let mut outputs = active_stage.process(&mut image, action, &payload)?;
                     #[cfg(feature = "rdpdr")]
@@ -2410,7 +2424,12 @@ async fn active_session(
                             GracefulDisconnectReason::UserInitiated,
                         ));
                     };
-                    result.map_err(|e| ironrdp_session::custom_err!("write response", e))?;
+                    if let Err(error) = result {
+                        return Ok(RdpControlFlow::TransportFailure(ironrdp_session::custom_err!(
+                            "write response",
+                            error
+                        )));
+                    }
                 }
                 ActiveStageOutput::GraphicsUpdate(_region) => {
                     let buffer: Vec<u32> = image

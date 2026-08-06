@@ -281,7 +281,7 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | Legacy RDP 6.1 through 11 host selection | The six published `MsRdpClient*NotSafeForScripting` class identifiers are accepted by `DllGetClassObject` and preserve their requested `IPersist` class identity. They are explicit backend aliases, not global COM registrations. |
 | WinForms `AxHost` lifecycle | Windowed OLE activation, focus, sizing, the inherited `IMsRdpClient` through `IMsRdpClient10` raw interfaces, and the RDM virtual channels `RDMJump`, `RDMLog`, and `RDMCmd` are supported. |
 | Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio, clipboard, CredSSP, client-device name, RemoteApp, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
-| Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, and writable confirm-close events are delivered on the creating apartment. Warning and auto-reconnect events remain unfired until an IronRDP worker produces their real state. |
+| Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, writable confirm-close, and worker-backed warning and auto-reconnect events are delivered on the creating apartment. |
 | Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. Non-filesystem device, camera, monitor, and preferred-redirection capabilities remain unavailable. |
 
 The audit also identified RDM settings that have no IronRDP ActiveX backend: input throttling,
@@ -309,8 +309,9 @@ transitions and preserves their ordering: it is shown after `OnConnecting` (`0x0
 after `OnConnected` (`0x02`) or `OnDisconnected(long)` (`0x04`). When the server supplied a
 cookie and an active session actually fails, `AdvancedSettings.EnableAutoReconnect` (default
 enabled) and `MaxReconnectAttempts` (default `20`) bound retry attempts. Each real attempt raises
-`OnAutoReconnecting` (`0x11`) and `OnAutoReconnecting2` (`0x22`); a completed retry raises
-`OnAutoReconnected()` (`0x21`) without a second `OnConnected`. The continuation pointer exposed
+`OnAutoReconnecting` (`0x11`); `OnAutoReconnecting2` (`0x22`) follows only when the original event
+permits continuation. A completed retry raises `OnAutoReconnected()` (`0x21`) without a second
+`OnConnected`. The continuation pointer exposed
 by `OnAutoReconnecting` controls the pending retry: automatic (`0`) continues, while stop (`1`)
 and manual (`2`) suppress further automatic reconnect attempts. Calling `Disconnect` also stops
 a pending retry.
