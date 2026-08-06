@@ -41,15 +41,22 @@ environment variable before the agent connects.
 
 ### RDCleanPath
 
-RDCleanPath is supported through this opt-in local RPC configuration path, not through the classic MSTSCLib Automation interfaces.
-Those published interfaces have no RDCleanPath URL or token members, so adding an unrelated Automation property would not provide a portable ActiveX contract.
-Supply `RDCleanPathUrl` and `RDCleanPathToken` in the RPC `connect` property set together with the normal destination and RDP credentials.
-Both values are required; the URL must use `ws` or `wss` and is validated as part of the connection configuration before it selects the WebSocket-based RDCleanPath transport.
-The client-standard `ironrdp_rdcleanpathurl` and `ironrdp_rdcleanpathtoken` names are not accepted by the ActiveX RPC surface.
+RDCleanPath is configured by the IronRDP extension to `IMsRdpExtendedSettings`: set
+`RDCleanPathUrl` and `RDCleanPathToken` as `VT_BSTR` properties while disconnected. This is the
+normal COM-host configuration route; `RDCleanPathUrl` is readable only while connection settings
+remain mutable, while `RDCleanPathToken` is write-only and its getter returns `E_NOTIMPL` with an
+empty `VARIANT`.
 
-The token is write-only connection input.
-It is held only for the active connection, is not copied to the ActiveX persistence state or host trace, and is removed before `query-props` exposes the live session properties.
-Do not place it in an `.rdp` file, command line, or log directive.
+Both values are required. The URL must use `ws` or `wss`, and the token must be nonempty. The
+settings are private, non-persisted connection input: they are not included in ActiveX persistence,
+host traces, or local RPC property queries. The token is discarded from the setting store after the
+connection configuration has been built. Do not place it in an `.rdp` file, command line, or log
+directive.
+
+The opt-in local RPC `connect` property set accepts the same `RDCleanPathUrl` and
+`RDCleanPathToken` names. Supplying a complete RPC pair replaces any staged COM pair; omitting it
+uses the staged COM configuration. The client-standard `ironrdp_rdcleanpathurl` and
+`ironrdp_rdcleanpathtoken` names are not accepted by the ActiveX RPC surface.
 Certificate validation continues to use the same ActiveX `AuthenticationLevel` policy as direct and gateway sessions.
 
 ## Registration

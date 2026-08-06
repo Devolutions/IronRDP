@@ -143,6 +143,8 @@ const ACTIVEX_CLIENT_DIRECTORY_PROPERTY: &str = "IronRdpClientDirectory";
 const ACTIVEX_IME_FILE_NAME_PROPERTY: &str = "IronRdpImeFileName";
 const ACTIVEX_DIGITAL_PRODUCT_ID_PROPERTY: &str = "IronRdpDigitalProductId";
 const ACTIVEX_FAKE_EVENTS_INTERVAL_PROPERTY: &str = "IronRdpFakeEventsIntervalMinutes";
+const ACTIVEX_RDCLEANPATH_URL_PROPERTY: &str = "RDCleanPathUrl";
+const ACTIVEX_RDCLEANPATH_TOKEN_PROPERTY: &str = "RDCleanPathToken";
 const MAX_ACTIVEX_EXTENDED_SETTING_STRING_BYTES: usize = 8 * 1024;
 const ACTIVEX_DVC_PLUGIN_OPT_IN: &str = "IRONRDP_ACTIVEX_ENABLE_DVC_PLUGINS";
 const MAX_ACTIVEX_DVC_PLUGINS: usize = 16;
@@ -1052,6 +1054,69 @@ fn active_x_connection_settings_mutable(state: ConnectionState, settings: &Compa
         return Err(Error::from_hresult(E_UNEXPECTED));
     }
     Ok(())
+}
+
+#[derive(Clone, Default)]
+struct RDCleanPathSettings {
+    url: Option<String>,
+    token: Option<String>,
+}
+
+impl RDCleanPathSettings {
+    fn set_url(&mut self, value: String) -> Result<()> {
+        let value = validate_activex_extended_string(value)?;
+        let url = value
+            .parse::<url::Url>()
+            .map_err(|_| Error::new(E_INVALIDARG, "invalid RDCleanPath URL"))?;
+        if !matches!(url.scheme(), "ws" | "wss") {
+            return Err(Error::new(
+                E_INVALIDARG,
+                "RDCleanPath URL must use the ws or wss scheme",
+            ));
+        }
+
+        self.url = Some(value);
+        Ok(())
+    }
+
+    fn set_token(&mut self, value: String) -> Result<()> {
+        let value = validate_activex_extended_string(value)?;
+        if value.is_empty() {
+            return Err(Error::new(E_INVALIDARG, "RDCleanPathToken must not be empty"));
+        }
+
+        self.token = Some(value);
+        Ok(())
+    }
+
+    fn transport(&self) -> Result<Option<ActiveXTransport>> {
+        match (&self.url, &self.token) {
+            (None, None) => Ok(None),
+            (Some(url), Some(token)) => {
+                let url = url
+                    .parse::<url::Url>()
+                    .map_err(|_| Error::new(E_INVALIDARG, "invalid RDCleanPath URL"))?;
+                Ok(Some(ActiveXTransport::RDCleanPath(RDCleanPathConfig {
+                    url,
+                    auth_token: token.clone(),
+                })))
+            }
+            _ => Err(Error::new(
+                E_INVALIDARG,
+                "RDCleanPathUrl and RDCleanPathToken must be configured together",
+            )),
+        }
+    }
+
+    fn apply_to_client_properties(&self, properties: &mut PropertySet) -> Result<()> {
+        if let (Some(url), Some(token)) = (&self.url, &self.token) {
+            properties.insert("ironrdp_rdcleanpathurl", url.clone());
+            properties.insert("ironrdp_rdcleanpathtoken", token.clone());
+        } else {
+            self.transport()?;
+        }
+        Ok(())
+    }
 }
 
 // The settings objects are consumed through their published dual-interface vtables by
@@ -2349,10 +2414,14 @@ fn rdcleanpath_rpc_client_properties(properties: &PropertySet) -> core::result::
         return Err("use RDCleanPathUrl and RDCleanPathToken for ActiveX RPC connections");
     }
 
-    let url = properties.get::<&str>("RDCleanPathUrl");
-    let token = properties.get::<&str>("RDCleanPathToken");
-    let has_url = properties.iter().any(|(key, _)| key.as_ref() == "RDCleanPathUrl");
-    let has_token = properties.iter().any(|(key, _)| key.as_ref() == "RDCleanPathToken");
+    let url = properties.get::<&str>(ACTIVEX_RDCLEANPATH_URL_PROPERTY);
+    let token = properties.get::<&str>(ACTIVEX_RDCLEANPATH_TOKEN_PROPERTY);
+    let has_url = properties
+        .iter()
+        .any(|(key, _)| key.as_ref() == ACTIVEX_RDCLEANPATH_URL_PROPERTY);
+    let has_token = properties
+        .iter()
+        .any(|(key, _)| key.as_ref() == ACTIVEX_RDCLEANPATH_TOKEN_PROPERTY);
 
     if has_url && url.is_none() {
         return Err("RDCleanPathUrl must be a string");
@@ -4297,6 +4366,7 @@ pub(crate) struct Control {
     traced_frame_layout_generation: Cell<u64>,
     traced_paint_layout_generation: Cell<u64>,
     rpc: Option<ActiveXRpc>,
+    rdcleanpath_settings: RefCell<RDCleanPathSettings>,
     rpc_properties: RefCell<Option<PropertySet>>,
     rpc_transport: RefCell<Option<ActiveXTransport>>,
     rpc_kerberos_config: RefCell<Option<ironrdp_connector::credssp::KerberosConfig>>,
@@ -4407,11 +4477,35 @@ impl Control {
             traced_frame_layout_generation: Cell::new(0),
             traced_paint_layout_generation: Cell::new(0),
             rpc: ActiveXRpc::from_environment(),
+            rdcleanpath_settings: RefCell::new(RDCleanPathSettings::default()),
             rpc_properties: RefCell::new(None),
             rpc_transport: RefCell::new(None),
             rpc_kerberos_config: RefCell::new(None),
             rpc_log_directive: RefCell::new(None),
         }
+    }
+
+    fn replace_rdcleanpath_settings(&self, url: String, token: String) -> Result<()> {
+        let mut settings = self.rdcleanpath_settings.borrow_mut();
+        let mut replacement = settings.clone();
+        replacement.set_url(url)?;
+        replacement.set_token(token)?;
+        *settings = replacement;
+        Ok(())
+    }
+
+    fn rdcleanpath_transport(&self) -> Result<Option<ActiveXTransport>> {
+        self.rdcleanpath_settings.borrow().transport()
+    }
+
+    fn apply_rdcleanpath_settings_to_client_properties(&self, properties: &mut PropertySet) -> Result<()> {
+        self.rdcleanpath_settings
+            .borrow()
+            .apply_to_client_properties(properties)
+    }
+
+    fn clear_rdcleanpath_token(&self) {
+        self.rdcleanpath_settings.borrow_mut().token = None;
     }
 
     fn remember_callback_owner(&self, owner: *const Control_Impl) {
@@ -6408,7 +6502,7 @@ impl Control {
                 "a session is already active; disconnect first",
             );
         }
-        let client_properties = match rdcleanpath_rpc_client_properties(&properties) {
+        let mut client_properties = match rdcleanpath_rpc_client_properties(&properties) {
             Ok(properties) => properties,
             Err(message) => {
                 return ironrdp_agent::ipc::Response::typed_error(
@@ -6417,6 +6511,16 @@ impl Control {
                 );
             }
         };
+        if let Some((url, token)) = client_properties
+            .get::<&str>("ironrdp_rdcleanpathurl")
+            .zip(client_properties.get::<&str>("ironrdp_rdcleanpathtoken"))
+        {
+            if let Err(error) = self.replace_rdcleanpath_settings(url.to_owned(), token.to_owned()) {
+                return rpc_control_error(error);
+            }
+        } else if let Err(error) = self.apply_rdcleanpath_settings_to_client_properties(&mut client_properties) {
+            return rpc_control_error(error);
+        }
         if ["ironrdp_dvcpipeproxy", "ironrdp_dvcplugin"]
             .into_iter()
             .any(|key| properties.get::<&str>(key).is_some())
@@ -6689,7 +6793,9 @@ impl Control {
         let work_dir = compatibility.secured_work_dir.clone();
         let transport = match self.rpc_transport.borrow_mut().take() {
             Some(transport) => transport,
-            None => active_x_transport(&settings, &compatibility)?,
+            None => self
+                .rdcleanpath_transport()?
+                .unwrap_or(active_x_transport(&settings, &compatibility)?),
         };
         let performance_flags = compatibility.performance_flags;
         let keyboard_layout = compatibility.keyboard_layout;
@@ -6880,6 +6986,7 @@ impl Control {
         } else {
             builder
         };
+        let using_rdcleanpath = matches!(&transport, ActiveXTransport::RDCleanPath(_));
         let builder = match transport {
             ActiveXTransport::Direct => builder,
             ActiveXTransport::Gateway {
@@ -6918,6 +7025,9 @@ impl Control {
         let config = builder
             .build()
             .map_err(|error| Error::new(E_INVALIDARG, format!("invalid RDP configuration: {error}")))?;
+        if using_rdcleanpath {
+            self.clear_rdcleanpath_token();
+        }
         let rpc_destination = config.destination().to_string();
         drop(settings);
         let (output_sender, mut output_receiver) = mpsc::channel(32);
@@ -9257,6 +9367,30 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
                 return Ok(());
             }
         }
+        if name.eq_ignore_ascii_case(ACTIVEX_RDCLEANPATH_URL_PROPERTY) {
+            if value.is_null() {
+                return Err(Error::from_hresult(E_POINTER));
+            }
+            let url = variant_string(unsafe { &*value }, ptr::null_mut())?;
+            let compatibility = self.compatibility.borrow();
+            active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
+            drop(compatibility);
+            self.rdcleanpath_settings.borrow_mut().set_url(url)?;
+            trace_host_call("IMsRdpExtendedSettings::put_RDCleanPathUrl");
+            return Ok(());
+        }
+        if name.eq_ignore_ascii_case(ACTIVEX_RDCLEANPATH_TOKEN_PROPERTY) {
+            if value.is_null() {
+                return Err(Error::from_hresult(E_POINTER));
+            }
+            let token = variant_string(unsafe { &*value }, ptr::null_mut())?;
+            let compatibility = self.compatibility.borrow();
+            active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
+            drop(compatibility);
+            self.rdcleanpath_settings.borrow_mut().set_token(token)?;
+            trace_host_call("IMsRdpExtendedSettings::put_RDCleanPathToken");
+            return Ok(());
+        }
         if name.eq_ignore_ascii_case("ClientDeviceName") {
             if value.is_null() {
                 return Err(Error::from_hresult(E_POINTER));
@@ -9435,6 +9569,18 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
         if name.eq_ignore_ascii_case("ZoomLevel") {
             trace_host_call("IMsRdpExtendedSettings::get_ZoomLevel");
             return write_out(value, variant_i32(self.compatibility.borrow().zoom_level));
+        }
+        if name.eq_ignore_ascii_case(ACTIVEX_RDCLEANPATH_URL_PROPERTY) {
+            let compatibility = self.compatibility.borrow();
+            active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
+            drop(compatibility);
+            let url = self.rdcleanpath_settings.borrow().url.clone().unwrap_or_default();
+            trace_host_call("IMsRdpExtendedSettings::get_RDCleanPathUrl");
+            return write_out(value, variant_bstr(url));
+        }
+        if name.eq_ignore_ascii_case(ACTIVEX_RDCLEANPATH_TOKEN_PROPERTY) {
+            write_out(value, VARIANT::default())?;
+            return Err(Error::from_hresult(E_NOTIMPL));
         }
         if name.eq_ignore_ascii_case("ClientDeviceName") {
             let client_name = self
@@ -12208,6 +12354,99 @@ mod tests {
             rdcleanpath_rpc_client_properties(&properties),
             Err("RDCleanPathUrl must be a string")
         );
+    }
+
+    #[test]
+    fn extended_settings_expose_rdcleanpath_url_and_protect_token() {
+        let control: IMsRdpClient10 = Control::new().into();
+        let extended = control
+            .cast::<IMsRdpExtendedSettings>()
+            .expect("control supports IMsRdpExtendedSettings");
+
+        let mut invalid_url = variant_i32(42);
+        let error = unsafe {
+            extended
+                .put_Property(BSTR::from(ACTIVEX_RDCLEANPATH_URL_PROPERTY).as_ptr(), &mut invalid_url)
+                .expect_err("RDCleanPathUrl only accepts VT_BSTR")
+        };
+        assert_eq!(error.code(), DISP_E_TYPEMISMATCH);
+
+        let mut invalid_scheme = variant_bstr("https://rdcleanpath.example.test/rdp".to_owned());
+        let error = unsafe {
+            extended
+                .put_Property(
+                    BSTR::from(ACTIVEX_RDCLEANPATH_URL_PROPERTY).as_ptr(),
+                    &mut invalid_scheme,
+                )
+                .expect_err("RDCleanPathUrl only accepts ws and wss URLs")
+        };
+        free_owned_bstr_variant(&mut invalid_scheme);
+        assert_eq!(error.code(), E_INVALIDARG);
+
+        let mut url = variant_bstr("wss://rdcleanpath.example.test/rdp".to_owned());
+        unsafe {
+            extended
+                .put_Property(BSTR::from(ACTIVEX_RDCLEANPATH_URL_PROPERTY).as_ptr(), &mut url)
+                .expect("set RDCleanPath URL");
+        }
+        free_owned_bstr_variant(&mut url);
+
+        let mut returned_url = VARIANT::default();
+        unsafe {
+            extended
+                .get_Property(BSTR::from(ACTIVEX_RDCLEANPATH_URL_PROPERTY).as_ptr(), &mut returned_url)
+                .expect("get RDCleanPath URL");
+        }
+        assert_eq!(
+            variant_bstr_value(&returned_url).expect("RDCleanPath URL BSTR"),
+            "wss://rdcleanpath.example.test/rdp"
+        );
+        free_owned_bstr_variant(&mut returned_url);
+
+        let mut token = variant_bstr("test-token".to_owned());
+        unsafe {
+            extended
+                .put_Property(BSTR::from(ACTIVEX_RDCLEANPATH_TOKEN_PROPERTY).as_ptr(), &mut token)
+                .expect("set RDCleanPath token");
+        }
+        free_owned_bstr_variant(&mut token);
+
+        let mut returned_token = VARIANT::default();
+        let error = unsafe {
+            extended
+                .get_Property(
+                    BSTR::from(ACTIVEX_RDCLEANPATH_TOKEN_PROPERTY).as_ptr(),
+                    &mut returned_token,
+                )
+                .expect_err("RDCleanPathToken is write-only")
+        };
+        assert_eq!(error.code(), E_NOTIMPL);
+        assert_eq!(variant_header(&returned_token).vt, VT_EMPTY);
+    }
+
+    #[test]
+    fn rdcleanpath_settings_require_a_complete_pair_and_mutable_connection_settings() {
+        let mut settings = RDCleanPathSettings::default();
+        settings
+            .set_url("wss://rdcleanpath.example.test/rdp".to_owned())
+            .expect("RDCleanPath URL is valid");
+        let error = match settings.transport() {
+            Ok(_) => panic!("RDCleanPath token is required"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), E_INVALIDARG);
+
+        let control = Control::new();
+        control.compatibility.borrow_mut().connection_settings_sealed = true;
+        let extended: IMsRdpExtendedSettings = control.into();
+        let mut url = variant_bstr("wss://rdcleanpath.example.test/rdp".to_owned());
+        let error = unsafe {
+            extended
+                .put_Property(BSTR::from(ACTIVEX_RDCLEANPATH_URL_PROPERTY).as_ptr(), &mut url)
+                .expect_err("RDCleanPath settings are immutable after connection settings are sealed")
+        };
+        free_owned_bstr_variant(&mut url);
+        assert_eq!(error.code(), E_UNEXPECTED);
     }
 
     #[implement(IDispatch)]
