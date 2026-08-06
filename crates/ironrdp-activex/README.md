@@ -43,8 +43,9 @@ environment variable before the agent connects.
 
 RDCleanPath is supported through this opt-in local RPC configuration path, not through the classic MSTSCLib Automation interfaces.
 Those published interfaces have no RDCleanPath URL or token members, so adding an unrelated Automation property would not provide a portable ActiveX contract.
-Supply `ironrdp_rdcleanpathurl` and `ironrdp_rdcleanpathtoken` in the RPC `connect` property set together with the normal destination and RDP credentials.
+Supply `RDCleanPathUrl` and `RDCleanPathToken` in the RPC `connect` property set together with the normal destination and RDP credentials.
 Both values are required; the URL must use `ws` or `wss` and is validated as part of the connection configuration before it selects the WebSocket-based RDCleanPath transport.
+The client-standard `ironrdp_rdcleanpathurl` and `ironrdp_rdcleanpathtoken` names are not accepted by the ActiveX RPC surface.
 
 The token is write-only connection input.
 It is held only for the active connection, is not copied to the ActiveX persistence state or host trace, and is removed before `query-props` exposes the live session properties.

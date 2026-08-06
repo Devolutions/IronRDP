@@ -2341,15 +2341,37 @@ fn active_x_transport_from_client_transport(transport: &Transport) -> ActiveXTra
     }
 }
 
-fn rdcleanpath_rpc_configuration_error(properties: &PropertySet) -> Option<&'static str> {
-    match (
-        properties.get::<&str>("ironrdp_rdcleanpathurl"),
-        properties.get::<&str>("ironrdp_rdcleanpathtoken"),
-    ) {
-        (Some(_), None) => Some("RDCleanPath token is required when an RDCleanPath URL is configured"),
-        (None, Some(_)) => Some("RDCleanPath URL is required when an RDCleanPath token is configured"),
-        (_, Some("")) => Some("RDCleanPath token must not be empty"),
-        _ => None,
+fn rdcleanpath_rpc_client_properties(properties: &PropertySet) -> core::result::Result<PropertySet, &'static str> {
+    let has_legacy_property = properties
+        .iter()
+        .any(|(key, _)| matches!(key.as_ref(), "ironrdp_rdcleanpathurl" | "ironrdp_rdcleanpathtoken"));
+    if has_legacy_property {
+        return Err("use RDCleanPathUrl and RDCleanPathToken for ActiveX RPC connections");
+    }
+
+    let url = properties.get::<&str>("RDCleanPathUrl");
+    let token = properties.get::<&str>("RDCleanPathToken");
+    let has_url = properties.iter().any(|(key, _)| key.as_ref() == "RDCleanPathUrl");
+    let has_token = properties.iter().any(|(key, _)| key.as_ref() == "RDCleanPathToken");
+
+    if has_url && url.is_none() {
+        return Err("RDCleanPathUrl must be a string");
+    }
+    if has_token && token.is_none() {
+        return Err("RDCleanPathToken must be a string");
+    }
+
+    match (url, token) {
+        (Some(_), None) => Err("RDCleanPathToken is required when RDCleanPathUrl is configured"),
+        (None, Some(_)) => Err("RDCleanPathUrl is required when RDCleanPathToken is configured"),
+        (_, Some("")) => Err("RDCleanPathToken must not be empty"),
+        (Some(url), Some(token)) => {
+            let mut client_properties = properties.clone();
+            client_properties.insert("ironrdp_rdcleanpathurl", url.to_owned());
+            client_properties.insert("ironrdp_rdcleanpathtoken", token.to_owned());
+            Ok(client_properties)
+        }
+        (None, None) => Ok(properties.clone()),
     }
 }
 
@@ -6386,12 +6408,15 @@ impl Control {
                 "a session is already active; disconnect first",
             );
         }
-        if let Some(message) = rdcleanpath_rpc_configuration_error(&properties) {
-            return ironrdp_agent::ipc::Response::typed_error(
-                ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
-                message,
-            );
-        }
+        let client_properties = match rdcleanpath_rpc_client_properties(&properties) {
+            Ok(properties) => properties,
+            Err(message) => {
+                return ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    message,
+                );
+            }
+        };
         if ["ironrdp_dvcpipeproxy", "ironrdp_dvcplugin"]
             .into_iter()
             .any(|key| properties.get::<&str>(key).is_some())
@@ -6423,7 +6448,7 @@ impl Control {
                 );
             }
         };
-        let builder = match ConfigBuilder::from_property_set(&properties) {
+        let builder = match ConfigBuilder::from_property_set(&client_properties) {
             Ok(builder) => builder,
             Err(error) => {
                 return ironrdp_agent::ipc::Response::typed_error(
@@ -6557,7 +6582,7 @@ impl Control {
             }
         }
 
-        *self.rpc_properties.borrow_mut() = Some(config.properties().clone());
+        *self.rpc_properties.borrow_mut() = Some(properties);
         *self.rpc_transport.borrow_mut() = Some(rpc_transport);
         *self.rpc_kerberos_config.borrow_mut() = config.kerberos_config().cloned();
         *self.rpc_log_directive.borrow_mut() = log_directive;
@@ -12136,28 +12161,52 @@ mod tests {
     }
 
     #[test]
-    fn activex_rpc_rdcleanpath_configuration_requires_a_url_and_token() {
+    fn activex_rpc_rdcleanpath_configuration_uses_activex_property_names() {
         let mut properties = PropertySet::new();
+        properties.insert("RDCleanPathUrl", "wss://rdcleanpath.example.test/rdp");
+        assert_eq!(
+            rdcleanpath_rpc_client_properties(&properties),
+            Err("RDCleanPathToken is required when RDCleanPathUrl is configured")
+        );
+
+        properties.remove("RDCleanPathUrl");
+        properties.insert("RDCleanPathToken", "test-token");
+        assert_eq!(
+            rdcleanpath_rpc_client_properties(&properties),
+            Err("RDCleanPathUrl is required when RDCleanPathToken is configured")
+        );
+
+        properties.insert("RDCleanPathUrl", "wss://rdcleanpath.example.test/rdp");
+        let client_properties =
+            rdcleanpath_rpc_client_properties(&properties).expect("complete ActiveX configuration is valid");
+        assert_eq!(
+            client_properties.get::<&str>("ironrdp_rdcleanpathurl"),
+            Some("wss://rdcleanpath.example.test/rdp")
+        );
+        assert_eq!(
+            client_properties.get::<&str>("ironrdp_rdcleanpathtoken"),
+            Some("test-token")
+        );
+
+        properties.insert("RDCleanPathToken", "");
+        assert_eq!(
+            rdcleanpath_rpc_client_properties(&properties),
+            Err("RDCleanPathToken must not be empty")
+        );
+
+        properties.remove("RDCleanPathUrl");
+        properties.remove("RDCleanPathToken");
         properties.insert("ironrdp_rdcleanpathurl", "wss://rdcleanpath.example.test/rdp");
         assert_eq!(
-            rdcleanpath_rpc_configuration_error(&properties),
-            Some("RDCleanPath token is required when an RDCleanPath URL is configured")
+            rdcleanpath_rpc_client_properties(&properties),
+            Err("use RDCleanPathUrl and RDCleanPathToken for ActiveX RPC connections")
         );
 
         properties.remove("ironrdp_rdcleanpathurl");
-        properties.insert("ironrdp_rdcleanpathtoken", "test-token");
+        properties.insert("RDCleanPathUrl", 42i32);
         assert_eq!(
-            rdcleanpath_rpc_configuration_error(&properties),
-            Some("RDCleanPath URL is required when an RDCleanPath token is configured")
-        );
-
-        properties.insert("ironrdp_rdcleanpathurl", "wss://rdcleanpath.example.test/rdp");
-        assert_eq!(rdcleanpath_rpc_configuration_error(&properties), None);
-
-        properties.insert("ironrdp_rdcleanpathtoken", "");
-        assert_eq!(
-            rdcleanpath_rpc_configuration_error(&properties),
-            Some("RDCleanPath token must not be empty")
+            rdcleanpath_rpc_client_properties(&properties),
+            Err("RDCleanPathUrl must be a string")
         );
     }
 
