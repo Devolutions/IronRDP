@@ -3011,6 +3011,7 @@ dependencies = [
  "expect-test",
  "hex",
  "ironrdp-acceptor",
+ "ironrdp-async",
  "ironrdp-bulk",
  "ironrdp-cfg",
  "ironrdp-cliprdr",
