@@ -288,6 +288,16 @@ const REMOTE_SESSION_ACTION_START_SCREEN: i32 = 3;
 const REMOTE_SESSION_ACTION_APP_SWITCH: i32 = 4;
 const REMOTE_SESSION_ACTION_ACTION_CENTER: i32 = 5;
 const REMOTE_SESSION_ACTION_TASK_MANAGER: i32 = 6;
+const REMOTE_ACTION_MODIFIERS: &[Scancode] = &[
+    Scancode::from_u8(false, 0x1d), // Left Ctrl
+    Scancode::from_u8(true, 0x1d),  // Right Ctrl
+    Scancode::from_u8(false, 0x2a), // Left Shift
+    Scancode::from_u8(false, 0x36), // Right Shift
+    Scancode::from_u8(false, 0x38), // Left Alt
+    Scancode::from_u8(true, 0x38),  // Right Alt
+    Scancode::from_u8(true, 0x5b),  // Left Win
+    Scancode::from_u8(true, 0x5c),  // Right Win
+];
 
 const DISPID_ON_CONNECTING: i32 = 1;
 const DISPID_ON_CONNECTED: i32 = 2;
@@ -7493,17 +7503,9 @@ impl Control {
         if self.state.get() != ConnectionState::Connected {
             return Err(Error::from_hresult(E_UNEXPECTED));
         }
-        let sender = self
-            .input_sender
-            .borrow()
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?;
-
         let key_up = unsafe { slice::from_raw_parts(key_up, key_count) };
         let key_data = unsafe { slice::from_raw_parts(key_data, key_count) };
-        let permit = sender.try_reserve().map_err(|_| Error::from_hresult(E_UNEXPECTED))?;
-        let operations = key_up.iter().zip(key_data).map(|(key_up, key_data)| {
+        let mut operations = key_up.iter().zip(key_data).map(|(key_up, key_data)| {
             let key_data = *key_data as u32;
             let scancode = Scancode::from_u8(key_data & (1 << 24) != 0, (key_data >> 16) as u8);
             if *key_up == VARIANT_FALSE.0 {
@@ -7512,6 +7514,21 @@ impl Control {
                 Operation::KeyReleased(scancode)
             }
         });
+
+        self.send_input_operations(&mut operations)
+    }
+
+    fn send_input_operations(&self, operations: &mut dyn Iterator<Item = Operation>) -> Result<()> {
+        if self.state.get() != ConnectionState::Connected {
+            return Err(Error::from_hresult(E_UNEXPECTED));
+        }
+        let sender = self
+            .input_sender
+            .borrow()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?;
+        let permit = sender.try_reserve().map_err(|_| Error::from_hresult(E_UNEXPECTED))?;
         let fast_path = self.input_database.borrow_mut().apply(operations);
         if fast_path.is_empty() {
             return Ok(());
@@ -7521,56 +7538,38 @@ impl Control {
     }
 
     fn send_remote_action(&self, action: i32) -> Result<()> {
-        // The action is expressed as its documented remote shell shortcut. The high byte of
-        // each key-data value is the Win32 extended-key flag accepted by SendKeys.
-        match action {
-            REMOTE_SESSION_ACTION_CHARMS => {
-                let key_up = [VARIANT_FALSE.0, VARIANT_FALSE.0, VARIANT_TRUE.0, VARIANT_TRUE.0];
-                let key_data = [0x015b_0001, 0x002e_0001, 0x002e_0001, 0x015b_0001];
-                self.send_keys(4, key_up.as_ptr(), key_data.as_ptr())
+        let shortcut: &[Scancode] = match action {
+            REMOTE_SESSION_ACTION_CHARMS => &[Scancode::from_u8(true, 0x5b), Scancode::from_u8(false, 0x2e)],
+            REMOTE_SESSION_ACTION_APPBAR => &[Scancode::from_u8(true, 0x5b), Scancode::from_u8(false, 0x2c)],
+            REMOTE_SESSION_ACTION_SNAP => return Err(Error::from_hresult(E_NOTIMPL)),
+            REMOTE_SESSION_ACTION_START_SCREEN => &[Scancode::from_u8(true, 0x5b)],
+            REMOTE_SESSION_ACTION_APP_SWITCH => &[Scancode::from_u8(false, 0x38), Scancode::from_u8(false, 0x0f)],
+            REMOTE_SESSION_ACTION_ACTION_CENTER => &[Scancode::from_u8(true, 0x5b), Scancode::from_u8(false, 0x1e)],
+            REMOTE_SESSION_ACTION_TASK_MANAGER => &[
+                Scancode::from_u8(false, 0x1d),
+                Scancode::from_u8(false, 0x2a),
+                Scancode::from_u8(false, 0x01),
+            ],
+            _ => return Err(Error::from_hresult(E_INVALIDARG)),
+        };
+
+        let previously_pressed = {
+            let input_database = self.input_database.borrow();
+            let mut pressed = Vec::new();
+            for key in REMOTE_ACTION_MODIFIERS.iter().chain(shortcut) {
+                if input_database.is_key_pressed(*key) && !pressed.contains(key) {
+                    pressed.push(*key);
+                }
             }
-            REMOTE_SESSION_ACTION_APPBAR => {
-                let key_up = [VARIANT_FALSE.0, VARIANT_FALSE.0, VARIANT_TRUE.0, VARIANT_TRUE.0];
-                let key_data = [0x015b_0001, 0x002c_0001, 0x002c_0001, 0x015b_0001];
-                self.send_keys(4, key_up.as_ptr(), key_data.as_ptr())
-            }
-            REMOTE_SESSION_ACTION_SNAP => Err(Error::from_hresult(E_NOTIMPL)),
-            REMOTE_SESSION_ACTION_START_SCREEN => {
-                let key_up = [VARIANT_FALSE.0, VARIANT_TRUE.0];
-                let key_data = [0x015b_0001, 0x015b_0001];
-                self.send_keys(2, key_up.as_ptr(), key_data.as_ptr())
-            }
-            REMOTE_SESSION_ACTION_APP_SWITCH => {
-                let key_up = [VARIANT_FALSE.0, VARIANT_FALSE.0, VARIANT_TRUE.0, VARIANT_TRUE.0];
-                let key_data = [0x0038_0001, 0x000f_0001, 0x000f_0001, 0x0038_0001];
-                self.send_keys(4, key_up.as_ptr(), key_data.as_ptr())
-            }
-            REMOTE_SESSION_ACTION_ACTION_CENTER => {
-                let key_up = [VARIANT_FALSE.0, VARIANT_FALSE.0, VARIANT_TRUE.0, VARIANT_TRUE.0];
-                let key_data = [0x015b_0001, 0x001e_0001, 0x001e_0001, 0x015b_0001];
-                self.send_keys(4, key_up.as_ptr(), key_data.as_ptr())
-            }
-            REMOTE_SESSION_ACTION_TASK_MANAGER => {
-                let key_up = [
-                    VARIANT_FALSE.0,
-                    VARIANT_FALSE.0,
-                    VARIANT_FALSE.0,
-                    VARIANT_TRUE.0,
-                    VARIANT_TRUE.0,
-                    VARIANT_TRUE.0,
-                ];
-                let key_data = [
-                    0x001d_0001,
-                    0x002a_0001,
-                    0x0001_0001,
-                    0x0001_0001,
-                    0x002a_0001,
-                    0x001d_0001,
-                ];
-                self.send_keys(6, key_up.as_ptr(), key_data.as_ptr())
-            }
-            _ => Err(Error::from_hresult(E_INVALIDARG)),
-        }
+            pressed
+        };
+        let mut operations = Vec::with_capacity(previously_pressed.len() * 2 + shortcut.len() * 2);
+        operations.extend(previously_pressed.iter().copied().map(Operation::KeyReleased));
+        operations.extend(shortcut.iter().copied().map(Operation::KeyPressed));
+        operations.extend(shortcut.iter().rev().copied().map(Operation::KeyReleased));
+        operations.extend(previously_pressed.iter().copied().map(Operation::KeyPressed));
+        let mut operations = operations.into_iter();
+        self.send_input_operations(&mut operations)
     }
 
     fn release_input(&self) {
@@ -13660,6 +13659,46 @@ mod tests {
                 Ok(RdpInputEvent::FastPath(events)) if events.as_slice() == expected
             ));
         }
+    }
+
+    #[test]
+    fn send_remote_action_preserves_held_shortcut_keys() {
+        let control = Control::new();
+        let (sender, mut receiver) = RdpInputSender::channel(1);
+        *control.input_sender.borrow_mut() = Some(sender);
+        control.state.set(ConnectionState::Connected);
+
+        let held_keys = [Scancode::from_u8(false, 0x1d), Scancode::from_u8(false, 0x2e)];
+        control
+            .input_database
+            .borrow_mut()
+            .apply(held_keys.into_iter().map(Operation::KeyPressed));
+
+        control
+            .send_remote_action(REMOTE_SESSION_ACTION_CHARMS)
+            .expect("send Charms while Ctrl+C is held");
+
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(RdpInputEvent::FastPath(events))
+                if events.as_slice()
+                    == [
+                        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x1d),
+                        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x2e),
+                        FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 0x5b),
+                        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x2e),
+                        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x2e),
+                        FastPathInputEvent::KeyboardEvent(
+                            KeyboardFlags::EXTENDED | KeyboardFlags::RELEASE,
+                            0x5b,
+                        ),
+                        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1d),
+                        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x2e),
+                    ]
+        ));
+        let input_database = control.input_database.borrow();
+        assert!(input_database.is_key_pressed(held_keys[0]));
+        assert!(input_database.is_key_pressed(held_keys[1]));
     }
 
     #[test]

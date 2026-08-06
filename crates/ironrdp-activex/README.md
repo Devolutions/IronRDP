@@ -228,6 +228,7 @@ secret.
 `SendRemoteAction` is supported only for an active session and translates the documented `RemoteSessionActionType` shell actions into the corresponding complete RDP scancode shortcut.
 It does not use a local keyboard hook, so these actions are sent to the remote session regardless of host focus.
 IronRDP sends each key press and release as a Fast-Path keyboard event as specified by [MS-RDPBCGR 2.2.8.1.2.2.1].
+Held modifiers and shortcut keys are released before the action, then restored within the same transaction.
 
 | Action | Value | Remote shortcut |
 | --- | ---: | --- |
