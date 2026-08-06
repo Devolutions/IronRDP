@@ -29,10 +29,12 @@ use ironrdp_tls::CertificateValidation;
 use sha2::{Digest as _, Sha256};
 use tokio::sync::mpsc;
 use windows::Win32::Foundation::{
-    DISP_E_BADPARAMCOUNT, DISP_E_MEMBERNOTFOUND, DISP_E_TYPEMISMATCH, DISP_E_UNKNOWNNAME, DV_E_DVASPECT, DV_E_LINDEX,
-    E_FAIL, E_INVALIDARG, E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, E_UNEXPECTED, ERROR_CANCELLED,
-    ERROR_CLASS_DOES_NOT_EXIST, FreeLibrary, HMODULE, HWND, LPARAM, LRESULT, OLE_E_NOCONNECTION, OLEOBJ_S_INVALIDVERB,
-    POINT, RECT, RECTL, S_FALSE, S_OK, SIZE, SysStringLen, VARIANT_BOOL, VARIANT_FALSE, VARIANT_TRUE, WPARAM,
+    DATA_S_SAMEFORMATETC, DISP_E_BADPARAMCOUNT, DISP_E_MEMBERNOTFOUND, DISP_E_TYPEMISMATCH, DISP_E_UNKNOWNNAME,
+    DV_E_DVASPECT, DV_E_DVTARGETDEVICE, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_FAIL, E_INVALIDARG, E_NOTIMPL,
+    E_OUTOFMEMORY, E_POINTER, E_UNEXPECTED, ERROR_CANCELLED, ERROR_CLASS_DOES_NOT_EXIST, FreeLibrary, GlobalFree,
+    HGLOBAL, HMODULE, HWND, LPARAM, LRESULT, OLE_E_ADVISENOTSUPPORTED, OLE_E_NOCONNECTION, OLE_E_NOTRUNNING,
+    OLEOBJ_S_INVALIDVERB, POINT, RECT, RECTL, S_FALSE, S_OK, SIZE, SysStringLen, VARIANT_BOOL, VARIANT_FALSE,
+    VARIANT_TRUE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateRectRgn,
@@ -44,17 +46,22 @@ use windows::Win32::Security::Credentials::{
     CredUIPromptForCredentialsW,
 };
 use windows::Win32::System::Com::{
-    CONNECTDATA, CoTaskMemAlloc, DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET, DISPATCH_PROPERTYPUT,
-    DISPPARAMS, DVASPECT, DVASPECT_CONTENT, DVTARGETDEVICE, EXCEPINFO, FORMATETC, IAdviseSink, IConnectionPoint,
-    IConnectionPoint_Impl, IConnectionPointContainer, IConnectionPointContainer_Impl, IDispatch, IDispatch_Impl,
-    IDispatch_Vtbl, IEnumConnectionPoints, IEnumConnectionPoints_Impl, IEnumConnections, IEnumConnections_Impl,
-    IEnumSTATDATA, IEnumSTATDATA_Impl, IPersist_Impl, IPersistStreamInit, IPersistStreamInit_Impl, IStream, ITypeInfo,
-    STATDATA,
+    CONNECTDATA, CoTaskMemAlloc, DATADIR_GET, DATADIR_SET, DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET,
+    DISPATCH_PROPERTYPUT, DISPPARAMS, DVASPECT, DVASPECT_CONTENT, DVTARGETDEVICE, EXCEPINFO, FORMATETC, IAdviseSink,
+    IConnectionPoint, IConnectionPoint_Impl, IConnectionPointContainer, IConnectionPointContainer_Impl, IDataObject,
+    IDataObject_Impl, IDispatch, IDispatch_Impl, IDispatch_Vtbl, IEnumConnectionPoints, IEnumConnectionPoints_Impl,
+    IEnumConnections, IEnumConnections_Impl, IEnumFORMATETC, IEnumFORMATETC_Impl, IEnumSTATDATA, IEnumSTATDATA_Impl,
+    IPersist_Impl, IPersistStreamInit, IPersistStreamInit_Impl, IStream, ITypeInfo, STATDATA, STGMEDIUM, STGMEDIUM_0,
+    TYMED_HGLOBAL,
+};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::{
-    CONTROLINFO, DVEXTENTINFO, HITRESULT_HIT, HITRESULT_OUTSIDE, IEnumOLEVERB, IEnumOLEVERB_Impl, IOleClientSite,
-    IOleControl, IOleControl_Impl, IOleControlSite, IOleControlSite_Vtbl, IOleInPlaceActiveObject,
+    CF_UNICODETEXT, CONTROLINFO, DVEXTENTINFO, HITRESULT_HIT, HITRESULT_OUTSIDE, IEnumOLEVERB, IEnumOLEVERB_Impl,
+    IOleClientSite, IOleControl, IOleControl_Impl, IOleControlSite, IOleControlSite_Vtbl, IOleInPlaceActiveObject,
     IOleInPlaceActiveObject_Impl, IOleInPlaceObject, IOleInPlaceObject_Impl, IOleInPlaceSite, IOleInPlaceUIWindow,
     IOleObject, IOleObject_Impl, IOleWindow_Impl, IViewObject, IViewObject_Impl, IViewObject2, IViewObject2_Impl,
     IViewObjectEx, IViewObjectEx_Impl, KEYMODIFIERS, OLECLOSE, OLEGETMONIKER, OLEMISC, OLEVERB, OLEVERB_PRIMARY,
@@ -3576,6 +3583,8 @@ struct ClipboardState {
     connected: Cell<bool>,
 }
 
+const MAX_OLE_CLIPBOARD_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
 impl ClipboardState {
     fn is_available(&self) -> bool {
         self.enabled_for_session.get() && self.connected.get()
@@ -3831,6 +3840,283 @@ impl IMsRdpClipboard_Impl for ClipboardCapabilities_Impl {
         } else {
             Err(Error::from_hresult(E_UNEXPECTED))
         }
+    }
+}
+
+#[implement(IEnumFORMATETC)]
+struct ClipboardFormatEnumerator {
+    _lifetime: ServerObjectLifetime,
+    has_unicode_text: bool,
+    consumed: Cell<bool>,
+}
+
+impl ClipboardFormatEnumerator {
+    fn new(has_unicode_text: bool, consumed: bool) -> Self {
+        Self {
+            _lifetime: ServerObjectLifetime::new(),
+            has_unicode_text,
+            consumed: Cell::new(consumed),
+        }
+    }
+}
+
+impl IEnumFORMATETC_Impl for ClipboardFormatEnumerator_Impl {
+    fn Next(&self, celt: u32, formats: *mut FORMATETC, fetched: *mut u32) -> HRESULT {
+        if celt != 0 && formats.is_null() {
+            return E_POINTER;
+        }
+        if celt != 1 && fetched.is_null() {
+            return E_POINTER;
+        }
+        if !fetched.is_null() {
+            unsafe {
+                fetched.write(0);
+            }
+        }
+        if celt == 0 {
+            return S_OK;
+        }
+        if self.consumed.get() || !self.has_unicode_text {
+            return S_FALSE;
+        }
+
+        unsafe {
+            formats.write(unicode_text_format());
+        }
+        self.consumed.set(true);
+        if !fetched.is_null() {
+            unsafe {
+                fetched.write(1);
+            }
+        }
+        if celt == 1 { S_OK } else { S_FALSE }
+    }
+
+    fn Skip(&self, celt: u32) -> Result<()> {
+        if celt == 0 {
+            return Ok(());
+        }
+        if self.consumed.get() || !self.has_unicode_text {
+            return Err(Error::from_hresult(S_FALSE));
+        }
+
+        self.consumed.set(true);
+        if celt == 1 {
+            Ok(())
+        } else {
+            Err(Error::from_hresult(S_FALSE))
+        }
+    }
+
+    fn Reset(&self) -> Result<()> {
+        self.consumed.set(false);
+        Ok(())
+    }
+
+    fn Clone(&self) -> Result<IEnumFORMATETC> {
+        Ok(ClipboardFormatEnumerator::new(self.has_unicode_text, self.consumed.get()).into())
+    }
+}
+
+#[implement(IDataObject)]
+struct ClipboardDataObject {
+    _lifetime: ServerObjectLifetime,
+    unicode_text: Option<Vec<u8>>,
+}
+
+impl ClipboardDataObject {
+    fn snapshot() -> Result<Self> {
+        let unicode_text = if unsafe { IsClipboardFormatAvailable(u32::from(CF_UNICODETEXT.0)) }.is_ok() {
+            unsafe {
+                OpenClipboard(None)?;
+            }
+
+            let result = (|| {
+                let handle = match unsafe { GetClipboardData(u32::from(CF_UNICODETEXT.0)) } {
+                    Ok(handle) => HGLOBAL(handle.0),
+                    Err(_) => return Ok(None),
+                };
+                let byte_count = unsafe { GlobalSize(handle) };
+                if !(2..=MAX_OLE_CLIPBOARD_TEXT_BYTES).contains(&byte_count) || byte_count % 2 != 0 {
+                    return Ok(None);
+                }
+
+                let source = unsafe { GlobalLock(handle) }.cast::<u8>();
+                if source.is_null() {
+                    return Ok(None);
+                }
+                let snapshot = (|| {
+                    let data = unsafe { slice::from_raw_parts(source, byte_count) };
+                    let units = data
+                        .chunks_exact(2)
+                        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                        .collect::<Vec<_>>();
+
+                    let Some(terminator) = units.iter().position(|unit| *unit == 0) else {
+                        return Ok(None);
+                    };
+                    if !char::decode_utf16(units[..terminator].iter().copied()).all(|character| character.is_ok()) {
+                        return Ok(None);
+                    }
+                    let text_byte_count = (terminator + 1)
+                        .checked_mul(2)
+                        .ok_or_else(|| Error::from_hresult(E_OUTOFMEMORY))?;
+                    Ok(Some(data[..text_byte_count].to_vec()))
+                })();
+                if let Err(error) = unsafe { GlobalUnlock(handle) } {
+                    tracing::debug!(?error, "Unable to unlock OLE clipboard snapshot");
+                }
+                snapshot
+            })();
+
+            let close_result = unsafe { CloseClipboard() };
+            match (result, close_result) {
+                (Ok(data), Ok(())) => data,
+                (Ok(_), Err(error)) => return Err(error),
+                (Err(error), _) => return Err(error),
+            }
+        } else {
+            None
+        };
+
+        Ok(Self {
+            _lifetime: ServerObjectLifetime::new(),
+            unicode_text,
+        })
+    }
+
+    #[cfg(test)]
+    fn from_unicode_text(unicode_text: Option<Vec<u8>>) -> Self {
+        Self {
+            _lifetime: ServerObjectLifetime::new(),
+            unicode_text,
+        }
+    }
+
+    fn validate_format(&self, format: *const FORMATETC) -> Result<()> {
+        let format = unsafe { format.as_ref() }.ok_or_else(|| Error::from_hresult(E_POINTER))?;
+        if format.cfFormat != CF_UNICODETEXT.0 {
+            return Err(Error::from_hresult(DV_E_FORMATETC));
+        }
+        if !format.ptd.is_null() {
+            return Err(Error::from_hresult(DV_E_DVTARGETDEVICE));
+        }
+        if format.dwAspect != DVASPECT_CONTENT.0 {
+            return Err(Error::from_hresult(DV_E_DVASPECT));
+        }
+        if format.lindex != -1 {
+            return Err(Error::from_hresult(DV_E_LINDEX));
+        }
+        if format.tymed & TYMED_HGLOBAL.0 as u32 == 0 {
+            return Err(Error::from_hresult(DV_E_TYMED));
+        }
+        if self.unicode_text.is_none() {
+            return Err(Error::from_hresult(DV_E_FORMATETC));
+        }
+        Ok(())
+    }
+}
+
+impl IDataObject_Impl for ClipboardDataObject_Impl {
+    fn GetData(&self, format: *const FORMATETC) -> Result<STGMEDIUM> {
+        self.validate_format(format)?;
+        let data = self
+            .unicode_text
+            .as_ref()
+            .ok_or_else(|| Error::from_hresult(DV_E_FORMATETC))?;
+
+        let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, data.len()) }?;
+        let destination = unsafe { GlobalLock(memory) }.cast::<u8>();
+        if destination.is_null() {
+            unsafe {
+                GlobalFree(Some(memory))?;
+            }
+            return Err(Error::from_hresult(E_OUTOFMEMORY));
+        }
+        unsafe {
+            ptr::copy_nonoverlapping(data.as_ptr(), destination, data.len());
+        }
+        if let Err(error) = unsafe { GlobalUnlock(memory) } {
+            tracing::debug!(?error, "Unable to unlock OLE clipboard medium");
+        }
+
+        Ok(STGMEDIUM {
+            tymed: TYMED_HGLOBAL.0 as u32,
+            u: STGMEDIUM_0 { hGlobal: memory },
+            pUnkForRelease: ManuallyDrop::new(None),
+        })
+    }
+
+    fn GetDataHere(&self, format: *const FORMATETC, medium: *mut STGMEDIUM) -> Result<()> {
+        self.validate_format(format)?;
+        let medium = unsafe { medium.as_ref() }.ok_or_else(|| Error::from_hresult(E_POINTER))?;
+        if medium.tymed != TYMED_HGLOBAL.0 as u32 {
+            return Err(Error::from_hresult(DV_E_TYMED));
+        }
+        Err(Error::from_hresult(E_NOTIMPL))
+    }
+
+    fn QueryGetData(&self, format: *const FORMATETC) -> HRESULT {
+        match self.validate_format(format) {
+            Ok(()) => S_OK,
+            Err(error) => error.code(),
+        }
+    }
+
+    fn GetCanonicalFormatEtc(&self, format: *const FORMATETC, canonical: *mut FORMATETC) -> HRESULT {
+        if canonical.is_null() {
+            return E_POINTER;
+        }
+        if let Err(error) = self.validate_format(format) {
+            unsafe {
+                canonical.write(FORMATETC::default());
+            }
+            return error.code();
+        }
+
+        unsafe {
+            canonical.write(unicode_text_format());
+        }
+        DATA_S_SAMEFORMATETC
+    }
+
+    fn SetData(&self, format: *const FORMATETC, medium: *const STGMEDIUM, _release: WinBool) -> Result<()> {
+        if format.is_null() || medium.is_null() {
+            return Err(Error::from_hresult(E_POINTER));
+        }
+        Err(Error::from_hresult(E_NOTIMPL))
+    }
+
+    fn EnumFormatEtc(&self, direction: u32) -> Result<IEnumFORMATETC> {
+        if direction == DATADIR_GET.0 as u32 {
+            Ok(ClipboardFormatEnumerator::new(self.unicode_text.is_some(), false).into())
+        } else if direction == DATADIR_SET.0 as u32 {
+            Err(Error::from_hresult(E_NOTIMPL))
+        } else {
+            Err(Error::from_hresult(E_INVALIDARG))
+        }
+    }
+
+    fn DAdvise(&self, _format: *const FORMATETC, _advf: u32, _sink: Ref<'_, IAdviseSink>) -> Result<u32> {
+        Err(Error::from_hresult(OLE_E_ADVISENOTSUPPORTED))
+    }
+
+    fn DUnadvise(&self, _connection: u32) -> Result<()> {
+        Err(Error::from_hresult(OLE_E_NOCONNECTION))
+    }
+
+    fn EnumDAdvise(&self) -> Result<IEnumSTATDATA> {
+        Err(Error::from_hresult(OLE_E_ADVISENOTSUPPORTED))
+    }
+}
+
+fn unicode_text_format() -> FORMATETC {
+    FORMATETC {
+        cfFormat: CF_UNICODETEXT.0,
+        ptd: ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as u32,
     }
 }
 
@@ -9314,15 +9600,21 @@ impl IOleObject_Impl for Control_Impl {
 
     fn InitFromData(
         &self,
-        _data_object: Ref<'_, windows::Win32::System::Com::IDataObject>,
+        _data_object: Ref<'_, IDataObject>,
         _creation: windows_core::BOOL,
         _reserved: u32,
     ) -> Result<()> {
         unsupported()
     }
 
-    fn GetClipboardData(&self, _reserved: u32) -> Result<windows::Win32::System::Com::IDataObject> {
-        unsupported_value()
+    fn GetClipboardData(&self, reserved: u32) -> Result<IDataObject> {
+        if reserved != 0 {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+        if !self.clipboard_state.is_available() {
+            return Err(Error::from_hresult(OLE_E_NOTRUNNING));
+        }
+        ClipboardDataObject::snapshot().map(Into::into)
     }
 
     fn DoVerb(
@@ -11623,12 +11915,10 @@ mod tests {
     use super::*;
     use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
     use ironrdp_pdu::rdp::capability_sets::{CodecProperty, client_codecs_capabilities};
-    use windows::Win32::Foundation::HGLOBAL;
     use windows::Win32::System::Com::{
-        CoTaskMemFree, IAdviseSink_Impl, IMoniker, IPersist, STGMEDIUM, STREAM_SEEK_SET,
-        StructuredStorage::CreateStreamOnHGlobal,
+        CoTaskMemFree, IAdviseSink_Impl, IMoniker, IPersist, STREAM_SEEK_SET, StructuredStorage::CreateStreamOnHGlobal,
     };
-    use windows::Win32::System::Ole::OLECLOSE_NOSAVE;
+    use windows::Win32::System::Ole::{OLECLOSE_NOSAVE, ReleaseStgMedium};
     use windows::Win32::UI::WindowsAndMessaging::WS_OVERLAPPEDWINDOW;
 
     use crate::mstsc::{
@@ -13706,6 +13996,80 @@ mod tests {
         unsafe { non_scriptable.get_RemoteMonitorCount(&mut remote_monitor_count) }
             .expect("empty remote monitor collection");
         assert_eq!(remote_monitor_count, 0);
+    }
+
+    #[test]
+    fn ole_clipboard_data_object_is_a_unicode_text_snapshot() {
+        let data_object: IDataObject =
+            ClipboardDataObject::from_unicode_text(Some(vec![b'i', 0, b'r', 0, b'o', 0, b'n', 0, 0, 0])).into();
+        let format = unicode_text_format();
+
+        assert_eq!(unsafe { data_object.QueryGetData(&format) }, S_OK);
+
+        let enumerator =
+            unsafe { data_object.EnumFormatEtc(DATADIR_GET.0 as u32) }.expect("enumerate source clipboard formats");
+        let mut formats = [FORMATETC::default()];
+        let mut fetched = 0;
+        assert_eq!(unsafe { enumerator.Next(&mut formats, Some(&mut fetched)) }, S_OK);
+        assert_eq!(fetched, 1);
+        assert_eq!(formats[0].cfFormat, CF_UNICODETEXT.0);
+        assert_eq!(formats[0].tymed, TYMED_HGLOBAL.0 as u32);
+        assert_eq!(unsafe { enumerator.Next(&mut formats, Some(&mut fetched)) }, S_FALSE);
+        assert_eq!(fetched, 0);
+
+        let mut medium = unsafe { data_object.GetData(&format) }.expect("retrieve clipboard snapshot");
+        assert_eq!(medium.tymed, TYMED_HGLOBAL.0 as u32);
+        let memory = unsafe { medium.u.hGlobal };
+        let source = unsafe { GlobalLock(memory) }.cast::<u8>();
+        assert!(!source.is_null());
+        let copied = unsafe { slice::from_raw_parts(source, GlobalSize(memory)) };
+        assert_eq!(copied, [b'i', 0, b'r', 0, b'o', 0, b'n', 0, 0, 0]);
+        let _ = unsafe { GlobalUnlock(memory) };
+        unsafe {
+            ReleaseStgMedium(&mut medium);
+        }
+
+        let invalid_tymed = FORMATETC { tymed: 0, ..format };
+        assert_eq!(unsafe { data_object.QueryGetData(&invalid_tymed) }, DV_E_TYMED);
+        let mut caller_medium = STGMEDIUM::default();
+        assert_eq!(
+            unsafe { data_object.GetDataHere(&format, &mut caller_medium) }
+                .expect_err("GetDataHere requires the supported storage medium")
+                .code(),
+            DV_E_TYMED
+        );
+        caller_medium.tymed = TYMED_HGLOBAL.0 as u32;
+        assert_eq!(
+            unsafe { data_object.GetDataHere(&format, &mut caller_medium) }
+                .expect_err("the snapshot does not accept caller-owned output storage")
+                .code(),
+            E_NOTIMPL
+        );
+        assert_eq!(
+            unsafe { data_object.EnumFormatEtc(DATADIR_SET.0 as u32) }
+                .expect_err("the snapshot must not advertise a destination")
+                .code(),
+            E_NOTIMPL
+        );
+    }
+
+    #[test]
+    fn ole_clipboard_data_requires_active_redirection() {
+        let control: IMsRdpClient10 = Control::new().into();
+        let ole_object = control.cast::<IOleObject>().expect("control supports OLE data access");
+
+        assert_eq!(
+            unsafe { ole_object.GetClipboardData(0) }
+                .expect_err("disconnected control must not expose a clipboard snapshot")
+                .code(),
+            OLE_E_NOTRUNNING
+        );
+        assert_eq!(
+            unsafe { ole_object.GetClipboardData(1) }
+                .expect_err("GetClipboardData reserved parameter must be zero")
+                .code(),
+            E_INVALIDARG
+        );
     }
 
     #[test]

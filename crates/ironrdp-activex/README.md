@@ -522,8 +522,7 @@ The control emits `OnViewChange(DVASPECT_CONTENT, -1)` after a rendered-frame in
 change, `OnSave` after a successful persistence write, and `OnClose` during `IOleObject::Close`.
 Its extent and misc-status contracts support `DVASPECT_CONTENT` only; unsupported drawing aspects
 return `DV_E_DVASPECT` rather than claiming unavailable static rendering.
-It does not emit `OnDataChange` or `OnRename` because it does not implement `IDataObject` exchange or
-moniker support.
+It does not emit `OnDataChange` or `OnRename` because clipboard snapshots are immutable and the control does not implement moniker support.
 `IViewObject`, `IViewObject2`, and `IViewObjectEx` report the same content extent, opaque/solid
 view status, content bounds, natural extent, and view-advise notifications. They intentionally
 return `E_NOTIMPL` for detached-HDC drawing, palette enumeration, and frozen snapshots: the
@@ -568,8 +567,13 @@ connection while the RDP worker owns the protocol backend; shutdown removes the 
 `IMsRdpClipboard` reports synchronization available only after that enabled connection completes
 activation; its explicit sync methods succeed at that point because the backend performs
 synchronization automatically. They return `E_UNEXPECTED` before connection or when clipboard
-redirection was disabled for the session. The separate OLE `IDataObject` clipboard contract remains a
-TODO and is not claimed as supported.
+redirection was disabled for the session.
+For the same active state, `IOleObject::GetClipboardData(0)` returns an immutable OLE `IDataObject` snapshot of the current Windows clipboard's valid `CF_UNICODETEXT` payload.
+The object supports source retrieval only (`DATADIR_GET`) with `DVASPECT_CONTENT`, `lindex = -1`, no target device, and `TYMED_HGLOBAL`.
+It validates those `FORMATETC` fields and returns a newly allocated `STGMEDIUM` for each `GetData` call, so the caller owns and must release that medium.
+Delayed rendering remains in the STA-bound native CLIPRDR backend while the snapshot is created; after creation the object has no live clipboard or RDP-worker dependency.
+No other clipboard format, conversion, inbound `SetData`, destination enumeration, `GetDataHere`, or data-advisory contract is claimed.
+`GetClipboardData` rejects a nonzero reserved value and reports `OLE_E_NOTRUNNING` before clipboard redirection is active.
 
 `IMsRdpClientNonScriptable5` reports one remote monitor only after an active remote framebuffer is
 available and returns its `(0, 0, width, height)` bounding box. Multi-monitor mode is not
@@ -653,7 +657,7 @@ The worker translates supported Automation settings into `ironrdp-client::Config
 Connection points retain sinks through `Advise`/`Unadvise`, enumerate correctly, and query the supplied
 sink for the event interface IID before retaining its `IDispatch`.
 
-This is an Automation, lifecycle, hosting, framebuffer, basic input, persistence, and static
-virtual-channel foundation. It does not yet implement RemoteApp, OLE `IDataObject` clipboard exchange,
-monikers, RDPDR device redirection, or arbitrary persisted designer state. Those contracts must be
-added as exact ABI implementations before advertising their individual methods as supported.
+This is an Automation, lifecycle, hosting, framebuffer, basic input, persistence, static
+virtual-channel, and Unicode-text OLE clipboard-snapshot foundation.
+It does not yet implement RemoteApp, non-text or writable OLE clipboard exchange, monikers, RDPDR device redirection, or arbitrary persisted designer state.
+Those contracts must be added as exact ABI implementations before advertising their individual methods as supported.
