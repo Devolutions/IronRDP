@@ -14,7 +14,9 @@ use std::time::Duration;
 use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
 use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind};
 use ironrdp_client::rail::RailInputEvent;
-use ironrdp_client::rdp::{CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent};
+use ironrdp_client::rdp::{
+    AutoReconnectDecision, CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent,
+};
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
@@ -37,7 +39,7 @@ use ironrdp_session::{GracefulDisconnectReason, SessionError, SessionErrorKind};
 use ironrdp_svc::{SvcClientProcessor, SvcMessage, SvcProcessor, impl_as_any};
 use ironrdp_tls::CertificateValidation;
 use sha2::{Digest as _, Sha256};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use windows::Win32::Foundation::{
     DATA_S_SAMEFORMATETC, DISP_E_BADPARAMCOUNT, DISP_E_MEMBERNOTFOUND, DISP_E_TYPEMISMATCH, DISP_E_UNKNOWNNAME,
     DV_E_DVASPECT, DV_E_DVTARGETDEVICE, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_FAIL, E_INVALIDARG, E_NOTIMPL,
@@ -3501,6 +3503,7 @@ enum WorkerEvent {
         generation: u64,
         attempt: u32,
         maximum_attempts: u32,
+        response: oneshot::Sender<AutoReconnectDecision>,
     },
     AutoReconnected {
         generation: u64,
@@ -3542,8 +3545,14 @@ impl WorkerEvent {
     }
 
     fn reject_certificate_warning(self) {
-        if let Self::CertificateWarning { response, .. } = self {
-            let _ = response.send(CertificateDecision::Reject);
+        match self {
+            Self::CertificateWarning { response, .. } => {
+                let _ = response.send(CertificateDecision::Reject);
+            }
+            Self::AutoReconnecting { response, .. } => {
+                let _ = response.send(AutoReconnectDecision::Stop);
+            }
+            _ => {}
         }
     }
 }
@@ -7440,9 +7449,9 @@ impl Control {
         }
     }
 
-    fn fire_auto_reconnecting_event(&self, attempt: i32, maximum_attempts: i32) {
+    fn fire_auto_reconnecting_event(&self, attempt: i32, maximum_attempts: i32) -> i32 {
         if self.events_are_frozen() {
-            return;
+            return 0;
         }
 
         let mut continuation = 0;
@@ -7482,6 +7491,8 @@ impl Control {
                 tracing::debug!(?error, "ActiveX event sink rejected automatic reconnect notification");
             }
         }
+
+        continuation
     }
 
     fn fire_auto_reconnecting2_event(&self, attempt: i32, maximum_attempts: i32) {
@@ -8000,13 +8011,20 @@ impl Control {
                 WorkerEvent::AutoReconnecting {
                     attempt,
                     maximum_attempts,
+                    response,
                     ..
                 } => {
                     self.report_reconnect_worker_progress(attempt, maximum_attempts);
                     let attempt = i32::try_from(attempt).unwrap_or(i32::MAX);
                     let maximum_attempts = i32::try_from(maximum_attempts).unwrap_or(i32::MAX);
-                    self.fire_auto_reconnecting_event(attempt, maximum_attempts);
-                    self.fire_auto_reconnecting2_event(attempt, maximum_attempts);
+                    let decision = match self.fire_auto_reconnecting_event(attempt, maximum_attempts) {
+                        0 => {
+                            self.fire_auto_reconnecting2_event(attempt, maximum_attempts);
+                            AutoReconnectDecision::Continue
+                        }
+                        _ => AutoReconnectDecision::Stop,
+                    };
+                    let _ = response.send(decision);
                 }
                 WorkerEvent::AutoReconnected { .. } => {
                     if self.state.get() == ConnectionState::Connected {
@@ -9004,8 +9022,9 @@ impl Control {
                                             RdpOutputEvent::AutoReconnecting {
                                                 attempt,
                                                 maximum_attempts,
+                                                response,
                                             } => {
-                                                queue_worker_event(
+                                                if !queue_worker_event(
                                                     &worker_events,
                                                     &worker_event_posted,
                                                     hwnd,
@@ -9013,8 +9032,13 @@ impl Control {
                                                         generation,
                                                         attempt,
                                                         maximum_attempts,
+                                                        response,
                                                     },
-                                                );
+                                                ) {
+                                                    // The host cannot make a decision if its dispatcher is gone.
+                                                    // Fail closed rather than starting an unobservable retry.
+                                                    // `response` has been moved into the rejected queue request.
+                                                }
                                             }
                                             RdpOutputEvent::AutoReconnected => {
                                                 queue_worker_event(

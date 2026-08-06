@@ -41,7 +41,7 @@ use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
 use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 #[cfg(any(feature = "clipboard", all(windows, feature = "dvc-com-plugin")))]
 use tracing::error;
 use tracing::{debug, info, trace, warn};
@@ -163,10 +163,18 @@ pub enum RdpOutputEvent {
     AutoReconnecting {
         attempt: u32,
         maximum_attempts: u32,
+        response: oneshot::Sender<AutoReconnectDecision>,
     },
     /// A cookie-based reconnect has completed successfully.
     AutoReconnected,
     Terminated(SessionResult<GracefulDisconnectReason>),
+}
+
+/// Controls whether a pending automatic reconnect may proceed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AutoReconnectDecision {
+    Continue,
+    Stop,
 }
 
 #[derive(Debug)]
@@ -580,10 +588,10 @@ impl RdpClient {
                         ) {
                             reconnect_attempt = attempt;
                             if self
-                                .send_output_event(RdpOutputEvent::AutoReconnecting {
+                                .confirm_auto_reconnect(
                                     attempt,
-                                    maximum_attempts: auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
-                                })
+                                    auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
+                                )
                                 .await
                             {
                                 continue;
@@ -623,10 +631,10 @@ impl RdpClient {
                         ) {
                             reconnect_attempt = attempt;
                             if self
-                                .send_output_event(RdpOutputEvent::AutoReconnecting {
+                                .confirm_auto_reconnect(
                                     attempt,
-                                    maximum_attempts: auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
-                                })
+                                    auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
+                                )
                                 .await
                             {
                                 continue;
@@ -708,10 +716,10 @@ impl RdpClient {
                         ) {
                             reconnect_attempt = attempt;
                             if self
-                                .send_output_event(RdpOutputEvent::AutoReconnecting {
+                                .confirm_auto_reconnect(
                                     attempt,
-                                    maximum_attempts: auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
-                                })
+                                    auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
+                                )
                                 .await
                             {
                                 continue;
@@ -780,10 +788,10 @@ impl RdpClient {
                     ) {
                         reconnect_attempt = attempt;
                         if self
-                            .send_output_event(RdpOutputEvent::AutoReconnecting {
+                            .confirm_auto_reconnect(
                                 attempt,
-                                maximum_attempts: auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
-                            })
+                                auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
+                            )
                             .await
                         {
                             continue;
@@ -803,6 +811,25 @@ impl RdpClient {
         send_cancellable_output_event(&self.output_event_sender, event, &mut self.close_receiver)
             .await
             .unwrap_or(false)
+    }
+
+    async fn confirm_auto_reconnect(&mut self, attempt: u32, maximum_attempts: u32) -> bool {
+        let (response, receiver) = oneshot::channel();
+        if !self
+            .send_output_event(RdpOutputEvent::AutoReconnecting {
+                attempt,
+                maximum_attempts,
+                response,
+            })
+            .await
+        {
+            return false;
+        }
+
+        matches!(
+            tokio::time::timeout(Duration::from_secs(30), receiver).await,
+            Ok(Ok(AutoReconnectDecision::Continue)) | Err(_)
+        )
     }
 
     fn emit_user_initiated_termination(&self) {

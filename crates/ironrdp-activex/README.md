@@ -311,8 +311,9 @@ cookie and an active session actually fails, `AdvancedSettings.EnableAutoReconne
 enabled) and `MaxReconnectAttempts` (default `20`) bound retry attempts. Each real attempt raises
 `OnAutoReconnecting` (`0x11`) and `OnAutoReconnecting2` (`0x22`); a completed retry raises
 `OnAutoReconnected()` (`0x21`) without a second `OnConnected`. The continuation pointer exposed
-by `OnAutoReconnecting` is currently advisory: hosts can cancel by calling `Disconnect`, but its
-automatic (`0`), stop (`1`), and manual (`2`) value does not otherwise alter the active retry.
+by `OnAutoReconnecting` controls the pending retry: automatic (`0`) continues, while stop (`1`)
+and manual (`2`) suppress further automatic reconnect attempts. Calling `Disconnect` also stops
+a pending retry.
 
 Worker-to-apartment events are bounded to 64 pending entries. Frame updates coalesce to the latest
 frame, while lifecycle and terminal state evict only frames or static-channel data. A full queue
