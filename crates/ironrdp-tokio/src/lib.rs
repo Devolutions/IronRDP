@@ -6,6 +6,8 @@ pub use ironrdp_async::*;
 
 #[cfg(feature = "reqwest")]
 pub mod reqwest;
+#[cfg(feature = "udp")]
+pub mod udp;
 
 use core::pin::Pin;
 use std::io;

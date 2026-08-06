@@ -27,6 +27,12 @@ use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput}
 use ironrdp::svc::StaticChannelSet;
 use ironrdp_async::{Framed, FramedWrite as _};
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType, flags as bulk_flags};
+use ironrdp_client::config::{
+    ConfigBuilder as ClientConfigBuilder, Destination, UdpTransportConfig as ClientUdpTransportConfig,
+    UdpTransportFailurePolicy,
+};
+use ironrdp_client::rdp::{RdpClient, RdpOutputEvent};
+use ironrdp_server::UdpTransportConfig as ServerUdpTransportConfig;
 use ironrdp_testsuite_extra as _;
 use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
@@ -39,6 +45,116 @@ const DESKTOP_WIDTH: u16 = 1024;
 const DESKTOP_HEIGHT: u16 = 768;
 const USERNAME: &str = "";
 const PASSWORD: &str = "";
+
+#[tokio::test]
+async fn test_client_server_reliable_udp_bootstrap() {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+        })
+        .with_udp_transport(ServerUdpTransportConfig::new(([127, 0, 0, 1], 0).into()))
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let server_events = server.event_sender().clone();
+    let echo_handle = server.echo_handle().clone();
+
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                server.run().await.expect("server run");
+            });
+
+            let (local_addr_tx, local_addr_rx) = oneshot::channel();
+            server_events
+                .send(ServerEvent::GetLocalAddr(local_addr_tx))
+                .expect("get server address");
+            let server_addr = local_addr_rx
+                .await
+                .expect("server address response")
+                .expect("server address");
+            let client_config = ClientConfigBuilder::new()
+                .with_destination(Destination::new(server_addr.to_string()).expect("destination"))
+                .with_username(USERNAME)
+                .with_password(PASSWORD)
+                .with_client_build(1)
+                .with_client_dir("C:\\Windows\\System32\\mstscax.dll")
+                .with_client_name("ironrdp-udp-e2e")
+                .with_platform(MajorPlatformType::UNSPECIFIED)
+                .with_credssp(false)
+                .with_certificate_validation(ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate)
+                .with_udp_transport(ClientUdpTransportConfig {
+                    enabled: true,
+                    failure_policy: UdpTransportFailurePolicy::FailConnection,
+                })
+                .build()
+                .expect("client configuration");
+            let (output_tx, mut output_rx) = mpsc::channel(8);
+            let client = RdpClient::new(client_config, output_tx);
+            let input = client.input_sender();
+            let client_task = tokio::task::spawn_local(client.run());
+
+            let connection_result = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match output_rx.recv().await {
+                        Some(RdpOutputEvent::Connected) => break Ok(()),
+                        Some(RdpOutputEvent::ConnectionFailure(error)) => break Err(error.to_string()),
+                        Some(_) => {}
+                        None => break Err("client output closed".to_owned()),
+                    }
+                }
+            })
+            .await
+            .expect("client connection timed out");
+            if let Err(error) = connection_result {
+                let _ = server_events.send(ServerEvent::Quit("UDP bootstrap failed".into()));
+                let server_result = tokio::time::timeout(Duration::from_secs(5), server_task).await;
+                panic!("client connection failed: {error}; server result: {server_result:?}");
+            }
+            let payload = b"reliable-udp-soft-sync".to_vec();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            echo_handle.send_request(payload.clone()).expect("send ECHO request");
+            let measurement = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if let Some(measurement) = echo_handle
+                        .take_measurements()
+                        .into_iter()
+                        .find(|measurement| measurement.payload == payload)
+                    {
+                        return measurement;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("reliable UDP ECHO response timed out");
+            assert_eq!(measurement.payload, payload);
+
+            input.request_graceful_close();
+            tokio::time::timeout(Duration::from_secs(5), client_task)
+                .await
+                .expect("client shutdown timed out")
+                .expect("client task");
+            server_events
+                .send(ServerEvent::Quit("UDP e2e complete".into()))
+                .expect("stop server");
+            server_task.await.expect("server task");
+            drop(display_tx);
+        })
+        .await;
+}
 
 #[tokio::test]
 async fn test_client_server() {

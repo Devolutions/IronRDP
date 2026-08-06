@@ -34,6 +34,9 @@ pub struct Acceptor {
     desktop_size: DesktopSize,
     keyboard_layout: u32,
     multitransport_flags: gcc::MultiTransportFlags,
+    server_multitransport_flags: gcc::MultiTransportFlags,
+    multitransport_request: Option<rdp::multitransport::MultitransportRequestPdu>,
+    multitransport_response: Option<rdp::multitransport::MultitransportResponsePdu>,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
@@ -106,6 +109,13 @@ pub struct AcceptorResult {
     /// implement UDP multitransport can use it to decide whether to send a
     /// Server Initiate Multitransport Request.
     pub multitransport_flags: gcc::MultiTransportFlags,
+    /// Response to the server's Initiate Multitransport Request, if the client
+    /// sent it before Confirm Active.
+    ///
+    /// The response travels on the MCS message channel, interleaved with the
+    /// standard activation exchange. The acceptor consumes it so it does not
+    /// mistake it for a Share Control PDU.
+    pub multitransport_response: Option<rdp::multitransport::MultitransportResponsePdu>,
     /// Credentials received from the client during SecureSettingsExchange.
     ///
     /// Present for TLS-mode connections where the client sends credentials
@@ -140,6 +150,9 @@ impl Acceptor {
             desktop_size,
             keyboard_layout: 0,
             multitransport_flags: gcc::MultiTransportFlags::empty(),
+            server_multitransport_flags: gcc::MultiTransportFlags::empty(),
+            multitransport_request: None,
+            multitransport_response: None,
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
@@ -195,6 +208,21 @@ impl Acceptor {
         self.honor_client_desktop_size = max;
     }
 
+    /// Configure one reliable-UDP multitransport request for this connection.
+    ///
+    /// When the client negotiates both a message channel and reliable UDP, the
+    /// acceptor advertises `TRANSPORT_TYPE_UDP_FECR` and `SOFTSYNC_TCP_TO_UDP`
+    /// in the server GCC block and emits this request after licensing, before
+    /// Demand Active.
+    pub fn set_reliable_udp_request(&mut self, request: Option<rdp::multitransport::MultitransportRequestPdu>) {
+        self.server_multitransport_flags = if request.is_some() {
+            gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR | gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP
+        } else {
+            gcc::MultiTransportFlags::empty()
+        };
+        self.multitransport_request = request;
+    }
+
     pub fn new_deactivation_reactivation(
         mut consumed: Acceptor,
         static_channels: StaticChannelSet,
@@ -226,6 +254,9 @@ impl Acceptor {
             desktop_size,
             keyboard_layout: consumed.keyboard_layout,
             multitransport_flags: consumed.multitransport_flags,
+            server_multitransport_flags: consumed.server_multitransport_flags,
+            multitransport_request: consumed.multitransport_request,
+            multitransport_response: None,
             server_capabilities: consumed.server_capabilities,
             static_channels,
             saved_for_reactivation,
@@ -320,6 +351,7 @@ impl Acceptor {
                 message_channel_id: self.message_channel_id,
                 keyboard_layout: self.keyboard_layout,
                 multitransport_flags: self.multitransport_flags,
+                multitransport_response: self.multitransport_response.take(),
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),
                 auto_reconnect: self.received_auto_reconnect.take(),
@@ -687,6 +719,11 @@ impl Sequence for Acceptor {
                     requested_protocol,
                     skip_channel_join,
                     self.message_channel_id,
+                    self.multitransport_request.as_ref().and_then(|_| {
+                        self.multitransport_flags
+                            .contains(gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR)
+                            .then_some(self.server_multitransport_flags)
+                    }),
                 );
 
                 let settings_response = mcs::ConnectResponse {
@@ -823,6 +860,21 @@ impl Sequence for Acceptor {
 
                 let written =
                     util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &license, output)?;
+                let written = if let (Some(request), Some(message_channel_id)) =
+                    (self.multitransport_request.as_ref(), self.message_channel_id)
+                    && self
+                        .multitransport_flags
+                        .contains(gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR)
+                {
+                    debug!(request_id = request.request_id, "Send Initiate Multitransport Request");
+                    let request_written =
+                        util::encode_send_data_indication(self.user_channel_id, message_channel_id, request, output)?;
+                    written
+                        .checked_add(request_written)
+                        .ok_or_else(|| ConnectorError::general("written size overflow"))?
+                } else {
+                    written
+                };
 
                 self.saved_for_reactivation = AcceptorState::CapabilitiesSendServer {
                     early_capability,
@@ -915,6 +967,22 @@ impl Sequence for Acceptor {
                 };
                 match message {
                     mcs::McsMessage::SendDataRequest(data) => {
+                        if self.message_channel_id == Some(data.channel_id) {
+                            let response =
+                                decode::<rdp::multitransport::MultitransportResponsePdu>(data.user_data.as_ref())
+                                    .map_err(ConnectorError::decode)?;
+                            let request = self
+                                .multitransport_request
+                                .as_ref()
+                                .ok_or_else(|| ConnectorError::general("unexpected multitransport response"))?;
+                            if response.request_id != request.request_id {
+                                return Err(ConnectorError::general("multitransport response request ID mismatch"));
+                            }
+                            self.multitransport_response = Some(response);
+                            self.state = prev_state;
+                            return Ok(Written::Nothing);
+                        }
+
                         let capabilities_confirm = decode::<rdp::headers::ShareControlHeader>(data.user_data.as_ref())
                             .map_err(ConnectorError::decode);
                         let capabilities_confirm = match capabilities_confirm {
@@ -997,6 +1065,7 @@ fn create_gcc_blocks(
     requested: SecurityProtocol,
     skip_channel_join: bool,
     message_channel_id: Option<u16>,
+    multi_transport_channel: Option<gcc::MultiTransportFlags>,
 ) -> gcc::ServerGccBlocks {
     gcc::ServerGccBlocks {
         core: gcc::ServerCoreData {
@@ -1015,6 +1084,6 @@ fn create_gcc_blocks(
         message_channel: message_channel_id.map(|id| gcc::ServerMessageChannelData {
             mcs_message_channel_id: id,
         }),
-        multi_transport_channel: None,
+        multi_transport_channel: multi_transport_channel.map(|flags| gcc::MultiTransportChannelData { flags }),
     }
 }

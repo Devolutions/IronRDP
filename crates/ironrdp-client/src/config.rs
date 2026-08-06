@@ -58,6 +58,8 @@ pub struct Config {
     pub(crate) connector: ironrdp_connector::Config,
     pub(crate) destination: Destination,
     pub(crate) transport: Transport,
+    #[cfg(feature = "udp")]
+    pub(crate) udp_transport: UdpTransportConfig,
     pub(crate) certificate_validation: ironrdp_tls::CertificateValidation,
     pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
@@ -100,6 +102,15 @@ impl Config {
     /// Selected transport (Direct, Gateway, or RDCleanPath).
     pub fn transport(&self) -> &Transport {
         &self.transport
+    }
+
+    /// Reliable UDP multitransport configuration.
+    ///
+    /// This is only used for direct TCP connections. Gateway and RDCleanPath connections always
+    /// remain TCP-only.
+    #[cfg(feature = "udp")]
+    pub fn udp_transport(&self) -> &UdpTransportConfig {
+        &self.udp_transport
     }
 
     /// TLS peer-certificate validation policy.
@@ -151,6 +162,8 @@ impl fmt::Debug for Config {
         s.field("connector", &self.connector);
         s.field("destination", &self.destination);
         s.field("transport", &self.transport);
+        #[cfg(feature = "udp")]
+        s.field("udp_transport", &self.udp_transport);
         s.field("certificate_validation", &self.certificate_validation);
         s.field(
             "certificate_validation_callback",
@@ -332,6 +345,32 @@ pub enum TransportKind {
         /// RDCleanPath proxy URL.
         url: Url,
     },
+}
+
+/// Policy to apply when reliable UDP multitransport bootstrap fails.
+#[cfg(feature = "udp")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UdpTransportFailurePolicy {
+    /// Send `E_ABORT` for the UDP request and continue the session over TCP.
+    #[default]
+    FallbackToTcp,
+    /// Send `E_ABORT` for the UDP request and fail the primary connection.
+    FailConnection,
+}
+
+/// Opt-in reliable UDP multitransport configuration.
+///
+/// UDP is disabled by default. When enabled for a direct TCP connection, IronRDP advertises
+/// reliable UDP and Soft-Sync, creates an RDPEMT tunnel when requested, and keeps that tunnel
+/// alive for the session. Dynamic virtual channel traffic continues over TCP until a transparent
+/// routing boundary is implemented.
+#[cfg(feature = "udp")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UdpTransportConfig {
+    /// Whether to advertise and bootstrap reliable UDP multitransport.
+    pub enabled: bool,
+    /// Behavior when reliable UDP setup cannot complete.
+    pub failure_policy: UdpTransportFailurePolicy,
 }
 
 /// Endpoint and credentials for a fully-resolved RDS gateway connection.
@@ -587,6 +626,8 @@ pub struct ConfigBuilder {
     work_dir: Option<String>,
 
     transport: TransportKind,
+    #[cfg(feature = "udp")]
+    udp_transport: UdpTransportConfig,
     rdcleanpath_token: Option<String>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     fake_events_interval: Option<Duration>,
@@ -973,6 +1014,14 @@ impl ConfigBuilder {
         self
     }
 
+    /// Configure opt-in reliable UDP multitransport for direct TCP connections.
+    #[cfg(feature = "udp")]
+    #[must_use]
+    pub fn with_udp_transport(mut self, udp_transport: UdpTransportConfig) -> Self {
+        self.udp_transport = udp_transport;
+        self
+    }
+
     /// Set the RDCleanPath authentication token (only meaningful with an RDCleanPath transport).
     ///
     /// The token is a secret: like the gateway password, it is *not* mirrored into the PropertySet,
@@ -1290,6 +1339,18 @@ impl ConfigBuilder {
             None
         };
 
+        #[cfg(feature = "udp")]
+        let multitransport_flags = if self.udp_transport.enabled && matches!(&transport, Transport::Direct) {
+            Some(
+                ironrdp_pdu::gcc::MultiTransportFlags::TRANSPORT_TYPE_UDP_FECR
+                    | ironrdp_pdu::gcc::MultiTransportFlags::SOFT_SYNC_TCP_TO_UDP,
+            )
+        } else {
+            None
+        };
+        #[cfg(not(feature = "udp"))]
+        let multitransport_flags = None;
+
         let connector = ironrdp_connector::Config {
             credentials: ironrdp_connector::Credentials::UsernamePassword {
                 username: self.username.unwrap_or_default(),
@@ -1326,7 +1387,7 @@ impl ConfigBuilder {
             enable_audio_playback: self.enable_audio_playback.unwrap_or(true),
             request_data: None,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
-            multitransport_flags: None,
+            multitransport_flags,
             compression_type,
             performance_flags: self.performance_flags.unwrap_or_default(),
             timezone_info: TimezoneInfo::default(),
@@ -1349,6 +1410,8 @@ impl ConfigBuilder {
             connector,
             destination: self.destination.context("server address is required")?,
             transport,
+            #[cfg(feature = "udp")]
+            udp_transport: self.udp_transport,
             certificate_validation,
             certificate_validation_callback: self.certificate_validation_callback,
             kerberos_config,

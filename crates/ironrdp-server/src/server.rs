@@ -2,6 +2,8 @@ use core::fmt;
 use core::net::SocketAddr;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
+#[cfg(feature = "udp")]
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -30,8 +32,12 @@ use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor,
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rand::RngCore as _;
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
+#[cfg(feature = "udp")]
+use tokio::io::AsyncReadExt as _;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::TcpSocket;
+#[cfg(feature = "udp")]
+use tokio::sync::watch;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
@@ -50,6 +56,14 @@ use crate::{SoundServerFactory, builder, capabilities};
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
 const AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+#[cfg(feature = "udp")]
+const UDP_RECEIVE_WINDOW_SIZE: u16 = 32;
+#[cfg(feature = "udp")]
+const UDP_MAX_RETRANSMITS: u8 = 3;
+#[cfg(feature = "udp")]
+const UDP_MAX_REORDER_BUFFER: usize = 32;
+#[cfg(feature = "udp")]
+const UDP_MAX_DELIVERED_MESSAGES: usize = 32;
 
 /// Monotonic milliseconds since first use, for feeding the auto-detect state machine.
 ///
@@ -247,6 +261,41 @@ pub struct RdpServerOptions {
     /// server-provided size. Set via
     /// [`RdpServerBuilder::with_honor_client_desktop_size`](crate::RdpServerBuilder::with_honor_client_desktop_size).
     pub honor_client_desktop_size: Option<DesktopSize>,
+    /// Optional reliable RDP-UDP sideband transport configuration.
+    #[cfg(feature = "udp")]
+    pub udp_transport: Option<UdpTransportConfig>,
+}
+
+/// Opt-in server configuration for reliable RDP-UDP multitransport.
+///
+/// The listener owns a distinct UDP socket while the primary RDP connection
+/// remains on TCP. The configured request lifetime bounds unauthenticated
+/// tunnel setup before its RDPEMT cookie is validated.
+#[cfg(feature = "udp")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UdpTransportConfig {
+    /// UDP address to bind for reliable RDP-UDP packets.
+    pub bind_addr: SocketAddr,
+    /// Maximum concurrent UDP peers, including handshakes.
+    pub max_connections: usize,
+    /// Maximum TCP-issued tunnel requests awaiting an RDPEMT create request.
+    pub max_pending_requests: usize,
+    /// Lifetime of an unclaimed multitransport request.
+    pub request_lifetime: Duration,
+}
+
+#[cfg(feature = "udp")]
+impl UdpTransportConfig {
+    /// Builds a bounded reliable RDP-UDP configuration with conservative limits.
+    #[must_use]
+    pub fn new(bind_addr: SocketAddr) -> Self {
+        Self {
+            bind_addr,
+            max_connections: 128,
+            max_pending_requests: 128,
+            request_lifetime: Duration::from_secs(15),
+        }
+    }
 }
 
 impl RdpServerOptions {
@@ -313,6 +362,15 @@ impl RdpServerSecurity {
             RdpServerSecurity::None => nego::SecurityProtocol::empty(),
             RdpServerSecurity::Tls(_) => nego::SecurityProtocol::SSL,
             RdpServerSecurity::Hybrid(_) => nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX,
+        }
+    }
+
+    #[cfg(feature = "udp")]
+    fn tls_acceptor(&self) -> Option<TlsAcceptor> {
+        match self {
+            Self::None => None,
+            Self::Tls(acceptor) => Some(acceptor.clone()),
+            Self::Hybrid((acceptor, _)) => Some(acceptor.clone()),
         }
     }
 }
@@ -507,6 +565,271 @@ pub struct RdpServer {
     /// Tracks whether the current cookie has reached a client. Subsequent
     /// connections and hourly updates replace it with a new random.
     auto_reconnect_sent: bool,
+    #[cfg(feature = "udp")]
+    udp_tunnel_registry: Option<PendingTunnelRegistry>,
+    #[cfg(feature = "udp")]
+    udp_tunnel_receiver: Option<oneshot::Receiver<UdpTunnelStream>>,
+    #[cfg(feature = "udp")]
+    udp_multitransport_request_id: Option<u32>,
+    #[cfg(feature = "udp")]
+    udp_multitransport_response_received: bool,
+}
+
+#[cfg(feature = "udp")]
+type UdpTunnelStream = tokio_rustls::server::TlsStream<ironrdp_tokio::udp::UdpTransportStream>;
+
+#[cfg(feature = "udp")]
+type UdpTunnelWriter = tokio::io::WriteHalf<UdpTunnelStream>;
+
+#[cfg(feature = "udp")]
+#[derive(Clone)]
+struct PendingTunnelRegistry {
+    entries: Arc<std::sync::Mutex<HashMap<u32, PendingTunnel>>>,
+    max_pending_requests: usize,
+    request_lifetime: Duration,
+}
+
+#[cfg(feature = "udp")]
+struct PendingTunnel {
+    security_cookie: [u8; 16],
+    expires_at: Instant,
+    stream_sender: oneshot::Sender<UdpTunnelStream>,
+}
+
+#[cfg(feature = "udp")]
+impl PendingTunnelRegistry {
+    fn new(config: &UdpTransportConfig) -> Self {
+        Self {
+            entries: Arc::new(std::sync::Mutex::new(HashMap::with_capacity(
+                config.max_pending_requests,
+            ))),
+            max_pending_requests: config.max_pending_requests,
+            request_lifetime: config.request_lifetime,
+        }
+    }
+
+    fn issue(
+        &self,
+    ) -> Result<(
+        rdp::multitransport::MultitransportRequestPdu,
+        oneshot::Receiver<UdpTunnelStream>,
+    )> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| anyhow::anyhow!("pending tunnel registry mutex is poisoned"))?;
+        let now = Instant::now();
+        entries.retain(|_, pending| pending.expires_at > now);
+        if entries.len() >= self.max_pending_requests {
+            bail!("too many pending UDP tunnel requests");
+        }
+
+        for _ in 0..16 {
+            let request_id = rand::rng().next_u32();
+            if entries.contains_key(&request_id) {
+                continue;
+            }
+
+            let mut security_cookie = [0; 16];
+            rand::rng().fill_bytes(&mut security_cookie);
+            let (stream_sender, stream_receiver) = oneshot::channel();
+            entries.insert(
+                request_id,
+                PendingTunnel {
+                    security_cookie,
+                    expires_at: now + self.request_lifetime,
+                    stream_sender,
+                },
+            );
+            return Ok((
+                rdp::multitransport::MultitransportRequestPdu {
+                    security_header: rdp::headers::BasicSecurityHeader {
+                        flags: rdp::headers::BasicSecurityHeaderFlags::TRANSPORT_REQ,
+                    },
+                    request_id,
+                    requested_protocol: rdp::multitransport::RequestedProtocol::UdpFecR,
+                    security_cookie,
+                },
+                stream_receiver,
+            ));
+        }
+
+        bail!("unable to allocate a unique UDP tunnel request ID")
+    }
+
+    fn claim(&self, request_id: u32, security_cookie: &[u8; 16]) -> Result<Option<oneshot::Sender<UdpTunnelStream>>> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| anyhow::anyhow!("pending tunnel registry mutex is poisoned"))?;
+        let now = Instant::now();
+        entries.retain(|_, pending| pending.expires_at > now);
+        let Some(pending) = entries.get(&request_id) else {
+            return Ok(None);
+        };
+        if !constant_time_eq(&pending.security_cookie, security_cookie) {
+            return Ok(None);
+        }
+        let pending = entries
+            .remove(&request_id)
+            .expect("pending tunnel entry was found immediately before removal");
+        Ok(Some(pending.stream_sender))
+    }
+
+    fn remove(&self, request_id: u32) -> Result<bool> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| anyhow::anyhow!("pending tunnel registry mutex is poisoned"))?;
+        Ok(entries.remove(&request_id).is_some())
+    }
+}
+
+#[cfg(feature = "udp")]
+struct PendingTunnelRegistration {
+    registry: PendingTunnelRegistry,
+    request_id: u32,
+}
+
+#[cfg(feature = "udp")]
+impl PendingTunnelRegistration {
+    fn new(registry: PendingTunnelRegistry, request_id: u32) -> Self {
+        Self { registry, request_id }
+    }
+}
+
+#[cfg(feature = "udp")]
+impl Drop for PendingTunnelRegistration {
+    fn drop(&mut self) {
+        if let Err(error) = self.registry.remove(self.request_id) {
+            error!(%error, request_id = self.request_id, "Failed to remove pending reliable UDP tunnel");
+        }
+    }
+}
+
+#[cfg(feature = "udp")]
+fn constant_time_eq(left: &[u8; 16], right: &[u8; 16]) -> bool {
+    left.iter()
+        .zip(right)
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
+}
+
+#[cfg(feature = "udp")]
+fn reliable_udp_config() -> ironrdp_rdpudp::Config {
+    ironrdp_rdpudp::Config {
+        initial_sequence_number: rand::rng().next_u32(),
+        // RDP-UDP v3 requires a SYN security-cookie hash that this server does
+        // not yet validate. Restricting negotiation to v2 keeps the binding
+        // established exclusively by the subsequent RDPEMT create request.
+        max_version: ironrdp_rdpudp::ProtocolVersion::V2,
+        receive_window_size: UDP_RECEIVE_WINDOW_SIZE,
+        mtu: u16::try_from(ironrdp_rdpudp::MAX_MTU).expect("RDP-UDP maximum MTU fits in u16"),
+        max_retransmits: UDP_MAX_RETRANSMITS,
+        max_reorder_buffer: UDP_MAX_REORDER_BUFFER,
+        max_delivered_messages: UDP_MAX_DELIVERED_MESSAGES,
+    }
+}
+
+#[cfg(feature = "udp")]
+async fn run_udp_tunnel_listener(
+    mut listener: ironrdp_tokio::udp::UdpTransportListener,
+    tls_acceptor: TlsAcceptor,
+    registry: PendingTunnelRegistry,
+    setup_timeout: Duration,
+) -> Result<()> {
+    let mut tunnel_tasks = task::JoinSet::new();
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let Some(accepted) = accepted else {
+                    break;
+                };
+                let tls_acceptor = tls_acceptor.clone();
+                let registry = registry.clone();
+                tunnel_tasks.spawn(async move {
+                    match tokio::time::timeout(
+                        setup_timeout,
+                        establish_udp_tunnel(accepted.stream, tls_acceptor, registry),
+                    )
+                    .await
+                    {
+                        Ok(Ok((stream, stream_sender))) => {
+                            if stream_sender.send(stream).is_err() {
+                                debug!(peer = ?accepted.peer, "Reliable UDP session ended before tunnel handoff");
+                            }
+                        }
+                        Ok(Err(error)) => debug!(peer = ?accepted.peer, ?error, "Rejected reliable UDP tunnel"),
+                        Err(_) => debug!(peer = ?accepted.peer, "Reliable UDP tunnel setup timed out"),
+                    }
+                });
+            }
+            _ = tunnel_tasks.join_next(), if !tunnel_tasks.is_empty() => {}
+        }
+    }
+
+    warn!("Reliable UDP listener stopped");
+    Ok(())
+}
+
+#[cfg(feature = "udp")]
+async fn establish_udp_tunnel(
+    stream: ironrdp_tokio::udp::UdpTransportStream,
+    tls_acceptor: TlsAcceptor,
+    registry: PendingTunnelRegistry,
+) -> Result<(UdpTunnelStream, oneshot::Sender<UdpTunnelStream>)> {
+    let mut stream = tls_acceptor.accept(stream).await.context("accept UDP tunnel TLS")?;
+    let create_request = match read_tunnel_pdu(&mut stream).await? {
+        rdp::multitransport::TunnelPdu::CreateRequest(request) => request,
+        _ => bail!("expected an RDPEMT tunnel create request"),
+    };
+    let Some(stream_sender) = registry.claim(create_request.request_id, &create_request.security_cookie)? else {
+        bail!("UDP tunnel request ID or security cookie is invalid");
+    };
+
+    let create_response =
+        rdp::multitransport::TunnelPdu::CreateResponse(rdp::multitransport::TunnelCreateResponsePdu {
+            subheaders: Vec::new(),
+            hr_response: rdp::multitransport::TunnelCreateResponsePdu::S_OK,
+        });
+    stream
+        .write_all(&encode_vec(&create_response)?)
+        .await
+        .context("write RDPEMT tunnel create response")?;
+    stream.flush().await.context("flush RDPEMT tunnel create response")?;
+
+    Ok((stream, stream_sender))
+}
+
+#[cfg(feature = "udp")]
+async fn read_tunnel_pdu<S>(stream: &mut S) -> Result<rdp::multitransport::TunnelPdu>
+where
+    S: AsyncRead + Unpin,
+{
+    const TUNNEL_HEADER_SIZE: usize = 1 /* action and flags */ + 2 /* payload length */ + 1 /* header length */;
+
+    let mut header = [0; TUNNEL_HEADER_SIZE];
+    stream
+        .read_exact(&mut header)
+        .await
+        .context("read RDPEMT tunnel header")?;
+    let payload_length = usize::from(u16::from_le_bytes([header[1], header[2]]));
+    let header_length = usize::from(header[3]);
+    if header_length < TUNNEL_HEADER_SIZE {
+        bail!("RDPEMT tunnel header length is smaller than four bytes");
+    }
+    let total_length = header_length
+        .checked_add(payload_length)
+        .context("RDPEMT tunnel PDU length overflow")?;
+    let mut bytes = Vec::with_capacity(total_length);
+    bytes.extend_from_slice(&header);
+    bytes.resize(total_length, 0);
+    stream
+        .read_exact(&mut bytes[TUNNEL_HEADER_SIZE..])
+        .await
+        .context("read RDPEMT tunnel payload")?;
+
+    decode(&bytes).context("decode RDPEMT tunnel PDU")
 }
 
 /// Cloneable handle for updating the Server Auto-Reconnect Cookie while
@@ -603,6 +926,8 @@ impl RdpServer {
         if let Some(snd) = sound_factory.as_mut() {
             snd.set_sender(ev_sender.clone());
         }
+        #[cfg(feature = "udp")]
+        let udp_tunnel_registry = opts.udp_transport.as_ref().map(PendingTunnelRegistry::new);
         #[cfg(feature = "egfx")]
         if let Some(gfx) = gfx_factory.as_mut() {
             gfx.set_sender(ev_sender.clone());
@@ -636,6 +961,14 @@ impl RdpServer {
             auto_reconnect_cookie: None,
             previous_auto_reconnect_cookie: None,
             auto_reconnect_sent: false,
+            #[cfg(feature = "udp")]
+            udp_tunnel_registry,
+            #[cfg(feature = "udp")]
+            udp_tunnel_receiver: None,
+            #[cfg(feature = "udp")]
+            udp_multitransport_request_id: None,
+            #[cfg(feature = "udp")]
+            udp_multitransport_response_received: false,
         }
     }
 
@@ -1062,6 +1395,23 @@ impl RdpServer {
         let capabilities = capabilities::capabilities(&self.opts, size);
         let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities, self.creds.clone());
         acceptor.set_honor_client_desktop_size(self.opts.honor_client_desktop_size);
+        #[cfg(feature = "udp")]
+        {
+            self.udp_tunnel_receiver = None;
+            self.udp_multitransport_request_id = None;
+            self.udp_multitransport_response_received = false;
+        }
+        #[cfg(feature = "udp")]
+        let _pending_udp_tunnel = if let Some(registry) = &self.udp_tunnel_registry {
+            let (request, receiver) = registry.issue()?;
+            let request_id = request.request_id;
+            self.udp_multitransport_request_id = Some(request_id);
+            self.udp_tunnel_receiver = Some(receiver);
+            acceptor.set_reliable_udp_request(Some(request));
+            Some(PendingTunnelRegistration::new(registry.clone(), request_id))
+        } else {
+            None
+        };
 
         self.attach_channels(&mut acceptor);
 
@@ -1180,6 +1530,42 @@ impl RdpServer {
 
         debug!("Listening for connections on {local_addr}");
         self.local_addr = Some(local_addr);
+        #[cfg(feature = "udp")]
+        let mut udp_listener_task = if let Some(config) = &self.opts.udp_transport {
+            let tls_acceptor = self
+                .opts
+                .security
+                .tls_acceptor()
+                .context("reliable UDP transport requires TLS or Hybrid server security")?;
+            let bind_addr = SocketAddr::new(
+                config.bind_addr.ip(),
+                if config.bind_addr.port() == 0 {
+                    local_addr.port()
+                } else {
+                    config.bind_addr.port()
+                },
+            );
+            let listener = ironrdp_tokio::udp::UdpTransportListener::bind(
+                bind_addr,
+                reliable_udp_config(),
+                config.max_connections,
+            )
+            .await
+            .context("bind reliable UDP listener")?;
+            let registry = self
+                .udp_tunnel_registry
+                .clone()
+                .context("missing reliable UDP tunnel registry")?;
+            debug!(udp_addr = ?listener.local_addr()?, "Listening for reliable UDP connections");
+            Some(task::spawn(run_udp_tunnel_listener(
+                listener,
+                tls_acceptor,
+                registry,
+                config.request_lifetime,
+            )))
+        } else {
+            None
+        };
 
         loop {
             let ev_receiver = Arc::clone(&self.ev_receiver);
@@ -1242,6 +1628,11 @@ impl RdpServer {
                 }
                 else => break,
             }
+        }
+
+        #[cfg(feature = "udp")]
+        if let Some(udp_listener_task) = udp_listener_task.take() {
+            udp_listener_task.abort();
         }
 
         Ok(())
@@ -1331,6 +1722,7 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
+        #[cfg(feature = "udp")] udp_tunnel_writer: &Arc<Mutex<Option<UdpTunnelWriter>>>,
     ) -> Result<RunState> {
         // Avoid wave messages queuing up and causing extra delay. When a
         // batch carries more than `WAVE_KEEP` waves, drop the OLDEST ones
@@ -1440,6 +1832,53 @@ impl RdpServer {
                         let messages =
                             dvc::encode_dvc_messages(echo_channel_id, vec![request], ChannelFlags::SHOW_PROTOCOL)?;
 
+                        #[cfg(feature = "udp")]
+                        if self.udp_multitransport_response_received
+                            && udp_tunnel_writer.lock().await.is_some()
+                            && self
+                                .get_svc_processor::<dvc::DrdynvcServer>()
+                                .is_some_and(|drdynvc| drdynvc.tunnel_for_outgoing_channel(echo_channel_id).is_none())
+                        {
+                            let soft_sync_request = self
+                                .get_svc_processor::<dvc::DrdynvcServer>()
+                                .context("DRDYNVC static channel is unavailable")?
+                                .request_reliable_udp(vec![echo_channel_id])?;
+                            let drdynvc_channel_id = self
+                                .get_channel_id_by_type::<dvc::DrdynvcServer>()
+                                .context("DRDYNVC channel not found")?;
+                            let data = server_encode_svc_messages(
+                                vec![soft_sync_request],
+                                drdynvc_channel_id,
+                                user_channel_id,
+                            )?;
+                            writer.write_all(&data).await?;
+                            self.get_svc_processor::<dvc::DrdynvcServer>()
+                                .context("DRDYNVC static channel is unavailable")?
+                                .complete_soft_sync_request()?;
+                            trace!(channel_id = echo_channel_id, "Reliable UDP DVC Soft-Sync is active");
+                        }
+
+                        #[cfg(feature = "udp")]
+                        if self
+                            .get_svc_processor::<dvc::DrdynvcServer>()
+                            .is_some_and(|drdynvc| drdynvc.tunnel_for_outgoing_channel(echo_channel_id).is_some())
+                        {
+                            let mut udp_tunnel_writer = udp_tunnel_writer.lock().await;
+                            let udp_tunnel_writer = udp_tunnel_writer
+                                .as_mut()
+                                .context("reliable UDP tunnel writer is unavailable")?;
+                            for message in messages {
+                                let pdu = rdp::multitransport::TunnelPdu::Data(
+                                    rdp::multitransport::TunnelDataPdu::new(message.encode_unframed_pdu()?),
+                                );
+                                udp_tunnel_writer
+                                    .write_all(&encode_vec(&pdu)?)
+                                    .await
+                                    .context("write reliable UDP ECHO request")?;
+                            }
+                            continue;
+                        }
+
                         let drdynvc_channel_id = self
                             .get_channel_id_by_type::<dvc::DrdynvcServer>()
                             .context("DRDYNVC channel not found")?;
@@ -1496,14 +1935,24 @@ impl RdpServer {
         let mut event_writer = writer.clone();
         let mut auto_reconnect_writer = writer.clone();
         let ev_receiver = Arc::clone(&self.ev_receiver);
+        #[cfg(feature = "udp")]
+        let udp_tunnel_writer = Arc::new(Mutex::new(None));
+        #[cfg(feature = "udp")]
+        let udp_tunnel_writer_for_events = Arc::clone(&udp_tunnel_writer);
+        #[cfg(feature = "udp")]
+        let udp_tunnel_receiver = self.udp_tunnel_receiver.take();
+        #[cfg(feature = "udp")]
+        let (soft_sync_ready_sender, soft_sync_ready_receiver) = watch::channel(false);
         let s = Rc::new(Mutex::new(self));
 
         let this = Rc::clone(&s);
+        #[cfg(feature = "udp")]
+        let soft_sync_ready_sender_for_pdu = soft_sync_ready_sender.clone();
         let dispatch_pdu = async move {
             loop {
                 let (action, bytes) = reader.read_pdu().await?;
                 let mut this = this.lock().await;
-                match this
+                let state = this
                     .dispatch_pdu(
                         action,
                         bytes,
@@ -1512,8 +1961,15 @@ impl RdpServer {
                         user_channel_id,
                         message_channel_id,
                     )
-                    .await?
+                    .await?;
+                #[cfg(feature = "udp")]
+                if this
+                    .get_svc_processor::<dvc::DrdynvcServer>()
+                    .is_some_and(|drdynvc| drdynvc.soft_sync_response_received())
                 {
+                    soft_sync_ready_sender_for_pdu.send_replace(true);
+                }
+                match state {
                     RunState::Continue => continue,
                     state => break Ok(state),
                 }
@@ -1576,6 +2032,8 @@ impl RdpServer {
                         io_channel_id,
                         user_channel_id,
                         message_channel_id,
+                        #[cfg(feature = "udp")]
+                        &udp_tunnel_writer_for_events,
                     )
                     .await?
                 {
@@ -1584,6 +2042,56 @@ impl RdpServer {
                 }
             }
         };
+
+        #[cfg(feature = "udp")]
+        let this = Rc::clone(&s);
+        #[cfg(feature = "udp")]
+        let udp_tunnel_writer_for_read = Arc::clone(&udp_tunnel_writer);
+        #[cfg(feature = "udp")]
+        let dispatch_udp = async move {
+            let Some(receiver) = udp_tunnel_receiver else {
+                return core::future::pending::<Result<RunState>>().await;
+            };
+            let stream = receiver.await.context("reliable UDP tunnel was not established")?;
+            let (mut reader, writer) = tokio::io::split(stream);
+            *udp_tunnel_writer_for_read.lock().await = Some(writer);
+            let mut soft_sync_ready_receiver = soft_sync_ready_receiver;
+            while !*soft_sync_ready_receiver.borrow_and_update() {
+                soft_sync_ready_receiver
+                    .changed()
+                    .await
+                    .context("reliable UDP Soft-Sync readiness notification was dropped")?;
+            }
+
+            loop {
+                let tunnel_pdu = read_tunnel_pdu(&mut reader).await?;
+                let rdp::multitransport::TunnelPdu::Data(tunnel_data) = tunnel_pdu else {
+                    bail!("unexpected RDPEMT control PDU after reliable UDP tunnel creation");
+                };
+
+                let responses = {
+                    let mut this = this.lock().await;
+                    let drdynvc = this
+                        .get_svc_processor::<dvc::DrdynvcServer>()
+                        .context("DRDYNVC static channel is unavailable")?;
+                    drdynvc.process_tunnel(&tunnel_data.data)?
+                };
+
+                let mut writer = udp_tunnel_writer_for_read.lock().await;
+                let writer = writer.as_mut().context("reliable UDP tunnel writer is unavailable")?;
+                for response in responses {
+                    let pdu = rdp::multitransport::TunnelPdu::Data(rdp::multitransport::TunnelDataPdu::new(
+                        response.encode_unframed_pdu()?,
+                    ));
+                    writer
+                        .write_all(&encode_vec(&pdu)?)
+                        .await
+                        .context("write reliable UDP tunnel data")?;
+                }
+            }
+        };
+        #[cfg(not(feature = "udp"))]
+        let dispatch_udp = core::future::pending::<Result<RunState>>();
 
         let this = Rc::clone(&s);
         let refresh_auto_reconnect_cookie = async move {
@@ -1602,6 +2110,7 @@ impl RdpServer {
             state = dispatch_pdu => state,
             state = dispatch_display => state,
             state = dispatch_events => state,
+            state = dispatch_udp => state,
             state = refresh_auto_reconnect_cookie => state,
         );
 
@@ -1620,6 +2129,26 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Client accepted");
+
+        #[cfg(feature = "udp")]
+        if let Some(response) = result.multitransport_response.as_ref() {
+            if self.udp_multitransport_request_id != Some(response.request_id) {
+                bail!("received multitransport response for an unknown request ID");
+            }
+
+            self.udp_multitransport_response_received = response.is_success();
+            if response.is_success() {
+                debug!(
+                    request_id = response.request_id,
+                    "Reliable UDP multitransport setup confirmed"
+                );
+            } else {
+                debug!(
+                    request_id = response.request_id,
+                    "Client declined reliable UDP multitransport setup"
+                );
+            }
+        }
 
         let is_auto_reconnect = if let Some(reconnect) = result.auto_reconnect.as_ref() {
             if !self.verify_auto_reconnect_cookie(reconnect) {
@@ -1912,7 +2441,28 @@ impl RdpServer {
         Ok(false)
     }
 
-    fn handle_message_channel_data(&mut self, data: SendDataRequest<'_>) {
+    fn handle_message_channel_data(&mut self, data: SendDataRequest<'_>) -> Result<()> {
+        #[cfg(feature = "udp")]
+        if let Ok(response) = decode::<rdp::multitransport::MultitransportResponsePdu>(data.user_data.as_ref()) {
+            if self.udp_multitransport_request_id != Some(response.request_id) {
+                bail!("received multitransport response for an unknown request ID");
+            }
+
+            self.udp_multitransport_response_received = response.is_success();
+            if response.is_success() {
+                debug!(
+                    request_id = response.request_id,
+                    "Reliable UDP multitransport setup confirmed"
+                );
+            } else {
+                debug!(
+                    request_id = response.request_id,
+                    "Client declined reliable UDP multitransport setup"
+                );
+            }
+            return Ok(());
+        }
+
         // The MCS message channel currently carries only the auto-detect
         // response. It is framed by a Basic Security Header (SEC_AUTODETECT_RSP),
         // not a Share Control header.
@@ -1931,6 +2481,7 @@ impl RdpServer {
                 warn!(error = format!("{error:#}"), "Unhandled MCS message channel PDU");
             }
         }
+        Ok(())
     }
 
     async fn handle_x224(
@@ -1955,7 +2506,7 @@ impl RdpServer {
                 }
 
                 if message_channel_id == Some(data.channel_id) {
-                    self.handle_message_channel_data(data);
+                    self.handle_message_channel_data(data)?;
                     return Ok(false);
                 }
 
@@ -2192,5 +2743,85 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
         Self {
             writer: Rc::new(Mutex::new(writer)),
         }
+    }
+}
+
+#[cfg(all(test, feature = "udp"))]
+mod tests {
+    use super::*;
+
+    fn udp_config(max_pending_requests: usize, request_lifetime: Duration) -> UdpTransportConfig {
+        UdpTransportConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            max_connections: 1,
+            max_pending_requests,
+            request_lifetime,
+        }
+    }
+
+    #[test]
+    fn pending_tunnel_request_is_single_use() {
+        let registry = PendingTunnelRegistry::new(&udp_config(1, Duration::from_secs(1)));
+        let (request, _) = registry.issue().unwrap();
+
+        assert!(
+            registry
+                .claim(request.request_id, &request.security_cookie)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            registry
+                .claim(request.request_id, &request.security_cookie)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pending_tunnel_request_rejects_wrong_cookie_without_consuming_it() {
+        let registry = PendingTunnelRegistry::new(&udp_config(1, Duration::from_secs(1)));
+        let (request, _) = registry.issue().unwrap();
+        let wrong_cookie = [0; 16];
+
+        assert!(registry.claim(request.request_id, &wrong_cookie).unwrap().is_none());
+        assert!(
+            registry
+                .claim(request.request_id, &request.security_cookie)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn pending_tunnel_request_expires() {
+        let registry = PendingTunnelRegistry::new(&udp_config(1, Duration::ZERO));
+        let (request, _) = registry.issue().unwrap();
+
+        assert!(
+            registry
+                .claim(request.request_id, &request.security_cookie)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pending_tunnel_request_limit_is_enforced() {
+        let registry = PendingTunnelRegistry::new(&udp_config(1, Duration::from_secs(1)));
+        registry.issue().unwrap();
+
+        assert!(registry.issue().is_err());
+    }
+
+    #[test]
+    fn dropped_tunnel_registration_releases_pending_capacity() {
+        let registry = PendingTunnelRegistry::new(&udp_config(1, Duration::from_secs(1)));
+        let (request, _) = registry.issue().unwrap();
+        let registration = PendingTunnelRegistration::new(registry.clone(), request.request_id);
+
+        drop(registration);
+
+        assert!(registry.issue().is_ok());
     }
 }

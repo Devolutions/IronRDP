@@ -33,6 +33,8 @@ pub use handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
+#[cfg(feature = "udp")]
+pub use server::UdpTransportConfig;
 pub use server::{
     AutoReconnectCookieHandle, ConnectionHandler, CredentialDecision, CredentialValidationError, CredentialValidator,
     Credentials, ExactMatchCredentialValidator, PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity,

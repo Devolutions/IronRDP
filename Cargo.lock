@@ -2545,10 +2545,12 @@ dependencies = [
  "ironrdp-rdpdr",
  "ironrdp-rdpsnd",
  "ironrdp-rdpsnd-native",
+ "ironrdp-rdpudp",
  "ironrdp-session",
  "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "rand 0.9.4",
  "smallvec",
  "tokio",
  "tokio-tungstenite",
@@ -2914,6 +2916,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpudp"
+version = "0.1.0"
+
+[[package]]
 name = "ironrdp-rpc"
 version = "0.1.0"
 dependencies = [
@@ -2949,6 +2955,7 @@ dependencies = [
  "ironrdp-nscodec",
  "ironrdp-pdu",
  "ironrdp-rdpsnd",
+ "ironrdp-rdpudp",
  "ironrdp-svc",
  "ironrdp-tokio",
  "qoicoubeh",
@@ -3064,6 +3071,7 @@ dependencies = [
  "ironrdp-input",
  "ironrdp-propertyset",
  "ironrdp-rpc",
+ "ironrdp-server",
  "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",
@@ -3092,8 +3100,10 @@ version = "0.10.0"
 dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
+ "ironrdp-rdpudp",
  "reqwest",
  "tokio",
+ "tracing",
  "url",
 ]
 

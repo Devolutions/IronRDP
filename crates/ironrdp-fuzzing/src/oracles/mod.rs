@@ -109,7 +109,7 @@ pub fn pdu_decode(data: &[u8]) {
     use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::{
-        ClientInfoPdu, capability_sets, headers, multitransport, server_error_info, server_license, vc,
+        ClientInfoPdu, capability_sets, headers, multitransport, server_error_info, server_license, udp, vc,
     };
     use ironrdp_pdu::x224::X224;
     use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
@@ -137,6 +137,11 @@ pub fn pdu_decode(data: &[u8]) {
     // arbitrary server bytes as a request to distinguish it from Demand Active.
     let _ = decode::<multitransport::MultitransportRequestPdu>(data);
     let _ = decode::<multitransport::MultitransportResponsePdu>(data);
+    let _ = decode::<multitransport::TunnelPdu>(data);
+    let _ = decode::<udp::RdpUdpFecHeader>(data);
+    let _ = decode::<udp::RdpUdpSynData>(data);
+    let _ = decode::<udp::RdpUdpAckVector>(data);
+    let _ = decode::<udp::RdpUdpSourcePayload>(data);
 
     let _ = decode::<vc::ChannelPduHeader>(data);
 
@@ -265,7 +270,7 @@ pub fn pdu_round_trip(data: &[u8]) {
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
     use ironrdp_pdu::rdp::headers::ShareControlHeader;
-    use ironrdp_pdu::rdp::{self, ClientInfoPdu, multitransport, server_error_info, server_license, vc};
+    use ironrdp_pdu::rdp::{self, ClientInfoPdu, multitransport, server_error_info, server_license, udp, vc};
     use ironrdp_pdu::x224::X224;
     use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
 
@@ -296,6 +301,11 @@ pub fn pdu_round_trip(data: &[u8]) {
     // Multitransport bootstrapping (server request / client response)
     pdu_round_trip_one!(data, multitransport::MultitransportRequestPdu);
     pdu_round_trip_one!(data, multitransport::MultitransportResponsePdu);
+    pdu_round_trip_one!(data, multitransport::TunnelPdu);
+    pdu_round_trip_one!(data, udp::RdpUdpFecHeader);
+    pdu_round_trip_one!(data, udp::RdpUdpSynData);
+    pdu_round_trip_one!(data, udp::RdpUdpAckVector);
+    pdu_round_trip_one!(data, udp::RdpUdpSourcePayload);
 
     // Virtual channel header
     pdu_round_trip_one!(data, vc::ChannelPduHeader);

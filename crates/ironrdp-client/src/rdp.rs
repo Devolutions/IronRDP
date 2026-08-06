@@ -8,10 +8,14 @@ pub use ironrdp_cliprdr::backend::CliprdrBackendFactory;
 use ironrdp_connector::connection_activation::ConnectionActivationState;
 use ironrdp_connector::{ConnectionResult, ConnectorResult};
 use ironrdp_core::WriteBuf;
+#[cfg(feature = "udp")]
+use ironrdp_core::encode_vec;
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_displaycontrol::pdu::MonitorLayoutEntry;
 #[cfg(all(windows, feature = "dvc-com-plugin"))]
 use ironrdp_dvc::DvcProcessor as _;
+#[cfg(feature = "udp")]
+use ironrdp_dvc::pdu::SoftSyncTunnelType;
 use ironrdp_echo::client::EchoClient;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::DecodedPointer;
@@ -21,14 +25,24 @@ use ironrdp_pdu::input::fast_path::FastPathInputEvent;
 use ironrdp_pdu::input::mouse::PointerFlags;
 #[cfg(any(feature = "dvc-pipe-proxy", all(windows, feature = "dvc-com-plugin")))]
 use ironrdp_pdu::pdu_other_err;
+#[cfg(feature = "udp")]
+use ironrdp_pdu::rdp::multitransport::{TunnelDataPdu, TunnelPdu};
+#[cfg(feature = "clipboard")]
+use ironrdp_session::ActiveStage;
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
+use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
+#[cfg(feature = "udp")]
+use rand::RngCore as _;
 use smallvec::SmallVec;
 use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(feature = "udp")]
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
+#[cfg(feature = "udp")]
+use tokio::sync::Mutex;
 use tokio::sync::{mpsc, watch};
 #[cfg(any(feature = "clipboard", all(windows, feature = "dvc-com-plugin")))]
 use tracing::error;
@@ -125,6 +139,10 @@ pub const RDP_INPUT_EVENT_QUEUE_CAPACITY: usize = 128;
 #[derive(Clone, Debug)]
 pub struct RdpInputSender {
     input_sender: mpsc::Sender<RdpInputEvent>,
+    #[cfg_attr(
+        not(feature = "clipboard"),
+        expect(dead_code, reason = "the field is used when clipboard support is enabled")
+    )]
     clipboard_sender: mpsc::UnboundedSender<RdpInputEvent>,
     close_sender: watch::Sender<bool>,
     graceful_close_sender: watch::Sender<bool>,
@@ -419,7 +437,7 @@ impl RdpClient {
                 break;
             }
 
-            let (connection_result, framed) = match &self.config.transport {
+            let (connection_result, framed, udp_tunnel) = match &self.config.transport {
                 Transport::Direct => match Box::pin(cancelable_operation(
                     connect_direct(&self.config, &self.input_event_sender, cliprdr_factory),
                     &mut self.close_receiver,
@@ -487,6 +505,7 @@ impl RdpClient {
             match active_session(
                 framed,
                 connection_result,
+                udp_tunnel,
                 &self.output_event_sender,
                 &mut self.input_event_receiver,
                 &mut self.clipboard_event_receiver,
@@ -737,17 +756,27 @@ fn build_connector(
 trait AsyncReadWrite: AsyncRead + AsyncWrite {}
 impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite {}
 type UpgradedFramed = ironrdp_tokio::TokioFramed<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>;
+type ConnectOutput = (ConnectionResult, UpgradedFramed, UdpTunnelKeepalive);
+
+#[derive(Default)]
+struct UdpTunnelKeepalive {
+    #[cfg(feature = "udp")]
+    tunnel: Option<Box<dyn AsyncReadWrite + Unpin + Send>>,
+}
 
 /// Direct TCP → TLS connection (no gateway).
 async fn connect_direct(
     config: &Config,
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
-) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
+) -> ConnectorResult<ConnectOutput> {
     let dest = config.destination.to_string();
     let stream = TcpStream::connect(&dest)
         .await
         .map_err(|e| ironrdp_connector::custom_err!("TCP connect", e))?;
+    let tcp_peer = stream
+        .peer_addr()
+        .map_err(|e| ironrdp_connector::custom_err!("get socket peer address", e))?;
     let client_addr = stream
         .local_addr()
         .map_err(|e| ironrdp_connector::custom_err!("get socket local address", e))?;
@@ -755,7 +784,8 @@ async fn connect_direct(
 
     let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
 
-    tls_handshake_and_finalize(framed, connector, config).await
+    let udp_peer = SocketAddr::new(tcp_peer.ip(), config.destination.port());
+    tls_handshake_and_finalize(framed, connector, config, Some(udp_peer)).await
 }
 
 /// RDS gateway TCP → gateway auth → TLS connection.
@@ -765,7 +795,7 @@ async fn connect_gateway(
     gw: &crate::config::GatewayConfig,
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
-) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
+) -> ConnectorResult<ConnectOutput> {
     use ironrdp_mstsgu::GwConnectTarget;
 
     // Build the GwConnectTarget.  `server` is the RDP target derived from `config.destination`.
@@ -785,7 +815,7 @@ async fn connect_gateway(
 
     let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
 
-    tls_handshake_and_finalize(framed, connector, config).await
+    tls_handshake_and_finalize(framed, connector, config, None).await
 }
 
 /// RDCleanPath WebSocket → RDCleanPath handshake connection.
@@ -794,7 +824,7 @@ async fn connect_rdcleanpath_transport(
     rdcp: &RDCleanPathConfig,
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
-) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
+) -> ConnectorResult<ConnectOutput> {
     let hostname = rdcp
         .url
         .host_str()
@@ -838,7 +868,7 @@ async fn connect_rdcleanpath_transport(
     let erased_stream: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(ws);
     let upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
 
-    Ok((connection_result, upgraded_framed))
+    Ok((connection_result, upgraded_framed, UdpTunnelKeepalive::default()))
 }
 
 // ── Shared TLS handshake ──────────────────────────────────────────────────────
@@ -847,7 +877,8 @@ async fn tls_handshake_and_finalize<S>(
     mut framed: ironrdp_tokio::TokioFramed<S>,
     mut connector: ironrdp_connector::ClientConnector,
     config: &Config,
-) -> ConnectorResult<(ConnectionResult, UpgradedFramed)>
+    udp_peer: Option<SocketAddr>,
+) -> ConnectorResult<ConnectOutput>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
 {
@@ -857,22 +888,7 @@ where
 
     let (initial_stream, leftover_bytes) = framed.into_inner();
 
-    let tls_upgrade = if let Some(callback) = config.certificate_validation_callback() {
-        ironrdp_tls::upgrade_with_certificate_validation_callback(
-            initial_stream,
-            config.destination.name(),
-            Arc::clone(callback),
-        )
-        .await
-    } else {
-        ironrdp_tls::upgrade_with_certificate_validation(
-            initial_stream,
-            config.destination.name(),
-            config.certificate_validation(),
-        )
-        .await
-    };
-    let (tls_stream, tls_cert) = tls_upgrade.map_err(|e| ironrdp_connector::custom_err!("TLS upgrade", e))?;
+    let (tls_stream, tls_cert) = upgrade_tls(initial_stream, config).await?;
 
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
 
@@ -883,6 +899,84 @@ where
         .ok_or_else(|| ironrdp_connector::general_err!("unable to extract tls server public key"))?
         .to_owned();
 
+    #[cfg(feature = "udp")]
+    let (connection_result, udp_tunnel) = if config.udp_transport.enabled {
+        if let Some(udp_peer) = udp_peer {
+            let udp_tunnel = Arc::new(Mutex::new(None));
+            let tunnel_for_handler = Arc::clone(&udp_tunnel);
+            let udp_config = config.clone();
+            let connection_result = ironrdp_tokio::connect_finalize_with_multitransport(
+                upgraded,
+                connector,
+                &mut upgraded_framed,
+                &mut ReqwestNetworkClient::new(),
+                (&config.destination).into(),
+                server_public_key,
+                config.kerberos_config.clone(),
+                move |request| {
+                    let udp_config = udp_config.clone();
+                    let udp_tunnel = Arc::clone(&tunnel_for_handler);
+                    async move {
+                        use ironrdp_connector::MultitransportResult;
+                        use ironrdp_pdu::rdp::multitransport::{MultitransportResponsePdu, RequestedProtocol};
+
+                        if request.requested_protocol != RequestedProtocol::UdpFecR {
+                            warn!(
+                                ?request.requested_protocol,
+                                "Declining unsupported UDP multitransport protocol"
+                            );
+                            return Ok(MultitransportResult::Failure(MultitransportResponsePdu::E_ABORT));
+                        }
+
+                        match bootstrap_reliable_udp(&udp_config, udp_peer, request).await {
+                            Ok(tunnel) => {
+                                *udp_tunnel.lock().await = Some(tunnel);
+                                Ok(MultitransportResult::Success)
+                            }
+                            Err(error) => match udp_config.udp_transport.failure_policy {
+                                crate::config::UdpTransportFailurePolicy::FallbackToTcp => {
+                                    warn!(error = %error, "Reliable UDP bootstrap failed; continuing with TCP");
+                                    Ok(MultitransportResult::Failure(MultitransportResponsePdu::E_ABORT))
+                                }
+                                crate::config::UdpTransportFailurePolicy::FailConnection => Err(error),
+                            },
+                        }
+                    }
+                },
+            )
+            .await?;
+            let tunnel = udp_tunnel.lock().await.take();
+
+            (connection_result, UdpTunnelKeepalive { tunnel })
+        } else {
+            let connection_result = ironrdp_tokio::connect_finalize(
+                upgraded,
+                connector,
+                &mut upgraded_framed,
+                &mut ReqwestNetworkClient::new(),
+                (&config.destination).into(),
+                server_public_key,
+                config.kerberos_config.clone(),
+            )
+            .await?;
+
+            (connection_result, UdpTunnelKeepalive::default())
+        }
+    } else {
+        let connection_result = ironrdp_tokio::connect_finalize(
+            upgraded,
+            connector,
+            &mut upgraded_framed,
+            &mut ReqwestNetworkClient::new(),
+            (&config.destination).into(),
+            server_public_key,
+            config.kerberos_config.clone(),
+        )
+        .await?;
+
+        (connection_result, UdpTunnelKeepalive::default())
+    };
+    #[cfg(not(feature = "udp"))]
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
         connector,
@@ -894,7 +988,142 @@ where
     )
     .await?;
 
-    Ok((connection_result, upgraded_framed))
+    #[cfg(not(feature = "udp"))]
+    let udp_tunnel = {
+        let _ = udp_peer;
+        UdpTunnelKeepalive::default()
+    };
+
+    Ok((connection_result, upgraded_framed, udp_tunnel))
+}
+
+async fn upgrade_tls<S>(
+    stream: S,
+    config: &Config,
+) -> ConnectorResult<(ironrdp_tls::TlsStream<S>, x509_cert::Certificate)>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let tls_upgrade = if let Some(callback) = config.certificate_validation_callback() {
+        ironrdp_tls::upgrade_with_certificate_validation_callback(
+            stream,
+            config.destination.name(),
+            Arc::clone(callback),
+        )
+        .await
+    } else {
+        ironrdp_tls::upgrade_with_certificate_validation(
+            stream,
+            config.destination.name(),
+            config.certificate_validation(),
+        )
+        .await
+    };
+
+    tls_upgrade.map_err(|e| ironrdp_connector::custom_err!("TLS upgrade", e))
+}
+
+#[cfg(feature = "udp")]
+const UDP_RECEIVE_WINDOW_SIZE: u16 = 32;
+#[cfg(feature = "udp")]
+const UDP_MAX_RETRANSMITS: u8 = 3;
+#[cfg(feature = "udp")]
+const UDP_MAX_REORDER_BUFFER: usize = 32;
+#[cfg(feature = "udp")]
+const UDP_MAX_DELIVERED_MESSAGES: usize = 32;
+
+#[cfg(feature = "udp")]
+async fn bootstrap_reliable_udp(
+    config: &Config,
+    peer: SocketAddr,
+    request: ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu,
+) -> ConnectorResult<Box<dyn AsyncReadWrite + Unpin + Send>> {
+    use ironrdp_pdu::rdp::multitransport::TunnelCreateRequestPdu;
+
+    let stream = ironrdp_tokio::udp::connect(peer, reliable_udp_config())
+        .await
+        .map_err(|e| ironrdp_connector::custom_err!("reliable UDP connect", e))?;
+    let (mut stream, _) = upgrade_tls(stream, config).await?;
+
+    let create_request =
+        TunnelPdu::CreateRequest(TunnelCreateRequestPdu::new(request.request_id, request.security_cookie));
+    let encoded = encode_vec(&create_request)
+        .map_err(|e| ironrdp_connector::custom_err!("encode RDPEMT tunnel create request", e))?;
+    stream
+        .write_all(&encoded)
+        .await
+        .map_err(|e| ironrdp_connector::custom_err!("write RDPEMT tunnel create request", e))?;
+    stream
+        .flush()
+        .await
+        .map_err(|e| ironrdp_connector::custom_err!("flush RDPEMT tunnel create request", e))?;
+
+    let response = read_tunnel_pdu(&mut stream).await?;
+    match response {
+        TunnelPdu::CreateResponse(response) if response.is_success() => {}
+        TunnelPdu::CreateResponse(response) => {
+            debug!(
+                hr_response = response.hr_response,
+                "RDPEMT tunnel create response was unsuccessful"
+            );
+            return Err(ironrdp_connector::general_err!(
+                "rdpemt tunnel create response was unsuccessful"
+            ));
+        }
+        _ => {
+            return Err(ironrdp_connector::general_err!(
+                "expected an RDPEMT tunnel create response"
+            ));
+        }
+    }
+
+    Ok(Box::new(stream))
+}
+
+#[cfg(feature = "udp")]
+fn reliable_udp_config() -> ironrdp_rdpudp::Config {
+    ironrdp_rdpudp::Config {
+        initial_sequence_number: rand::rng().next_u32(),
+        // RDP-UDP v3 requires a SYN security-cookie hash that this client does
+        // not yet create. Keep the advertised version aligned with the server.
+        max_version: ironrdp_rdpudp::ProtocolVersion::V2,
+        receive_window_size: UDP_RECEIVE_WINDOW_SIZE,
+        mtu: u16::try_from(ironrdp_rdpudp::MAX_MTU).expect("RDP-UDP maximum MTU fits in u16"),
+        max_retransmits: UDP_MAX_RETRANSMITS,
+        max_reorder_buffer: UDP_MAX_REORDER_BUFFER,
+        max_delivered_messages: UDP_MAX_DELIVERED_MESSAGES,
+    }
+}
+
+#[cfg(feature = "udp")]
+async fn read_tunnel_pdu<S>(stream: &mut S) -> ConnectorResult<TunnelPdu>
+where
+    S: AsyncRead + Unpin,
+{
+    const TUNNEL_HEADER_SIZE: usize = 1 /* action and flags */ + 2 /* payload length */ + 1 /* header length */;
+
+    let mut header = [0; TUNNEL_HEADER_SIZE];
+    stream
+        .read_exact(&mut header)
+        .await
+        .map_err(|e| ironrdp_connector::custom_err!("read RDPEMT tunnel header", e))?;
+    let payload_length = usize::from(u16::from_le_bytes([header[1], header[2]]));
+    let header_length = usize::from(header[3]);
+    if header_length < TUNNEL_HEADER_SIZE {
+        return Err(ironrdp_connector::general_err!(
+            "rdpemt tunnel header length is smaller than four bytes"
+        ));
+    }
+    let total_length = header_length + payload_length;
+    let mut bytes = Vec::with_capacity(total_length);
+    bytes.extend_from_slice(&header);
+    bytes.resize(total_length, 0);
+    stream
+        .read_exact(&mut bytes[TUNNEL_HEADER_SIZE..])
+        .await
+        .map_err(|e| ironrdp_connector::custom_err!("read RDPEMT tunnel payload", e))?;
+
+    ironrdp_core::decode(&bytes).map_err(|e| ironrdp_connector::custom_err!("decode RDPEMT tunnel response", e))
 }
 
 // ── RDCleanPath handshake ─────────────────────────────────────────────────────
@@ -1057,6 +1286,7 @@ enum RdpControlFlow {
 async fn active_session(
     framed: UpgradedFramed,
     connection_result: ConnectionResult,
+    udp_tunnel: UdpTunnelKeepalive,
     output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::Receiver<RdpInputEvent>,
     clipboard_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
@@ -1064,6 +1294,11 @@ async fn active_session(
     graceful_close_receiver: &mut watch::Receiver<bool>,
     fake_events_interval: Option<Duration>,
 ) -> SessionResult<RdpControlFlow> {
+    #[cfg(feature = "udp")]
+    let mut udp_tunnel = udp_tunnel.tunnel;
+    #[cfg(not(feature = "udp"))]
+    let _ = udp_tunnel;
+
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let desktop_size = connection_result.desktop_size;
     let mut refresh_rect_support = connection_result.refresh_rect_support;
@@ -1084,6 +1319,16 @@ async fn active_session(
         pointer_software_rendering: connection_result.pointer_software_rendering,
     }
     .build();
+
+    #[cfg(feature = "udp")]
+    let (mut udp_reader, mut udp_writer) = if let Some(tunnel) = udp_tunnel.take() {
+        active_stage.enable_reliable_udp_dvc_tunnel()?;
+        trace!("Reliable UDP tunnel established; awaiting DVC Soft-Sync");
+        let (reader, writer) = tokio::io::split(tunnel);
+        (Some(reader), Some(writer))
+    } else {
+        (None, None)
+    };
 
     // Timer interval for driving clipboard lock timeouts.
     let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
@@ -1130,6 +1375,43 @@ async fn active_session(
         let outputs = if let Some(outputs) = initial_outputs.take() {
             outputs
         } else {
+            let tunneled_outputs = async {
+                #[cfg(feature = "udp")]
+                {
+                    if !active_stage.dvc_soft_sync_complete() {
+                        return core::future::pending::<SessionResult<Vec<ActiveStageOutput>>>().await;
+                    }
+                    let tunnel_pdu = match udp_reader.as_mut() {
+                        Some(reader) => read_tunnel_pdu(reader).await,
+                        None => core::future::pending().await,
+                    }
+                    .map_err(|e| ironrdp_session::custom_err!("read reliable UDP tunnel PDU", e))?;
+                    let TunnelPdu::Data(tunnel_data) = tunnel_pdu else {
+                        return Err(ironrdp_session::general_err!(
+                            "unexpected RDPEMT control PDU after reliable UDP tunnel creation"
+                        ));
+                    };
+
+                    let responses = active_stage.process_tunneled_dvc_data(&tunnel_data.data)?;
+                    let udp_writer = udp_writer
+                        .as_mut()
+                        .ok_or_else(|| ironrdp_session::general_err!("reliable UDP tunnel writer is unavailable"))?;
+                    for response in responses {
+                        let pdu = TunnelPdu::Data(TunnelDataPdu::new(response));
+                        let encoded = encode_vec(&pdu)
+                            .map_err(|e| ironrdp_session::custom_err!("encode reliable UDP tunnel data", e))?;
+                        udp_writer
+                            .write_all(&encoded)
+                            .await
+                            .map_err(|e| ironrdp_session::custom_err!("write reliable UDP tunnel data", e))?;
+                    }
+                    Ok(Vec::new())
+                }
+                #[cfg(not(feature = "udp"))]
+                {
+                    core::future::pending::<SessionResult<Vec<ActiveStageOutput>>>().await
+                }
+            };
             tokio::select! {
                 _ = close_receiver.changed() => {
                     break 'outer GracefulDisconnectReason::UserInitiated;
@@ -1158,10 +1440,13 @@ async fn active_session(
                     }
                     outputs
                 }
-                clipboard_event = clipboard_event => {
+                tunnel_outputs = tunneled_outputs => {
+                    tunnel_outputs?
+                }
+                _clipboard_event = clipboard_event => {
                     #[cfg(feature = "clipboard")]
                     {
-                        let Some(RdpInputEvent::Clipboard(event)) = clipboard_event else {
+                        let Some(RdpInputEvent::Clipboard(event)) = _clipboard_event else {
                             return Err(ironrdp_session::general_err!("clipboard event channel closed"));
                         };
                         process_clipboard_message(&mut active_stage, event)?
@@ -1229,8 +1514,36 @@ async fn active_session(
                     }
                     RdpInputEvent::SendDvcMessages { channel_id, messages } => {
                         trace!(channel_id, ?messages, "Send DVC messages");
-                        let frame = active_stage.encode_dvc_messages(messages)?;
-                        vec![ActiveStageOutput::ResponseFrame(frame)]
+                        #[cfg(feature = "udp")]
+                        if active_stage.dvc_tunnel_for_channel(channel_id) == Some(SoftSyncTunnelType::ReliableUdp) {
+                            let udp_writer = udp_writer.as_mut().ok_or_else(|| {
+                                ironrdp_session::general_err!("reliable UDP tunnel writer is unavailable")
+                            })?;
+                            for message in messages {
+                                let pdu = TunnelPdu::Data(TunnelDataPdu::new(
+                                    message
+                                        .encode_unframed_pdu()
+                                        .map_err(|e| {
+                                            ironrdp_session::custom_err!("encode reliable UDP tunnel data", e)
+                                        })?,
+                                ));
+                                let encoded = encode_vec(&pdu).map_err(|e| {
+                                    ironrdp_session::custom_err!("encode reliable UDP tunnel data", e)
+                                })?;
+                                udp_writer.write_all(&encoded).await.map_err(|e| {
+                                    ironrdp_session::custom_err!("write reliable UDP tunnel data", e)
+                                })?;
+                            }
+                            Vec::new()
+                        } else {
+                            let frame = active_stage.encode_dvc_messages(messages)?;
+                            vec![ActiveStageOutput::ResponseFrame(frame)]
+                        }
+                        #[cfg(not(feature = "udp"))]
+                        {
+                            let frame = active_stage.encode_dvc_messages(messages)?;
+                            vec![ActiveStageOutput::ResponseFrame(frame)]
+                        }
                     }
                     RdpInputEvent::SendStaticChannelData { channel_name, data } => {
                         match active_stage.process_svc_messages_by_name(&channel_name, vec![SvcMessage::from(data)]) {
@@ -1321,6 +1634,10 @@ async fn active_session(
                         ));
                     };
                     result.map_err(|e| ironrdp_session::custom_err!("write response", e))?;
+                    #[cfg(feature = "udp")]
+                    if active_stage.complete_pending_dvc_soft_sync()? {
+                        trace!("Reliable UDP DVC Soft-Sync is active");
+                    }
                 }
                 ActiveStageOutput::GraphicsUpdate(_region) => {
                     let buffer: Vec<u32> = image

@@ -35,7 +35,8 @@ pub enum ProcessorOutput {
     SaveSessionInfo { logon_complete: bool },
     /// Server Initiate Multitransport Request. The application should establish a
     /// sideband UDP transport using the request ID and security cookie, then send
-    /// a [`MultitransportResponsePdu`] back on the IO channel.
+    /// a [`MultitransportResponsePdu`] back on the negotiated MCS message
+    /// channel.
     ///
     /// See [\[MS-RDPBCGR\] 2.2.15.1].
     ///

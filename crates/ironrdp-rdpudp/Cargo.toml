@@ -1,0 +1,19 @@
+[package]
+name = "ironrdp-rdpudp"
+version = "0.1.0"
+description = "No-I/O reliable RDP-UDP transport state machine"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["alloc"]
+alloc = []
+
+[lints]
+workspace = true

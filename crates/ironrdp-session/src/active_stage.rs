@@ -460,6 +460,60 @@ impl ActiveStage {
     pub fn encode_dvc_messages(&mut self, messages: Vec<SvcMessage>) -> SessionResult<Vec<u8>> {
         self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(messages))
     }
+
+    /// Marks the reliable UDP tunnel as available for a future DVC Soft-Sync request.
+    pub fn enable_reliable_udp_dvc_tunnel(&mut self) -> SessionResult<()> {
+        let drdynvc = self
+            .get_svc_processor_mut::<DrdynvcClient>()
+            .ok_or_else(|| SessionError::general("DRDYNVC static channel is unavailable"))?;
+        drdynvc.enable_soft_sync_tunnel(ironrdp_dvc::pdu::SoftSyncTunnelType::ReliableUdp);
+        Ok(())
+    }
+
+    /// Returns whether the TCP Soft-Sync response has enabled tunnel DVC routing.
+    pub fn dvc_soft_sync_complete(&mut self) -> bool {
+        self.get_svc_processor::<DrdynvcClient>()
+            .is_some_and(DrdynvcClient::soft_sync_complete)
+    }
+
+    /// Returns the selected multitransport tunnel for a dynamic channel.
+    pub fn dvc_tunnel_for_channel(
+        &mut self,
+        channel_id: ironrdp_dvc::DynamicChannelId,
+    ) -> Option<ironrdp_dvc::pdu::SoftSyncTunnelType> {
+        self.get_svc_processor::<DrdynvcClient>()
+            .and_then(|drdynvc| drdynvc.tunnel_for_channel(channel_id))
+    }
+
+    /// Processes unframed DRDYNVC data received through the reliable UDP tunnel.
+    ///
+    /// The returned buffers are unframed DRDYNVC PDUs and must be sent in
+    /// `RDP_TUNNEL_DATA` PDUs on the same tunnel.
+    pub fn process_tunneled_dvc_data(&mut self, payload: &[u8]) -> SessionResult<Vec<Vec<u8>>> {
+        let drdynvc = self
+            .get_svc_processor_mut::<DrdynvcClient>()
+            .ok_or_else(|| SessionError::general("DRDYNVC static channel is unavailable"))?;
+        let messages = drdynvc.process_tunnel(payload).map_err(SessionError::pdu)?;
+
+        messages
+            .iter()
+            .map(|message| message.encode_unframed_pdu().map_err(SessionError::encode))
+            .collect()
+    }
+
+    /// Activates a received DVC Soft-Sync request after its TCP response was written.
+    ///
+    /// Returns `true` only when a Soft-Sync response was pending.
+    pub fn complete_pending_dvc_soft_sync(&mut self) -> SessionResult<bool> {
+        let drdynvc = self
+            .get_svc_processor_mut::<DrdynvcClient>()
+            .ok_or_else(|| SessionError::general("DRDYNVC static channel is unavailable"))?;
+        if !drdynvc.has_pending_soft_sync_response() {
+            return Ok(false);
+        }
+        drdynvc.complete_soft_sync_response().map_err(SessionError::pdu)?;
+        Ok(true)
+    }
 }
 
 #[derive(Debug)]

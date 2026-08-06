@@ -12,6 +12,8 @@ use super::display::{DesktopSize, RdpServerDisplay};
 #[cfg(feature = "egfx")]
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
+#[cfg(feature = "udp")]
+use super::server::UdpTransportConfig;
 use super::server::{ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity};
 use crate::{DisplayUpdate, RdpServerDisplayUpdates, SoundServerFactory};
 
@@ -45,6 +47,8 @@ pub struct BuilderDone {
     autodetect_rtt: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
+    #[cfg(feature = "udp")]
+    udp_transport: Option<UdpTransportConfig>,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -147,6 +151,8 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_rtt: None,
                 honor_client_desktop_size: None,
                 auto_reconnect_cookie: None,
+                #[cfg(feature = "udp")]
+                udp_transport: None,
             },
         }
     }
@@ -170,6 +176,8 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_rtt: None,
                 honor_client_desktop_size: None,
                 auto_reconnect_cookie: None,
+                #[cfg(feature = "udp")]
+                udp_transport: None,
             },
         }
     }
@@ -323,6 +331,16 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Enable reliable RDP-UDP multitransport for server connections.
+    ///
+    /// The primary connection must use TLS or Hybrid security because reliable
+    /// RDP-UDP carries TLS and reuses that certificate for tunnel setup.
+    #[cfg(feature = "udp")]
+    pub fn with_udp_transport(mut self, udp_transport: UdpTransportConfig) -> Self {
+        self.state.udp_transport = Some(udp_transport);
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         let mut server = RdpServer::new(
             RdpServerOptions {
@@ -331,6 +349,8 @@ impl RdpServerBuilder<BuilderDone> {
                 codecs: self.state.codecs,
                 max_request_size: self.state.max_request_size,
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
+                #[cfg(feature = "udp")]
+                udp_transport: self.state.udp_transport,
             },
             self.state.handler,
             self.state.display,

@@ -39,6 +39,7 @@ qoi = ["ironrdp-connector/qoi", "ironrdp-session/qoi"]
 qoiz = ["ironrdp-connector/qoiz", "ironrdp-session/qoiz"]
 dvc-pipe-proxy = ["dep:ironrdp-dvc-pipe-proxy"]
 dvc-com-plugin = ["dep:ironrdp-dvc-com-plugin"]
+udp = ["ironrdp-tokio/udp", "dep:ironrdp-rdpudp"]
 
 all = [
     "sound",
@@ -48,6 +49,7 @@ all = [
     "gateway",
     "dvc-pipe-proxy",
     "dvc-com-plugin",
+    "udp",
 ]
 
 [dependencies]
@@ -63,6 +65,7 @@ ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.8" }
 ironrdp-echo = { path = "../ironrdp-echo", version = "0.4" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" } # public
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.10", features = ["reqwest"] }
+ironrdp-rdpudp = { path = "../ironrdp-rdpudp", version = "0.1", optional = true }
 ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath", version = "0.2" }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
@@ -88,6 +91,7 @@ futures-util = { version = "0.3", features = ["sink"] }
 
 # Utils
 anyhow = "1"
+rand = "0.9"
 smallvec = "1.15"
 url = "2"
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }

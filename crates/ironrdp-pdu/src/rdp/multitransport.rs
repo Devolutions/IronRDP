@@ -6,14 +6,440 @@
 //! [\[MS-RDPBCGR\] 2.2.15.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/44044233-e498-46f8-8e16-1ffa595a8e8b
 
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, invalid_field_err,
-    read_padding, write_padding,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
+    ensure_size, invalid_field_err, read_padding, write_padding,
 };
 
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 
 /// Length of the security cookie used for transport binding validation.
 const SECURITY_COOKIE_LEN: usize = 16;
+
+/// An RDPEMT tunnel subheader.
+///
+/// Defined in [\[MS-RDPEMT\] 2.2.1.1.1].
+///
+/// [\[MS-RDPEMT\] 2.2.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/5d6ce64a-ec26-4ee2-8375-28040bc7f3f9
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct TunnelSubheader {
+    /// Type of the encapsulated subheader.
+    pub ty: u8,
+    /// Type-specific bytes following the length and type fields.
+    pub data: Vec<u8>,
+}
+
+impl TunnelSubheader {
+    const FIXED_PART_SIZE: usize = 1 /* subHeaderLength */ + 1 /* subHeaderType */;
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.data.len()
+    }
+
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        let length: u8 = cast_length!("subHeaderLength", self.size())?;
+        if usize::from(length) < Self::FIXED_PART_SIZE {
+            return Err(invalid_field_err!("subHeaderLength", "must be at least two bytes"));
+        }
+
+        dst.write_u8(length);
+        dst.write_u8(self.ty);
+        dst.write_slice(&self.data);
+
+        Ok(())
+    }
+
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: Self::FIXED_PART_SIZE);
+
+        let length = usize::from(src.read_u8());
+        if length < Self::FIXED_PART_SIZE {
+            return Err(invalid_field_err!("subHeaderLength", "must be at least two bytes"));
+        }
+
+        ensure_size!(in: src, size: length - 1 /* subHeaderLength */);
+        let ty = src.read_u8();
+        let data = src.read_slice(length - Self::FIXED_PART_SIZE).to_vec();
+
+        Ok(Self { ty, data })
+    }
+}
+
+/// Action carried in an RDPEMT tunnel PDU header.
+///
+/// Defined in [\[MS-RDPEMT\] 2.2.1.1].
+///
+/// [\[MS-RDPEMT\] 2.2.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/80d0849e-91a0-4fe7-83ad-ea9eaa7d15e9
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+#[repr(u8)]
+pub enum TunnelAction {
+    /// `RDP_TUNNEL_CREATEREQUEST`.
+    CreateRequest = 0x0,
+    /// `RDP_TUNNEL_CREATERESPONSE`.
+    CreateResponse = 0x1,
+    /// `RDP_TUNNEL_DATA`.
+    Data = 0x2,
+}
+
+impl TunnelAction {
+    fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0x0 => Some(Self::CreateRequest),
+            0x1 => Some(Self::CreateResponse),
+            0x2 => Some(Self::Data),
+            _ => None,
+        }
+    }
+
+    #[expect(
+        clippy::as_conversions,
+        reason = "repr(u8) guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TunnelHeader {
+    action: TunnelAction,
+    subheaders: Vec<TunnelSubheader>,
+}
+
+impl TunnelHeader {
+    const FIXED_PART_SIZE: usize = 1 /* action and flags */ + 2 /* payloadLength */ + 1 /* headerLength */;
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.subheaders.iter().map(TunnelSubheader::size).sum::<usize>()
+    }
+
+    fn encode(&self, payload_length: usize, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        let payload_length: u16 = cast_length!("payloadLength", payload_length)?;
+        let header_length: u8 = cast_length!("headerLength", self.size())?;
+
+        dst.write_u8(self.action.as_u8());
+        dst.write_u16(payload_length);
+        dst.write_u8(header_length);
+        self.subheaders.iter().try_for_each(|subheader| subheader.encode(dst))
+    }
+
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<(Self, usize)> {
+        ensure_size!(in: src, size: Self::FIXED_PART_SIZE);
+
+        let action_and_flags = src.read_u8();
+        let flags = action_and_flags >> 4;
+        if flags != 0 {
+            return Err(invalid_field_err!("flags", "must be zero"));
+        }
+
+        let action = TunnelAction::from_u8(action_and_flags & 0x0F)
+            .ok_or_else(|| invalid_field_err!("action", "unknown tunnel action"))?;
+        let payload_length = usize::from(src.read_u16());
+        let header_length = usize::from(src.read_u8());
+        if header_length < Self::FIXED_PART_SIZE {
+            return Err(invalid_field_err!("headerLength", "must be at least four bytes"));
+        }
+
+        let subheader_length = header_length - Self::FIXED_PART_SIZE;
+        ensure_size!(in: src, size: subheader_length);
+        let mut subheaders_cursor = ReadCursor::new(src.read_slice(subheader_length));
+        let mut subheaders = Vec::new();
+        while !subheaders_cursor.is_empty() {
+            subheaders.push(TunnelSubheader::decode(&mut subheaders_cursor)?);
+        }
+
+        if src.len() != payload_length {
+            return Err(invalid_field_err!(
+                "payloadLength",
+                "does not match the bytes following the tunnel header"
+            ));
+        }
+
+        Ok((Self { action, subheaders }, payload_length))
+    }
+}
+
+/// Client request that binds an RDPEMT tunnel to the main RDP connection.
+///
+/// Defined in [\[MS-RDPEMT\] 2.2.2.1].
+///
+/// [\[MS-RDPEMT\] 2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/4cee15bd-2f65-4624-95d2-a3aa6c08d588
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct TunnelCreateRequestPdu {
+    /// Optional autodetect subheaders.
+    pub subheaders: Vec<TunnelSubheader>,
+    /// Request ID from the Initiate Multitransport Request PDU.
+    pub request_id: u32,
+    /// Security cookie from the Initiate Multitransport Request PDU.
+    pub security_cookie: [u8; SECURITY_COOKIE_LEN],
+}
+
+impl TunnelCreateRequestPdu {
+    const PAYLOAD_SIZE: usize = 4 /* requestId */ + 4 /* reserved */ + SECURITY_COOKIE_LEN /* securityCookie */;
+    const NAME: &'static str = "TunnelCreateRequestPdu";
+
+    /// Builds a tunnel-create request without optional subheaders.
+    pub fn new(request_id: u32, security_cookie: [u8; SECURITY_COOKIE_LEN]) -> Self {
+        Self {
+            subheaders: Vec::new(),
+            request_id,
+            security_cookie,
+        }
+    }
+}
+
+impl Encode for TunnelCreateRequestPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        TunnelHeader {
+            action: TunnelAction::CreateRequest,
+            subheaders: self.subheaders.clone(),
+        }
+        .encode(Self::PAYLOAD_SIZE, dst)?;
+        dst.write_u32(self.request_id);
+        dst.write_u32(0);
+        dst.write_slice(&self.security_cookie);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        TunnelHeader {
+            action: TunnelAction::CreateRequest,
+            subheaders: self.subheaders.clone(),
+        }
+        .size()
+            + Self::PAYLOAD_SIZE
+    }
+}
+
+impl<'de> Decode<'de> for TunnelCreateRequestPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        let (header, payload_length) = TunnelHeader::decode(src)?;
+        if header.action != TunnelAction::CreateRequest {
+            return Err(invalid_field_err!("action", "expected tunnel create request"));
+        }
+        if payload_length != Self::PAYLOAD_SIZE {
+            return Err(invalid_field_err!(
+                "payloadLength",
+                "must be 24 bytes for a tunnel create request"
+            ));
+        }
+
+        let request_id = src.read_u32();
+        let reserved = src.read_u32();
+        if reserved != 0 {
+            return Err(invalid_field_err!("reserved", "must be zero"));
+        }
+        let security_cookie = src.read_array();
+
+        Ok(Self {
+            subheaders: header.subheaders,
+            request_id,
+            security_cookie,
+        })
+    }
+}
+
+/// Server response to an RDPEMT tunnel-create request.
+///
+/// Defined in [\[MS-RDPEMT\] 2.2.2.2].
+///
+/// [\[MS-RDPEMT\] 2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/8676e0f6-b5f3-45fb-8c3e-18a9414ea98f
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct TunnelCreateResponsePdu {
+    /// Optional autodetect subheaders.
+    pub subheaders: Vec<TunnelSubheader>,
+    /// HRESULT returned by the server.
+    pub hr_response: u32,
+}
+
+impl TunnelCreateResponsePdu {
+    const PAYLOAD_SIZE: usize = 4 /* hrResponse */;
+    const NAME: &'static str = "TunnelCreateResponsePdu";
+
+    /// `S_OK`.
+    pub const S_OK: u32 = 0;
+
+    /// Whether the server accepted the tunnel.
+    pub fn is_success(&self) -> bool {
+        self.hr_response == Self::S_OK
+    }
+}
+
+impl Encode for TunnelCreateResponsePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        TunnelHeader {
+            action: TunnelAction::CreateResponse,
+            subheaders: self.subheaders.clone(),
+        }
+        .encode(Self::PAYLOAD_SIZE, dst)?;
+        dst.write_u32(self.hr_response);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        TunnelHeader {
+            action: TunnelAction::CreateResponse,
+            subheaders: self.subheaders.clone(),
+        }
+        .size()
+            + Self::PAYLOAD_SIZE
+    }
+}
+
+impl<'de> Decode<'de> for TunnelCreateResponsePdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        let (header, payload_length) = TunnelHeader::decode(src)?;
+        if header.action != TunnelAction::CreateResponse {
+            return Err(invalid_field_err!("action", "expected tunnel create response"));
+        }
+        if payload_length != Self::PAYLOAD_SIZE {
+            return Err(invalid_field_err!(
+                "payloadLength",
+                "must be four bytes for a tunnel create response"
+            ));
+        }
+
+        Ok(Self {
+            subheaders: header.subheaders,
+            hr_response: src.read_u32(),
+        })
+    }
+}
+
+/// Higher-layer data transported by an established RDPEMT tunnel.
+///
+/// Defined in [\[MS-RDPEMT\] 2.2.2.3].
+///
+/// [\[MS-RDPEMT\] 2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/0c9108e9-fa9f-4d44-a030-810e2902a2c6
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct TunnelDataPdu {
+    /// Optional autodetect subheaders.
+    pub subheaders: Vec<TunnelSubheader>,
+    /// Complete higher-layer message.
+    pub data: Vec<u8>,
+}
+
+impl TunnelDataPdu {
+    const NAME: &'static str = "TunnelDataPdu";
+
+    /// Builds a tunnel data PDU without optional subheaders.
+    pub fn new(data: Vec<u8>) -> Self {
+        Self {
+            subheaders: Vec::new(),
+            data,
+        }
+    }
+}
+
+impl Encode for TunnelDataPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        TunnelHeader {
+            action: TunnelAction::Data,
+            subheaders: self.subheaders.clone(),
+        }
+        .encode(self.data.len(), dst)?;
+        dst.write_slice(&self.data);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        TunnelHeader {
+            action: TunnelAction::Data,
+            subheaders: self.subheaders.clone(),
+        }
+        .size()
+            + self.data.len()
+    }
+}
+
+impl<'de> Decode<'de> for TunnelDataPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        let (header, payload_length) = TunnelHeader::decode(src)?;
+        if header.action != TunnelAction::Data {
+            return Err(invalid_field_err!("action", "expected tunnel data"));
+        }
+
+        Ok(Self {
+            subheaders: header.subheaders,
+            data: src.read_slice(payload_length).to_vec(),
+        })
+    }
+}
+
+/// Any complete RDPEMT tunnel PDU.
+///
+/// Defined in [\[MS-RDPEMT\] 2.2.2].
+///
+/// [\[MS-RDPEMT\] 2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/9f9aefd5-c7dc-47d7-8767-1224a92f4e9f
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub enum TunnelPdu {
+    /// Client tunnel-create request.
+    CreateRequest(TunnelCreateRequestPdu),
+    /// Server tunnel-create response.
+    CreateResponse(TunnelCreateResponsePdu),
+    /// Higher-layer data.
+    Data(TunnelDataPdu),
+}
+
+impl Encode for TunnelPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        match self {
+            Self::CreateRequest(pdu) => pdu.encode(dst),
+            Self::CreateResponse(pdu) => pdu.encode(dst),
+            Self::Data(pdu) => pdu.encode(dst),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::CreateRequest(pdu) => pdu.name(),
+            Self::CreateResponse(pdu) => pdu.name(),
+            Self::Data(pdu) => pdu.name(),
+        }
+    }
+
+    fn size(&self) -> usize {
+        match self {
+            Self::CreateRequest(pdu) => pdu.size(),
+            Self::CreateResponse(pdu) => pdu.size(),
+            Self::Data(pdu) => pdu.size(),
+        }
+    }
+}
+
+impl<'de> Decode<'de> for TunnelPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: TunnelHeader::FIXED_PART_SIZE);
+        let action = TunnelAction::from_u8(src.remaining()[0] & 0x0F)
+            .ok_or_else(|| invalid_field_err!("action", "unknown tunnel action"))?;
+
+        match action {
+            TunnelAction::CreateRequest => TunnelCreateRequestPdu::decode(src).map(Self::CreateRequest),
+            TunnelAction::CreateResponse => TunnelCreateResponsePdu::decode(src).map(Self::CreateResponse),
+            TunnelAction::Data => TunnelDataPdu::decode(src).map(Self::Data),
+        }
+    }
+}
 
 /// Requested transport protocol for multitransport bootstrapping.
 ///
@@ -459,5 +885,61 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
         assert!(ironrdp_core::decode::<MultitransportRequestPdu>(bad_wire).is_err());
+    }
+
+    #[test]
+    fn tunnel_create_request_round_trip() {
+        let pdu = TunnelCreateRequestPdu::new(7, [0xAB; SECURITY_COOKIE_LEN]);
+        let encoded = ironrdp_core::encode_vec(&pdu).unwrap();
+        assert_eq!(
+            encoded.as_slice(),
+            &[
+                0x00, // action = create request, flags = 0
+                0x18, 0x00, // payloadLength = 24
+                0x04, // headerLength = 4
+                0x07, 0x00, 0x00, 0x00, // requestId
+                0x00, 0x00, 0x00, 0x00, // reserved
+                0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, // securityCookie
+                0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB,
+            ]
+        );
+        let decoded = ironrdp_core::decode::<TunnelCreateRequestPdu>(&encoded).unwrap();
+        assert_eq!(decoded, pdu);
+    }
+
+    #[test]
+    fn tunnel_pdu_preserves_subheaders_and_data() {
+        let pdu = TunnelPdu::Data(TunnelDataPdu {
+            subheaders: vec![TunnelSubheader {
+                ty: 1,
+                data: vec![0xAA, 0xBB],
+            }],
+            data: vec![1, 2, 3],
+        });
+        let encoded = ironrdp_core::encode_vec(&pdu).unwrap();
+        assert_eq!(
+            encoded.as_slice(),
+            &[
+                0x02, // action = data, flags = 0
+                0x03, 0x00, // payloadLength = 3
+                0x08, // headerLength = 8
+                0x04, 0x01, 0xAA, 0xBB, // subheader
+                0x01, 0x02, 0x03, // higher-layer data
+            ]
+        );
+        let decoded = ironrdp_core::decode::<TunnelPdu>(&encoded).unwrap();
+        assert_eq!(decoded, pdu);
+    }
+
+    #[test]
+    fn tunnel_header_rejects_invalid_lengths_and_flags() {
+        let invalid_header_length = [0x02, 0x00, 0x00, 0x03];
+        assert!(ironrdp_core::decode::<TunnelDataPdu>(&invalid_header_length).is_err());
+
+        let invalid_flags = [0x12, 0x00, 0x00, 0x04];
+        assert!(ironrdp_core::decode::<TunnelDataPdu>(&invalid_flags).is_err());
+
+        let invalid_payload_length = [0x02, 0x01, 0x00, 0x04];
+        assert!(ironrdp_core::decode::<TunnelDataPdu>(&invalid_payload_length).is_err());
     }
 }

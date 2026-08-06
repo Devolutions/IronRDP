@@ -50,8 +50,8 @@ pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut ClientConnector) -> Up
 
 #[instrument(skip_all)]
 pub async fn connect_finalize<S, N>(
-    _: Upgraded,
-    mut connector: ClientConnector,
+    upgraded: Upgraded,
+    connector: ClientConnector,
     framed: &mut Framed<S>,
     network_client: &mut N,
     server_name: ServerName,
@@ -61,6 +61,52 @@ pub async fn connect_finalize<S, N>(
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
+{
+    connect_finalize_with_multitransport(
+        upgraded,
+        connector,
+        framed,
+        network_client,
+        server_name,
+        server_public_key,
+        kerberos_config,
+        |_| async {
+            Ok(ironrdp_connector::MultitransportResult::Failure(
+                ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu::E_ABORT,
+            ))
+        },
+    )
+    .await
+}
+
+/// Completes the RDP connection sequence with application-owned multitransport setup.
+///
+/// The handler receives one server Initiate Multitransport Request at a time. It must establish
+/// the requested transport and return its outcome. Returning an error first sends an `E_ABORT`
+/// response for the request, then terminates the primary connection.
+///
+/// [`connect_finalize`] preserves the historical TCP-only behavior by calling this function with
+/// a handler that declines every request.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "extends the established connection-finalization API with a multitransport callback"
+)]
+#[instrument(skip_all)]
+pub async fn connect_finalize_with_multitransport<S, N, H, F>(
+    _: Upgraded,
+    mut connector: ClientConnector,
+    framed: &mut Framed<S>,
+    network_client: &mut N,
+    server_name: ServerName,
+    server_public_key: Vec<u8>,
+    kerberos_config: Option<KerberosConfig>,
+    mut multitransport_handler: H,
+) -> ConnectorResult<ConnectionResult>
+where
+    S: FramedRead + FramedWrite,
+    N: NetworkClient,
+    H: FnMut(ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu) -> F,
+    F: Future<Output = ConnectorResult<ironrdp_connector::MultitransportResult>>,
 {
     let mut buf = WriteBuf::new();
 
@@ -79,19 +125,24 @@ where
 
     let result = loop {
         if connector.should_perform_multitransport() {
-            // Auto-skip multitransport bootstrapping: this driver does not own
-            // UDP transport setup, so it declines on the application's behalf
-            // and the connection continues TCP-only. Applications that want to
-            // participate in multitransport must drive the connector directly
-            // using `ClientConnector::complete_multitransport()` instead of
-            // calling `connect_finalize`.
-            buf.clear();
-            let written = connector.skip_multitransport(&mut buf)?;
-            if written.size().is_some() {
-                framed
-                    .write_all(buf.filled())
-                    .await
-                    .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+            let request = connector
+                .multitransport_request()
+                .cloned()
+                .ok_or_else(|| general_err!("multitransport is pending without an Initiate Multitransport Request"))?;
+
+            match multitransport_handler(request).await {
+                Ok(result) => complete_multitransport(&mut connector, framed, result).await?,
+                Err(error) => {
+                    complete_multitransport(
+                        &mut connector,
+                        framed,
+                        ironrdp_connector::MultitransportResult::Failure(
+                            ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu::E_ABORT,
+                        ),
+                    )
+                    .await?;
+                    return Err(error);
+                }
             }
             continue;
         }
@@ -106,6 +157,32 @@ where
     info!("Connected with success");
 
     Ok(result)
+}
+
+/// Sends the connector's Initiate Multitransport Response for the pending request.
+///
+/// The response is emitted on the negotiated MCS message channel when the connector determines
+/// that one is owed. This is public so applications which drive connector states themselves can
+/// use the same completion path as [`connect_finalize_with_multitransport`].
+#[instrument(skip_all)]
+pub async fn complete_multitransport<S>(
+    connector: &mut ClientConnector,
+    framed: &mut Framed<S>,
+    result: ironrdp_connector::MultitransportResult,
+) -> ConnectorResult<()>
+where
+    S: FramedRead + FramedWrite,
+{
+    let mut buf = WriteBuf::new();
+    let written = connector.complete_multitransport(result, &mut buf)?;
+    if written.size().is_some() {
+        framed
+            .write_all(buf.filled())
+            .await
+            .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+    }
+
+    Ok(())
 }
 
 async fn resolve_generator(
