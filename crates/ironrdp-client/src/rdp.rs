@@ -947,7 +947,7 @@ where
         let rdcleanpath_req =
             ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
                 .map_err(|e| ironrdp_connector::custom_err!("new RDCleanPath request", e))?;
-        debug!("Send RDCleanPath request");
+        debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
         let rdcleanpath_req = rdcleanpath_req
             .to_der()
             .map_err(|e| ironrdp_connector::custom_err!("RDCleanPath request encode", e))?;
