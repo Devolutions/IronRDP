@@ -463,7 +463,7 @@ pub struct MissingRDCleanPathField(&'static str);
 
 impl fmt::Display for MissingRDCleanPathField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "RDCleanPath is missing {} field", self.0)
+        write!(f, "missing RDCleanPath field: {}", self.0)
     }
 }
 

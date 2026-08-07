@@ -182,16 +182,10 @@ where
 /// through [`connect_front`], so this is the single choke point.
 fn prepare_connector(connector: &mut ClientConnector) -> ConnectorResult<()> {
     if !connector.config.enable_tls {
-        return Err(reason_err!(
-            "vmconnect",
-            "TLS is required for a Hyper-V console connection",
-        ));
+        return Err(reason_err!("vmconnect", "vmconnect requires TLS"));
     }
     if !connector.config.enable_credssp {
-        return Err(reason_err!(
-            "vmconnect",
-            "CredSSP is required for a Hyper-V console connection",
-        ));
+        return Err(reason_err!("vmconnect", "vmconnect requires CredSSP"));
     }
     Ok(())
 }

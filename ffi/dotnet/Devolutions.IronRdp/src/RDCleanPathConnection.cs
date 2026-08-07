@@ -16,7 +16,7 @@ public static class RDCleanPathConnection
     /// <param name="gatewayUrl">The WebSocket URL to the RDCleanPath gateway (e.g., "ws://localhost:7171/jet/rdp")</param>
     /// <param name="authToken">The JWT authentication token for the RDCleanPath gateway</param>
     /// <param name="destination">The destination RDP server address (e.g., "10.10.0.3:3389")</param>
-    /// <param name="pcb">Optional preconnection blob for Hyper-V VM connections</param>
+    /// <param name="pcbPayload">Optional Hyper-V VMConnect PCB payload</param>
     /// <param name="factory">Optional clipboard backend factory</param>
     /// <returns>A tuple containing the connection result and framed WebSocket stream</returns>
     public static async Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectRDCleanPath(
@@ -24,7 +24,7 @@ public static class RDCleanPathConnection
         string gatewayUrl,
         string authToken,
         string destination,
-        string? pcb = null,
+        string? pcbPayload = null,
         CliprdrBackendFactory? factory = null)
     {
         // Step 1: Connect WebSocket to gateway
@@ -44,7 +44,7 @@ public static class RDCleanPathConnection
         // Step 4: Perform RDCleanPath handshake
         System.Diagnostics.Debug.WriteLine("Performing RDCleanPath handshake...");
         var (serverPublicKey, framedAfterHandshake, hasX224) = await ConnectRdCleanPath(
-            framed, connector, destination, authToken, pcb ?? "");
+            framed, connector, destination, authToken, pcbPayload ?? "");
 
         if (hasX224)
         {
@@ -53,8 +53,10 @@ public static class RDCleanPathConnection
         }
         else
         {
+            // PCB front: proxy did PCB + TLS. Client runs CredSSP then HYBRID-only X.224.
             const uint HybridProtocol = 0x00000002;
             var writeBuf = WriteBuf.New();
+
             await ConnectionHelpers.PerformCredsspSteps(
                 connector,
                 destination,
@@ -63,11 +65,24 @@ public static class RDCleanPathConnection
                 serverPublicKey,
                 HybridProtocol);
 
+            connector.ClearCredentialsAfterHostAuth();
+
+            writeBuf.Clear();
+            var written = connector.InitiateWithSecurityProtocol(HybridProtocol, writeBuf);
+            if (written.GetWrittenType() != WrittenType.Nothing)
+            {
+                var size = (int)written.GetSize().Get();
+                var x224Request = new byte[size];
+                writeBuf.ReadIntoBuf(x224Request);
+                await framedAfterHandshake.Write(x224Request);
+            }
+
             while (!connector.ShouldPerformSecurityUpgrade())
             {
                 await Connection.SingleSequenceStep(connector, writeBuf, framedAfterHandshake);
             }
 
+            connector.EnsureSelectedHybrid();
             connector.MarkSecurityUpgradeAsDone();
             connector.MarkCredsspAsDone();
         }
