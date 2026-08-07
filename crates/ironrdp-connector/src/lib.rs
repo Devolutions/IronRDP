@@ -112,6 +112,7 @@ pub struct SmartCardIdentity {
 #[derive(Debug, Clone)]
 pub enum Credentials {
     UsernamePassword {
+        /// An empty username suppresses the X.224 `mstshash` cookie.
         username: String,
         password: String,
     },

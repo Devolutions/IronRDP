@@ -10,6 +10,7 @@ use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_propertyset::PropertySet;
 use url::Url;
 
+#[cfg(feature = "vmconnect")]
 pub use ironrdp_vmconnect::Mode as VmConnectMode;
 
 // ── Extension registry ────────────────────────────────────────────────────────
@@ -63,8 +64,10 @@ pub struct Config {
     pub(crate) certificate_validation: ironrdp_tls::CertificateValidation,
     pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
 
+    #[cfg(feature = "vmconnect")]
     /// Hyper-V VM ID when connecting to a VM console (port [`ironrdp_vmconnect::PORT`]).
     pub(crate) vm_id: Option<String>,
+    #[cfg(feature = "vmconnect")]
     pub(crate) vmconnect_mode: VmConnectMode,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
@@ -118,11 +121,13 @@ impl Config {
         self.certificate_validation_callback.as_ref()
     }
 
+    #[cfg(feature = "vmconnect")]
     /// Hyper-V VM ID for a vmconnect session, if any.
     pub fn vm_id(&self) -> Option<&str> {
         self.vm_id.as_deref()
     }
 
+    #[cfg(feature = "vmconnect")]
     /// Hyper-V console mode for a vmconnect session, if any.
     pub fn vmconnect_mode(&self) -> Option<VmConnectMode> {
         self.vm_id.as_ref().map(|_| self.vmconnect_mode)
@@ -172,8 +177,11 @@ impl fmt::Debug for Config {
             "certificate_validation_callback",
             &self.certificate_validation_callback.as_ref().map(|_| "<configured>"),
         );
-        s.field("vm_id", &self.vm_id);
-        s.field("vmconnect_mode", &self.vmconnect_mode);
+        #[cfg(feature = "vmconnect")]
+        {
+            s.field("vm_id", &self.vm_id);
+            s.field("vmconnect_mode", &self.vmconnect_mode);
+        }
         s.field("kerberos_config", &self.kerberos_config);
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
@@ -605,7 +613,9 @@ pub struct ConfigBuilder {
     work_dir: Option<String>,
 
     transport: TransportKind,
+    #[cfg(feature = "vmconnect")]
     vm_id: Option<String>,
+    #[cfg(feature = "vmconnect")]
     vmconnect_mode: VmConnectMode,
     rdcleanpath_token: Option<String>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
@@ -993,6 +1003,7 @@ impl ConfigBuilder {
         self
     }
 
+    #[cfg(feature = "vmconnect")]
     /// Connect to a Hyper-V VM console by VM GUID. Destination must use port
     /// [`ironrdp_vmconnect::PORT`] (2179).
     ///
@@ -1005,6 +1016,7 @@ impl ConfigBuilder {
         self
     }
 
+    #[cfg(feature = "vmconnect")]
     /// Connect to a Hyper-V VM console using the selected mode.
     ///
     /// See [`with_vmconnect`](Self::with_vmconnect) for transport notes.
@@ -1306,6 +1318,7 @@ impl ConfigBuilder {
             }),
         };
 
+        #[cfg(feature = "vmconnect")]
         if self.vm_id.is_some() {
             if !self.enable_tls.unwrap_or(true) {
                 anyhow::bail!("vmconnect requires TLS");
@@ -1409,7 +1422,9 @@ impl ConfigBuilder {
             transport,
             certificate_validation,
             certificate_validation_callback: self.certificate_validation_callback,
+            #[cfg(feature = "vmconnect")]
             vm_id: self.vm_id,
+            #[cfg(feature = "vmconnect")]
             vmconnect_mode: self.vmconnect_mode,
             kerberos_config,
             fake_events_interval: self.fake_events_interval,
