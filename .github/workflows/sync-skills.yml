@@ -16,6 +16,9 @@ concurrency:
 jobs:
   sync:
     name: Sync shared skills
+    # TODO: Rename this environment or move the bot write token to a dedicated
+    # environment; trusted publishing no longer requires it for crates.io tokens.
+    environment: cratesio-publish
     runs-on: ubuntu-latest
 
     steps:
