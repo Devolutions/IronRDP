@@ -571,7 +571,7 @@ fn trace_decode_failure(context: &str, error: &DecodeError) {
     let location = error.location();
     let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
     let marker = match error.kind() {
-        DecodeErrorKind::NotEnoughBytes { received, expected } => {
+        DecodeErrorKind::NotEnoughBytes { received, expected, .. } => {
             format!("Decode:NotEnoughBytes:received_{received}:expected_{expected}")
         }
         DecodeErrorKind::InvalidField { .. } => "Decode:InvalidField".to_owned(),

@@ -677,7 +677,7 @@ impl Decode<'_> for KeyFilter {
         match src.read_u8() {
             0 => Ok(Self::Substring(read_string(src)?)),
             1 => Ok(Self::Prefix(read_string(src)?)),
-            _ => Err(ironrdp_core::invalid_field_err!("key filter", "unknown tag")),
+            _ => Err(ironrdp_core::invalid_field_err!("key filter", "unknown tag", in: src)),
         }
     }
 }
@@ -724,7 +724,7 @@ impl Decode<'_> for PropValue {
                 Ok(Self::Int(src.read_i64()))
             }
             1 => Ok(Self::Str(read_string(src)?)),
-            _ => Err(ironrdp_core::invalid_field_err!("property value", "unknown tag")),
+            _ => Err(ironrdp_core::invalid_field_err!("property value", "unknown tag", in: src)),
         }
     }
 }
@@ -760,7 +760,7 @@ impl_pdu_pod!(PropertyEntry);
 impl Encode for PropertyDump {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
-        let count: u32 = cast_length!("property count", self.entries.len())?;
+        let count: u32 = cast_length!("property count", self.entries.len(), in: dst)?;
         dst.write_u32(count);
         for entry in &self.entries {
             entry.encode(dst)?;
@@ -857,7 +857,7 @@ impl Encode for Payload {
             }
             Self::Logs(lines) => {
                 dst.write_u8(3);
-                let count: u32 = cast_length!("log line count", lines.len())?;
+                let count: u32 = cast_length!("log line count", lines.len(), in: dst)?;
                 dst.write_u32(count);
                 for line in lines {
                     write_string(dst, line)?;
@@ -879,7 +879,7 @@ impl Encode for Payload {
             }
             Self::NowOperations(operations) => {
                 dst.write_u8(7);
-                let count: u32 = cast_length!("operation count", operations.len())?;
+                let count: u32 = cast_length!("operation count", operations.len(), in: dst)?;
                 dst.write_u32(count);
                 for operation in operations {
                     operation.encode(dst)?;
@@ -954,7 +954,7 @@ impl Decode<'_> for Payload {
             }
             8 => Ok(Self::NowEvent(OperationEvent::decode(src)?)),
             9 => Ok(Self::NowDiagnostics(NowDiagnostics::decode(src)?)),
-            _ => Err(ironrdp_core::invalid_field_err!("payload", "unknown tag")),
+            _ => Err(ironrdp_core::invalid_field_err!("payload", "unknown tag", in: src)),
         }
     }
 }
@@ -997,7 +997,7 @@ impl Decode<'_> for Response {
         match src.read_u8() {
             0 => Ok(Self::Ok(Payload::decode(src)?)),
             1 => Ok(Self::Err(AgentError::decode(src)?)),
-            _ => Err(ironrdp_core::invalid_field_err!("response", "unknown tag")),
+            _ => Err(ironrdp_core::invalid_field_err!("response", "unknown tag", in: src)),
         }
     }
 }
@@ -1169,7 +1169,7 @@ impl Decode<'_> for Request {
                 let filter = match src.read_u8() {
                     0 => None,
                     1 => Some(KeyFilter::decode(src)?),
-                    _ => return Err(ironrdp_core::invalid_field_err!("dump filter", "invalid presence flag")),
+                    _ => return Err(ironrdp_core::invalid_field_err!("dump filter", "invalid presence flag", in: src)),
                 };
                 Ok(Self::QueryProps { filter })
             }
@@ -1182,7 +1182,7 @@ impl Decode<'_> for Request {
                         ensure_size!(in: src, size: 4);
                         Some(src.read_u32())
                     }
-                    _ => return Err(ironrdp_core::invalid_field_err!("query last", "invalid presence flag")),
+                    _ => return Err(ironrdp_core::invalid_field_err!("query last", "invalid presence flag", in: src)),
                 };
                 Ok(Self::QueryLogs { substring, last })
             }
@@ -1261,7 +1261,7 @@ impl Decode<'_> for Request {
                 })
             }
             20 => Ok(Self::NowDiagnostics),
-            _ => Err(ironrdp_core::invalid_field_err!("request", "unknown tag")),
+            _ => Err(ironrdp_core::invalid_field_err!("request", "unknown tag", in: src)),
         }
     }
 }
@@ -1290,7 +1290,7 @@ fn read_error_category(src: &mut ReadCursor<'_>) -> DecodeResult<AgentErrorCateg
         3 => Ok(AgentErrorCategory::Transport),
         4 => Ok(AgentErrorCategory::Remote),
         5 => Ok(AgentErrorCategory::Internal),
-        _ => Err(ironrdp_core::invalid_field_err!("agent error category", "unknown tag")),
+        _ => Err(ironrdp_core::invalid_field_err!("agent error category", "unknown tag", in: src)),
     }
 }
 
@@ -1337,7 +1337,7 @@ fn read_execution_kind(src: &mut ReadCursor<'_>) -> DecodeResult<NowExecutionKin
         1 => Ok(NowExecutionKind::Batch),
         2 => Ok(NowExecutionKind::PowerShell),
         3 => Ok(NowExecutionKind::Pwsh),
-        _ => Err(ironrdp_core::invalid_field_err!("NOW execution kind", "unknown tag")),
+        _ => Err(ironrdp_core::invalid_field_err!("NOW execution kind", "unknown tag", in: src)),
     }
 }
 
@@ -1389,7 +1389,7 @@ impl Decode<'_> for NowExecutionRequest {
         let stdin = match src.read_u8() {
             0 => None,
             1 => Some(read_bytes(src)?),
-            _ => return Err(ironrdp_core::invalid_field_err!("NOW stdin", "invalid presence flag")),
+            _ => return Err(ironrdp_core::invalid_field_err!("NOW stdin", "invalid presence flag", in: src)),
         };
         Ok(Self {
             kind,
@@ -1427,7 +1427,7 @@ fn read_operation_state(src: &mut ReadCursor<'_>) -> DecodeResult<OperationState
         3 => Ok(OperationState::Cancelled),
         4 => Ok(OperationState::Failed),
         5 => Ok(OperationState::Detached),
-        _ => Err(ironrdp_core::invalid_field_err!("operation state", "unknown tag")),
+        _ => Err(ironrdp_core::invalid_field_err!("operation state", "unknown tag", in: src)),
     }
 }
 
@@ -1489,7 +1489,7 @@ impl Decode<'_> for OperationInfo {
                 ensure_size!(in: src, size: 4);
                 Some(src.read_u32())
             }
-            _ => return Err(ironrdp_core::invalid_field_err!("exit code", "invalid presence flag")),
+            _ => return Err(ironrdp_core::invalid_field_err!("exit code", "invalid presence flag", in: src)),
         };
         ensure_size!(in: src, size: 1);
         let error = match src.read_u8() {
@@ -1498,7 +1498,8 @@ impl Decode<'_> for OperationInfo {
             _ => {
                 return Err(ironrdp_core::invalid_field_err!(
                     "operation error",
-                    "invalid presence flag"
+                    "invalid presence flag",
+                    in: src
                 ));
             }
         };
@@ -1530,7 +1531,7 @@ fn read_stream(src: &mut ReadCursor<'_>) -> DecodeResult<NowStream> {
     match src.read_u8() {
         0 => Ok(NowStream::Stdout),
         1 => Ok(NowStream::Stderr),
-        _ => Err(ironrdp_core::invalid_field_err!("NOW output stream", "unknown tag")),
+        _ => Err(ironrdp_core::invalid_field_err!("NOW output stream", "unknown tag", in: src)),
     }
 }
 
@@ -1593,7 +1594,7 @@ impl Decode<'_> for OperationEventKind {
             }
             4 => Ok(Self::Cancelled),
             5 => Ok(Self::Failed(AgentError::decode(src)?)),
-            _ => Err(ironrdp_core::invalid_field_err!("operation event", "unknown tag")),
+            _ => Err(ironrdp_core::invalid_field_err!("operation event", "unknown tag", in: src)),
         }
     }
 }
@@ -1722,7 +1723,8 @@ impl Decode<'_> for NowDiagnostics {
             _ => {
                 return Err(ironrdp_core::invalid_field_err!(
                     "NOW capabilities",
-                    "invalid presence flag"
+                    "invalid presence flag",
+                    in: src
                 ));
             }
         };

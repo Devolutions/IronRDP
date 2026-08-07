@@ -65,13 +65,10 @@ impl Encode for Input {
         dst.write_u32(self.keyboard_subtype);
         dst.write_u32(self.keyboard_function_key);
 
-        utils::encode_string(
-            dst.remaining_mut(),
-            &self.keyboard_ime_filename,
-            utils::CharacterSet::Unicode,
-            true,
-        )?;
-        dst.advance(IME_FILE_NAME_SIZE);
+        let start = dst.pos();
+        utils::encode_string(dst, &self.keyboard_ime_filename, utils::CharacterSet::Unicode, true)?;
+        let written = dst.pos() - start;
+        write_padding!(dst, IME_FILE_NAME_SIZE - written);
 
         Ok(())
     }

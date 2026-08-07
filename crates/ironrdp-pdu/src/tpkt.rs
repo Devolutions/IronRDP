@@ -57,7 +57,7 @@ impl TpktHeader {
         let version = src.read_u8();
 
         if version != Self::VERSION {
-            return Err(unsupported_version_err!("TPKT version", version));
+            return Err(unsupported_version_err!("TPKT version", version, in: src));
         }
 
         read_padding!(src, 1);
@@ -67,7 +67,8 @@ impl TpktHeader {
         if usize::from(packet_length) < 7 {
             return Err(invalid_field_err!(
                 "packetLength",
-                "length is smaller than the minimum TPKT size"
+                "length is smaller than the minimum TPKT size",
+                in: src
             ));
         }
 

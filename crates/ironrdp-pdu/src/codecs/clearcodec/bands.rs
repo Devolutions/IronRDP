@@ -94,14 +94,14 @@ fn decode_single_band<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<Band<'a>> {
     let height = y_end
         .checked_sub(y_start)
         .and_then(|h| h.checked_add(1))
-        .ok_or_else(|| invalid_field_err!("yEnd", "yEnd < yStart"))?;
+        .ok_or_else(|| invalid_field_err!("yEnd", "yEnd < yStart", in: src))?;
 
     if height > MAX_BAND_HEIGHT {
-        return Err(invalid_field_err!("bandHeight", "band height exceeds 52"));
+        return Err(invalid_field_err!("bandHeight", "band height exceeds 52", in: src));
     }
 
     if x_end < x_start {
-        return Err(invalid_field_err!("xEnd", "xEnd < xStart"));
+        return Err(invalid_field_err!("xEnd", "xEnd < xStart", in: src));
     }
 
     // `x_end - x_start` is at most u16::MAX (when x_end = u16::MAX and
@@ -153,13 +153,14 @@ fn decode_vbar<'a>(src: &mut ReadCursor<'a>, band_height: u16) -> DecodeResult<V
     let y_off = u8::try_from(first_word & 0x3F).expect("masked to 6 bits, always fits in u8");
 
     if y_off < y_on {
-        return Err(invalid_field_err!("shortVBarCacheMiss", "shortVBarYOff < shortVBarYOn"));
+        return Err(invalid_field_err!("shortVBarCacheMiss", "shortVBarYOff < shortVBarYOn", in: src));
     }
 
     if u16::from(y_off) > band_height {
         return Err(invalid_field_err!(
             "shortVBarCacheMiss",
-            "shortVBarYOff exceeds band height"
+            "shortVBarYOff exceeds band height",
+            in: src
         ));
     }
 

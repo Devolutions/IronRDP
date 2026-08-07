@@ -127,6 +127,7 @@ impl TpduHeader {
                 Self::NAME,
                 "li",
                 "tpdu length greater than tpkt length",
+                None,
             ));
         }
 
@@ -136,6 +137,7 @@ impl TpduHeader {
                 Self::NAME,
                 "li",
                 "unsupported X.224 extension (suggested by LI field set to 255)",
+                None,
             ));
         }
 

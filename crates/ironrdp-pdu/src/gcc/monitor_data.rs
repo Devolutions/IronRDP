@@ -27,7 +27,7 @@ impl Encode for ClientMonitorData {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(0); // flags
-        dst.write_u32(cast_length!("nMonitors", self.monitors.len())?);
+        dst.write_u32(cast_length!("nMonitors", self.monitors.len(), in: dst)?);
 
         for monitor in self.monitors.iter().take(MONITOR_COUNT_MAX) {
             monitor.encode(dst)?;
@@ -50,10 +50,10 @@ impl<'de> Decode<'de> for ClientMonitorData {
         ensure_fixed_part_size!(in: src);
 
         let _flags = src.read_u32(); // is unused
-        let monitor_count = cast_length!("number of monitors", src.read_u32())?;
+        let monitor_count = cast_length!("number of monitors", src.read_u32(), in: src)?;
 
         if monitor_count > MONITOR_COUNT_MAX {
-            return Err(invalid_field_err!("nMonitors", "too many monitors"));
+            return Err(invalid_field_err!("nMonitors", "too many monitors", in: src));
         }
 
         let mut monitors = Vec::with_capacity(monitor_count);
@@ -112,7 +112,7 @@ impl<'de> Decode<'de> for Monitor {
         let right = src.read_i32();
         let bottom = src.read_i32();
         let flags = MonitorFlags::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("flags", "invalid monitor flags"))?;
+            .ok_or_else(|| invalid_field_err!("flags", "invalid monitor flags", in: src))?;
 
         Ok(Self {
             left,
