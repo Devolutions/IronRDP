@@ -125,14 +125,25 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                     .expect("value is guaranteed to be `Some` due to the prior check");
                 let mut nz: u32 = 0;
 
-                // Count zeros: while current value is zero and more data exists,
-                // count it as a run zero and read the next value.
+                // Count zeros: while the current value is zero, count it as a
+                // run zero and read the next value.
+                //
+                // A run that reaches the end of the input has no value after
+                // it, and `run_to_end` records that. The trailing zeros are the
+                // run and nothing follows them, because RL mode codes the
+                // following value's magnitude minus one and so cannot express a
+                // magnitude of zero: coding one there decodes as a magnitude of
+                // one, which appends a coefficient the input never had.
+                let mut run_to_end = false;
                 while val == 0 {
-                    if input.peek().is_none() {
-                        break;
-                    }
                     nz += 1;
-                    val = *input.next().expect("peek confirmed Some");
+                    match input.next() {
+                        Some(&next) => val = next,
+                        None => {
+                            run_to_end = true;
+                            break;
+                        }
+                    }
                 }
 
                 let mut runmax: u32 = 1 << k;
@@ -146,11 +157,13 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                 bits.output_bit(1, true);
                 bits.output_bits(k as usize, nz);
 
-                // Always encode the value after the run (even if it's 0 due
-                // to exhausted input). This matches the reference encoder.
-                let mag = u32::from(val.unsigned_abs());
-                bits.output_bit(1, val < 0);
-                code_gr(&mut bits, &mut krp, if mag > 0 { mag - 1 } else { 0 });
+                // Encode the value that ended the run. A run that consumed the
+                // rest of the input has no such value.
+                if !run_to_end {
+                    let mag = u32::from(val.unsigned_abs());
+                    bits.output_bit(1, val < 0);
+                    code_gr(&mut bits, &mut krp, mag - 1);
+                }
 
                 kp = kp.saturating_sub(DN_GR);
                 k = kp >> LS_GR;

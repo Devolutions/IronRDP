@@ -707,3 +707,34 @@ const CR_DATA_DECODED: [i16; 4096] = [
     -38, -3, -1, 61, -68, 60, -4, -37, 1, -18, 2, 29, 29, 8, 18, -74, 10, 5, -17, -22, 108, -16, 33, -124, 22, -7, 0,
     -4, 48, 26, -46, -33,
 ];
+
+/// A run that consumes the rest of the input has no value after it.
+///
+/// RL mode codes the following value's magnitude minus one, so it cannot
+/// express a magnitude of zero. Coding one anyway decodes as a magnitude of
+/// one, which appends a coefficient the input never had. Quantized wavelet
+/// coefficients almost always end in a zero run, so this reaches every
+/// RemoteFX tile.
+#[test]
+fn round_trip_preserves_a_run_that_reaches_the_end_of_the_input() {
+    let cases: [&[i16]; 6] = [
+        &[0],
+        &[0, 0, 0, 0, 0, 0, 0, 0],
+        &[5, 0, 0, 0, 0, 0, 0, 0],
+        &[0, 0, 3, 0, 0, 0, 0, 0],
+        &[1, -2, 3, 0, 0, 0, 0, 0],
+        &[7],
+    ];
+
+    for mode in [EntropyAlgorithm::Rlgr1, EntropyAlgorithm::Rlgr3] {
+        for input in cases {
+            let mut encoded = vec![0; 8192];
+            let len = encode(mode, input, encoded.as_mut_slice()).expect("encode");
+
+            let mut decoded = vec![0i16; input.len()];
+            decode(mode, &encoded[..len], decoded.as_mut_slice()).expect("decode");
+
+            assert_eq!(decoded.as_slice(), input, "{mode:?} round trip of {input:?}");
+        }
+    }
+}
