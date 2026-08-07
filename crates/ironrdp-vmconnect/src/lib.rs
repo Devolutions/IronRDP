@@ -75,10 +75,15 @@ pub fn encode_preconnection_blob(vm_id: &str, mode: Mode) -> ConnectorResult<Vec
         Mode::Enhanced => format!("{vm_id}{ENHANCED_MODE_SUFFIX}"),
         Mode::Basic => vm_id.to_owned(),
     };
+    encode_preconnection_blob_payload(&payload)
+}
+
+/// Encode a PCB V2 containing an opaque routing payload.
+pub fn encode_preconnection_blob_payload(payload: &str) -> ConnectorResult<Vec<u8>> {
     encode_vec(&PreconnectionBlob {
         id: 0,
         version: PcbVersion::V2,
-        v2_payload: Some(payload),
+        v2_payload: Some(payload.to_owned()),
     })
     .map_err(ConnectorError::encode)
 }
@@ -103,7 +108,6 @@ where
 }
 
 /// Receipt after an RDCleanPath v2 proxy has written the PCB and established TLS to the host.
-#[must_use]
 pub fn pcb_sent_via_proxy() -> PcbSent {
     PcbSent
 }
@@ -125,7 +129,7 @@ pub async fn connect_front<S, N>(
     kerberos_config: Option<KerberosConfig>,
 ) -> ConnectorResult<Upgraded>
 where
-    S: Sync + FramedRead + FramedWrite,
+    S: FramedRead + FramedWrite,
     N: NetworkClient,
 {
     prepare_connector(connector)?;
@@ -209,5 +213,166 @@ fn ensure_selected_credssp(state: &ClientConnectorState) -> ConnectorResult<()> 
             "Initiation",
             "server must select HYBRID for a Hyper-V console, but it selected {selected}",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_connector::{ClientConnector, ClientConnectorState, Credentials};
+    use ironrdp_core::{WriteBuf, decode};
+    use ironrdp_pdu::nego::{ConnectionRequest, SecurityProtocol};
+    use ironrdp_pdu::pcb::PreconnectionBlob;
+    use ironrdp_pdu::x224::X224;
+
+    use super::{
+        Mode, encode_preconnection_blob, encode_preconnection_blob_payload, ensure_selected_credssp, prepare_connector,
+    };
+
+    #[test]
+    fn pcb_payload_selects_console_mode() {
+        const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
+
+        for (mode, expected) in [
+            (Mode::Enhanced, format!("{VM_ID};EnhancedMode=1")),
+            (Mode::Basic, VM_ID.to_owned()),
+        ] {
+            let bytes = encode_preconnection_blob(VM_ID, mode).expect("encode");
+            let pcb: PreconnectionBlob = decode(&bytes).expect("decode");
+
+            assert_eq!(pcb.v2_payload.as_deref(), Some(expected.as_str()));
+        }
+    }
+
+    #[test]
+    fn opaque_pcb_payload_is_preserved() {
+        const PAYLOAD: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6;EnhancedMode=1";
+
+        let bytes = encode_preconnection_blob_payload(PAYLOAD).expect("encode");
+        let pcb: PreconnectionBlob = decode(&bytes).expect("decode");
+
+        assert_eq!(pcb.v2_payload.as_deref(), Some(PAYLOAD));
+    }
+
+    #[test]
+    fn accepts_hybrid_selected_after_enhanced_mode_authentication() {
+        let state = ClientConnectorState::EnhancedSecurityUpgrade {
+            selected_protocol: SecurityProtocol::HYBRID,
+        };
+
+        ensure_selected_credssp(&state).expect("CredSSP protocol");
+    }
+
+    #[test]
+    fn rejects_hybrid_ex_selected_after_enhanced_mode_authentication() {
+        let state = ClientConnectorState::EnhancedSecurityUpgrade {
+            selected_protocol: SecurityProtocol::HYBRID_EX,
+        };
+
+        ensure_selected_credssp(&state).expect_err("HYBRID_EX must be rejected");
+    }
+
+    #[test]
+    fn pcb_transmit_deadline_matches_ms_rdpeps() {
+        assert_eq!(super::PCB_TRANSMIT_DEADLINE, core::time::Duration::from_secs(10));
+    }
+
+    fn test_connector(enable_tls: bool, enable_credssp: bool) -> ClientConnector {
+        use ironrdp_pdu::gcc;
+        use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
+
+        ClientConnector::new(
+            ironrdp_connector::Config {
+                desktop_size: ironrdp_connector::DesktopSize {
+                    width: 800,
+                    height: 600,
+                },
+                desktop_scale_factor: 0,
+                enable_tls,
+                enable_credssp,
+                credentials: Credentials::UsernamePassword {
+                    username: "u".into(),
+                    password: "p".into(),
+                },
+                domain: None,
+                client_build: 0,
+                client_name: "test".into(),
+                keyboard_type: gcc::KeyboardType::IbmEnhanced,
+                keyboard_subtype: 0,
+                keyboard_layout: 0,
+                keyboard_functional_keys_count: 12,
+                connection_type: gcc::ConnectionType::Lan,
+                ime_file_name: String::new(),
+                bitmap: None,
+                dig_product_id: String::new(),
+                client_dir: String::new(),
+                platform: MajorPlatformType::UNSPECIFIED,
+                hardware_id: None,
+                request_data: None,
+                autologon: false,
+                enable_audio_playback: false,
+                license_cache: None,
+                compression_type: None,
+                enable_server_pointer: false,
+                pointer_software_rendering: false,
+                multitransport_flags: None,
+                performance_flags: Default::default(),
+                timezone_info: Default::default(),
+                alternate_shell: String::new(),
+                work_dir: String::new(),
+            },
+            "127.0.0.1:2179".parse().unwrap(),
+        )
+    }
+
+    #[test]
+    fn prepare_connector_accepts_tls_and_credssp() {
+        prepare_connector(&mut test_connector(true, true)).expect("required flags set");
+    }
+
+    #[test]
+    fn prepare_connector_rejects_disabled_tls() {
+        let err = prepare_connector(&mut test_connector(false, true)).expect_err("TLS required");
+        assert!(err.to_string().contains("TLS"), "{err}");
+    }
+
+    #[test]
+    fn prepare_connector_rejects_disabled_credssp() {
+        let err = prepare_connector(&mut test_connector(true, false)).expect_err("CredSSP required");
+        assert!(err.to_string().contains("CredSSP"), "{err}");
+    }
+
+    #[test]
+    fn prepare_connector_advertises_hybrid_without_hybrid_ex() {
+        let mut connector = test_connector(true, true);
+        prepare_connector(&mut connector).expect("prepare connector");
+
+        let mut output = WriteBuf::new();
+        connector
+            .initiate_with_security_protocol(SecurityProtocol::HYBRID, &mut output)
+            .expect("encode X.224 request");
+        let X224(request): X224<ConnectionRequest> = decode(output.filled()).expect("decode X.224 request");
+
+        assert_eq!(request.protocol, SecurityProtocol::HYBRID);
+    }
+
+    #[test]
+    fn guest_rdp_sequence_omits_host_username_cookie() {
+        let mut connector = test_connector(true, true);
+        prepare_connector(&mut connector).expect("prepare connector");
+        connector.config.credentials = Credentials::UsernamePassword {
+            username: String::new(),
+            password: String::new(),
+        };
+        connector.config.domain = None;
+        connector.config.autologon = false;
+
+        let mut output = WriteBuf::new();
+        connector
+            .initiate_with_security_protocol(SecurityProtocol::HYBRID, &mut output)
+            .expect("encode X.224 request");
+        let X224(request): X224<ConnectionRequest> = decode(output.filled()).expect("decode X.224 request");
+
+        assert_eq!(request.protocol, SecurityProtocol::HYBRID);
+        assert_eq!(request.nego_data, None);
     }
 }

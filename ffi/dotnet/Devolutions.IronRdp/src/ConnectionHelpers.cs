@@ -35,7 +35,8 @@ internal static class ConnectionHelpers
         string serverName,
         WriteBuf writeBuf,
         Framed<T> framed,
-        byte[] serverpubkey) where T : Stream
+        byte[] serverpubkey,
+        uint? selectedProtocol = null) where T : Stream
     {
         // Extract hostname from "hostname:port" format if needed
         // CredSSP needs just the hostname for the service principal name (TERMSRV/hostname)
@@ -46,7 +47,9 @@ internal static class ConnectionHelpers
             hostname = serverName.Substring(0, colonIndex);
         }
 
-        var credsspSequenceInitResult = CredsspSequence.Init(connector, hostname, serverpubkey, null);
+        var credsspSequenceInitResult = selectedProtocol is uint protocol
+            ? CredsspSequence.InitWithProtocol(connector, hostname, serverpubkey, protocol, null)
+            : CredsspSequence.Init(connector, hostname, serverpubkey, null);
         var credsspSequence = credsspSequenceInitResult.GetCredsspSequence();
         var tsRequest = credsspSequenceInitResult.GetTsRequest();
         var tcpClient = new TcpClient();

@@ -35,6 +35,12 @@ public partial struct RDCleanPathPdu
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_new_v2_request", ExactSpelling = true)]
     public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewV2Request(byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* serverPreconnectionPdu, nuint serverPreconnectionPduSz);
 
+    /// <summary>
+    /// Creates a version 2 request from an opaque PCB payload.
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_new_v2_request_with_pcb_payload", ExactSpelling = true)]
+    public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewV2RequestWithPcbPayload(byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* pcbPayload, nuint pcbPayloadSz);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_get_version", ExactSpelling = true)]
     public static unsafe extern ulong GetVersion(RDCleanPathPdu* self);
 

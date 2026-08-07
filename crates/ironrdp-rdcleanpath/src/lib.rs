@@ -438,12 +438,6 @@ impl RDCleanPathPdu {
 /// Helper enum to leverage Rust pattern matching feature.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RDCleanPath {
-    V1(RDCleanPathV1),
-    V2(RDCleanPathV2),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RDCleanPathV1 {
     Request {
         destination: String,
         proxy_auth: String,
@@ -460,6 +454,7 @@ pub enum RDCleanPathV1 {
     NegotiationErr {
         x224_connection_response: Vec<u8>,
     },
+    V2(RDCleanPathV2),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -499,35 +494,37 @@ impl TryFrom<RDCleanPathPdu> for RDCleanPath {
 
     fn try_from(pdu: RDCleanPathPdu) -> Result<Self, Self::Error> {
         let rdcleanpath = match pdu.version {
-            VERSION_1 => Self::V1(if let Some(destination) = pdu.destination {
-                RDCleanPathV1::Request {
-                    destination,
-                    proxy_auth: pdu.proxy_auth.ok_or(MissingRDCleanPathField("proxy_auth"))?,
-                    server_auth: pdu.server_auth,
-                    preconnection_blob: pdu.preconnection_blob,
-                    x224_connection_request: pdu
-                        .x224_connection_pdu
-                        .ok_or(MissingRDCleanPathField("x224_connection_pdu"))?,
+            VERSION_1 => {
+                if let Some(destination) = pdu.destination {
+                    Self::Request {
+                        destination,
+                        proxy_auth: pdu.proxy_auth.ok_or(MissingRDCleanPathField("proxy_auth"))?,
+                        server_auth: pdu.server_auth,
+                        preconnection_blob: pdu.preconnection_blob,
+                        x224_connection_request: pdu
+                            .x224_connection_pdu
+                            .ok_or(MissingRDCleanPathField("x224_connection_pdu"))?,
+                    }
+                } else if let Some(server_addr) = pdu.server_addr {
+                    Self::Response {
+                        x224_connection_response: pdu
+                            .x224_connection_pdu
+                            .ok_or(MissingRDCleanPathField("x224_connection_pdu"))?,
+                        server_cert_chain: pdu
+                            .server_cert_chain
+                            .ok_or(MissingRDCleanPathField("server_cert_chain"))?,
+                        server_addr,
+                    }
+                } else {
+                    let error = pdu.error.ok_or(MissingRDCleanPathField("error"))?;
+                    match (error.error_code, pdu.x224_connection_pdu) {
+                        (NEGOTIATION_ERROR_CODE, Some(x224_pdu)) => Self::NegotiationErr {
+                            x224_connection_response: x224_pdu.as_bytes().to_vec(),
+                        },
+                        _ => Self::GeneralErr(error),
+                    }
                 }
-            } else if let Some(server_addr) = pdu.server_addr {
-                RDCleanPathV1::Response {
-                    x224_connection_response: pdu
-                        .x224_connection_pdu
-                        .ok_or(MissingRDCleanPathField("x224_connection_pdu"))?,
-                    server_cert_chain: pdu
-                        .server_cert_chain
-                        .ok_or(MissingRDCleanPathField("server_cert_chain"))?,
-                    server_addr,
-                }
-            } else {
-                let error = pdu.error.ok_or(MissingRDCleanPathField("error"))?;
-                match (error.error_code, pdu.x224_connection_pdu) {
-                    (NEGOTIATION_ERROR_CODE, Some(x224_pdu)) => RDCleanPathV1::NegotiationErr {
-                        x224_connection_response: x224_pdu.as_bytes().to_vec(),
-                    },
-                    _ => RDCleanPathV1::GeneralErr(error),
-                }
-            }),
+            }
             VERSION_2 => Self::V2(if let Some(destination) = pdu.destination {
                 RDCleanPathV2::Request {
                     destination,
@@ -557,54 +554,52 @@ impl TryFrom<RDCleanPathPdu> for RDCleanPath {
 impl From<RDCleanPath> for RDCleanPathPdu {
     fn from(value: RDCleanPath) -> Self {
         match value {
-            RDCleanPath::V1(value) => match value {
-                RDCleanPathV1::Request {
-                    destination,
-                    proxy_auth,
-                    server_auth,
-                    preconnection_blob,
-                    x224_connection_request,
-                } => Self {
-                    version: VERSION_1,
-                    destination: Some(destination),
-                    proxy_auth: Some(proxy_auth),
-                    server_auth,
-                    preconnection_blob,
-                    x224_connection_pdu: Some(x224_connection_request),
-                    ..Default::default()
-                },
-                RDCleanPathV1::Response {
-                    x224_connection_response,
-                    server_cert_chain,
-                    server_addr,
-                } => Self {
-                    version: VERSION_1,
-                    x224_connection_pdu: Some(x224_connection_response),
-                    server_cert_chain: Some(server_cert_chain),
-                    server_addr: Some(server_addr),
-                    ..Default::default()
-                },
-                RDCleanPathV1::GeneralErr(error) => Self {
-                    version: VERSION_1,
-                    error: Some(error),
-                    ..Default::default()
-                },
-                RDCleanPathV1::NegotiationErr {
-                    x224_connection_response,
-                } => Self {
-                    version: VERSION_1,
-                    error: Some(RDCleanPathErr {
-                        error_code: NEGOTIATION_ERROR_CODE,
-                        http_status_code: None,
-                        wsa_last_error: None,
-                        tls_alert_code: None,
-                    }),
-                    x224_connection_pdu: Some(
-                        OctetString::new(x224_connection_response)
-                            .expect("x224_connection_response smaller than u32::MAX (256 MiB)"),
-                    ),
-                    ..Default::default()
-                },
+            RDCleanPath::Request {
+                destination,
+                proxy_auth,
+                server_auth,
+                preconnection_blob,
+                x224_connection_request,
+            } => Self {
+                version: VERSION_1,
+                destination: Some(destination),
+                proxy_auth: Some(proxy_auth),
+                server_auth,
+                preconnection_blob,
+                x224_connection_pdu: Some(x224_connection_request),
+                ..Default::default()
+            },
+            RDCleanPath::Response {
+                x224_connection_response,
+                server_cert_chain,
+                server_addr,
+            } => Self {
+                version: VERSION_1,
+                x224_connection_pdu: Some(x224_connection_response),
+                server_cert_chain: Some(server_cert_chain),
+                server_addr: Some(server_addr),
+                ..Default::default()
+            },
+            RDCleanPath::GeneralErr(error) => Self {
+                version: VERSION_1,
+                error: Some(error),
+                ..Default::default()
+            },
+            RDCleanPath::NegotiationErr {
+                x224_connection_response,
+            } => Self {
+                version: VERSION_1,
+                error: Some(RDCleanPathErr {
+                    error_code: NEGOTIATION_ERROR_CODE,
+                    http_status_code: None,
+                    wsa_last_error: None,
+                    tls_alert_code: None,
+                }),
+                x224_connection_pdu: Some(
+                    OctetString::new(x224_connection_response)
+                        .expect("x224_connection_response smaller than u32::MAX (256 MiB)"),
+                ),
+                ..Default::default()
             },
             RDCleanPath::V2(value) => match value {
                 RDCleanPathV2::Request {

@@ -19,9 +19,6 @@ public partial struct ClientConnector
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_new", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultBoxClientConnectorBoxIronRdpError New(Config* config, byte* clientAddr, nuint clientAddrSz);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_new_vmconnect", ExactSpelling = true)]
-    public static unsafe extern ConnectorFfiResultBoxClientConnectorBoxIronRdpError NewVmconnect(Config* config, byte* clientAddr, nuint clientAddrSz, byte* vmId, nuint vmIdSz);
-
     /// <summary>
     /// Must use
     /// </summary>
