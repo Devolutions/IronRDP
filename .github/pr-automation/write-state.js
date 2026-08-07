@@ -1,6 +1,7 @@
 "use strict";
 
-const { encodeCheckState } = require("./validate-classifier");
+const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, encodeCheckState } = require("./validate-classifier");
+const { SCHEMA_VERSION: REVIEWER_SCHEMA_VERSION } = require("./validate-reviewer");
 
 class StaleHeadError extends Error {
   constructor() { super("pull request head is no longer current"); this.name = "StaleHeadError"; }
@@ -152,14 +153,23 @@ async function ensureClassificationCheck(github, owner, repo, prNumber, expected
 }
 
 async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, check) {
-  if ((await findCheck(github, owner, repo, expectedSha, check))?.conclusion === "success") return false;
+  const conclusion = check.conclusion ?? "success";
+  const title = check.title ?? "Automated review complete";
+  const summary = check.summary ?? "Validated automated review is bound to this commit.";
+  const existing = await findCheck(github, owner, repo, expectedSha, check);
+  if (existing?.conclusion === conclusion && existing.output?.title === title &&
+      existing.output?.summary === summary) return false;
   await issueLabels(github, owner, repo, prNumber);
   await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
-  await github.rest.checks.create({
+  const payload = {
     owner, repo, name: check.name, head_sha: expectedSha, external_id: check.externalId,
-    status: "completed", conclusion: "success",
-    output: { title: "Automated review complete", summary: "Validated automated review is bound to this commit." },
-  });
+    status: "completed", conclusion, output: { title, summary },
+  };
+  if (existing) {
+    await github.rest.checks.update({ ...payload, check_run_id: existing.id });
+  } else {
+    await github.rest.checks.create(payload);
+  }
   return true;
 }
 
@@ -200,36 +210,88 @@ async function applyLabels(github, owner, repo, prNumber, state) {
   return true;
 }
 
+async function hasAutomationFailureAtHead(github, owner, repo, expectedSha) {
+  const checks = [
+    {
+      name: "AI classification",
+      externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
+      title: "Classification unavailable",
+    },
+    {
+      name: "AI automated review",
+      externalId: `${REVIEWER_SCHEMA_VERSION}:${expectedSha}`,
+      title: "Automated review unavailable",
+    },
+  ];
+  for (const check of checks) {
+    const found = await findCheck(github, owner, repo, expectedSha, check);
+    if (found?.app?.slug === "github-actions" && found.conclusion === "neutral" &&
+        found.output?.title === check.title) return true;
+  }
+  return false;
+}
+
 async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
   if (!state?.ok || !["classification", "review"].includes(state.mode) ||
       typeof state.expectedSha !== "string" || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
     throw new Error("invalid normalized state");
   }
   await assertCurrentHead(github, owner, repo, prNumber, state.expectedSha);
+  let effectiveState = state;
+  let revalidationError;
+  if (state.pending === true && state.removeLabels?.includes("maintainer-required")) {
+    let preserveMaintainer = false;
+    try {
+      preserveMaintainer = await hasAutomationFailureAtHead(github, owner, repo, state.expectedSha);
+    } catch (error) {
+      preserveMaintainer = true;
+      revalidationError = error;
+    }
+    if (preserveMaintainer) {
+      effectiveState = {
+        ...state,
+        addLabels: [...new Set([...(state.addLabels || []), "maintainer-required"])],
+        removeLabels: state.removeLabels.filter((label) => label !== "maintainer-required"),
+      };
+    }
+  }
   // Labels come first in both modes: they are the durable record of the outcome, and a later
-  // comment or review failure must not leave the pull request without its maintainer-required triage.
-  await applyLabels(github, owner, repo, prNumber, state);
-  if (state.mode === "review") {
-    for (const comment of state.comments || []) {
-      if (comment.kind === "review") {
-        await publishReview(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
-      } else {
-        await upsertMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
+  // publication failure must not leave the pull request with stale triage.
+  await applyLabels(github, owner, repo, prNumber, effectiveState);
+  try {
+    if (revalidationError) throw revalidationError;
+    if (state.mode === "review") {
+      for (const comment of state.comments || []) {
+        if (comment.kind === "review") {
+          await publishReview(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
+        } else {
+          await upsertMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
+        }
+      }
+      if (state.check) await ensureReviewCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
+    } else {
+      for (const comment of state.comments || []) await upsertMarkedComment(
+        github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
+      for (const marker of new Set(state.removeCommentMarkers || [])) {
+        await deleteMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, marker);
+      }
+      if (state.check) {
+        const created = await ensureClassificationCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
+        if (created && state.check.title === "Classification complete") {
+          await dispatchClassificationComplete(github, owner, repo, prNumber, state.expectedSha);
+        }
       }
     }
-    if (state.check) await ensureReviewCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
-  } else {
-    for (const comment of state.comments || []) await upsertMarkedComment(
-      github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
-    for (const marker of new Set(state.removeCommentMarkers || [])) {
-      await deleteMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, marker);
+  } catch (error) {
+    if (error instanceof StaleHeadError) throw error;
+    try {
+      await applyLabels(github, owner, repo, prNumber, {
+        expectedSha: state.expectedSha, labelSets: [], addLabels: ["maintainer-required"],
+      });
+    } catch (triageError) {
+      throw new AggregateError([error, triageError], "state publication and maintainer triage failed");
     }
-    if (state.check) {
-      const created = await ensureClassificationCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
-      if (created && state.check.title === "Classification complete") {
-        await dispatchClassificationComplete(github, owner, repo, prNumber, state.expectedSha);
-      }
-    }
+    throw error;
   }
   return { ok: true };
 }

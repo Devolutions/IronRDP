@@ -582,14 +582,22 @@ jobs:
                 .filter((run) => run.external_id === externalId)
                 .sort((left, right) => right.id - left.id)[0];
               const classification = completed(classificationRuns, `${SCHEMA_VERSION}:${headSha}`);
-              const trusted = classification?.conclusion === "success" && classification.app?.slug === "github-actions";
+              const classificationFromActions = classification?.app?.slug === "github-actions";
+              const trusted = classification?.conclusion === "success" && classificationFromActions;
               // A check without the current machine-readable state predates this contract: fail closed
               // and wait for a later classification event to rewrite it.
               const protocolState = trusted ? parseCheckState(classification.output?.summary) : null;
               const classificationCheck = trusted && protocolState !== null &&
                 classification.output?.title === "Classification complete";
+              const classificationFailed = classificationFromActions &&
+                classification?.conclusion === "neutral" &&
+                classification.output?.title === "Classification unavailable";
               const legitimacyStopped = trusted && classification.output?.title === "Automation stopped";
               const reviewAtHead = completed(reviewRuns, `${REVIEWER_SCHEMA_VERSION}:${headSha}`)?.conclusion === "success";
+              const reviewFailure = completed(reviewRuns, `${REVIEWER_SCHEMA_VERSION}:${headSha}`);
+              const reviewFailed = reviewFailure?.app?.slug === "github-actions" &&
+                reviewFailure.conclusion === "neutral" &&
+                reviewFailure.output?.title === "Automated review unavailable";
               const workflowRuns = process.env.ROUTE === "ci" ? [context.payload.workflow_run] :
                 (await github.rest.actions.listWorkflowRunsForRepo({
                   owner: context.repo.owner, repo: context.repo.repo, head_sha: headSha, per_page: 100,
@@ -601,7 +609,9 @@ jobs:
               const policyEligible = reviewPolicyEligible({ labels, legitimacyStopped, protocolRelated });
               core.setOutput("gate", JSON.stringify({
                 ok: classificationCheck && (ciGreen || bypassCi) && secondReviewEligible && policyEligible,
-                head_sha: headSha, classificationCheck, legitimacyStopped, ciGreen, bypassCi, secondReviewEligible, policyEligible, labels,
+                available: true,
+                head_sha: headSha, classificationCheck, classificationFailed, reviewFailed, legitimacyStopped,
+                ciGreen, bypassCi, secondReviewEligible, policyEligible, labels,
                 protocolRelated,
               }));
               core.setOutput("eligible", classificationCheck && (ciGreen || bypassCi) && secondReviewEligible && policyEligible);
@@ -610,16 +620,19 @@ jobs:
                 event: "pr-automation.review-gate",
                 decision: {
                   ok: classificationCheck && (ciGreen || bypassCi) && secondReviewEligible && policyEligible,
-                  headSha, classificationCheck, legitimacyStopped, ciGreen, bypassCi, secondReviewEligible,
+                  available: true,
+                  headSha, classificationCheck, classificationFailed, reviewFailed, legitimacyStopped,
+                  ciGreen, bypassCi, secondReviewEligible,
                   policyEligible, labels, protocolRelated,
                 },
               }));
             } catch (error) {
               core.warning(`Review gate unavailable: ${error.message}`);
               core.setOutput("gate", JSON.stringify({
-                ok: false, head_sha: headSha, classificationCheck: false, ciGreen: false,
+                ok: false, available: false, head_sha: headSha, classificationCheck: false,
+                classificationFailed: false, reviewFailed: false, ciGreen: false,
                 legitimacyStopped: false, bypassCi: process.env.BYPASS_CI === "true", secondReviewEligible: false,
-                policyEligible: false, labels: [], protocolRelated: false,
+                policyEligible: false, labels: [], protocolRelated: false, reason: error.message,
               }));
               core.setOutput("eligible", false);
               core.setOutput("protocol-related", false);
@@ -1031,6 +1044,7 @@ jobs:
           script: |
             const { addedLinesByPath, listPrFiles } = require("./.github/pr-automation/deterministic-analysis");
             const { resolveReviewState } = require("./.github/pr-automation/resolve-state");
+            const { SCHEMA_VERSION: REVIEWER_SCHEMA_VERSION } = require("./.github/pr-automation/validate-reviewer");
             const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
             const gate = parse(process.env.GATE, {});
             let files;
@@ -1040,16 +1054,22 @@ jobs:
                 prNumber: Number(process.env.PULL_REQUEST_NUMBER),
               });
             } catch {
-              core.setOutput("state", JSON.stringify({
+              const state = {
                 ok: true, mode: "review", expectedSha: process.env.HEAD_SHA, failed: true,
                 reason: "changed file retrieval unavailable", labelSets: [],
                 addLabels: ["maintainer-required"], comments: [],
-              }));
+                check: {
+                  name: "AI automated review",
+                  externalId: `${REVIEWER_SCHEMA_VERSION}:${process.env.HEAD_SHA}`,
+                  title: "Automated review unavailable",
+                  summary: "Automated review was unavailable: changed file retrieval unavailable. Maintainer review is required.",
+                  conclusion: "neutral",
+                },
+              };
+              core.setOutput("state", JSON.stringify(state));
               core.info(JSON.stringify({
                 event: "pr-automation.review-state",
-                decision: { ok: true, mode: "review", expectedSha: process.env.HEAD_SHA, failed: true,
-                  reason: "changed file retrieval unavailable", labelSets: [],
-                  addLabels: ["maintainer-required"], comments: [] },
+                decision: state,
               }));
               return;
             }

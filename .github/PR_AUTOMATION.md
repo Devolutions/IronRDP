@@ -112,6 +112,13 @@ review requires a later push and its matching successful CI run. Manual dispatch
 the CI-success requirement; it cannot bypass draft status, duplicate/XL handling, contributor
 history, classification, risk, terminal state, or SHA validation.
 
+`maintainer-required` records an actionable automation outcome, not a pull request that is merely
+waiting. Successful classification removes a stale copy of the label while CI and review are
+pending. A completed review adds it when no findings remain or when the second review makes
+automated review terminal; findings from the first review remove it. Automation failures and
+human-only stops such as duplicate, legitimacy, and `size/XL` classification also add it. A red or
+unfinished CI run does not.
+
 Fork-origin PRs are subject to daily UTC automation limits. The first five PRs from a fork author
 may use automation; authors with at least 15 qualifying merged IronRDP PRs may use ten. Across all
 forks, the workflow stops LLM automation after 30 fork-origin PRs were opened that day. This

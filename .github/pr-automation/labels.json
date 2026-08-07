@@ -102,7 +102,7 @@
   {
     "name": "maintainer-required",
     "color": "c2e0c6",
-    "description": "Maintainer review or intervention is required"
+    "description": "Automation completed with human-only triage or failed and needs maintainer intervention"
   },
   {
     "name": "ai-reviewed/1",
