@@ -27,7 +27,8 @@ function exactKeys(value, keys) {
 
 function normalizeText(value, maximum) {
   if (typeof value !== "string") return null;
-  const normalized = value.replace(/\s+/g, " ").trim();
+  // Structured output occasionally represents an empty string as the literal text `""`.
+  const normalized = (value === '""' ? "" : value).replace(/\s+/g, " ").trim();
   if (Buffer.byteLength(normalized, "utf8") > maximum ||
       /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(normalized) ||
       COMMAND_OR_INSTRUCTION.test(normalized)) return null;

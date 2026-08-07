@@ -104,6 +104,7 @@ jobs:
     outputs:
       required: ${{ steps.gate.outputs.required }}
       available: ${{ steps.gate.outputs.available }}
+      reason: ${{ steps.gate.outputs.reason }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -130,6 +131,7 @@ jobs:
                 run.app?.slug === "github-actions" && parseCheckState(run.output?.summary) !== null);
               core.setOutput("required", !completed);
               core.setOutput("available", true);
+              core.setOutput("reason", "");
               core.info(JSON.stringify({
                 event: "pr-automation.classification-gate",
                 decision: { available: true, required: !completed, externalId, completed },
@@ -138,6 +140,7 @@ jobs:
               core.warning(`Classification gate unavailable: ${error.message}`);
               core.setOutput("required", false);
               core.setOutput("available", false);
+              core.setOutput("reason", "GitHub checks API unavailable");
               core.info(JSON.stringify({
                 event: "pr-automation.classification-gate",
                 decision: { available: false, required: false, reason: error.message },
@@ -501,6 +504,8 @@ jobs:
           PR_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           DETERMINISTIC: ${{ needs.deterministic-analysis.outputs.analysis }}
           CLASSIFIER: ${{ needs.classifier.outputs.output }}
+          CLASSIFICATION_GATE_AVAILABLE: ${{ needs.classification-gate.outputs.available }}
+          CLASSIFICATION_GATE_REASON: ${{ needs.classification-gate.outputs.reason }}
           FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
           SEMVER: ${{ needs.semver.outputs.compatibility }}
         with:
@@ -513,6 +518,10 @@ jobs:
               prNumber: Number(process.env.PR_NUMBER),
               deterministic: parse(process.env.DETERMINISTIC, {}),
               classifier: process.env.CLASSIFIER || "",
+              classificationGate: {
+                available: process.env.CLASSIFICATION_GATE_AVAILABLE === "true",
+                reason: process.env.CLASSIFICATION_GATE_REASON || "",
+              },
               rateLimit: parse(process.env.FORK_RATE_LIMIT, {}),
               semver: parse(process.env.SEMVER, {}),
             });

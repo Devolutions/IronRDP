@@ -25,7 +25,12 @@ is unchanged, and the PR stays `maintainer-required`. A classification check tha
 machine-readable protocol state is treated as unavailable; the next classification event rewrites
 it.
 
-Each stage selects its model and effort through `--model` and `--effort` in the `claude-args` step
+The trusted LLM validators normalize exact empty-string representation artifacts consistently.
+An invalid classifier result keeps the pull request `risk/unknown` and
+`maintainer-required`, and publishes a neutral `AI classification` check containing the local
+validation reason so the review remains blocked without hiding why.
+
+Each analytical stage selects its model and effort through `--model` and `--effort` in the `claude-args` step
 that builds its `claude_args`. The classifier runs Sonnet at `low` effort: it runs on every push and
 only has to fill a small, schema-bound triage record, so it buys Sonnet-class judgement at a
 fraction of the default token spend. Both heavy stages run Opus at its default `high` effort, since
