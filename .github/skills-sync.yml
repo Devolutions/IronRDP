@@ -1,0 +1,6 @@
+repositories:
+  - repository: Devolutions/devolutions-gateway
+    source_path: .agents/skills
+    skills:
+      - commit-and-pr-conventions
+      - tessl-skill-linting
