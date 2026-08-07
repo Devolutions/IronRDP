@@ -95,6 +95,9 @@ public partial class CredsspSequence: IDisposable
         }
     }
 
+    /// <summary>
+    /// Init CredSSP with an explicit protocol (pre-X.224 VMConnect front).
+    /// </summary>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>CredsspSequenceInitResult</c> allocated on Rust side.

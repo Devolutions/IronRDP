@@ -26,7 +26,6 @@ remains interactive.
 | `PCB_TRANSMIT_DEADLINE` | 10s bound for PCB after TCP connect |
 | `Mode` | Enhanced or basic console routing |
 | `encode_preconnection_blob` | PCB V2 bytes |
-| `encode_preconnection_blob_payload` | PCB V2 bytes for an opaque routing payload |
 | `send_preconnection_blob` | write PCB → `PcbSent` |
 | `connect_front` | CredSSP + X.224 after TLS; takes `PcbSent` → `Upgraded` |
 

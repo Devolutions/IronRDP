@@ -43,13 +43,17 @@ public static class RDCleanPathConnection
 
         // Step 4: Perform RDCleanPath handshake
         System.Diagnostics.Debug.WriteLine("Performing RDCleanPath handshake...");
-        var (serverPublicKey, framedAfterHandshake, isPcbFront) = await ConnectRdCleanPath(
+        var (serverPublicKey, framedAfterHandshake, hasX224) = await ConnectRdCleanPath(
             framed, connector, destination, authToken, pcb ?? "");
 
-        if (isPcbFront)
+        if (hasX224)
+        {
+            // Ordinary front: proxy already performed X.224 and TLS.
+            connector.MarkSecurityUpgradeAsDone();
+        }
+        else
         {
             const uint HybridProtocol = 0x00000002;
-
             var writeBuf = WriteBuf.New();
             await ConnectionHelpers.PerformCredsspSteps(
                 connector,
@@ -66,11 +70,6 @@ public static class RDCleanPathConnection
 
             connector.MarkSecurityUpgradeAsDone();
             connector.MarkCredsspAsDone();
-        }
-        else
-        {
-            // The RDCleanPath v1 proxy already performed X.224 and TLS.
-            connector.MarkSecurityUpgradeAsDone();
         }
 
         // Step 6: Finalize connection
@@ -92,15 +91,13 @@ public static class RDCleanPathConnection
         string pcb)
     {
         var writeBuf = WriteBuf.New();
+        var pcbFront = !string.IsNullOrEmpty(pcb);
 
-        var isPcbFront = !string.IsNullOrEmpty(pcb);
-
-        // Step 1: Create and send the RDCleanPath request.
         System.Diagnostics.Debug.WriteLine($"Sending RDCleanPath request to {destination}...");
         RDCleanPathPdu rdCleanPathReq;
-        if (isPcbFront)
+        if (pcbFront)
         {
-            rdCleanPathReq = RDCleanPathPdu.NewPcbFrontRequest(destination, authToken, pcb);
+            rdCleanPathReq = RDCleanPathPdu.NewRequestWithPcb(destination, authToken, pcb);
         }
         else
         {
@@ -115,25 +112,18 @@ public static class RDCleanPathConnection
         reqBytes.Fill(reqBytesArray);
         await framed.Write(reqBytesArray);
 
-        // Step 3: Read RDCleanPath Response
         System.Diagnostics.Debug.WriteLine("Waiting for RDCleanPath response...");
         var respBytes = await framed.ReadByHint(new RDCleanPathHint());
         var rdCleanPathResp = RDCleanPathPdu.FromDer(respBytes);
-        if (rdCleanPathResp.IsPcbFront() != isPcbFront)
-        {
-            throw new IronRdpLibException(
-                IronRdpLibExceptionType.ConnectionFailed,
-                "RDCleanPath response front does not match the request");
-        }
 
-        // Step 4: Determine response type and handle accordingly
         var resultType = rdCleanPathResp.GetType();
 
         if (resultType == RDCleanPathResultType.Response)
         {
             System.Diagnostics.Debug.WriteLine("RDCleanPath handshake successful!");
 
-            if (!rdCleanPathResp.IsPcbFront())
+            var hasX224 = rdCleanPathResp.HasX224();
+            if (hasX224)
             {
                 var x224Response = rdCleanPathResp.GetX224Response();
                 var x224ResponseBytes = new byte[x224Response.GetSize()];
@@ -143,7 +133,6 @@ public static class RDCleanPathConnection
                 connector.Step(x224ResponseBytes, writeBuf);
             }
 
-            // Extract server public key from certificate chain
             var certChain = rdCleanPathResp.GetServerCertChain();
             if (certChain.IsEmpty())
             {
@@ -167,7 +156,7 @@ public static class RDCleanPathConnection
 
             System.Diagnostics.Debug.WriteLine($"Extracted server public key (length: {serverPublicKey.Length})");
 
-            return (serverPublicKey, framed, isPcbFront);
+            return (serverPublicKey, framed, hasX224);
         }
         else if (resultType == RDCleanPathResultType.GeneralError)
         {
