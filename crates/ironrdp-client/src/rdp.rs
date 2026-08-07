@@ -748,13 +748,18 @@ async fn connect_direct(
     let stream = TcpStream::connect(&dest)
         .await
         .map_err(|e| ironrdp_connector::custom_err!("TCP connect", e))?;
+    #[cfg(feature = "vmconnect")]
+    let pcb_deadline = tokio::time::Instant::now() + ironrdp_vmconnect::PCB_TRANSMIT_DEADLINE;
     let client_addr = stream
         .local_addr()
         .map_err(|e| ironrdp_connector::custom_err!("get socket local address", e))?;
     let framed = ironrdp_tokio::TokioFramed::new(stream);
 
     let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
-
+    #[cfg(feature = "vmconnect")]
+    if config.vm_id().is_some() {
+        return vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await;
+    }
     tls_handshake_and_finalize(framed, connector, config).await
 }
 
@@ -767,6 +772,14 @@ async fn connect_gateway(
     cliprdr_factory: CliprdrFactoryRef<'_>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     use ironrdp_mstsgu::GwConnectTarget;
+
+    // VMConnect needs destination port 2179; GwConnectTarget does not carry it yet (TODO below).
+    #[cfg(feature = "vmconnect")]
+    if config.vm_id().is_some() {
+        return Err(ironrdp_connector::general_err!(
+            "vmconnect cannot be used over an RDS gateway until the target port is propagated"
+        ));
+    }
 
     // Build the GwConnectTarget.  `server` is the RDP target derived from `config.destination`.
     // TODO: preserve the destination port; ironrdp-mstsgu may currently hard-code 3389.
@@ -784,7 +797,6 @@ async fn connect_gateway(
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
     let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
-
     tls_handshake_and_finalize(framed, connector, config).await
 }
 
@@ -889,6 +901,73 @@ where
         &mut upgraded_framed,
         &mut ReqwestNetworkClient::new(),
         (&config.destination).into(),
+        server_public_key,
+        config.kerberos_config.clone(),
+    )
+    .await?;
+
+    Ok((connection_result, upgraded_framed))
+}
+
+/// Hyper-V console connect via ironrdp-vmconnect, then shared RDP tail.
+#[cfg(feature = "vmconnect")]
+async fn vmconnect_handshake_and_finalize<S>(
+    mut framed: ironrdp_tokio::TokioFramed<S>,
+    mut connector: ironrdp_connector::ClientConnector,
+    config: &Config,
+    pcb_deadline: tokio::time::Instant,
+) -> ConnectorResult<(ConnectionResult, UpgradedFramed)>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+{
+    let vm_id = config
+        .vm_id()
+        .ok_or_else(|| ironrdp_connector::general_err!("vmconnect path requires a VM ID"))?;
+    let mode = config
+        .vmconnect_mode()
+        .ok_or_else(|| ironrdp_connector::general_err!("vmconnect path requires a console mode"))?;
+
+    // MS-RDPEPS: complete PCB within ten seconds of TCP connection creation.
+    let pcb_sent = tokio::time::timeout_at(
+        pcb_deadline,
+        ironrdp_vmconnect::send_preconnection_blob(&mut framed, vm_id, mode),
+    )
+    .await
+    .map_err(|_| ironrdp_connector::general_err!("timed out writing preconnection blob"))??;
+
+    debug!("TLS upgrade");
+
+    let (initial_stream, leftover_bytes) = framed.into_inner();
+    let (tls_stream, tls_cert) = ironrdp_tls::upgrade(initial_stream, config.destination.name())
+        .await
+        .map_err(|e| ironrdp_connector::custom_err!("TLS upgrade", e))?;
+
+    let erased_stream: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(tls_stream);
+    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
+
+    let server_public_key = ironrdp_tls::extract_tls_server_public_key(&tls_cert)
+        .ok_or_else(|| ironrdp_connector::general_err!("unable to extract tls server public key"))?
+        .to_owned();
+
+    let mut network_client = ReqwestNetworkClient::new();
+    let server_name = ironrdp_connector::ServerName::from(&config.destination);
+    let upgraded = ironrdp_vmconnect::connect_front(
+        pcb_sent,
+        &mut upgraded_framed,
+        &mut connector,
+        &mut network_client,
+        server_name.clone(),
+        &server_public_key,
+        config.kerberos_config.clone(),
+    )
+    .await?;
+
+    let connection_result = ironrdp_tokio::connect_finalize(
+        upgraded,
+        connector,
+        &mut upgraded_framed,
+        &mut network_client,
+        server_name,
         server_public_key,
         config.kerberos_config.clone(),
     )

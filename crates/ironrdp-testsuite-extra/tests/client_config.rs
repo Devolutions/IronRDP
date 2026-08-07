@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use std::sync::Arc;
 
-use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, Transport};
+use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, Transport, VmConnectMode};
 use ironrdp_viewer::cli::parse_config_from;
 use uuid::Uuid;
 
@@ -29,7 +29,7 @@ impl Drop for TempRdpFile {
     }
 }
 
-fn parse_config_from_rdp(content: &str, extra_args: &[&str]) -> ironrdp_client::config::Config {
+fn parse_config_from_rdp_result(content: &str, extra_args: &[&str]) -> anyhow::Result<ironrdp_client::config::Config> {
     let rdp_file = TempRdpFile::new(content);
 
     let mut args = vec![
@@ -40,7 +40,11 @@ fn parse_config_from_rdp(content: &str, extra_args: &[&str]) -> ironrdp_client::
 
     args.extend(extra_args.iter().map(|arg| (*arg).to_owned()));
 
-    parse_config_from(args).expect("failed to parse client config")
+    parse_config_from(args)
+}
+
+fn parse_config_from_rdp(content: &str, extra_args: &[&str]) -> ironrdp_client::config::Config {
+    parse_config_from_rdp_result(content, extra_args).expect("failed to parse client config")
 }
 
 #[test]
@@ -86,6 +90,112 @@ fn no_credssp_cli_flag_overrides_rdp_enable_credssp_property() {
     );
 
     assert!(!config.connector().enable_credssp);
+}
+
+#[test]
+fn bare_destination_keeps_the_ordinary_rdp_default() {
+    let bare = Destination::new("rdp.example.com").expect("valid bare destination");
+    let explicit = Destination::new("rdp.example.com:3389").expect("valid explicit destination");
+
+    assert_eq!(bare.port(), 3389);
+    assert_eq!(bare, explicit);
+}
+
+#[test]
+fn vmconnect_uses_enhanced_mode_by_default() {
+    let config = parse_config_from_rdp(
+        "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
+        &["--vmconnect", "efd1efab-c750-4262-b1bb-af0f7733bdd6"],
+    );
+
+    assert_eq!(config.vmconnect_mode(), Some(VmConnectMode::Enhanced));
+}
+
+#[test]
+fn vmconnect_bare_destination_defaults_to_port_2179() {
+    let config = parse_config_from([
+        "ironrdp-viewer",
+        "-u",
+        "test-user",
+        "-p",
+        "test-pass",
+        "--vmconnect",
+        "efd1efab-c750-4262-b1bb-af0f7733bdd6",
+        "hyperv.example.com",
+    ])
+    .expect("valid vmconnect configuration");
+
+    assert_eq!(config.destination().port(), 2179);
+}
+
+#[test]
+fn vmconnect_preserves_explicit_destination_port() {
+    for port in [3389, 12_345] {
+        let destination = format!("hyperv.example.com:{port}");
+        let config = parse_config_from([
+            "ironrdp-viewer",
+            "-u",
+            "test-user",
+            "-p",
+            "test-pass",
+            "--vmconnect",
+            "efd1efab-c750-4262-b1bb-af0f7733bdd6",
+            &destination,
+        ])
+        .expect("valid vmconnect configuration");
+
+        assert_eq!(config.destination().port(), port);
+    }
+}
+
+#[test]
+fn vmconnect_basic_flag_selects_basic_mode() {
+    let config = parse_config_from_rdp(
+        "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
+        &[
+            "--vmconnect",
+            "efd1efab-c750-4262-b1bb-af0f7733bdd6",
+            "--vmconnect-basic",
+        ],
+    );
+
+    assert_eq!(config.vmconnect_mode(), Some(VmConnectMode::Basic));
+}
+
+#[test]
+fn vmconnect_rejects_rds_gateway() {
+    let err = parse_config_from_rdp_result(
+        "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
+        &[
+            "--vmconnect",
+            "efd1efab-c750-4262-b1bb-af0f7733bdd6",
+            "--gw-endpoint",
+            "gw.example.com:443",
+            "--gw-user",
+            "gw-user",
+            "--gw-pass",
+            "gw-pass",
+        ],
+    )
+    .expect_err("vmconnect + RDS gateway must fail");
+
+    assert!(err.to_string().contains("gateway"), "unexpected error: {err:#}");
+}
+
+#[test]
+fn vmconnect_rejects_disabled_security() {
+    for disabled_security in ["--no-tls", "--no-credssp"] {
+        let err = parse_config_from_rdp_result(
+            "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
+            &["--vmconnect", "efd1efab-c750-4262-b1bb-af0f7733bdd6", disabled_security],
+        )
+        .expect_err("vmconnect security requirements must fail during configuration");
+
+        assert!(
+            err.to_string().contains("requires"),
+            "unexpected error for {disabled_security}: {err:#}"
+        );
+    }
 }
 
 #[test]

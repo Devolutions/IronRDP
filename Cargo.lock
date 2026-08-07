@@ -2398,6 +2398,7 @@ dependencies = [
  "ironrdp-server",
  "ironrdp-session",
  "ironrdp-svc",
+ "ironrdp-vmconnect",
  "opus2",
  "pico-args",
  "rand 0.9.4",
@@ -2550,6 +2551,7 @@ dependencies = [
  "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "ironrdp-vmconnect",
  "smallvec",
  "tokio",
  "tokio-tungstenite",
@@ -3070,6 +3072,7 @@ dependencies = [
  "ironrdp-tls",
  "ironrdp-tokio",
  "ironrdp-viewer",
+ "ironrdp-vmconnect",
  "semver",
  "tokio",
  "tracing",
@@ -3124,6 +3127,17 @@ dependencies = [
  "url",
  "whoami",
  "winit",
+]
+
+[[package]]
+name = "ironrdp-vmconnect"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-async",
+ "ironrdp-connector",
+ "ironrdp-core 0.2.1",
+ "ironrdp-pdu",
+ "tracing",
 ]
 
 [[package]]

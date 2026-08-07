@@ -46,7 +46,9 @@ client-smartcard = ["ironrdp-client?/smartcard"]
 client-gateway = ["ironrdp-client?/gateway"]
 client-dvc-pipe-proxy = ["ironrdp-client?/dvc-pipe-proxy"]
 client-dvc-com-plugin = ["ironrdp-client?/dvc-com-plugin"]
+client-vmconnect = ["ironrdp-client?/vmconnect"]
 client-all = ["ironrdp-client?/all"]
+vmconnect = ["dep:ironrdp-vmconnect"]
 qoi = ["ironrdp-server?/qoi", "ironrdp-pdu?/qoi", "ironrdp-connector?/qoi", "ironrdp-session?/qoi", "ironrdp-client?/qoi"]
 qoiz = ["ironrdp-server?/qoiz", "ironrdp-pdu?/qoiz", "ironrdp-connector?/qoiz", "ironrdp-session?/qoiz", "ironrdp-client?/qoiz"]
 
@@ -72,6 +74,7 @@ ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.8", 
 ironrdp-echo = { path = "../ironrdp-echo", version = "0.4", optional = true } # public
 ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.0.1", optional = true } # public
 ironrdp-client = { path = "../ironrdp-client", version = "0.1", optional = true } # public
+ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.1", optional = true } # public
 
 [dev-dependencies]
 ironrdp-blocking = { path = "../ironrdp-blocking", version = "0.10" }

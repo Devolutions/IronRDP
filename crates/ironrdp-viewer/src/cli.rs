@@ -8,7 +8,7 @@ use clap::Parser;
 use clap::clap_derive::ValueEnum;
 use ironrdp::client::config::{
     ClipboardType as ResolvedClipboardType, Config, ConfigBuilder, Destination, DvcProxyInfo, MissingField,
-    TransportKind,
+    TransportKind, VmConnectMode,
 };
 use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
 use ironrdp_cfg::PropertySetExt as _;
@@ -106,6 +106,18 @@ struct Args {
     /// Authentication token to insert in the RDCleanPath packet
     #[clap(long, requires("rdcleanpath_url"))]
     rdcleanpath_token: Option<String>,
+
+    /// Connect to a Hyper-V VM console instead of an RDP host, by VM ID (`Get-VM | Select Id`).
+    ///
+    /// The destination is the Hyper-V host, which listens on port 2179. TLS and CredSSP are
+    /// required (do not combine with `--no-tls` / `--no-credssp`). Not supported with
+    /// `--gw-endpoint` / RDCleanPath until those transports can target port 2179.
+    #[clap(long, value_name = "VM_ID")]
+    vmconnect: Option<String>,
+
+    /// Use the Hyper-V basic console instead of Enhanced Session mode.
+    #[clap(long, requires = "vmconnect")]
+    vmconnect_basic: bool,
 
     /// The keyboard type
     #[clap(long, value_enum, default_value_t = KeyboardType::IbmEnhanced)]
@@ -387,6 +399,15 @@ fn apply_cli_to_builder(mut builder: ConfigBuilder, args: Args, redirect_clipboa
     }
 
     // Transport overrides: RDCleanPath takes precedence over Gateway.
+    if let Some(vm_id) = args.vmconnect {
+        let mode = if args.vmconnect_basic {
+            VmConnectMode::Basic
+        } else {
+            VmConnectMode::Enhanced
+        };
+        builder = builder.with_vmconnect_mode(vm_id, mode);
+    }
+
     if let Some(url) = args.rdcleanpath_url {
         builder = builder.with_transport(TransportKind::RDCleanPath { url });
 

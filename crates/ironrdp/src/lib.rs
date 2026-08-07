@@ -75,3 +75,7 @@ pub use ironrdp_session as session;
 #[cfg(feature = "svc")]
 #[doc(inline)]
 pub use ironrdp_svc as svc;
+
+#[cfg(feature = "vmconnect")]
+#[doc(inline)]
+pub use ironrdp_vmconnect as vmconnect;

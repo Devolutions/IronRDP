@@ -112,6 +112,7 @@ pub struct SmartCardIdentity {
 #[derive(Debug, Clone)]
 pub enum Credentials {
     UsernamePassword {
+        /// An empty username suppresses the X.224 `mstshash` cookie.
         username: String,
         password: String,
     },
@@ -124,7 +125,8 @@ pub enum Credentials {
 impl Credentials {
     fn username(&self) -> Option<&str> {
         match self {
-            Self::UsernamePassword { username, .. } => Some(username),
+            Self::UsernamePassword { username, .. } if !username.is_empty() => Some(username),
+            Self::UsernamePassword { .. } => None,
             Self::SmartCard { .. } => None, // Username is ultimately provided by the smart card certificate.
         }
     }
