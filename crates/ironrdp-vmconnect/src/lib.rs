@@ -65,15 +65,15 @@ pub fn encode_preconnection_blob(vm_id: &str, mode: Mode) -> ConnectorResult<Vec
         Mode::Enhanced => format!("{vm_id}{ENHANCED_MODE_SUFFIX}"),
         Mode::Basic => vm_id.to_owned(),
     };
-    encode_preconnection_blob_payload(&payload)
+    encode_preconnection_blob_payload(payload)
 }
 
 /// Encode a PCB V2 containing an opaque routing payload.
-pub fn encode_preconnection_blob_payload(payload: &str) -> ConnectorResult<Vec<u8>> {
+pub fn encode_preconnection_blob_payload(payload: String) -> ConnectorResult<Vec<u8>> {
     encode_vec(&PreconnectionBlob {
         id: 0,
         version: PcbVersion::V2,
-        v2_payload: Some(payload.to_owned()),
+        v2_payload: Some(payload),
     })
     .map_err(ConnectorError::encode)
 }
@@ -85,7 +85,7 @@ pub fn encode_preconnection_blob_string(vm_id: &str, mode: Mode) -> ConnectorRes
 }
 
 /// Encode an opaque PCB payload as the byte-preserving string used by RDCleanPath.
-pub fn encode_preconnection_blob_payload_string(payload: &str) -> ConnectorResult<String> {
+pub fn encode_preconnection_blob_payload_string(payload: String) -> ConnectorResult<String> {
     String::from_utf8(encode_preconnection_blob_payload(payload)?)
         .map_err(|e| custom_err!("encode preconnection blob as RDCleanPath string", e))
 }

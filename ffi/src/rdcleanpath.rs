@@ -46,7 +46,7 @@ pub mod ffi {
             proxy_auth: &str,
             pcb_payload: &str,
         ) -> Result<Box<RDCleanPathPdu>, Box<IronRdpError>> {
-            let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_payload_string(pcb_payload)?;
+            let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_payload_string(pcb_payload.to_owned())?;
             Ok(Box::new(RDCleanPathPdu(
                 ironrdp_rdcleanpath::RDCleanPathPdu::new_request_with_pcb(
                     destination.to_owned(),
