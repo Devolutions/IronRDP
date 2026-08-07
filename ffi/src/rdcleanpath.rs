@@ -40,29 +40,25 @@ pub mod ffi {
             Ok(Box::new(RDCleanPathPdu(pdu)))
         }
 
-        /// Creates a request for a server that expects TLS before X.224.
-        pub fn new_pcb_front_request(
+        /// Request with PCB only: proxy does PCB + TLS; client runs CredSSP then X.224.
+        pub fn new_request_with_pcb(
             destination: &str,
             proxy_auth: &str,
             pcb_payload: &str,
         ) -> Result<Box<RDCleanPathPdu>, Box<IronRdpError>> {
             let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_payload_string(pcb_payload)?;
-            let pdu = ironrdp_rdcleanpath::RDCleanPathPdu::new_pcb_front_request(
-                destination.to_owned(),
-                proxy_auth.to_owned(),
-                preconnection_blob,
-            );
-
-            Ok(Box::new(RDCleanPathPdu(pdu)))
+            Ok(Box::new(RDCleanPathPdu(
+                ironrdp_rdcleanpath::RDCleanPathPdu::new_request_with_pcb(
+                    destination.to_owned(),
+                    proxy_auth.to_owned(),
+                    preconnection_blob,
+                ),
+            )))
         }
 
-        pub fn get_version(&self) -> u64 {
-            self.0.version
-        }
-
-        pub fn is_pcb_front(&self) -> bool {
-            self.0.x224_connection_pdu.is_none()
-                && (self.0.preconnection_blob.is_some() || self.0.server_addr.is_some())
+        /// True when the PDU has no X.224 payload (PCB-front request or response).
+        pub fn has_x224(&self) -> bool {
+            self.0.x224_connection_pdu.is_some()
         }
 
         /// Decodes a RDCleanPath PDU from DER-encoded bytes

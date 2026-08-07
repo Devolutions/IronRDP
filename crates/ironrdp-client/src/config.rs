@@ -1032,19 +1032,13 @@ impl ConfigBuilder {
     }
 
     #[cfg(feature = "vmconnect")]
-    /// Connect to a Hyper-V VM console via vmconnect, identified by its VM ID (a GUID string).
-    ///
-    /// The Hyper-V front (Preconnection Blob → TLS → CredSSP → X.224) is driven by
-    /// `ironrdp-vmconnect` outside the plain RDP connector. A console listens on port
-    /// [`ironrdp_vmconnect::PORT`] (2179), not 3389, so the destination must say so.
-    ///
-    /// Works over Direct and RDCleanPath (proxy does PCB + TLS; client runs CredSSP then X.224).
+    /// Connect to a Hyper-V VM console by VM GUID. Destination must use port
+    /// [`ironrdp_vmconnect::PORT`] (2179) unless the caller explicitly selects another port.
+    /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
     ///
     /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
-    /// embedder. RDS Gateway is rejected until it can propagate the VMConnect target port.
-    ///
-    /// Not mirrored into the [`PropertySet`]: `.rdp` files carry the VM ID in the `pcb` key, which
-    /// `ironrdp-cfg` does not model yet.
+    /// embedder (error if disabled). Works over Direct and RDCleanPath. RDS Gateway is rejected
+    /// until it can propagate the VMConnect target port.
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
@@ -1387,6 +1381,7 @@ impl ConfigBuilder {
                 anyhow::bail!("vmconnect cannot be used over an RDS gateway until the target port is propagated");
             }
         }
+
         let client_name = self.client_name.unwrap_or_default();
         let kerberos_config = self
             .kerberos_config

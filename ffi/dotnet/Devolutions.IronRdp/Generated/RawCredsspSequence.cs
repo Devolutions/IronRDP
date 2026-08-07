@@ -22,6 +22,9 @@ public partial struct CredsspSequence
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "CredsspSequence_init", ExactSpelling = true)]
     public static unsafe extern CredsspFfiResultBoxCredsspSequenceInitResultBoxIronRdpError Init(ClientConnector* connector, byte* serverName, nuint serverNameSz, byte* serverPublicKey, nuint serverPublicKeySz, KerberosConfig* kerberoConfigs);
 
+    /// <summary>
+    /// Init CredSSP with an explicit protocol (pre-X.224 VMConnect front).
+    /// </summary>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "CredsspSequence_init_with_protocol", ExactSpelling = true)]
     public static unsafe extern CredsspFfiResultBoxCredsspSequenceInitResultBoxIronRdpError InitWithProtocol(ClientConnector* connector, byte* serverName, nuint serverNameSz, byte* serverPublicKey, nuint serverPublicKeySz, uint selectedProtocol, KerberosConfig* kerberoConfigs);
 

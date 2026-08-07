@@ -322,6 +322,17 @@ impl RDCleanPathPdu {
         })
     }
 
+    /// Request with PCB only: proxy writes PCB and does TLS; client runs CredSSP then X.224.
+    pub fn new_request_with_pcb(destination: String, proxy_auth: String, preconnection_blob: String) -> Self {
+        Self {
+            version: VERSION_1,
+            destination: Some(destination),
+            proxy_auth: Some(proxy_auth),
+            preconnection_blob: Some(preconnection_blob),
+            ..Self::default()
+        }
+    }
+
     pub fn new_response(
         server_addr: String,
         x224_pdu: Vec<u8>,
@@ -341,17 +352,8 @@ impl RDCleanPathPdu {
         })
     }
 
-    pub fn new_pcb_front_request(destination: String, proxy_auth: String, preconnection_blob: String) -> Self {
-        Self {
-            version: VERSION_1,
-            destination: Some(destination),
-            proxy_auth: Some(proxy_auth),
-            preconnection_blob: Some(preconnection_blob),
-            ..Self::default()
-        }
-    }
-
-    pub fn new_pcb_front_response(
+    /// Response after PCB-front TLS: cert chain only, no X.224.
+    pub fn new_response_with_pcb(
         server_addr: String,
         x509_chain: impl IntoIterator<Item = Vec<u8>>,
     ) -> der::Result<Self> {
@@ -435,20 +437,12 @@ pub enum RDCleanPath {
         proxy_auth: String,
         server_auth: Option<String>,
         preconnection_blob: Option<String>,
-        x224_connection_request: OctetString,
+        /// Absent means the proxy should do PCB → TLS and leave CredSSP/X.224 to the client.
+        x224_connection_request: Option<OctetString>,
     },
     Response {
-        x224_connection_response: OctetString,
-        server_cert_chain: Vec<OctetString>,
-        server_addr: String,
-    },
-    PcbFrontRequest {
-        destination: String,
-        proxy_auth: String,
-        server_auth: Option<String>,
-        preconnection_blob: String,
-    },
-    PcbFrontResponse {
+        /// Absent means the proxy already did PCB → TLS; client must run CredSSP then X.224.
+        x224_connection_response: Option<OctetString>,
         server_cert_chain: Vec<OctetString>,
         server_addr: String,
     },
@@ -479,45 +473,25 @@ impl TryFrom<RDCleanPathPdu> for RDCleanPath {
     type Error = MissingRDCleanPathField;
 
     fn try_from(pdu: RDCleanPathPdu) -> Result<Self, Self::Error> {
-        if pdu.version != VERSION_1 {
-            return Err(MissingRDCleanPathField("supported version"));
-        }
-
         let rdcleanpath = if let Some(destination) = pdu.destination {
             let proxy_auth = pdu.proxy_auth.ok_or(MissingRDCleanPathField("proxy_auth"))?;
-            if let Some(x224_connection_request) = pdu.x224_connection_pdu {
-                Self::Request {
-                    destination,
-                    proxy_auth,
-                    server_auth: pdu.server_auth,
-                    preconnection_blob: pdu.preconnection_blob,
-                    x224_connection_request,
-                }
-            } else {
-                Self::PcbFrontRequest {
-                    destination,
-                    proxy_auth,
-                    server_auth: pdu.server_auth,
-                    preconnection_blob: pdu
-                        .preconnection_blob
-                        .ok_or(MissingRDCleanPathField("preconnection_blob"))?,
-                }
+            if pdu.x224_connection_pdu.is_none() && pdu.preconnection_blob.is_none() {
+                return Err(MissingRDCleanPathField("x224_connection_pdu or preconnection_blob"));
+            }
+            Self::Request {
+                destination,
+                proxy_auth,
+                server_auth: pdu.server_auth,
+                preconnection_blob: pdu.preconnection_blob,
+                x224_connection_request: pdu.x224_connection_pdu,
             }
         } else if let Some(server_addr) = pdu.server_addr {
-            let server_cert_chain = pdu
-                .server_cert_chain
-                .ok_or(MissingRDCleanPathField("server_cert_chain"))?;
-            if let Some(x224_connection_response) = pdu.x224_connection_pdu {
-                Self::Response {
-                    x224_connection_response,
-                    server_cert_chain,
-                    server_addr,
-                }
-            } else {
-                Self::PcbFrontResponse {
-                    server_cert_chain,
-                    server_addr,
-                }
+            Self::Response {
+                x224_connection_response: pdu.x224_connection_pdu,
+                server_cert_chain: pdu
+                    .server_cert_chain
+                    .ok_or(MissingRDCleanPathField("server_cert_chain"))?,
+                server_addr,
             }
         } else {
             let error = pdu.error.ok_or(MissingRDCleanPathField("error"))?;
@@ -548,7 +522,7 @@ impl From<RDCleanPath> for RDCleanPathPdu {
                 proxy_auth: Some(proxy_auth),
                 server_auth,
                 preconnection_blob,
-                x224_connection_pdu: Some(x224_connection_request),
+                x224_connection_pdu: x224_connection_request,
                 ..Default::default()
             },
             RDCleanPath::Response {
@@ -557,29 +531,7 @@ impl From<RDCleanPath> for RDCleanPathPdu {
                 server_addr,
             } => Self {
                 version: VERSION_1,
-                x224_connection_pdu: Some(x224_connection_response),
-                server_cert_chain: Some(server_cert_chain),
-                server_addr: Some(server_addr),
-                ..Default::default()
-            },
-            RDCleanPath::PcbFrontRequest {
-                destination,
-                proxy_auth,
-                server_auth,
-                preconnection_blob,
-            } => Self {
-                version: VERSION_1,
-                destination: Some(destination),
-                proxy_auth: Some(proxy_auth),
-                server_auth,
-                preconnection_blob: Some(preconnection_blob),
-                ..Default::default()
-            },
-            RDCleanPath::PcbFrontResponse {
-                server_cert_chain,
-                server_addr,
-            } => Self {
-                version: VERSION_1,
+                x224_connection_pdu: x224_connection_response,
                 server_cert_chain: Some(server_cert_chain),
                 server_addr: Some(server_addr),
                 ..Default::default()

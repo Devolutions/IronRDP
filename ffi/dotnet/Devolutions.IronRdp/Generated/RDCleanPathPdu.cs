@@ -63,14 +63,6 @@ public partial class RDCleanPathPdu: IDisposable
         }
     }
 
-    public ulong Version
-    {
-        get
-        {
-            return GetVersion();
-        }
-    }
-
     public VecU8 X224Response
     {
         get
@@ -141,13 +133,13 @@ public partial class RDCleanPathPdu: IDisposable
     }
 
     /// <summary>
-    /// Creates a request for a server that expects TLS before X.224.
+    /// Request with PCB only: proxy does PCB + TLS; client runs CredSSP then X.224.
     /// </summary>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>RDCleanPathPdu</c> allocated on Rust side.
     /// </returns>
-    public static RDCleanPathPdu NewPcbFrontRequest(string destination, string proxyAuth, string pcbPayload)
+    public static RDCleanPathPdu NewRequestWithPcb(string destination, string proxyAuth, string pcbPayload)
     {
         unsafe
         {
@@ -163,7 +155,7 @@ public partial class RDCleanPathPdu: IDisposable
                 {
                     fixed (byte* pcbPayloadBufPtr = pcbPayloadBuf)
                     {
-                        Raw.RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError result = Raw.RDCleanPathPdu.NewPcbFrontRequest(destinationBufPtr, destinationBufLength, proxyAuthBufPtr, proxyAuthBufLength, pcbPayloadBufPtr, pcbPayloadBufLength);
+                        Raw.RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError result = Raw.RDCleanPathPdu.NewRequestWithPcb(destinationBufPtr, destinationBufLength, proxyAuthBufPtr, proxyAuthBufLength, pcbPayloadBufPtr, pcbPayloadBufLength);
                         if (!result.isOk)
                         {
                             throw new IronRdpException(new IronRdpError(result.Err));
@@ -176,7 +168,10 @@ public partial class RDCleanPathPdu: IDisposable
         }
     }
 
-    public ulong GetVersion()
+    /// <summary>
+    /// True when the PDU has no X.224 payload (PCB-front request or response).
+    /// </summary>
+    public bool HasX224()
     {
         unsafe
         {
@@ -184,20 +179,7 @@ public partial class RDCleanPathPdu: IDisposable
             {
                 throw new ObjectDisposedException("RDCleanPathPdu");
             }
-            ulong retVal = Raw.RDCleanPathPdu.GetVersion(_inner);
-            return retVal;
-        }
-    }
-
-    public bool IsPcbFront()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("RDCleanPathPdu");
-            }
-            bool retVal = Raw.RDCleanPathPdu.IsPcbFront(_inner);
+            bool retVal = Raw.RDCleanPathPdu.HasX224(_inner);
             return retVal;
         }
     }
