@@ -105,7 +105,7 @@ function xlClassification(expectedSha, deterministic, semverStatus) {
 }
 
 function resolveClassificationState({
-  expectedSha, labels, deterministic, classifier, changedPaths, prNumber, semver, rateLimit,
+  expectedSha, labels, deterministic, classifier, classificationGate, changedPaths, prNumber, semver, rateLimit,
 } = {}) {
   const existing = labelsOf(labels);
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
@@ -118,15 +118,20 @@ function resolveClassificationState({
   if (deterministic?.ok && deterministic.sizeLabel === "size/XL") {
     return xlClassification(expectedSha, deterministic, semverStatus);
   }
-  const classifierResult = validateClassifier(classifier, {
-    expectedSha, changedPaths, documentationOnlyPaths: deterministic?.documentationOnlyPaths, prNumber,
-  });
   if (rateLimit && rateLimit.status !== "allowed") {
     return failedClassification(expectedSha, deterministic, "fork LLM quota unavailable", rateLimit, semverStatus);
   }
   if (!deterministic?.ok) {
-    return failedClassification(expectedSha, deterministic, "deterministic analysis unavailable", rateLimit, semverStatus);
+    const reason = deterministic?.reason || "deterministic analysis unavailable";
+    return failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus);
   }
+  if (classificationGate?.available === false) {
+    const reason = classificationGate.reason || "classification gate unavailable";
+    return failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus);
+  }
+  const classifierResult = validateClassifier(classifier, {
+    expectedSha, changedPaths, documentationOnlyPaths: deterministic.documentationOnlyPaths, prNumber,
+  });
   if (!classifierResult?.ok || classifierResult.value?.head_sha !== expectedSha) {
     const reason = classifierResult?.reason || "classifier output unavailable";
     return failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus);

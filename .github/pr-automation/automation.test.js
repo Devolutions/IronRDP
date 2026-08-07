@@ -365,6 +365,24 @@ test("deterministic semver outranks the model and a model-only break cannot stay
   });
   assert.equal(malformed.check.conclusion, "neutral");
   assert.match(malformed.check.summary, /invalid classifier object/);
+  const deterministicFailure = resolveClassificationState({
+    expectedSha: SHA,
+    labels: [],
+    deterministic: { ok: false, reason: "invalid file metadata" },
+    classifier: "",
+    semver: { head_sha: SHA, status: "not-suspected" },
+  });
+  assert.match(deterministicFailure.check.summary, /invalid file metadata/);
+  const gateFailure = resolveClassificationState({
+    expectedSha: SHA,
+    labels: [],
+    deterministic,
+    classifier: "",
+    classificationGate: { available: false, reason: "GitHub checks API unavailable" },
+    semver: {},
+  });
+  assert.match(gateFailure.check.summary, /GitHub checks API unavailable/);
+  assert.doesNotMatch(gateFailure.check.summary, /invalid classifier object/);
   const failedWithSemverBreak = resolveClassificationState({
     expectedSha: SHA,
     labels: [],
