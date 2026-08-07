@@ -48,7 +48,10 @@ test("workflow does not overwrite github-script result outputs", () => {
   assert.doesNotMatch(workflow, /core\.setOutput\("result"/);
   assert.doesNotMatch(workflow, /^\s{6}result:\s+\$\{\{\s*steps\./m);
   assert.doesNotMatch(workflow, /needs\.[\w-]+\.outputs\.result\b/);
-  assert.equal((workflow.match(/uses: \.\/\.github\/actions\/resilient-review-output/g) || []).length, 2);
+  assert.equal((workflow.match(/uses: \.\/\.github\/actions\/resilient-review-output/g) || []).length, 3);
+  assert.match(workflow, /stage: classifier/);
+  assert.match(workflow, /pr_number: \$\{\{ needs\.resolve-pr\.outputs\.pr-number \}\}/);
+  assert.match(workflow, /core\.setOutput\("retry", `\$\{common\} --max-turns 3`\)/);
   const resilientAction = fs.readFileSync(
     path.join(__dirname, "..", "actions", "resilient-review-output", "action.yml"), "utf8");
   assert.match(resilientAction, /--resume \$\{sessionId\}/);
@@ -325,6 +328,24 @@ test("heavy review output validation accepts a schema-bound reviewer result", ()
   assert.equal(validateModelOutput(valid, {
     stage: "skeptical-review", expectedSha: SHA, changedPaths: ["src/lib.rs"], protocolReceived: false,
   }).ok, true);
+});
+
+test("classifier output validation requires trusted PR context", () => {
+  assert.equal(validateModelOutput(JSON.stringify(classifier()), {
+    stage: "classifier", expectedSha: SHA, changedPaths: ["src/lib.rs"], prNumber: 7,
+  }).ok, true);
+  assert.equal(validateModelOutput(JSON.stringify(classifier({ documentation_only: true })), {
+    stage: "classifier", expectedSha: SHA, changedPaths: ["src/lib.rs"], prNumber: 7,
+  }).ok, false);
+  assert.equal(validateModelOutput(JSON.stringify(classifier({ duplicate: {
+    detected: true, similar_pr_number: 7, similar_pr_url: "https://github.com/Devolutions/IronRDP/pull/7",
+    confidence: 0.9, rationale: "same pull request",
+  } })), {
+    stage: "classifier", expectedSha: SHA, changedPaths: ["src/lib.rs"], prNumber: 7,
+  }).ok, false);
+  assert.equal(validateModelOutput(JSON.stringify(classifier()), {
+    stage: "classifier", expectedSha: SHA, changedPaths: ["src/lib.rs"], prNumber: 0,
+  }).ok, false);
 });
 
 test("heavy review output rejects malformed changed-path evidence", () => {

@@ -8,6 +8,10 @@ inputs:
   expected_sha:
     description: Pull request head SHA the output must bind to
     required: true
+  pr_number:
+    description: Pull request number for classifier output validation
+    required: false
+    default: ""
   anthropic_api_key:
     description: Anthropic API key for the review stage
     required: true
@@ -60,6 +64,7 @@ runs:
       env:
         STAGE: ${{ inputs.stage }}
         EXPECTED_SHA: ${{ inputs.expected_sha }}
+        PR_NUMBER: ${{ inputs.pr_number }}
         OUTCOME: ${{ steps.initial.outcome }}
         STRUCTURED_OUTPUT: ${{ steps.initial.outputs.structured_output }}
         SESSION_ID: ${{ steps.initial.outputs.session_id }}
@@ -74,6 +79,7 @@ runs:
             ? { ok: false, reason: "initial model action failed without structured output" }
             : validateModelOutput(output, {
               stage: process.env.STAGE, expectedSha: process.env.EXPECTED_SHA,
+              prNumber: Number(process.env.PR_NUMBER),
             });
           core.setOutput("valid", result.ok);
           core.setOutput("reason", result.ok ? "" : result.reason);
@@ -108,6 +114,7 @@ runs:
       env:
         STAGE: ${{ inputs.stage }}
         EXPECTED_SHA: ${{ inputs.expected_sha }}
+        PR_NUMBER: ${{ inputs.pr_number }}
         INITIAL_VALID: ${{ steps.validate-initial.outputs.valid }}
         INITIAL_REASON: ${{ steps.validate-initial.outputs.reason }}
         INITIAL_OUTCOME: ${{ steps.initial.outcome }}
@@ -129,6 +136,7 @@ runs:
               ? { ok: false, reason: "resumed model action failed without structured output" }
               : validateModelOutput(retryOutput, {
                 stage: process.env.STAGE, expectedSha: process.env.EXPECTED_SHA,
+                prNumber: Number(process.env.PR_NUMBER),
               });
             if (retry.ok) {
               output = retryOutput;

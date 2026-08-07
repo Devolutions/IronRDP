@@ -9,6 +9,7 @@ const { invalid, REPO_PATH, SHA } = require("../../pr-automation/validation");
 const {
   corpusFromDirectory, validateProtocolReview,
 } = require("../../pr-automation/validate-protocol-review");
+const { validateClassifier } = require("../../pr-automation/validate-classifier");
 const { validateReviewer } = require("../../pr-automation/validate-reviewer");
 
 const MAX_PATH_BYTES = 500;
@@ -38,15 +39,23 @@ function changedPathsFromRepository(repository) {
 }
 
 function validateModelOutput(raw, {
-  stage, expectedSha, workspace = process.cwd(), changedPaths, corpus, protocolReceived,
+  stage, expectedSha, workspace = process.cwd(), changedPaths, corpus, protocolReceived, prNumber,
 } = {}) {
-  if (!["protocol-analysis", "skeptical-review"].includes(stage) || !SHA.test(expectedSha || "")) {
+  if (!["classifier", "protocol-analysis", "skeptical-review"].includes(stage) || !SHA.test(expectedSha || "")) {
     return invalid("invalid model validation context");
+  }
+  if (stage === "classifier" && (!Number.isSafeInteger(prNumber) || prNumber < 1)) {
+    return invalid("invalid classifier validation context");
   }
   const paths = changedPaths === undefined
     ? changedPathsFromRepository(path.join(workspace, "pr-head"))
     : { ok: true, paths: changedPaths };
   if (!paths.ok) return paths;
+  if (stage === "classifier") {
+    return validateClassifier(raw, {
+      expectedSha, changedPaths: paths.paths, prNumber,
+    });
+  }
   if (stage === "protocol-analysis") {
     return validateProtocolReview(raw, {
       expectedSha,
