@@ -12,8 +12,8 @@ use std::thread::JoinHandle;
 
 use anyhow::Context as _;
 use ironrdp_agent::ipc::{
-    AgentErrorCategory, ConnState, KeyFilter, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry, Request,
-    Response, StatusInfo,
+    AgentErrorCategory, ConnState, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PropValue, PropertyDump,
+    PropertyEntry, Request, Response, StatusInfo,
 };
 use ironrdp_daemon::logbuf::{self, LogBuffer};
 use ironrdp_daemon::now::NowEndpoint;
@@ -77,6 +77,10 @@ pub(crate) enum Command {
     },
     Input {
         operation: Operation,
+        response: oneshot::Sender<Response>,
+    },
+    InputText {
+        text: String,
         response: oneshot::Sender<Response>,
     },
     Resize {
@@ -390,6 +394,16 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             })
             .await
         }
+        Request::UnicodeText { text } => {
+            if text.chars().count() > MAX_UNICODE_TEXT_CHARS {
+                return ConnectionResponse::Single(Response::typed_error(
+                    AgentErrorCategory::InvalidRequest,
+                    format!("text exceeds the {MAX_UNICODE_TEXT_CHARS}-character limit"),
+                ));
+            }
+
+            queue_command(shared, dispatcher, |response| Command::InputText { text, response }).await
+        }
         Request::Resize { width, height } => {
             queue_command(shared, dispatcher, |response| Command::Resize {
                 width,
@@ -688,6 +702,7 @@ fn respond(command: Command, response: Response) {
         Command::Connect { response, .. }
         | Command::Disconnect { response }
         | Command::Input { response, .. }
+        | Command::InputText { response, .. }
         | Command::Resize { response, .. } => response,
     };
     let _ = sender.send(response);

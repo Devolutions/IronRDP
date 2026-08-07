@@ -1236,25 +1236,34 @@ impl Sequence for ClientConnector {
                             pointer_software_rendering,
                             refresh_rect_support,
                             suppress_output_support,
+                            static_channel_chunk_size,
                         } => ClientConnectorState::Connected {
-                            result: ConnectionResult {
-                                io_channel_id: connection_activation.io_channel_id(),
-                                user_channel_id: connection_activation.user_channel_id(),
-                                message_channel_id: self.message_channel_id,
-                                share_id,
-                                static_channels: mem::take(&mut self.static_channels),
-                                desktop_size,
-                                input_flags,
-                                enable_server_pointer,
-                                pointer_software_rendering,
-                                refresh_rect_support,
-                                suppress_output_support,
-                                activation_factory: ConnectionActivationFactory::new(
-                                    self.config.clone(),
-                                    connection_activation.io_channel_id(),
-                                    connection_activation.user_channel_id(),
-                                ),
-                                compression_type: self.config.compression_type,
+                            result: {
+                                let mut static_channels = mem::take(&mut self.static_channels);
+                                assert!(
+                                    static_channels.set_maximum_chunk_size(static_channel_chunk_size),
+                                    "connection activation must validate the static channel chunk size"
+                                );
+
+                                ConnectionResult {
+                                    io_channel_id: connection_activation.io_channel_id(),
+                                    user_channel_id: connection_activation.user_channel_id(),
+                                    message_channel_id: self.message_channel_id,
+                                    share_id,
+                                    static_channels,
+                                    desktop_size,
+                                    input_flags,
+                                    enable_server_pointer,
+                                    pointer_software_rendering,
+                                    refresh_rect_support,
+                                    suppress_output_support,
+                                    activation_factory: ConnectionActivationFactory::new(
+                                        self.config.clone(),
+                                        connection_activation.io_channel_id(),
+                                        connection_activation.user_channel_id(),
+                                    ),
+                                    compression_type: self.config.compression_type,
+                                }
                             },
                         },
                         _ => return Err(general_err!("invalid state (this is a bug)")),

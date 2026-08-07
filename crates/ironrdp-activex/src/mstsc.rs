@@ -28,9 +28,16 @@ pub(crate) unsafe trait IMsRdpDeviceCollection: IUnknown {
 
 #[interface("7FF17599-DA2C-4677-AD35-F60C04FE1585")]
 pub(crate) unsafe trait IMsRdpDriveCollection: IUnknown {
-    fn RescanDrives(&self, dynamic_redirection: i16) -> Result<()>;
-    fn get_DriveByIndex(&self, index: u32, drive: InterfaceOut) -> Result<()>;
-    fn get_DriveCount(&self, count: *mut u32) -> Result<()>;
+    pub(crate) fn RescanDrives(&self, dynamic_redirection: i16) -> Result<()>;
+    pub(crate) fn get_DriveByIndex(&self, index: u32, drive: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_DriveCount(&self, count: *mut u32) -> Result<()>;
+}
+
+#[interface("D28B5458-F694-47A8-8E61-40356A767E46")]
+pub(crate) unsafe trait IMsRdpDrive: IUnknown {
+    pub(crate) fn get_Name(&self, name: BstrOut) -> Result<()>;
+    pub(crate) fn put_RedirectionState(&self, state: i16) -> Result<()>;
+    pub(crate) fn get_RedirectionState(&self, state: *mut i16) -> Result<()>;
 }
 
 #[interface("AE45252B-AAAB-4504-B681-649D6073A37A")]
@@ -99,12 +106,12 @@ pub(crate) unsafe trait IMsRdpClientNonScriptable3: IMsRdpClientNonScriptable2 {
     fn get_NegotiateSecurityLayer(&self, value: *mut i16) -> Result<()>;
     fn put_EnableCredSspSupport(&self, value: i16) -> Result<()>;
     fn get_EnableCredSspSupport(&self, value: *mut i16) -> Result<()>;
-    fn put_RedirectDynamicDrives(&self, value: i16) -> Result<()>;
+    pub(crate) fn put_RedirectDynamicDrives(&self, value: i16) -> Result<()>;
     fn get_RedirectDynamicDrives(&self, value: *mut i16) -> Result<()>;
     fn put_RedirectDynamicDevices(&self, value: i16) -> Result<()>;
     fn get_RedirectDynamicDevices(&self, value: *mut i16) -> Result<()>;
     fn get_DeviceCollection(&self, collection: InterfaceOut) -> Result<()>;
-    fn get_DriveCollection(&self, collection: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_DriveCollection(&self, collection: InterfaceOut) -> Result<()>;
     fn put_WarnAboutSendingCredentials(&self, value: i16) -> Result<()>;
     fn get_WarnAboutSendingCredentials(&self, value: *mut i16) -> Result<()>;
     fn put_WarnAboutClipboardRedirection(&self, value: i16) -> Result<()>;

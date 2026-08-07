@@ -26,39 +26,25 @@ connection flags. Explicit flags override those process-local values. The native
 these only when it is explicitly enabled; `RDP_AUTOLOGON` is active only when its value is exactly
 `1`, and requires nonempty username and password values.
 
-## Windows Sandbox
+Daemon-backed sessions use strict certificate validation. Set
+`IRONRDP_AGENT_CERTIFICATE_SHA256` (or `daemon-start --certificate-sha256`) to permit only the
+specified SHA-256 certificate fingerprint when normal validation fails. The agent never falls back
+to permissive certificate validation unless `daemon-start
+--dangerously-accept-invalid-certificate` is explicitly supplied for an authorized test-only
+daemon process. On Windows, repeat `daemon-start --rdpdr-drive NAME=VOLUME_ROOT` to enable one or
+more native filesystem-redirection drives, for example `--rdpdr-drive C=C:\ --rdpdr-drive D=D:\`.
+Each protocol-visible DOS name must be unique and contain at most seven valid ASCII DOS-name
+characters. The legacy `--rdpdr-volume C:\ --rdpdr-drive-name C` form remains available for a
+single drive.
 
-On Windows with the Windows Sandbox feature enabled, the agent can attach to a sandbox that was
-created separately (preferred) and speak RDP over the product's default **named-pipe** transport
-(`\\.\pipe\{VMId}`), using standard RDP security with no encryption (`PROTOCOL_RDP` /
-`ENCRYPTION_LEVEL_NONE`).
-
-```bat
-:: create headless (prints Id only)
-wsb start
-
-:: inspect / list via WindowsSandboxServer gRPC
-ironrdp-agent sandbox list
-ironrdp-agent sandbox config <sandbox-id>
-
-:: connect (daemon must already be running)
-ironrdp-agent daemon-start
-ironrdp-agent connect --sandbox-id <sandbox-id>
-ironrdp-agent screenshot sandbox.png
-```
-
-The agent speaks `sandboxserver.SandboxCore` in-process over the per-user named pipe
-(`\\.\pipe\wsandbox\<md5(user SID)>`) — no .NET helper is required. WindowsSandboxServer must
-already be running (starting a sandbox with `wsb start` / the Sandbox UI is enough).
-
-Low-level escape hatch when you already have the pipe path and guest password:
-
-```bat
-ironrdp-agent connect --sandbox-pipe \\.\pipe\{VMId} -u WDAGUtilityAccount -p <password>
-```
-
-`Local` (VMConnect `:2179` + PCB) and guest TCP `:3389` transports are not implemented as the
-primary path; use the default NamedPipe recipe.
+`testing/agentic-rdp/Invoke-AgentRdpdrRegression.ps1` is the unattended Windows regression loop
+for filesystem redirection. It reads only `RDP_USERNAME` and `RDP_PASSWORD` from its launching
+environment, redirects the local volume that contains a disposable deterministic payload, performs
+both direct PowerShell and Explorer-shell copies through `\\tsclient`, verifies SHA-256 results,
+and retains screenshots plus bounded RDPDR diagnostics in its artifact directory. The server exposes
+the redirected namespace to its interactive desktop rather than the NOW command token, so the
+harness launches copy commands through remote RDP input while NOW only verifies result files. It
+never launches MSTSC or performs local UI automation.
 
 ## Prebuilt binaries
 

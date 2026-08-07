@@ -23,8 +23,8 @@ use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
 use ironrdp_rpc::ipc::{
-    AgentError, KeyFilter, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind,
-    OperationInfo, OperationState, Payload, PropValue, Request, Response,
+    AgentError, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent,
+    OperationEventKind, OperationInfo, OperationState, Payload, PropValue, Request, Response,
 };
 use ironrdp_rpc::transport::{self, Endpoint};
 
@@ -98,6 +98,11 @@ enum Command {
         character: char,
         #[arg(long, action = clap::ArgAction::Set)]
         pressed: bool,
+    },
+    /// Type bounded Unicode text in ordered FastPath input messages.
+    TypeUnicode {
+        #[arg(long, value_parser = parse_unicode_text)]
+        text: String,
     },
     /// Resize the remote desktop.
     Resize {
@@ -306,6 +311,31 @@ struct DaemonArgs {
     /// property without a dedicated flag existing for it.
     #[arg(long = "prop", value_name = "KEY:TYPE:VALUE")]
     prop: Vec<PropOverride>,
+    /// SHA-256 fingerprint accepted only when normal strict certificate validation fails.
+    #[arg(
+        long,
+        env = "IRONRDP_AGENT_CERTIFICATE_SHA256",
+        value_name = "SHA256",
+        hide_env_values = true
+    )]
+    certificate_sha256: Option<ironrdp_daemon::daemon::CertificateSha256>,
+    /// Disable certificate and hostname validation for this daemon process.
+    #[arg(long)]
+    dangerously_accept_invalid_certificate: bool,
+    /// Full local Windows volume root exposed as an RDPDR filesystem drive.
+    ///
+    /// Use `--rdpdr-drive NAME=VOLUME_ROOT` to configure more than one drive.
+    #[arg(long, value_name = "VOLUME_ROOT", conflicts_with = "rdpdr_drives")]
+    rdpdr_volume: Option<PathBuf>,
+    /// Protocol-visible DOS name for `--rdpdr-volume` (one to seven ASCII characters).
+    #[arg(long, requires = "rdpdr_volume", default_value = "C")]
+    rdpdr_drive_name: String,
+    /// Named local Windows volume exposed as an RDPDR filesystem drive.
+    ///
+    /// Repeat this flag to redirect multiple volumes. The `NAME` is the
+    /// protocol-visible DOS drive name and must be unique.
+    #[arg(long = "rdpdr-drive", value_name = "NAME=VOLUME_ROOT", value_parser = parse_rdpdr_drive)]
+    rdpdr_drives: Vec<ironrdp_daemon::daemon::RdpdrDriveConfig>,
 }
 
 #[derive(Args, Debug)]
@@ -451,6 +481,14 @@ fn parse_scancode(input: &str) -> Result<u16, core::num::ParseIntError> {
     }
 }
 
+fn parse_rdpdr_drive(input: &str) -> Result<ironrdp_daemon::daemon::RdpdrDriveConfig, String> {
+    let (display_name, root_path) = input
+        .split_once('=')
+        .ok_or_else(|| "RDPDR drive must use NAME=VOLUME_ROOT syntax".to_owned())?;
+    ironrdp_daemon::daemon::RdpdrDriveConfig::new(PathBuf::from(root_path), display_name.to_owned())
+        .map_err(|error| error.to_string())
+}
+
 /// Entry point shared by the binary: dispatches the parsed [`Cli`].
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     if cli.help_agent {
@@ -476,7 +514,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 anyhow::bail!("daemon-start requires --backend daemon");
             }
             let overlay = load_overlay(args.overlay.as_deref(), args.prop)?;
-            return ironrdp_daemon::daemon::run(endpoint, overlay).await;
+            let mut drives = args.rdpdr_drives;
+            if let Some(root_path) = args.rdpdr_volume {
+                drives.push(ironrdp_daemon::daemon::RdpdrDriveConfig::new(
+                    root_path,
+                    args.rdpdr_drive_name,
+                )?);
+            }
+            let options = ironrdp_daemon::daemon::DaemonOptions::default()
+                .with_certificate_pin(args.certificate_sha256)
+                .with_dangerously_accept_invalid_certificate(args.dangerously_accept_invalid_certificate)
+                .with_rdpdr_drives(drives);
+            return ironrdp_daemon::daemon::run(endpoint, overlay, options).await;
         }
         Command::Now(args) => {
             let format = args.format;
@@ -534,11 +583,20 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Wheel { delta, horizontal } => Request::Wheel { delta, horizontal },
         Command::KeyScancode { scancode, pressed } => Request::KeyScancode { scancode, pressed },
         Command::KeyUnicode { character, pressed } => Request::KeyUnicode { ch: character, pressed },
+        Command::TypeUnicode { text } => Request::UnicodeText { text },
         Command::Resize { width, height } => Request::Resize { width, height },
     };
 
     let response = transport::send_request(&endpoint, &request).await?;
     print_response(response)
+}
+
+fn parse_unicode_text(text: &str) -> Result<String, String> {
+    if text.chars().count() > MAX_UNICODE_TEXT_CHARS {
+        return Err(format!("text exceeds the {MAX_UNICODE_TEXT_CHARS}-character limit"));
+    }
+
+    Ok(text.to_owned())
 }
 
 /// Loads an operator-provided overlay [`PropertySet`] from an optional `.rdp` file, then layers
@@ -845,11 +903,14 @@ async fn now_stream(
 
     let mut exit_code = payload_remote_exit(&first);
     let mut terminal_observed = payload_is_terminal_operation(&first);
+    let operation_id = match &first {
+        Payload::NowOperation(operation) => operation.id,
+        _ => anyhow::bail!("NOW stream did not begin with an operation"),
+    };
+    let mut last_sequence = None;
+    let mut reconnect_attempts = 0;
     if let Some(path) = operation_id_file {
-        let Payload::NowOperation(operation) = &first else {
-            anyhow::bail!("unexpected response while writing operation ID");
-        };
-        std::fs::write(&path, format!("{}\n", operation.id)).with_context(|| format!("write {}", path.display()))?;
+        std::fs::write(&path, format!("{operation_id}\n")).with_context(|| format!("write {}", path.display()))?;
     }
     let mut json_values = Vec::new();
     let mut json_output_bytes = 0;
@@ -872,7 +933,31 @@ async fn now_stream(
                 }) =>
             {
                 if !terminal_observed {
-                    anyhow::bail!("NOW operation stream closed before a terminal event");
+                    if reconnect_attempts == MAX_NOW_STREAM_RECONNECT_ATTEMPTS {
+                        anyhow::bail!(
+                            "NOW operation stream closed before a terminal event after {MAX_NOW_STREAM_RECONNECT_ATTEMPTS} reconnect attempts"
+                        );
+                    }
+                    reconnect_attempts += 1;
+                    let request = Request::NowAttach {
+                        operation_id,
+                        after_sequence: last_sequence,
+                    };
+                    stream = transport::open_stream(endpoint, &request).await?;
+                    let response: Response = transport::read_message(&mut stream).await?;
+                    let payload = match response {
+                        Response::Ok(payload) => payload,
+                        Response::Err(error) => return Err(NowRequestError(error).into()),
+                    };
+                    let Payload::NowOperation(operation) = &payload else {
+                        anyhow::bail!("NOW operation attachment did not begin with an operation");
+                    };
+                    if operation.id != operation_id {
+                        anyhow::bail!("NOW operation attachment returned a different operation");
+                    }
+                    exit_code = payload_remote_exit(&payload).or(exit_code);
+                    terminal_observed |= payload_is_terminal_operation(&payload);
+                    continue;
                 }
                 break;
             }
@@ -883,6 +968,7 @@ async fn now_stream(
             Response::Err(error) => return Err(NowRequestError(error).into()),
         };
         if let Payload::NowEvent(event) = &payload {
+            last_sequence = Some(event.sequence);
             match &event.kind {
                 OperationEventKind::Completed { exit_code: code } => {
                     terminal_observed = true;
@@ -912,6 +998,8 @@ async fn now_stream(
     }
     Ok(exit_code)
 }
+
+const MAX_NOW_STREAM_RECONNECT_ATTEMPTS: u8 = 3;
 
 fn print_now_error(error: &AgentError, format: OutputFormat) -> anyhow::Result<()> {
     match format {
@@ -1308,7 +1396,7 @@ fn property_description(key: &str) -> Option<&'static str> {
         "ironrdp_smartcard" => "enable smart-card device redirection (0/1)",
         "ironrdp_tls" => "use plain TLS security instead of CredSSP/Hybrid (0/1)",
         "ironrdp_certificate_validation" => {
-            "TLS certificate validation policy: strict or dangerously_accept_invalid_certificate (disables certificate and hostname validation; testing only)"
+            "TLS certificate validation policy: strict (required by the daemon backend)"
         }
         "ironrdp_fakeeventsinterval" => "interval in minutes between synthetic keep-alive input events",
         "ironrdp_rdcleanpathtoken" => "RDCleanPath authentication token (secret)",
@@ -1321,9 +1409,11 @@ fn property_description(key: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Backend, Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution, endpoint_from_arg};
+    use super::{Backend, Cli, Command, CommonExecutionArgs, NowExecutionKind, build_now_execution, endpoint_from_arg};
 
     #[test]
     fn backend_endpoint_selection_is_distinct_and_overridable() {
@@ -1343,6 +1433,55 @@ mod tests {
             endpoint_from_arg(Some("custom-rpc-endpoint".to_owned()), Backend::ActiveX).to_string(),
             "custom-rpc-endpoint"
         );
+    }
+
+    #[test]
+    fn daemon_rdpdr_flags_parse_as_startup_only_configuration() {
+        let cli = Cli::try_parse_from([
+            "ironrdp-agent",
+            "daemon-start",
+            "--rdpdr-volume",
+            r"C:\",
+            "--rdpdr-drive-name",
+            "RegressionDrive",
+            "--certificate-sha256",
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+            "--dangerously-accept-invalid-certificate",
+        ])
+        .expect("valid daemon RDPDR options");
+
+        let Some(Command::DaemonStart(args)) = cli.command else {
+            panic!("expected daemon-start command");
+        };
+        assert_eq!(args.rdpdr_volume, Some(PathBuf::from(r"C:\")));
+        assert_eq!(args.rdpdr_drive_name, "RegressionDrive");
+        assert!(args.certificate_sha256.is_some());
+        assert!(args.dangerously_accept_invalid_certificate);
+    }
+
+    #[test]
+    fn daemon_rdpdr_multiple_drive_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "ironrdp-agent",
+            "daemon-start",
+            "--rdpdr-drive",
+            "System=C:\\",
+            "--rdpdr-drive",
+            "Data=D:\\",
+        ])
+        .expect("valid multiple-drive configuration");
+
+        let Some(Command::DaemonStart(args)) = cli.command else {
+            panic!("expected daemon-start command");
+        };
+        assert_eq!(args.rdpdr_drives.len(), 2);
+    }
+
+    #[test]
+    fn daemon_rdpdr_multiple_drive_flags_require_a_name_and_root() {
+        assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--rdpdr-drive", "C:\\"]).is_err());
+        assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--rdpdr-drive", "=C:\\"]).is_err());
+        assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--rdpdr-drive", "C="]).is_err());
     }
 
     #[test]

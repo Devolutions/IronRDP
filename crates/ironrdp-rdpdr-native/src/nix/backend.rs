@@ -6,6 +6,7 @@ use std::os::unix::fs::MetadataExt;
 use ironrdp_core::impl_as_any;
 use ironrdp_pdu::{PduResult, encode_err};
 use ironrdp_rdpdr::RdpdrBackend;
+use ironrdp_rdpdr::backend::unsupported_drive_io_response;
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::*;
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
@@ -34,6 +35,13 @@ impl NixRdpdrBackend {
 impl_as_any!(NixRdpdrBackend);
 
 impl RdpdrBackend for NixRdpdrBackend {
+    fn reset(&mut self) -> PduResult<()> {
+        self.file_map.clear();
+        self.file_path_map.clear();
+        self.file_dir_map.clear();
+        Ok(())
+    }
+
     fn handle_server_device_announce_response(&mut self, _pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
         Ok(())
     }
@@ -47,10 +55,7 @@ impl RdpdrBackend for NixRdpdrBackend {
             ServerDriveIoRequest::ServerCreateDriveRequest(req_inner) => create_drive(self, req_inner),
             ServerDriveIoRequest::DeviceReadRequest(req_inner) => read_device(self, req_inner),
             ServerDriveIoRequest::DeviceCloseRequest(req_inner) => close_device(self, req_inner),
-            ServerDriveIoRequest::ServerDriveNotifyChangeDirectoryRequest(_) => {
-                // TODO
-                Ok(Vec::new())
-            }
+            ServerDriveIoRequest::DeviceFlushBuffersRequest(req_inner) => flush_device(self, req_inner),
             ServerDriveIoRequest::ServerDriveQueryDirectoryRequest(req_inner) => query_directory(self, req_inner),
             ServerDriveIoRequest::ServerDriveQueryInformationRequest(req_inner) => query_information(self, req_inner),
             ServerDriveIoRequest::ServerDriveQueryVolumeInformationRequest(req_inner) => {
@@ -63,10 +68,11 @@ impl RdpdrBackend for NixRdpdrBackend {
                     output_buffer: None,
                 }),
             )]),
-            ServerDriveIoRequest::ServerDriveLockControlRequest(_) => {
-                // TODO
-                Ok(Vec::new())
-            }
+            req @ (ServerDriveIoRequest::ServerDriveSetVolumeInformationRequest(_)
+            | ServerDriveIoRequest::ServerDriveNotifyChangeDirectoryRequest(_)
+            | ServerDriveIoRequest::ServerDriveLockControlRequest(_)
+            | ServerDriveIoRequest::ServerDriveQuerySecurityRequest(_)
+            | ServerDriveIoRequest::ServerDriveSetSecurityRequest(_)) => unsupported_drive_io_response(req),
         }
     }
 }
@@ -115,7 +121,13 @@ pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWrite
         },
     );
     fn write_inner(file: &mut std::fs::File, offset: u64, write_data: &[u8]) -> std::io::Result<usize> {
-        let sf = SeekFrom::Start(offset);
+        // MS-RDPEFS 2.2.1.4.4 defines the all-ones offset as append for
+        // clients that announce minor version 0x000D or later.
+        let sf = if offset == u64::MAX {
+            SeekFrom::End(0)
+        } else {
+            SeekFrom::Start(offset)
+        };
         file.seek(sf)?;
         let length = file.write(write_data)?;
         file.flush()?;
@@ -161,6 +173,23 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
         buf.resize(length, 0u8);
         Ok(buf)
     }
+}
+
+pub(crate) fn flush_device(
+    backend: &mut NixRdpdrBackend,
+    req_inner: DeviceFlushBuffersRequest,
+) -> PduResult<Vec<SvcMessage>> {
+    let status = backend
+        .file_map
+        .get(&req_inner.device_io_request.file_id)
+        .map_or(NtStatus::INVALID_HANDLE, |file| {
+            file.sync_all().map_or(NtStatus::UNSUCCESSFUL, |_| NtStatus::SUCCESS)
+        });
+    Ok(vec![SvcMessage::from(RdpdrPdu::DeviceFlushBuffersResponse(
+        DeviceFlushBuffersResponse {
+            device_io_response: DeviceIoResponse::new(req_inner.device_io_request, status),
+        },
+    ))])
 }
 
 pub(crate) fn close_device(backend: &mut NixRdpdrBackend, req_inner: DeviceCloseRequest) -> PduResult<Vec<SvcMessage>> {

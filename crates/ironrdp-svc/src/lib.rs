@@ -172,7 +172,15 @@ impl StaticVirtualChannel {
     }
 
     pub fn chunkify(messages: Vec<SvcMessage>) -> EncodeResult<Vec<WriteBuf>> {
-        ChunkProcessor::chunkify(messages, CHANNEL_CHUNK_LENGTH)
+        Self::chunkify_with_max_chunk_len(messages, CHANNEL_CHUNK_LENGTH)
+    }
+
+    /// Splits static-channel messages into chunks no larger than `max_chunk_len`.
+    ///
+    /// The maximum is negotiated during connection activation through the Virtual
+    /// Channel Capability Set.
+    pub fn chunkify_with_max_chunk_len(messages: Vec<SvcMessage>, max_chunk_len: usize) -> EncodeResult<Vec<WriteBuf>> {
+        ChunkProcessor::chunkify(messages, max_chunk_len)
     }
 
     pub fn channel_processor_downcast_ref<T: SvcProcessor + 'static>(&self) -> Option<&T> {
@@ -193,11 +201,12 @@ fn encode_svc_messages(
     channel_id: u16,
     initiator_id: u16,
     client: bool,
+    max_chunk_len: usize,
 ) -> EncodeResult<Vec<u8>> {
     let mut fully_encoded_responses = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
 
     // For each response PDU, chunkify it and add appropriate static channel headers.
-    let chunks = StaticVirtualChannel::chunkify(messages)?;
+    let chunks = StaticVirtualChannel::chunkify_with_max_chunk_len(messages, max_chunk_len)?;
 
     // SendData is [`McsPdu`], which is [`x224Pdu`], which is [`Encode`]. [`Encode`] for [`x224Pdu`]
     // also takes care of adding the Tpkt header, so therefore we can just call `encode_buf` on each of these and
@@ -241,7 +250,17 @@ pub fn client_encode_svc_messages(
     channel_id: u16,
     initiator_id: u16,
 ) -> EncodeResult<Vec<u8>> {
-    encode_svc_messages(messages, channel_id, initiator_id, true)
+    client_encode_svc_messages_with_max_chunk_len(messages, channel_id, initiator_id, CHANNEL_CHUNK_LENGTH)
+}
+
+/// Encodes client static-channel messages using the negotiated maximum chunk length.
+pub fn client_encode_svc_messages_with_max_chunk_len(
+    messages: Vec<SvcMessage>,
+    channel_id: u16,
+    initiator_id: u16,
+    max_chunk_len: usize,
+) -> EncodeResult<Vec<u8>> {
+    encode_svc_messages(messages, channel_id, initiator_id, true, max_chunk_len)
 }
 
 /// Encode a vector of [`SvcMessage`] in preparation for sending them on the `channel_id` channel.
@@ -255,7 +274,7 @@ pub fn server_encode_svc_messages(
     channel_id: u16,
     initiator_id: u16,
 ) -> EncodeResult<Vec<u8>> {
-    encode_svc_messages(messages, channel_id, initiator_id, false)
+    encode_svc_messages(messages, channel_id, initiator_id, false, CHANNEL_CHUNK_LENGTH)
 }
 
 /// A type that is a Static Virtual Channel
@@ -434,7 +453,6 @@ impl ChunkProcessor {
         let mut chunks = Vec::new();
 
         let total_len = encoded_pdu.filled_len();
-        let is_chunked = total_len > max_chunk_len;
         let mut chunk_start_index: usize = 0;
         let mut chunk_end_index = core::cmp::min(total_len, max_chunk_len);
         loop {
@@ -457,10 +475,8 @@ impl ChunkProcessor {
                 if last {
                     flags |= ChannelFlags::LAST;
                 }
-                if is_chunked {
-                    flags |= ChannelFlags::SHOW_PROTOCOL;
-                }
-
+                // Processors that parse channel headers opt in through message flags; other
+                // endpoints receive the fully reassembled PDU from the channel manager.
                 flags |= message.flags;
 
                 ChannelPduHeader {
@@ -537,6 +553,7 @@ pub struct StaticChannelSet {
     to_channel_id: BTreeMap<StaticChannelKey, StaticChannelId>,
     to_channel_key: BTreeMap<StaticChannelId, StaticChannelKey>,
     next_dynamic_key: u64,
+    maximum_chunk_size: usize,
 }
 
 impl StaticChannelSet {
@@ -547,7 +564,28 @@ impl StaticChannelSet {
             to_channel_id: BTreeMap::new(),
             to_channel_key: BTreeMap::new(),
             next_dynamic_key: 0,
+            maximum_chunk_size: CHANNEL_CHUNK_LENGTH,
         }
+    }
+
+    /// Sets the maximum payload length for outgoing static virtual-channel chunks.
+    ///
+    /// Callers must use the server-advertised `VCChunkSize` only when it is
+    /// within the protocol-defined range.
+    #[must_use]
+    pub fn set_maximum_chunk_size(&mut self, maximum_chunk_size: usize) -> bool {
+        if !(CHANNEL_CHUNK_LENGTH..=MAX_CHANNEL_CHUNK_LENGTH).contains(&maximum_chunk_size) {
+            return false;
+        }
+
+        self.maximum_chunk_size = maximum_chunk_size;
+        true
+    }
+
+    /// Returns the negotiated maximum payload length for outgoing static
+    /// virtual-channel chunks.
+    pub fn maximum_chunk_size(&self) -> usize {
+        self.maximum_chunk_size
     }
 
     /// Inserts a [`StaticVirtualChannel`] into this [`StaticChannelSet`].
@@ -820,6 +858,9 @@ impl Default for StaticChannelSet {
 /// - <https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/6c074267-1b32-4ceb-9496-2eb941a23e6b>
 /// - <https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8593178-80c0-4b80-876c-cb77e62cecfc>
 pub const CHANNEL_CHUNK_LENGTH: usize = 1600;
+
+/// The largest `VCChunkSize` value permitted by MS-RDPBCGR.
+pub const MAX_CHANNEL_CHUNK_LENGTH: usize = 16_256;
 
 bitflags! {
     /// Channel control flags, as specified in [section 2.2.6.1.1 of MS-RDPBCGR].

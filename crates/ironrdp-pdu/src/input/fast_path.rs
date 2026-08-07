@@ -269,7 +269,7 @@ pub struct FastPathInput(
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for FastPathInput {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let len = u.int_in_range::<usize>(1..=255)?;
+        let len = u.int_in_range::<usize>(1..=FastPathInput::MAX_EVENTS)?;
         let mut events = Vec::with_capacity(len);
         for _ in 0..len {
             events.push(FastPathInputEvent::arbitrary(u)?);
@@ -281,9 +281,12 @@ impl<'a> arbitrary::Arbitrary<'a> for FastPathInput {
 impl FastPathInput {
     const NAME: &'static str = "FastPathInput";
 
+    /// Maximum events that fit in the one-byte Fast-Path event-count field.
+    pub const MAX_EVENTS: usize = 255;
+
     pub fn new(input_events: Vec<FastPathInputEvent>) -> DecodeResult<Self> {
         // Ensure the invariant on `input_events.len()` is respected.
-        if !(1..=255usize).contains(&input_events.len()) {
+        if !(1..=Self::MAX_EVENTS).contains(&input_events.len()) {
             return Err(invalid_field_err!("nEvents", "invalid number of input events"));
         }
 

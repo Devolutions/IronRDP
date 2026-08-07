@@ -6,14 +6,16 @@ use core::slice;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::Duration;
 
 use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
 use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind};
-use ironrdp_client::rdp::{CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent};
+use ironrdp_client::rdp::{
+    CliprdrBackendFactory, DynamicDriveOperation, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent,
+};
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
@@ -30,11 +32,11 @@ use sha2::{Digest as _, Sha256};
 use tokio::sync::mpsc;
 use windows::Win32::Foundation::{
     DATA_S_SAMEFORMATETC, DISP_E_BADPARAMCOUNT, DISP_E_MEMBERNOTFOUND, DISP_E_TYPEMISMATCH, DISP_E_UNKNOWNNAME,
-    DV_E_DVASPECT, DV_E_DVTARGETDEVICE, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_FAIL, E_INVALIDARG, E_NOTIMPL,
-    E_OUTOFMEMORY, E_POINTER, E_UNEXPECTED, ERROR_CANCELLED, ERROR_CLASS_DOES_NOT_EXIST, FreeLibrary, GlobalFree,
-    HGLOBAL, HMODULE, HWND, LPARAM, LRESULT, OLE_E_ADVISENOTSUPPORTED, OLE_E_NOCONNECTION, OLE_E_NOTRUNNING,
-    OLEOBJ_S_INVALIDVERB, POINT, RECT, RECTL, S_FALSE, S_OK, SIZE, SysStringLen, VARIANT_BOOL, VARIANT_FALSE,
-    VARIANT_TRUE, WPARAM,
+    DV_E_DVASPECT, DV_E_DVTARGETDEVICE, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_ACCESSDENIED, E_FAIL, E_INVALIDARG,
+    E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, E_UNEXPECTED, ERROR_CANCELLED, ERROR_CLASS_DOES_NOT_EXIST, FreeLibrary,
+    GlobalFree, HANDLE, HGLOBAL, HMODULE, HWND, LPARAM, LRESULT, OLE_E_ADVISENOTSUPPORTED, OLE_E_NOCONNECTION,
+    OLE_E_NOTRUNNING, OLEOBJ_S_INVALIDVERB, POINT, RECT, RECTL, S_FALSE, S_OK, SIZE, SysStringLen, VARIANT_BOOL,
+    VARIANT_FALSE, VARIANT_TRUE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateRectRgn,
@@ -45,6 +47,7 @@ use windows::Win32::Security::Credentials::{
     CREDUI_FLAGS_ALWAYS_SHOW_UI, CREDUI_FLAGS_DO_NOT_PERSIST, CREDUI_FLAGS_GENERIC_CREDENTIALS, CREDUI_INFOW,
     CredUIPromptForCredentialsW,
 };
+use windows::Win32::Storage::FileSystem::GetLogicalDrives;
 use windows::Win32::System::Com::{
     CONNECTDATA, CoTaskMemAlloc, DATADIR_GET, DATADIR_SET, DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET,
     DISPATCH_PROPERTYPUT, DISPPARAMS, DVASPECT, DVASPECT_CONTENT, DVTARGETDEVICE, EXCEPINFO, FORMATETC, IAdviseSink,
@@ -57,6 +60,7 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::DataExchange::{
     CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
 };
+use windows::Win32::System::Ioctl::GUID_DEVINTERFACE_VOLUME;
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::{
@@ -85,17 +89,19 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BS_PUSHBUTTON, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, GA_ROOT, GA_ROOTOWNER,
-    GWLP_USERDATA, GetAncestor, GetClassNameW, GetClientRect, GetCursorPos, GetDlgItem, GetForegroundWindow, GetParent,
-    GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, HMENU, HWND_MESSAGE, IsIconic,
-    IsWindow, IsWindowVisible, KillTimer, PostMessageW, RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_MAXIMIZE,
-    SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER, SendMessageW, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_ENABLE, WM_KEYDOWN, WM_KEYUP,
-    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    BS_PUSHBUTTON, CREATESTRUCTW, CreateWindowExW, DBT_DEVICEARRIVAL, DBT_DEVICEREMOVECOMPLETE,
+    DBT_DEVTYP_DEVICEINTERFACE, DEV_BROADCAST_DEVICEINTERFACE_W, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW,
+    DestroyWindow, EnumWindows, GA_ROOT, GA_ROOTOWNER, GWLP_USERDATA, GetAncestor, GetClassNameW, GetClientRect,
+    GetCursorPos, GetDlgItem, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
+    GetWindowThreadProcessId, HDEVNOTIFY, HMENU, HWND_MESSAGE, IsIconic, IsWindow, IsWindowVisible, KillTimer,
+    PostMessageW, RegisterClassW, RegisterDeviceNotificationW, SIZE_MINIMIZED, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE,
+    SW_RESTORE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER, SendMessageW, SetTimer, SetWindowLongPtrW,
+    SetWindowPos, SetWindowTextW, ShowWindow, UnregisterClassW, UnregisterDeviceNotification, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_APP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DEVICECHANGE, WM_DPICHANGED,
+    WM_ENABLE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{s, w};
 use windows_core::{
@@ -115,9 +121,10 @@ use crate::mstsc::{
     IMsRdpClientNonScriptable5_Impl, IMsRdpClientNonScriptable6, IMsRdpClientNonScriptable6_Impl,
     IMsRdpClientNonScriptable7, IMsRdpClientNonScriptable7_Impl, IMsRdpClientNonScriptable8,
     IMsRdpClientNonScriptable8_Impl, IMsRdpClipboard, IMsRdpClipboard_Impl, IMsRdpDeviceCollection,
-    IMsRdpDeviceCollection_Impl, IMsRdpDriveCollection, IMsRdpDriveCollection_Impl, IMsRdpExtendedSettings,
-    IMsRdpExtendedSettings_Impl, IMsRdpPreferredRedirectionInfo, IMsRdpPreferredRedirectionInfo_Impl, IMsTscAx_Impl,
-    IMsTscAx_Redist_Impl, IMsTscNonScriptable, IMsTscNonScriptable_Impl, InterfaceOut,
+    IMsRdpDeviceCollection_Impl, IMsRdpDrive, IMsRdpDrive_Impl, IMsRdpDriveCollection, IMsRdpDriveCollection_Impl,
+    IMsRdpExtendedSettings, IMsRdpExtendedSettings_Impl, IMsRdpPreferredRedirectionInfo,
+    IMsRdpPreferredRedirectionInfo_Impl, IMsTscAx_Impl, IMsTscAx_Redist_Impl, IMsTscNonScriptable,
+    IMsTscNonScriptable_Impl, InterfaceOut,
 };
 use crate::rpc::{self, ActiveXRpc, Command as RpcCommand};
 use ironrdp_rpc as ironrdp_agent;
@@ -326,6 +333,8 @@ const DISPID_ON_AUTHENTICATION_WARNING_DISMISSED: i32 = 19;
 const WM_DISPATCH_EVENTS: u32 = WM_APP + 0x52;
 const WM_DESTROY_CONTROL_WINDOW: u32 = WM_APP + 0x53;
 const WM_UPDATE_CONNECTION_BAR: u32 = WM_APP + 0x54;
+const DYNAMIC_DRIVE_RESCAN_TIMER_ID: usize = 0x4952_4455;
+const DYNAMIC_DRIVE_RESCAN_DEBOUNCE_MILLISECONDS: u32 = 500;
 const CONNECTION_BAR_AUTO_HIDE_TIMER_ID: usize = 0x4952_4452;
 const CONNECTION_BAR_AUTO_HIDE_MILLISECONDS: u32 = 3_000;
 const CONNECTION_BAR_OWNER_LAYOUT_TIMER_ID: usize = 0x4952_4453;
@@ -425,7 +434,7 @@ impl Drop for TestHostTracePath {
     }
 }
 
-fn append_host_trace(path: impl AsRef<std::path::Path>, name: &str) {
+fn append_host_trace(path: impl AsRef<Path>, name: &str) {
     // Host startup may carry credentials in Automation values, so log method names only.
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = std::io::Write::write_all(&mut file, format!("{name}\n").as_bytes());
@@ -632,11 +641,29 @@ fn trace_session_failure(error: &SessionError) {
             let location = error.location();
             let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
             trace_host_call(&format!(
-                "RdpWorker::SessionFailure:Custom:{file}:line_{}",
+                "RdpWorker::SessionFailure:Custom:{}:{}:{file}:line_{}",
+                error.context(),
+                custom_session_error_source_category(error),
                 location.line()
             ));
         }
         _ => trace_host_call("RdpWorker::SessionFailure:Unknown"),
+    }
+}
+
+fn custom_session_error_source_category(error: &SessionError) -> &'static str {
+    let Some(io_error) = core::error::Error::source(error).and_then(|source| source.downcast_ref::<std::io::Error>())
+    else {
+        return "Other";
+    };
+
+    match io_error.kind() {
+        std::io::ErrorKind::UnexpectedEof => "UnexpectedEof",
+        std::io::ErrorKind::ConnectionAborted => "ConnectionAborted",
+        std::io::ErrorKind::ConnectionReset => "ConnectionReset",
+        std::io::ErrorKind::InvalidData => "InvalidData",
+        std::io::ErrorKind::TimedOut => "TimedOut",
+        _ => "Other",
     }
 }
 
@@ -799,38 +826,72 @@ enum ConnectionHealthStatus {
     Reconnecting { attempt: u32, maximum: u32 },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum ConnectionSecurityWarning {
     SendingCredentials,
     ClipboardRedirection,
+    DriveRedirection {
+        drive_names: Vec<String>,
+        redirect_future_drives: bool,
+    },
 }
 
 fn connection_security_warnings(
     warn_about_credentials: bool,
     warn_about_clipboard: bool,
+    redirected_drive_names: Vec<String>,
+    redirect_future_drives: bool,
 ) -> Vec<ConnectionSecurityWarning> {
-    [
-        (warn_about_credentials, ConnectionSecurityWarning::SendingCredentials),
-        (warn_about_clipboard, ConnectionSecurityWarning::ClipboardRedirection),
-    ]
-    .into_iter()
-    .filter_map(|(enabled, warning)| enabled.then_some(warning))
-    .collect()
+    let mut warnings = Vec::new();
+    if warn_about_credentials {
+        warnings.push(ConnectionSecurityWarning::SendingCredentials);
+    }
+    if warn_about_clipboard {
+        warnings.push(ConnectionSecurityWarning::ClipboardRedirection);
+    }
+    if !redirected_drive_names.is_empty() || redirect_future_drives {
+        warnings.push(ConnectionSecurityWarning::DriveRedirection {
+            drive_names: redirected_drive_names,
+            redirect_future_drives,
+        });
+    }
+    warnings
 }
 
 impl ConnectionSecurityWarning {
-    fn text(self) -> (&'static str, &'static str, &'static str) {
+    fn text(&self) -> (String, String, String) {
         match self {
             Self::SendingCredentials => (
-                "IronRDP security warning",
-                "Credentials will be sent to establish the remote session.",
-                "Continue only if you trust the remote session configuration.",
+                "IronRDP security warning".to_owned(),
+                "Credentials will be sent to establish the remote session.".to_owned(),
+                "Continue only if you trust the remote session configuration.".to_owned(),
             ),
             Self::ClipboardRedirection => (
-                "IronRDP security warning",
-                "Clipboard redirection will be enabled for the remote session.",
-                "Text and files copied in either session can become available to the other session.",
+                "IronRDP security warning".to_owned(),
+                "Clipboard redirection will be enabled for the remote session.".to_owned(),
+                "Text and files copied in either session can become available to the other session.".to_owned(),
             ),
+            Self::DriveRedirection {
+                drive_names,
+                redirect_future_drives,
+            } => {
+                let detail = match (drive_names.is_empty(), redirect_future_drives) {
+                    (true, true) => {
+                        "The remote server can access files on local drives added during this session.".to_owned()
+                    }
+                    (false, true) => format!(
+                        "The remote server can access files on: {}. Local drives added during this session can also be redirected.",
+                        drive_names.join(", ")
+                    ),
+                    (false, false) => format!("The remote server can access files on: {}.", drive_names.join(", ")),
+                    (true, false) => unreachable!("drive redirection warning requires a current or future drive"),
+                };
+                (
+                    "IronRDP security warning".to_owned(),
+                    "Drive redirection will be enabled for the remote session.".to_owned(),
+                    detail,
+                )
+            }
         }
     }
 }
@@ -927,6 +988,14 @@ struct CompatibilitySettings {
     redirect_clipboard: bool,
     warn_about_sending_credentials: bool,
     warn_about_clipboard_redirection: bool,
+    show_redirection_warning_dialog: bool,
+    disable_rdpdr: bool,
+    redirect_drives: bool,
+    redirect_dynamic_drives: bool,
+    drive_catalog: Rc<RefCell<DriveCatalog>>,
+    rdpdr_input_sender: Option<RdpInputSender>,
+    rdpdr_drive_registry: Option<ironrdp_rdpdr_native::WindowsRdpdrDriveRegistry>,
+    rdpdr_session_active: Rc<Cell<bool>>,
     performance_flags: PerformanceFlags,
     keyboard_type: KeyboardType,
     keyboard_subtype: u32,
@@ -993,6 +1062,14 @@ impl Default for CompatibilitySettings {
             redirect_clipboard: true,
             warn_about_sending_credentials: false,
             warn_about_clipboard_redirection: false,
+            show_redirection_warning_dialog: true,
+            disable_rdpdr: false,
+            redirect_drives: false,
+            redirect_dynamic_drives: false,
+            drive_catalog: Rc::new(RefCell::new(DriveCatalog::new())),
+            rdpdr_input_sender: None,
+            rdpdr_drive_registry: None,
+            rdpdr_session_active: Rc::new(Cell::new(false)),
             performance_flags: PerformanceFlags::default(),
             keyboard_type: KeyboardType::IbmEnhanced,
             keyboard_subtype: 0,
@@ -1764,7 +1841,6 @@ advanced_put_not_implemented!(
     (93, advanced_put_bitmap_persistence, i32),
     (95, advanced_put_minutes_to_idle_timeout, i32),
     (112, advanced_put_load_balance_info, Bstr),
-    (114, advanced_put_redirect_drives, i16),
     (116, advanced_put_redirect_printers, i16),
     (118, advanced_put_redirect_ports, i16),
     (120, advanced_put_redirect_smart_cards, i16),
@@ -1786,7 +1862,6 @@ advanced_get_not_implemented!(
     (92, advanced_get_connect_to_server_console, i16),
     (94, advanced_get_bitmap_persistence, i32),
     (96, advanced_get_minutes_to_idle_timeout, i32),
-    (115, advanced_get_redirect_drives, i16),
     (117, advanced_get_redirect_printers, i16),
     (119, advanced_get_redirect_ports, i16),
     (121, advanced_get_redirect_smart_cards, i16),
@@ -2288,18 +2363,26 @@ unsafe extern "system" fn advanced_get_keyboard_function_key(this: *mut c_void, 
     }
 }
 
-unsafe extern "system" fn advanced_put_disable_rdpdr(_this: *mut c_void, value: i32) -> HRESULT {
-    if value == 0 {
-        // The ActiveX connection owns no RDPDR host backend, so enabling the channel would falsely
-        // advertise drives, printers, ports, or devices that cannot be serviced.
-        E_NOTIMPL
-    } else {
-        S_OK
+unsafe extern "system" fn advanced_put_disable_rdpdr(this: *mut c_void, value: i32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
     }
+    settings.disable_rdpdr = value != 0;
+    mark_compatibility_persistence_dirty(&settings);
+    S_OK
 }
 
-unsafe extern "system" fn advanced_get_disable_rdpdr(_this: *mut c_void, value: *mut i32) -> HRESULT {
-    write_out(value, 1).map_or_else(|error| error.code(), |_| S_OK)
+unsafe extern "system" fn advanced_get_disable_rdpdr(this: *mut c_void, output: *mut i32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    // mstscax exposes this LONG property as a zero-extended VARIANT_TRUE.
+    let value = if object.settings.borrow().disable_rdpdr {
+        i32::from(u16::MAX)
+    } else {
+        0
+    };
+    write_out(output, value).map_or_else(|error| error.code(), |_| S_OK)
 }
 
 unsafe extern "system" fn advanced_put_enable_mouse(this: *mut c_void, value: i32) -> HRESULT {
@@ -2347,6 +2430,38 @@ unsafe extern "system" fn advanced_put_redirect_clipboard(this: *mut c_void, val
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
     object.settings.borrow_mut().redirect_clipboard = value != VARIANT_FALSE.0;
     S_OK
+}
+
+unsafe extern "system" fn advanced_put_redirect_drives(this: *mut c_void, value: i16) -> HRESULT {
+    let value = match normalize_variant_bool(value) {
+        Ok(value) => value == VARIANT_TRUE.0,
+        Err(error) => return error.code(),
+    };
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let catalog = {
+        let mut settings = object.settings.borrow_mut();
+        if settings.connection_settings_sealed {
+            return E_FAIL;
+        }
+        settings.redirect_drives = value;
+        mark_compatibility_persistence_dirty(&settings);
+        Rc::clone(&settings.drive_catalog)
+    };
+    catalog.borrow().set_redirection_state(value);
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_redirect_drives(this: *mut c_void, value: *mut i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    write_out(
+        value,
+        if object.settings.borrow().redirect_drives {
+            VARIANT_TRUE.0
+        } else {
+            VARIANT_FALSE.0
+        },
+    )
+    .map_or_else(|error| error.code(), |_| S_OK)
 }
 
 fn set_audio_redirection_mode(settings: &mut CompatibilitySettings, value: u32) -> Result<()> {
@@ -3280,6 +3395,18 @@ enum WorkerEvent {
     LoginComplete {
         generation: u64,
     },
+    DynamicDriveRejected {
+        generation: u64,
+        device_id: u32,
+    },
+    DynamicDriveRemovalFailed {
+        generation: u64,
+        device_id: u32,
+    },
+    DynamicDriveRemoved {
+        generation: u64,
+        device_id: u32,
+    },
     Image {
         generation: u64,
         buffer: Vec<u32>,
@@ -3313,6 +3440,9 @@ impl WorkerEvent {
             Self::CertificateWarning { generation, .. }
             | Self::Connected { generation }
             | Self::LoginComplete { generation }
+            | Self::DynamicDriveRejected { generation, .. }
+            | Self::DynamicDriveRemovalFailed { generation, .. }
+            | Self::DynamicDriveRemoved { generation, .. }
             | Self::Image { generation, .. }
             | Self::DisplayResizeFallback { generation }
             | Self::FatalError { generation, .. }
@@ -3840,32 +3970,407 @@ impl IMsRdpDeviceCollection_Impl for EmptyDeviceCollection_Impl {
     }
 }
 
-#[implement(IMsRdpDriveCollection)]
-struct EmptyDriveCollection {
-    _lifetime: ServerObjectLifetime,
+struct DriveCatalogEntry {
+    device_id: u32,
+    name: String,
+    root_path: PathBuf,
+    redirection_state: Cell<bool>,
 }
 
-impl EmptyDriveCollection {
+#[derive(Clone)]
+struct DriveCatalog {
+    entries: Vec<Rc<DriveCatalogEntry>>,
+    removed_entries: Vec<Rc<DriveCatalogEntry>>,
+    device_ids: BTreeMap<PathBuf, u32>,
+    next_device_id: u32,
+}
+
+impl DriveCatalog {
     fn new() -> Self {
+        Self::from_roots(logical_volume_roots(), false)
+    }
+
+    fn from_roots(roots: Vec<PathBuf>, redirect_new_drives: bool) -> Self {
+        let mut catalog = Self {
+            entries: Vec::new(),
+            removed_entries: Vec::new(),
+            device_ids: BTreeMap::new(),
+            next_device_id: 1,
+        };
+        catalog.rescan_from_roots(roots, redirect_new_drives);
+        catalog
+    }
+
+    fn rescanned(&self, redirect_new_drives: bool) -> Self {
+        let mut catalog = Self {
+            entries: self.entries.clone(),
+            removed_entries: self.removed_entries.clone(),
+            device_ids: self.device_ids.clone(),
+            next_device_id: self.next_device_id,
+        };
+        catalog.rescan_from_roots(logical_volume_roots(), redirect_new_drives);
+        catalog
+    }
+
+    fn connection_snapshot(&self, redirect_future_drives: bool) -> Self {
+        if redirect_future_drives {
+            self.rescanned(true)
+        } else {
+            self.clone()
+        }
+    }
+
+    fn rescan_from_roots(&mut self, roots: Vec<PathBuf>, redirect_new_drives: bool) {
+        let mut existing = self
+            .entries
+            .iter()
+            .map(|entry| (entry.root_path.clone(), Rc::clone(entry)))
+            .collect::<BTreeMap<_, _>>();
+        let mut removed = self
+            .removed_entries
+            .iter()
+            .map(|entry| (entry.root_path.clone(), Rc::clone(entry)))
+            .collect::<BTreeMap<_, _>>();
+        self.entries.clear();
+        for root_path in roots {
+            let entry = existing
+                .remove(&root_path)
+                .or_else(|| removed.remove(&root_path))
+                .unwrap_or_else(|| {
+                    let device_id = if let Some(device_id) = self.device_ids.get(&root_path) {
+                        *device_id
+                    } else {
+                        let device_id = self.next_device_id;
+                        self.next_device_id = self
+                            .next_device_id
+                            .checked_add(1)
+                            .expect("logical-volume RDPDR device IDs must not exhaust u32");
+                        self.device_ids.insert(root_path.clone(), device_id);
+                        device_id
+                    };
+                    Rc::new(DriveCatalogEntry {
+                        device_id,
+                        name: logical_volume_name(&root_path),
+                        root_path,
+                        redirection_state: Cell::new(redirect_new_drives),
+                    })
+                });
+            self.entries.push(entry);
+        }
+        removed.extend(existing.into_iter().filter(|(_, entry)| entry.redirection_state.get()));
+        self.removed_entries = removed.into_values().collect();
+    }
+
+    fn set_redirection_state(&self, value: bool) {
+        for entry in &self.entries {
+            entry.redirection_state.set(value);
+        }
+    }
+
+    fn all_drives(&self) -> Result<Vec<ironrdp_rdpdr_native::RedirectedDrive>> {
+        self.entries
+            .iter()
+            .map(|entry| {
+                ironrdp_rdpdr_native::RedirectedDrive::new(
+                    entry.device_id,
+                    entry.name.clone(),
+                    entry.root_path.clone(),
+                    false,
+                )
+                .map_err(|error| Error::new(E_FAIL, format!("invalid redirected drive: {error}")))
+            })
+            .collect()
+    }
+
+    fn selected_drive_ids(&self) -> Vec<u32> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.redirection_state.get())
+            .map(|entry| entry.device_id)
+            .collect()
+    }
+
+    fn selected_drive_descriptions(&self) -> BTreeMap<PathBuf, (u32, String)> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.redirection_state.get())
+            .map(|entry| (entry.root_path.clone(), (entry.device_id, entry.name.clone())))
+            .collect()
+    }
+
+    fn selected_drive_names(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.redirection_state.get())
+            .map(|entry| entry.name.clone())
+            .collect()
+    }
+
+    fn entry_by_device_id(&self, device_id: u32) -> Option<Rc<DriveCatalogEntry>> {
+        self.entries
+            .iter()
+            .chain(&self.removed_entries)
+            .find(|entry| entry.device_id == device_id)
+            .cloned()
+    }
+
+    fn confirm_dynamic_drive_removed(&mut self, device_id: u32) {
+        self.removed_entries.retain(|entry| entry.device_id != device_id);
+    }
+
+    fn refresh_without_dynamic_redirection(catalog: &RefCell<DriveCatalog>) {
+        let updated_catalog = catalog.borrow().rescanned(false);
+        *catalog.borrow_mut() = updated_catalog;
+    }
+
+    fn dynamic_drive_operations(
+        before: &BTreeMap<PathBuf, (u32, String)>,
+        after: &BTreeMap<PathBuf, (u32, String)>,
+    ) -> Vec<DynamicDriveOperation> {
+        let mut operations = before
+            .iter()
+            .filter(|(root, _)| !after.contains_key(*root))
+            .map(|(_, (device_id, _))| DynamicDriveOperation::Remove { device_id: *device_id })
+            .collect::<Vec<_>>();
+        operations.extend(after.iter().filter(|(root, _)| !before.contains_key(*root)).map(
+            |(_, (device_id, name))| DynamicDriveOperation::Add {
+                device_id: *device_id,
+                name: name.clone(),
+            },
+        ));
+        operations
+    }
+
+    fn reconnect_dynamic_drive_operations(
+        initial_device_ids: &BTreeSet<u32>,
+        desired_drives: &BTreeMap<PathBuf, (u32, String)>,
+    ) -> Vec<DynamicDriveOperation> {
+        let mut operations = initial_device_ids
+            .iter()
+            .filter(|device_id| !desired_drives.values().any(|(id, _)| *id == **device_id))
+            .map(|device_id| DynamicDriveOperation::Remove { device_id: *device_id })
+            .collect::<Vec<_>>();
+        operations.extend(
+            desired_drives
+                .values()
+                .filter(|(device_id, _)| !initial_device_ids.contains(device_id))
+                .map(|(device_id, name)| DynamicDriveOperation::Add {
+                    device_id: *device_id,
+                    name: name.clone(),
+                }),
+        );
+        operations
+    }
+
+    fn rescan_drive_catalog(
+        catalog: &RefCell<DriveCatalog>,
+        settings: &CompatibilitySettings,
+        redirect_new_drives: bool,
+    ) -> Result<()> {
+        if settings.connection_settings_sealed && !settings.redirect_dynamic_drives {
+            return Err(Error::from_hresult(E_FAIL));
+        }
+        if settings.connection_settings_sealed && !settings.rdpdr_session_active.get() {
+            return Err(Error::new(E_FAIL, "dynamic RDPDR session is not connected"));
+        }
+        let before = catalog.borrow().selected_drive_descriptions();
+        let updated_catalog = catalog.borrow().rescanned(redirect_new_drives);
+        if settings.connection_settings_sealed {
+            let operations = Self::dynamic_drive_operations(&before, &updated_catalog.selected_drive_descriptions());
+            if !operations.is_empty() {
+                let registry = settings
+                    .rdpdr_drive_registry
+                    .as_ref()
+                    .ok_or_else(|| Error::new(E_FAIL, "dynamic RDPDR drive registry is unavailable"))?;
+                registry
+                    .register_drives(updated_catalog.all_drives()?)
+                    .map_err(|error| Error::new(E_FAIL, format!("register dynamic RDPDR drive: {error}")))?;
+                let sender = settings
+                    .rdpdr_input_sender
+                    .as_ref()
+                    .ok_or_else(|| Error::new(E_FAIL, "dynamic RDPDR session is unavailable"))?;
+                sender
+                    .try_update_rdpdr_drives(operations)
+                    .map_err(|_| Error::new(E_FAIL, "dynamic RDPDR drive update is backpressured"))?;
+            }
+        }
+        *catalog.borrow_mut() = updated_catalog;
+        Ok(())
+    }
+}
+
+fn logical_volume_roots() -> Vec<PathBuf> {
+    let mask = unsafe { GetLogicalDrives() };
+    if mask == 0 {
+        tracing::warn!("Unable to enumerate logical drives for ActiveX RDPDR redirection");
+    }
+
+    (0..26)
+        .filter(|index| mask & (1u32 << index) != 0)
+        .map(|index| PathBuf::from(format!("{}:\\", char::from(b'A' + index))))
+        .collect()
+}
+
+fn logical_volume_name(root_path: &Path) -> String {
+    root_path.to_string_lossy().trim_end_matches(['\\', '/']).to_owned()
+}
+
+fn is_volume_device_interface_change(wparam: WPARAM, lparam: LPARAM) -> bool {
+    // RegisterDeviceNotificationW filters this window's notifications to volume interfaces.
+    // WM_DEVICECHANGE can be spoofed, so its lParam must not be dereferenced.
+    let _ = lparam;
+    wparam.0 == DBT_DEVICEARRIVAL as usize || wparam.0 == DBT_DEVICEREMOVECOMPLETE as usize
+}
+
+#[implement(IMsRdpDrive)]
+struct Drive {
+    _lifetime: ServerObjectLifetime,
+    catalog: Rc<RefCell<DriveCatalog>>,
+    entry: Rc<DriveCatalogEntry>,
+    settings: Rc<RefCell<CompatibilitySettings>>,
+}
+
+impl Drive {
+    fn new(
+        catalog: Rc<RefCell<DriveCatalog>>,
+        entry: Rc<DriveCatalogEntry>,
+        settings: Rc<RefCell<CompatibilitySettings>>,
+    ) -> Self {
         Self {
             _lifetime: ServerObjectLifetime::new(),
+            catalog,
+            entry,
+            settings,
         }
     }
 }
 
-impl IMsRdpDriveCollection_Impl for EmptyDriveCollection_Impl {
-    unsafe fn RescanDrives(&self, _dynamic_redirection: i16) -> Result<()> {
-        // TODO(activex): enumerate drives after IronRDP RDPDR exposes a host-drive backend.
+impl IMsRdpDrive_Impl for Drive_Impl {
+    unsafe fn get_Name(&self, name: BstrOut) -> Result<()> {
+        // mstscax returns a volume-root name with an embedded terminal NUL in the BSTR payload.
+        let value = format!("{}\\\0", self.entry.name);
+        write_bstr(name, &value)
+    }
+
+    unsafe fn put_RedirectionState(&self, state: i16) -> Result<()> {
+        let state = normalize_variant_bool(state)? == VARIANT_TRUE.0;
+        if !self
+            .catalog
+            .borrow()
+            .entries
+            .iter()
+            .any(|entry| Rc::ptr_eq(entry, &self.entry))
+        {
+            return Err(Error::from_hresult(E_FAIL));
+        }
+        let settings = self.settings.borrow();
+        if settings.connection_settings_sealed && !settings.redirect_dynamic_drives {
+            return Err(Error::from_hresult(E_FAIL));
+        }
+        if settings.connection_settings_sealed && !settings.rdpdr_session_active.get() {
+            return Err(Error::new(E_FAIL, "dynamic RDPDR session is not connected"));
+        }
+        if settings.connection_settings_sealed && state != self.entry.redirection_state.get() {
+            if state {
+                let registry = settings
+                    .rdpdr_drive_registry
+                    .as_ref()
+                    .ok_or_else(|| Error::new(E_FAIL, "dynamic RDPDR drive registry is unavailable"))?;
+                let drive = ironrdp_rdpdr_native::RedirectedDrive::new(
+                    self.entry.device_id,
+                    self.entry.name.clone(),
+                    self.entry.root_path.clone(),
+                    false,
+                )
+                .map_err(|error| Error::new(E_FAIL, format!("invalid redirected drive: {error}")))?;
+                registry
+                    .register_drives([drive])
+                    .map_err(|error| Error::new(E_FAIL, format!("register dynamic RDPDR drive: {error}")))?;
+            }
+            let sender = settings
+                .rdpdr_input_sender
+                .as_ref()
+                .ok_or_else(|| Error::new(E_FAIL, "dynamic RDPDR session is unavailable"))?;
+            let operation = if state {
+                DynamicDriveOperation::Add {
+                    device_id: self.entry.device_id,
+                    name: self.entry.name.clone(),
+                }
+            } else {
+                DynamicDriveOperation::Remove {
+                    device_id: self.entry.device_id,
+                }
+            };
+            sender
+                .try_update_rdpdr_drive(operation)
+                .map_err(|_| Error::new(E_FAIL, "dynamic RDPDR drive update is backpressured"))?;
+        }
+        self.entry.redirection_state.set(state);
+        mark_compatibility_persistence_dirty(&settings);
         Ok(())
     }
 
-    unsafe fn get_DriveByIndex(&self, _index: u32, drive: InterfaceOut) -> Result<()> {
-        write_out(drive, ptr::null_mut())?;
-        Err(Error::from_hresult(E_INVALIDARG))
+    unsafe fn get_RedirectionState(&self, state: *mut i16) -> Result<()> {
+        write_out(
+            state,
+            if self.entry.redirection_state.get() {
+                VARIANT_TRUE.0
+            } else {
+                VARIANT_FALSE.0
+            },
+        )
+    }
+}
+
+#[implement(IMsRdpDriveCollection)]
+struct DriveCollection {
+    _lifetime: ServerObjectLifetime,
+    catalog: Rc<RefCell<DriveCatalog>>,
+    settings: Rc<RefCell<CompatibilitySettings>>,
+}
+
+impl DriveCollection {
+    fn new(catalog: Rc<RefCell<DriveCatalog>>, settings: Rc<RefCell<CompatibilitySettings>>) -> Self {
+        Self {
+            _lifetime: ServerObjectLifetime::new(),
+            catalog,
+            settings,
+        }
+    }
+}
+
+impl IMsRdpDriveCollection_Impl for DriveCollection_Impl {
+    unsafe fn RescanDrives(&self, redirect_new_drives: i16) -> Result<()> {
+        let redirect_new_drives = normalize_variant_bool(redirect_new_drives)? == VARIANT_TRUE.0;
+        let settings = self.settings.borrow();
+        if settings.connection_settings_sealed && !settings.rdpdr_session_active.get() {
+            return Err(Error::new(E_FAIL, "dynamic RDPDR session is not connected"));
+        }
+        DriveCatalog::rescan_drive_catalog(&self.catalog, &settings, redirect_new_drives)
+    }
+
+    unsafe fn get_DriveByIndex(&self, index: u32, output: InterfaceOut) -> Result<()> {
+        if output.is_null() {
+            return Err(Error::from_hresult(E_POINTER));
+        }
+        let entry = self
+            .catalog
+            .borrow()
+            .entries
+            .get(usize::try_from(index).map_err(|_| Error::from_hresult(E_INVALIDARG))?)
+            .cloned()
+            // mstscax returns E_UNEXPECTED and does not overwrite the output pointer for an
+            // out-of-range index.
+            .ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?;
+        let drive: IMsRdpDrive = Drive::new(Rc::clone(&self.catalog), entry, Rc::clone(&self.settings)).into();
+        write_out(output, drive.into_raw().cast())
     }
 
     unsafe fn get_DriveCount(&self, count: *mut u32) -> Result<()> {
-        write_out(count, 0)
+        write_out(
+            count,
+            u32::try_from(self.catalog.borrow().entries.len()).map_err(|_| Error::from_hresult(E_FAIL))?,
+        )
     }
 }
 
@@ -4328,8 +4833,11 @@ pub(crate) struct Control {
     last_disconnect: Cell<DisconnectInfo>,
     clipboard_state: Rc<ClipboardState>,
     clipboard_backend: RefCell<Option<WinClipboard>>,
+    drive_collection: IMsRdpDriveCollection,
     connection_generation: Cell<u64>,
     login_complete_fired: Cell<bool>,
+    rdpdr_initial_device_ids: RefCell<BTreeSet<u32>>,
+    rdpdr_resync_pending: Cell<bool>,
     remote_size: Cell<Option<(i32, i32)>>,
     input_sender: RefCell<Option<RdpInputSender>>,
     static_channels: RefCell<BTreeMap<String, ActiveXStaticChannelSpec>>,
@@ -4343,6 +4851,7 @@ pub(crate) struct Control {
     event_posted: Arc<AtomicBool>,
     callback_owner: Cell<*const Control_Impl>,
     dispatcher: Cell<HWND>,
+    volume_device_notification: Cell<Option<HDEVNOTIFY>>,
     credential_parent: Cell<HWND>,
     native_mstsc_preflight: Cell<NativeMstscPreflight>,
     event_freeze_count: Cell<u32>,
@@ -4428,6 +4937,11 @@ impl Control {
         let persistence_dirty = Rc::new(Cell::new(false));
         let compatibility = Rc::new(RefCell::new(CompatibilitySettings::default()));
         compatibility.borrow_mut().persistence_dirty = Some(Rc::clone(&persistence_dirty));
+        let drive_collection: IMsRdpDriveCollection = DriveCollection::new(
+            Rc::clone(&compatibility.borrow().drive_catalog),
+            Rc::clone(&compatibility),
+        )
+        .into();
         Self {
             class_id,
             settings: RefCell::new(Settings::default()),
@@ -4439,8 +4953,11 @@ impl Control {
                 connected: Cell::new(false),
             }),
             clipboard_backend: RefCell::new(None),
+            drive_collection,
             connection_generation: Cell::new(0),
             login_complete_fired: Cell::new(false),
+            rdpdr_initial_device_ids: RefCell::new(BTreeSet::new()),
+            rdpdr_resync_pending: Cell::new(false),
             remote_size: Cell::new(None),
             input_sender: RefCell::new(None),
             static_channels: RefCell::new(BTreeMap::new()),
@@ -4454,6 +4971,7 @@ impl Control {
             event_posted: Arc::new(AtomicBool::new(false)),
             callback_owner: Cell::new(ptr::null()),
             dispatcher: Cell::new(HWND(ptr::null_mut())),
+            volume_device_notification: Cell::new(None),
             credential_parent: Cell::new(HWND(ptr::null_mut())),
             native_mstsc_preflight: Cell::new(NativeMstscPreflight::Idle),
             event_freeze_count: Cell::new(0),
@@ -5279,6 +5797,8 @@ impl Control {
         if self.state.get() == ConnectionState::Connected {
             // Display Control has already reported that it is reconnecting with the requested
             // size. The worker supplies no retry count, so do not present reconnect attempts.
+            self.rdpdr_resync_pending
+                .set(self.compatibility.borrow().redirect_dynamic_drives);
             self.set_connection_health_status(ConnectionHealthStatus::UpdatingDisplay);
         }
     }
@@ -5667,6 +6187,106 @@ impl Control {
         Ok(hwnd)
     }
 
+    fn register_volume_device_notifications(&self, hwnd: HWND) -> Result<()> {
+        if self.volume_device_notification.get().is_some() {
+            return Ok(());
+        }
+
+        let filter = DEV_BROADCAST_DEVICEINTERFACE_W {
+            dbcc_size: u32::try_from(size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>())
+                .expect("device notification filter size fits in u32"),
+            dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE.0,
+            dbcc_reserved: 0,
+            dbcc_classguid: GUID_DEVINTERFACE_VOLUME,
+            dbcc_name: [0],
+        };
+        let notification = unsafe {
+            RegisterDeviceNotificationW(HANDLE(hwnd.0), (&raw const filter).cast(), DEVICE_NOTIFY_WINDOW_HANDLE)
+        }?;
+        self.volume_device_notification.set(Some(notification));
+        Ok(())
+    }
+
+    fn unregister_volume_device_notifications(&self) {
+        let Some(notification) = self.volume_device_notification.take() else {
+            return;
+        };
+        if let Err(error) = unsafe { UnregisterDeviceNotification(notification) } {
+            tracing::debug!(?error, "Unable to unregister ActiveX volume device notifications");
+        }
+    }
+
+    fn rescan_dynamic_drives(&self) -> Result<()> {
+        let settings = self.compatibility.borrow();
+        if !settings.redirect_dynamic_drives || self.state.get() != ConnectionState::Connected {
+            return Ok(());
+        }
+        DriveCatalog::rescan_drive_catalog(&settings.drive_catalog, &settings, true)
+    }
+
+    fn resync_dynamic_drives_after_reconnect(&self) -> Result<()> {
+        let settings = self.compatibility.borrow();
+        if !settings.redirect_dynamic_drives || self.state.get() != ConnectionState::Connected {
+            return Ok(());
+        }
+
+        let updated_catalog = settings.drive_catalog.borrow().rescanned(true);
+        let desired_drives = updated_catalog.selected_drive_descriptions();
+        let initial_device_ids = self.rdpdr_initial_device_ids.borrow();
+        let operations = DriveCatalog::reconnect_dynamic_drive_operations(&initial_device_ids, &desired_drives);
+        drop(initial_device_ids);
+
+        if !operations.is_empty() {
+            let registry = settings
+                .rdpdr_drive_registry
+                .as_ref()
+                .ok_or_else(|| Error::new(E_FAIL, "dynamic RDPDR drive registry is unavailable"))?;
+            registry
+                .register_drives(updated_catalog.all_drives()?)
+                .map_err(|error| Error::new(E_FAIL, format!("register dynamic RDPDR drive: {error}")))?;
+            let sender = settings
+                .rdpdr_input_sender
+                .as_ref()
+                .ok_or_else(|| Error::new(E_FAIL, "dynamic RDPDR session is unavailable"))?;
+            sender
+                .try_update_rdpdr_drives(operations)
+                .map_err(|_| Error::new(E_FAIL, "dynamic RDPDR drive update is backpressured"))?;
+        }
+        *settings.drive_catalog.borrow_mut() = updated_catalog;
+        Ok(())
+    }
+
+    fn reconcile_dynamic_drive_redirection_state(&self, device_id: u32, state: bool) {
+        let settings = self.compatibility.borrow();
+        let entry = settings.drive_catalog.borrow().entry_by_device_id(device_id);
+        if let Some(entry) = entry {
+            entry.redirection_state.set(state);
+            mark_compatibility_persistence_dirty(&settings);
+        }
+    }
+
+    fn confirm_dynamic_drive_removed(&self, device_id: u32) {
+        self.compatibility
+            .borrow()
+            .drive_catalog
+            .borrow_mut()
+            .confirm_dynamic_drive_removed(device_id);
+    }
+
+    fn schedule_dynamic_drive_rescan(&self, hwnd: HWND) {
+        if self.state.get() != ConnectionState::Connected || !self.compatibility.borrow().redirect_dynamic_drives {
+            return;
+        }
+        unsafe {
+            let _ = SetTimer(
+                Some(hwnd),
+                DYNAMIC_DRIVE_RESCAN_TIMER_ID,
+                DYNAMIC_DRIVE_RESCAN_DEBOUNCE_MILLISECONDS,
+                None,
+            );
+        }
+    }
+
     fn prompt_for_credentials(&self) -> Result<bool> {
         trace_host_call("ActiveXCredentialPrompt::Prompt");
         if self.state.get() != ConnectionState::Disconnected {
@@ -6038,8 +6658,15 @@ impl Control {
         &self,
         warn_about_credentials: bool,
         warn_about_clipboard: bool,
+        redirected_drive_names: Vec<String>,
+        redirect_future_drives: bool,
     ) -> Result<bool> {
-        for warning in connection_security_warnings(warn_about_credentials, warn_about_clipboard) {
+        for warning in connection_security_warnings(
+            warn_about_credentials,
+            warn_about_clipboard,
+            redirected_drive_names,
+            redirect_future_drives,
+        ) {
             if !self.confirm_connection_security_warning(warning)? {
                 return Ok(false);
             }
@@ -6333,6 +6960,7 @@ impl Control {
                 WorkerEvent::Connected { .. } => {
                     if self.state.get() == ConnectionState::Connecting {
                         self.state.set(ConnectionState::Connected);
+                        self.compatibility.borrow().rdpdr_session_active.set(true);
                         if let Some(rpc) = &self.rpc {
                             rpc.session_connected();
                         }
@@ -6358,9 +6986,31 @@ impl Control {
                     }
                 }
                 WorkerEvent::LoginComplete { .. } => {
-                    if self.state.get() == ConnectionState::Connected && !self.login_complete_fired.replace(true) {
-                        self.fire_event(DISPID_ON_LOGIN_COMPLETE, &[]);
+                    if self.state.get() == ConnectionState::Connected {
+                        if !self.login_complete_fired.replace(true) {
+                            self.fire_event(DISPID_ON_LOGIN_COMPLETE, &[]);
+                        }
+                        let result = if self.rdpdr_resync_pending.replace(false) {
+                            self.resync_dynamic_drives_after_reconnect()
+                        } else {
+                            self.rescan_dynamic_drives()
+                        };
+                        if let Err(error) = result {
+                            tracing::debug!(?error, "Unable to synchronize dynamic RDPDR drives after logon");
+                        }
                     }
+                }
+                WorkerEvent::DynamicDriveRejected { device_id, .. } => {
+                    self.reconcile_dynamic_drive_redirection_state(device_id, false);
+                    trace_host_call("RdpWorker::Rdpdr:DynamicDriveRejected");
+                }
+                WorkerEvent::DynamicDriveRemovalFailed { device_id, .. } => {
+                    self.reconcile_dynamic_drive_redirection_state(device_id, true);
+                    trace_host_call("RdpWorker::Rdpdr:DynamicDriveRemovalFailed");
+                }
+                WorkerEvent::DynamicDriveRemoved { device_id, .. } => {
+                    self.confirm_dynamic_drive_removed(device_id);
+                    trace_host_call("RdpWorker::Rdpdr:DynamicDriveRemoved");
                 }
                 WorkerEvent::Image {
                     buffer, width, height, ..
@@ -6384,6 +7034,10 @@ impl Control {
                         rpc.session_failed(disconnect.description.to_owned());
                     }
                     self.state.set(ConnectionState::Stopping);
+                    let mut compatibility = self.compatibility.borrow_mut();
+                    compatibility.rdpdr_session_active.set(false);
+                    compatibility.rdpdr_input_sender = None;
+                    drop(compatibility);
                     self.clear_connection_health_window();
                     if let Err(error) = self.destroy_connection_bar() {
                         tracing::debug!(
@@ -6404,6 +7058,10 @@ impl Control {
                         rpc.session_disconnected(disconnect.description.to_owned());
                     }
                     self.state.set(ConnectionState::Stopping);
+                    let mut compatibility = self.compatibility.borrow_mut();
+                    compatibility.rdpdr_session_active.set(false);
+                    compatibility.rdpdr_input_sender = None;
+                    drop(compatibility);
                     self.clear_connection_health_window();
                     if let Err(error) = self.destroy_connection_bar() {
                         tracing::debug!(?error, "Unable to destroy ActiveX connection bar after disconnecting");
@@ -6418,6 +7076,13 @@ impl Control {
                     self.fire_channel_received_data(&channel_name, &data)
                 }
                 WorkerEvent::Stopped { .. } => {
+                    self.unregister_volume_device_notifications();
+                    let dispatcher = self.dispatcher.get();
+                    if !dispatcher.0.is_null() {
+                        unsafe {
+                            let _ = KillTimer(Some(dispatcher), DYNAMIC_DRIVE_RESCAN_TIMER_ID);
+                        }
+                    }
                     self.clear_connection_health_window();
                     if let Err(error) = self.destroy_connection_bar() {
                         tracing::debug!(
@@ -6431,8 +7096,14 @@ impl Control {
                     self.remote_size.set(None);
                     self.clear_frame();
                     self.state.set(ConnectionState::Disconnected);
+                    self.rdpdr_initial_device_ids.borrow_mut().clear();
+                    self.rdpdr_resync_pending.set(false);
                     self.native_mstsc_preflight.set(NativeMstscPreflight::Idle);
-                    self.compatibility.borrow_mut().connection_settings_sealed = false;
+                    let mut compatibility = self.compatibility.borrow_mut();
+                    compatibility.rdpdr_session_active.set(false);
+                    compatibility.rdpdr_input_sender = None;
+                    compatibility.rdpdr_drive_registry = None;
+                    compatibility.connection_settings_sealed = false;
                     if let Some(rpc) = &self.rpc {
                         rpc.session_stopped();
                     }
@@ -6471,6 +7142,9 @@ impl Control {
             }
             RpcCommand::Input { operation, response } => {
                 let _ = response.send(self.rpc_input(operation));
+            }
+            RpcCommand::InputText { text, response } => {
+                let _ = response.send(self.rpc_input_text(&text));
             }
             RpcCommand::Resize {
                 width,
@@ -6728,6 +7402,17 @@ impl Control {
     }
 
     fn rpc_input(&self, operation: Operation) -> ironrdp_agent::ipc::Response {
+        self.rpc_input_operations([operation])
+    }
+
+    fn rpc_input_text(&self, text: &str) -> ironrdp_agent::ipc::Response {
+        self.rpc_input_operations(
+            text.chars()
+                .flat_map(|ch| [Operation::UnicodeKeyPressed(ch), Operation::UnicodeKeyReleased(ch)]),
+        )
+    }
+
+    fn rpc_input_operations(&self, operations: impl IntoIterator<Item = Operation>) -> ironrdp_agent::ipc::Response {
         if self.state.get() != ConnectionState::Connected {
             return ironrdp_agent::ipc::Response::typed_error(
                 ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
@@ -6749,7 +7434,7 @@ impl Control {
                 );
             }
         };
-        let fast_path = self.input_database.borrow_mut().apply([operation]);
+        let fast_path = self.input_database.borrow_mut().apply(operations);
         if fast_path.is_empty() {
             return ironrdp_agent::ipc::Response::ok();
         }
@@ -6788,7 +7473,7 @@ impl Control {
         let settings = self.settings.borrow();
         let destination = Destination::new(settings.server.clone())
             .map_err(|error| Error::new(E_INVALIDARG, format!("invalid RDP destination: {error}")))?;
-        let compatibility = self.compatibility.borrow();
+        let compatibility = self.compatibility.borrow_mut();
         let destination = compatibility
             .rdp_port
             .map(|port| Destination::from_parts(destination.name().to_owned(), port))
@@ -6800,7 +7485,45 @@ impl Control {
         let clipboard = compatibility.redirect_clipboard;
         let warn_about_credentials = compatibility.warn_about_sending_credentials;
         let warn_about_clipboard = clipboard && compatibility.warn_about_clipboard_redirection;
+        let redirect_dynamic_drives = compatibility.redirect_dynamic_drives;
+        let refresh_dynamic_drives = redirect_dynamic_drives && !compatibility.disable_rdpdr;
+        let connection_drive_catalog = compatibility
+            .drive_catalog
+            .borrow()
+            .connection_snapshot(refresh_dynamic_drives);
+        let pending_dynamic_drive_catalog = refresh_dynamic_drives.then(|| connection_drive_catalog.clone());
+        let redirected_drive_names = if compatibility.disable_rdpdr {
+            Vec::new()
+        } else {
+            connection_drive_catalog.selected_drive_names()
+        };
+        let rdpdr_factory = if compatibility.disable_rdpdr
+            || (redirected_drive_names.is_empty() && !redirect_dynamic_drives)
+        {
+            None
+        } else {
+            Some(
+                ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::new(connection_drive_catalog.all_drives()?)
+                    .map_err(|error| Error::new(E_FAIL, format!("invalid redirected-drive configuration: {error}")))?
+                    .with_initial_device_ids(connection_drive_catalog.selected_drive_ids()),
+            )
+        };
+        let rdpdr_enabled = rdpdr_factory.is_some();
+        let rdpdr_drive_registry = rdpdr_factory
+            .as_ref()
+            .map(ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::drive_registry);
+        let rdpdr_initial_device_ids = connection_drive_catalog
+            .selected_drive_ids()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let warn_about_drive_redirection = rdpdr_enabled && compatibility.show_redirection_warning_dialog;
         let audio_redirection_mode = audio_mode_from_raw(compatibility.audio_redirection_mode)?;
+        if rdpdr_enabled {
+            trace_host_call(match audio_redirection_mode {
+                AudioMode::RedirectToClient => "RdpWorker::Rdpdr:EnabledWithAudioPlayback",
+                AudioMode::PlayOnServer | AudioMode::Disabled => "RdpWorker::Rdpdr:EnabledWithNoopRdpsnd",
+            });
+        }
         let keyboard_type = compatibility.keyboard_type;
         let keyboard_subtype = compatibility.keyboard_subtype;
         let keyboard_functional_keys_count = compatibility.keyboard_functional_keys_count;
@@ -6835,7 +7558,16 @@ impl Control {
         let public_mode = compatibility.public_mode;
         let direct_rpc_properties = active_x_property_snapshot(&settings, &compatibility);
         drop(compatibility);
-        if !self.confirm_connection_security_warnings(warn_about_credentials, warn_about_clipboard)? {
+        if !self.confirm_connection_security_warnings(
+            warn_about_credentials,
+            warn_about_clipboard,
+            if warn_about_drive_redirection {
+                redirected_drive_names
+            } else {
+                Vec::new()
+            },
+            warn_about_drive_redirection && redirect_dynamic_drives,
+        )? {
             return Ok(());
         }
         let certificate_validation =
@@ -6916,6 +7648,9 @@ impl Control {
                 ironrdp_agent::ipc::Response::Err(error) => Error::new(E_FAIL, error.message),
                 ironrdp_agent::ipc::Response::Ok(_) => Error::from_hresult(E_FAIL),
             })?;
+        if rpc_now_endpoint.is_some() {
+            trace_host_call("RdpWorker::DvcNowProxy:Configured");
+        }
         let builder = ConfigBuilder::new()
             .with_destination(destination)
             .with_username(settings.username.clone())
@@ -6956,7 +7691,8 @@ impl Control {
                 ClipboardType::Enable
             } else {
                 ClipboardType::Disable
-            });
+            })
+            .with_rdpdr(rdpdr_enabled);
         let builder = if let Some(kerberos_config) = self.rpc_kerberos_config.borrow_mut().take() {
             builder.with_kerberos_config(kerberos_config)
         } else {
@@ -7056,6 +7792,17 @@ impl Control {
             self.stop_clipboard_redirection();
             client
         };
+        let client = if let Some(factory) = rdpdr_factory {
+            client.with_rdpdr_backend_factory(Box::new(factory))
+        } else {
+            client
+        };
+        if rdpdr_enabled && redirect_dynamic_drives {
+            if let Err(error) = self.register_volume_device_notifications(hwnd) {
+                self.stop_clipboard_redirection();
+                return Err(error);
+            }
+        }
         self.compatibility.borrow_mut().connection_settings_sealed = true;
         self.clipboard_state.enabled_for_session.set(clipboard);
         self.clipboard_state.connected.set(false);
@@ -7073,6 +7820,7 @@ impl Control {
             Err(error) => {
                 self.stop_clipboard_redirection();
                 self.compatibility.borrow_mut().connection_settings_sealed = false;
+                self.unregister_volume_device_notifications();
                 return Err(error);
             }
         };
@@ -7134,6 +7882,202 @@ impl Control {
                                                     hwnd,
                                                     WorkerEvent::LoginComplete { generation },
                                                 );
+                                            }
+                                            RdpOutputEvent::RdpdrEvent(event) => {
+                                                match event {
+                                                    ironrdp_client::rdp::RdpdrEvent::ServerAnnounce => {
+                                                        trace_host_call("RdpWorker::Rdpdr:ServerAnnounce");
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::ServerCapabilities => {
+                                                        trace_host_call("RdpWorker::Rdpdr:ServerCapabilities");
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::ClientIdConfirm => {
+                                                        trace_host_call("RdpWorker::Rdpdr:ClientIdConfirm");
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::UserLoggedOn => {
+                                                        trace_host_call("RdpWorker::Rdpdr:UserLoggedOn");
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DeviceListAnnounce => {
+                                                        trace_host_call("RdpWorker::Rdpdr:DeviceListAnnounce");
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DeviceAccepted => {
+                                                        trace_host_call("RdpWorker::Rdpdr:DeviceAccepted");
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DeviceRejected => {
+                                                        trace_host_call("RdpWorker::Rdpdr:DeviceRejected");
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DynamicDriveAdded => {
+                                                        trace_host_call("RdpWorker::Rdpdr:DynamicDriveAdded");
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DynamicDriveAccepted { .. } => {
+                                                        trace_host_call("RdpWorker::Rdpdr:DynamicDriveAccepted");
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DynamicDriveRejected { device_id } => {
+                                                        queue_worker_event(
+                                                            &worker_events,
+                                                            &worker_event_posted,
+                                                            hwnd,
+                                                            WorkerEvent::DynamicDriveRejected {
+                                                                generation,
+                                                                device_id,
+                                                            },
+                                                        );
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DynamicDriveRemoved {
+                                                        device_id,
+                                                    } => {
+                                                        queue_worker_event(
+                                                            &worker_events,
+                                                            &worker_event_posted,
+                                                            hwnd,
+                                                            WorkerEvent::DynamicDriveRemoved {
+                                                                generation,
+                                                                device_id,
+                                                            },
+                                                        );
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DynamicDriveRemovalFailed {
+                                                        device_id,
+                                                    } => {
+                                                        queue_worker_event(
+                                                            &worker_events,
+                                                            &worker_event_posted,
+                                                            hwnd,
+                                                            WorkerEvent::DynamicDriveRemovalFailed {
+                                                                generation,
+                                                                device_id,
+                                                            },
+                                                        );
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveIoRequest(major_function) => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveIoRequest:{major_function:?}"
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveIoRequestIgnoredUnknownDevice {
+                                                        device_id,
+                                                    } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveIoRequestIgnoredUnknownDevice:{device_id:08X}"
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveIoRequestIgnoredRejectedDevice {
+                                                        device_id,
+                                                    } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveIoRequestIgnoredRejectedDevice:{device_id:08X}"
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveCreateRequest {
+                                                        desired_access,
+                                                        shared_access,
+                                                        create_options,
+                                                    } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveCreateRequest:{desired_access:08X}:{shared_access:08X}:{create_options:08X}"
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveQueryInformationRequest {
+                                                        information_class,
+                                                    } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveQueryInformationRequest:{information_class}"
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveQueryDirectoryRequest {
+                                                        information_class,
+                                                        initial_query,
+                                                    } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveQueryDirectoryRequest:{information_class}:{initial_query}"
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveReadRequest { length } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveReadRequest:{length}"
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveReadRequestCorrelation {
+                                                        device_id,
+                                                        file_id,
+                                                        completion_id,
+                                                        offset,
+                                                    } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveReadRequestCorrelation:{device_id:08X}:{file_id:08X}:{completion_id:08X}:{offset}"
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveWriteRequest { length } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveWriteRequest:{length}"
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveDeviceControlRequest {
+                                                        io_control_code,
+                                                        input_buffer_length,
+                                                        output_buffer_length,
+                                                    } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveDeviceControlRequest:{io_control_code:08X}:{input_buffer_length}:{output_buffer_length}"
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveIoCompletion {
+                                                        major_function,
+                                                        status,
+                                                    } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveIoCompletion:{major_function:?}:{}",
+                                                            status.map_or_else(
+                                                                || "Unknown".to_owned(),
+                                                                |status| format!("{status:08X}")
+                                                            )
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveIoResponseSize {
+                                                        major_function,
+                                                        bytes,
+                                                    } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveIoResponseSize:{major_function:?}:{}",
+                                                            bytes.map_or_else(
+                                                                || "Unknown".to_owned(),
+                                                                |bytes| bytes.to_string()
+                                                            )
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveIoResponseWritten {
+                                                        bytes,
+                                                    } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveIoResponseWritten:{}",
+                                                            bytes.map_or_else(
+                                                                || "Unknown".to_owned(),
+                                                                |bytes| bytes.to_string()
+                                                            )
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveIoDeferredCompletion {
+                                                        status,
+                                                        bytes,
+                                                    } => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveIoDeferredCompletion:{}:{}",
+                                                            status.map_or_else(
+                                                                || "Unknown".to_owned(),
+                                                                |status| format!("{status:08X}")
+                                                            ),
+                                                            bytes.map_or_else(
+                                                                || "Unknown".to_owned(),
+                                                                |bytes| bytes.to_string()
+                                                            )
+                                                        ));
+                                                    }
+                                                    ironrdp_client::rdp::RdpdrEvent::DriveIoDeferred(major_function) => {
+                                                        trace_host_call(&format!(
+                                                            "RdpWorker::Rdpdr:DriveIoDeferred:{major_function:?}"
+                                                        ));
+                                                    }
+                                                }
                                             }
                                             RdpOutputEvent::PostLogonDisplayRedraw => {
                                                 trace_host_call("RdpWorker::PostLogonDisplayRedraw");
@@ -7268,6 +8212,7 @@ impl Control {
             com::release_module_reference(module);
             self.stop_clipboard_redirection();
             self.compatibility.borrow_mut().connection_settings_sealed = false;
+            self.unregister_volume_device_notifications();
             let message = format!("unable to start RDP worker: {error}");
             if let Some(rpc) = &self.rpc {
                 rpc.session_failed(message.clone());
@@ -7276,9 +8221,25 @@ impl Control {
             return Err(Error::new(E_FAIL, message));
         }
 
+        let rdpdr_input_sender = rdpdr_enabled.then(|| input_sender.clone());
         *self.input_sender.borrow_mut() = Some(input_sender);
+        {
+            let mut compatibility = self.compatibility.borrow_mut();
+            if let Some(catalog) = pending_dynamic_drive_catalog {
+                *compatibility.drive_catalog.borrow_mut() = catalog;
+            }
+            compatibility.rdpdr_input_sender = rdpdr_input_sender;
+            compatibility.rdpdr_drive_registry = rdpdr_drive_registry;
+            compatibility.rdpdr_session_active.set(false);
+        }
         self.connection_generation.set(generation);
         self.login_complete_fired.set(false);
+        *self.rdpdr_initial_device_ids.borrow_mut() = if rdpdr_enabled {
+            rdpdr_initial_device_ids
+        } else {
+            BTreeSet::new()
+        };
+        self.rdpdr_resync_pending.set(false);
         self.remote_size.set(None);
         self.clear_frame();
         self.input_database.borrow_mut().release_all();
@@ -7299,6 +8260,11 @@ impl Control {
             .cloned()
             .ok_or_else(|| Error::from_hresult(E_FAIL))?;
         self.last_disconnect.set(DisconnectInfo::api_initiated());
+        {
+            let mut compatibility = self.compatibility.borrow_mut();
+            compatibility.rdpdr_session_active.set(false);
+            compatibility.rdpdr_input_sender = None;
+        }
         sender.request_close();
         self.state.set(ConnectionState::Stopping);
         if let Some(rpc) = &self.rpc {
@@ -7553,6 +8519,10 @@ impl Control {
             return Ok(());
         }
 
+        self.unregister_volume_device_notifications();
+        unsafe {
+            let _ = KillTimer(Some(window), DYNAMIC_DRIVE_RESCAN_TIMER_ID);
+        }
         let result = if unsafe { IsWindow(Some(window)) }.as_bool() {
             match destroy_control_window(window) {
                 Ok(()) => {
@@ -8965,8 +9935,11 @@ impl IMsTscNonScriptable_Impl for Control_Impl {
 
 impl IMsRdpClientNonScriptable_Impl for Control_Impl {
     unsafe fn NotifyRedirectDeviceChange(&self, _wparam: usize, _lparam: isize) -> Result<()> {
-        // This control does not expose a configured ActiveX device collection, so a host device
-        // change cannot affect the RDPDR state that this control advertises.
+        if self.compatibility.borrow().redirect_dynamic_drives && self.state.get() == ConnectionState::Connected {
+            return self.rescan_dynamic_drives();
+        }
+        let settings = self.compatibility.borrow();
+        DriveCatalog::refresh_without_dynamic_redirection(&settings.drive_catalog);
         Ok(())
     }
 
@@ -8987,12 +9960,24 @@ impl IMsRdpClientNonScriptable2_Impl for Control_Impl {
 }
 
 impl IMsRdpClientNonScriptable3_Impl for Control_Impl {
-    unsafe fn put_ShowRedirectionWarningDialog(&self, _value: i16) -> Result<()> {
-        unsupported()
+    unsafe fn put_ShowRedirectionWarningDialog(&self, value: i16) -> Result<()> {
+        let value = normalize_variant_bool(value)? == VARIANT_TRUE.0;
+        let mut settings = self.compatibility.borrow_mut();
+        active_x_connection_settings_mutable(self.state.get(), &settings)?;
+        settings.show_redirection_warning_dialog = value;
+        mark_compatibility_persistence_dirty(&settings);
+        Ok(())
     }
 
     unsafe fn get_ShowRedirectionWarningDialog(&self, value: *mut i16) -> Result<()> {
-        unsupported_out(value)
+        write_out(
+            value,
+            if self.compatibility.borrow().show_redirection_warning_dialog {
+                VARIANT_TRUE.0
+            } else {
+                VARIANT_FALSE.0
+            },
+        )
     }
 
     unsafe fn put_PromptForCredentials(&self, value: i16) -> Result<()> {
@@ -9035,13 +10020,26 @@ impl IMsRdpClientNonScriptable3_Impl for Control_Impl {
         )
     }
 
-    unsafe fn put_RedirectDynamicDrives(&self, _value: i16) -> Result<()> {
-        // TODO(activex): map dynamic-drive redirection to IronRDP RDPDR support.
-        unsupported()
+    unsafe fn put_RedirectDynamicDrives(&self, value: i16) -> Result<()> {
+        let value = normalize_variant_bool(value)? == VARIANT_TRUE.0;
+        let mut settings = self.compatibility.borrow_mut();
+        if settings.connection_settings_sealed {
+            return Err(Error::from_hresult(E_ACCESSDENIED));
+        }
+        settings.redirect_dynamic_drives = value;
+        mark_compatibility_persistence_dirty(&settings);
+        Ok(())
     }
 
     unsafe fn get_RedirectDynamicDrives(&self, value: *mut i16) -> Result<()> {
-        unsupported_out(value)
+        write_out(
+            value,
+            if self.compatibility.borrow().redirect_dynamic_drives {
+                VARIANT_TRUE.0
+            } else {
+                VARIANT_FALSE.0
+            },
+        )
     }
 
     unsafe fn put_RedirectDynamicDevices(&self, _value: i16) -> Result<()> {
@@ -9065,7 +10063,7 @@ impl IMsRdpClientNonScriptable3_Impl for Control_Impl {
         if output.is_null() {
             return Err(Error::from_hresult(E_POINTER));
         }
-        let collection: IMsRdpDriveCollection = EmptyDriveCollection::new().into();
+        let collection = self.drive_collection.clone();
         write_out(output, collection.into_raw().cast())
     }
 
@@ -11286,6 +12284,9 @@ fn queue_worker_event(
             }
         }
         WorkerEvent::CertificateWarning { .. }
+        | WorkerEvent::DynamicDriveRejected { .. }
+        | WorkerEvent::DynamicDriveRemovalFailed { .. }
+        | WorkerEvent::DynamicDriveRemoved { .. }
         | WorkerEvent::FatalError { .. }
         | WorkerEvent::Disconnected { .. }
         | WorkerEvent::Stopped { .. } => {
@@ -12004,6 +13005,30 @@ unsafe extern "system" fn dispatcher_window_proc(hwnd: HWND, message: u32, _wpar
             }
             LRESULT(0)
         }
+        WM_DEVICECHANGE => {
+            if is_volume_device_interface_change(_wparam, lparam) {
+                if let Some(owner) = unsafe { control_from_window(hwnd).as_ref() } {
+                    let _keep_alive: IUnknown = owner.to_interface();
+                    let control: &Control = owner;
+                    control.schedule_dynamic_drive_rescan(hwnd);
+                    return LRESULT(1);
+                }
+            }
+            unsafe { DefWindowProcW(hwnd, message, _wparam, lparam) }
+        }
+        WM_TIMER if _wparam.0 == DYNAMIC_DRIVE_RESCAN_TIMER_ID => {
+            unsafe {
+                let _ = KillTimer(Some(hwnd), DYNAMIC_DRIVE_RESCAN_TIMER_ID);
+            }
+            if let Some(owner) = unsafe { control_from_window(hwnd).as_ref() } {
+                let _keep_alive: IUnknown = owner.to_interface();
+                let control: &Control = owner;
+                if let Err(error) = control.rescan_dynamic_drives() {
+                    tracing::debug!(?error, "Unable to rescan dynamic RDPDR drives after a volume change");
+                }
+            }
+            LRESULT(0)
+        }
         rpc::WM_DISPATCH_RPC => {
             if let Some(owner) = unsafe { control_from_window(hwnd).as_ref() } {
                 let _keep_alive: IUnknown = owner.to_interface();
@@ -12023,6 +13048,10 @@ unsafe extern "system" fn dispatcher_window_proc(hwnd: HWND, message: u32, _wpar
                     if let Some(owner) = unsafe { control_from_context(context).as_ref() } {
                         let control: &Control = owner;
                         if control.dispatcher.get() == hwnd {
+                            control.unregister_volume_device_notifications();
+                            unsafe {
+                                let _ = KillTimer(Some(hwnd), DYNAMIC_DRIVE_RESCAN_TIMER_ID);
+                            }
                             control.dispatcher.set(HWND(ptr::null_mut()));
                         }
                     }
@@ -13016,7 +14045,12 @@ mod tests {
     #[test]
     fn advanced_settings_map_preconnect_transport_and_capability_slots() {
         let persistence_dirty = Rc::new(Cell::new(false));
+        let drive_catalog = Rc::new(RefCell::new(DriveCatalog::from_roots(
+            vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\")],
+            false,
+        )));
         let compatibility = CompatibilitySettings {
+            drive_catalog: Rc::clone(&drive_catalog),
             persistence_dirty: Some(Rc::clone(&persistence_dirty)),
             ..Default::default()
         };
@@ -13137,9 +14171,34 @@ mod tests {
 
         let mut disable_rdpdr = 0;
         assert_eq!(unsafe { advanced_get_disable_rdpdr(this, &mut disable_rdpdr) }, S_OK);
-        assert_eq!(disable_rdpdr, 1);
-        assert_eq!(unsafe { advanced_put_disable_rdpdr(this, 0) }, E_NOTIMPL);
+        assert_eq!(disable_rdpdr, 0);
         assert_eq!(unsafe { advanced_put_disable_rdpdr(this, 1) }, S_OK);
+        assert_eq!(unsafe { advanced_get_disable_rdpdr(this, &mut disable_rdpdr) }, S_OK);
+        assert_eq!(disable_rdpdr, i32::from(u16::MAX));
+
+        assert_eq!(unsafe { advanced_put_redirect_drives(this, VARIANT_TRUE.0) }, S_OK);
+        let mut redirect_drives = VARIANT_FALSE.0;
+        assert_eq!(
+            unsafe { advanced_get_redirect_drives(this, &mut redirect_drives) },
+            S_OK
+        );
+        assert_eq!(redirect_drives, VARIANT_TRUE.0);
+        assert_eq!(
+            drive_catalog.borrow().selected_drive_names(),
+            vec!["C:".to_owned(), "D:".to_owned()]
+        );
+        drive_catalog.borrow().entries[0].redirection_state.set(false);
+        assert_eq!(
+            unsafe { advanced_get_redirect_drives(this, &mut redirect_drives) },
+            S_OK
+        );
+        assert_eq!(redirect_drives, VARIANT_TRUE.0);
+
+        assert_eq!(unsafe { advanced_put_redirect_drives(this, VARIANT_FALSE.0) }, S_OK);
+        assert_eq!(unsafe { advanced_get_disable_rdpdr(this, &mut disable_rdpdr) }, S_OK);
+        assert_eq!(disable_rdpdr, i32::from(u16::MAX));
+        assert!(drive_catalog.borrow().selected_drive_names().is_empty());
+        assert_eq!(unsafe { advanced_put_disable_rdpdr(this, 0) }, S_OK);
 
         assert_eq!(unsafe { advanced_put_enable_mouse(this, 0) }, S_OK);
         let mut enable_mouse = -1;
@@ -13377,6 +14436,14 @@ mod tests {
     }
 
     #[test]
+    fn custom_session_failure_classifies_transport_eof_without_message_contents() {
+        let error = SessionError::new("read frame", SessionErrorKind::Custom)
+            .with_source(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+
+        assert_eq!(custom_session_error_source_category(&error), "UnexpectedEof");
+    }
+
+    #[test]
     fn rdm_unmapped_advanced_settings_slots_use_typed_failures() {
         let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
         let mut object = CompatibilitySettingsObject {
@@ -13461,6 +14528,24 @@ mod tests {
 
         assert_eq!(unsafe { advanced_put_authentication_level(this, 0) }, E_FAIL);
         assert_eq!(unsafe { advanced_put_public_mode(this, VARIANT_FALSE.0) }, E_FAIL);
+    }
+
+    #[test]
+    fn redirect_dynamic_drives_is_sealed_after_connect_starts() {
+        let control = Control::new();
+        let compatibility = Rc::clone(&control.compatibility);
+        let non_scriptable: IMsRdpClientNonScriptable3 = control.into();
+
+        unsafe { non_scriptable.put_RedirectDynamicDrives(VARIANT_TRUE.0) }
+            .expect("dynamic drive redirection is configurable before connect");
+        assert!(compatibility.borrow().redirect_dynamic_drives);
+
+        compatibility.borrow_mut().connection_settings_sealed = true;
+        let error = unsafe { non_scriptable.put_RedirectDynamicDrives(VARIANT_FALSE.0) }
+            .expect_err("dynamic drive redirection is sealed after connection starts");
+
+        assert_eq!(error.code(), E_ACCESSDENIED);
+        assert!(compatibility.borrow().redirect_dynamic_drives);
     }
 
     #[test]
@@ -13782,7 +14867,9 @@ mod tests {
     #[test]
     fn independently_returned_com_children_keep_the_server_loaded() {
         let _devices: IMsRdpDeviceCollection = EmptyDeviceCollection::new().into();
-        let _drives: IMsRdpDriveCollection = EmptyDriveCollection::new().into();
+        let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
+        let catalog = Rc::clone(&settings.borrow().drive_catalog);
+        let _drives: IMsRdpDriveCollection = DriveCollection::new(catalog, settings).into();
         let _cameras: IMsRdpCameraRedirConfigCollection = EmptyCameraRedirConfigCollection::new().into();
         let _clipboard: IMsRdpClipboard = ClipboardCapabilities::new(Rc::new(ClipboardState {
             enabled_for_session: Cell::new(false),
@@ -15197,17 +16284,269 @@ mod tests {
     #[test]
     fn connection_security_warnings_follow_public_setting_order() {
         assert_eq!(
-            connection_security_warnings(true, true),
+            connection_security_warnings(true, true, vec!["C:".to_owned()], false),
             vec![
                 ConnectionSecurityWarning::SendingCredentials,
                 ConnectionSecurityWarning::ClipboardRedirection,
+                ConnectionSecurityWarning::DriveRedirection {
+                    drive_names: vec!["C:".to_owned()],
+                    redirect_future_drives: false,
+                },
             ]
         );
         assert_eq!(
-            connection_security_warnings(false, true),
+            connection_security_warnings(false, true, Vec::new(), false),
             vec![ConnectionSecurityWarning::ClipboardRedirection]
         );
-        assert!(connection_security_warnings(false, false).is_empty());
+        assert_eq!(
+            connection_security_warnings(false, false, Vec::new(), true),
+            vec![ConnectionSecurityWarning::DriveRedirection {
+                drive_names: Vec::new(),
+                redirect_future_drives: true,
+            }]
+        );
+        assert!(connection_security_warnings(false, false, Vec::new(), false).is_empty());
+    }
+
+    #[test]
+    fn registered_volume_device_interface_changes_ignore_untrusted_lparam() {
+        let spoofed_lparam = LPARAM(1);
+        assert!(is_volume_device_interface_change(
+            WPARAM(DBT_DEVICEARRIVAL as usize),
+            spoofed_lparam
+        ));
+        assert!(is_volume_device_interface_change(
+            WPARAM(DBT_DEVICEREMOVECOMPLETE as usize),
+            spoofed_lparam
+        ));
+        assert!(!is_volume_device_interface_change(WPARAM(0), spoofed_lparam));
+    }
+
+    #[test]
+    fn dynamic_drive_failures_reconcile_catalog_state() {
+        let control = Control::new();
+        let settings = control.compatibility.borrow();
+        *settings.drive_catalog.borrow_mut() = DriveCatalog::from_roots(vec![PathBuf::from(r"C:\")], false);
+        let device_id = settings.drive_catalog.borrow().entries[0].device_id;
+        settings.drive_catalog.borrow().entries[0].redirection_state.set(true);
+        drop(settings);
+
+        control.reconcile_dynamic_drive_redirection_state(device_id, false);
+        assert!(
+            !control.compatibility.borrow().drive_catalog.borrow().entries[0]
+                .redirection_state
+                .get()
+        );
+
+        control.reconcile_dynamic_drive_redirection_state(device_id, true);
+        assert!(
+            control.compatibility.borrow().drive_catalog.borrow().entries[0]
+                .redirection_state
+                .get()
+        );
+    }
+
+    #[test]
+    fn drive_catalog_preserves_existing_selection_and_defaults_only_new_drives() {
+        let mut catalog = DriveCatalog::from_roots(vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\")], false);
+        catalog.entries[0].redirection_state.set(true);
+
+        catalog.rescan_from_roots(
+            vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\"), PathBuf::from(r"E:\")],
+            true,
+        );
+
+        assert_eq!(catalog.selected_drive_names(), vec!["C:".to_owned(), "E:".to_owned()]);
+        assert!(!catalog.entries[1].redirection_state.get());
+    }
+
+    #[test]
+    fn drive_catalog_keeps_device_ids_stable_across_rescans_and_reinsertion() {
+        let mut catalog = DriveCatalog::from_roots(vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\")], false);
+        let c_id = catalog.entries[0].device_id;
+        let d_id = catalog.entries[1].device_id;
+        catalog.entries[0].redirection_state.set(true);
+
+        catalog.rescan_from_roots(vec![PathBuf::from(r"D:\"), PathBuf::from(r"C:\")], false);
+        assert_eq!(catalog.entries[0].device_id, d_id);
+        assert_eq!(catalog.entries[1].device_id, c_id);
+
+        let before = catalog.selected_drive_descriptions();
+        catalog.rescan_from_roots(vec![PathBuf::from(r"D:\")], false);
+        let after_remove = catalog.selected_drive_descriptions();
+        assert_eq!(
+            DriveCatalog::dynamic_drive_operations(&before, &after_remove),
+            vec![DynamicDriveOperation::Remove { device_id: c_id }]
+        );
+
+        catalog.rescan_from_roots(vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\")], false);
+        assert_eq!(catalog.entries[0].device_id, c_id);
+    }
+
+    #[test]
+    fn removed_selected_drive_is_retained_until_worker_confirms_removal() {
+        let mut catalog = DriveCatalog::from_roots(vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\")], false);
+        let c_id = catalog.entries[0].device_id;
+        catalog.entries[0].redirection_state.set(true);
+
+        catalog.rescan_from_roots(vec![PathBuf::from(r"D:\")], false);
+        assert_eq!(catalog.entries.len(), 1);
+        assert_eq!(catalog.removed_entries.len(), 1);
+        assert_eq!(catalog.removed_entries[0].device_id, c_id);
+
+        catalog
+            .entry_by_device_id(c_id)
+            .expect("removed drive tombstone")
+            .redirection_state
+            .set(true);
+        catalog.rescan_from_roots(vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\")], false);
+
+        assert!(catalog.removed_entries.is_empty());
+        assert_eq!(catalog.entries[0].device_id, c_id);
+        assert!(catalog.entries[0].redirection_state.get());
+    }
+
+    #[test]
+    fn confirmed_dynamic_removal_discards_drive_tombstone() {
+        let mut catalog = DriveCatalog::from_roots(vec![PathBuf::from(r"C:\")], true);
+        let device_id = catalog.entries[0].device_id;
+        catalog.rescan_from_roots(Vec::new(), false);
+        assert_eq!(catalog.removed_entries.len(), 1);
+
+        catalog.confirm_dynamic_drive_removed(device_id);
+
+        assert!(catalog.removed_entries.is_empty());
+    }
+
+    #[test]
+    fn dynamic_connection_snapshot_does_not_mutate_preconnect_selection() {
+        let catalog = DriveCatalog::from_roots(vec![PathBuf::from(r"C:\")], false);
+        let mut snapshot = catalog.connection_snapshot(false);
+        snapshot.rescan_from_roots(vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\")], true);
+
+        assert!(!catalog.entries[0].redirection_state.get());
+        assert!(!snapshot.entries[0].redirection_state.get());
+        assert!(snapshot.entries[1].redirection_state.get());
+    }
+
+    #[test]
+    fn reconnect_dynamic_drive_operations_restore_live_selection() {
+        let initial_device_ids = BTreeSet::from([1, 2]);
+        let desired_drives = BTreeMap::from([
+            (PathBuf::from(r"C:\"), (1, "C:".to_owned())),
+            (PathBuf::from(r"E:\"), (3, "E:".to_owned())),
+        ]);
+
+        assert_eq!(
+            DriveCatalog::reconnect_dynamic_drive_operations(&initial_device_ids, &desired_drives),
+            vec![
+                DynamicDriveOperation::Remove { device_id: 2 },
+                DynamicDriveOperation::Add {
+                    device_id: 3,
+                    name: "E:".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn sealed_dynamic_drive_objects_reject_updates_without_an_active_session() {
+        let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
+        settings.borrow_mut().redirect_dynamic_drives = true;
+        settings.borrow_mut().connection_settings_sealed = true;
+        let catalog = Rc::new(RefCell::new(DriveCatalog::from_roots(
+            vec![PathBuf::from(r"C:\")],
+            false,
+        )));
+        let collection: IMsRdpDriveCollection = DriveCollection::new(Rc::clone(&catalog), Rc::clone(&settings)).into();
+        let mut drive = ptr::null_mut();
+        unsafe { collection.get_DriveByIndex(0, &mut drive) }.expect("get drive");
+        let drive = unsafe { IMsRdpDrive::from_raw(drive) };
+
+        let error = unsafe { drive.put_RedirectionState(VARIANT_TRUE.0) }
+            .expect_err("a stopping or disconnected session must reject dynamic updates");
+
+        assert_eq!(error.code(), E_FAIL);
+        assert!(!catalog.borrow().entries[0].redirection_state.get());
+    }
+
+    #[test]
+    fn drive_collection_exposes_mutable_preconnect_drive_objects() {
+        let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
+        let catalog = Rc::new(RefCell::new(DriveCatalog::from_roots(
+            vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\")],
+            false,
+        )));
+        let collection: IMsRdpDriveCollection = DriveCollection::new(Rc::clone(&catalog), Rc::clone(&settings)).into();
+
+        let mut count = 0;
+        unsafe { collection.get_DriveCount(&mut count) }.expect("get drive count");
+        assert_eq!(count, 2);
+
+        let mut drive = ptr::null_mut();
+        unsafe { collection.get_DriveByIndex(0, &mut drive) }.expect("get first drive");
+        let drive = unsafe { IMsRdpDrive::from_raw(drive) };
+
+        let mut name = ptr::null();
+        unsafe { drive.get_Name(&mut name) }.expect("get drive name");
+        let name = unsafe { BSTR::from_raw(name) };
+        assert_eq!(String::try_from(&name).expect("valid drive name"), "C:\\\0");
+
+        let mut state = VARIANT_TRUE.0;
+        unsafe { drive.get_RedirectionState(&mut state) }.expect("get initial drive redirection state");
+        assert_eq!(state, VARIANT_FALSE.0);
+        unsafe { drive.put_RedirectionState(VARIANT_TRUE.0) }.expect("select first drive");
+        assert_eq!(catalog.borrow().selected_drive_names(), vec!["C:".to_owned()]);
+
+        settings.borrow_mut().connection_settings_sealed = true;
+        let error = unsafe { drive.put_RedirectionState(VARIANT_FALSE.0) }
+            .expect_err("drive redirection state is sealed after connection starts");
+        assert_eq!(error.code(), E_FAIL);
+
+        let mut missing: *mut c_void = ptr::dangling_mut();
+        let error =
+            unsafe { collection.get_DriveByIndex(2, &mut missing) }.expect_err("out-of-range drive index is rejected");
+        assert_eq!(error.code(), E_UNEXPECTED);
+        assert_eq!(missing, ptr::dangling_mut());
+    }
+
+    #[test]
+    fn removed_drive_object_cannot_redirect_a_recycled_volume_root() {
+        let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
+        let catalog = Rc::new(RefCell::new(DriveCatalog::from_roots(
+            vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\")],
+            false,
+        )));
+        let collection: IMsRdpDriveCollection = DriveCollection::new(Rc::clone(&catalog), Rc::clone(&settings)).into();
+
+        let mut drive = ptr::null_mut();
+        unsafe { collection.get_DriveByIndex(0, &mut drive) }.expect("get first drive");
+        let drive = unsafe { IMsRdpDrive::from_raw(drive) };
+
+        catalog
+            .borrow_mut()
+            .rescan_from_roots(vec![PathBuf::from(r"D:\")], false);
+
+        let error = unsafe { drive.put_RedirectionState(VARIANT_TRUE.0) }
+            .expect_err("a drive object detached by rescan cannot mutate redirection");
+        assert_eq!(error.code(), E_FAIL);
+        assert!(catalog.borrow().selected_drive_names().is_empty());
+    }
+
+    #[test]
+    fn control_keeps_a_stable_drive_collection() {
+        let control: IMsRdpClient10 = Control::new().into();
+        let non_scriptable = control
+            .cast::<IMsRdpClientNonScriptable3>()
+            .expect("control supports the drive collection contract");
+
+        let mut first = ptr::null_mut();
+        let mut second = ptr::null_mut();
+        unsafe { non_scriptable.get_DriveCollection(&mut first) }.expect("get first drive collection");
+        unsafe { non_scriptable.get_DriveCollection(&mut second) }.expect("get second drive collection");
+        assert_eq!(first, second);
+        drop(unsafe { IMsRdpDriveCollection::from_raw(first) });
+        drop(unsafe { IMsRdpDriveCollection::from_raw(second) });
     }
 
     #[test]

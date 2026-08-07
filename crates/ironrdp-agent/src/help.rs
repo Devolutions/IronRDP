@@ -28,7 +28,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Lifecycle
 
-- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]...`
+- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--certificate-sha256 SHA256] [--dangerously-accept-invalid-certificate] [--rdpdr-volume VOLUME_ROOT --rdpdr-drive-name NAME] [--rdpdr-drive NAME=VOLUME_ROOT]...`
                                  Start the daemon (foreground). Run this first. `--overlay`
                                  preloads a .rdp file as an overlay applied to every `connect`
                                  (overlay wins), letting an operator provision any setting out of
@@ -38,7 +38,19 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  file line (TYPE is `i` for integer or `s` for string), e.g.
                                  `--prop ironrdp_autologon:i:1`. Check `status` to see whether
                                  credentials are already loaded before supplying any yourself.
-- `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
+                                 Every daemon connection uses strict certificate validation. An
+                                 optional `--certificate-sha256` value (or
+                                 `IRONRDP_AGENT_CERTIFICATE_SHA256`) is accepted only as an
+                                 endpoint-specific pin after normal validation fails. For an
+                                 explicitly authorized test-only bypass, use
+                                 `--dangerously-accept-invalid-certificate`; it applies only to
+                                 that daemon process and cannot be set through IPC. On Windows, `--rdpdr-volume`
+                                 configures one full local volume for filesystem redirection under
+                                 the optional `--rdpdr-drive-name` (default `C`). Repeat
+                                 `--rdpdr-drive NAME=VOLUME_ROOT` to redirect multiple volumes in
+                                 one session. Each name is protocol-visible, unique, and limited to
+                                 seven RDPDR-compatible ASCII characters.
+- `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. Precedence (low to high): .rdp file -> `--prop`
                                  overrides -> named flags (`--server`/`-u`/`-p`/`-d`). When those
@@ -54,12 +66,6 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  (e.g. `ironrdp_connector=trace`) on top of the default `debug`
                                  level; use it to troubleshoot a connection, then read the result
                                  with `query-logs`.
-                                 On Windows, `--sandbox-id` resolves NamedPipe RDP settings via
-                                 WindowsSandboxServer gRPC (create the VM first with `wsb start`).
-                                 Sandbox defaults are the base; explicit file/prop/flags override
-                                 them, except NamedPipe TLS/CredSSP stay forced off. Prefer
-                                 `--sandbox-id` over `--sandbox-pipe`; the pipe escape hatch needs
-                                 `-u`/`-p` (guest password from `sandbox config`).
 - `disconnect`                   Tear down the current session (daemon keeps running).
 - `status`                       Report connection state, destination, last frame size, and whether
                                  credentials are preloaded (`credentials loaded: true|false`). Query
@@ -138,23 +144,6 @@ event lines. JSON output represents raw bytes as byte arrays and is bounded to 8
 
 Shell execution is intentionally not exposed: there is no `now shell` command, IPC request,
 capability, or mapping, even if a peer advertises it.
-
-## Windows Sandbox (Windows only)
-
-Prefer create-then-connect: start the VM with official `wsb start` (prints the sandbox Id), then
-attach with the agent. The agent calls WindowsSandboxServer gRPC in-process over the per-user
-named pipe (no .NET helper).
-
-- `sandbox list`                 List running sandbox Ids via WindowsSandboxServer.
-- `sandbox config <ID>`          Print a redacted RdpClientConfig summary (password shown as set/empty).
-- `sandbox stop <ID>`            Shut down a running sandbox via gRPC.
-- `connect --sandbox-id <ID>`    Fetch config + connect over `\\.\pipe\{VMId}` (PROTOCOL_RDP /
-                                 ENCRYPTION_LEVEL_NONE). Daemon must already be running.
-- `connect --sandbox-pipe PATH -u USER -p PASS`
-                                 Low-level NamedPipe connect when you already have the guest password.
-
-Default product transport is NamedPipe. Local (VMConnect :2179 + PCB) and guest TCP are not the
-primary path.
 
 ## Errors
 

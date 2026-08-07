@@ -5,6 +5,7 @@
 //! explicitly with `daemon-start` and runs in the foreground; the caller is expected to background
 //! it. On a clean shutdown the Unix socket file is removed (see [`crate::transport`]).
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
@@ -14,13 +15,19 @@ use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
 use ironrdp_tls::CertificateValidation;
+use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
+#[cfg(windows)]
+use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
+#[cfg(windows)]
+use std::collections::BTreeSet;
+
 use crate::ipc::{
-    ConnState, KeyFilter, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response,
-    StatusInfo,
+    ConnState, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry,
+    Request, Response, StatusInfo,
 };
 use crate::logbuf::{self, LogBuffer};
 use crate::now::NowEndpoint;
@@ -32,9 +39,9 @@ use crate::transport::{Endpoint, Listener, read_message, write_message};
 /// `overlay` is an operator-provided [`PropertySet`] layered on top of every `Connect` request
 /// (overlay wins), so any setting — credentials in particular — can be preconfigured without the
 /// caller ever supplying it. Pass an empty set when no overlay is desired.
-pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()> {
+pub async fn run(endpoint: Endpoint, overlay: PropertySet, options: DaemonOptions) -> anyhow::Result<()> {
     init_daemon_logging();
-    let daemon = Arc::new(Daemon::with_overlay(overlay));
+    let daemon = Arc::new(Daemon::with_options(overlay, options)?);
     serve(endpoint, daemon).await
 }
 
@@ -122,6 +129,116 @@ pub enum ResizeError {
     Closed,
 }
 
+/// Endpoint-bound SHA-256 certificate pin for an unattended session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CertificateSha256([u8; 32]);
+
+impl CertificateSha256 {
+    fn matches(self, certificate: &[u8]) -> bool {
+        let actual: [u8; 32] = Sha256::digest(certificate).into();
+        actual == self.0
+    }
+}
+
+impl core::str::FromStr for CertificateSha256 {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let normalized: String = input
+            .chars()
+            .filter(|character| !matches!(character, ':' | '-'))
+            .collect();
+        if normalized.len() != 64 || !normalized.is_ascii() {
+            return Err("certificate SHA-256 fingerprint must contain 64 hexadecimal characters".to_owned());
+        }
+
+        let mut bytes = [0; 32];
+        for (hex, byte) in normalized.as_bytes().chunks_exact(2).zip(&mut bytes) {
+            let hex = core::str::from_utf8(hex)
+                .map_err(|_| "certificate SHA-256 fingerprint must be hexadecimal".to_owned())?;
+            *byte = u8::from_str_radix(hex, 16)
+                .map_err(|_| "certificate SHA-256 fingerprint must be hexadecimal".to_owned())?;
+        }
+        Ok(Self(bytes))
+    }
+}
+
+/// Windows volume definition exposed as one RDPDR filesystem drive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RdpdrDriveConfig {
+    root_path: PathBuf,
+    display_name: String,
+}
+
+impl RdpdrDriveConfig {
+    /// Creates a drive definition. The Windows backend validates and opens the
+    /// volume root before starting the RDP session.
+    pub fn new(root_path: PathBuf, display_name: String) -> anyhow::Result<Self> {
+        if root_path.as_os_str().is_empty() {
+            anyhow::bail!("RDPDR volume root must not be empty");
+        }
+        if display_name.is_empty() {
+            anyhow::bail!("RDPDR drive name must not be empty");
+        }
+        if display_name.len() > 7 {
+            anyhow::bail!("RDPDR drive name must contain at most seven ASCII characters");
+        }
+        if !display_name.chars().enumerate().all(|(index, character)| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, ' ' | '_' | '-' | '.')
+                || (character == ':' && index + 1 == display_name.len())
+        }) {
+            anyhow::bail!("RDPDR drive name contains an invalid DOS device-name character");
+        }
+
+        Ok(Self {
+            root_path,
+            display_name,
+        })
+    }
+}
+
+/// Startup-only settings that are deliberately not exposed through the session IPC protocol.
+#[derive(Clone, Debug, Default)]
+pub struct DaemonOptions {
+    certificate_pin: Option<CertificateSha256>,
+    dangerously_accept_invalid_certificate: bool,
+    rdpdr_drives: Vec<RdpdrDriveConfig>,
+}
+
+impl DaemonOptions {
+    /// Configures an endpoint-bound exception for a certificate that fails
+    /// normal strict validation.
+    #[must_use]
+    pub fn with_certificate_pin(mut self, certificate_pin: Option<CertificateSha256>) -> Self {
+        self.certificate_pin = certificate_pin;
+        self
+    }
+
+    /// Disables certificate and hostname validation for this daemon process.
+    #[must_use]
+    pub fn with_dangerously_accept_invalid_certificate(mut self, enabled: bool) -> Self {
+        self.dangerously_accept_invalid_certificate = enabled;
+        self
+    }
+
+    /// Configures one or more local volumes for filesystem redirection.
+    #[must_use]
+    pub fn with_rdpdr_drives(mut self, rdpdr_drives: Vec<RdpdrDriveConfig>) -> Self {
+        self.rdpdr_drives = rdpdr_drives;
+        self
+    }
+
+    /// Configures a single local volume for filesystem redirection.
+    ///
+    /// This compatibility helper is equivalent to calling
+    /// [`Self::with_rdpdr_drives`] with zero or one drive.
+    #[must_use]
+    pub fn with_rdpdr_drive(self, rdpdr_drive: Option<RdpdrDriveConfig>) -> Self {
+        self.with_rdpdr_drives(rdpdr_drive.into_iter().collect())
+    }
+}
+
 /// The daemon's mutable state: the (single) current session, plus the shared log buffer.
 pub struct Daemon {
     state: Mutex<Option<Session>>,
@@ -135,6 +252,10 @@ pub struct Daemon {
     /// Whether [`Self::overlay`] contributes any secret (password/token) value, i.e. whether the
     /// caller can omit credentials of its own.
     credentials_loaded: bool,
+    certificate_pin: Option<CertificateSha256>,
+    dangerously_accept_invalid_certificate: bool,
+    #[cfg(windows)]
+    rdpdr_backend_factory: Option<WindowsRdpdrBackendFactory>,
     /// Notifies an optional GUI frontend whenever retained live state changes.
     notification: Option<mpsc::Sender<()>>,
     shutdown: tokio::sync::watch::Sender<()>,
@@ -171,25 +292,67 @@ pub struct Frame {
 }
 
 impl Daemon {
-    fn new(logs: Arc<LogBuffer>, overlay: PropertySet) -> Self {
+    fn new(logs: Arc<LogBuffer>, overlay: PropertySet, options: DaemonOptions) -> anyhow::Result<Self> {
         // Credentials are considered "loaded" when the overlay provides at least one secret value,
         // which is what frees the caller from supplying a password.
         let credentials_loaded = overlay.iter().any(|(key, _)| ironrdp_cfg::is_secret_key(key));
         let (shutdown, _) = tokio::sync::watch::channel(());
-        Self {
+        #[cfg(windows)]
+        let rdpdr_backend_factory = if options.rdpdr_drives.is_empty() {
+            None
+        } else {
+            let mut names = BTreeSet::new();
+            let drives = options
+                .rdpdr_drives
+                .iter()
+                .enumerate()
+                .map(|(index, drive)| {
+                    if !names.insert(drive.display_name.to_ascii_uppercase()) {
+                        anyhow::bail!("RDPDR drive names must be unique");
+                    }
+                    let device_id =
+                        u32::try_from(index + 1).map_err(|_| anyhow::anyhow!("too many RDPDR drive configurations"))?;
+                    RedirectedDrive::new(device_id, &drive.display_name, &drive.root_path, false)
+                        .map_err(|error| anyhow::anyhow!("invalid RDPDR drive configuration: {error}"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            Some(
+                WindowsRdpdrBackendFactory::new(drives)
+                    .map_err(|error| anyhow::anyhow!("invalid RDPDR drive configuration: {error}"))?,
+            )
+        };
+        #[cfg(not(windows))]
+        if !options.rdpdr_drives.is_empty() {
+            anyhow::bail!("RDPDR filesystem redirection is only available on Windows");
+        }
+
+        Ok(Self {
             state: Mutex::new(None),
             connect_lock: Mutex::new(()),
             logs,
             overlay,
             credentials_loaded,
+            certificate_pin: options.certificate_pin,
+            dangerously_accept_invalid_certificate: options.dangerously_accept_invalid_certificate,
+            #[cfg(windows)]
+            rdpdr_backend_factory,
             notification: None,
             shutdown,
-        }
+        })
     }
 
     /// Creates a daemon with no preconfigured connection properties.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the default daemon configuration becomes invalid.
     pub fn with_overlay(overlay: PropertySet) -> Self {
-        Self::new(LogBuffer::new(), overlay)
+        Self::with_options(overlay, DaemonOptions::default()).expect("default daemon configuration is valid")
+    }
+
+    /// Creates a daemon with startup-only settings that are not available to IPC callers.
+    pub fn with_options(overlay: PropertySet, options: DaemonOptions) -> anyhow::Result<Self> {
+        Self::new(LogBuffer::new(), overlay, options)
     }
 
     /// Adds a capacity-one notification channel for frontends that render retained live state.
@@ -259,6 +422,7 @@ impl Daemon {
             } else {
                 Operation::UnicodeKeyReleased(ch)
             })),
+            Request::UnicodeText { text } => DaemonResponse::Single(self.unicode_text(&text).await),
             Request::Resize { width, height } => DaemonResponse::Single(self.resize(width, height)),
             Request::NowCapabilities => DaemonResponse::Single(self.now_capabilities().await),
             Request::NowRun { command, directory } => DaemonResponse::Single(self.now_run(command, directory).await),
@@ -317,16 +481,18 @@ impl Daemon {
             }
         };
         let certificate_validation = match properties.get::<&str>("ironrdp_certificate_validation") {
-            None | Some("dangerously_accept_invalid_certificate") => {
-                CertificateValidation::DangerouslyAcceptInvalidCertificate
+            None | Some("strict") => {
+                if self.dangerously_accept_invalid_certificate {
+                    warn!("Certificate validation is disabled by daemon startup configuration");
+                    CertificateValidation::DangerouslyAcceptInvalidCertificate
+                } else {
+                    CertificateValidation::Strict
+                }
             }
-            Some("strict") => CertificateValidation::Strict,
             Some(value) => {
                 return Response::typed_error(
                     crate::ipc::AgentErrorCategory::InvalidRequest,
-                    format!(
-                        "invalid certificate validation policy '{value}'; expected 'strict' or 'dangerously_accept_invalid_certificate'"
-                    ),
+                    format!("invalid certificate validation policy '{value}'; agent sessions require 'strict'"),
                 );
             }
         };
@@ -353,6 +519,20 @@ impl Daemon {
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true);
+        #[cfg(windows)]
+        let builder = if self.rdpdr_backend_factory.is_some() {
+            builder.with_rdpdr(true)
+        } else {
+            builder
+        };
+        let builder = match self.certificate_pin {
+            Some(certificate_pin) => {
+                let callback: ironrdp_tls::CertificateValidationCallback =
+                    Arc::new(move |certificate, _reason| certificate_pin.matches(certificate));
+                builder.with_certificate_validation_callback(callback)
+            }
+            None => builder,
+        };
 
         let missing = builder.missing();
         if !missing.is_empty() {
@@ -380,8 +560,15 @@ impl Daemon {
         let live_seed = config.properties().clone();
         let destination = config.destination().to_string();
 
-        let (output_tx, output_rx) = mpsc::channel(16);
+        // A single RDPDR IRP emits several diagnostic events. Keep them from
+        // backpressuring the active RDP loop during large file transfers.
+        let (output_tx, output_rx) = mpsc::channel(128);
         let client = RdpClient::new(config, output_tx);
+        #[cfg(windows)]
+        let client = match &self.rdpdr_backend_factory {
+            Some(factory) => client.with_rdpdr_backend_factory(Box::new(factory.clone())),
+            None => client,
+        };
         let input_tx = client.input_sender();
 
         let live = Arc::new(Mutex::new(Live {
@@ -619,6 +806,48 @@ impl Daemon {
         self.input_operations([operation])
     }
 
+    async fn unicode_text(&self, text: &str) -> Response {
+        if text.chars().count() > MAX_UNICODE_TEXT_CHARS {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                format!("text exceeds the {MAX_UNICODE_TEXT_CHARS}-character limit"),
+            );
+        }
+
+        let (input_tx, events) = {
+            let mut guard = self.state.lock().expect("daemon state poisoned");
+            let Some(session) = guard.as_mut() else {
+                return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+            };
+
+            let events = text
+                .chars()
+                .map(|ch| {
+                    session
+                        .input_db
+                        .apply([Operation::UnicodeKeyPressed(ch), Operation::UnicodeKeyReleased(ch)])
+                })
+                .filter(|events| !events.is_empty())
+                .collect::<Vec<_>>();
+
+            (session.input_tx.clone(), events)
+        };
+
+        // Some servers lose characters when a complete command line is packed into one
+        // FastPath PDU. Preserve the established key-by-key framing without forcing every
+        // caller to start a separate CLI process, and await capacity so no character is dropped.
+        for events in events {
+            if input_tx.send(RdpInputEvent::FastPath(events)).await.is_err() {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        }
+
+        Response::ok()
+    }
+
     /// Sends input operations to the active RDP session in one FastPath message.
     ///
     /// # Panics
@@ -794,6 +1023,13 @@ async fn consume_output(
     notification: Option<mpsc::Sender<()>>,
 ) {
     while let Some(event) = output_rx.recv().await {
+        if let RdpOutputEvent::RdpdrEvent(event) = event {
+            // RDPDR telemetry is diagnostic-only; do not contend on retained
+            // framebuffer state or notify frontends for it.
+            debug!(?event, "RDPDR event");
+            continue;
+        }
+
         let mut guard = live.lock().expect("session live state poisoned");
         let previous = guard.state;
         match event {
@@ -834,7 +1070,7 @@ async fn consume_output(
             RdpOutputEvent::Terminated(Err(error)) => {
                 guard.state = ConnState::Failed;
                 guard.error = Some(format!("{error}"));
-                warn!(%error, "Session terminated with an error");
+                warn!(%error, ?error, "Session terminated with an error");
             }
             // With software pointer rendering the cursor is composited into the `Image` frames
             // above; the remaining pointer events (default/hidden) carry no live state we track.
@@ -941,11 +1177,14 @@ fn current_platform() -> MajorPlatformType {
 
 #[cfg(test)]
 mod tests {
+    use core::str::FromStr as _;
+    use std::path::PathBuf;
+
     use tokio::sync::mpsc;
 
     use ironrdp_propertyset::PropertySet;
 
-    use super::{Daemon, ResizeError, notify};
+    use super::{CertificateSha256, Daemon, DaemonOptions, RdpdrDriveConfig, ResizeError, notify};
     use crate::ipc::Response;
 
     #[test]
@@ -976,5 +1215,60 @@ mod tests {
         daemon.shutdown();
 
         assert!(shutdown.has_changed().expect("shutdown sender is live"));
+    }
+
+    #[test]
+    fn certificate_sha256_accepts_common_fingerprint_formatting() {
+        let pin = CertificateSha256::from_str(
+            "00:11-22:33-44:55-66:77-88:99-aa:bb-cc:dd-ee:ff-00:11-22:33-44:55-66:77-88:99-aa:bb-cc:dd-ee:ff",
+        )
+        .expect("valid SHA-256 fingerprint");
+
+        assert_eq!(
+            pin.0,
+            [
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
+                0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff
+            ]
+        );
+        assert!(CertificateSha256::from_str("0011").is_err());
+        assert!(CertificateSha256::from_str(&"zz".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn rdpdr_drive_configuration_rejects_empty_values() {
+        assert!(RdpdrDriveConfig::new(PathBuf::new(), "AgentRdpdr".to_owned()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), String::new()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "invalid\0name".to_owned()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "too-long".to_owned()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), r"C\share".to_owned()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "C".to_owned()).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rdpdr_daemon_option_constructs_backend_factory() {
+        let drive = RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "C".to_owned()).expect("valid drive");
+        let daemon = Daemon::with_options(
+            PropertySet::new(),
+            DaemonOptions::default().with_rdpdr_drive(Some(drive)),
+        )
+        .expect("valid daemon options");
+
+        assert!(daemon.rdpdr_backend_factory.is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rdpdr_daemon_option_rejects_case_insensitive_duplicate_drive_names() {
+        let first = RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "Data".to_owned()).expect("valid drive");
+        let duplicate = RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "data".to_owned()).expect("valid drive");
+
+        let result = Daemon::with_options(
+            PropertySet::new(),
+            DaemonOptions::default().with_rdpdr_drives(vec![first, duplicate]),
+        );
+
+        assert!(matches!(result, Err(error) if error.to_string().contains("RDPDR drive names must be unique")));
     }
 }

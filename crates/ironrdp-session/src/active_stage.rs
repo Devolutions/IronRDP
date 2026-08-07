@@ -107,6 +107,11 @@ impl ActiveStage {
         self.fast_path_processor.update_mouse_pos(x, y);
     }
 
+    #[must_use]
+    pub fn set_static_channel_chunk_size(&mut self, chunk_size: usize) -> bool {
+        self.x224_processor.set_static_channel_chunk_size(chunk_size)
+    }
+
     /// Returns whether a malformed Fast-Path bitmap was discarded and needs a full visual recovery.
     ///
     /// The caller decides whether the negotiated capabilities permit a recovery request.
@@ -129,11 +134,13 @@ impl ActiveStage {
         // response frame + graphics update
         let mut output = Vec::with_capacity(2);
 
-        // Encoding fastpath response frame
-        // PERF: unnecessary copy
-        let fastpath_input = FastPathInput::new(events.to_vec()).map_err(SessionError::decode)?;
-        let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
-        output.push(ActiveStageOutput::ResponseFrame(frame));
+        // The Fast-Path event count is an 8-bit field, so preserve input order across bounded frames.
+        for event_chunk in events.chunks(FastPathInput::MAX_EVENTS) {
+            // PERF: unnecessary copy
+            let fastpath_input = FastPathInput::new(event_chunk.to_vec()).map_err(SessionError::decode)?;
+            let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
+            output.push(ActiveStageOutput::ResponseFrame(frame));
+        }
 
         // If pointer rendering is disabled - we can skip the rest
         if !self.enable_server_pointer {
@@ -612,7 +619,9 @@ fn process_slow_path_pointer(
 
 #[cfg(test)]
 mod tests {
+    use ironrdp_core::decode;
     use ironrdp_graphics::image_processing::PixelFormat;
+    use ironrdp_pdu::input::fast_path::KeyboardFlags;
     use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
 
     use super::*;
@@ -637,6 +646,44 @@ mod tests {
 
         assert_eq!(stage.request_full_redraw(1024, 768, true, false).unwrap().len(), 1);
         assert!(stage.request_full_redraw(1024, 768, false, false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fastpath_input_splits_event_counts_that_exceed_the_wire_limit() {
+        let mut stage = ActiveStageBuilder {
+            static_channels: StaticChannelSet::new(),
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let events = vec![
+            FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), u16::from(b'a'));
+            FastPathInput::MAX_EVENTS + 1
+        ];
+
+        let outputs = stage
+            .process_fastpath_input(&mut image, &events)
+            .expect("large input event batch should encode");
+        let event_counts = outputs
+            .iter()
+            .filter_map(|output| match output {
+                ActiveStageOutput::ResponseFrame(frame) => Some(
+                    decode::<FastPathInput>(frame)
+                        .expect("response frame should decode")
+                        .input_events()
+                        .len(),
+                ),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(event_counts, [FastPathInput::MAX_EVENTS, 1]);
     }
 
     #[test]

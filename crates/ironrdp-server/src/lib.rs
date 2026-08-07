@@ -36,7 +36,7 @@ pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 pub use server::{
     AutoReconnectCookieHandle, ConnectionHandler, CredentialDecision, CredentialValidationError, CredentialValidator,
     Credentials, ExactMatchCredentialValidator, PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity,
-    ServerEvent, ServerEventSender, TransportTls,
+    ServerEvent, ServerEventSender, StaticChannelFactory, TransportTls,
 };
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 

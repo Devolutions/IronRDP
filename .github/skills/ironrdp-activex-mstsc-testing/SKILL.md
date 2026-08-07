@@ -22,10 +22,13 @@ than launching the real `mstsc.exe` child.
 - Require `MSRDPEX_AX_BACKEND=ironrdp` so MsRdpEx enables its private-layout exclusion.
 - Put `RDP_USERNAME` and `RDP_PASSWORD` only in the launcher process environment. Never print,
   persist, pass as arguments, add to an `.rdp` file, or copy to artifacts.
-- For an authorized isolated test endpoint with a self-signed certificate, set the standard
-  `IMsRdpClientAdvancedSettings4::AuthenticationLevel` property to `0` before `Connect`. This
-  disables certificate and hostname validation for that control instance; never use it for a
-  production connection.
+- Do not weaken certificate validation for the real `mstsc.exe` child. If
+  `AuthenticationLevel` is unset, the native-MSTSC credential bridge uses the control's strict,
+  fingerprint-bound certificate-warning lifecycle. Confirm and accept that warning only for the
+  explicitly authorized test endpoint.
+- `IMsRdpClientAdvancedSettings4::put_AuthenticationLevel(0)` is only suitable for an isolated
+  COM-hosted test that can invoke the setter before `Connect`. UI Automation against real
+  `mstsc.exe` cannot invoke the hosted control's preconnect COM setter.
 - Do not synthesize messages with pointer-bearing parameters, especially `WM_DPICHANGED`. Generate
   native resize, move, activation, minimization, and restoration through Win32 window APIs instead.
 - Store screenshots, traces, JSON reports, and temporary scripts under the session artifact
@@ -40,8 +43,9 @@ than launching the real `mstsc.exe` child.
    ```
 
 2. Obtain an architecture-matched MsRdpEx build containing `mstscex.exe` and `MsRdpEx.dll`.
-3. Confirm the user authorized the test endpoint, the process-local `RDP_USERNAME` /
-   `RDP_PASSWORD` credentials, and (if required) `AuthenticationLevel=0`.
+3. Confirm the user authorized the test endpoint and the process-local `RDP_USERNAME` /
+   `RDP_PASSWORD` credentials. If the endpoint has an untrusted certificate, confirm its expected
+   fingerprint through the control's certificate warning before accepting it.
 
 ## Launch the real native host
 
@@ -64,18 +68,10 @@ $mstsc = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($launcherProce
 if ($null -eq $mstsc) { throw 'mstscex did not launch mstsc.exe' }
 ```
 
-The target for UI Automation is the `mstsc.exe` child, not `mstscex.exe`.
-
-Before calling `Connect`, configure the launched control through its normal preconnect COM
-settings:
-
-```text
-IMsRdpClientAdvancedSettings4::put_AuthenticationLevel(0)
-```
-
-This is the only permitted invalid-certificate test configuration. It must be set explicitly for
-the test control before connecting; do not use an environment variable, register the DLL, alter
-machine-wide settings, or change the product default.
+The target for UI Automation is the `mstsc.exe` child, not `mstscex.exe`. Do not pass an `.rdp`
+file to set `authentication level:i:0`: this workflow requires the visible **Computer** field for
+the credential bridge, and a file setting is not a substitute for the hosted control's preconnect
+COM setter.
 
 ## Connect without exposing credentials
 
@@ -83,7 +79,8 @@ Use UI Automation to set the visible **Computer** edit control to the authorized
 **Connect**. The explicit bridge will receive native MSTSC's `put_StartProgram` preflight, display
 the IronRDP CredUI dialog, and pre-populate it from the process-local `RDP_USERNAME` /
 `RDP_PASSWORD` values. Invoke **OK** only after confirming the prompt belongs to the launched
-`mstsc.exe` process.
+`mstsc.exe` process. If certificate validation fails, confirm that the control's warning identifies
+the authorized endpoint and expected fingerprint, then accept it explicitly for this connection.
 
 Expected value-free trace markers, in order:
 
@@ -93,7 +90,7 @@ NativeMstscCredentialBridge::StartProgramBridgeAttached
 ActiveXCredentialPrompt::Prompt
 NativeMstscCredentialBridge::QualifiedUsername
 ActiveXCredentialPrompt::CredentialsAccepted
-RdpWorker::TlsCertificateValidation:DangerouslyAcceptInvalidCertificate
+RdpWorker::TlsCertificateValidation:PromptOnFailure
 ActiveXClipboard::Started
 Renderer::NativeMstscShellLayoutSynced
 RdpWorker::PostLogonDisplayRedraw

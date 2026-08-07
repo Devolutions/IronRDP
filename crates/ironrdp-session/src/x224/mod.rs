@@ -10,7 +10,9 @@ use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::rdp::session_info::{InfoData, SaveSessionInfoPdu, ServerAutoReconnect};
 use ironrdp_pdu::x224::X224;
-use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages, client_encode_svc_messages};
+use ironrdp_svc::{
+    StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages, client_encode_svc_messages_with_max_chunk_len,
+};
 use tracing::debug;
 
 use crate::{SessionError, SessionErrorExt as _, SessionResult, reason_err};
@@ -91,6 +93,7 @@ pub struct Processor {
     io_channel_id: u16,
     message_channel_id: Option<u16>,
     share_id: u32,
+    static_channel_chunk_size: usize,
 }
 
 impl Processor {
@@ -101,17 +104,30 @@ impl Processor {
         message_channel_id: Option<u16>,
         share_id: u32,
     ) -> Self {
+        let static_channel_chunk_size = static_channels.maximum_chunk_size();
+
         Self {
             static_channels,
             user_channel_id,
             io_channel_id,
             message_channel_id,
             share_id,
+            static_channel_chunk_size,
         }
     }
 
     pub fn set_share_id(&mut self, share_id: u32) {
         self.share_id = share_id;
+    }
+
+    #[must_use]
+    pub fn set_static_channel_chunk_size(&mut self, chunk_size: usize) -> bool {
+        if !self.static_channels.set_maximum_chunk_size(chunk_size) {
+            return false;
+        }
+
+        self.static_channel_chunk_size = chunk_size;
+        true
     }
 
     pub fn get_svc_processor<T: SvcProcessor + 'static>(&self) -> Option<&T> {
@@ -137,7 +153,12 @@ impl Processor {
             .get_channel_id_by_type::<C>()
             .ok_or_else(|| reason_err!("SVC", "channel not found"))?;
 
-        process_svc_messages(messages.into(), channel_id, self.user_channel_id)
+        process_svc_messages(
+            messages.into(),
+            channel_id,
+            self.user_channel_id,
+            self.static_channel_chunk_size,
+        )
     }
 
     /// Completes an SVC request for a runtime-defined channel name.
@@ -151,7 +172,12 @@ impl Processor {
             .get_channel_id_by_channel_name(channel_name)
             .ok_or_else(|| reason_err!("SVC", "channel not found"))?;
 
-        process_svc_messages(messages, channel_id, self.user_channel_id)
+        process_svc_messages(
+            messages,
+            channel_id,
+            self.user_channel_id,
+            self.static_channel_chunk_size,
+        )
     }
 
     pub fn get_dvc<T: DvcClientProcessor + 'static>(&self) -> Option<DynamicChannelRef<'_, T>> {
@@ -183,8 +209,14 @@ impl Processor {
             self.process_message_channel(data_ctx)
         } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
             let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
-            process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id)
-                .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
+            client_encode_svc_messages_with_max_chunk_len(
+                response_pdus,
+                channel_id,
+                self.user_channel_id,
+                self.static_channel_chunk_size,
+            )
+            .map(|response| vec![ProcessorOutput::ResponseFrame(response)])
+            .map_err(SessionError::encode)
         } else {
             Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
         }
@@ -394,18 +426,125 @@ fn is_logon_complete(session_info: &SaveSessionInfoPdu) -> bool {
 /// The messages returned here are ready to be sent to the server.
 ///
 /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
-fn process_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> SessionResult<Vec<u8>> {
-    client_encode_svc_messages(messages, channel_id, initiator_id).map_err(SessionError::encode)
+fn process_svc_messages(
+    messages: Vec<SvcMessage>,
+    channel_id: u16,
+    initiator_id: u16,
+    max_chunk_len: usize,
+) -> SessionResult<Vec<u8>> {
+    client_encode_svc_messages_with_max_chunk_len(messages, channel_id, initiator_id, max_chunk_len)
+        .map_err(SessionError::encode)
 }
 
 #[cfg(test)]
 mod tests {
+    use core::any::TypeId;
+    use std::borrow::Cow;
+
     use ironrdp_bulk::{CompressionType as BulkCompressionType, flags};
     use ironrdp_core::encode_vec;
+    use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
     use ironrdp_pdu::rdp::headers::ShareDataPduType;
     use ironrdp_pdu::rdp::session_info::{InfoType, LogonExFlags, LogonInfoExtended};
+    use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
+    use ironrdp_svc::MAX_CHANNEL_CHUNK_LENGTH;
 
     use super::*;
+
+    const CLIENT_USER_CHANNEL_ID: u16 = 1001;
+    const SERVER_USER_CHANNEL_ID: u16 = 1002;
+    const STATIC_CHANNEL_ID: u16 = 1005;
+
+    #[derive(Debug)]
+    struct ReplyingStaticChannel {
+        response: Vec<u8>,
+    }
+
+    ironrdp_svc::impl_as_any!(ReplyingStaticChannel);
+
+    impl SvcProcessor for ReplyingStaticChannel {
+        fn channel_name(&self) -> ChannelName {
+            ChannelName::from_utf8("reply").expect("static channel name is valid")
+        }
+
+        fn process(&mut self, _payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+            Ok(vec![SvcMessage::from(self.response.clone())])
+        }
+    }
+
+    fn static_channel_response(response: Vec<u8>, chunk_size: usize) -> Vec<u8> {
+        let mut static_channels = StaticChannelSet::new();
+        assert!(static_channels.insert(ReplyingStaticChannel { response }).is_none());
+        static_channels.attach_channel_id(TypeId::of::<ReplyingStaticChannel>(), STATIC_CHANNEL_ID);
+        let mut processor = Processor::new(static_channels, CLIENT_USER_CHANNEL_ID, 1003, None, 0);
+        assert!(processor.set_static_channel_chunk_size(chunk_size));
+
+        let mut channel_data = encode_vec(&ChannelPduHeader {
+            length: 1,
+            flags: ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+        })
+        .expect("channel PDU header should encode");
+        channel_data.push(0);
+        let request = encode_vec(&X224(SendDataIndication {
+            initiator_id: SERVER_USER_CHANNEL_ID,
+            channel_id: STATIC_CHANNEL_ID,
+            user_data: Cow::Owned(channel_data),
+        }))
+        .expect("server static-channel request should encode");
+
+        let outputs = processor
+            .process(&request, &mut None)
+            .expect("static-channel request should be processed");
+        let [ProcessorOutput::ResponseFrame(response)] = outputs.as_slice() else {
+            panic!("expected one static-channel response frame");
+        };
+
+        response.clone()
+    }
+
+    #[test]
+    fn static_channel_replies_use_the_client_mcs_initiator_id() {
+        let response = static_channel_response(vec![0xFF], MAX_CHANNEL_CHUNK_LENGTH);
+        let response = decode::<X224<SendDataRequest<'_>>>(&response)
+            .expect("static-channel response frame should decode")
+            .0;
+
+        assert_eq!(response.initiator_id, CLIENT_USER_CHANNEL_ID);
+        assert_eq!(response.channel_id, STATIC_CHANNEL_ID);
+    }
+
+    #[test]
+    fn maximum_static_channel_payload_is_encoded_as_one_tpkt_frame() {
+        let response = static_channel_response(vec![0x5A; MAX_CHANNEL_CHUNK_LENGTH], MAX_CHANNEL_CHUNK_LENGTH);
+        let tpkt_frame_length = usize::from(u16::from_be_bytes(
+            response[2..4].try_into().expect("TPKT length is two bytes"),
+        ));
+        assert_eq!(tpkt_frame_length, response.len());
+
+        let response = decode::<X224<SendDataRequest<'_>>>(&response)
+            .expect("static-channel response frame should decode")
+            .0;
+        assert_eq!(
+            response.user_data.len(),
+            MAX_CHANNEL_CHUNK_LENGTH + 8 /* Channel PDU Header */
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                response.user_data[..4]
+                    .try_into()
+                    .expect("channel length is four bytes")
+            ),
+            u32::try_from(MAX_CHANNEL_CHUNK_LENGTH).expect("maximum chunk size fits in u32")
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                response.user_data[4..8]
+                    .try_into()
+                    .expect("channel flags are four bytes")
+            ),
+            (ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST).bits()
+        );
+    }
 
     #[test]
     fn processor_decompresses_slow_path_share_data() {

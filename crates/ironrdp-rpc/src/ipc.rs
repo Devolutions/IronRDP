@@ -25,6 +25,11 @@ use crate::wire::{
     write_char, write_mouse_button, write_opt_string, write_opt_u16, write_opt_u64, write_string,
 };
 
+/// Maximum number of Unicode scalar values accepted in one [`Request::UnicodeText`] request.
+///
+/// This keeps the generated FastPath input PDU well below its wire-size limit.
+pub const MAX_UNICODE_TEXT_CHARS: usize = 2_048;
+
 /// A request sent by the CLI to the daemon.
 ///
 /// `Connect` carries a binary-encoded [`PropertySet`] — never `argv` or CLI strings. Runtime
@@ -59,13 +64,12 @@ pub enum Request {
     MouseButton { button: MouseButton, pressed: bool },
     /// Rotate the mouse wheel.
     Wheel { delta: i16, horizontal: bool },
-    // TODO: questioning whether we need a way to send multiple keys at once, e.g. a small mini
-    // format to express in a single command that keys A and B are pressed while key C is released.
-    // This could save LLM tokens by collapsing several round-trips into one request.
     /// Press or release a key identified by its RDP scancode.
     KeyScancode { scancode: u16, pressed: bool },
     /// Press or release a key identified by a Unicode character.
     KeyUnicode { ch: char, pressed: bool },
+    /// Type bounded Unicode text in ordered FastPath input messages.
+    UnicodeText { text: String },
     /// Resize the remote desktop.
     Resize { width: u16, height: u16 },
     /// Query and negotiate the capabilities of the session's NOW endpoint.
@@ -144,6 +148,10 @@ impl fmt::Debug for Request {
                 .debug_struct("KeyUnicode")
                 .field("ch", ch)
                 .field("pressed", pressed)
+                .finish(),
+            Self::UnicodeText { text } => f
+                .debug_struct("UnicodeText")
+                .field("char_count", &text.chars().count())
                 .finish(),
             Self::Resize { width, height } => f
                 .debug_struct("Resize")
@@ -1067,6 +1075,10 @@ impl Encode for Request {
                 write_char(dst, *ch)?;
                 write_bool(dst, *pressed)?;
             }
+            Self::UnicodeText { text } => {
+                dst.write_u8(21);
+                write_string(dst, text)?;
+            }
             Self::Resize { width, height } => {
                 dst.write_u8(11);
                 dst.write_u16(*width);
@@ -1139,6 +1151,7 @@ impl Encode for Request {
                 Self::Wheel { .. } => 2 /* delta */ + 1 /* horizontal */,
                 Self::KeyScancode { .. } => 2 /* scancode */ + 1 /* pressed */,
                 Self::KeyUnicode { .. } => 4 /* ch */ + 1 /* pressed */,
+                Self::UnicodeText { text } => string_size(text),
                 Self::Resize { .. } => 2 /* width */ + 2 /* height */,
                 Self::NowRun { command, directory } => string_size(command) + opt_string_size(directory.as_deref()),
                 Self::NowExecute(request) => request.size(),
@@ -1215,6 +1228,9 @@ impl Decode<'_> for Request {
                 let pressed = read_bool(src)?;
                 Ok(Self::KeyUnicode { ch, pressed })
             }
+            21 => Ok(Self::UnicodeText {
+                text: read_string(src)?,
+            }),
             11 => {
                 ensure_size!(in: src, size: 4);
                 let width = src.read_u16();
