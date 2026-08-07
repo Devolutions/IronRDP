@@ -716,6 +716,22 @@ test("an unavailable protocol handoff blocks the review count", () => {
   assert.equal(reviewerFailure.check.conclusion, "neutral");
 });
 
+test("evidence failures are reported only for an eligible review", () => {
+  const args = {
+    expectedSha: SHA, labels: ["risk/high"], reviewer: "",
+    gate: { ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true },
+    contributor: { status: "eligible" }, protocolStatus: "not_applicable",
+    evidenceReason: "changed file retrieval unavailable",
+  };
+  const active = resolveReviewState(args);
+  assert.equal(active.reason, "changed file retrieval unavailable");
+  assert.equal(active.check.conclusion, "neutral");
+
+  const terminal = resolveReviewState({ ...args, labels: ["ai-reviewed/2", "risk/high"] });
+  assert.equal(terminal.reason, "terminal AI review count");
+  assert.equal(terminal.check, undefined);
+});
+
 test("writer stops before mutations when the head is stale", async () => {
   let writes = 0;
   const github = { rest: {

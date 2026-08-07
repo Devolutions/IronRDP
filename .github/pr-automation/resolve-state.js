@@ -261,7 +261,6 @@ function resolveReviewState({
     };
   };
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
-  if (evidenceReason) return fail(evidenceReason, true);
   if (existing.has("ai-reviewed/2")) return fail("terminal AI review count");
   if (rateLimit && rateLimit.status !== "allowed") return fail("fork LLM quota unavailable");
   if (!gate?.ok || gate.head_sha !== expectedSha || gate.classificationCheck !== true ||
@@ -272,6 +271,7 @@ function resolveReviewState({
   if (!reviewPolicyEligible({
     labels, legitimacyStopped: gate.legitimacyStopped, protocolRelated: gate.protocolRelated,
   })) return fail("review is not eligible");
+  if (evidenceReason) return fail(evidenceReason, true);
   // A protocol-related review is only publishable when the protocol stage produced a validated
   // handoff; anything else fails closed to humans.
   if (!["valid", "not_applicable"].includes(protocolStatus)) {
