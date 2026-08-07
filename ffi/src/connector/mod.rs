@@ -9,6 +9,7 @@ pub mod ffi {
 
     use diplomat_runtime::DiplomatWriteable;
     use ironrdp::connector::Sequence as _;
+    use ironrdp::connector::State as _;
     use ironrdp::displaycontrol::client::DisplayControlClient;
     use ironrdp::dvc::DvcClientProcessor;
     use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
@@ -150,6 +151,60 @@ pub mod ffi {
             };
             connector.mark_credssp_as_done();
             Ok(())
+        }
+
+        /// Send X.224 with an explicit protocol set (Hyper-V PCB-front uses HYBRID only).
+        pub fn initiate_with_security_protocol(
+            &mut self,
+            security_protocol: u32,
+            write_buf: &mut WriteBuf,
+        ) -> Result<Box<Written>, Box<IronRdpError>> {
+            let Some(connector) = self.0.as_mut() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            let security_protocol = ironrdp::pdu::nego::SecurityProtocol::from_bits(security_protocol)
+                .ok_or_else(|| ironrdp::connector::general_err!("invalid security protocol"))?;
+            let written = connector.initiate_with_security_protocol(security_protocol, &mut write_buf.0)?;
+            Ok(Box::new(Written(written)))
+        }
+
+        /// Drop host identity after pre-X.224 CredSSP so it is not forwarded into guest RDP.
+        pub fn clear_credentials_after_host_auth(&mut self) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.as_mut() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            connector.config.credentials = ironrdp::connector::Credentials::UsernamePassword {
+                username: String::new(),
+                password: String::new(),
+            };
+            connector.config.domain = None;
+            connector.config.autologon = false;
+            Ok(())
+        }
+
+        /// Require EnhancedSecurityUpgrade with HYBRID, matching ironrdp-vmconnect::connect_front.
+        pub fn ensure_selected_hybrid(&self) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.as_ref() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            match &connector.state {
+                ironrdp::connector::ClientConnectorState::EnhancedSecurityUpgrade {
+                    selected_protocol,
+                } if *selected_protocol == ironrdp::pdu::nego::SecurityProtocol::HYBRID => Ok(()),
+                ironrdp::connector::ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => {
+                    Err(ironrdp::connector::reason_err!(
+                        "Initiation",
+                        "server must select HYBRID for a Hyper-V console, but it selected {selected_protocol}",
+                    )
+                    .into())
+                }
+                other => Err(ironrdp::connector::reason_err!(
+                    "Initiation",
+                    "expected EnhancedSecurityUpgrade after Hyper-V X.224 initiation, got {}",
+                    other.name(),
+                )
+                .into()),
+            }
         }
 
         pub fn step(&mut self, input: &[u8], write_buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {
