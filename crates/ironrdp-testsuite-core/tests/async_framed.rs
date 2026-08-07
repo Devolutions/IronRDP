@@ -100,19 +100,14 @@ fn tpkt(payload: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn nothing_read_yet_means_no_arrival_time() {
-    let framed = Framed::<ChunkedStream>::new(ChunkedStream::new([]));
+fn each_socket_read_advances_the_arrival_time() {
+    // One frame per read, so each PDU is stamped by the read that carried it.
+    let mut framed = Framed::<ChunkedStream>::new(ChunkedStream::new([tpkt(&[0xAA; 8]), tpkt(&[0xBB; 8])]));
 
     assert!(
         framed.last_read_at().is_none(),
         "an unread Framed has observed no arrival"
     );
-}
-
-#[test]
-fn each_socket_read_advances_the_arrival_time() {
-    // One frame per read, so each PDU is stamped by the read that carried it.
-    let mut framed = Framed::<ChunkedStream>::new(ChunkedStream::new([tpkt(&[0xAA; 8]), tpkt(&[0xBB; 8])]));
 
     block_on(framed.read_pdu()).expect("first frame");
     let first = framed.last_read_at().expect("host build observes time");

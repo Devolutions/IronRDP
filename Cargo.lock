@@ -2484,6 +2484,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "tracing",
+ "web-time",
 ]
 
 [[package]]

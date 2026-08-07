@@ -132,7 +132,7 @@ where
 
         let mut read_bytes = [0u8; 1024];
         let len = self.stream.read(&mut read_bytes)?;
-        self.last_read_at = monotonic_now();
+        self.last_read_at = Some(monotonic_now());
         self.buf.extend_from_slice(&read_bytes[..len]);
 
         Ok(len)
@@ -151,9 +151,7 @@ where
 
 /// Reads the driver-owned monotonic clock. Epoch is the first call; only
 /// differences are meaningful.
-fn monotonic_now() -> Option<MonotonicInstant> {
+fn monotonic_now() -> MonotonicInstant {
     static EPOCH: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
-    Some(MonotonicInstant::from_millis(
-        u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX),
-    ))
+    MonotonicInstant::from_millis(u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX))
 }
