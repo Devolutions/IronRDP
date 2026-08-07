@@ -358,11 +358,12 @@ impl Written {
 /// A point on a monotonic millisecond clock owned by the I/O driver.
 ///
 /// The epoch is arbitrary and carries no meaning; only differences between two
-/// instants do. The clock deliberately lives outside the sans-I/O sequences:
-/// `std::time::Instant::now` panics on `wasm32-unknown-unknown`, which
-/// `ironrdp-connector` compiles for, and a sequence reading a clock itself would
-/// measure how quickly it drained an already-filled buffer rather than how long
-/// the bytes took to arrive.
+/// instants do. The clock deliberately lives outside the sans-I/O sequences,
+/// because a sequence reading a clock itself would measure how quickly it
+/// drained an already-filled buffer rather than how long the bytes took to
+/// arrive. Only the driver that performed the read knows the latter, and a
+/// driver whose caller owns the read loop does not know it either: that is what
+/// the `None` in [`Sequence::step`] is for, and why it stays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MonotonicInstant(u64);
 

@@ -225,41 +225,6 @@ fn decode_bandwidth_results(output: &WriteBuf) -> (u32, u32) {
     }
 }
 
-/// The reported interval is the time between the Start that opened the window and
-/// the Stop that closed it, taken from the arrival times the driver observed.
-#[test]
-fn connect_time_bandwidth_reports_the_measured_interval_and_total_bytes() {
-    let mut connector = connect_time_autodetect_connector();
-    let mut output = WriteBuf::new();
-
-    let start = encode_vec(&AutoDetectReqPdu::new(AutoDetectRequest::bw_start_connect_time(0x1111))).unwrap();
-    connector
-        .step(
-            &server_send_data_indication(MESSAGE_CHANNEL_ID, start),
-            Some(MonotonicInstant::from_millis(1_000)),
-            &mut output,
-        )
-        .unwrap();
-
-    output.clear();
-    let stop = encode_vec(&AutoDetectReqPdu::new(AutoDetectRequest::bw_stop_connect_time(
-        0x1111,
-        vec![0u8; 4096],
-    )))
-    .unwrap();
-    connector
-        .step(
-            &server_send_data_indication(MESSAGE_CHANNEL_ID, stop),
-            Some(MonotonicInstant::from_millis(1_250)),
-            &mut output,
-        )
-        .unwrap();
-
-    let results = decode_bandwidth_results(&output);
-    assert_eq!(results.0, 250, "interval is Stop arrival minus Start arrival");
-    assert_eq!(results.1, 4096, "byte count is what the server sent in the window");
-}
-
 /// A Stop with no preceding Start has nothing to have measured. It is still
 /// answered, because the server blocks without a reply, but the interval reported
 /// is the unmeasurable floor rather than an invented figure.

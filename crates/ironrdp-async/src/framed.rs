@@ -213,7 +213,7 @@ where
     /// completes first, then it is guaranteed that no data was read.
     async fn read(&mut self) -> io::Result<usize> {
         let len = self.stream.read(&mut self.buf).await?;
-        self.last_read_at = monotonic_now();
+        self.last_read_at = Some(monotonic_now());
         Ok(len)
     }
 }
@@ -305,24 +305,16 @@ where
     Ok(())
 }
 
-/// Reads the driver-owned monotonic clock, if this build has one.
+/// Reads the driver-owned monotonic clock.
 ///
 /// The epoch is the first call; only differences are meaningful.
 ///
-/// `std::time::Instant::now` panics on `wasm32-unknown-unknown`, and this crate is
-/// reached from `ironrdp-web` through `ironrdp-futures`, so the browser build has no
-/// clock to read and reports `None` rather than a fabricated reading. Giving it one
-/// means plumbing a clock in from the embedder, which has `Performance.now()`
-/// available to it.
-#[cfg(not(target_arch = "wasm32"))]
-fn monotonic_now() -> Option<MonotonicInstant> {
-    static EPOCH: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
-    Some(MonotonicInstant::from_millis(
-        u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX),
-    ))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn monotonic_now() -> Option<MonotonicInstant> {
-    None
+/// `web_time::Instant` is `std::time::Instant` everywhere except
+/// `wasm32-unknown-unknown`, where `std`'s panics and this one reads
+/// `Performance.now()` instead. This crate is reached from `ironrdp-web` through
+/// `ironrdp-futures`, so without it the browser build has no clock and every
+/// measurement there is lost.
+fn monotonic_now() -> MonotonicInstant {
+    static EPOCH: std::sync::LazyLock<web_time::Instant> = std::sync::LazyLock::new(web_time::Instant::now);
+    MonotonicInstant::from_millis(u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX))
 }
