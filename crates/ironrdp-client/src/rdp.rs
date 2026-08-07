@@ -1286,11 +1286,9 @@ where
         let rdcleanpath_res = framed
             .read_by_hint(&RDCLEANPATH_HINT)
             .await
-            .map_err(|e| ironrdp_connector::custom_err!("read RDCleanPath response", e))?
-        ;
+            .map_err(|e| ironrdp_connector::custom_err!("read RDCleanPath response", e))?;
         let rdcleanpath_res = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_res)
-            .map_err(|e| ironrdp_connector::custom_err!("RDCleanPath response decode", e))?
-        ;
+            .map_err(|e| ironrdp_connector::custom_err!("RDCleanPath response decode", e))?;
         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
         let (x224_connection_response, server_cert_chain) = match rdcleanpath_res
@@ -1348,7 +1346,8 @@ where
             .to_owned();
 
         let upgraded = if let Some(x224_connection_response) = x224_connection_response {
-            let ironrdp_connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
+            let ironrdp_connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state
+            else {
                 return Err(ironrdp_connector::general_err!(
                     "invalid connector state (wait confirm)"
                 ));

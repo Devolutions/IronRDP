@@ -188,9 +188,11 @@ pub mod ffi {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
             match &connector.state {
-                ironrdp::connector::ClientConnectorState::EnhancedSecurityUpgrade {
-                    selected_protocol,
-                } if *selected_protocol == ironrdp::pdu::nego::SecurityProtocol::HYBRID => Ok(()),
+                ironrdp::connector::ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol }
+                    if *selected_protocol == ironrdp::pdu::nego::SecurityProtocol::HYBRID =>
+                {
+                    Ok(())
+                }
                 ironrdp::connector::ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => {
                     Err(ironrdp::connector::reason_err!(
                         "Initiation",
