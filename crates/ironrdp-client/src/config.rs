@@ -374,40 +374,32 @@ pub struct GatewayConfig {
 
 // ── Destination ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Destination {
     name: String,
-    port: u16,
+    port: Option<u16>,
 }
 
 impl Destination {
     pub fn new(addr: impl Into<String>) -> anyhow::Result<Self> {
-        const RDP_DEFAULT_PORT: u16 = 3389;
-
         let addr = addr.into();
 
         if let Some(addr_split) = addr.rsplit_once(':') {
             if let Ok(sock_addr) = addr.parse::<core::net::SocketAddr>() {
                 Ok(Self {
                     name: sock_addr.ip().to_string(),
-                    port: sock_addr.port(),
+                    port: Some(sock_addr.port()),
                 })
             } else if addr.parse::<core::net::Ipv6Addr>().is_ok() {
-                Ok(Self {
-                    name: addr,
-                    port: RDP_DEFAULT_PORT,
-                })
+                Ok(Self { name: addr, port: None })
             } else {
                 Ok(Self {
                     name: addr_split.0.to_owned(),
-                    port: addr_split.1.parse().context("invalid port")?,
+                    port: Some(addr_split.1.parse().context("invalid port")?),
                 })
             }
         } else {
-            Ok(Self {
-                name: addr,
-                port: RDP_DEFAULT_PORT,
-            })
+            Ok(Self { name: addr, port: None })
         }
     }
 
@@ -416,7 +408,7 @@ impl Destination {
     }
 
     pub fn port(&self) -> u16 {
-        self.port
+        self.port.unwrap_or(RDP_DEFAULT_PORT)
     }
 
     /// Construct a `Destination` from already-validated components.
@@ -426,18 +418,26 @@ impl Destination {
     pub fn from_parts(name: impl Into<String>, port: u16) -> Self {
         Self {
             name: name.into(),
-            port,
+            port: Some(port),
         }
     }
 }
+
+impl PartialEq for Destination {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.port() == other.port()
+    }
+}
+
+impl Eq for Destination {}
 
 impl fmt::Display for Destination {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // IPv6 addresses must be bracketed in host:port notation.
         if self.name.parse::<core::net::Ipv6Addr>().is_ok() {
-            write!(f, "[{}]:{}", self.name, self.port)
+            write!(f, "[{}]:{}", self.name, self.port())
         } else {
-            write!(f, "{}:{}", self.name, self.port)
+            write!(f, "{}:{}", self.name, self.port())
         }
     }
 }
@@ -645,7 +645,7 @@ impl ConfigBuilder {
         };
         self.properties
             .set_full_address(&ironrdp_cfg::TargetAddr { host, port: None });
-        self.properties.set_server_port(destination.port);
+        self.properties.set_server_port(destination.port());
         self.properties.clear_alternate_full_address();
         self.destination = Some(destination);
         self
@@ -1005,7 +1005,8 @@ impl ConfigBuilder {
 
     #[cfg(feature = "vmconnect")]
     /// Connect to a Hyper-V VM console by VM GUID. Destination must use port
-    /// [`ironrdp_vmconnect::PORT`] (2179).
+    /// [`ironrdp_vmconnect::PORT`] (2179) unless the caller explicitly selects another port.
+    /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
     ///
     /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
     /// embedder (error if disabled). This builder only rejects transports that cannot target port
@@ -1264,7 +1265,7 @@ impl ConfigBuilder {
         clippy::missing_panics_doc,
         reason = "a panic here would be a bug (secrets are guaranteed present by missing()), not documented behavior"
     )]
-    pub fn build(self) -> anyhow::Result<Config> {
+    pub fn build(mut self) -> anyhow::Result<Config> {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
         use ironrdp_pdu::rdp::client_info::TimezoneInfo;
 
@@ -1278,6 +1279,15 @@ impl ConfigBuilder {
                     .collect::<Vec<_>>()
                     .join(", ")
             );
+        }
+
+        #[cfg(feature = "vmconnect")]
+        if self.vm_id.is_some()
+            && let Some(destination) = self.destination.as_mut()
+            && destination.port.is_none()
+        {
+            destination.port = Some(ironrdp_vmconnect::PORT);
+            self.properties.set_server_port(ironrdp_vmconnect::PORT);
         }
 
         if self.certificate_validation == Some(ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate)
@@ -1461,15 +1471,12 @@ impl ConfigBuilder {
             .alternate_full_address()
             .context("invalid 'alternate full address'")?);
         if let Some(target) = target {
-            let port = target
-                .port
-                .or(ps.server_port().context("invalid 'server port'")?)
-                .unwrap_or(RDP_DEFAULT_PORT);
+            let port = target.port.or(ps.server_port().context("invalid 'server port'")?);
             let name = match target.host {
                 TargetHost::Ip(ip) => ip.to_string(),
                 TargetHost::Domain(host) => host,
             };
-            self.destination = Some(Destination::from_parts(name, port));
+            self.destination = Some(Destination { name, port });
         }
 
         if let Some(username) = ps.username() {

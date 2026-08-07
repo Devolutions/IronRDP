@@ -93,6 +93,15 @@ fn no_credssp_cli_flag_overrides_rdp_enable_credssp_property() {
 }
 
 #[test]
+fn bare_destination_keeps_the_ordinary_rdp_default() {
+    let bare = Destination::new("rdp.example.com").expect("valid bare destination");
+    let explicit = Destination::new("rdp.example.com:3389").expect("valid explicit destination");
+
+    assert_eq!(bare.port(), 3389);
+    assert_eq!(bare, explicit);
+}
+
+#[test]
 fn vmconnect_uses_enhanced_mode_by_default() {
     let config = parse_config_from_rdp(
         "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
@@ -100,6 +109,43 @@ fn vmconnect_uses_enhanced_mode_by_default() {
     );
 
     assert_eq!(config.vmconnect_mode(), Some(VmConnectMode::Enhanced));
+}
+
+#[test]
+fn vmconnect_bare_destination_defaults_to_port_2179() {
+    let config = parse_config_from([
+        "ironrdp-viewer",
+        "-u",
+        "test-user",
+        "-p",
+        "test-pass",
+        "--vmconnect",
+        "efd1efab-c750-4262-b1bb-af0f7733bdd6",
+        "hyperv.example.com",
+    ])
+    .expect("valid vmconnect configuration");
+
+    assert_eq!(config.destination().port(), 2179);
+}
+
+#[test]
+fn vmconnect_preserves_explicit_destination_port() {
+    for port in [3389, 12_345] {
+        let destination = format!("hyperv.example.com:{port}");
+        let config = parse_config_from([
+            "ironrdp-viewer",
+            "-u",
+            "test-user",
+            "-p",
+            "test-pass",
+            "--vmconnect",
+            "efd1efab-c750-4262-b1bb-af0f7733bdd6",
+            &destination,
+        ])
+        .expect("valid vmconnect configuration");
+
+        assert_eq!(config.destination().port(), port);
+    }
 }
 
 #[test]
