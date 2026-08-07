@@ -9,9 +9,10 @@
 //! `ironrdp-agent connect --sandbox-id <id>`.
 
 #![cfg(windows)]
+// CLI-facing summaries intentionally print to stdout (same pattern as `cli.rs`).
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::Context as _;
@@ -247,10 +248,4 @@ pub(crate) fn print_config_summary(cfg: &SandboxRdpConfig) {
     if !cfg.ip_address.is_empty() {
         println!("ip:         {}", cfg.ip_address);
     }
-}
-
-/// Resolve helper path for docs/tests.
-#[allow(dead_code)]
-pub(crate) fn helper_path_for_display() -> PathBuf {
-    helper_script_path().unwrap_or_else(|_| Path::new("tools/windows_sandbox_grpc.cs").to_path_buf())
 }

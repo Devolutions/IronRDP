@@ -2403,6 +2403,8 @@ fn active_x_transport_from_client_transport(transport: &Transport) -> ActiveXTra
             password: gateway.password.clone(),
         },
         Transport::RDCleanPath(rdcleanpath) => ActiveXTransport::RDCleanPath(rdcleanpath.clone()),
+        // Named-pipe RDP (e.g. Windows Sandbox) is agent/desktop-client only.
+        Transport::NamedPipe { .. } => ActiveXTransport::Direct,
     }
 }
 
@@ -6604,6 +6606,12 @@ impl Control {
                 "RDCleanPath URL must use the ws or wss scheme",
             );
         }
+        if matches!(config.transport(), Transport::NamedPipe { .. }) {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                "Windows named-pipe transport is not supported by the ActiveX host",
+            );
+        }
         let Credentials::UsernamePassword { username, password } = &config.connector().credentials else {
             return ironrdp_agent::ipc::Response::typed_error(
                 ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
@@ -6664,7 +6672,7 @@ impl Control {
                 certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate;
             compatibility.authentication_level = if compatibility.authentication_level_set { 0 } else { 1 };
             match config.transport() {
-                Transport::Direct => {
+                Transport::Direct | Transport::NamedPipe { .. } => {
                     compatibility.gateway_usage_method = GatewayUsageMethod::Direct.as_i64() as u32;
                 }
                 Transport::Gateway(gateway) => {
