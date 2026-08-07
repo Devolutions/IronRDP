@@ -1686,7 +1686,7 @@ where
 
     {
         let rdcleanpath_req = if let Some(pcb) = pcb {
-            let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_payload_string(&pcb)
+            let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_payload_string(pcb)
                 .context("encode preconnection blob")?;
             Ok(ironrdp_rdcleanpath::RDCleanPathPdu::new_request_with_pcb(
                 destination,
