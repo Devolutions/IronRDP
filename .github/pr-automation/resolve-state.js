@@ -162,8 +162,8 @@ function resolveClassificationState({
     ...optional.map(([label, enabled]) => ({ owned: [label], desired: enabled ? [label] : [] })),
     { owned: ["breaking-change"], desired: breaking ? ["breaking-change"] : [] },
   ];
-  const addLabels = ["maintainer-required"];
   const legitimacyStopped = model.likely_non_legitimate;
+  const requiresMaintainer = duplicate || legitimacyStopped;
   const comments = [
     ...(duplicate ? [{
       kind: "duplicate", marker: DUPLICATE_MARKER,
@@ -175,7 +175,10 @@ function resolveClassificationState({
     }] : []),
   ];
   return {
-    ok: true, mode: "classification", expectedSha, labelSets, addLabels, comments,
+    ok: true, mode: "classification", expectedSha, labelSets,
+    addLabels: requiresMaintainer ? ["maintainer-required"] : [],
+    removeLabels: requiresMaintainer ? [] : ["maintainer-required"],
+    comments,
     removeCommentMarkers: [
       ...(legitimacyStopped ? [] : [LEGITIMACY_MARKER]),
       // A later push can make a previously reported duplicate or XL verdict wrong, and stale
@@ -247,24 +250,49 @@ function resolveReviewState({
   rateLimit, protocolStatus,
 } = {}) {
   const existing = labelsOf(labels);
+  const needsHumanOnlyReview = existing.has("size/XL") || existing.has("duplicate") ||
+    gate?.legitimacyStopped === true || gate?.classificationFailed === true ||
+    gate?.reviewFailed === true;
   const fail = (reason) => {
     const comment = quotaComment(rateLimit);
     return {
       ok: true, mode: "review", expectedSha, failed: true, reason,
       labelSets: [], addLabels: ["maintainer-required"], comments: comment ? [comment] : [],
+      check: {
+        name: "AI automated review",
+        externalId: `${REVIEWER_SCHEMA_VERSION}:${expectedSha}`,
+        title: "Automated review unavailable",
+        summary: `Automated review was unavailable: ${reason}. Maintainer review is required.`,
+        conclusion: "neutral",
+      },
     };
   };
+  const wait = (reason, preserveMaintainer = false) => ({
+    ok: true, mode: "review", expectedSha, pending: true, reason, labelSets: [],
+    addLabels: needsHumanOnlyReview ? ["maintainer-required"] : [],
+    removeLabels: needsHumanOnlyReview || preserveMaintainer ? [] : ["maintainer-required"],
+    comments: [],
+  });
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
-  if (existing.has("ai-reviewed/2")) return fail("terminal AI review count");
-  if (rateLimit && rateLimit.status !== "allowed") return fail("fork LLM quota unavailable");
-  if (!gate?.ok || gate.head_sha !== expectedSha || gate.classificationCheck !== true ||
-      (gate.ciGreen !== true && gate.bypassCi !== true) || contributor?.status !== "eligible") {
-    return fail("review gate unavailable");
+  if (existing.has("ai-reviewed/2")) {
+    return {
+      ok: true, mode: "review", expectedSha, terminal: true,
+      labelSets: [], addLabels: ["maintainer-required"], comments: [],
+    };
   }
-  if (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true) return fail("second review is not eligible");
+  if (rateLimit && rateLimit.status !== "allowed") return fail("fork LLM quota unavailable");
+  if (gate?.available === false || gate?.head_sha !== expectedSha) return fail("review gate unavailable");
+  if (contributor?.status === "unavailable") return fail("contributor history unavailable");
+  if (gate.classificationCheck !== true) return wait("classification is not ready");
+  if (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true) {
+    return wait("second review is not eligible", true);
+  }
+  if (gate.ciGreen !== true && gate.bypassCi !== true) return wait("CI is not green");
+  if (contributor?.status !== "eligible") return wait("contributor is not eligible");
   if (!reviewPolicyEligible({
     labels, legitimacyStopped: gate.legitimacyStopped, protocolRelated: gate.protocolRelated,
-  })) return fail("review is not eligible");
+  })) return wait("review is not eligible");
+  if (gate.ok !== true) return fail("review gate unavailable");
   // A protocol-related review is only publishable when the protocol stage produced a validated
   // handoff; anything else fails closed to humans.
   if (!["valid", "not_applicable"].includes(protocolStatus)) return fail("protocol handoff unavailable");
