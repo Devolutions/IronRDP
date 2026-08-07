@@ -1695,17 +1695,16 @@ where
     let mut buf = WriteBuf::new();
 
     info!("Begin connection procedure");
-    let request_version = if pcb.is_some() {
-        ironrdp_rdcleanpath::VERSION_2
-    } else {
-        ironrdp_rdcleanpath::VERSION_1
-    };
 
     {
         let rdcleanpath_req = if let Some(pcb) = pcb {
-            let server_preconnection_pdu =
-                ironrdp_vmconnect::encode_preconnection_blob_payload(pcb).context("encode preconnection blob")?;
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_v2_request(destination, proxy_auth_token, server_preconnection_pdu)
+            let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_payload_string(pcb)
+                .context("encode preconnection blob")?;
+            Ok(ironrdp_rdcleanpath::RDCleanPathPdu::new_pcb_front_request(
+                destination,
+                proxy_auth_token,
+                preconnection_blob,
+            ))
         } else {
             let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
                 return Err(anyhow::Error::msg("invalid connector state (send request)").into());
@@ -1721,9 +1720,9 @@ where
         }
         .context("new RDCleanPath request")?;
         debug!(
-            version = rdcleanpath_req.version,
             destination = ?rdcleanpath_req.destination,
-            has_server_preconnection_pdu = rdcleanpath_req.server_preconnection_pdu.is_some(),
+            has_preconnection_blob = rdcleanpath_req.preconnection_blob.is_some(),
+            has_x224_connection_pdu = rdcleanpath_req.x224_connection_pdu.is_some(),
             "Send RDCleanPath request"
         );
         let rdcleanpath_req = rdcleanpath_req.to_der().context("RDCleanPath request encode")?;
@@ -1748,34 +1747,21 @@ where
         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
         let response = rdcleanpath_res.into_enum().context("invalid RDCleanPath PDU")?;
-        let (x224_connection_response, server_cert_chain) = match (request_version, response) {
-            (ironrdp_rdcleanpath::VERSION_1, ironrdp_rdcleanpath::RDCleanPath::Request { .. })
-            | (
-                ironrdp_rdcleanpath::VERSION_2,
-                ironrdp_rdcleanpath::RDCleanPath::V2(ironrdp_rdcleanpath::RDCleanPathV2::Request { .. }),
-            ) => {
+        let (x224_connection_response, server_cert_chain) = match response {
+            ironrdp_rdcleanpath::RDCleanPath::Request { .. }
+            | ironrdp_rdcleanpath::RDCleanPath::PcbFrontRequest { .. } => {
                 return Err(anyhow::Error::msg("received an unexpected RDCleanPath type (request)").into());
             }
-            (
-                ironrdp_rdcleanpath::VERSION_1,
-                ironrdp_rdcleanpath::RDCleanPath::Response {
-                    x224_connection_response,
-                    server_cert_chain,
-                    server_addr: _,
-                },
-            ) => (Some(x224_connection_response), server_cert_chain),
-            (
-                ironrdp_rdcleanpath::VERSION_2,
-                ironrdp_rdcleanpath::RDCleanPath::V2(ironrdp_rdcleanpath::RDCleanPathV2::Response {
-                    server_cert_chain,
-                    server_addr: _,
-                }),
-            ) => (None, server_cert_chain),
-            (ironrdp_rdcleanpath::VERSION_1, ironrdp_rdcleanpath::RDCleanPath::GeneralErr(error))
-            | (
-                ironrdp_rdcleanpath::VERSION_2,
-                ironrdp_rdcleanpath::RDCleanPath::V2(ironrdp_rdcleanpath::RDCleanPathV2::GeneralErr(error)),
-            ) => {
+            ironrdp_rdcleanpath::RDCleanPath::Response {
+                x224_connection_response,
+                server_cert_chain,
+                server_addr: _,
+            } => (Some(x224_connection_response), server_cert_chain),
+            ironrdp_rdcleanpath::RDCleanPath::PcbFrontResponse {
+                server_cert_chain,
+                server_addr: _,
+            } => (None, server_cert_chain),
+            ironrdp_rdcleanpath::RDCleanPath::GeneralErr(error) => {
                 let details = iron_remote_desktop::RDCleanPathDetails::new(
                     error.http_status_code,
                     error.wsa_last_error,
@@ -1787,12 +1773,9 @@ where
                         .with_rdcleanpath_details(details),
                 );
             }
-            (
-                ironrdp_rdcleanpath::VERSION_1,
-                ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
-                    x224_connection_response,
-                },
-            ) => {
+            ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
+                x224_connection_response,
+            } => {
                 // Try to decode as X.224 Connection Confirm to extract negotiation failure details.
                 if let Ok(x224_confirm) = ironrdp_core::decode::<
                     ironrdp::pdu::x224::X224<ironrdp::pdu::nego::ConnectionConfirm>,
@@ -1814,12 +1797,6 @@ where
                         .with_kind(IronErrorKind::RDCleanPath),
                 );
             }
-            (expected, response) => {
-                return Err(IronError::from(anyhow::anyhow!(
-                    "RDCleanPath request version {expected} does not match response {response:?}"
-                ))
-                .with_kind(IronErrorKind::RDCleanPath));
-            }
         };
 
         let server_cert = server_cert_chain
@@ -1838,7 +1815,7 @@ where
             .context("subject public key BIT STRING is not aligned")?
             .to_owned();
 
-        // At this point, proxy established the TLS session (and for v2, already wrote the PCB).
+        // At this point, proxy established the TLS session and may have already written the PCB.
         let upgraded = if let Some(x224_connection_response) = x224_connection_response {
             let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
                 return Err(anyhow::Error::msg("invalid connector state (wait confirm)").into());
@@ -1864,7 +1841,7 @@ where
                 kerberos_config,
             )
             .await
-            .context("Hyper-V front over RDCleanPath v2")?
+            .context("Hyper-V front over RDCleanPath")?
         };
 
         Ok((upgraded, server_public_key))

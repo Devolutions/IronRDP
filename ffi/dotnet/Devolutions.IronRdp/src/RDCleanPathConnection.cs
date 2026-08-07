@@ -43,10 +43,10 @@ public static class RDCleanPathConnection
 
         // Step 4: Perform RDCleanPath handshake
         System.Diagnostics.Debug.WriteLine("Performing RDCleanPath handshake...");
-        var (serverPublicKey, framedAfterHandshake, isVersion2) = await ConnectRdCleanPath(
+        var (serverPublicKey, framedAfterHandshake, isPcbFront) = await ConnectRdCleanPath(
             framed, connector, destination, authToken, pcb ?? "");
 
-        if (isVersion2)
+        if (isPcbFront)
         {
             const uint HybridProtocol = 0x00000002;
 
@@ -93,14 +93,14 @@ public static class RDCleanPathConnection
     {
         var writeBuf = WriteBuf.New();
 
-        var isVersion2 = !string.IsNullOrEmpty(pcb);
+        var isPcbFront = !string.IsNullOrEmpty(pcb);
 
-        // Step 1: Create and send the version-specific RDCleanPath request.
+        // Step 1: Create and send the RDCleanPath request.
         System.Diagnostics.Debug.WriteLine($"Sending RDCleanPath request to {destination}...");
         RDCleanPathPdu rdCleanPathReq;
-        if (isVersion2)
+        if (isPcbFront)
         {
-            rdCleanPathReq = RDCleanPathPdu.NewV2RequestWithPcbPayload(destination, authToken, pcb);
+            rdCleanPathReq = RDCleanPathPdu.NewPcbFrontRequest(destination, authToken, pcb);
         }
         else
         {
@@ -119,11 +119,11 @@ public static class RDCleanPathConnection
         System.Diagnostics.Debug.WriteLine("Waiting for RDCleanPath response...");
         var respBytes = await framed.ReadByHint(new RDCleanPathHint());
         var rdCleanPathResp = RDCleanPathPdu.FromDer(respBytes);
-        if (rdCleanPathResp.IsVersion2() != isVersion2)
+        if (rdCleanPathResp.IsPcbFront() != isPcbFront)
         {
             throw new IronRdpLibException(
                 IronRdpLibExceptionType.ConnectionFailed,
-                "RDCleanPath response version does not match the request");
+                "RDCleanPath response front does not match the request");
         }
 
         // Step 4: Determine response type and handle accordingly
@@ -133,7 +133,7 @@ public static class RDCleanPathConnection
         {
             System.Diagnostics.Debug.WriteLine("RDCleanPath handshake successful!");
 
-            if (!rdCleanPathResp.IsVersion2())
+            if (!rdCleanPathResp.IsPcbFront())
             {
                 var x224Response = rdCleanPathResp.GetX224Response();
                 var x224ResponseBytes = new byte[x224Response.GetSize()];
@@ -167,7 +167,7 @@ public static class RDCleanPathConnection
 
             System.Diagnostics.Debug.WriteLine($"Extracted server public key (length: {serverPublicKey.Length})");
 
-            return (serverPublicKey, framed, isVersion2);
+            return (serverPublicKey, framed, isPcbFront);
         }
         else if (resultType == RDCleanPathResultType.GeneralError)
         {

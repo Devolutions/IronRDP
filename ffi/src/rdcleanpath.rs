@@ -40,37 +40,18 @@ pub mod ffi {
             Ok(Box::new(RDCleanPathPdu(pdu)))
         }
 
-        /// Creates a version 2 request for a server that expects TLS before X.224.
-        pub fn new_v2_request(
-            destination: &str,
-            proxy_auth: &str,
-            server_preconnection_pdu: &[u8],
-        ) -> Result<Box<RDCleanPathPdu>, Box<IronRdpError>> {
-            let pdu = ironrdp_rdcleanpath::RDCleanPathPdu::new_v2_request(
-                destination.to_owned(),
-                proxy_auth.to_owned(),
-                server_preconnection_pdu.to_vec(),
-            )
-            .context("failed to create RDCleanPath version 2 request")
-            .map_err(GenericError)?;
-
-            Ok(Box::new(RDCleanPathPdu(pdu)))
-        }
-
-        /// Creates a version 2 request from an opaque PCB payload.
-        pub fn new_v2_request_with_pcb_payload(
+        /// Creates a request for a server that expects TLS before X.224.
+        pub fn new_pcb_front_request(
             destination: &str,
             proxy_auth: &str,
             pcb_payload: &str,
         ) -> Result<Box<RDCleanPathPdu>, Box<IronRdpError>> {
-            let server_preconnection_pdu = ironrdp_vmconnect::encode_preconnection_blob_payload(pcb_payload)?;
-            let pdu = ironrdp_rdcleanpath::RDCleanPathPdu::new_v2_request(
+            let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_payload_string(pcb_payload)?;
+            let pdu = ironrdp_rdcleanpath::RDCleanPathPdu::new_pcb_front_request(
                 destination.to_owned(),
                 proxy_auth.to_owned(),
-                server_preconnection_pdu,
-            )
-            .context("failed to create RDCleanPath version 2 request")
-            .map_err(GenericError)?;
+                preconnection_blob,
+            );
 
             Ok(Box::new(RDCleanPathPdu(pdu)))
         }
@@ -79,8 +60,9 @@ pub mod ffi {
             self.0.version
         }
 
-        pub fn is_version_2(&self) -> bool {
-            self.0.version == ironrdp_rdcleanpath::VERSION_2
+        pub fn is_pcb_front(&self) -> bool {
+            self.0.x224_connection_pdu.is_none()
+                && (self.0.preconnection_blob.is_some() || self.0.server_addr.is_some())
         }
 
         /// Decodes a RDCleanPath PDU from DER-encoded bytes
@@ -116,19 +98,12 @@ pub mod ffi {
                     return Err(Self::missing_field("proxy_auth"));
                 }
 
-                if self.0.version == ironrdp_rdcleanpath::VERSION_1 && self.0.x224_connection_pdu.is_none() {
+                if self.0.x224_connection_pdu.is_none() && self.0.preconnection_blob.is_none() {
                     return Err(Self::missing_field("x224_connection_pdu"));
-                }
-                if self.0.version == ironrdp_rdcleanpath::VERSION_2 && self.0.server_preconnection_pdu.is_none() {
-                    return Err(Self::missing_field("server_preconnection_pdu"));
                 }
 
                 Ok(RDCleanPathResultType::Request)
             } else if self.0.server_addr.is_some() {
-                if self.0.version == ironrdp_rdcleanpath::VERSION_1 && self.0.x224_connection_pdu.is_none() {
-                    return Err(Self::missing_field("x224_connection_pdu"));
-                }
-
                 if self.0.server_cert_chain.is_none() {
                     return Err(Self::missing_field("server_cert_chain"));
                 }

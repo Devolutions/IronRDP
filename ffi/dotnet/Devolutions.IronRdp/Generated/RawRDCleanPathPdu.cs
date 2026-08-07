@@ -30,23 +30,17 @@ public partial struct RDCleanPathPdu
     public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewRequest(byte* x224Pdu, nuint x224PduSz, byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* pcb, nuint pcbSz);
 
     /// <summary>
-    /// Creates a version 2 request for a server that expects TLS before X.224.
+    /// Creates a request for a server that expects TLS before X.224.
     /// </summary>
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_new_v2_request", ExactSpelling = true)]
-    public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewV2Request(byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* serverPreconnectionPdu, nuint serverPreconnectionPduSz);
-
-    /// <summary>
-    /// Creates a version 2 request from an opaque PCB payload.
-    /// </summary>
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_new_v2_request_with_pcb_payload", ExactSpelling = true)]
-    public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewV2RequestWithPcbPayload(byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* pcbPayload, nuint pcbPayloadSz);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_new_pcb_front_request", ExactSpelling = true)]
+    public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewPcbFrontRequest(byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* pcbPayload, nuint pcbPayloadSz);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_get_version", ExactSpelling = true)]
     public static unsafe extern ulong GetVersion(RDCleanPathPdu* self);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_is_version_2", ExactSpelling = true)]
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_is_pcb_front", ExactSpelling = true)]
     [return: MarshalAs(UnmanagedType.U1)]
-    public static unsafe extern bool IsVersion2(RDCleanPathPdu* self);
+    public static unsafe extern bool IsPcbFront(RDCleanPathPdu* self);
 
     /// <summary>
     /// Decodes a RDCleanPath PDU from DER-encoded bytes

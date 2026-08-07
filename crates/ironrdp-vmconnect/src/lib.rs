@@ -57,7 +57,7 @@ pub enum Mode {
     Basic,
 }
 
-/// Receipt that the Preconnection Blob reached the server path (direct write or RDCleanPath v2 proxy).
+/// Receipt that the Preconnection Blob reached the server path (direct write or RDCleanPath proxy).
 ///
 /// [`connect_front`] consumes it by value. Construct via [`send_preconnection_blob`] or
 /// [`pcb_sent_via_proxy`].
@@ -68,7 +68,7 @@ pub struct PcbSent;
 
 /// Encode a PCB V2 for the selected console mode without writing it.
 ///
-/// Use when the bytes ride inside another envelope (RDCleanPath v2 `server_preconnection_pdu`).
+/// Use when the bytes ride inside another envelope.
 /// For a plain socket, prefer [`send_preconnection_blob`].
 pub fn encode_preconnection_blob(vm_id: &str, mode: Mode) -> ConnectorResult<Vec<u8>> {
     let payload = match mode {
@@ -86,6 +86,18 @@ pub fn encode_preconnection_blob_payload(payload: &str) -> ConnectorResult<Vec<u
         v2_payload: Some(payload.to_owned()),
     })
     .map_err(ConnectorError::encode)
+}
+
+/// Encode a PCB V2 as the byte-preserving string used by RDCleanPath.
+pub fn encode_preconnection_blob_string(vm_id: &str, mode: Mode) -> ConnectorResult<String> {
+    String::from_utf8(encode_preconnection_blob(vm_id, mode)?)
+        .map_err(|e| custom_err!("encode preconnection blob as RDCleanPath string", e))
+}
+
+/// Encode an opaque PCB payload as the byte-preserving string used by RDCleanPath.
+pub fn encode_preconnection_blob_payload_string(payload: &str) -> ConnectorResult<String> {
+    String::from_utf8(encode_preconnection_blob_payload(payload)?)
+        .map_err(|e| custom_err!("encode preconnection blob as RDCleanPath string", e))
 }
 
 /// Write the Preconnection Blob on a pre-TLS stream. Returns a [`PcbSent`] for [`connect_front`].
@@ -107,7 +119,7 @@ where
     Ok(PcbSent)
 }
 
-/// Receipt after an RDCleanPath v2 proxy has written the PCB and established TLS to the host.
+/// Receipt after an RDCleanPath proxy has written the PCB and established TLS to the host.
 pub fn pcb_sent_via_proxy() -> PcbSent {
     PcbSent
 }
