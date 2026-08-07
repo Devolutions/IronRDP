@@ -18,9 +18,10 @@ use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
 pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
     /// Releases state associated with the current RDPDR initialization sequence.
     ///
-    /// A Server Announce Request starts a new sequence. Implementations must
-    /// discard deferred operations before the channel restores configured drives
-    /// and announces them again.
+    /// A Server Announce Request starts a new sequence. Stateful
+    /// implementations must override this method to discard deferred operations
+    /// before the channel restores configured drives and announces them again.
+    /// Stateless implementations may use the default.
     fn reset(&mut self) -> PduResult<()> {
         Ok(())
     }

@@ -52,6 +52,7 @@ pub struct Rdpdr {
     post_logon_devices_announced: bool,
     pending_device_announcements: Vec<u32>,
     manually_announced_device_ids: Vec<u32>,
+    activated_dynamic_drive_ids: Vec<u32>,
     active_device_ids: Vec<u32>,
     rejected_device_ids: Vec<u32>,
     backend: Option<Box<dyn RdpdrBackend>>,
@@ -76,6 +77,7 @@ impl Rdpdr {
             post_logon_devices_announced: false,
             pending_device_announcements: Vec::new(),
             manually_announced_device_ids: Vec::new(),
+            activated_dynamic_drive_ids: Vec::new(),
             active_device_ids: Vec::new(),
             rejected_device_ids: Vec::new(),
             backend: Some(backend),
@@ -172,6 +174,7 @@ impl Rdpdr {
             .as_mut()
             .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
             .add_drive(device_id)?;
+        self.activated_dynamic_drive_ids.push(device_id);
         self.device_list.add_drive(device_id, name.clone());
         self.device_types.push((device_id, DeviceType::Filesystem));
 
@@ -202,14 +205,13 @@ impl Rdpdr {
         }
 
         let was_active = self.active_device_ids.contains(&device_id);
-        let was_rejected = self.rejected_device_ids.contains(&device_id);
-        let mut messages = if was_rejected {
-            Vec::new()
-        } else {
+        let mut messages = if self.activated_dynamic_drive_ids.contains(&device_id) {
             self.backend
                 .as_mut()
                 .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
                 .remove_drive(device_id)?
+        } else {
+            Vec::new()
         };
 
         self.device_list
@@ -219,6 +221,7 @@ impl Rdpdr {
         self.active_device_ids.retain(|id| *id != device_id);
         self.rejected_device_ids.retain(|id| *id != device_id);
         self.manually_announced_device_ids.retain(|id| *id != device_id);
+        self.activated_dynamic_drive_ids.retain(|id| *id != device_id);
 
         if was_active {
             messages.push(SvcMessage::from(RdpdrPdu::ClientDeviceListRemove(
@@ -229,7 +232,26 @@ impl Rdpdr {
         Ok(messages)
     }
 
+    /// Builds a removal PDU for a non-filesystem or externally managed device.
+    ///
+    /// Filesystem devices managed through [`Self::add_dynamic_drive`] must use
+    /// [`Self::remove_drive`] so the backend can cancel deferred IRPs before
+    /// the removal PDU is sent.
     pub fn remove_device(&mut self, device_id: u32) -> Option<ClientDeviceListRemove> {
+        let is_externally_managed_drive = self.manually_announced_device_ids.contains(&device_id);
+        if self
+            .device_types
+            .iter()
+            .any(|(id, device_type)| *id == device_id && *device_type == DeviceType::Filesystem)
+            && !is_externally_managed_drive
+        {
+            warn!(
+                device_id,
+                "Ignoring raw filesystem device removal; use remove_drive instead"
+            );
+            return None;
+        }
+
         let device_id = self.device_list.remove_device(device_id)?;
         if let Some(index) = self.device_types.iter().position(|(id, _)| *id == device_id) {
             self.device_types.remove(index);
@@ -238,6 +260,7 @@ impl Rdpdr {
         self.manually_announced_device_ids.retain(|id| *id != device_id);
         self.active_device_ids.retain(|id| *id != device_id);
         self.rejected_device_ids.retain(|id| *id != device_id);
+        self.activated_dynamic_drive_ids.retain(|id| *id != device_id);
         Some(ClientDeviceListRemove::remove_device(device_id))
     }
 
@@ -431,9 +454,9 @@ impl Rdpdr {
             .as_mut()
             .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
             .handle_server_device_announce_response(pdu)?;
-        self.pending_device_announcements.retain(|id| *id != device_id);
 
         if accepted {
+            self.pending_device_announcements.retain(|id| *id != device_id);
             if !self.active_device_ids.contains(&device_id) {
                 self.active_device_ids.push(device_id);
             }
@@ -441,14 +464,25 @@ impl Rdpdr {
             return Ok(Vec::new());
         }
 
+        let mut messages = if self.activated_dynamic_drive_ids.contains(&device_id) {
+            self.backend
+                .as_mut()
+                .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+                .remove_drive(device_id)?
+        } else {
+            Vec::new()
+        };
+        self.activated_dynamic_drive_ids.retain(|id| *id != device_id);
+        self.pending_device_announcements.retain(|id| *id != device_id);
         if !self.rejected_device_ids.contains(&device_id) {
             self.rejected_device_ids.push(device_id);
         }
         self.active_device_ids.retain(|id| *id != device_id);
 
-        Ok(vec![SvcMessage::from(RdpdrPdu::ClientDeviceListRemove(
+        messages.push(SvcMessage::from(RdpdrPdu::ClientDeviceListRemove(
             ClientDeviceListRemove::remove_device(device_id),
-        ))])
+        )));
+        Ok(messages)
     }
 
     fn handle_user_logged_on(&mut self) -> PduResult<Vec<SvcMessage>> {
@@ -537,6 +571,14 @@ impl Rdpdr {
                         .as_mut()
                         .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
                         .handle_drive_device_control(req);
+                }
+                if dev_io_req.major_function == MajorFunction::Close {
+                    const CLOSE_REQUEST_PADDING_SIZE: usize = 32;
+
+                    if src.len() < CLOSE_REQUEST_PADDING_SIZE {
+                        return Err(pdu_other_err!("received truncated filesystem close IRP"));
+                    }
+                    src.advance(CLOSE_REQUEST_PADDING_SIZE);
                 }
                 let req = ServerDriveIoRequest::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
                 if !src.is_empty() {
@@ -766,14 +808,18 @@ mod tests {
     }
 
     fn encoded_drive_io_request(device_id: u32, completion_id: u32, major_function: MajorFunction) -> Vec<u8> {
-        encode_vec(&RdpdrPdu::DeviceIoRequest(DeviceIoRequest {
+        let mut request = encode_vec(&RdpdrPdu::DeviceIoRequest(DeviceIoRequest {
             device_id,
             file_id: 1,
             completion_id,
             major_function,
             minor_function: pdu::efs::MinorFunction::from(0),
         }))
-        .expect("encode drive I/O request")
+        .expect("encode drive I/O request");
+        if major_function == MajorFunction::Close {
+            request.extend([0; 32]);
+        }
+        request
     }
 
     fn initialize_drive(rdpdr: &mut Rdpdr, device_id: u32) {
@@ -914,6 +960,36 @@ mod tests {
     }
 
     #[test]
+    fn drive_close_padding_is_consumed_before_dispatch() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
+            .with_drives(Some(vec![(42, "C:".to_owned())]));
+        initialize_drive(&mut rdpdr, 42);
+
+        assert_eq!(
+            rdpdr
+                .process(&encoded_drive_io_request(42, 0x100, MajorFunction::Close))
+                .expect("process padded drive close")
+                .len(),
+            1
+        );
+
+        let mut request = encoded_drive_io_request(42, 0x101, MajorFunction::Close);
+        request.push(0);
+        assert!(rdpdr.process(&request).is_err());
+
+        let mut request = encoded_drive_io_request(42, 0x102, MajorFunction::Close);
+        request.pop();
+        assert!(rdpdr.process(&request).is_err());
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .drive_requests,
+            vec![(42, 0x100)]
+        );
+    }
+
+    #[test]
     fn unconfirmed_or_rejected_drive_irps_are_ignored() {
         let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
             .with_drives(Some(vec![(42, "C:".to_owned())]));
@@ -1045,6 +1121,76 @@ mod tests {
                 .removed_drives,
             vec![42]
         );
+    }
+
+    #[test]
+    fn rejected_dynamic_drive_releases_backend_resources() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned());
+        rdpdr.add_dynamic_drive(42, "C:".to_owned()).expect("add dynamic drive");
+
+        let responses = rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+        let client_id = read_u32(
+            &responses[0]
+                .encode_unframed_pdu()
+                .expect("encode client announce response"),
+            8,
+        );
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .expect("process server client ID confirm");
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on");
+
+        assert_eq!(
+            rdpdr
+                .process(&encoded_server_device_announce_response(42, NtStatus::ACCESS_DENIED))
+                .expect("process rejected dynamic drive")
+                .len(),
+            1
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .removed_drives,
+            vec![42]
+        );
+        assert!(
+            rdpdr
+                .remove_drive(42)
+                .expect("remove rejected dynamic drive")
+                .is_empty()
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .removed_drives,
+            vec![42]
+        );
+    }
+
+    #[test]
+    fn raw_device_removal_cannot_bypass_dynamic_drive_cleanup() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned());
+        rdpdr.add_dynamic_drive(42, "C:".to_owned()).expect("add dynamic drive");
+
+        assert!(rdpdr.remove_device(42).is_none());
+        assert!(rdpdr.remove_drive(42).expect("remove dynamic drive").is_empty());
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .removed_drives,
+            vec![42]
+        );
+
+        let mut raw_rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned());
+        raw_rdpdr.add_drive(7, "D:".to_owned());
+        assert!(raw_rdpdr.remove_device(7).is_some());
     }
 
     #[test]
