@@ -67,6 +67,7 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
         clippy::as_conversions,
         reason = "u32-to-usize and usize-to-u32 conversions, mostly fine, and hot loop"
     )]
+    #![expect(clippy::missing_panics_doc, reason = "unreachable panics (prior checks)")]
 
     if input.is_empty() {
         return Err(RlgrError::EmptyTile);
@@ -83,15 +84,23 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
     while input.peek().is_some() {
         match CompressionMode::from(k) {
             CompressionMode::RunLength => {
-                let mut nz = 0;
-                while let Some(&&x) = input.peek() {
-                    if x == 0 {
-                        nz += 1;
-                        input.next();
-                    } else {
+                // Read the first value (guaranteed Some by the while condition).
+                // This mirrors FreeRDP's GetNextInput before the zero-counting loop.
+                let mut val = *input
+                    .next()
+                    .expect("value is guaranteed to be `Some` due to the prior check");
+                let mut nz: u32 = 0;
+
+                // Count zeros: while current value is zero and more data exists,
+                // count it as a run zero and read the next value.
+                while val == 0 {
+                    if input.peek().is_none() {
                         break;
                     }
+                    nz += 1;
+                    val = *input.next().expect("peek confirmed Some");
                 }
+
                 let mut runmax: u32 = 1 << k;
                 while nz >= runmax {
                     bits.output_bit(1, false);
@@ -103,16 +112,16 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                 bits.output_bit(1, true);
                 bits.output_bits(k as usize, nz);
 
-                if let Some(val) = input.next() {
-                    let mag = u32::from(val.unsigned_abs());
-                    bits.output_bit(1, *val < 0);
-                    code_gr(&mut bits, &mut krp, mag - 1);
-                }
+                // Always encode the value after the run (even if it's 0 due
+                // to exhausted input). This matches the reference encoder.
+                let mag = u32::from(val.unsigned_abs());
+                bits.output_bit(1, val < 0);
+                code_gr(&mut bits, &mut krp, if mag > 0 { mag - 1 } else { 0 });
+
                 kp = kp.saturating_sub(DN_GR);
                 k = kp >> LS_GR;
             }
             CompressionMode::GolombRice => {
-                #[expect(clippy::missing_panics_doc, reason = "unreachable panic (prior check)")]
                 let input_first = *input
                     .next()
                     .expect("value is guaranteed to be `Some` due to the prior check");
@@ -122,7 +131,7 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                         let two_ms = get_2magsign(input_first);
                         code_gr(&mut bits, &mut krp, two_ms);
                         if two_ms == 0 {
-                            kp = min(kp + UP_GR, KP_MAX);
+                            kp = min(kp + UQ_GR, KP_MAX);
                         } else {
                             kp = kp.saturating_sub(DQ_GR);
                         }
@@ -130,7 +139,7 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                     }
                     EntropyAlgorithm::Rlgr3 => {
                         let two_ms1 = get_2magsign(input_first);
-                        let two_ms2 = input.next().map(|&n| get_2magsign(n)).unwrap_or(1);
+                        let two_ms2 = input.next().map(|&n| get_2magsign(n)).unwrap_or(0);
                         let sum2ms = two_ms1 + two_ms2;
                         code_gr(&mut bits, &mut krp, sum2ms);
 
