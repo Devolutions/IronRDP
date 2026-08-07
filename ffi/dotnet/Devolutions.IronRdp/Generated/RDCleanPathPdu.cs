@@ -141,48 +141,13 @@ public partial class RDCleanPathPdu: IDisposable
     }
 
     /// <summary>
-    /// Creates a version 2 request for a server that expects TLS before X.224.
+    /// Creates a request for a server that expects TLS before X.224.
     /// </summary>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>RDCleanPathPdu</c> allocated on Rust side.
     /// </returns>
-    public static RDCleanPathPdu NewV2Request(string destination, string proxyAuth, byte[] serverPreconnectionPdu)
-    {
-        unsafe
-        {
-            byte[] destinationBuf = DiplomatUtils.StringToUtf8(destination);
-            byte[] proxyAuthBuf = DiplomatUtils.StringToUtf8(proxyAuth);
-            nuint serverPreconnectionPduLength = (nuint)serverPreconnectionPdu.Length;
-            nuint destinationBufLength = (nuint)destinationBuf.Length;
-            nuint proxyAuthBufLength = (nuint)proxyAuthBuf.Length;
-            fixed (byte* serverPreconnectionPduPtr = serverPreconnectionPdu)
-            {
-                fixed (byte* destinationBufPtr = destinationBuf)
-                {
-                    fixed (byte* proxyAuthBufPtr = proxyAuthBuf)
-                    {
-                        Raw.RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError result = Raw.RDCleanPathPdu.NewV2Request(destinationBufPtr, destinationBufLength, proxyAuthBufPtr, proxyAuthBufLength, serverPreconnectionPduPtr, serverPreconnectionPduLength);
-                        if (!result.isOk)
-                        {
-                            throw new IronRdpException(new IronRdpError(result.Err));
-                        }
-                        Raw.RDCleanPathPdu* retVal = result.Ok;
-                        return new RDCleanPathPdu(retVal);
-                    }
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Creates a version 2 request from an opaque PCB payload.
-    /// </summary>
-    /// <exception cref="IronRdpException"></exception>
-    /// <returns>
-    /// A <c>RDCleanPathPdu</c> allocated on Rust side.
-    /// </returns>
-    public static RDCleanPathPdu NewV2RequestWithPcbPayload(string destination, string proxyAuth, string pcbPayload)
+    public static RDCleanPathPdu NewPcbFrontRequest(string destination, string proxyAuth, string pcbPayload)
     {
         unsafe
         {
@@ -198,7 +163,7 @@ public partial class RDCleanPathPdu: IDisposable
                 {
                     fixed (byte* pcbPayloadBufPtr = pcbPayloadBuf)
                     {
-                        Raw.RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError result = Raw.RDCleanPathPdu.NewV2RequestWithPcbPayload(destinationBufPtr, destinationBufLength, proxyAuthBufPtr, proxyAuthBufLength, pcbPayloadBufPtr, pcbPayloadBufLength);
+                        Raw.RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError result = Raw.RDCleanPathPdu.NewPcbFrontRequest(destinationBufPtr, destinationBufLength, proxyAuthBufPtr, proxyAuthBufLength, pcbPayloadBufPtr, pcbPayloadBufLength);
                         if (!result.isOk)
                         {
                             throw new IronRdpException(new IronRdpError(result.Err));
@@ -224,7 +189,7 @@ public partial class RDCleanPathPdu: IDisposable
         }
     }
 
-    public bool IsVersion2()
+    public bool IsPcbFront()
     {
         unsafe
         {
@@ -232,7 +197,7 @@ public partial class RDCleanPathPdu: IDisposable
             {
                 throw new ObjectDisposedException("RDCleanPathPdu");
             }
-            bool retVal = Raw.RDCleanPathPdu.IsVersion2(_inner);
+            bool retVal = Raw.RDCleanPathPdu.IsPcbFront(_inner);
             return retVal;
         }
     }

@@ -1010,8 +1010,7 @@ impl ConfigBuilder {
     /// `ironrdp-vmconnect` outside the plain RDP connector. A console listens on port
     /// [`ironrdp_vmconnect::PORT`] (2179), not 3389, so the destination must say so.
     ///
-    /// Works over Direct and RDCleanPath v2 (proxy does PCB + TLS; client runs CredSSP then X.224).
-    /// Classic RDCleanPath v1 is used when no VM ID is set.
+    /// Works over Direct and RDCleanPath (proxy does PCB + TLS; client runs CredSSP then X.224).
     ///
     /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
     /// embedder. RDS Gateway is rejected until it can propagate the VMConnect target port.

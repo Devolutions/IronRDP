@@ -1,6 +1,6 @@
 use expect_test::{Expect, expect};
 use ironrdp_rdcleanpath::{
-    DetectionResult, GENERAL_ERROR_CODE, NEGOTIATION_ERROR_CODE, RDCleanPathErr, RDCleanPathPdu, VERSION_1, VERSION_2,
+    DetectionResult, GENERAL_ERROR_CODE, NEGOTIATION_ERROR_CODE, RDCleanPathErr, RDCleanPathPdu, VERSION_1,
 };
 use rstest::rstest;
 
@@ -20,19 +20,14 @@ const REQUEST_DER: &[u8] = &[
     0x3, 0x50, 0x43, 0x42, 0xA6, 0x6, 0x4, 0x4, 0xDE, 0xAD, 0xBE, 0xFF,
 ];
 
-fn request_v2() -> RDCleanPathPdu {
-    RDCleanPathPdu::new_v2_request(
-        "destination".to_owned(),
-        "proxy auth".to_owned(),
-        vec![0xDE, 0xAD, 0xBE, 0xFF],
-    )
-    .unwrap()
+fn pcb_front_request() -> RDCleanPathPdu {
+    RDCleanPathPdu::new_pcb_front_request("destination".to_owned(), "proxy auth".to_owned(), "PCB".to_owned())
 }
 
-const REQUEST_V2_DER: &[u8] = &[
-    0x30, 0x2B, 0xA0, 0x4, 0x2, 0x2, 0xD, 0x3F, 0xA2, 0xD, 0xC, 0xB, 0x64, 0x65, 0x73, 0x74, 0x69, 0x6E, 0x61, 0x74,
-    0x69, 0x6F, 0x6E, 0xA3, 0xC, 0xC, 0xA, 0x70, 0x72, 0x6F, 0x78, 0x79, 0x20, 0x61, 0x75, 0x74, 0x68, 0xA8, 0x6, 0x4,
-    0x4, 0xDE, 0xAD, 0xBE, 0xFF,
+const PCB_FRONT_REQUEST_DER: &[u8] = &[
+    0x30, 0x2A, 0xA0, 0x4, 0x2, 0x2, 0xD, 0x3E, 0xA2, 0xD, 0xC, 0xB, 0x64, 0x65, 0x73, 0x74, 0x69, 0x6E, 0x61, 0x74,
+    0x69, 0x6F, 0x6E, 0xA3, 0xC, 0xC, 0xA, 0x70, 0x72, 0x6F, 0x78, 0x79, 0x20, 0x61, 0x75, 0x74, 0x68, 0xA5, 0x5, 0xC,
+    0x3, 0x50, 0x43, 0x42,
 ];
 
 fn response_success() -> RDCleanPathPdu {
@@ -54,8 +49,8 @@ const RESPONSE_SUCCESS_DER: &[u8] = &[
     0xC, 0xC, 0x31, 0x39, 0x32, 0x2E, 0x31, 0x36, 0x38, 0x2E, 0x37, 0x2E, 0x39, 0x35,
 ];
 
-fn response_success_v2() -> RDCleanPathPdu {
-    RDCleanPathPdu::new_v2_response(
+fn pcb_front_response() -> RDCleanPathPdu {
+    RDCleanPathPdu::new_pcb_front_response(
         "192.168.7.95".to_owned(),
         [
             vec![0xDE, 0xAD, 0xBE, 0xFF],
@@ -66,8 +61,8 @@ fn response_success_v2() -> RDCleanPathPdu {
     .unwrap()
 }
 
-const RESPONSE_SUCCESS_V2_DER: &[u8] = &[
-    0x30, 0x2C, 0xA0, 0x4, 0x2, 0x2, 0xD, 0x3F, 0xA7, 0x14, 0x30, 0x12, 0x4, 0x4, 0xDE, 0xAD, 0xBE, 0xFF, 0x4, 0x4,
+const PCB_FRONT_RESPONSE_DER: &[u8] = &[
+    0x30, 0x2C, 0xA0, 0x4, 0x2, 0x2, 0xD, 0x3E, 0xA7, 0x14, 0x30, 0x12, 0x4, 0x4, 0xDE, 0xAD, 0xBE, 0xFF, 0x4, 0x4,
     0xDE, 0xAD, 0xBE, 0xFF, 0x4, 0x4, 0xDE, 0xAD, 0xBE, 0xFF, 0xA9, 0xE, 0xC, 0xC, 0x31, 0x39, 0x32, 0x2E, 0x31, 0x36,
     0x38, 0x2E, 0x37, 0x2E, 0x39, 0x35,
 ];
@@ -92,9 +87,9 @@ const RESPONSE_TLS_ERROR_DER: &[u8] = &[
 
 #[rstest]
 #[case(request())]
-#[case(request_v2())]
+#[case(pcb_front_request())]
 #[case(response_success())]
-#[case(response_success_v2())]
+#[case(pcb_front_response())]
 #[case(response_http_error())]
 #[case(response_tls_error())]
 fn smoke(#[case] message: RDCleanPathPdu) {
@@ -120,9 +115,9 @@ macro_rules! assert_serialization {
 
 #[rstest]
 #[case(request(), REQUEST_DER)]
-#[case(request_v2(), REQUEST_V2_DER)]
+#[case(pcb_front_request(), PCB_FRONT_REQUEST_DER)]
 #[case(response_success(), RESPONSE_SUCCESS_DER)]
-#[case(response_success_v2(), RESPONSE_SUCCESS_V2_DER)]
+#[case(pcb_front_response(), PCB_FRONT_RESPONSE_DER)]
 #[case(response_http_error(), RESPONSE_HTTP_ERROR_DER)]
 #[case(response_tls_error(), RESPONSE_TLS_ERROR_DER)]
 fn serialization(#[case] message: RDCleanPathPdu, #[case] expected_der: &[u8]) {
@@ -135,6 +130,8 @@ fn serialization(#[case] message: RDCleanPathPdu, #[case] expected_der: &[u8]) {
 #[case(RESPONSE_SUCCESS_DER)]
 #[case(RESPONSE_HTTP_ERROR_DER)]
 #[case(RESPONSE_TLS_ERROR_DER)]
+#[case(PCB_FRONT_REQUEST_DER)]
+#[case(PCB_FRONT_RESPONSE_DER)]
 fn detect(#[case] der: &[u8]) {
     let result = RDCleanPathPdu::detect(der);
 
@@ -148,21 +145,6 @@ fn detect(#[case] der: &[u8]) {
 
     assert_eq!(detected_version, VERSION_1);
     assert_eq!(detected_length, der.len());
-}
-
-#[rstest]
-#[case(REQUEST_V2_DER)]
-#[case(RESPONSE_SUCCESS_V2_DER)]
-fn detect_v2(#[case] der: &[u8]) {
-    let result = RDCleanPathPdu::detect(der);
-
-    assert_eq!(
-        result,
-        DetectionResult::Detected {
-            version: VERSION_2,
-            total_length: der.len(),
-        }
-    );
 }
 
 #[rstest]
