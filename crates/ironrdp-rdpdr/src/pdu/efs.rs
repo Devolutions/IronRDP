@@ -996,10 +996,6 @@ impl Devices {
         self.push(DeviceAnnounceHeader::new_drive(device_id, name));
     }
 
-    pub(crate) fn contains_device(&self, device_id: u32) -> bool {
-        self.0.iter().any(|device| device.device_id == device_id)
-    }
-
     /// Announce a virtual printer device to the server.
     ///
     /// Uses sensible defaults for web-client / virtual-printer scenarios:
@@ -1100,10 +1096,6 @@ impl DeviceAnnounceHeader {
             preferred_dos_name: PreferredDosName::for_drive(&name),
             device_data: utf16le_with_nul(&name),
         }
-    }
-
-    pub(crate) fn device_id(&self) -> u32 {
-        self.device_id
     }
 
     /// Construct a printer announce with sensible defaults; see
