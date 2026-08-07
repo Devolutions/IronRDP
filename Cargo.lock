@@ -2455,16 +2455,21 @@ name = "ironrdp-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "clap",
+ "h2",
+ "http",
  "ironrdp-cfg",
  "ironrdp-daemon",
  "ironrdp-input",
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
  "ironrdp-rpc",
+ "md-5 0.10.6",
  "serde",
  "serde_json",
  "tokio",
+ "windows",
 ]
 
 [[package]]

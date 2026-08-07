@@ -4,84 +4,31 @@
 //! (`sandboxserver.SandboxCore` on `\\.\pipe\wsandbox\<md5(user SID)>`), then
 //! expands them into a [`PropertySet`] the daemon already understands.
 //!
-//! The gRPC client is a small C# file-based app under `tools/windows_sandbox_grpc.cs`
-//! (requires `dotnet`). Prefer creating the sandbox with official `wsb start`, then:
+//! Prefer creating the sandbox with official `wsb start`, then:
 //! `ironrdp-agent connect --sandbox-id <id>`.
 
 #![cfg(windows)]
 // CLI-facing summaries intentionally print to stdout (same pattern as `cli.rs`).
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use std::path::PathBuf;
-use std::process::Command;
-
 use anyhow::Context as _;
 use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_propertyset::PropertySet;
-use serde::Deserialize;
+
+use crate::sandbox_grpc;
 
 /// Parsed `RdpClientConfig` from WindowsSandboxServer (subset we need).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub(crate) struct SandboxRdpConfig {
     pub sandbox_id: String,
     pub vm_id: String,
     pub username: String,
     pub password: String,
     pub rdp_transport: String,
-    #[serde(default)]
     pub ip_address: String,
     pub pipe_path: Option<String>,
-    #[serde(default)]
     pub clipboard_redirection: bool,
-    #[serde(default)]
     pub smartcard_redirection: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListReply {
-    sandbox_ids: Vec<String>,
-}
-
-/// Embedded so release binaries still work without shipping the `.cs` next to the exe.
-const HELPER_SOURCE: &str = include_str!("../tools/windows_sandbox_grpc.cs");
-
-fn helper_script_path() -> anyhow::Result<PathBuf> {
-    if let Ok(env_path) = std::env::var("IRONRDP_SANDBOX_GRPC_HELPER") {
-        let p = PathBuf::from(env_path);
-        if p.is_file() {
-            return Ok(p);
-        }
-        anyhow::bail!("IRONRDP_SANDBOX_GRPC_HELPER points to missing file: {}", p.display());
-    }
-
-    // Prefer a helper shipped beside the agent binary (release packaging / manual install).
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let beside = dir.join("windows_sandbox_grpc.cs");
-            if beside.is_file() {
-                return Ok(beside);
-            }
-        }
-    }
-
-    // Dev tree / `cargo run -p ironrdp-agent`.
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/windows_sandbox_grpc.cs");
-    if manifest.is_file() {
-        return Ok(manifest);
-    }
-
-    // Materialize the embedded source for installed binaries that did not ship the helper file.
-    let dir = std::env::temp_dir().join("ironrdp-agent-sandbox");
-    std::fs::create_dir_all(&dir).context("create temp dir for windows sandbox gRPC helper")?;
-    let path = dir.join("windows_sandbox_grpc.cs");
-    let needs_write = match std::fs::read_to_string(&path) {
-        Ok(existing) => existing != HELPER_SOURCE,
-        Err(_) => true,
-    };
-    if needs_write {
-        std::fs::write(&path, HELPER_SOURCE).context("write embedded windows sandbox gRPC helper")?;
-    }
-    Ok(path)
 }
 
 /// Re-apply NamedPipe transport security after user property merges.
@@ -95,76 +42,58 @@ pub(crate) fn reassert_named_pipe_security(ps: &mut PropertySet) {
     ps.set_autologon(true);
 }
 
-fn run_helper(args: &[&str]) -> anyhow::Result<String> {
-    let script = helper_script_path()?;
-    // File-based `dotnet run` may emit compiler warnings on stdout; keep only the JSON object line.
-    let output = Command::new("dotnet")
-        .arg("run")
-        .arg(&script)
-        .arg("--")
-        .args(args)
-        .env("DOTNET_NOLOGO", "1")
-        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
-        .output()
-        .with_context(|| {
-            format!(
-                "failed to spawn `dotnet run {}` (is the .NET SDK installed?)",
-                script.display()
-            )
-        })?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let json_line = stdout
-        .lines()
-        .rev()
-        .find(|l| {
-            let t = l.trim_start();
-            t.starts_with('{') || t.starts_with('[')
-        })
-        .map(str::trim)
-        .unwrap_or("");
-
-    if !output.status.success() {
-        anyhow::bail!(
-            "windows sandbox gRPC helper failed (exit {:?}): {}{}",
-            output.status.code(),
-            stderr.trim(),
-            if stdout.trim().is_empty() {
-                String::new()
-            } else {
-                format!(" | {stdout}")
-            }
-        );
-    }
-
-    if json_line.is_empty() {
-        anyhow::bail!(
-            "windows sandbox gRPC helper produced no JSON (stdout={stdout:?}, stderr={})",
-            stderr.trim()
-        );
-    }
-
-    Ok(json_line.to_owned())
-}
-
 /// List running sandbox ids via WindowsSandboxServer.
 pub(crate) fn list_sandbox_ids() -> anyhow::Result<Vec<String>> {
-    let stdout = run_helper(&["list"])?;
-    let reply: ListReply = serde_json::from_str(stdout.trim()).context("parse list JSON")?;
-    Ok(reply.sandbox_ids)
+    sandbox_grpc::enumerate_sandbox_vms()
 }
 
 /// Fetch `RdpClientConfig` for a running sandbox.
 pub(crate) fn get_rdp_config(sandbox_id: &str) -> anyhow::Result<SandboxRdpConfig> {
-    let stdout = run_helper(&["config", sandbox_id])?;
-    serde_json::from_str(stdout.trim()).context("parse config JSON")
+    let xml = sandbox_grpc::get_rdp_client_config_xml(sandbox_id)
+        .with_context(|| format!("GetRdpClientConfig for {sandbox_id}"))?;
+    Ok(parse_config_xml(&xml, sandbox_id))
 }
 
 /// Shut down a running sandbox via gRPC.
 pub(crate) fn stop_sandbox(sandbox_id: &str) -> anyhow::Result<()> {
-    let _ = run_helper(&["stop", sandbox_id])?;
-    Ok(())
+    sandbox_grpc::shutdown_sandbox(sandbox_id)
+}
+
+fn parse_config_xml(xml: &str, fallback_sandbox_id: &str) -> SandboxRdpConfig {
+    let trim_braces = |s: String| s.trim_matches(|c| c == '{' || c == '}').to_owned();
+
+    let mut sandbox_id = trim_braces(sandbox_grpc::xml_local_value(xml, "SandboxId"));
+    if sandbox_id.is_empty() {
+        sandbox_id = fallback_sandbox_id.to_owned();
+    }
+    let vm_id = trim_braces(sandbox_grpc::xml_local_value(xml, "VMId"));
+    let username = sandbox_grpc::xml_local_value(xml, "Username");
+    let password = sandbox_grpc::xml_local_value(xml, "Password");
+    let rdp_transport = sandbox_grpc::xml_local_value(xml, "RdpTransport");
+    let ip_address = sandbox_grpc::xml_local_value(xml, "IpAddress");
+    let clipboard_redirection = parse_bool_xml(&sandbox_grpc::xml_local_value(xml, "ClipboardRedirection"));
+    let smartcard_redirection = parse_bool_xml(&sandbox_grpc::xml_local_value(xml, "SmartCardRedirection"));
+    let pipe_path = if vm_id.is_empty() {
+        None
+    } else {
+        Some(format!(r"\\.\pipe\{vm_id}"))
+    };
+
+    SandboxRdpConfig {
+        sandbox_id,
+        vm_id,
+        username,
+        password,
+        rdp_transport,
+        ip_address,
+        pipe_path,
+        clipboard_redirection,
+        smartcard_redirection,
+    }
+}
+
+fn parse_bool_xml(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes")
 }
 
 /// Expand a sandbox id into connect properties (NamedPipe + PROTOCOL_RDP defaults).
@@ -275,5 +204,37 @@ pub(crate) fn print_config_summary(cfg: &SandboxRdpConfig) {
     }
     if !cfg.ip_address.is_empty() {
         println!("ip:         {}", cfg.ip_address);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_config_xml_named_pipe() {
+        let xml = "
+            <RdpClientConfig>
+              <SandboxId>{8825f947-7d05-46e5-9efb-317ca83500ec}</SandboxId>
+              <VMId>{606cf61b-dd6c-4d4c-8700-4af99a73f7ab}</VMId>
+              <Username>WDAGUtilityAccount</Username>
+              <Password>pw</Password>
+              <RdpTransport>NamedPipe</RdpTransport>
+              <ClipboardRedirection>true</ClipboardRedirection>
+              <SmartCardRedirection>false</SmartCardRedirection>
+            </RdpClientConfig>
+        ";
+        let cfg = parse_config_xml(xml, "fallback");
+        assert_eq!(cfg.sandbox_id, "8825f947-7d05-46e5-9efb-317ca83500ec");
+        assert_eq!(cfg.vm_id, "606cf61b-dd6c-4d4c-8700-4af99a73f7ab");
+        assert_eq!(cfg.username, "WDAGUtilityAccount");
+        assert_eq!(cfg.password, "pw");
+        assert_eq!(cfg.rdp_transport, "NamedPipe");
+        assert!(cfg.clipboard_redirection);
+        assert!(!cfg.smartcard_redirection);
+        assert_eq!(
+            cfg.pipe_path.as_deref(),
+            Some(r"\\.\pipe\606cf61b-dd6c-4d4c-8700-4af99a73f7ab")
+        );
     }
 }

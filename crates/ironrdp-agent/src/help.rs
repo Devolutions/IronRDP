@@ -142,10 +142,8 @@ capability, or mapping, even if a peer advertises it.
 ## Windows Sandbox (Windows only)
 
 Prefer create-then-connect: start the VM with official `wsb start` (prints the sandbox Id), then
-attach with the agent. Requires the .NET SDK on PATH for the small gRPC helper
-(`tools/windows_sandbox_grpc.cs`, also embedded and materializable at runtime). Override the
-helper path with `IRONRDP_SANDBOX_GRPC_HELPER`, or place `windows_sandbox_grpc.cs` next to the
-agent binary.
+attach with the agent. The agent calls WindowsSandboxServer gRPC in-process over the per-user
+named pipe (no .NET helper).
 
 - `sandbox list`                 List running sandbox Ids via WindowsSandboxServer.
 - `sandbox config <ID>`          Print a redacted RdpClientConfig summary (password shown as set/empty).

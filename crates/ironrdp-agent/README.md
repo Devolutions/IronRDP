@@ -47,13 +47,9 @@ ironrdp-agent connect --sandbox-id <sandbox-id>
 ironrdp-agent screenshot sandbox.png
 ```
 
-Requires the .NET SDK on PATH so the small helper can call `sandboxserver.SandboxCore`
-(`GetRdpClientConfig` / `EnumerateSandboxVMs` / `ShutdownSandbox`). Resolution order:
-
-1. `IRONRDP_SANDBOX_GRPC_HELPER` (explicit path)
-2. `windows_sandbox_grpc.cs` next to the `ironrdp-agent` binary
-3. `crates/ironrdp-agent/tools/windows_sandbox_grpc.cs` (dev / `cargo run`)
-4. embedded source materialized under the process temp directory
+The agent speaks `sandboxserver.SandboxCore` in-process over the per-user named pipe
+(`\\.\pipe\wsandbox\<md5(user SID)>`) — no .NET helper is required. WindowsSandboxServer must
+already be running (starting a sandbox with `wsb start` / the Sandbox UI is enough).
 
 Low-level escape hatch when you already have the pipe path and guest password:
 
