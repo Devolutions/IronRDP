@@ -6,17 +6,20 @@ requires human review.
 
 A heavy review is split into two isolated LLM stages. The classifier reports whether the change is
 protocol-related, and that boolean is persisted in machine-readable form on the SHA-bound
-`AI classification` check because the review route runs in a later workflow run. When it is true,
-**Analyze protocol conformance** runs first: it stages the `awakecoding/openspecs` default branch
-into `.claude/skills/windows-protocols/` with a credentialless git fetch — no `npx`, package
-lifecycle script, or global install — and returns a structured protocol handoff. The commit it
-resolved is handed to the validation job, so both stages read the same corpus even if the corpus
-moves in between. A trusted job then validates that handoff, including that every cited protocol ID
-and section heading exists in that corpus. **Review pull request** is the skeptical stage: it never
-sees the corpus, receives the validated handoff as a data file, and must record whether it accepted,
-partly accepted, or rejected the protocol findings. Only its output is published, and inline
-comments are placed only on lines this pull request actually adds; any other finding is published in
-the review body instead.
+`AI classification` check because the review route runs in a later workflow run. Its workflow-only
+instructions live in `.github/pr-automation/prompts/classifier.md`. Each LLM stage similarly injects
+its pipeline-specific evidence and output contract from
+`.github/pr-automation/prompts/<stage>.md`; reusable review methodology remains in `.agents/skills`.
+When it is true, **Analyze protocol conformance** runs first: it stages the `awakecoding/openspecs` default branch into
+`.claude/skills/windows-protocols/` with a credentialless git fetch — no `npx`, package lifecycle
+script, or global install — together with the repository's `.agents/skills/protocol-reviewer` skill. The commit it
+resolved is handed to the validation job, so both stages read the same corpus even if the corpus moves
+in between. A trusted job then validates that handoff, including that every cited protocol ID and
+section heading exists in that corpus. **Review pull request** invokes the
+`.agents/skills/skeptical-reviewer` skill: it never sees the corpus, receives the validated handoff as
+a data file, and must record whether it accepted, partly accepted, or rejected the protocol findings.
+Only its output is published, and inline comments are placed only on lines this pull request actually
+adds; any other finding is published in the review body instead.
 
 Protocol-related reviews therefore consume two calls against `ANTHROPIC_API_KEY_REVIEWER`;
 non-protocol reviews consume one. If the protocol stage fails, is cancelled, is malformed, or cites
@@ -44,18 +47,19 @@ excluded from this workflow. Dependabot is the sole owner of dependency and lang
 this automation never adds, removes, or reconciles labels on bot pull requests.
 
 Every LLM stage is given the same evidence, prepared by `.github/pr-automation/fetch-pr-evidence.sh`
-running from the trusted base checkout. The action is used in explicit-prompt mode, which injects no
-pull request context of its own, and `Bash` is denied, so a model cannot derive a diff by itself.
-The script therefore writes `pr-evidence/changed-files.txt` and `pr-evidence/pull-request.diff`,
-both computed against the merge base so that unrelated commits landing on `master` are not
-attributed to the pull request, and the head tree stays available in `pr-head` for surrounding
-context. Before exposing that tree to filesystem-reading tools, it removes all symlinks so a pull
-request cannot redirect a read outside the checkout. It also removes contributor-controlled agent
-instruction files — `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `.claude`, `.cursor`,
-`.cursorrules` — recursively rather than only at the checkout root, because Claude Code discovers
-them in every directory it reads and a nested copy would otherwise escape the evidence-only
-boundary. Those files still appear in the diff, where they are reviewable data rather than
-instructions.
+running from the trusted base checkout. The action uses only an explicit file or skill invocation,
+which injects no pull request context of its own, and `Bash` is denied, so a model cannot derive a
+diff by itself. Trusted workflow code writes the target head SHA and handoff-receipt status to
+`pr-automation-context.json` rather than interpolating them into instructions. The script writes
+`pr-evidence/changed-files.txt` and `pr-evidence/pull-request.diff`, both computed against the merge
+base so that unrelated commits landing on `master` are not attributed to the pull request, and the
+head tree stays available in `pr-head` for surrounding context. Before exposing that tree to
+filesystem-reading tools, it removes all symlinks so a pull request cannot redirect a read outside the
+checkout. It also removes contributor-controlled agent instruction files — `CLAUDE.md`,
+`CLAUDE.local.md`, `AGENTS.md`, `.claude`, `.cursor`, `.cursorrules` — recursively rather than only
+at the checkout root, because Claude Code discovers them in every directory it reads and a nested copy
+would otherwise escape the evidence-only boundary. Those files still appear in the diff, where they
+are reviewable data rather than instructions.
 
 Model output is likewise treated as hostile on the way out. Text published in a bot comment or
 review is escaped so that HTML, code spans, mentions, issue references, and the Markdown constructs

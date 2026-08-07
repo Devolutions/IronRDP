@@ -47,6 +47,40 @@ test("workflow does not overwrite github-script result outputs", () => {
   assert.doesNotMatch(workflow, /needs\.[\w-]+\.outputs\.result\b/);
 });
 
+test("review skills own methodology while stage prompts own pipeline contracts", () => {
+  const githubDirectory = path.join(__dirname, "..");
+  const repositoryRoot = path.join(githubDirectory, "..");
+  const workflow = fs.readFileSync(path.join(githubDirectory, "workflows", "labeler.yml"), "utf8");
+  const prompt = (name) => fs.readFileSync(path.join(__dirname, "prompts", `${name}.md`), "utf8");
+  const skill = (name) => fs.readFileSync(
+    path.join(repositoryRoot, ".agents", "skills", name, "SKILL.md"),
+    "utf8",
+  );
+
+  for (const stage of ["classifier", "protocol-reviewer", "skeptical-reviewer"]) {
+    assert.equal(workflow.includes(`prompts/${stage}.md`), true);
+  }
+
+  const protocolPrompt = prompt("protocol-reviewer");
+  const skepticalPrompt = prompt("skeptical-reviewer");
+  const protocolSkill = skill("protocol-reviewer");
+  const skepticalSkill = skill("skeptical-reviewer");
+
+  assert.match(protocolSkill, /windows-protocols/);
+  assert.doesNotMatch(protocolPrompt, /windows-protocols/);
+  for (const reusableSkill of [protocolSkill, skepticalSkill]) {
+    assert.doesNotMatch(
+      reusableSkill,
+      /pr-automation-context|pr-evidence|protocol-handoff\.json|change_mappings|start_line|end_line/,
+    );
+  }
+  for (const stagePrompt of [protocolPrompt, skepticalPrompt]) {
+    assert.match(stagePrompt, /pr-automation-context\.json/);
+    assert.match(stagePrompt, /pr-evidence\/changed-files\.txt/);
+    assert.match(stagePrompt, /Return only the required .*JSON/);
+  }
+});
+
 test("every deterministic label is declared and the repository rules classify tooling changes", () => {
   const githubDirectory = path.join(__dirname, "..");
   const rules = parseLabelerRules(fs.readFileSync(path.join(githubDirectory, "labeler.yml"), "utf8"));
