@@ -776,47 +776,47 @@ async fn connect_direct(
     let framed = ironrdp_tokio::TokioFramed::new(stream);
 
     let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
-        #[cfg(feature = "vmconnect")]
-        if config.vm_id().is_some() {
-            return vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await;
-        }
-        security_upgrade_and_finalize(framed, connector, config).await
+    #[cfg(feature = "vmconnect")]
+    if config.vm_id().is_some() {
+        return vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await;
     }
+    security_upgrade_and_finalize(framed, connector, config).await
+}
 
-    /// Windows named-pipe RDP stream (e.g. Windows Sandbox `\\.\pipe\{VMId}`).
-    ///
-    /// Opens a duplex byte-mode client pipe and runs the connector. When TLS/CredSSP are disabled
-    /// (Sandbox NamedPipe default), negotiation stays on PROTOCOL_RDP with ENCRYPTION_LEVEL_NONE.
-    #[cfg(windows)]
-    async fn connect_named_pipe(
-        config: &Config,
-        pipe_path: &str,
-        input_sender: &RdpInputSender,
-        cliprdr_factory: CliprdrFactoryRef<'_>,
-    ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
-        use tokio::net::windows::named_pipe::ClientOptions;
+/// Windows named-pipe RDP stream (e.g. Windows Sandbox `\\.\pipe\{VMId}`).
+///
+/// Opens a duplex byte-mode client pipe and runs the connector. When TLS/CredSSP are disabled
+/// (Sandbox NamedPipe default), negotiation stays on PROTOCOL_RDP with ENCRYPTION_LEVEL_NONE.
+#[cfg(windows)]
+async fn connect_named_pipe(
+    config: &Config,
+    pipe_path: &str,
+    input_sender: &RdpInputSender,
+    cliprdr_factory: CliprdrFactoryRef<'_>,
+) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
+    use tokio::net::windows::named_pipe::ClientOptions;
 
-        let path = if pipe_path.starts_with(r"\\.\pipe\") || pipe_path.starts_with(r"\\?\pipe\") {
-            pipe_path.to_owned()
-        } else {
-            format!(r"\\.\pipe\{pipe_path}")
-        };
+    let path = if pipe_path.starts_with(r"\\.\pipe\") || pipe_path.starts_with(r"\\?\pipe\") {
+        pipe_path.to_owned()
+    } else {
+        format!(r"\\.\pipe\{pipe_path}")
+    };
 
-        info!(%path, "Connecting over Windows named pipe");
+    info!(%path, "Connecting over Windows named pipe");
 
-        let stream = ClientOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .map_err(|e| ironrdp_connector::custom_err!("named pipe connect", e))?;
+    let stream = ClientOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|e| ironrdp_connector::custom_err!("named pipe connect", e))?;
 
-        // Named pipes have no socket address; use a dummy loopback address for Client Info.
-        let client_addr = SocketAddr::from(([127, 0, 0, 1], 0));
-        let framed = ironrdp_tokio::TokioFramed::new(stream);
-        let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
+    // Named pipes have no socket address; use a dummy loopback address for Client Info.
+    let client_addr = SocketAddr::from(([127, 0, 0, 1], 0));
+    let framed = ironrdp_tokio::TokioFramed::new(stream);
+    let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
 
-        security_upgrade_and_finalize(framed, connector, config).await
-    }
+    security_upgrade_and_finalize(framed, connector, config).await
+}
 
 /// RDS gateway TCP → gateway auth → TLS connection.
 #[cfg(feature = "gateway")]
@@ -852,8 +852,8 @@ async fn connect_gateway(
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
     let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
-        security_upgrade_and_finalize(framed, connector, config).await
-    }
+    security_upgrade_and_finalize(framed, connector, config).await
+}
 
 /// RDCleanPath WebSocket → RDCleanPath handshake connection.
 async fn connect_rdcleanpath_transport(

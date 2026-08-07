@@ -309,24 +309,24 @@ impl ClientConnector {
             security_protocol.insert(nego::SecurityProtocol::SSL);
         }
         if self.config.enable_credssp {
-                // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
-                // PROTOCOL_HYBRID "SHOULD" also set PROTOCOL_SSL, but it is not a MUST.
-                // IronRDP intentionally omits SSL unless enable_tls is set so the server
-                // cannot silently downgrade NLA to TLS-only.
-                security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
-            }
-
-            // PROTOCOL_RDP (empty flags) is standard RDP security. IronRDP only supports the
-            // ENCRYPTION_LEVEL_NONE variant (no RC4 Security Exchange). Servers that select
-            // PROTOCOL_RDP and advertise ServerSecurityData::no_security() — e.g. Windows
-            // Sandbox over a local named pipe — can complete the sequence. RC4/FIPS still
-            // fails later with "can't satisfy server security settings".
-            if security_protocol.is_standard_rdp_security() {
-                debug!("Advertising standard RDP security (PROTOCOL_RDP / no enhanced protocols)");
-            }
-
-            Ok(security_protocol)
+            // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
+            // PROTOCOL_HYBRID "SHOULD" also set PROTOCOL_SSL, but it is not a MUST.
+            // IronRDP intentionally omits SSL unless enable_tls is set so the server
+            // cannot silently downgrade NLA to TLS-only.
+            security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
         }
+
+        // PROTOCOL_RDP (empty flags) is standard RDP security. IronRDP only supports the
+        // ENCRYPTION_LEVEL_NONE variant (no RC4 Security Exchange). Servers that select
+        // PROTOCOL_RDP and advertise ServerSecurityData::no_security() — e.g. Windows
+        // Sandbox over a local named pipe — can complete the sequence. RC4/FIPS still
+        // fails later with "can't satisfy server security settings".
+        if security_protocol.is_standard_rdp_security() {
+            debug!("Advertising standard RDP security (PROTOCOL_RDP / no enhanced protocols)");
+        }
+
+        Ok(security_protocol)
+    }
 
     fn encode_connection_request(
         &mut self,
@@ -765,11 +765,11 @@ impl Sequence for ClientConnector {
             //== Connection Initiation ==//
             // Exchange supported security protocols and a few other connection flags.
             ClientConnectorState::ConnectionInitiationSendRequest => {
-                            debug!("Connection Initiation");
-                            let security_protocol = self.enabled_security_protocols()?;
-                            let written = self.encode_connection_request(security_protocol, output)?;
-                            (written, mem::take(&mut self.state))
-                        }
+                debug!("Connection Initiation");
+                let security_protocol = self.enabled_security_protocols()?;
+                let written = self.encode_connection_request(security_protocol, output)?;
+                (written, mem::take(&mut self.state))
+            }
             ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
                 let connection_confirm = decode::<X224<nego::ConnectionConfirm>>(input)
                     .map_err(ConnectorError::decode)
