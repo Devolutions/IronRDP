@@ -1,10 +1,8 @@
-use ironrdp_core::impl_as_any;
-use ironrdp_pdu::{PduResult, pdu_other_err};
-use ironrdp_svc::SvcMessage;
-
 use super::RdpdrBackend;
 use crate::pdu::efs::{DeviceControlRequest, ServerDeviceAnnounceResponse};
 use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
+use ironrdp_core::impl_as_any;
+use ironrdp_pdu::PduResult;
 
 #[derive(Debug)]
 pub struct NoopRdpdrBackend;
@@ -17,10 +15,5 @@ impl RdpdrBackend for NoopRdpdrBackend {
     }
     fn handle_scard_call(&mut self, _req: DeviceControlRequest<ScardIoCtlCode>, _call: ScardCall) -> PduResult<()> {
         Ok(())
-    }
-    fn handle_drive_io_request(&mut self, _req: crate::pdu::efs::ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {
-        Err(pdu_other_err!(
-            "filesystem I/O is not supported by the noop RDPDR backend"
-        ))
     }
 }

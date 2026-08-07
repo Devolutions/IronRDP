@@ -870,6 +870,56 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn dropped_subscription_can_replay_the_terminal_event() {
+        let manager = OperationManager::new(Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed")));
+        let id = 1;
+        lock(&manager.state).records.insert(
+            id,
+            OperationRecord {
+                info: OperationInfo {
+                    id,
+                    kind: NowExecutionKind::Batch,
+                    state: OperationState::Running,
+                    detached: false,
+                    exit_code: None,
+                    error: None,
+                    retained_output_bytes: 0,
+                    next_sequence: 0,
+                },
+                events: VecDeque::new(),
+                subscribers: Vec::new(),
+            },
+        );
+
+        let mut attachment = manager.attach(id, None).expect("subscription is accepted");
+        manager.emit(id, OperationEventKind::Started);
+        manager.emit(id, OperationEventKind::Completed { exit_code: 0 });
+        manager.finish(id, OperationState::Completed, Some(0), None);
+
+        assert!(matches!(
+            attachment.live.recv().await,
+            Some(OperationEvent {
+                kind: OperationEventKind::Started,
+                ..
+            })
+        ));
+        assert!(attachment.live.recv().await.is_none());
+
+        let replay = manager
+            .attach(id, Some(0))
+            .expect("terminal operation remains attachable")
+            .replay;
+        assert!(matches!(
+            replay.as_slice(),
+            [OperationEvent {
+                sequence: 1,
+                kind: OperationEventKind::Completed { exit_code: 0 },
+                ..
+            }]
+        ));
+    }
+
     #[test]
     fn output_is_split_to_fit_the_ipc_message_limit() {
         let manager = OperationManager::new(Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed")));

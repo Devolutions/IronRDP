@@ -457,6 +457,7 @@ pub struct RdpServer {
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+    static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
@@ -508,6 +509,15 @@ pub struct RdpServer {
     /// Tracks whether the current cookie has reached a client. Subsequent
     /// connections and hourly updates replace it with a new random.
     auto_reconnect_sent: bool,
+}
+
+/// Builds a static-channel processor for each accepted RDP connection.
+///
+/// Factories are invoked while the connection acceptor is being configured, so
+/// their channels participate in GCC negotiation and start with fresh
+/// per-connection state.
+pub trait StaticChannelFactory: Send {
+    fn attach(&self, acceptor: &mut Acceptor);
 }
 
 /// Cloneable handle for updating the Server Auto-Reconnect Cookie while
@@ -602,6 +612,7 @@ impl RdpServer {
         static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+        static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
         display_suppressed: Option<Arc<AtomicBool>>,
@@ -626,6 +637,7 @@ impl RdpServer {
             static_channel_factories,
             sound_factory,
             cliprdr_factory,
+            static_channel_factories,
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
             gfx_factory,
@@ -938,6 +950,10 @@ impl RdpServer {
             let backend = factory.build_backend();
 
             acceptor.attach_static_channel(RdpsndServer::new(backend));
+        }
+
+        for factory in &self.static_channel_factories {
+            factory.attach(acceptor);
         }
 
         let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));

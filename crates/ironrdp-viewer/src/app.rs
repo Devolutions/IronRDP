@@ -478,6 +478,7 @@ impl RpcApp {
         match event {
             RdpOutputEvent::Connected => info!("RDP session connected"),
             RdpOutputEvent::LoginComplete => info!("RDP login complete"),
+            RdpOutputEvent::RdpdrEvent(event) => trace!(?event, "RDPDR lifecycle event"),
             RdpOutputEvent::PostLogonDisplayRedraw => info!("Requested post-logon display redraw"),
             RdpOutputEvent::MalformedBitmapDisplayRedraw => {
                 warn!("Requested display redraw after discarding a malformed bitmap update");

@@ -40,6 +40,7 @@ pub struct BuilderDone {
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
+    static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     #[cfg(feature = "egfx")]
@@ -141,6 +142,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 static_channel_factories: Vec::new(),
                 sound_factory: None,
                 cliprdr_factory: None,
+                static_channel_factories: Vec::new(),
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
@@ -165,6 +167,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 static_channel_factories: Vec::new(),
                 sound_factory: None,
                 cliprdr_factory: None,
+                static_channel_factories: Vec::new(),
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
@@ -194,6 +197,12 @@ impl RdpServerBuilder<BuilderDone> {
 
     pub fn with_sound_factory(mut self, sound: Option<Box<dyn SoundServerFactory>>) -> Self {
         self.state.sound_factory = sound;
+        self
+    }
+
+    /// Adds a static-channel factory that creates one processor per connection.
+    pub fn with_static_channel_factory(mut self, factory: Box<dyn StaticChannelFactory>) -> Self {
+        self.state.static_channel_factories.push(factory);
         self
     }
 
@@ -348,6 +357,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.static_channel_factories,
             self.state.sound_factory,
             self.state.cliprdr_factory,
+            self.state.static_channel_factories,
             self.state.connection_handler,
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,
