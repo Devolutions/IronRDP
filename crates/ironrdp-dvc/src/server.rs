@@ -12,7 +12,8 @@ use pdu::gcc::ChannelName;
 use tracing::debug;
 
 use crate::pdu::{
-    CapabilitiesRequestPdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DrdynvcClientPdu, DrdynvcServerPdu,
+    CapabilitiesRequestPdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DrdynvcClientPdu,
+    DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
 };
 use crate::{CompleteData, DvcProcessor, DynamicChannelMut, DynamicChannelRef, encode_dvc_messages};
 
@@ -123,6 +124,10 @@ impl DynamicChannel {
 pub struct DrdynvcServer {
     dynamic_channels: DynamicChannelAllocator,
     type_id_to_channel_id: BTreeMap<TypeId, u32>,
+    pending_tunnel_channels: Option<BTreeMap<u32, SoftSyncTunnelType>>,
+    outgoing_tunnel_channels: BTreeMap<u32, SoftSyncTunnelType>,
+    incoming_tunnel_channels: BTreeMap<u32, SoftSyncTunnelType>,
+    soft_sync_response_received: bool,
 }
 
 impl fmt::Debug for DrdynvcServer {
@@ -147,6 +152,10 @@ impl DrdynvcServer {
         Self {
             dynamic_channels: DynamicChannelAllocator::new(),
             type_id_to_channel_id: BTreeMap::new(),
+            pending_tunnel_channels: None,
+            outgoing_tunnel_channels: BTreeMap::new(),
+            incoming_tunnel_channels: BTreeMap::new(),
+            soft_sync_response_received: false,
         }
     }
 
@@ -243,10 +252,124 @@ impl DrdynvcServer {
 
     pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
         self.remove_by_channel_id(channel_id)?;
+        if let Some(channels) = self.pending_tunnel_channels.as_mut() {
+            channels.remove(&channel_id);
+        }
+        self.outgoing_tunnel_channels.remove(&channel_id);
+        self.incoming_tunnel_channels.remove(&channel_id);
         Some(
             SvcMessage::from(DrdynvcServerPdu::Close(ClosePdu::new(channel_id)))
                 .with_flags(ChannelFlags::SHOW_PROTOCOL),
         )
+    }
+
+    /// Creates a Soft-Sync request that moves the supplied channels to reliable UDP.
+    ///
+    /// Call [`Self::complete_soft_sync_request`] only after the returned message
+    /// has been successfully written over TCP.
+    pub fn request_reliable_udp(&mut self, channel_ids: Vec<u32>) -> PduResult<SvcMessage> {
+        if channel_ids.is_empty() {
+            return Err(pdu_other_err!("Soft-Sync requires at least one dynamic channel"));
+        }
+        if self.pending_tunnel_channels.is_some() || !self.outgoing_tunnel_channels.is_empty() {
+            return Err(pdu_other_err!("Soft-Sync has already been requested"));
+        }
+
+        let mut selected_channels = BTreeMap::new();
+        for channel_id in &channel_ids {
+            if !self.is_channel_opened(*channel_id) {
+                return Err(pdu_other_err!(
+                    "Soft-Sync requested for a dynamic channel that is not open"
+                ));
+            }
+            if selected_channels
+                .insert(*channel_id, SoftSyncTunnelType::ReliableUdp)
+                .is_some()
+            {
+                return Err(pdu_other_err!("Soft-Sync channel list contains a duplicate channel ID"));
+            }
+        }
+
+        let request = SoftSyncRequestPdu::new(alloc::vec![SoftSyncChannelList::new(
+            SoftSyncTunnelType::ReliableUdp,
+            channel_ids,
+        )]);
+        self.pending_tunnel_channels = Some(selected_channels);
+        as_svc_msg_with_flag(DrdynvcServerPdu::SoftSyncRequest(request))
+    }
+
+    /// Begins server-to-client tunnel routing after a Soft-Sync request was sent over TCP.
+    pub fn complete_soft_sync_request(&mut self) -> PduResult<()> {
+        let pending = self
+            .pending_tunnel_channels
+            .take()
+            .ok_or_else(|| pdu_other_err!("no Soft-Sync request is pending"))?;
+        self.outgoing_tunnel_channels = pending;
+        Ok(())
+    }
+
+    /// Returns whether server-to-client data for `channel_id` must be sent through a tunnel.
+    pub fn tunnel_for_outgoing_channel(&self, channel_id: u32) -> Option<SoftSyncTunnelType> {
+        self.outgoing_tunnel_channels.get(&channel_id).copied()
+    }
+
+    /// Returns whether the client has acknowledged the Soft-Sync request over TCP.
+    pub const fn soft_sync_response_received(&self) -> bool {
+        self.soft_sync_response_received
+    }
+
+    /// Processes raw DRDYNVC data received through an established multitransport tunnel.
+    pub fn process_tunnel(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+        let pdu = decode_dvc_message(payload).map_err(|e| decode_err!(e))?;
+        let DrdynvcClientPdu::Data(data) = pdu else {
+            return Err(pdu_other_err!("only DVC data is permitted on a multitransport tunnel"));
+        };
+        if !self.incoming_tunnel_channels.contains_key(&data.channel_id()) {
+            return Err(pdu_other_err!(
+                "received tunneled data for a channel not selected by Soft-Sync"
+            ));
+        }
+        self.process_data(data)
+    }
+
+    fn process_data(&mut self, data: crate::pdu::DrdynvcDataPdu) -> PduResult<Vec<SvcMessage>> {
+        let channel_id = data.channel_id();
+        let c = self.channel_by_id(channel_id).map_err(|e| decode_err!(e))?;
+        if c.state != ChannelState::Opened {
+            debug!(?channel_id, ?c.state, "Invalid channel state");
+            return Err(pdu_other_err!("invalid channel state"));
+        }
+        let mut resp = Vec::new();
+        if let Some(complete) = c.complete_data.process_data(data).map_err(|e| decode_err!(e))? {
+            let msg = c.processor.process(channel_id, &complete)?;
+            resp.extend(encode_dvc_messages(channel_id, msg, ChannelFlags::SHOW_PROTOCOL).map_err(|e| encode_err!(e))?);
+        }
+        Ok(resp)
+    }
+
+    fn process_soft_sync_response(&mut self, response: crate::pdu::SoftSyncResponsePdu) -> PduResult<()> {
+        if self.outgoing_tunnel_channels.is_empty() || self.soft_sync_response_received {
+            return Err(pdu_other_err!("received unexpected Soft-Sync response"));
+        }
+
+        let requested_tunnels: BTreeMap<_, _> = self
+            .outgoing_tunnel_channels
+            .iter()
+            .map(|(channel_id, tunnel_type)| (*channel_id, *tunnel_type))
+            .collect();
+        for tunnel_type in response.tunnels_to_switch() {
+            if !requested_tunnels.values().any(|requested| requested == tunnel_type) {
+                return Err(pdu_other_err!("Soft-Sync response selected an unrequested tunnel"));
+            }
+        }
+        self.incoming_tunnel_channels = self
+            .outgoing_tunnel_channels
+            .iter()
+            .filter(|(_, tunnel_type)| response.tunnels_to_switch().contains(tunnel_type))
+            .map(|(channel_id, tunnel_type)| (*channel_id, *tunnel_type))
+            .collect();
+        self.soft_sync_response_received = true;
+        Ok(())
     }
 }
 
@@ -311,19 +434,14 @@ impl SvcProcessor for DrdynvcServer {
                 self.remove_by_channel_id(channel_id);
             }
             DrdynvcClientPdu::Data(data) => {
-                let channel_id = data.channel_id();
-                let c = self.channel_by_id(channel_id).map_err(|e| decode_err!(e))?;
-                if c.state != ChannelState::Opened {
-                    debug!(?channel_id, ?c.state, "Invalid channel state");
-                    return Err(pdu_other_err!("invalid channel state"));
+                if self.incoming_tunnel_channels.contains_key(&data.channel_id()) {
+                    return Err(pdu_other_err!("received TCP data for a channel selected by Soft-Sync"));
                 }
-                if let Some(complete) = c.complete_data.process_data(data).map_err(|e| decode_err!(e))? {
-                    let msg = c.processor.process(channel_id, &complete)?;
-                    resp.extend(
-                        encode_dvc_messages(channel_id, msg, ChannelFlags::SHOW_PROTOCOL)
-                            .map_err(|e| encode_err!(e))?,
-                    );
-                }
+                resp.extend(self.process_data(data)?);
+            }
+            DrdynvcClientPdu::SoftSyncResponse(response) => {
+                debug!("Got DVC Soft-Sync Response PDU: {response:?}");
+                self.process_soft_sync_response(response)?;
             }
         }
 
