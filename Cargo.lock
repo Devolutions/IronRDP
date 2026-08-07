@@ -2851,6 +2851,7 @@ name = "ironrdp-rdpdr"
 version = "0.7.0"
 dependencies = [
  "bitflags 2.13.1",
+ "getrandom 0.3.4",
  "ironrdp-core 0.2.1",
  "ironrdp-error 0.2.0",
  "ironrdp-pdu",

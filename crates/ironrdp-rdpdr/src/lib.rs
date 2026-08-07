@@ -11,7 +11,7 @@ use pdu::efs::{
     ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME,
     DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest, DeviceControlResponse, DeviceIoRequest,
     DeviceIoResponse, DeviceType, Devices, MajorFunction, NtStatus, PrinterIoRequest, ServerDeviceAnnounceResponse,
-    VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
+    VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
 use pdu::{PacketId, RdpdrPdu, SharedHeader};
@@ -44,6 +44,7 @@ pub struct Rdpdr {
     ///
     /// All devices not of the type [`DeviceType::Filesystem`] must be declared here.
     device_list: Devices,
+    client_id: Option<u32>,
     post_logon_devices_announced: bool,
     backend: Option<Box<dyn RdpdrBackend>>,
 }
@@ -59,6 +60,7 @@ impl Rdpdr {
             computer_name,
             capabilities: Capabilities::new(),
             device_list: Devices::new(),
+            client_id: None,
             post_logon_devices_announced: false,
             backend: Some(backend),
         }
@@ -136,8 +138,19 @@ impl Rdpdr {
     }
 
     fn handle_server_announce(&mut self, req: VersionAndIdPdu) -> PduResult<Vec<SvcMessage>> {
-        let client_announce_reply =
-            RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu::new_client_announce_reply(req).map_err(|e| decode_err!(e))?);
+        let client_id = if req.version_minor < VERSION_MINOR_12 {
+            let mut bytes = [0; size_of::<u32>()];
+            getrandom::fill(&mut bytes)
+                .map_err(|err| pdu_other_err!("generating rdpdr legacy client id", source: err))?;
+            u32::from_le_bytes(bytes)
+        } else {
+            req.client_id
+        };
+        self.client_id = Some(client_id);
+        let client_announce_reply = RdpdrPdu::VersionAndIdPdu(
+            VersionAndIdPdu::new_client_announce_reply_with_legacy_client_id(req, client_id)
+                .map_err(|e| decode_err!(e))?,
+        );
         trace!("sending {:?}", client_announce_reply);
 
         let client_name_request = RdpdrPdu::ClientNameRequest(ClientNameRequest::new(
@@ -160,6 +173,12 @@ impl Rdpdr {
     }
 
     fn handle_client_id_confirm(&mut self, req: VersionAndIdPdu) -> PduResult<Vec<SvcMessage>> {
+        if self.client_id != Some(req.client_id) {
+            return Err(pdu_other_err!(
+                "received RDPDR client ID confirm for an unexpected client ID"
+            ));
+        }
+
         let announce_all_devices = req.version_minor == VERSION_MINOR_RDP51;
         if announce_all_devices {
             self.post_logon_devices_announced = true;
@@ -373,3 +392,48 @@ impl SvcProcessor for Rdpdr {
 }
 
 impl SvcClientProcessor for Rdpdr {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_server_announce_generates_and_validates_a_client_id() {
+        let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "test".to_owned());
+        let server_announce = VersionAndIdPdu {
+            version_major: 1,
+            version_minor: VERSION_MINOR_RDP51,
+            client_id: 0,
+            kind: VersionAndIdPduKind::ServerAnnounceRequest,
+        };
+
+        assert_eq!(
+            rdpdr
+                .handle_server_announce(server_announce.clone())
+                .expect("handle legacy server announce")
+                .len(),
+            2
+        );
+
+        let client_id = rdpdr.client_id.expect("generated client ID");
+        assert!(
+            rdpdr
+                .handle_client_id_confirm(VersionAndIdPdu {
+                    client_id: client_id.wrapping_add(1),
+                    kind: VersionAndIdPduKind::ServerClientIdConfirm,
+                    ..server_announce
+                })
+                .is_err()
+        );
+        assert!(
+            rdpdr
+                .handle_client_id_confirm(VersionAndIdPdu {
+                    client_id,
+                    kind: VersionAndIdPduKind::ServerClientIdConfirm,
+                    ..server_announce
+                })
+                .expect("confirm generated client ID")
+                .is_empty()
+        );
+    }
+}

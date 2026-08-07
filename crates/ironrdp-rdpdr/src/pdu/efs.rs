@@ -427,6 +427,7 @@ impl CapabilityMessage {
         Self {
             header: CapabilityHeader::new_general(),
             capability_data: CapabilityData::General(GeneralCapabilitySet {
+                version: GENERAL_CAPABILITY_VERSION_02,
                 os_type: 0,
                 os_version: 0,
                 protocol_major_version: 1,
@@ -687,7 +688,7 @@ impl CapabilityData {
 
     fn size(&self) -> usize {
         match self {
-            CapabilityData::General(_) => GeneralCapabilitySet::SIZE,
+            CapabilityData::General(general) => general.size(),
             CapabilityData::Printer => 0,
             CapabilityData::Port => 0,
             CapabilityData::Drive => 0,
@@ -701,6 +702,7 @@ impl CapabilityData {
 /// [2.2.2.7.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/06c7cb30-303d-4fa2-b396-806df8ac1501
 #[derive(Debug, PartialEq, Clone, Copy)]
 struct GeneralCapabilitySet {
+    version: u32,
     /// MUST be ignored.
     os_type: u32,
     /// SHOULD be ignored.
@@ -736,7 +738,7 @@ impl GeneralCapabilitySet {
     const VERSION_01_SIZE: usize = Self::SIZE - size_of::<u32>();
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        ensure_size!(in: dst, size: Self::SIZE);
+        ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.os_type);
         dst.write_u32(self.os_version);
         dst.write_u16(self.protocol_major_version);
@@ -746,7 +748,9 @@ impl GeneralCapabilitySet {
         dst.write_u32(self.extended_pdu.bits());
         dst.write_u32(self.extra_flags_1.bits());
         dst.write_u32(self.extra_flags_2);
-        dst.write_u32(self.special_type_device_cap);
+        if self.version == GENERAL_CAPABILITY_VERSION_02 {
+            dst.write_u32(self.special_type_device_cap);
+        }
         Ok(())
     }
 
@@ -768,6 +772,7 @@ impl GeneralCapabilitySet {
         };
 
         Ok(Self {
+            version,
             os_type,
             os_version,
             protocol_major_version,
@@ -779,6 +784,14 @@ impl GeneralCapabilitySet {
             extra_flags_2,
             special_type_device_cap,
         })
+    }
+
+    fn size(&self) -> usize {
+        if self.version == GENERAL_CAPABILITY_VERSION_01 {
+            Self::VERSION_01_SIZE
+        } else {
+            Self::SIZE
+        }
     }
 
     fn size_for_version(version: u32) -> DecodeResult<usize> {
@@ -1673,14 +1686,6 @@ where
         + 20; // Additional 20 bytes for padding
 
     pub fn decode(header: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        Ok(Self::decode_with_input_buffer(header, src)?.request)
-    }
-
-    /// Decodes a request and returns its exact opaque input buffer.
-    pub fn decode_with_input_buffer(
-        header: DeviceIoRequest,
-        src: &mut ReadCursor<'_>,
-    ) -> DecodeResult<DecodedDeviceControlRequest<T>> {
         ensure_size!(ctx: "DeviceControlRequest", in: src, size: Self::HEADERLESS_SIZE);
         let output_buffer_length = src.read_u32();
         let input_buffer_length = src.read_u32();
@@ -1691,20 +1696,30 @@ where
 
         // Padding (20 bytes): An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
         read_padding!(src, 20);
-        let input_buffer_size: usize =
-            cast_length!("DeviceControlRequest", "input_buffer_length", input_buffer_length)?;
+
+        Ok(Self {
+            header,
+            output_buffer_length,
+            input_buffer_length,
+            io_control_code,
+        })
+    }
+
+    /// Decodes a request and returns its exact opaque input buffer.
+    pub fn decode_with_input_buffer(
+        header: DeviceIoRequest,
+        src: &mut ReadCursor<'_>,
+    ) -> DecodeResult<DecodedDeviceControlRequest<T>> {
+        let request = Self::decode(header, src)?;
+        let input_buffer_size: usize = cast_length!(
+            "DeviceControlRequest",
+            "input_buffer_length",
+            request.input_buffer_length
+        )?;
         ensure_size!(ctx: "DeviceControlRequest", in: src, size: input_buffer_size);
         let input_buffer = src.read_slice(input_buffer_size).to_vec();
 
-        Ok(DecodedDeviceControlRequest {
-            request: Self {
-                header,
-                output_buffer_length,
-                input_buffer_length,
-                io_control_code,
-            },
-            input_buffer,
-        })
+        Ok(DecodedDeviceControlRequest { request, input_buffer })
     }
 }
 
@@ -4553,6 +4568,12 @@ mod tests {
             panic!("decoded capability must be general");
         };
         assert_eq!(general.special_type_device_cap, 0);
+
+        let mut encoded = vec![0; capability.size()];
+        capability
+            .encode(&mut WriteCursor::new(&mut encoded))
+            .expect("encode version one general capability");
+        assert_eq!(encoded, payload);
     }
 
     #[test]
@@ -4825,6 +4846,30 @@ mod tests {
 
         assert_eq!(decoded.request.output_buffer_length, 64);
         assert_eq!(decoded.input_buffer, [1, 2, 3]);
+    }
+
+    #[test]
+    fn device_control_request_decode_leaves_the_input_buffer_for_the_caller() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&64u32.to_le_bytes()); // OutputBufferLength
+        payload.extend_from_slice(&3u32.to_le_bytes()); // InputBufferLength
+        payload.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes()); // IoControlCode
+        payload.extend_from_slice(&[0; 20]); // Padding
+        payload.extend_from_slice(&[1, 2, 3]); // InputBuffer
+        let mut cursor = ReadCursor::new(&payload);
+        let request = DeviceIoRequest {
+            device_id: 1,
+            file_id: 2,
+            completion_id: 3,
+            major_function: MajorFunction::DeviceControl,
+            minor_function: MinorFunction::from(0),
+        };
+
+        let decoded =
+            DeviceControlRequest::<AnyIoCtlCode>::decode(request, &mut cursor).expect("valid control request");
+
+        assert_eq!(decoded.input_buffer_length, 3);
+        assert_eq!(cursor.read_slice(3), [1, 2, 3]);
     }
 
     #[test]
