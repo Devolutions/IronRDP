@@ -39,22 +39,54 @@ macro_rules! try_split_bits {
 struct BitStream<'a> {
     bits: &'a mut BitSlice<u8, Msb0>,
     idx: usize,
+    /// Set once a write has been asked for that does not fit in `bits`.
+    ///
+    /// RLGR does not guarantee compression. A high-entropy tile paired with a
+    /// light quantization table can need more output than the caller reserved,
+    /// and callers size that buffer on an assumed ratio rather than a bound.
+    /// Indexing a `BitSlice` past its end panics, so the writers drop such a
+    /// write and record it here instead, and [`encode`] reports it as an error
+    /// once the tile is finished.
+    overflowed: bool,
 }
 
 impl<'a> BitStream<'a> {
     fn new(slice: &'a mut [u8]) -> Self {
         let bits = slice.view_bits_mut::<Msb0>();
-        Self { bits, idx: 0 }
+        Self {
+            bits,
+            idx: 0,
+            overflowed: false,
+        }
+    }
+
+    /// Reserves `count` bits, returning where to write them if they fit.
+    ///
+    /// `idx` advances whether or not the bits fit, so that after an overflow it
+    /// still counts what the tile would have needed and the error can say so.
+    fn reserve(&mut self, count: usize) -> Option<core::ops::Range<usize>> {
+        let start = self.idx;
+        let end = start.saturating_add(count);
+        self.idx = end;
+
+        if end <= self.bits.len() {
+            Some(start..end)
+        } else {
+            self.overflowed = true;
+            None
+        }
     }
 
     fn output_bit(&mut self, count: usize, val: bool) {
-        self.bits[self.idx..self.idx + count].fill(val);
-        self.idx += count;
+        if let Some(range) = self.reserve(count) {
+            self.bits[range].fill(val);
+        }
     }
 
     fn output_bits(&mut self, num_bits: usize, val: u32) {
-        self.bits[self.idx..self.idx + num_bits].store_be(val);
-        self.idx += num_bits;
+        if let Some(range) = self.reserve(num_bits) {
+            self.bits[range].store_be(val);
+        }
     }
 
     fn len(&self) -> usize {
@@ -72,6 +104,8 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
     if input.is_empty() {
         return Err(RlgrError::EmptyTile);
     }
+
+    let available = tile.len();
 
     let mut k: u32 = 1;
     let kr: u32 = 1;
@@ -159,6 +193,15 @@ pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<
                 }
             }
         }
+    }
+
+    // The whole tile is walked even after an overflow, so `len` here is what the
+    // tile actually needed rather than where the buffer ran out.
+    if bits.overflowed {
+        return Err(RlgrError::OutputTooSmall {
+            needed: bits.len(),
+            available,
+        });
     }
 
     Ok(bits.len())
@@ -399,6 +442,14 @@ pub enum RlgrError {
     Yuv(YuvError),
     EmptyTile,
     InvalidIntegralConversion(&'static str),
+    /// The encoded tile did not fit in the buffer the caller provided.
+    ///
+    /// `needed` is the size the tile would have taken, so a caller that sizes
+    /// its buffer on an assumed compression ratio can tell how far off it was.
+    OutputTooSmall {
+        needed: usize,
+        available: usize,
+    },
 }
 
 impl core::fmt::Display for RlgrError {
@@ -408,6 +459,9 @@ impl core::fmt::Display for RlgrError {
             Self::Yuv(_) => write!(f, "YUV error"),
             Self::EmptyTile => write!(f, "the input tile is empty"),
             Self::InvalidIntegralConversion(s) => write!(f, "invalid `{s}`: out of range integral type conversion"),
+            Self::OutputTooSmall { needed, available } => {
+                write!(f, "encoded tile needs {needed} bytes, output buffer is {available}")
+            }
         }
     }
 }
@@ -419,6 +473,7 @@ impl core::error::Error for RlgrError {
             Self::Yuv(error) => Some(error),
             Self::EmptyTile => None,
             Self::InvalidIntegralConversion(_) => None,
+            Self::OutputTooSmall { .. } => None,
         }
     }
 }
