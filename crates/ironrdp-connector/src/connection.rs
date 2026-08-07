@@ -332,6 +332,7 @@ impl ClientConnector {
             }),
             flags: nego::RequestFlags::empty(),
             protocol: security_protocol,
+            correlation_info: None,
         };
 
         debug!(message = ?connection_request, "Send");
