@@ -31,7 +31,8 @@ runs:
         validate_relative_path() {
           local path="$1"
 
-          if [[ -z "$path" || "$path" == /* || "$path" == *'\'* || "/$path/" == *'//'* ||
+          if [[ -z "$path" || "$path" == /* || "$path" == *'\'* || "$path" == *'*'* ||
+            "$path" == *'?'* || "$path" == *'['* || "/$path/" == *'//'* ||
             "/$path/" == *'/./'* || "/$path/" == *'/../'* ]]; then
             echo "Expected a non-empty relative path without '.' or '..' segments: $path" >&2
             exit 1
@@ -122,7 +123,7 @@ runs:
             sparse_paths+=("$source_path/$skill")
           done
 
-          git -C "$clone_directory" sparse-checkout set --no-cone "${sparse_paths[@]}"
+          git -C "$clone_directory" sparse-checkout set --cone "${sparse_paths[@]}"
 
           for skill in "${skills[@]}"; do
             source_skill="$clone_directory/$source_path/$skill"

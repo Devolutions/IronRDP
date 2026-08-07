@@ -52,14 +52,22 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -C "$SYNCHRONIZATION_BRANCH"
           git add --force -- .agents/skills
-          git commit -m "$PULL_REQUEST_TITLE"
-          git push --force-with-lease origin "HEAD:$SYNCHRONIZATION_BRANCH"
 
           pull_request_url="$(
             gh pr list --head "$SYNCHRONIZATION_BRANCH" --state open --json url --jq '.[0].url'
           )"
+
+          if [[ -n "$pull_request_url" ]] &&
+            git show-ref --verify --quiet "refs/remotes/origin/$SYNCHRONIZATION_BRANCH" &&
+            git diff --cached --quiet "origin/$SYNCHRONIZATION_BRANCH" -- .agents/skills; then
+            echo "The open synchronization pull request already contains the desired skills."
+            exit 0
+          fi
+
+          git switch -C "$SYNCHRONIZATION_BRANCH"
+          git commit -m "$PULL_REQUEST_TITLE"
+          git push --force-with-lease origin "HEAD:$SYNCHRONIZATION_BRANCH"
 
           if [[ -n "$pull_request_url" ]]; then
             gh pr edit "$pull_request_url" --title "$PULL_REQUEST_TITLE" --body "$PULL_REQUEST_BODY"
