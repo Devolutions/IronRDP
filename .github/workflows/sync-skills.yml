@@ -16,6 +16,9 @@ concurrency:
 jobs:
   sync:
     name: Sync shared skills
+    # TODO: Rename this environment or move the bot write token to a dedicated
+    # environment; trusted publishing no longer requires it for crates.io tokens.
+    environment: cratesio-publish
     runs-on: ubuntu-latest
 
     steps:
@@ -38,7 +41,7 @@ jobs:
         shell: bash
         env:
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
           PULL_REQUEST_BODY: |
             Synchronizes configured shared skills from their upstream repositories.
           PULL_REQUEST_TITLE: 'chore(skills): sync shared skills'
