@@ -244,17 +244,24 @@ async function contributorEligibility({ github, owner, repo, author, currentPrNu
 
 function resolveReviewState({
   expectedSha, labels, reviewer, changedPaths, changedLines, gate, contributor,
-  rateLimit, protocolStatus,
+  rateLimit, protocolStatus, protocolReason, reviewerReason, evidenceReason,
 } = {}) {
   const existing = labelsOf(labels);
-  const fail = (reason) => {
+  const fail = (reason, report = false) => {
     const comment = quotaComment(rateLimit);
     return {
       ok: true, mode: "review", expectedSha, failed: true, reason,
       labelSets: [], addLabels: ["maintainer-required"], comments: comment ? [comment] : [],
+      ...(report ? { check: {
+        name: "AI automated review", externalId: `${REVIEWER_SCHEMA_VERSION}:${expectedSha}`,
+        title: "Automated review unavailable",
+        summary: `Automated review was unavailable: ${reason}. Maintainer review is required.`,
+        conclusion: "neutral",
+      } } : {}),
     };
   };
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
+  if (evidenceReason) return fail(evidenceReason, true);
   if (existing.has("ai-reviewed/2")) return fail("terminal AI review count");
   if (rateLimit && rateLimit.status !== "allowed") return fail("fork LLM quota unavailable");
   if (!gate?.ok || gate.head_sha !== expectedSha || gate.classificationCheck !== true ||
@@ -267,11 +274,15 @@ function resolveReviewState({
   })) return fail("review is not eligible");
   // A protocol-related review is only publishable when the protocol stage produced a validated
   // handoff; anything else fails closed to humans.
-  if (!["valid", "not_applicable"].includes(protocolStatus)) return fail("protocol handoff unavailable");
+  if (!["valid", "not_applicable"].includes(protocolStatus)) {
+    return fail(protocolReason || "protocol handoff unavailable", true);
+  }
   const reviewerResult = validateReviewer(reviewer, {
     expectedSha, changedPaths, changedLines, protocolReceived: protocolStatus === "valid",
   });
-  if (!reviewerResult?.ok || reviewerResult.value?.head_sha !== expectedSha) return fail("reviewer unavailable");
+  if (!reviewerResult?.ok || reviewerResult.value?.head_sha !== expectedSha) {
+    return fail(reviewerReason || reviewerResult?.reason || "reviewer unavailable", true);
+  }
   const nextCount = existing.has("ai-reviewed/1") ? "ai-reviewed/2" : "ai-reviewed/1";
   const hasFindings = reviewerResult.value.has_findings;
   return {

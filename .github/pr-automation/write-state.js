@@ -152,14 +152,23 @@ async function ensureClassificationCheck(github, owner, repo, prNumber, expected
 }
 
 async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, check) {
-  if ((await findCheck(github, owner, repo, expectedSha, check))?.conclusion === "success") return false;
+  const conclusion = check.conclusion ?? "success";
+  const title = check.title ?? "Automated review complete";
+  const summary = check.summary ?? "Validated automated review is bound to this commit.";
+  const existing = await findCheck(github, owner, repo, expectedSha, check);
+  if (existing?.conclusion === conclusion && existing.output?.title === title &&
+      existing.output?.summary === summary) return false;
   await issueLabels(github, owner, repo, prNumber);
   await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
-  await github.rest.checks.create({
+  const payload = {
     owner, repo, name: check.name, head_sha: expectedSha, external_id: check.externalId,
-    status: "completed", conclusion: "success",
-    output: { title: "Automated review complete", summary: "Validated automated review is bound to this commit." },
-  });
+    status: "completed", conclusion, output: { title, summary },
+  };
+  if (existing) {
+    await github.rest.checks.update({ ...payload, check_run_id: existing.id });
+  } else {
+    await github.rest.checks.create(payload);
+  }
   return true;
 }
 
