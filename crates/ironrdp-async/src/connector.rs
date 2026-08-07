@@ -17,7 +17,7 @@ pub struct ShouldUpgrade;
 #[instrument(skip_all)]
 pub async fn connect_begin<S>(framed: &mut Framed<S>, connector: &mut ClientConnector) -> ConnectorResult<ShouldUpgrade>
 where
-    S: Sync + FramedRead + FramedWrite,
+    S: FramedRead + FramedWrite,
 {
     let mut buf = WriteBuf::new();
 

@@ -1619,17 +1619,15 @@ async fn connect(
     let mut network_client = WasmNetworkClient;
     let server_name = connector::ServerName::from(destination.as_str());
 
-    let (upgraded, server_public_key) = connect_rdcleanpath(
-        &mut framed,
-        &mut connector,
-        &mut network_client,
-        server_name.clone(),
-        destination.clone(),
+    let handshake = WebRDCleanPathHandshake {
+        server_name: server_name.clone(),
+        destination: destination.clone(),
         proxy_auth_token,
-        pcb.as_deref(),
-        kerberos_config.clone(),
-    )
-    .await?;
+        pcb: pcb.as_deref(),
+        kerberos_config: kerberos_config.clone(),
+    };
+    let (upgraded, server_public_key) =
+        connect_rdcleanpath(&mut framed, &mut connector, &mut network_client, handshake).await?;
 
     let connection_result = ironrdp_futures::connect_finalize(
         upgraded,
@@ -1647,22 +1645,34 @@ async fn connect(
     Ok((connection_result, ws))
 }
 
+struct WebRDCleanPathHandshake<'a> {
+    server_name: connector::ServerName,
+    destination: String,
+    proxy_auth_token: String,
+    pcb: Option<&'a str>,
+    kerberos_config: Option<KerberosConfig>,
+}
+
 async fn connect_rdcleanpath<S, N>(
     framed: &mut ironrdp_futures::Framed<S>,
     connector: &mut ClientConnector,
     network_client: &mut N,
-    server_name: connector::ServerName,
-    destination: String,
-    proxy_auth_token: String,
-    vm_id: Option<&str>,
-    kerberos_config: Option<KerberosConfig>,
+    handshake: WebRDCleanPathHandshake<'_>,
 ) -> Result<(ironrdp_futures::Upgraded, Vec<u8>), IronError>
 where
-    S: ironrdp_futures::FramedRead + FramedWrite + Sync,
+    S: ironrdp_futures::FramedRead + FramedWrite,
     N: ironrdp_futures::NetworkClient,
 {
     use ironrdp::connector::Sequence as _;
     use x509_cert::der::Decode as _;
+
+    let WebRDCleanPathHandshake {
+        server_name,
+        destination,
+        proxy_auth_token,
+        pcb,
+        kerberos_config,
+    } = handshake;
 
     #[derive(Clone, Copy, Debug)]
     struct RDCleanPathHint;
@@ -1685,12 +1695,16 @@ where
     let mut buf = WriteBuf::new();
 
     info!("Begin connection procedure");
+    let request_version = if pcb.is_some() {
+        ironrdp_rdcleanpath::VERSION_2
+    } else {
+        ironrdp_rdcleanpath::VERSION_1
+    };
 
     {
-        let rdcleanpath_req = if let Some(vm_id) = vm_id {
+        let rdcleanpath_req = if let Some(pcb) = pcb {
             let server_preconnection_pdu =
-                ironrdp_vmconnect::encode_preconnection_blob(vm_id, ironrdp_vmconnect::Mode::Enhanced)
-                    .context("encode preconnection blob")?;
+                ironrdp_vmconnect::encode_preconnection_blob_payload(pcb).context("encode preconnection blob")?;
             ironrdp_rdcleanpath::RDCleanPathPdu::new_v2_request(destination, proxy_auth_token, server_preconnection_pdu)
         } else {
             let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
@@ -1706,7 +1720,12 @@ where
             ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, None)
         }
         .context("new RDCleanPath request")?;
-        debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
+        debug!(
+            version = rdcleanpath_req.version,
+            destination = ?rdcleanpath_req.destination,
+            has_server_preconnection_pdu = rdcleanpath_req.server_preconnection_pdu.is_some(),
+            "Send RDCleanPath request"
+        );
         let rdcleanpath_req = rdcleanpath_req.to_der().context("RDCleanPath request encode")?;
 
         framed
@@ -1728,59 +1747,80 @@ where
 
         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
-        let (x224_connection_response, server_cert_chain) =
-            match rdcleanpath_res.into_enum().context("invalid RDCleanPath PDU")? {
-                ironrdp_rdcleanpath::RDCleanPath::V1(ironrdp_rdcleanpath::RDCleanPathV1::Request { .. })
-                | ironrdp_rdcleanpath::RDCleanPath::V2(ironrdp_rdcleanpath::RDCleanPathV2::Request { .. }) => {
-                    return Err(anyhow::Error::msg("received an unexpected RDCleanPath type (request)").into());
-                }
-                ironrdp_rdcleanpath::RDCleanPath::V1(ironrdp_rdcleanpath::RDCleanPathV1::Response {
+        let response = rdcleanpath_res.into_enum().context("invalid RDCleanPath PDU")?;
+        let (x224_connection_response, server_cert_chain) = match (request_version, response) {
+            (ironrdp_rdcleanpath::VERSION_1, ironrdp_rdcleanpath::RDCleanPath::Request { .. })
+            | (
+                ironrdp_rdcleanpath::VERSION_2,
+                ironrdp_rdcleanpath::RDCleanPath::V2(ironrdp_rdcleanpath::RDCleanPathV2::Request { .. }),
+            ) => {
+                return Err(anyhow::Error::msg("received an unexpected RDCleanPath type (request)").into());
+            }
+            (
+                ironrdp_rdcleanpath::VERSION_1,
+                ironrdp_rdcleanpath::RDCleanPath::Response {
                     x224_connection_response,
                     server_cert_chain,
                     server_addr: _,
-                }) => (Some(x224_connection_response), server_cert_chain),
+                },
+            ) => (Some(x224_connection_response), server_cert_chain),
+            (
+                ironrdp_rdcleanpath::VERSION_2,
                 ironrdp_rdcleanpath::RDCleanPath::V2(ironrdp_rdcleanpath::RDCleanPathV2::Response {
                     server_cert_chain,
                     server_addr: _,
-                }) => (None, server_cert_chain),
-                ironrdp_rdcleanpath::RDCleanPath::V1(ironrdp_rdcleanpath::RDCleanPathV1::GeneralErr(error))
-                | ironrdp_rdcleanpath::RDCleanPath::V2(ironrdp_rdcleanpath::RDCleanPathV2::GeneralErr(error)) => {
-                    let details = iron_remote_desktop::RDCleanPathDetails::new(
-                        error.http_status_code,
-                        error.wsa_last_error,
-                        error.tls_alert_code,
-                    );
-                    return Err(
-                        IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
-                            .with_kind(IronErrorKind::RDCleanPath)
-                            .with_rdcleanpath_details(details),
-                    );
-                }
-                ironrdp_rdcleanpath::RDCleanPath::V1(ironrdp_rdcleanpath::RDCleanPathV1::NegotiationErr {
+                }),
+            ) => (None, server_cert_chain),
+            (ironrdp_rdcleanpath::VERSION_1, ironrdp_rdcleanpath::RDCleanPath::GeneralErr(error))
+            | (
+                ironrdp_rdcleanpath::VERSION_2,
+                ironrdp_rdcleanpath::RDCleanPath::V2(ironrdp_rdcleanpath::RDCleanPathV2::GeneralErr(error)),
+            ) => {
+                let details = iron_remote_desktop::RDCleanPathDetails::new(
+                    error.http_status_code,
+                    error.wsa_last_error,
+                    error.tls_alert_code,
+                );
+                return Err(
+                    IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
+                        .with_kind(IronErrorKind::RDCleanPath)
+                        .with_rdcleanpath_details(details),
+                );
+            }
+            (
+                ironrdp_rdcleanpath::VERSION_1,
+                ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
                     x224_connection_response,
-                }) => {
-                    // Try to decode as X.224 Connection Confirm to extract negotiation failure details.
-                    if let Ok(x224_confirm) = ironrdp_core::decode::<
-                        ironrdp::pdu::x224::X224<ironrdp::pdu::nego::ConnectionConfirm>,
-                    >(&x224_connection_response)
-                    {
-                        if let ironrdp::pdu::nego::ConnectionConfirm::Failure { code } = x224_confirm.0 {
-                            // Convert to negotiation failure instead of generic RDCleanPath error.
-                            let negotiation_failure = connector::NegotiationFailure::from(code);
-                            return Err(IronError::from(
-                                anyhow::Error::new(negotiation_failure).context("RDP negotiation failed"),
-                            )
-                            .with_kind(IronErrorKind::NegotiationFailure));
-                        }
+                },
+            ) => {
+                // Try to decode as X.224 Connection Confirm to extract negotiation failure details.
+                if let Ok(x224_confirm) = ironrdp_core::decode::<
+                    ironrdp::pdu::x224::X224<ironrdp::pdu::nego::ConnectionConfirm>,
+                >(&x224_connection_response)
+                {
+                    if let ironrdp::pdu::nego::ConnectionConfirm::Failure { code } = x224_confirm.0 {
+                        // Convert to negotiation failure instead of generic RDCleanPath error.
+                        let negotiation_failure = connector::NegotiationFailure::from(code);
+                        return Err(IronError::from(
+                            anyhow::Error::new(negotiation_failure).context("RDP negotiation failed"),
+                        )
+                        .with_kind(IronErrorKind::NegotiationFailure));
                     }
-
-                    // Fallback to generic error if we can't decode the negotiation failure.
-                    return Err(
-                        IronError::from(anyhow::Error::msg("received an RDCleanPath negotiation error"))
-                            .with_kind(IronErrorKind::RDCleanPath),
-                    );
                 }
-            };
+
+                // Fallback to generic error if we can't decode the negotiation failure.
+                return Err(
+                    IronError::from(anyhow::Error::msg("received an RDCleanPath negotiation error"))
+                        .with_kind(IronErrorKind::RDCleanPath),
+                );
+            }
+            (expected, response) => {
+                return Err(IronError::from(anyhow::anyhow!(
+                    "RDCleanPath request version {expected} does not match response {response:?}"
+                ))
+                .with_kind(IronErrorKind::RDCleanPath));
+            }
+        };
 
         let server_cert = server_cert_chain
             .into_iter()

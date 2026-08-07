@@ -57,6 +57,24 @@ pub mod ffi {
             Ok(Box::new(RDCleanPathPdu(pdu)))
         }
 
+        /// Creates a version 2 request from an opaque PCB payload.
+        pub fn new_v2_request_with_pcb_payload(
+            destination: &str,
+            proxy_auth: &str,
+            pcb_payload: &str,
+        ) -> Result<Box<RDCleanPathPdu>, Box<IronRdpError>> {
+            let server_preconnection_pdu = ironrdp_vmconnect::encode_preconnection_blob_payload(pcb_payload)?;
+            let pdu = ironrdp_rdcleanpath::RDCleanPathPdu::new_v2_request(
+                destination.to_owned(),
+                proxy_auth.to_owned(),
+                server_preconnection_pdu,
+            )
+            .context("failed to create RDCleanPath version 2 request")
+            .map_err(GenericError)?;
+
+            Ok(Box::new(RDCleanPathPdu(pdu)))
+        }
+
         pub fn get_version(&self) -> u64 {
             self.0.version
         }

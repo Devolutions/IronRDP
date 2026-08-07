@@ -38,18 +38,40 @@ public static class RDCleanPathConnection
         System.Diagnostics.Debug.WriteLine($"Client local address: {clientAddr}");
 
         // Step 3: Setup ClientConnector
-        var connector = string.IsNullOrEmpty(pcb)
-            ? ClientConnector.New(config, clientAddr)
-            : ClientConnector.NewVmconnect(config, clientAddr, pcb);
+        var connector = ClientConnector.New(config, clientAddr);
         ConnectionHelpers.SetupConnector(connector, config, factory);
 
         // Step 4: Perform RDCleanPath handshake
         System.Diagnostics.Debug.WriteLine("Performing RDCleanPath handshake...");
-        var (serverPublicKey, framedAfterHandshake) = await ConnectRdCleanPath(
+        var (serverPublicKey, framedAfterHandshake, isVersion2) = await ConnectRdCleanPath(
             framed, connector, destination, authToken, pcb ?? "");
 
-        // Step 5: Mark security upgrade as done (WebSocket already has TLS)
-        connector.MarkSecurityUpgradeAsDone();
+        if (isVersion2)
+        {
+            const uint HybridProtocol = 0x00000002;
+
+            var writeBuf = WriteBuf.New();
+            await ConnectionHelpers.PerformCredsspSteps(
+                connector,
+                destination,
+                writeBuf,
+                framedAfterHandshake,
+                serverPublicKey,
+                HybridProtocol);
+
+            while (!connector.ShouldPerformSecurityUpgrade())
+            {
+                await Connection.SingleSequenceStep(connector, writeBuf, framedAfterHandshake);
+            }
+
+            connector.MarkSecurityUpgradeAsDone();
+            connector.MarkCredsspAsDone();
+        }
+        else
+        {
+            // The RDCleanPath v1 proxy already performed X.224 and TLS.
+            connector.MarkSecurityUpgradeAsDone();
+        }
 
         // Step 6: Finalize connection
         System.Diagnostics.Debug.WriteLine("Finalizing RDP connection...");
@@ -62,7 +84,7 @@ public static class RDCleanPathConnection
     /// <summary>
     /// Performs the RDCleanPath handshake with the RDCleanPath-compatible gateway.
     /// </summary>
-    private static async Task<(byte[], Framed<WebSocketStream>)> ConnectRdCleanPath(
+    private static async Task<(byte[], Framed<WebSocketStream>, bool)> ConnectRdCleanPath(
         Framed<WebSocketStream> framed,
         ClientConnector connector,
         string destination,
@@ -71,17 +93,23 @@ public static class RDCleanPathConnection
     {
         var writeBuf = WriteBuf.New();
 
-        // Step 1: Generate the first server PDU.
-        var written = connector.StepNoInput(writeBuf);
-        var firstPduSize = (int)written.GetSize().Get();
-        var firstPdu = new byte[firstPduSize];
-        writeBuf.ReadIntoBuf(firstPdu);
+        var isVersion2 = !string.IsNullOrEmpty(pcb);
 
-        // Step 2: Create and send RDCleanPath Request
+        // Step 1: Create and send the version-specific RDCleanPath request.
         System.Diagnostics.Debug.WriteLine($"Sending RDCleanPath request to {destination}...");
-        var rdCleanPathReq = string.IsNullOrEmpty(pcb)
-            ? RDCleanPathPdu.NewRequest(firstPdu, destination, authToken, string.Empty)
-            : RDCleanPathPdu.NewV2Request(destination, authToken, firstPdu);
+        RDCleanPathPdu rdCleanPathReq;
+        if (isVersion2)
+        {
+            rdCleanPathReq = RDCleanPathPdu.NewV2RequestWithPcbPayload(destination, authToken, pcb);
+        }
+        else
+        {
+            var written = connector.StepNoInput(writeBuf);
+            var firstPduSize = (int)written.GetSize().Get();
+            var firstPdu = new byte[firstPduSize];
+            writeBuf.ReadIntoBuf(firstPdu);
+            rdCleanPathReq = RDCleanPathPdu.NewRequest(firstPdu, destination, authToken, string.Empty);
+        }
         var reqBytes = rdCleanPathReq.ToDer();
         var reqBytesArray = new byte[reqBytes.GetSize()];
         reqBytes.Fill(reqBytesArray);
@@ -91,6 +119,12 @@ public static class RDCleanPathConnection
         System.Diagnostics.Debug.WriteLine("Waiting for RDCleanPath response...");
         var respBytes = await framed.ReadByHint(new RDCleanPathHint());
         var rdCleanPathResp = RDCleanPathPdu.FromDer(respBytes);
+        if (rdCleanPathResp.IsVersion2() != isVersion2)
+        {
+            throw new IronRdpLibException(
+                IronRdpLibExceptionType.ConnectionFailed,
+                "RDCleanPath response version does not match the request");
+        }
 
         // Step 4: Determine response type and handle accordingly
         var resultType = rdCleanPathResp.GetType();
@@ -133,7 +167,7 @@ public static class RDCleanPathConnection
 
             System.Diagnostics.Debug.WriteLine($"Extracted server public key (length: {serverPublicKey.Length})");
 
-            return (serverPublicKey, framed);
+            return (serverPublicKey, framed, isVersion2);
         }
         else if (resultType == RDCleanPathResultType.GeneralError)
         {
