@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-v0.7.0...ironrdp-rdpdr-v0.8.0)] - 2026-08-07
+
+### <!-- 1 -->Features
+
+- Add filesystem PDU foundation ([#1566](https://github.com/Devolutions/IronRDP/issues/1566)) ([161409e18d](https://github.com/Devolutions/IronRDP/commit/161409e18dd185de9bb30730303e56f5e8d28941)) 
+
+  ## Summary
+  - Add portable MS-RDPEFS/MS-FSCC filesystem request and completion
+  codecs with malformed-input validation and wire tests.
+  - Keep RDPDR runtime dispatch, Windows-native backend implementation,
+  and client/session integration out of this foundation.
+  
+  ## Follow-up
+  Later stacked PRs provide the backend implementation and runtime
+  integration.
+  
+  ---------
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-v0.6.0...ironrdp-rdpdr-v0.7.0)] - 2026-07-10
 
 ### <!-- 7 -->Build

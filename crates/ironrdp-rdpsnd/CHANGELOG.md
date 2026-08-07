@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.9.0...ironrdp-rdpsnd-v0.9.1)] - 2026-08-07
+
+### <!-- 4 -->Bug Fixes
+
+- Isolate malformed encrypted waves ([#1514](https://github.com/Devolutions/IronRDP/issues/1514)) ([c87ab68e9c](https://github.com/Devolutions/IronRDP/commit/c87ab68e9c6adbf524cb0b2783ff4bd61178fb9b)) 
+
+  ## Summary
+  
+  - Treat malformed RDPSND server-audio PDUs as recoverable channel input
+  and ignore them without failing the desktop session.
+  - Preserve the RDPSND state after a decode failure so valid subsequent
+  audio continues normally.
+  - Add a regression test for an encrypted wave missing its required v5
+  signature.
+  
+  ## Testing
+  
+  - `cargo test -p ironrdp-testsuite-core --test integration_tests_core --
+  rdpsnd::client`
+  - `cargo fmt --all -- --check`
+  
+  ---------
+
+
+
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.8.1...ironrdp-rdpsnd-v0.9.0)] - 2026-07-10
 
 ### <!-- 1 -->Features

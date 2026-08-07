@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.2.3](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.2.2...ironrdp-rdcleanpath-v0.2.3)] - 2026-08-07
+
+### <!-- 7 -->Build
+
+- Bump the crypto group across 1 directory with 3 updates ([#1449](https://github.com/Devolutions/IronRDP/issues/1449)) ([e1725e8c8a](https://github.com/Devolutions/IronRDP/commit/e1725e8c8a581b83835647b6ee563a5b3f6c7a1b)) 
+
+
+
 ## [[0.2.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.2.1...ironrdp-rdcleanpath-v0.2.2)] - 2026-06-05
 
 ## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.2.0...ironrdp-rdcleanpath-v0.2.1)] - 2025-10-02
