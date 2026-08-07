@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-error-v0.2.0...ironrdp-error-v0.2.1)] - 2026-08-07
+
+### <!-- 1 -->Features
+
+- Add ergonomic cross-error mapping ([#1481](https://github.com/Devolutions/IronRDP/issues/1481)) ([71d63c75f5](https://github.com/Devolutions/IronRDP/commit/71d63c75f58228fa0960c3b52327e9694272e976)) 
+
+- Add IronRDP ActiveX COM server ([#1523](https://github.com/Devolutions/IronRDP/issues/1523)) ([ee58b7c5f2](https://github.com/Devolutions/IronRDP/commit/ee58b7c5f283ef64be93a8483242f49070c6cdc9)) 
+
+  ## Summary
+  - Add the IronRDP ActiveX COM server and native MSTSC host integration.
+  - Provide bounded native-host diagnostics, credential-bridge support,
+  and an AxHost test harness.
+  - Preserve the minimal client, connector, and error integrations needed
+  by the control.
+  
+  ## Validation
+  - cargo check -p ironrdp-activex
+  - Focused ironrdp-error and ironrdp-connector tests
+  - cargo test -p ironrdp-activex --lib --no-run
+  - cargo fmt --all -- --check
+  - cargo xtask check locks -v
+  
+  ---------
+
+### <!-- 4 -->Bug Fixes
+
+- Make source locations opt-in ([#1480](https://github.com/Devolutions/IronRDP/issues/1480)) ([f84cd01450](https://github.com/Devolutions/IronRDP/commit/f84cd01450e18d12838b225859878b311802b805)) 
+
+  Default error display omits locations; alternate formatting and reports
+  with explicit location opt-in preserve diagnostic context.
+
+
+
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-error-v0.1.3...ironrdp-error-v0.2.0)] - 2026-05-27
 
 ### <!-- 1 -->Features

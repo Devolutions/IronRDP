@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.8.0...ironrdp-svc-v0.8.1)] - 2026-08-07
+
+### <!-- 1 -->Features
+
+- Support runtime-defined static virtual channels ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba)) 
+
+  ## Summary
+  - add keyed runtime-defined static-channel registration, lookup, and
+  negotiated ID attachment
+  - enforce the static-channel limit and reject malformed SVC fragment
+  sequences
+  - wire generic connector, acceptor, and session name-based dispatch
+  support
+  
+  ## Testing
+  - `cargo test -p ironrdp-testsuite-core --test integration_tests_core
+  svc::`
+  - `cargo clippy -p ironrdp-testsuite-core --test integration_tests_core
+  -- -D warnings`
+  
+  ---------
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.7.0...ironrdp-svc-v0.8.0)] - 2026-07-10
 
 ### <!-- 7 -->Build
