@@ -54,6 +54,17 @@ test("workflow does not overwrite github-script result outputs", () => {
   assert.match(resilientAction, /--resume \$\{sessionId\}/);
 });
 
+test("workflow does not resolve or write state after cancellation", () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  for (const name of ["resolve-classification-state", "resolve-review-state", "write-state"]) {
+    const start = workflow.indexOf(`  ${name}:\n`);
+    assert.notEqual(start, -1, `${name} job is missing`);
+    const following = workflow.slice(start + 1).search(/\n  [a-z][a-z0-9-]+:\n/);
+    const job = workflow.slice(start, following === -1 ? undefined : start + following + 1);
+    assert.match(job, /^    if: always\(\) && !cancelled\(\) &&/m);
+  }
+});
+
 test("review skills own methodology while stage prompts own pipeline contracts", () => {
   const githubDirectory = path.join(__dirname, "..");
   const repositoryRoot = path.join(githubDirectory, "..");

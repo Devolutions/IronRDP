@@ -462,7 +462,7 @@ jobs:
   resolve-classification-state:
     name: Resolve classification state
     needs: [resolve-pr, classification-gate, deterministic-analysis, fork-rate-limit, semver, classifier]
-    if: always() && needs.resolve-pr.outputs.ok == 'true' &&
+    if: always() && !cancelled() && needs.resolve-pr.outputs.ok == 'true' &&
       needs.resolve-pr.outputs.classification-requested == 'true' &&
       (needs.classification-gate.outputs.required == 'true' ||
       needs.classification-gate.outputs.available != 'true')
@@ -917,7 +917,7 @@ jobs:
   resolve-review-state:
     name: Resolve review state
     needs: [resolve-pr, fork-rate-limit, review-gate, contributor-history, validate-protocol-review, skeptical-reviewer]
-    if: always() && needs.resolve-pr.outputs.ok == 'true' &&
+    if: always() && !cancelled() && needs.resolve-pr.outputs.ok == 'true' &&
       needs.resolve-pr.outputs.review-route == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -981,7 +981,7 @@ jobs:
     needs: [resolve-pr, classification-gate, deterministic-analysis, fork-rate-limit, semver,
       classifier, resolve-classification-state, review-gate, contributor-history, protocol-reviewer,
       validate-protocol-review, skeptical-reviewer, resolve-review-state]
-    if: always() && needs.resolve-pr.outputs.ok == 'true'
+    if: always() && !cancelled() && needs.resolve-pr.outputs.ok == 'true'
     runs-on: ubuntu-latest
     concurrency:
       group: pr-automation-write-${{ needs.resolve-pr.outputs.pr-number }}

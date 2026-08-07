@@ -35,7 +35,8 @@ rewrites it.
 The trusted LLM validators normalize exact empty-string representation artifacts consistently.
 An invalid classifier result keeps the pull request `risk/unknown` and
 `maintainer-required`, and publishes a neutral `AI classification` check containing the local
-validation reason so the review remains blocked without hiding why.
+validation reason so the review remains blocked without hiding why. A cancelled workflow does not
+publish a fallback state or change labels; the succeeding workflow run recomputes the classification.
 
 Each analytical stage selects its model and effort through `--model` and `--effort` in the `claude-args` step
 that builds its `claude_args`. The classifier runs Sonnet at `low` effort: it runs on every push and
