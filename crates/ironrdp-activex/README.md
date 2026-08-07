@@ -48,10 +48,11 @@ remain mutable, while `RDCleanPathToken` is write-only and its getter returns `E
 empty `VARIANT`.
 
 Both values are required. The URL must use `ws` or `wss`, and the token must be nonempty. The
-settings are private, non-persisted connection input: they are not included in ActiveX persistence,
-host traces, or local RPC property queries. The token is discarded from the setting store after the
-connection configuration has been built. Do not place it in an `.rdp` file, command line, or log
-directive.
+settings are non-persisted connection input and are not included in ActiveX persistence or host
+traces. The token is never returned through local RPC property queries and is discarded from the
+setting store after the connection configuration has been built. An RPC-supplied URL remains
+observable through the local RPC property query. Do not place the token in an `.rdp` file, command
+line, or log directive.
 
 The opt-in local RPC `connect` property set accepts the same `RDCleanPathUrl` and
 `RDCleanPathToken` names. Supplying a complete RPC pair replaces any staged COM pair; omitting it

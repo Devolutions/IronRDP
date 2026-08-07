@@ -6793,9 +6793,10 @@ impl Control {
         let work_dir = compatibility.secured_work_dir.clone();
         let transport = match self.rpc_transport.borrow_mut().take() {
             Some(transport) => transport,
-            None => self
-                .rdcleanpath_transport()?
-                .unwrap_or(active_x_transport(&settings, &compatibility)?),
+            None => match self.rdcleanpath_transport()? {
+                Some(transport) => transport,
+                None => active_x_transport(&settings, &compatibility)?,
+            },
         };
         let performance_flags = compatibility.performance_flags;
         let keyboard_layout = compatibility.keyboard_layout;
