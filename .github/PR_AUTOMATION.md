@@ -21,12 +21,16 @@ a data file, and must record whether it accepted, partly accepted, or rejected t
 Only its output is published, and inline comments are placed only on lines this pull request actually
 adds; any other finding is published in the review body instead.
 
-Protocol-related reviews therefore consume two calls against `ANTHROPIC_API_KEY_REVIEWER`;
-non-protocol reviews consume one. If the protocol stage fails, is cancelled, is malformed, or cites
-a specification section that does not exist, the skeptical stage does not run, the AI review count
-is unchanged, and the PR stays `maintainer-required`. A classification check that predates the
-machine-readable protocol state is treated as unavailable; the next classification event rewrites
-it.
+Protocol-related reviews normally consume two calls against `ANTHROPIC_API_KEY_REVIEWER`;
+non-protocol reviews normally consume one. Each heavy stage validates its structured output
+immediately. If the action reaches its turn limit or validation rejects the result, it resumes that
+exact Claude session once with a six-turn output-only budget, preserving the analysis already paid
+for instead of starting over. The separately isolated publication jobs still revalidate the selected
+result against GitHub's pull request data and the pinned protocol corpus. If both attempts fail, the
+AI review count is unchanged, the PR stays `maintainer-required`, and a neutral SHA-bound
+`AI automated review` check records the precise failure reason. A classification check that predates
+the machine-readable protocol state is treated as unavailable; the next classification event
+rewrites it.
 
 The trusted LLM validators normalize exact empty-string representation artifacts consistently.
 An invalid classifier result keeps the pull request `risk/unknown` and

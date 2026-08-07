@@ -661,6 +661,7 @@ jobs:
     environment: llm-providers
     outputs:
       output: ${{ steps.claude.outputs.structured_output }}
+      failure-reason: ${{ steps.claude.outputs.failure_reason }}
       openspecs-sha: ${{ steps.sources.outputs.openspecs-sha }}
     steps:
       - name: Fetch trusted base, PR head, and protocol skills
@@ -700,6 +701,7 @@ jobs:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
         with:
           script: |
+           const schema = JSON.stringify(require("./.github/pr-automation/schemas/protocol-reviewer.json"));
            require("node:fs").writeFileSync(
              "pr-automation-context.json",
              JSON.stringify({ head_sha: process.env.HEAD_SHA }, null, 2),
@@ -708,40 +710,25 @@ jobs:
              ".github/pr-automation/prompts/protocol-reviewer.md",
              "utf8",
            ));
-           const schema = JSON.stringify(require("./.github/pr-automation/schemas/protocol-reviewer.json"));
-           core.setOutput("value", `--model opus --max-turns 30 --add-dir pr-head --add-dir pr-evidence --allowedTools "Read,Glob,Grep,Skill" --disallowedTools "Bash,Edit,Write,WebFetch,Task" --json-schema '${schema}'`);
+           const common = `--model opus --add-dir pr-head --add-dir pr-evidence --allowedTools "Read,Glob,Grep,Skill" --disallowedTools "Bash,Edit,Write,WebFetch,Task" --json-schema '${schema}'`;
+           core.setOutput("value", `${common} --max-turns 30`);
+           core.setOutput("retry", `${common} --max-turns 6`);
 
       - id: claude
-        continue-on-error: true
-        uses: anthropics/claude-code-action@v1
+        uses: ./.github/actions/resilient-review-output
         with:
+          stage: protocol-analysis
+          expected_sha: ${{ needs.resolve-pr.outputs.head-sha }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_REVIEWER }}
-          github_token: ${{ github.token }}
-          allowed_non_write_users: "*"
-          include_comments_by_actor: "__pr_automation_no_comments__"
-          track_progress: false
-          use_sticky_comment: false
-          display_report: false
-          show_full_output: false
           claude_args: ${{ steps.claude-args.outputs.value }}
+          retry_claude_args: ${{ steps.claude-args.outputs.retry }}
           settings: >-
             {"permissions":{"allow":["Read","Glob","Grep","Skill"],"deny":["Bash","Edit","Write","WebFetch","Task"]}}
           prompt: ${{ steps.claude-args.outputs.prompt }}
-
-      - name: Log protocol-analysis LLM output
-        if: always()
-        uses: actions/github-script@v8
-        env:
-          OUTCOME: ${{ steps.claude.outcome }}
-          STRUCTURED_OUTPUT: ${{ steps.claude.outputs.structured_output }}
-        with:
-          script: |
-            core.info(JSON.stringify({
-              event: "pr-automation.llm-output",
-              stage: "protocol-analysis",
-              outcome: process.env.OUTCOME,
-              structuredOutput: process.env.STRUCTURED_OUTPUT || null,
-            }));
+          retry_prompt: >-
+            Finish the protocol handoff now using the analysis already completed in this session.
+            Do not investigate further. Correct the reported validation problem and return only the
+            required schema-bound JSON for head ${{ needs.resolve-pr.outputs.head-sha }}.
 
   validate-protocol-review:
     name: Validate protocol handoff
@@ -757,6 +744,7 @@ jobs:
     outputs:
       status: ${{ steps.validate.outputs.status }}
       handoff: ${{ steps.validate.outputs.handoff }}
+      reason: ${{ steps.validate.outputs.reason }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -764,7 +752,7 @@ jobs:
           persist-credentials: false
 
       - id: cited
-        if: needs.review-gate.outputs.protocol-related == 'true' && needs.protocol-reviewer.result == 'success'
+        if: needs.review-gate.outputs.protocol-related == 'true' && needs.protocol-reviewer.outputs.output != ''
         uses: actions/github-script@v8
         env:
           RAW_OUTPUT: ${{ needs.protocol-reviewer.outputs.output }}
@@ -778,7 +766,7 @@ jobs:
             core.setOutput("paths", ids.map((id) => `/skills/windows-protocols/${id}/`).join("\n"));
 
       - name: Fetch cited specifications from the reviewed corpus
-        if: needs.review-gate.outputs.protocol-related == 'true' && needs.protocol-reviewer.result == 'success'
+        if: needs.review-gate.outputs.protocol-related == 'true' && needs.protocol-reviewer.outputs.output != ''
         shell: bash
         env:
           OPENSPECS_SHA: ${{ needs.protocol-reviewer.outputs.openspecs-sha }}
@@ -808,8 +796,8 @@ jobs:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           PROTOCOL_RELATED: ${{ needs.review-gate.outputs.protocol-related }}
-          PROTOCOL_RESULT: ${{ needs.protocol-reviewer.result }}
           RAW_OUTPUT: ${{ needs.protocol-reviewer.outputs.output }}
+          MODEL_REASON: ${{ needs.protocol-reviewer.outputs.failure-reason }}
         with:
           script: |
             const { listPrFiles } = require("./.github/pr-automation/deterministic-analysis");
@@ -819,6 +807,7 @@ jobs:
             const publish = (result) => {
               core.setOutput("status", result.ok ? result.status : "unavailable");
               core.setOutput("handoff", result.ok ? JSON.stringify(result) : "");
+              core.setOutput("reason", result.ok ? "" : result.reason);
               core.info(JSON.stringify({
                 event: "pr-automation.protocol-handoff",
                 decision: result,
@@ -826,8 +815,11 @@ jobs:
               if (!result.ok) core.warning(`Protocol handoff unavailable: ${result.reason}`);
             };
             if (process.env.PROTOCOL_RELATED !== "true") return publish(notApplicableHandoff());
-            if (process.env.PROTOCOL_RESULT !== "success") {
-              return publish({ ok: false, reason: "protocol analysis did not complete" });
+            if (!process.env.RAW_OUTPUT) {
+              return publish({
+                ok: false,
+                reason: process.env.MODEL_REASON || "protocol analysis did not produce structured output",
+              });
             }
             let changedPaths;
             try {
@@ -860,6 +852,7 @@ jobs:
     environment: llm-providers
     outputs:
       output: ${{ steps.claude.outputs.structured_output }}
+      failure-reason: ${{ steps.claude.outputs.failure_reason }}
     steps:
       - name: Fetch trusted base and untrusted PR head without credentials
         shell: bash
@@ -901,39 +894,25 @@ jobs:
              "utf8",
            ));
            const schema = JSON.stringify(require("./.github/pr-automation/schemas/reviewer.json"));
-           core.setOutput("value", `--model opus --max-turns 20 --add-dir pr-head --add-dir pr-evidence --allowedTools "Read,Glob,Grep,Skill" --disallowedTools "Bash,Edit,Write,WebFetch,Task" --json-schema '${schema}'`);
+           const common = `--model opus --add-dir pr-head --add-dir pr-evidence --allowedTools "Read,Glob,Grep,Skill" --disallowedTools "Bash,Edit,Write,WebFetch,Task" --json-schema '${schema}'`;
+           core.setOutput("value", `${common} --max-turns 20`);
+           core.setOutput("retry", `${common} --max-turns 6`);
 
       - id: claude
-        continue-on-error: true
-        uses: anthropics/claude-code-action@v1
+        uses: ./.github/actions/resilient-review-output
         with:
+          stage: skeptical-review
+          expected_sha: ${{ needs.resolve-pr.outputs.head-sha }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_REVIEWER }}
-          github_token: ${{ github.token }}
-          allowed_non_write_users: "*"
-          include_comments_by_actor: "__pr_automation_no_comments__"
-          track_progress: false
-          use_sticky_comment: false
-          display_report: false
-          show_full_output: false
           claude_args: ${{ steps.claude-args.outputs.value }}
+          retry_claude_args: ${{ steps.claude-args.outputs.retry }}
           settings: >-
             {"permissions":{"allow":["Read","Glob","Grep","Skill"],"deny":["Bash","Edit","Write","WebFetch","Task"]}}
           prompt: ${{ steps.claude-args.outputs.prompt }}
-
-      - name: Log skeptical-review LLM output
-        if: always()
-        uses: actions/github-script@v8
-        env:
-          OUTCOME: ${{ steps.claude.outcome }}
-          STRUCTURED_OUTPUT: ${{ steps.claude.outputs.structured_output }}
-        with:
-          script: |
-            core.info(JSON.stringify({
-              event: "pr-automation.llm-output",
-              stage: "skeptical-review",
-              outcome: process.env.OUTCOME,
-              structuredOutput: process.env.STRUCTURED_OUTPUT || null,
-            }));
+          retry_prompt: >-
+            Finish the skeptical review now using the analysis already completed in this session.
+            Do not investigate further. Correct the reported validation problem and return only the
+            required schema-bound JSON for head ${{ needs.resolve-pr.outputs.head-sha }}.
 
   resolve-review-state:
     name: Resolve review state
@@ -960,7 +939,9 @@ jobs:
           CONTRIBUTOR: ${{ needs.contributor-history.outputs.history }}
           FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
           PROTOCOL_STATUS: ${{ needs.validate-protocol-review.outputs.status }}
+          PROTOCOL_REASON: ${{ needs.validate-protocol-review.outputs.reason }}
           RAW_OUTPUT: ${{ needs.skeptical-reviewer.outputs.output }}
+          REVIEWER_REASON: ${{ needs.skeptical-reviewer.outputs.failure-reason }}
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
         with:
           script: |
@@ -968,25 +949,15 @@ jobs:
             const { resolveReviewState } = require("./.github/pr-automation/resolve-state");
             const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
             const gate = parse(process.env.GATE, {});
-            let files;
+            let files = [];
+            let evidenceReason;
             try {
               files = await listPrFiles(github, {
                 owner: context.repo.owner, repo: context.repo.repo,
                 prNumber: Number(process.env.PULL_REQUEST_NUMBER),
               });
             } catch {
-              core.setOutput("state", JSON.stringify({
-                ok: true, mode: "review", expectedSha: process.env.HEAD_SHA, failed: true,
-                reason: "changed file retrieval unavailable", labelSets: [],
-                addLabels: ["maintainer-required"], comments: [],
-              }));
-              core.info(JSON.stringify({
-                event: "pr-automation.review-state",
-                decision: { ok: true, mode: "review", expectedSha: process.env.HEAD_SHA, failed: true,
-                  reason: "changed file retrieval unavailable", labelSets: [],
-                  addLabels: ["maintainer-required"], comments: [] },
-              }));
-              return;
+              evidenceReason = "changed file retrieval unavailable";
             }
             const state = resolveReviewState({
               expectedSha: process.env.HEAD_SHA,
@@ -995,7 +966,10 @@ jobs:
               contributor: parse(process.env.CONTRIBUTOR, {}),
               rateLimit: parse(process.env.FORK_RATE_LIMIT, {}),
               protocolStatus: process.env.PROTOCOL_STATUS,
+              protocolReason: process.env.PROTOCOL_REASON,
               reviewer: process.env.RAW_OUTPUT || "",
+              reviewerReason: process.env.REVIEWER_REASON,
+              evidenceReason,
               changedPaths: files.map((file) => file.filename),
               changedLines: addedLinesByPath(files),
             });

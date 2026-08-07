@@ -15,6 +15,9 @@ const { encodeCheckState, parseCheckState } = require("./validate-classifier");
 const {
   corpusFromDirectory, notApplicableHandoff, validateProtocolReview,
 } = require("./validate-protocol-review");
+const {
+  parseChangedPaths, validateModelOutput,
+} = require("../actions/resilient-review-output/validate");
 
 const SHA = "a".repeat(40);
 const classifier = (changes = {}) => ({
@@ -45,6 +48,10 @@ test("workflow does not overwrite github-script result outputs", () => {
   assert.doesNotMatch(workflow, /core\.setOutput\("result"/);
   assert.doesNotMatch(workflow, /^\s{6}result:\s+\$\{\{\s*steps\./m);
   assert.doesNotMatch(workflow, /needs\.[\w-]+\.outputs\.result\b/);
+  assert.equal((workflow.match(/uses: \.\/\.github\/actions\/resilient-review-output/g) || []).length, 2);
+  const resilientAction = fs.readFileSync(
+    path.join(__dirname, "..", "actions", "resilient-review-output", "action.yml"), "utf8");
+  assert.match(resilientAction, /--resume \$\{sessionId\}/);
 });
 
 test("review skills own methodology while stage prompts own pipeline contracts", () => {
@@ -307,6 +314,25 @@ test("protocol handoff treats quoted empty required prose as empty", () => {
   assert.equal(validateProtocolReview(protocolReview({
     relevance_reason: '""',
   }), { expectedSha: SHA, changedPaths: ["src/lib.rs"], corpus }).ok, false);
+});
+
+test("heavy review output validation accepts a schema-bound reviewer result", () => {
+  const valid = JSON.stringify(review({
+    has_findings: false, summary: "no findings",
+    protocol_handoff: { received: false, disposition: "not_applicable", rationale: "" },
+    findings: [],
+  }));
+  assert.equal(validateModelOutput(valid, {
+    stage: "skeptical-review", expectedSha: SHA, changedPaths: ["src/lib.rs"], protocolReceived: false,
+  }).ok, true);
+});
+
+test("heavy review output rejects malformed changed-path evidence", () => {
+  assert.deepEqual(parseChangedPaths(Buffer.from("src/lib.rs\0")), {
+    ok: true, paths: ["src/lib.rs"],
+  });
+  assert.equal(parseChangedPaths(Buffer.from("../outside\0")).ok, false);
+  assert.equal(parseChangedPaths(Buffer.from("unterminated")).ok, false);
 });
 
 test("corpus reader indexes real headings and refuses traversal", () => {
@@ -671,12 +697,39 @@ test("an unavailable protocol handoff blocks the review count", () => {
     expectedSha: SHA, labels: ["risk/high"], reviewer,
     gate: { ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true }, contributor: { status: "eligible" },
   };
-  const failed = resolveReviewState({ ...args, protocolStatus: "unavailable" });
+  const failed = resolveReviewState({
+    ...args, protocolStatus: "unavailable", protocolReason: "resumed model action failed without structured output",
+  });
   assert.equal(failed.failed, true);
+  assert.equal(failed.reason, "resumed model action failed without structured output");
   assert.deepEqual(failed.addLabels, ["maintainer-required"]);
   assert.deepEqual(failed.labelSets, []);
+  assert.equal(failed.check.conclusion, "neutral");
+  assert.match(failed.check.summary, /resumed model action failed/);
   assert.equal(resolveReviewState(args).failed, true);
   assert.deepEqual(resolveReviewState({ ...args, protocolStatus: "valid" }).labelSets[0].desired, ["ai-reviewed/1"]);
+  const reviewerFailure = resolveReviewState({
+    ...args, protocolStatus: "valid", reviewer: "",
+    reviewerReason: "resumed model action failed without structured output",
+  });
+  assert.equal(reviewerFailure.reason, "resumed model action failed without structured output");
+  assert.equal(reviewerFailure.check.conclusion, "neutral");
+});
+
+test("evidence failures are reported only for an eligible review", () => {
+  const args = {
+    expectedSha: SHA, labels: ["risk/high"], reviewer: "",
+    gate: { ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true },
+    contributor: { status: "eligible" }, protocolStatus: "not_applicable",
+    evidenceReason: "changed file retrieval unavailable",
+  };
+  const active = resolveReviewState(args);
+  assert.equal(active.reason, "changed file retrieval unavailable");
+  assert.equal(active.check.conclusion, "neutral");
+
+  const terminal = resolveReviewState({ ...args, labels: ["ai-reviewed/2", "risk/high"] });
+  assert.equal(terminal.reason, "terminal AI review count");
+  assert.equal(terminal.check, undefined);
 });
 
 test("writer stops before mutations when the head is stale", async () => {
@@ -756,6 +809,39 @@ test("writer reads normalized check-run pages and updates the newest matching ru
   });
   assert.equal(updatedCheckRun, 3);
   assert.equal(updatedConclusion, "neutral");
+});
+
+test("writer upgrades a neutral automated review check instead of creating a duplicate", async () => {
+  let created = 0;
+  let update = null;
+  const github = {
+    paginate: { iterator: async function* () {
+      yield { data: [{
+        id: 7, external_id: `reviewer-v1:${SHA}`, conclusion: "neutral",
+        output: { title: "Automated review unavailable", summary: "Model timed out." },
+      }] };
+    } },
+    rest: {
+      checks: {
+        listForRef: () => {},
+        create: async () => { created += 1; },
+        update: async (payload) => { update = payload; },
+      },
+      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+      issues: { get: async () => ({ data: { labels: [] } }) },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+    state: {
+      ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [], comments: [],
+      check: { name: "AI automated review", externalId: `reviewer-v1:${SHA}` },
+    },
+  });
+  assert.equal(created, 0);
+  assert.equal(update.check_run_id, 7);
+  assert.equal(update.conclusion, "success");
+  assert.equal(update.output.title, "Automated review complete");
 });
 
 function paginated(pages) {
