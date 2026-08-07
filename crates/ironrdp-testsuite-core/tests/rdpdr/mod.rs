@@ -42,24 +42,42 @@ fn encoded_printer_announce(device: DeviceAnnounceHeader) -> Vec<u8> {
     .unwrap()
 }
 
-fn encoded_server_client_id_confirm() -> Vec<u8> {
+fn encoded_server_client_id_confirm(client_id: u32) -> Vec<u8> {
     encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
         version_major: 1,
         version_minor: 12,
-        client_id: 0x1234,
+        client_id,
         kind: VersionAndIdPduKind::ServerClientIdConfirm,
     }))
     .unwrap()
 }
 
-fn encoded_server_client_id_confirm_with_minor(version_minor: u16) -> Vec<u8> {
+fn encoded_server_client_id_confirm_with_minor(version_minor: u16, client_id: u32) -> Vec<u8> {
     encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
         version_major: 1,
         version_minor,
-        client_id: 0x1234,
+        client_id,
         kind: VersionAndIdPduKind::ServerClientIdConfirm,
     }))
     .unwrap()
+}
+
+fn announce_client_id(rdpdr: &mut Rdpdr, version_minor: u16) -> u32 {
+    let responses = rdpdr
+        .process(
+            &encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+                version_major: 1,
+                version_minor,
+                client_id: 0x1234,
+                kind: VersionAndIdPduKind::ServerAnnounceRequest,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(responses.len(), 2);
+
+    let encoded = responses[0].encode_unframed_pdu().unwrap();
+    read_u32(&encoded[8..])
 }
 
 fn encoded_printer_device_io_request(major_function: MajorFunction) -> Vec<u8> {
@@ -242,7 +260,13 @@ fn devices_add_printer_appends_printer_entry() {
 fn printer_device_announce_is_deferred_until_user_loggedon() {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
 
-    assert!(rdpdr.process(&encoded_server_client_id_confirm()).unwrap().is_empty());
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    assert!(
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .unwrap()
+            .is_empty()
+    );
 
     let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
     assert_eq!(responses.len(), 1);
@@ -263,7 +287,8 @@ fn smartcard_device_announce_remains_pre_logon() {
         .with_smartcard(1)
         .with_printer(42, "PrintMe".to_owned());
 
-    let responses = rdpdr.process(&encoded_server_client_id_confirm()).unwrap();
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    let responses = rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap();
     assert_eq!(responses.len(), 1);
 
     assert_eq!(announced_devices(&responses[0]), vec![(1, DeviceType::Smartcard)]);
@@ -280,8 +305,12 @@ fn rdp51_client_id_confirm_announces_all_devices_pre_logon() {
         .with_smartcard(1)
         .with_printer(42, "PrintMe".to_owned());
 
+    let client_id = announce_client_id(&mut rdpdr, VERSION_MINOR_RDP51);
     let responses = rdpdr
-        .process(&encoded_server_client_id_confirm_with_minor(VERSION_MINOR_RDP51))
+        .process(&encoded_server_client_id_confirm_with_minor(
+            VERSION_MINOR_RDP51,
+            client_id,
+        ))
         .unwrap();
     assert_eq!(responses.len(), 1);
 
