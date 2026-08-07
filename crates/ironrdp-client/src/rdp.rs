@@ -477,6 +477,26 @@ impl RdpClient {
                         break;
                     }
                 },
+
+                #[cfg(windows)]
+                Transport::NamedPipe { path } => match Box::pin(cancelable_operation(
+                    connect_named_pipe(&self.config, path, &self.input_event_sender, cliprdr_factory),
+                    &mut self.close_receiver,
+                ))
+                .await
+                {
+                    Some(Ok(result)) => result,
+                    Some(Err(error)) => {
+                        if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
+                            self.emit_user_initiated_termination();
+                        }
+                        break;
+                    }
+                    None => {
+                        self.emit_user_initiated_termination();
+                        break;
+                    }
+                },
             };
 
             if !self.send_output_event(RdpOutputEvent::Connected).await {
@@ -756,12 +776,47 @@ async fn connect_direct(
     let framed = ironrdp_tokio::TokioFramed::new(stream);
 
     let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
-    #[cfg(feature = "vmconnect")]
-    if config.vm_id().is_some() {
-        return vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await;
+        #[cfg(feature = "vmconnect")]
+        if config.vm_id().is_some() {
+            return vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await;
+        }
+        security_upgrade_and_finalize(framed, connector, config).await
     }
-    tls_handshake_and_finalize(framed, connector, config).await
-}
+
+    /// Windows named-pipe RDP stream (e.g. Windows Sandbox `\\.\pipe\{VMId}`).
+    ///
+    /// Opens a duplex byte-mode client pipe and runs the connector. When TLS/CredSSP are disabled
+    /// (Sandbox NamedPipe default), negotiation stays on PROTOCOL_RDP with ENCRYPTION_LEVEL_NONE.
+    #[cfg(windows)]
+    async fn connect_named_pipe(
+        config: &Config,
+        pipe_path: &str,
+        input_sender: &RdpInputSender,
+        cliprdr_factory: CliprdrFactoryRef<'_>,
+    ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
+        use tokio::net::windows::named_pipe::ClientOptions;
+
+        let path = if pipe_path.starts_with(r"\\.\pipe\") || pipe_path.starts_with(r"\\?\pipe\") {
+            pipe_path.to_owned()
+        } else {
+            format!(r"\\.\pipe\{pipe_path}")
+        };
+
+        info!(%path, "Connecting over Windows named pipe");
+
+        let stream = ClientOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|e| ironrdp_connector::custom_err!("named pipe connect", e))?;
+
+        // Named pipes have no socket address; use a dummy loopback address for Client Info.
+        let client_addr = SocketAddr::from(([127, 0, 0, 1], 0));
+        let framed = ironrdp_tokio::TokioFramed::new(stream);
+        let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
+
+        security_upgrade_and_finalize(framed, connector, config).await
+    }
 
 /// RDS gateway TCP → gateway auth → TLS connection.
 #[cfg(feature = "gateway")]
@@ -797,8 +852,8 @@ async fn connect_gateway(
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
     let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
-    tls_handshake_and_finalize(framed, connector, config).await
-}
+        security_upgrade_and_finalize(framed, connector, config).await
+    }
 
 /// RDCleanPath WebSocket → RDCleanPath handshake connection.
 async fn connect_rdcleanpath_transport(
@@ -853,9 +908,11 @@ async fn connect_rdcleanpath_transport(
     Ok((connection_result, upgraded_framed))
 }
 
-// ── Shared TLS handshake ──────────────────────────────────────────────────────
+// ── Shared security upgrade + finalize ────────────────────────────────────────
 
-async fn tls_handshake_and_finalize<S>(
+/// After X.224 negotiation, either perform TLS (enhanced security) or mark a no-op upgrade
+/// for standard RDP security / plain local transports (Windows Sandbox named pipe).
+async fn security_upgrade_and_finalize<S>(
     mut framed: ironrdp_tokio::TokioFramed<S>,
     mut connector: ironrdp_connector::ClientConnector,
     config: &Config,
@@ -864,6 +921,30 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
 {
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
+
+    // Standard RDP security (PROTOCOL_RDP) and configs with both TLS and CredSSP disabled skip
+    // the TLS front-end. Enhanced protocols still require a real TLS upgrade.
+    let needs_tls = config.connector.enable_tls || config.connector.enable_credssp;
+    if !needs_tls {
+        debug!("Skipping TLS upgrade (standard RDP security / plain transport)");
+        let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
+        let (stream, leftover_bytes) = framed.into_inner();
+        let erased_stream: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(stream);
+        let mut upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
+
+        let connection_result = ironrdp_tokio::connect_finalize(
+            upgraded,
+            connector,
+            &mut upgraded_framed,
+            &mut ReqwestNetworkClient::new(),
+            (&config.destination).into(),
+            Vec::new(),
+            config.kerberos_config.clone(),
+        )
+        .await?;
+
+        return Ok((connection_result, upgraded_framed));
+    }
 
     debug!("TLS upgrade");
 

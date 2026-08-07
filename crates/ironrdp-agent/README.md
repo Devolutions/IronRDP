@@ -26,6 +26,41 @@ connection flags. Explicit flags override those process-local values. The native
 these only when it is explicitly enabled; `RDP_AUTOLOGON` is active only when its value is exactly
 `1`, and requires nonempty username and password values.
 
+## Windows Sandbox
+
+On Windows with the Windows Sandbox feature enabled, the agent can attach to a sandbox that was
+created separately (preferred) and speak RDP over the product's default **named-pipe** transport
+(`\\.\pipe\{VMId}`), using standard RDP security with no encryption (`PROTOCOL_RDP` /
+`ENCRYPTION_LEVEL_NONE`).
+
+```bat
+:: create headless (prints Id only)
+wsb start
+
+:: inspect / list via WindowsSandboxServer gRPC
+ironrdp-agent sandbox list
+ironrdp-agent sandbox config <sandbox-id>
+
+:: connect (daemon must already be running)
+ironrdp-agent daemon-start
+ironrdp-agent connect --sandbox-id <sandbox-id>
+ironrdp-agent screenshot sandbox.png
+```
+
+Requires the .NET SDK on PATH so the small helper under
+`crates/ironrdp-agent/tools/windows_sandbox_grpc.cs` can call
+`sandboxserver.SandboxCore` (`GetRdpClientConfig` / `EnumerateSandboxVMs`). Override the helper
+path with `IRONRDP_SANDBOX_GRPC_HELPER` if needed.
+
+Low-level escape hatch when you already have the pipe path and guest password:
+
+```bat
+ironrdp-agent connect --sandbox-pipe \\.\pipe\{VMId} -u WDAGUtilityAccount -p <password>
+```
+
+`Local` (VMConnect `:2179` + PCB) and guest TCP `:3389` transports are not implemented as the
+primary path; use the default NamedPipe recipe.
+
 ## Prebuilt binaries
 
 Prebuilt, checksummed archives are attached to each GitHub Release under the `ironrdp-agent-v*`

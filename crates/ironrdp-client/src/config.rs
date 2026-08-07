@@ -318,6 +318,15 @@ pub enum Transport {
 
     /// Connect via an RDCleanPath proxy (WebSocket-based).
     RDCleanPath(RDCleanPathConfig),
+
+    /// Windows named-pipe byte stream carrying TPKT/X.224 (e.g. Windows Sandbox `\\.\pipe\{VMId}`).
+    ///
+    /// Typically used with standard RDP security (`enable_tls`/`enable_credssp` both false).
+    #[cfg(windows)]
+    NamedPipe {
+        /// Full pipe path (`\\.\pipe\…`) or bare pipe name.
+        path: String,
+    },
 }
 
 /// Transport selection used to configure a [`ConfigBuilder`].
@@ -357,6 +366,13 @@ pub enum TransportKind {
     RDCleanPath {
         /// RDCleanPath proxy URL.
         url: Url,
+    },
+
+    /// Windows named-pipe RDP stream (e.g. Windows Sandbox).
+    #[cfg(windows)]
+    NamedPipe {
+        /// Full pipe path (`\\.\pipe\…`) or bare pipe name.
+        path: String,
     },
 }
 
@@ -986,17 +1002,29 @@ impl ConfigBuilder {
             TransportKind::Direct => {
                 self.properties.clear_rdcleanpath();
                 self.properties.clear_gateway();
+                #[cfg(windows)]
+                self.properties.clear_named_pipe();
             }
             TransportKind::RDCleanPath { url } => {
                 self.properties.clear_gateway();
+                #[cfg(windows)]
+                self.properties.clear_named_pipe();
                 self.properties.set_rdcleanpath_url(url.to_string());
             }
             #[cfg(feature = "gateway")]
             TransportKind::Gateway { endpoint } => {
                 self.properties.clear_rdcleanpath();
+                #[cfg(windows)]
+                self.properties.clear_named_pipe();
                 self.properties.set_gateway_hostname(endpoint.clone());
                 self.properties
                     .set_gateway_usage_method(ironrdp_cfg::GatewayUsageMethod::UseAlways);
+            }
+            #[cfg(windows)]
+            TransportKind::NamedPipe { path } => {
+                self.properties.clear_rdcleanpath();
+                self.properties.clear_gateway();
+                self.properties.set_named_pipe(path.clone());
             }
         }
         self.transport = transport;
@@ -1326,6 +1354,8 @@ impl ConfigBuilder {
                 url,
                 auth_token: self.rdcleanpath_token.unwrap(),
             }),
+            #[cfg(windows)]
+            TransportKind::NamedPipe { path } => Transport::NamedPipe { path },
         };
 
         #[cfg(feature = "vmconnect")]
@@ -1533,8 +1563,11 @@ impl ConfigBuilder {
             _ => {}
         }
 
-        // Transport: RDCleanPath > Gateway > Direct.
-        if let Some((url, token)) = ps.rdcleanpath_url().zip(ps.rdcleanpath_token()) {
+        // Transport: NamedPipe > RDCleanPath > Gateway > Direct.
+        #[cfg(windows)]
+        if let Some(path) = ps.named_pipe() {
+            self.transport = TransportKind::NamedPipe { path: path.to_owned() };
+        } else if let Some((url, token)) = ps.rdcleanpath_url().zip(ps.rdcleanpath_token()) {
             let url = Url::parse(url).context("invalid 'ironrdp_rdcleanpathurl'")?;
             self.transport = TransportKind::RDCleanPath { url };
             self.rdcleanpath_token = Some(token.to_owned());
@@ -1559,6 +1592,45 @@ impl ConfigBuilder {
                     GatewayUsageMethod::UseDefaultSettings => false,
 
                     // Explicit no-gateway modes.
+                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => false,
+                };
+
+                if select_gateway_transport {
+                    let endpoint = gateway_hostname.context("missing Gateway hostname")?;
+
+                    self.transport = TransportKind::Gateway {
+                        endpoint: endpoint.to_owned(),
+                    };
+
+                    if let Some(user) = ps.gateway_username() {
+                        self.gateway_username = Some(user.to_owned());
+                    }
+
+                    if let Some(pass) = ps.gateway_password() {
+                        self.gateway_password = Some(pass.to_owned());
+                    }
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        if let Some((url, token)) = ps.rdcleanpath_url().zip(ps.rdcleanpath_token()) {
+            let url = Url::parse(url).context("invalid 'ironrdp_rdcleanpathurl'")?;
+            self.transport = TransportKind::RDCleanPath { url };
+            self.rdcleanpath_token = Some(token.to_owned());
+        } else {
+            #[cfg(feature = "gateway")]
+            {
+                let gateway_usage = ps
+                    .gateway_usage_method()
+                    .context("invalid Gateway usage method")?
+                    .unwrap_or_default();
+
+                let gateway_hostname = ps.gateway_hostname();
+
+                let select_gateway_transport = match gateway_usage {
+                    GatewayUsageMethod::UseAlways => true,
+                    GatewayUsageMethod::Detect => gateway_hostname.is_some(),
+                    GatewayUsageMethod::UseDefaultSettings => false,
                     GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => false,
                 };
 

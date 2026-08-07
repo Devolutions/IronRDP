@@ -558,6 +558,20 @@ pub trait PropertySetExt {
     /// Removes the `ironrdp_rdcleanpathurl` property.
     fn clear_rdcleanpath_url(&mut self);
 
+    /// Windows named-pipe RDP path (`ironrdp_named_pipe`), e.g. `\\.\pipe\{VMId}`.
+    fn named_pipe(&self) -> Option<&str>;
+    /// Sets the `ironrdp_named_pipe` property.
+    fn set_named_pipe(&mut self, value: impl Into<String>);
+    /// Removes the `ironrdp_named_pipe` property.
+    fn clear_named_pipe(&mut self);
+
+    /// Windows Sandbox id used by agent tooling (`ironrdp_sandbox_id`).
+    fn sandbox_id(&self) -> Option<&str>;
+    /// Sets the `ironrdp_sandbox_id` property.
+    fn set_sandbox_id(&mut self, value: impl Into<String>);
+    /// Removes the `ironrdp_sandbox_id` property.
+    fn clear_sandbox_id(&mut self);
+
     /// Render the server-side pointer; default enabled (`ironrdp_serverpointer`).
     fn server_pointer(&self) -> Option<bool>;
     /// Sets the `ironrdp_serverpointer` property.
@@ -1091,6 +1105,35 @@ impl PropertySetExt for PropertySet {
 
     fn clear_rdcleanpath_url(&mut self) {
         self.remove("ironrdp_rdcleanpathurl");
+    }
+
+    /// Windows named-pipe path for RDP (e.g. Windows Sandbox `\\.\pipe\{VMId}`).
+    ///
+    /// When set, the client opens this pipe instead of a TCP socket. Pair with
+    /// `ironrdp_tls:i:0` and `enablecredsspsupport:i:0` for the Sandbox NamedPipe path.
+    fn named_pipe(&self) -> Option<&str> {
+        self.get::<&str>("ironrdp_named_pipe")
+    }
+
+    fn set_named_pipe(&mut self, value: impl Into<String>) {
+        self.insert("ironrdp_named_pipe", value.into());
+    }
+
+    fn clear_named_pipe(&mut self) {
+        self.remove("ironrdp_named_pipe");
+    }
+
+    /// Optional Windows Sandbox id used by agent tooling to resolve RDP config via gRPC.
+    fn sandbox_id(&self) -> Option<&str> {
+        self.get::<&str>("ironrdp_sandbox_id")
+    }
+
+    fn set_sandbox_id(&mut self, value: impl Into<String>) {
+        self.insert("ironrdp_sandbox_id", value.into());
+    }
+
+    fn clear_sandbox_id(&mut self) {
+        self.remove("ironrdp_sandbox_id");
     }
 
     fn server_pointer(&self) -> Option<bool> {
