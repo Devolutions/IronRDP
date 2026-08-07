@@ -67,7 +67,7 @@ function validateReviewer(raw, {
       Number.isSafeInteger(finding.end_line) && finding.end_line >= finding.start_line;
     if (!linesAreNull && !linesAreIntegers) continue;
     const rationale = normalizeText(finding.rationale, 1200);
-    if (rationale === null || !paths.has(path)) continue;
+    if (!rationale || !paths.has(path)) continue;
     const locationIsValidated = linesAreNull ||
       linesAreValidated(path, finding.start_line, finding.end_line, changedLines);
     findings.push({

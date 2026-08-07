@@ -65,6 +65,14 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
         : []),
     ],
     addLabels: ["maintainer-required"], comments: comment ? [comment] : [],
+    check: {
+      name: "AI classification",
+      externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
+      title: "Classification unavailable",
+      summary: `Automated classification was unavailable: ${reason}. Maintainer review is required.`,
+      machineState: { protocolRelated: false },
+      conclusion: "neutral",
+    },
   };
 }
 
@@ -116,9 +124,15 @@ function resolveClassificationState({
   if (rateLimit && rateLimit.status !== "allowed") {
     return failedClassification(expectedSha, deterministic, "fork LLM quota unavailable", rateLimit, semverStatus);
   }
-  if (!deterministic?.ok || !classifierResult?.ok || classifierResult.value?.head_sha !== expectedSha ||
-      semverStatus === "unavailable") {
-    return failedClassification(expectedSha, deterministic, "classification prerequisite unavailable", rateLimit, semverStatus);
+  if (!deterministic?.ok) {
+    return failedClassification(expectedSha, deterministic, "deterministic analysis unavailable", rateLimit, semverStatus);
+  }
+  if (!classifierResult?.ok || classifierResult.value?.head_sha !== expectedSha) {
+    const reason = classifierResult?.reason || "classifier output unavailable";
+    return failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus);
+  }
+  if (semverStatus === "unavailable") {
+    return failedClassification(expectedSha, deterministic, "public API compatibility unavailable", rateLimit, semverStatus);
   }
   const model = classifierResult.value;
   const breaking = semverStatus === "suspected" || model.breaking_change_suspected;

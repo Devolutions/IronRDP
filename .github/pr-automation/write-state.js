@@ -133,13 +133,14 @@ async function findCheck(github, owner, repo, expectedSha, check) {
 
 async function ensureClassificationCheck(github, owner, repo, prNumber, expectedSha, check) {
   const summary = `${check.summary}\n\n${encodeCheckState(check.machineState)}`;
+  const conclusion = check.conclusion ?? "success";
   const existing = await findCheck(github, owner, repo, expectedSha, check);
-  if (existing?.conclusion === "success" && existing.output?.title === check.title &&
+  if (existing?.conclusion === conclusion && existing.output?.title === check.title &&
       existing.output?.summary === summary) return false;
   await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
   const payload = {
     owner, repo, name: check.name, head_sha: expectedSha, external_id: check.externalId,
-    status: "completed", conclusion: "success",
+    status: "completed", conclusion,
     output: { title: check.title, summary },
   };
   if (existing) {

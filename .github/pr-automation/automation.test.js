@@ -122,11 +122,42 @@ test("classifier requires a high-confidence coherent legitimacy signal", () => {
   }), { expectedSha: SHA }).ok, true);
 });
 
+test("classifier normalizes PR 1564 quoted-empty-string output", () => {
+  const malformed = classifier({
+    risk: "high",
+    likely_non_legitimate: false,
+    non_legitimate_confidence: 0,
+    non_legitimate_reason: '""',
+    breaking_change_suspected: true,
+    breaking_change_rationale: "The default capability set changes.",
+    breaking_change_surface: "GraphicsPipelineHandler::capabilities",
+    protocol_related: true,
+    summary: "Stops advertising AVC444 without a decoder.",
+  });
+  const result = validateClassifier(JSON.stringify(malformed), { expectedSha: SHA });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.non_legitimate_reason, "");
+});
+
 test("reviewer requires validated paths and paired lines", () => {
   const output = review();
   assert.equal(validateReviewer(output, { expectedSha: SHA, changedPaths: ["src/lib.rs"], changedLines: { "src/lib.rs": [4] } }).ok, true);
   output.findings[0].end_line = null;
   assert.equal(validateReviewer(output, { expectedSha: SHA, changedPaths: ["src/lib.rs"] }).ok, false);
+});
+
+test("reviewer canonicalizes quoted empty text and rejects it where prose is required", () => {
+  const noProtocol = validateReviewer(review({
+    has_findings: false,
+    protocol_handoff: { received: false, disposition: "not_applicable", rationale: '""' },
+    findings: [],
+  }), { expectedSha: SHA });
+  assert.equal(noProtocol.ok, true);
+  assert.equal(noProtocol.value.protocol_handoff.rationale, "");
+
+  assert.equal(validateReviewer(review({
+    findings: [finding({ rationale: '""' })],
+  }), { expectedSha: SHA, changedPaths: ["src/lib.rs"], changedLines: { "src/lib.rs": [4] } }).ok, false);
 });
 
 test("reviewer keeps line numbers only when the whole range is inside the diff", () => {
@@ -238,6 +269,12 @@ test("protocol handoff relevance must match the reported evidence", () => {
   assert.equal(notApplicableHandoff().status, "not_applicable");
 });
 
+test("protocol handoff treats quoted empty required prose as empty", () => {
+  assert.equal(validateProtocolReview(protocolReview({
+    relevance_reason: '""',
+  }), { expectedSha: SHA, changedPaths: ["src/lib.rs"], corpus }).ok, false);
+});
+
 test("corpus reader indexes real headings and refuses traversal", () => {
   const fs = require("node:fs");
   const os = require("node:os");
@@ -316,6 +353,18 @@ test("deterministic semver outranks the model and a model-only break cannot stay
   assert.equal(unavailable.failed, true);
   assert.deepEqual(unavailable.addLabels, ["maintainer-required"]);
   assert.deepEqual(unavailable.labelSets.at(-1).desired, ["risk/unknown"]);
+  assert.equal(unavailable.check.title, "Classification unavailable");
+  assert.equal(unavailable.check.conclusion, "neutral");
+  assert.match(unavailable.check.summary, /public API compatibility unavailable/);
+  const malformed = resolveClassificationState({
+    expectedSha: SHA,
+    labels: [],
+    deterministic,
+    classifier: "",
+    semver: { head_sha: SHA, status: "not-suspected" },
+  });
+  assert.equal(malformed.check.conclusion, "neutral");
+  assert.match(malformed.check.summary, /invalid classifier object/);
   const failedWithSemverBreak = resolveClassificationState({
     expectedSha: SHA,
     labels: [],
@@ -617,6 +666,7 @@ test("writer batches the label delta and tolerates an absent label removal", asy
 
 test("writer reads normalized check-run pages and updates the newest matching run", async () => {
   let updatedCheckRun = null;
+  let updatedConclusion = null;
   const github = {
     paginate: { iterator: async function* () {
       yield { data: [
@@ -630,7 +680,10 @@ test("writer reads normalized check-run pages and updates the newest matching ru
     rest: {
       checks: {
         listForRef: () => {},
-        update: async ({ check_run_id }) => { updatedCheckRun = check_run_id; },
+        update: async ({ check_run_id, conclusion }) => {
+          updatedCheckRun = check_run_id;
+          updatedConclusion = conclusion;
+        },
       },
       pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
       issues: { get: async () => ({ data: { labels: [] } }) },
@@ -643,12 +696,14 @@ test("writer reads normalized check-run pages and updates the newest matching ru
       comments: [], removeCommentMarkers: [],
       check: {
         name: "AI classification", externalId: `classifier-v2:${SHA}`,
-        title: "Automation stopped", summary: "Maintainer review is required.",
+        title: "Classification unavailable", summary: "Classifier output invalid.",
         machineState: { protocolRelated: false },
+        conclusion: "neutral",
       },
     },
   });
   assert.equal(updatedCheckRun, 3);
+  assert.equal(updatedConclusion, "neutral");
 });
 
 function paginated(pages) {
