@@ -594,15 +594,16 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
 
     #[cfg(windows)]
     {
+        // Sandbox defaults are the base; explicit .rdp / --prop / named flags win on conflict.
+        // Transport/security invariants from the sandbox path are re-applied last so a file
+        // cannot force TLS/CredSSP onto a NamedPipe session.
         if let Some(sandbox_id) = args.sandbox_id {
             let sandbox_props =
                 crate::sandbox::properties_for_sandbox_id(&sandbox_id).context("resolve Windows Sandbox RDP config")?;
-            // Sandbox-derived props are the base; existing props (flags/file) win on conflict
-            // except we want sandbox pipe/creds to win — merge sandbox last.
-            properties.merge(&sandbox_props);
-            // Re-apply named credential flags if the user overrode them explicitly after merge.
-            // (username/password already applied above; merge overwrote with sandbox values which is intended.)
-            let _ = sandbox_id;
+            let mut merged = sandbox_props;
+            merged.merge(&properties);
+            crate::sandbox::reassert_named_pipe_security(&mut merged);
+            properties = merged;
         } else if let Some(pipe) = args.sandbox_pipe {
             let user = properties
                 .username()
@@ -612,8 +613,16 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
                 .clear_text_password()
                 .map(str::to_owned)
                 .context("--sandbox-pipe requires --password (or ClearTextPassword in the .rdp file)")?;
-            let sandbox_props = crate::sandbox::properties_for_pipe(&pipe, &user, &pass);
-            properties.merge(&sandbox_props);
+            let mut merged = crate::sandbox::properties_for_pipe(&pipe, &user, &pass);
+            merged.merge(&properties);
+            // Keep the explicit pipe path and plain-security defaults after user overrides.
+            merged.set_named_pipe(if pipe.starts_with(r"\\.\pipe\") || pipe.starts_with(r"\\?\pipe\") {
+                pipe
+            } else {
+                format!(r"\\.\pipe\{pipe}")
+            });
+            crate::sandbox::reassert_named_pipe_security(&mut merged);
+            properties = merged;
         }
     }
 

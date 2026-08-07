@@ -922,10 +922,10 @@ where
 {
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
 
-    // Standard RDP security (PROTOCOL_RDP) and configs with both TLS and CredSSP disabled skip
-    // the TLS front-end. Enhanced protocols still require a real TLS upgrade.
-    let needs_tls = config.connector.enable_tls || config.connector.enable_credssp;
-    if !needs_tls {
+    // Only the explicit standard-RDP opt-in (NamedPipe / local plain transports) skips TLS.
+    // A bare `enable_tls = false` + `enable_credssp = false` still fails earlier in the connector.
+    if config.connector.enable_standard_rdp_security && !config.connector.enable_tls && !config.connector.enable_credssp
+    {
         debug!("Skipping TLS upgrade (standard RDP security / plain transport)");
         let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
         let (stream, leftover_bytes) = framed.into_inner();

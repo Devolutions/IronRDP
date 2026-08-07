@@ -42,13 +42,10 @@ struct ListReply {
     sandbox_ids: Vec<String>,
 }
 
+/// Embedded so release binaries still work without shipping the `.cs` next to the exe.
+const HELPER_SOURCE: &str = include_str!("../tools/windows_sandbox_grpc.cs");
+
 fn helper_script_path() -> anyhow::Result<PathBuf> {
-    // Prefer the source tree path relative to the running binary (dev builds),
-    // then CARGO_MANIFEST_DIR baked at compile time.
-    let candidates = [
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/windows_sandbox_grpc.cs"),
-        // When installed, operators can set IRONRDP_SANDBOX_GRPC_HELPER.
-    ];
     if let Ok(env_path) = std::env::var("IRONRDP_SANDBOX_GRPC_HELPER") {
         let p = PathBuf::from(env_path);
         if p.is_file() {
@@ -56,15 +53,46 @@ fn helper_script_path() -> anyhow::Result<PathBuf> {
         }
         anyhow::bail!("IRONRDP_SANDBOX_GRPC_HELPER points to missing file: {}", p.display());
     }
-    for c in &candidates {
-        if c.is_file() {
-            return Ok(c.clone());
+
+    // Prefer a helper shipped beside the agent binary (release packaging / manual install).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let beside = dir.join("windows_sandbox_grpc.cs");
+            if beside.is_file() {
+                return Ok(beside);
+            }
         }
     }
-    anyhow::bail!(
-        "windows sandbox gRPC helper not found (expected at {}); set IRONRDP_SANDBOX_GRPC_HELPER",
-        candidates[0].display()
-    )
+
+    // Dev tree / `cargo run -p ironrdp-agent`.
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/windows_sandbox_grpc.cs");
+    if manifest.is_file() {
+        return Ok(manifest);
+    }
+
+    // Materialize the embedded source for installed binaries that did not ship the helper file.
+    let dir = std::env::temp_dir().join("ironrdp-agent-sandbox");
+    std::fs::create_dir_all(&dir).context("create temp dir for windows sandbox gRPC helper")?;
+    let path = dir.join("windows_sandbox_grpc.cs");
+    let needs_write = match std::fs::read_to_string(&path) {
+        Ok(existing) => existing != HELPER_SOURCE,
+        Err(_) => true,
+    };
+    if needs_write {
+        std::fs::write(&path, HELPER_SOURCE).context("write embedded windows sandbox gRPC helper")?;
+    }
+    Ok(path)
+}
+
+/// Re-apply NamedPipe transport security after user property merges.
+///
+/// Clipboard and credentials may be overridden by the caller; TLS/CredSSP must stay off for
+/// the default Sandbox named-pipe path so we do not advertise enhanced protocols the server
+/// will reject (and so we do not silently open a plaintext TCP session).
+pub(crate) fn reassert_named_pipe_security(ps: &mut PropertySet) {
+    ps.set_enable_tls(false);
+    ps.set_enable_credssp_support(false);
+    ps.set_autologon(true);
 }
 
 fn run_helper(args: &[&str]) -> anyhow::Result<String> {

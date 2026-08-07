@@ -317,11 +317,13 @@ impl ClientConnector {
         }
 
         // PROTOCOL_RDP (empty flags) is standard RDP security. IronRDP only supports the
-        // ENCRYPTION_LEVEL_NONE variant (no RC4 Security Exchange). Servers that select
-        // PROTOCOL_RDP and advertise ServerSecurityData::no_security() — e.g. Windows
-        // Sandbox over a local named pipe — can complete the sequence. RC4/FIPS still
-        // fails later with "can't satisfy server security settings".
+        // ENCRYPTION_LEVEL_NONE variant (no RC4 Security Exchange). Keep it opt-in so
+        // `enable_tls = false` + `enable_credssp = false` cannot silently open a plaintext
+        // TCP session; local named-pipe transports set `enable_standard_rdp_security`.
         if security_protocol.is_standard_rdp_security() {
+            if !self.config.enable_standard_rdp_security {
+                return Err(reason_err!("Initiation", "standard RDP security is not supported"));
+            }
             debug!("Advertising standard RDP security (PROTOCOL_RDP / no enhanced protocols)");
         }
 

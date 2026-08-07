@@ -1338,6 +1338,14 @@ impl ConfigBuilder {
             codecs,
         };
 
+        // Named-pipe RDP (Windows Sandbox) is the only built-in path that opts into PROTOCOL_RDP
+        // with ENCRYPTION_LEVEL_NONE. Keep TCP/gateway paths on enhanced security by default.
+        // Check before consuming `self.transport` below.
+        #[cfg(windows)]
+        let enable_standard_rdp_security = matches!(&self.transport, TransportKind::NamedPipe { .. });
+        #[cfg(not(windows))]
+        let enable_standard_rdp_security = false;
+
         // Resolve the granular transport selection into the bundled form, folding in the separately
         // tracked secrets (gateway credentials, RDCleanPath token).
         #[expect(
@@ -1403,14 +1411,26 @@ impl ConfigBuilder {
             None
         };
 
+        let enable_tls = if enable_standard_rdp_security {
+            false
+        } else {
+            self.enable_tls.unwrap_or(true)
+        };
+        let enable_credssp = if enable_standard_rdp_security {
+            false
+        } else {
+            self.enable_credssp.unwrap_or(true)
+        };
+
         let connector = ironrdp_connector::Config {
             credentials: ironrdp_connector::Credentials::UsernamePassword {
                 username: self.username.unwrap_or_default(),
                 password: self.password.unwrap_or_default(),
             },
             domain: self.domain,
-            enable_tls: self.enable_tls.unwrap_or(true),
-            enable_credssp: self.enable_credssp.unwrap_or(true),
+            enable_tls,
+            enable_credssp,
+            enable_standard_rdp_security,
             keyboard_type: self
                 .keyboard_type
                 .unwrap_or(ironrdp_pdu::gcc::KeyboardType::IbmEnhanced),

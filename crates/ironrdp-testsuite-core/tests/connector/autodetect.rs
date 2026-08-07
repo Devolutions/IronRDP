@@ -35,6 +35,7 @@ fn test_config() -> ironrdp_connector::Config {
         desktop_scale_factor: 0,
         enable_tls: true,
         enable_credssp: false,
+        enable_standard_rdp_security: false,
         credentials: Credentials::UsernamePassword {
             username: "test".into(),
             password: "test".into(),
