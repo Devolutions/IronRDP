@@ -178,12 +178,13 @@ fn client_keeps_avc_caps_with_decoder() {
     let caps_pdu = decode_caps_from_message(&messages[0]);
     assert_eq!(
         caps_pdu.0.len(),
-        3,
-        "expected all three capability sets with decoder present"
+        2,
+        "expected both capability sets with decoder present"
     );
-    assert_eq!(caps_pdu.0[0].version, CapabilityVersion::V10_7);
-    assert_eq!(caps_pdu.0[1].version, CapabilityVersion::V8_1);
-    assert_eq!(caps_pdu.0[2].version, CapabilityVersion::V8);
+    // V10.x is absent by design: those versions imply AVC444, which the client
+    // cannot decode, and the server would then send only frames it discards.
+    assert_eq!(caps_pdu.0[0].version, CapabilityVersion::V8_1);
+    assert_eq!(caps_pdu.0[1].version, CapabilityVersion::V8);
 }
 
 // ============================================================================

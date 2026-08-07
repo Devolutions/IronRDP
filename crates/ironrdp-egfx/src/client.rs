@@ -220,18 +220,25 @@ pub struct BitmapUpdate {
 pub trait GraphicsPipelineHandler: Send {
     /// Returns the capability sets to advertise to the server
     ///
-    /// The default advertises V10.7 (AVC420+AVC444), V8.1 (AVC420 only),
-    /// and V8 (no AVC) as fallback.
+    /// The default advertises V8.1 (AVC420) and V8 (no AVC) as fallback.
+    ///
+    /// V10.x is deliberately absent. Those versions signal AVC444 support
+    /// unless `AVC_DISABLED` is set, and [`GraphicsPipelineClient`] has no
+    /// AVC444 decoder: [`Codec1Type::Avc444`] and [`Codec1Type::Avc444v2`]
+    /// reach [`GraphicsPipelineHandler::on_unhandled_pdu`] instead of being
+    /// decoded. The server picks one of the advertised sets ([capability
+    /// negotiation]) and prefers the most capable, so offering AVC444 makes a
+    /// host that supports it send nothing the client can paint. Add V10.7 back
+    /// once AVC444 decodes.
     ///
     /// Note: AVC-capable versions are automatically filtered out at
     /// advertisement time if no H.264 decoder is configured on the
     /// [`GraphicsPipelineClient`]. If all returned sets require AVC
     /// and no decoder is available, a V8-only fallback is used.
+    ///
+    /// [capability negotiation]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/31c6e2b1-335b-4a75-9454-bb2309958c21
     fn capabilities(&self) -> Vec<CapabilitySet> {
         vec![
-            CapabilitySet::V10_7 {
-                flags: CapabilitiesV107Flags::SMALL_CACHE,
-            },
             CapabilitySet::V8_1 {
                 flags: CapabilitiesV81Flags::AVC420_ENABLED | CapabilitiesV81Flags::SMALL_CACHE,
             },
@@ -1371,5 +1378,34 @@ mod tests {
         let rgba = convert_uncompressed_to_rgba(&wire_pixels);
         // Expected: [R, G, B, 0xFF] per pixel (alpha forced to opaque)
         assert_eq!(rgba, vec![0xFF, 0x80, 0x00, 0xFF, 0x30, 0x20, 0x10, 0xFF]);
+    }
+
+    /// Every capability set the default advertises must correspond to a codec
+    /// `handle_wire_to_surface1` can actually decode.
+    ///
+    /// The server picks one of the advertised sets and prefers the most capable,
+    /// so a set that implies AVC444 makes the server send `Avc444`/`Avc444v2`,
+    /// which fall through to `on_unhandled_pdu` and leave the screen blank.
+    #[test]
+    fn default_capabilities_do_not_advertise_avc444() {
+        for cap in TestHandler.capabilities() {
+            assert!(
+                !CodecCapabilities::from_capability_set(&cap).avc444,
+                "advertised set implies an AVC444 decoder that does not exist: {cap:?}"
+            );
+        }
+    }
+
+    /// AVC420 must stay advertised: it is the H.264 flavour that does decode, and
+    /// dropping V10.x must not cost it.
+    #[test]
+    fn default_capabilities_still_advertise_avc420() {
+        assert!(
+            TestHandler
+                .capabilities()
+                .iter()
+                .any(|cap| CodecCapabilities::from_capability_set(cap).avc420),
+            "no advertised set enables AVC420"
+        );
     }
 }
