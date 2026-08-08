@@ -1869,8 +1869,11 @@ pub enum ServerDriveIoRequest {
     DeviceControlRequest(DeviceControlRequest<AnyIoCtlCode>),
     DeviceReadRequest(DeviceReadRequest),
     DeviceWriteRequest(DeviceWriteRequest),
+    DeviceFlushBuffersRequest(DeviceFlushBuffersRequest),
     ServerDriveSetInformationRequest(ServerDriveSetInformationRequest),
     ServerDriveLockControlRequest(ServerDriveLockControlRequest),
+    ServerDriveQuerySecurityRequest(ServerDriveQuerySecurityRequest),
+    ServerDriveSetSecurityRequest(ServerDriveSetSecurityRequest),
 }
 
 impl ServerDriveIoRequest {
@@ -1880,6 +1883,7 @@ impl ServerDriveIoRequest {
             MajorFunction::Close => Ok(DeviceCloseRequest::decode(dev_io_req).into()),
             MajorFunction::Read => Ok(DeviceReadRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::Write => Ok(DeviceWriteRequest::decode(dev_io_req, src)?.into()),
+            MajorFunction::FlushBuffers => Ok(DeviceFlushBuffersRequest::decode(dev_io_req).into()),
             MajorFunction::DeviceControl => Ok(DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src)?.into()),
             MajorFunction::QueryVolumeInformation => {
                 Ok(ServerDriveQueryVolumeInformationRequest::decode(dev_io_req, src)?.into())
@@ -1901,10 +1905,9 @@ impl ServerDriveIoRequest {
                 )),
             },
             MajorFunction::LockControl => Ok(ServerDriveLockControlRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::FlushBuffers
-            | MajorFunction::SetVolumeInformation
-            | MajorFunction::QuerySecurity
-            | MajorFunction::SetSecurity => Err(unsupported_value_err!(
+            MajorFunction::QuerySecurity => Ok(ServerDriveQuerySecurityRequest::decode(dev_io_req, src)?.into()),
+            MajorFunction::SetSecurity => Ok(ServerDriveSetSecurityRequest::decode(dev_io_req, src)?.into()),
+            MajorFunction::SetVolumeInformation => Err(unsupported_value_err!(
                 "ServerDriveIoRequest::decode",
                 "MajorFunction",
                 "unsupported value".to_owned()
@@ -1967,6 +1970,12 @@ impl From<DeviceWriteRequest> for ServerDriveIoRequest {
     }
 }
 
+impl From<DeviceFlushBuffersRequest> for ServerDriveIoRequest {
+    fn from(req: DeviceFlushBuffersRequest) -> Self {
+        Self::DeviceFlushBuffersRequest(req)
+    }
+}
+
 impl From<ServerDriveSetInformationRequest> for ServerDriveIoRequest {
     fn from(req: ServerDriveSetInformationRequest) -> Self {
         Self::ServerDriveSetInformationRequest(req)
@@ -1976,6 +1985,18 @@ impl From<ServerDriveSetInformationRequest> for ServerDriveIoRequest {
 impl From<ServerDriveLockControlRequest> for ServerDriveIoRequest {
     fn from(req: ServerDriveLockControlRequest) -> Self {
         Self::ServerDriveLockControlRequest(req)
+    }
+}
+
+impl From<ServerDriveQuerySecurityRequest> for ServerDriveIoRequest {
+    fn from(req: ServerDriveQuerySecurityRequest) -> Self {
+        Self::ServerDriveQuerySecurityRequest(req)
+    }
+}
+
+impl From<ServerDriveSetSecurityRequest> for ServerDriveIoRequest {
+    fn from(req: ServerDriveSetSecurityRequest) -> Self {
+        Self::ServerDriveSetSecurityRequest(req)
     }
 }
 
@@ -4761,8 +4782,11 @@ mod tests {
         let mut query_payload = Vec::new();
         query_payload.extend_from_slice(&SecurityInformation::OWNER.bits().to_le_bytes());
 
-        let query = ServerDriveQuerySecurityRequest::decode(request.clone(), &mut ReadCursor::new(&query_payload))
+        let query = ServerDriveIoRequest::decode(request.clone(), &mut ReadCursor::new(&query_payload))
             .expect("valid query security request");
+        let ServerDriveIoRequest::ServerDriveQuerySecurityRequest(query) = query else {
+            panic!("decoded request must be query security");
+        };
         assert_eq!(query.security_information, SecurityInformation::OWNER);
 
         let descriptor = vec![1, 2, 3, 4];
@@ -4775,8 +4799,11 @@ mod tests {
             major_function: MajorFunction::SetSecurity,
             ..request
         };
-        let set = ServerDriveSetSecurityRequest::decode(set_request, &mut ReadCursor::new(&set_payload))
+        let set = ServerDriveIoRequest::decode(set_request, &mut ReadCursor::new(&set_payload))
             .expect("valid set security request");
+        let ServerDriveIoRequest::ServerDriveSetSecurityRequest(set) = set else {
+            panic!("decoded request must be set security");
+        };
         assert_eq!(set.security_descriptor, descriptor);
 
         let query_response = ClientDriveQuerySecurityResponse {
@@ -4900,13 +4927,14 @@ mod tests {
             minor_function: MinorFunction::from(0),
         };
 
-        let decoded = DeviceFlushBuffersRequest::decode(request.clone());
+        let decoded =
+            ServerDriveIoRequest::decode(request.clone(), &mut ReadCursor::new(&[])).expect("valid flush request");
 
         assert_eq!(
             decoded,
-            DeviceFlushBuffersRequest {
+            ServerDriveIoRequest::DeviceFlushBuffersRequest(DeviceFlushBuffersRequest {
                 device_io_request: request,
-            }
+            })
         );
     }
 
@@ -4937,23 +4965,16 @@ mod tests {
     }
 
     #[test]
-    fn filesystem_foundation_requests_remain_outside_drive_dispatch() {
-        for major_function in [
-            MajorFunction::FlushBuffers,
-            MajorFunction::SetVolumeInformation,
-            MajorFunction::QuerySecurity,
-            MajorFunction::SetSecurity,
-        ] {
-            let request = DeviceIoRequest {
-                device_id: 1,
-                file_id: 2,
-                completion_id: 3,
-                major_function,
-                minor_function: MinorFunction::from(0),
-            };
+    fn volume_updates_remain_outside_drive_dispatch() {
+        let request = DeviceIoRequest {
+            device_id: 1,
+            file_id: 2,
+            completion_id: 3,
+            major_function: MajorFunction::SetVolumeInformation,
+            minor_function: MinorFunction::from(0),
+        };
 
-            assert!(ServerDriveIoRequest::decode(request, &mut ReadCursor::new(&[])).is_err());
-        }
+        assert!(ServerDriveIoRequest::decode(request, &mut ReadCursor::new(&[])).is_err());
     }
 
     #[test]

@@ -9,9 +9,10 @@ use ironrdp_svc::SvcEncode;
 use self::efs::{
     ClientDeviceListAnnounce, ClientDeviceListRemove, ClientDriveLockControlResponse,
     ClientDriveNotifyChangeDirectoryResponse, ClientDriveQueryDirectoryResponse, ClientDriveQueryInformationResponse,
-    ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse, ClientNameRequest, CoreCapability,
-    CoreCapabilityKind, DeviceCloseResponse, DeviceControlResponse, DeviceCreateResponse, DeviceIoRequest,
-    DeviceReadResponse, DeviceWriteResponse, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
+    ClientDriveQuerySecurityResponse, ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse,
+    ClientDriveSetSecurityResponse, ClientNameRequest, CoreCapability, CoreCapabilityKind, DeviceCloseResponse,
+    DeviceControlResponse, DeviceCreateResponse, DeviceFlushBuffersResponse, DeviceIoRequest, DeviceReadResponse,
+    DeviceWriteResponse, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
 };
 
 pub mod efs;
@@ -29,13 +30,16 @@ pub enum RdpdrPdu {
     DeviceControlResponse(DeviceControlResponse),
     DeviceCreateResponse(DeviceCreateResponse),
     ClientDriveQueryInformationResponse(ClientDriveQueryInformationResponse),
+    ClientDriveQuerySecurityResponse(ClientDriveQuerySecurityResponse),
     DeviceCloseResponse(DeviceCloseResponse),
     ClientDriveQueryDirectoryResponse(ClientDriveQueryDirectoryResponse),
-    ClientDriveNotifyChangeDirectoryResponse(ClientDriveNotifyChangeDirectoryResponse),
     ClientDriveQueryVolumeInformationResponse(ClientDriveQueryVolumeInformationResponse),
     DeviceReadResponse(DeviceReadResponse),
     DeviceWriteResponse(DeviceWriteResponse),
+    DeviceFlushBuffersResponse(DeviceFlushBuffersResponse),
     ClientDriveSetInformationResponse(ClientDriveSetInformationResponse),
+    ClientDriveSetSecurityResponse(ClientDriveSetSecurityResponse),
+    ClientDriveNotifyChangeDirectoryResponse(ClientDriveNotifyChangeDirectoryResponse),
     ClientDriveLockControlResponse(ClientDriveLockControlResponse),
     UserLoggedon,
     EmptyResponse,
@@ -92,13 +96,16 @@ impl RdpdrPdu {
             RdpdrPdu::DeviceControlResponse(_)
             | RdpdrPdu::DeviceCreateResponse(_)
             | RdpdrPdu::ClientDriveQueryInformationResponse(_)
+            | RdpdrPdu::ClientDriveQuerySecurityResponse(_)
             | RdpdrPdu::DeviceCloseResponse(_)
             | RdpdrPdu::ClientDriveQueryDirectoryResponse(_)
-            | RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(_)
             | RdpdrPdu::ClientDriveQueryVolumeInformationResponse(_)
             | RdpdrPdu::DeviceReadResponse(_)
             | RdpdrPdu::DeviceWriteResponse(_)
+            | RdpdrPdu::DeviceFlushBuffersResponse(_)
             | RdpdrPdu::ClientDriveSetInformationResponse(_)
+            | RdpdrPdu::ClientDriveSetSecurityResponse(_)
+            | RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(_)
             | RdpdrPdu::ClientDriveLockControlResponse(_)
             | RdpdrPdu::EmptyResponse => SharedHeader {
                 component: Component::RdpdrCtypCore,
@@ -152,13 +159,16 @@ impl Encode for RdpdrPdu {
             RdpdrPdu::DeviceControlResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceCreateResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDriveQueryInformationResponse(pdu) => pdu.encode(dst),
+            RdpdrPdu::ClientDriveQuerySecurityResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceCloseResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDriveQueryDirectoryResponse(pdu) => pdu.encode(dst),
-            RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDriveQueryVolumeInformationResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceReadResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceWriteResponse(pdu) => pdu.encode(dst),
+            RdpdrPdu::DeviceFlushBuffersResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.encode(dst),
+            RdpdrPdu::ClientDriveSetSecurityResponse(pdu) => pdu.encode(dst),
+            RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDriveLockControlResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::UserLoggedon => Ok(()),
             RdpdrPdu::EmptyResponse => {
@@ -181,13 +191,16 @@ impl Encode for RdpdrPdu {
             RdpdrPdu::DeviceControlResponse(pdu) => pdu.name(),
             RdpdrPdu::DeviceCreateResponse(pdu) => pdu.name(),
             RdpdrPdu::ClientDriveQueryInformationResponse(pdu) => pdu.name(),
+            RdpdrPdu::ClientDriveQuerySecurityResponse(pdu) => pdu.name(),
             RdpdrPdu::DeviceCloseResponse(pdu) => pdu.name(),
             RdpdrPdu::ClientDriveQueryDirectoryResponse(pdu) => pdu.name(),
-            RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(pdu) => pdu.name(),
             RdpdrPdu::ClientDriveQueryVolumeInformationResponse(pdu) => pdu.name(),
             RdpdrPdu::DeviceReadResponse(pdu) => pdu.name(),
             RdpdrPdu::DeviceWriteResponse(pdu) => pdu.name(),
+            RdpdrPdu::DeviceFlushBuffersResponse(pdu) => pdu.name(),
             RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.name(),
+            RdpdrPdu::ClientDriveSetSecurityResponse(pdu) => pdu.name(),
+            RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(pdu) => pdu.name(),
             RdpdrPdu::ClientDriveLockControlResponse(pdu) => pdu.name(),
             RdpdrPdu::UserLoggedon => "UserLoggedon",
             RdpdrPdu::EmptyResponse => "EmptyResponse",
@@ -207,13 +220,16 @@ impl Encode for RdpdrPdu {
                 RdpdrPdu::DeviceControlResponse(pdu) => pdu.size(),
                 RdpdrPdu::DeviceCreateResponse(pdu) => pdu.size(),
                 RdpdrPdu::ClientDriveQueryInformationResponse(pdu) => pdu.size(),
+                RdpdrPdu::ClientDriveQuerySecurityResponse(pdu) => pdu.size(),
                 RdpdrPdu::DeviceCloseResponse(pdu) => pdu.size(),
                 RdpdrPdu::ClientDriveQueryDirectoryResponse(pdu) => pdu.size(),
-                RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(pdu) => pdu.size(),
                 RdpdrPdu::ClientDriveQueryVolumeInformationResponse(pdu) => pdu.size(),
                 RdpdrPdu::DeviceReadResponse(pdu) => pdu.size(),
                 RdpdrPdu::DeviceWriteResponse(pdu) => pdu.size(),
+                RdpdrPdu::DeviceFlushBuffersResponse(pdu) => pdu.size(),
                 RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.size(),
+                RdpdrPdu::ClientDriveSetSecurityResponse(pdu) => pdu.size(),
+                RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(pdu) => pdu.size(),
                 RdpdrPdu::ClientDriveLockControlResponse(pdu) => pdu.size(),
                 RdpdrPdu::UserLoggedon => 0,
                 RdpdrPdu::EmptyResponse => size_of::<u32>(),
@@ -256,13 +272,13 @@ impl fmt::Debug for RdpdrPdu {
             Self::ClientDriveQueryInformationResponse(it) => {
                 write!(f, "RdpdrPdu({it:?})")
             }
+            Self::ClientDriveQuerySecurityResponse(it) => {
+                write!(f, "RdpdrPdu({it:?})")
+            }
             Self::DeviceCloseResponse(it) => {
                 write!(f, "RdpdrPdu({it:?})")
             }
             Self::ClientDriveQueryDirectoryResponse(it) => {
-                write!(f, "RdpdrPdu({it:?})")
-            }
-            Self::ClientDriveNotifyChangeDirectoryResponse(it) => {
                 write!(f, "RdpdrPdu({it:?})")
             }
             Self::ClientDriveQueryVolumeInformationResponse(it) => {
@@ -274,7 +290,16 @@ impl fmt::Debug for RdpdrPdu {
             Self::DeviceWriteResponse(it) => {
                 write!(f, "RdpdrPdu({it:?})")
             }
+            Self::DeviceFlushBuffersResponse(it) => {
+                write!(f, "RdpdrPdu({it:?})")
+            }
             Self::ClientDriveSetInformationResponse(it) => {
+                write!(f, "RdpdrPdu({it:?})")
+            }
+            Self::ClientDriveSetSecurityResponse(it) => {
+                write!(f, "RdpdrPdu({it:?})")
+            }
+            Self::ClientDriveNotifyChangeDirectoryResponse(it) => {
                 write!(f, "RdpdrPdu({it:?})")
             }
             Self::ClientDriveLockControlResponse(it) => {
@@ -308,6 +333,12 @@ impl From<ClientDriveQueryInformationResponse> for RdpdrPdu {
     }
 }
 
+impl From<ClientDriveQuerySecurityResponse> for RdpdrPdu {
+    fn from(value: ClientDriveQuerySecurityResponse) -> Self {
+        Self::ClientDriveQuerySecurityResponse(value)
+    }
+}
+
 impl From<DeviceCloseResponse> for RdpdrPdu {
     fn from(value: DeviceCloseResponse) -> Self {
         Self::DeviceCloseResponse(value)
@@ -317,12 +348,6 @@ impl From<DeviceCloseResponse> for RdpdrPdu {
 impl From<ClientDriveQueryDirectoryResponse> for RdpdrPdu {
     fn from(value: ClientDriveQueryDirectoryResponse) -> Self {
         Self::ClientDriveQueryDirectoryResponse(value)
-    }
-}
-
-impl From<ClientDriveNotifyChangeDirectoryResponse> for RdpdrPdu {
-    fn from(value: ClientDriveNotifyChangeDirectoryResponse) -> Self {
-        Self::ClientDriveNotifyChangeDirectoryResponse(value)
     }
 }
 
@@ -344,9 +369,27 @@ impl From<DeviceWriteResponse> for RdpdrPdu {
     }
 }
 
+impl From<DeviceFlushBuffersResponse> for RdpdrPdu {
+    fn from(value: DeviceFlushBuffersResponse) -> Self {
+        Self::DeviceFlushBuffersResponse(value)
+    }
+}
+
 impl From<ClientDriveSetInformationResponse> for RdpdrPdu {
     fn from(value: ClientDriveSetInformationResponse) -> Self {
         Self::ClientDriveSetInformationResponse(value)
+    }
+}
+
+impl From<ClientDriveSetSecurityResponse> for RdpdrPdu {
+    fn from(value: ClientDriveSetSecurityResponse) -> Self {
+        Self::ClientDriveSetSecurityResponse(value)
+    }
+}
+
+impl From<ClientDriveNotifyChangeDirectoryResponse> for RdpdrPdu {
+    fn from(value: ClientDriveNotifyChangeDirectoryResponse) -> Self {
+        Self::ClientDriveNotifyChangeDirectoryResponse(value)
     }
 }
 
