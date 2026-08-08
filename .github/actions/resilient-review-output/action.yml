@@ -58,6 +58,15 @@ runs:
         settings: ${{ inputs.settings }}
         prompt: ${{ inputs.prompt }}
 
+    - name: Remove untracked workspace package manifest
+      if: always()
+      shell: bash
+      run: |
+        if git ls-files --error-unmatch -- package.json >/dev/null 2>&1; then
+          exit 0
+        fi
+        rm -f -- package.json
+
     - id: validate-initial
       if: always()
       uses: actions/github-script@v8
@@ -107,6 +116,15 @@ runs:
         prompt: >-
           ${{ inputs.retry_prompt }}
           Trusted validation reason: ${{ steps.validate-initial.outputs.reason }}.
+
+    - name: Remove untracked workspace package manifest
+      if: always()
+      shell: bash
+      run: |
+        if git ls-files --error-unmatch -- package.json >/dev/null 2>&1; then
+          exit 0
+        fi
+        rm -f -- package.json
 
     - id: select
       if: always()

@@ -55,6 +55,12 @@ test("workflow does not overwrite github-script result outputs", () => {
   const resilientAction = fs.readFileSync(
     path.join(__dirname, "..", "actions", "resilient-review-output", "action.yml"), "utf8");
   assert.match(resilientAction, /--resume \$\{sessionId\}/);
+  assert.equal(
+    (resilientAction.match(/name: Remove untracked workspace package manifest/g) || []).length,
+    2,
+  );
+  assert.match(resilientAction, /if git ls-files --error-unmatch -- package\.json >\/dev\/null 2>&1; then/);
+  assert.match(resilientAction, /rm -f -- package\.json/);
 });
 
 test("workflow does not resolve or write state after cancellation", () => {
