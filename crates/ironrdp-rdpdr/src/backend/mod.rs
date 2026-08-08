@@ -16,6 +16,14 @@ use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
 
 /// Device redirection backend interface.
 pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
+    /// Indicates whether the backend implements the RDPDR security IRPs.
+    ///
+    /// The channel advertises the corresponding optional capability bits only
+    /// when this returns `true`.
+    fn supports_drive_security(&self) -> bool {
+        false
+    }
+
     /// Releases state associated with the current RDPDR initialization sequence.
     ///
     /// A Server Announce Request starts a new sequence. Stateful
