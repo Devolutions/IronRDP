@@ -39,9 +39,6 @@ windows = { version = "0.62", features = [
     "Win32_System_IO",
 ] }
 
-[dev-dependencies]
+[target.'cfg(windows)'.dev-dependencies]
 ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7" }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" }
-
-[lints]
-workspace = true
