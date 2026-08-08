@@ -9,16 +9,77 @@ use ironrdp_svc::SvcMessage;
 use crate::Rdpdr;
 use crate::pdu::RdpdrPdu;
 use crate::pdu::efs::{
-    DeviceCloseResponse, DeviceControlRequest, DeviceIoResponse, NtStatus, PrinterIoRequest,
-    ServerDeviceAnnounceResponse, ServerDriveIoRequest,
+    AnyIoCtlCode, DecodedDeviceControlRequest, DeviceCloseResponse, DeviceControlRequest, DeviceIoResponse, NtStatus,
+    PrinterIoRequest, ServerDeviceAnnounceResponse, ServerDriveIoRequest,
 };
 use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
 
-/// OS-specific device redirection backend interface.
+/// Device redirection backend interface.
 pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
+    /// Releases state associated with the current RDPDR initialization sequence.
+    ///
+    /// A Server Announce Request starts a new sequence. Stateful
+    /// implementations must override this method to discard deferred operations
+    /// before the channel restores configured drives and announces them again.
+    /// Stateless implementations may use the default.
+    fn reset(&mut self) -> PduResult<()> {
+        Ok(())
+    }
+
+    /// Restores backend state for a configured filesystem device after [`Self::reset`].
+    ///
+    /// The channel calls this before the device can be announced in the new
+    /// sequence.
+    fn restore_drive(&mut self, _device_id: u32) -> PduResult<()> {
+        Ok(())
+    }
+
+    /// Activates a filesystem device before its dynamic announcement.
+    ///
+    /// The channel validates that the device ID is not live and only sends an
+    /// announcement after this method succeeds.
+    fn add_drive(&mut self, _device_id: u32) -> PduResult<()> {
+        Err(ironrdp_pdu::pdu_other_err!(
+            "dynamic drive activation is not supported by this RDPDR backend"
+        ))
+    }
+
+    /// Releases a filesystem device before its removal announcement.
+    ///
+    /// The returned completions cancel any deferred IRPs and are sent before
+    /// the device removal PDU.
+    fn remove_drive(&mut self, _device_id: u32) -> PduResult<Vec<SvcMessage>> {
+        Err(ironrdp_pdu::pdu_other_err!(
+            "dynamic drive removal is not supported by this RDPDR backend"
+        ))
+    }
+
+    /// Handles the server result for a device announcement.
+    ///
+    /// A rejected filesystem device is never eligible for server I/O.
     fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()>;
     fn handle_scard_call(&mut self, req: DeviceControlRequest<ScardIoCtlCode>, call: ScardCall) -> PduResult<()>;
+
+    /// Handles a decoded filesystem IRP.
     fn handle_drive_io_request(&mut self, req: ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>>;
+
+    /// Handles a filesystem Device Control request and its exact opaque input.
+    ///
+    /// The default preserves the existing `handle_drive_io_request` contract
+    /// for backends that do not consume control input.
+    fn handle_drive_device_control(
+        &mut self,
+        req: DecodedDeviceControlRequest<AnyIoCtlCode>,
+    ) -> PduResult<Vec<SvcMessage>> {
+        self.handle_drive_io_request(ServerDriveIoRequest::DeviceControlRequest(req.request))
+    }
+
+    /// Drains completions for filesystem IRPs that were deferred by the backend.
+    ///
+    /// Implementations must return every completion only once.
+    fn poll_deferred_messages(&mut self) -> PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
+    }
 
     fn handle_user_logged_on(&mut self, _rdpdr: &mut Rdpdr) -> PduResult<Vec<SvcMessage>> {
         Ok(Vec::new())
