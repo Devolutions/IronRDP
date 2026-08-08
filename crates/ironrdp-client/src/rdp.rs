@@ -22,7 +22,9 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 #[cfg(any(feature = "dvc-pipe-proxy", all(windows, feature = "dvc-com-plugin")))]
 use ironrdp_pdu::pdu_other_err;
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
+#[cfg(feature = "clipboard")]
+use ironrdp_session::ActiveStage;
+use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
@@ -125,6 +127,7 @@ pub const RDP_INPUT_EVENT_QUEUE_CAPACITY: usize = 128;
 #[derive(Clone, Debug)]
 pub struct RdpInputSender {
     input_sender: mpsc::Sender<RdpInputEvent>,
+    #[cfg_attr(not(feature = "clipboard"), expect(dead_code))]
     clipboard_sender: mpsc::UnboundedSender<RdpInputEvent>,
     close_sender: watch::Sender<bool>,
     graceful_close_sender: watch::Sender<bool>,
@@ -838,11 +841,17 @@ async fn connect_rdcleanpath_transport(
         &mut framed,
         &mut connector,
         &mut network_client,
-        server_name.clone(),
-        destination,
-        rdcp.auth_token.clone(),
-        config.vm_id().zip(config.vmconnect_mode()),
-        config.kerberos_config.clone(),
+        RDCleanPathHandshakeParams {
+            server_name: server_name.clone(),
+            destination,
+            proxy_auth_token: rdcp.auth_token.clone(),
+            #[cfg(feature = "vmconnect")]
+            vmconnect: config
+                .vm_id()
+                .zip(config.vmconnect_mode())
+                .map(|(id, mode)| (id.to_owned(), mode)),
+            kerberos_config: config.kerberos_config.clone(),
+        },
     )
     .await?;
 
@@ -989,15 +998,20 @@ where
 
 // ── RDCleanPath handshake ─────────────────────────────────────────────────────
 
+struct RDCleanPathHandshakeParams {
+    server_name: ironrdp_connector::ServerName,
+    destination: String,
+    proxy_auth_token: String,
+    #[cfg(feature = "vmconnect")]
+    vmconnect: Option<(String, ironrdp_vmconnect::Mode)>,
+    kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
+}
+
 async fn rdcleanpath_handshake<S, N>(
     framed: &mut ironrdp_tokio::Framed<S>,
     connector: &mut ironrdp_connector::ClientConnector,
     network_client: &mut N,
-    server_name: ironrdp_connector::ServerName,
-    destination: String,
-    proxy_auth_token: String,
-    vmconnect: Option<(&str, ironrdp_vmconnect::Mode)>,
-    kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
+    params: RDCleanPathHandshakeParams,
 ) -> ConnectorResult<(ironrdp_tokio::Upgraded, Vec<u8>)>
 where
     S: ironrdp_tokio::FramedRead + FramedWrite,
@@ -1022,31 +1036,41 @@ where
         }
     }
 
+    let RDCleanPathHandshakeParams {
+        server_name,
+        destination,
+        proxy_auth_token,
+        #[cfg(feature = "vmconnect")]
+        vmconnect,
+        kerberos_config,
+    } = params;
+
+    #[cfg(feature = "vmconnect")]
+    let request_pcb_front = vmconnect.is_some();
+    #[cfg(not(feature = "vmconnect"))]
+    let request_pcb_front = false;
+
     let mut buf = WriteBuf::new();
     info!("Begin RDCleanPath connection procedure");
 
     {
-        let rdcleanpath_req = if let Some((vm_id, mode)) = vmconnect {
-            let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_string(vm_id, mode)?;
-            Ok(ironrdp_rdcleanpath::RDCleanPathPdu::new_request_with_pcb(
-                destination,
-                proxy_auth_token,
-                preconnection_blob,
-            ))
-        } else {
-            let ironrdp_connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
-                return Err(ironrdp_connector::general_err!(
-                    "invalid connector state (send request)"
-                ));
-            };
-            debug_assert!(connector.next_pdu_hint().is_none());
-            let written = connector.step_no_input(&mut buf)?;
-            let x224_pdu_len = written.size().expect("written size");
-            debug_assert_eq!(x224_pdu_len, buf.filled_len());
-            let x224_pdu = buf.filled().to_vec();
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, None)
-        }
-        .map_err(|e| ironrdp_connector::custom_err!("new RDCleanPath request", e))?;
+        let rdcleanpath_req = {
+            #[cfg(feature = "vmconnect")]
+            if let Some((vm_id, mode)) = vmconnect {
+                let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_string(&vm_id, mode)?;
+                ironrdp_rdcleanpath::RDCleanPathPdu::new_request_with_pcb(
+                    destination,
+                    proxy_auth_token,
+                    preconnection_blob,
+                )
+            } else {
+                build_ordinary_rdcleanpath_request(connector, &mut buf, destination, proxy_auth_token)?
+            }
+            #[cfg(not(feature = "vmconnect"))]
+            {
+                build_ordinary_rdcleanpath_request(connector, &mut buf, destination, proxy_auth_token)?
+            }
+        };
         debug!(
             destination = ?rdcleanpath_req.destination,
             has_preconnection_blob = rdcleanpath_req.preconnection_blob.is_some(),
@@ -1109,6 +1133,9 @@ where
             }
         };
 
+        let response_has_x224 = x224_connection_response.is_some();
+        ensure_rdcleanpath_front_mode(request_pcb_front, response_has_x224)?;
+
         let server_cert = server_cert_chain
             .into_iter()
             .next()
@@ -1125,35 +1152,82 @@ where
             .ok_or_else(|| ironrdp_connector::general_err!("subject public key BIT STRING is not aligned"))?
             .to_owned();
 
-        let upgraded = if let Some(x224_connection_response) = x224_connection_response {
-            let ironrdp_connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state
-            else {
-                return Err(ironrdp_connector::general_err!(
-                    "invalid connector state (wait confirm)"
-                ));
-            };
-            debug_assert!(connector.next_pdu_hint().is_some());
+        let upgraded = match x224_connection_response {
+            Some(x224_connection_response) => {
+                let ironrdp_connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state
+                else {
+                    return Err(ironrdp_connector::general_err!(
+                        "invalid connector state (wait confirm)"
+                    ));
+                };
+                debug_assert!(connector.next_pdu_hint().is_some());
 
-            buf.clear();
-            let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
-            debug_assert!(written.is_nothing());
+                buf.clear();
+                let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
+                debug_assert!(written.is_nothing());
 
-            let should_upgrade = ironrdp_tokio::skip_connect_begin(connector);
-            ironrdp_tokio::mark_as_upgraded(should_upgrade, connector)
-        } else {
-            ironrdp_vmconnect::connect_front(
-                ironrdp_vmconnect::pcb_sent_via_proxy(),
-                framed,
-                connector,
-                network_client,
-                server_name,
-                &server_public_key,
-                kerberos_config,
-            )
-            .await?
+                let should_upgrade = ironrdp_tokio::skip_connect_begin(connector);
+                ironrdp_tokio::mark_as_upgraded(should_upgrade, connector)
+            }
+            None => {
+                #[cfg(feature = "vmconnect")]
+                {
+                    ironrdp_vmconnect::connect_front(
+                        ironrdp_vmconnect::pcb_sent_via_proxy(),
+                        framed,
+                        connector,
+                        network_client,
+                        server_name,
+                        &server_public_key,
+                        kerberos_config,
+                    )
+                    .await?
+                }
+                #[cfg(not(feature = "vmconnect"))]
+                {
+                    let _ = (framed, network_client, server_name, kerberos_config);
+                    return Err(ironrdp_connector::general_err!(
+                        "RDCleanPath PCB-front response requires the vmconnect feature"
+                    ));
+                }
+            }
         };
 
         Ok((upgraded, server_public_key))
+    }
+}
+
+fn build_ordinary_rdcleanpath_request(
+    connector: &mut ironrdp_connector::ClientConnector,
+    buf: &mut WriteBuf,
+    destination: String,
+    proxy_auth_token: String,
+) -> ConnectorResult<ironrdp_rdcleanpath::RDCleanPathPdu> {
+    use ironrdp_connector::Sequence as _;
+
+    let ironrdp_connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
+        return Err(ironrdp_connector::general_err!(
+            "invalid connector state (send request)"
+        ));
+    };
+    debug_assert!(connector.next_pdu_hint().is_none());
+    let written = connector.step_no_input(buf)?;
+    let x224_pdu_len = written.size().expect("written size");
+    debug_assert_eq!(x224_pdu_len, buf.filled_len());
+    let x224_pdu = buf.filled().to_vec();
+    ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, None)
+        .map_err(|e| ironrdp_connector::custom_err!("new RDCleanPath request", e))
+}
+
+fn ensure_rdcleanpath_front_mode(request_pcb_front: bool, response_has_x224: bool) -> ConnectorResult<()> {
+    match (request_pcb_front, response_has_x224) {
+        (true, false) | (false, true) => Ok(()),
+        (true, true) => Err(ironrdp_connector::general_err!(
+            "RDCleanPath response includes X.224 for a PCB-front request"
+        )),
+        (false, false) => Err(ironrdp_connector::general_err!(
+            "RDCleanPath response missing X.224 for an ordinary request"
+        )),
     }
 }
 
@@ -1285,7 +1359,10 @@ async fn active_session(
                         process_clipboard_message(&mut active_stage, event)?
                     }
                     #[cfg(not(feature = "clipboard"))]
-                    unreachable!("clipboard receive is pending without the clipboard feature")
+                    {
+                        let _ = clipboard_event;
+                        unreachable!("clipboard receive is pending without the clipboard feature")
+                    }
                 }
                 input_event = input_event_receiver.recv() => {
                     let input_event = input_event.ok_or_else(|| ironrdp_session::general_err!("GUI is stopped"))?;

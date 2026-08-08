@@ -1265,6 +1265,7 @@ impl ConfigBuilder {
         clippy::missing_panics_doc,
         reason = "a panic here would be a bug (secrets are guaranteed present by missing()), not documented behavior"
     )]
+    #[cfg_attr(not(feature = "vmconnect"), expect(unused_mut))]
     pub fn build(mut self) -> anyhow::Result<Config> {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
         use ironrdp_pdu::rdp::client_info::TimezoneInfo;

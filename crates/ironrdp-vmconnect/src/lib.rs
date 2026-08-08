@@ -178,9 +178,11 @@ where
 ///
 /// CredSSP runs before X.224 and TLS is already up when this path is used. Clearing
 /// `enable_tls` / `enable_credssp` would make the later Negotiate Request advertise a protocol
-/// set that disagrees with the bytes already exchanged. Every embedder (client, FFI, web) goes
-/// through [`connect_front`], so this is the single choke point.
-fn prepare_connector(connector: &mut ClientConnector) -> ConnectorResult<()> {
+/// set that disagrees with the bytes already exchanged.
+///
+/// Call this before any pre-X.224 CredSSP path that does not go through [`connect_front`]
+/// (for example FFI `CredsspSequence::init_with_protocol`).
+pub fn prepare_connector(connector: &ClientConnector) -> ConnectorResult<()> {
     if !connector.config.enable_tls {
         return Err(reason_err!("vmconnect", "vmconnect requires TLS"));
     }
