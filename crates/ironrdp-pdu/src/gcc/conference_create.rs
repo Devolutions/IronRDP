@@ -164,7 +164,7 @@ impl<'de> Decode<'de> for ConferenceCreateRequest {
         if per::read_selection(src) != CONFERENCE_REQUEST_USER_DATA_SELECTION {
             return Err(invalid_field_err!(
                 "ConferenceCreateRequest::Selection",
-                "Got invalid ConferenceCreateRequest selection (expected UserData)",
+                "Got invalid ConferenceCreateRequest selection (expected UserData)"
             ));
         }
         // ConferenceCreateRequest::ConferenceName
@@ -178,7 +178,7 @@ impl<'de> Decode<'de> for ConferenceCreateRequest {
         if per::read_number_of_sets(src) != USER_DATA_NUMBER_OF_SETS {
             return Err(invalid_field_err!(
                 "ConferenceCreateRequest",
-                "Got invalid ConferenceCreateRequest number of sets (expected 1)",
+                "Got invalid ConferenceCreateRequest number of sets (expected 1)"
             ));
         }
         // select h221NonStandard
@@ -186,7 +186,7 @@ impl<'de> Decode<'de> for ConferenceCreateRequest {
         if per::read_choice(src) != USER_DATA_H221_NON_STANDARD_CHOICE {
             return Err(invalid_field_err!(
                 "ConferenceCreateRequest",
-                "Expected UserData H221NonStandard choice",
+                "Expected UserData H221NonStandard choice"
             ));
         }
         // h221NonStandard: client-to-server H.221 key, "Duca"
@@ -196,7 +196,7 @@ impl<'de> Decode<'de> for ConferenceCreateRequest {
         {
             return Err(invalid_field_err!(
                 "ConferenceCreateRequest",
-                "Got invalid H221NonStandard client-to-server key",
+                "Got invalid H221NonStandard client-to-server key"
             ));
         }
         // H221NonStandardIdentifier (octet string)
@@ -345,7 +345,7 @@ impl<'de> Decode<'de> for ConferenceCreateResponse {
         if per::read_u32(src).map_err(|e| other_err!("tag", source: e))? != CONFERENCE_RESPONSE_TAG {
             return Err(invalid_field_err!(
                 "ConferenceCreateResponse::tag",
-                "Got unexpected ConferenceCreateResponse tag",
+                "Got unexpected ConferenceCreateResponse tag"
             ));
         }
         // ConferenceCreateResponse::result (ENUMERATED)
@@ -354,14 +354,14 @@ impl<'de> Decode<'de> for ConferenceCreateResponse {
         {
             return Err(invalid_field_err!(
                 "ConferenceCreateResponse::result",
-                "Got invalid ConferenceCreateResponse result",
+                "Got invalid ConferenceCreateResponse result"
             ));
         }
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_number_of_sets(src) != USER_DATA_NUMBER_OF_SETS {
             return Err(invalid_field_err!(
                 "ConferenceCreateResponse",
-                "Got invalid ConferenceCreateResponse number of sets (expected 1)",
+                "Got invalid ConferenceCreateResponse number of sets (expected 1)"
             ));
         }
         // select h221NonStandard
@@ -369,7 +369,7 @@ impl<'de> Decode<'de> for ConferenceCreateResponse {
         if per::read_choice(src) != USER_DATA_H221_NON_STANDARD_CHOICE {
             return Err(invalid_field_err!(
                 "ConferenceCreateResponse",
-                "Expected UserData H221NonStandard choice",
+                "Expected UserData H221NonStandard choice"
             ));
         }
         // h221NonStandard, server-to-client H.221 key, "McDn"
@@ -379,7 +379,7 @@ impl<'de> Decode<'de> for ConferenceCreateResponse {
         {
             return Err(invalid_field_err!(
                 "ConferenceCreateResponse",
-                "Got invalid H221NonStandard server-to-client key",
+                "Got invalid H221NonStandard server-to-client key"
             ));
         }
         let (_gcc_blocks_buffer_length, _) = per::read_length(src).map_err(|e| other_err!("len", source: e))?;

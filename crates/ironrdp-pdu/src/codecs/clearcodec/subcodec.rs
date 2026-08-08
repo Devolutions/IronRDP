@@ -73,7 +73,7 @@ fn decode_single_subcodec<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<Subcodec
     let codec_id = SubcodecId::from_u8(codec_id_raw)?;
 
     if width == 0 || height == 0 {
-        return Err(invalid_field_err!("dimensions", "subcodec region has zero dimension"));
+        return Err(invalid_field_err!("dimensions", "subcodec region has zero dimension", in: src));
     }
 
     ensure_size!(ctx: Subcodec::NAME, in: src, size: bitmap_data_byte_count);

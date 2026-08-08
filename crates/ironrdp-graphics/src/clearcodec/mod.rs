@@ -56,7 +56,7 @@ impl ClearCodecDecoder {
         // Validate glyph index range per spec: 0..3999 inclusive
         if let Some(idx) = stream.glyph_index {
             if idx >= GLYPH_CACHE_WRAP {
-                return Err(invalid_field_err!("glyphIndex", "glyph index out of range 0-3999"));
+                return Err(invalid_field_err!("glyphIndex", "glyph index out of range 0-3999", in: src));
             }
         }
 
@@ -64,17 +64,17 @@ impl ClearCodecDecoder {
         let h = usize::from(height);
         let pixel_count = w
             .checked_mul(h)
-            .ok_or_else(|| invalid_field_err!("dimensions", "width * height overflow"))?;
+            .ok_or_else(|| invalid_field_err!("dimensions", "width * height overflow", in: src))?;
 
         // Handle glyph hit: return cached pixel data
         if stream.is_glyph_hit() {
             let glyph_index = stream
                 .glyph_index
-                .ok_or_else(|| invalid_field_err!("flags", "GLYPH_HIT without GLYPH_INDEX"))?;
+                .ok_or_else(|| invalid_field_err!("flags", "GLYPH_HIT without GLYPH_INDEX", in: src))?;
             let entry = self
                 .glyph_cache
                 .get(glyph_index)
-                .ok_or_else(|| invalid_field_err!("glyphIndex", "glyph cache miss on hit"))?;
+                .ok_or_else(|| invalid_field_err!("glyphIndex", "glyph cache miss on hit", in: src))?;
             // MS-RDPEGFX 4.1.1.5 stores a glyph as a dimensionless linear pixel stream, so the
             // destination rectangle supplies the shape and any rectangle of the same area is
             // valid (a glyph cached at 2x8 may be hit as 4x4). Only the pixel count has to
@@ -85,7 +85,8 @@ impl ClearCodecDecoder {
             if entry.pixels.len() / 4 != pixel_count {
                 return Err(invalid_field_err!(
                     "glyphIndex",
-                    "cached glyph area does not match destination"
+                    "cached glyph area does not match destination",
+                    in: src
                 ));
             }
             return Ok(entry.pixels.clone());
@@ -106,7 +107,7 @@ impl ClearCodecDecoder {
             return Err(invalid_field_err!(
                 "dimensions",
                 "width or height exceeds 8192-pixel decoder limit"
-            ));
+            , in: src));
         }
 
         // Decode composite payload

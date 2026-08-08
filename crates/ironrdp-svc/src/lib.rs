@@ -348,7 +348,7 @@ impl ChunkProcessor {
         let header: ironrdp_pdu::rdp::vc::ChannelPduHeader = decode_cursor(&mut cursor)?;
         let chunk = cursor.remaining();
         let expected_length = usize::try_from(header.length)
-            .map_err(|_| ironrdp_core::invalid_field_err!("length", "channel data length is too large"))?;
+            .map_err(|_| ironrdp_core::invalid_field_err!("length", "channel data length is too large", in: cursor))?;
         let first = header.flags.contains(ChannelControlFlags::FLAG_FIRST);
         let last = header.flags.contains(ChannelControlFlags::FLAG_LAST);
 
@@ -356,7 +356,8 @@ impl ChunkProcessor {
             if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && chunk.len() != expected_length {
                 return Err(ironrdp_core::invalid_field_err!(
                     "length",
-                    "unfragmented channel data does not match its declared length"
+                    "unfragmented channel data does not match its declared length",
+                    in: cursor
                 ));
             }
 
@@ -368,7 +369,8 @@ impl ChunkProcessor {
                 self.clear_sequence();
                 return Err(ironrdp_core::invalid_field_err!(
                     "flags",
-                    "received an initial channel fragment before completing the previous sequence"
+                    "received an initial channel fragment before completing the previous sequence",
+                    in: cursor
                 ));
             }
 
@@ -377,7 +379,8 @@ impl ChunkProcessor {
             self.clear_sequence();
             return Err(ironrdp_core::invalid_field_err!(
                 "length",
-                "received a channel fragment without a matching initial fragment"
+                "received a channel fragment without a matching initial fragment",
+                in: cursor
             ));
         }
 
@@ -387,7 +390,8 @@ impl ChunkProcessor {
             self.clear_sequence();
             return Err(ironrdp_core::invalid_field_err!(
                 "length",
-                "channel fragment sequence exceeds its declared length"
+                "channel fragment sequence exceeds its declared length",
+                in: cursor
             ));
         }
 
@@ -398,7 +402,8 @@ impl ChunkProcessor {
         let Some(sequence_length) = self.expected_length else {
             return Err(ironrdp_core::invalid_field_err!(
                 "flags",
-                "received a terminal channel fragment without an initial fragment"
+                "received a terminal channel fragment without an initial fragment",
+                in: cursor
             ));
         };
 
@@ -406,7 +411,8 @@ impl ChunkProcessor {
             self.clear_sequence();
             return Err(ironrdp_core::invalid_field_err!(
                 "length",
-                "terminal channel fragment does not match its declared length"
+                "terminal channel fragment does not match its declared length",
+                in: cursor
             ));
         }
 

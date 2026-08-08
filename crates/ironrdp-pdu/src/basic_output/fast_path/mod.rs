@@ -94,7 +94,7 @@ impl<'de> Decode<'de> for FastPathHeader {
         let flags = EncryptionFlags::from_bits_retain(header.get_bits(6..8));
 
         let (length, sizeof_length) = per::read_length(src).map_err(|e| {
-            DecodeError::invalid_field("", "length", "Invalid encoded fast path PDU length").with_source(e)
+            DecodeError::invalid_field("", "length", "Invalid encoded fast path PDU length", None).with_source(e)
         })?;
         let length = usize::from(length);
         if length < sizeof_length + Self::FIXED_PART_SIZE {

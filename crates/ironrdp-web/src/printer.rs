@@ -20,11 +20,10 @@
 //! [`SvcMessage`] layer prepends the correct RDPDR `SharedHeader`
 //! (`RDPDR_CTYP_CORE` + `PAKID_CORE_DEVICE_IOCOMPLETION`) automatically.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
-
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 use futures_channel::mpsc;
 use ironrdp::rdpdr::backend::RdpdrBackend;
@@ -443,11 +442,12 @@ pub(crate) fn wasm_printer_pair(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ironrdp::rdpdr::pdu::efs::{
         CreateDisposition, CreateOptions, DesiredAccess, DeviceCloseRequest, DeviceCreateRequest, DeviceIoRequest,
         DeviceWriteRequest, FileAttributes, MajorFunction, MinorFunction, SharedAccess,
     };
+
+    use super::*;
 
     const DEVICE_ID: u32 = 42;
 

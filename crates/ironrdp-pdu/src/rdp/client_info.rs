@@ -429,12 +429,12 @@ impl<'de> Decode<'de> for ClientAutoReconnect {
 
         let packet_length = src.read_u32();
         if packet_length != RECONNECT_COOKIE_CB_LEN {
-            return Err(invalid_field_err!("cbLen", "invalid auto-reconnect packet size"));
+            return Err(invalid_field_err!("cbLen", "invalid auto-reconnect packet size", in: src));
         }
 
         let version = src.read_u32();
         if version != RECONNECT_COOKIE_VERSION {
-            return Err(invalid_field_err!("Version", "invalid auto-reconnect version"));
+            return Err(invalid_field_err!("Version", "invalid auto-reconnect version", in: src));
         }
 
         let logon_id = src.read_u32();
