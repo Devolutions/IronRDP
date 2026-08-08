@@ -13,10 +13,17 @@ private `WindowsUdk.Security.Isolation` WinRT implementation to be registered on
 Call `SandboxRuntime::initialize` with the `Microsoft.WindowsAppRuntime.dll` from the installed
 Windows Sandbox package before creating a VM.
 
-An unpackaged executable is not currently sufficient: on the tested host,
-`WindowsAppRuntime_EnsureIsLoaded` returns `E_ACCESSDENIED` even when the process points at the
-installed package directory. Direct activation must therefore run from a compatible full-trust
-package-identity context before this crate can create a VM.
+On the tested host, the installed DLL has a conditional executable-mapping ACL requiring the
+`MicrosoftWindows.WindowsSandbox_cw5n1h2txyewy` package identity. An unpackaged process receives
+`E_ACCESSDENIED` from `LoadLibraryW` before `WindowsAppRuntime_EnsureIsLoaded` runs; that export is
+a no-op returning `S_OK`. An application with its own package identity does not receive the
+Sandbox package identity. Copying the DLL was useful only as a diagnostic and is not a supported
+or redistributable bootstrap strategy.
+
+`WindowsUdk.Security.Isolation.ManagedWindowsVM` is backed by the registered out-of-process WinRT
+server `C:\Windows\System32\ManagedWindowsVM.exe`. That server calls the private Container Manager
+(`Cms*`) APIs that create and run the underlying container. This crate invokes the private
+orchestration ABI; it does not replace the privileged container backend.
 
 ## Generated bindings
 
