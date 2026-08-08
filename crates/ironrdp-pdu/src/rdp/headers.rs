@@ -321,6 +321,16 @@ impl<'de> Decode<'de> for ShareControlHeader {
         };
 
         if pdu_type == ShareControlPduType::DataPdu {
+            // Servers get totalLength wrong in both directions. Some Windows versions append
+            // padding past the inner unit; VirtualBox's VRDP declares only the two headers of a
+            // Server Font Map PDU (18) and never counts its 8-byte body. An under-declared
+            // length is not a truncation — the inner PDU above has already decoded from bytes
+            // that were really present, and a genuinely short buffer fails there instead — so a
+            // server claiming *more* than we consumed is the only case with anything left to skip.
+            //
+            // Zero stays rejected. That is not a server undercounting its own body, it is a
+            // length field never filled in; the one legitimate use is the no-op empty Update /
+            // Pointer PDU, so that case is carved out rather than the check dropped.
             let header_length = header.size();
 
             let is_empty_output_pdu = matches!(
@@ -331,15 +341,12 @@ impl<'de> Decode<'de> for ShareControlHeader {
                 }) if data.is_empty()
             );
 
-            if header_length != total_length && !(total_length == 0 && is_empty_output_pdu) {
-                if total_length < header_length {
-                    return Err(not_enough_bytes_err!(total_length, header_length));
-                }
-
-                // Some Windows versions append padding that is not part of the inner unit.
+            if total_length > header_length {
                 let padding = total_length - header_length;
                 ensure_size!(in: src, size: padding);
                 read_padding!(src, padding);
+            } else if total_length == 0 && !is_empty_output_pdu {
+                return Err(not_enough_bytes_err!(total_length, header_length));
             }
         }
 

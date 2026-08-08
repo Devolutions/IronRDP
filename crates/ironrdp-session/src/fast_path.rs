@@ -139,6 +139,10 @@ pub struct Processor {
     /// repeatedly triggering redraw traffic.
     bitmap_recovery_requested: bool,
     bitmap_recovery_pending: bool,
+    /// How many bitmap rectangles have been discarded for a destination that
+    /// failed [`DecodedImage::bitmap_destination`]. Only used to rate-limit the
+    /// warning — see [`Processor::report_invalid_destination`].
+    invalid_destinations: u64,
     #[cfg(feature = "qoiz")]
     zdctx: zstd_safe::DCtx<'static>,
 }
@@ -158,6 +162,35 @@ impl Processor {
             self.bitmap_recovery_requested = true;
             self.bitmap_recovery_pending = true;
         }
+    }
+
+    /// Report a rectangle discarded by [`DecodedImage::bitmap_destination`],
+    /// with the geometry that failed and which of the three conditions it was.
+    ///
+    /// The bare "invalid declared destination" this replaces named neither the
+    /// rectangle nor the rule, so a reporter's log could say a session dropped
+    /// 53915 updates without saying what any of them looked like — there was
+    /// nothing to act on and no way to reproduce from it. Rate-limited because
+    /// that same log was 24 MB, over half of it this one line repeated.
+    fn report_invalid_destination(&mut self, rect: &InclusiveRectangle, width: u16, height: u16, fb: (u16, u16)) {
+        self.invalid_destinations += 1;
+        let n = self.invalid_destinations;
+        if n != 1 && n % 500 != 0 {
+            return;
+        }
+        let reason = invalid_destination_reason(rect, width, height, fb);
+        warn!(
+            "Ignoring bitmap update #{n}: {reason} — dest ({},{})-({},{}) is {}x{}, \
+             bitmap is {width}x{height}, framebuffer is {}x{}",
+            rect.left,
+            rect.top,
+            rect.right,
+            rect.bottom,
+            rect.width(),
+            rect.height(),
+            fb.0,
+            fb.1,
+        );
     }
 
     /// Process input fast path frame and return list of updates.
@@ -355,9 +388,10 @@ impl Processor {
 
         for update in bitmap_update.rectangles {
             trace!("{update:?}");
+            let fb = (image.width(), image.height());
             let Some(update_rectangle) = image.bitmap_destination(&update.rectangle, update.width, update.height)
             else {
-                warn!("Ignoring bitmap update with an invalid declared destination");
+                self.report_invalid_destination(&update.rectangle, update.width, update.height, fb);
                 self.request_bitmap_recovery();
                 continue;
             };
@@ -901,6 +935,7 @@ impl ProcessorBuilder {
             palette: Palette::system_default(),
             bitmap_recovery_requested: false,
             bitmap_recovery_pending: false,
+            invalid_destinations: 0,
             #[cfg(feature = "qoiz")]
             zdctx: zstd_safe::DCtx::default(),
         }
@@ -1065,6 +1100,21 @@ impl FrameMarkerProcessor {
     }
 }
 
+/// Which of [`DecodedImage::bitmap_destination`]'s conditions a discarded
+/// rectangle failed. Split out from the warning so it can be checked against
+/// the real gate rather than against a restatement of it.
+fn invalid_destination_reason(rect: &InclusiveRectangle, width: u16, height: u16, fb: (u16, u16)) -> &'static str {
+    if rect.left > rect.right || rect.top > rect.bottom {
+        "inverted rectangle"
+    } else if rect.right >= fb.0 || rect.bottom >= fb.1 {
+        "outside the framebuffer"
+    } else if width < rect.width() {
+        "bitmap narrower than its destination"
+    } else {
+        "bitmap shorter than its destination"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ironrdp_pdu::bitmap::{BitmapData, Compression};
@@ -1075,6 +1125,103 @@ mod tests {
     use ironrdp_graphics::rdp6::{BitmapStreamEncoder, RgbChannels};
 
     use super::*;
+
+    /// Every reason we print must describe a rectangle the gate really
+    /// rejects, and must name the condition that actually failed.
+    ///
+    /// The value of this line is that it tells you which of three rules bit,
+    /// so it is worth nothing if it can drift from the rule. Each case is
+    /// therefore asserted against `bitmap_destination` itself: if the gate is
+    /// relaxed and a case starts being accepted, the test fails rather than
+    /// leaving the message quietly describing something that no longer
+    /// happens. The last case is the one a VirtualBox reporter is hitting
+    /// tens of thousands of times per session (#422).
+    #[test]
+    fn every_discard_reason_matches_the_rule_that_rejected_it() {
+        let image = DecodedImage::new(PixelFormat::RgbA32, 100, 50);
+        let rect = |left, top, right, bottom| InclusiveRectangle {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        // (rectangle, bitmap width, bitmap height, expected reason)
+        let cases = [
+            (rect(10, 10, 5, 20), 16, 11, "inverted rectangle"),
+            (rect(90, 10, 100, 20), 16, 11, "outside the framebuffer"),
+            (rect(10, 10, 20, 60), 16, 51, "outside the framebuffer"),
+            (rect(10, 10, 30, 20), 8, 11, "bitmap narrower than its destination"),
+            (rect(10, 10, 20, 20), 16, 9, "bitmap shorter than its destination"),
+            (rect(10, 10, 20, 20), 16, 0, "bitmap shorter than its destination"),
+        ];
+        for (r, w, h, expected) in cases {
+            assert!(
+                image.bitmap_destination(&r, w, h).is_none(),
+                "case {r:?} {w}x{h} must actually be rejected, or the reason describes nothing",
+            );
+            assert_eq!(
+                invalid_destination_reason(&r, w, h, (image.width(), image.height())),
+                expected,
+                "wrong reason for {r:?} against a {w}x{h} bitmap",
+            );
+        }
+        // Rectangles the gate accepts must not reach the reporter at all —
+        // including a bitmap taller than its destination, which #422 changed
+        // from a discard into a normal update.
+        assert!(image.bitmap_destination(&rect(10, 10, 20, 20), 16, 11).is_some());
+        assert!(
+            image.bitmap_destination(&rect(10, 10, 20, 20), 16, 13).is_some(),
+            "a taller bitmap is applied now, so it is not a discard",
+        );
+    }
+
+    /// The counter that decides whether anything is printed at all has to be
+    /// driven by the real discard path, not just by calling the classifier.
+    ///
+    /// Rate limiting means a broken counter prints nothing rather than
+    /// printing something wrong, which is the failure mode that would go
+    /// unnoticed for a release — so this goes through `process_bitmap_update`
+    /// and checks the count moved, and that a valid rectangle leaves it alone.
+    #[test]
+    fn a_rejected_rectangle_is_counted_by_the_real_discard_path() {
+        let mut processor = ProcessorBuilder {
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            share_id: 1,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 64, 64);
+        let update = |bottom, height| BitmapUpdateData {
+            rectangles: vec![BitmapData {
+                rectangle: InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 3,
+                    bottom,
+                },
+                width: 4,
+                height,
+                bits_per_pixel: 32,
+                compression_flags: Compression::empty(),
+                compressed_data_header: None,
+                bitmap_data: &[0u8; 4 * 4 * 4],
+            }],
+        };
+
+        // Destination is 4 rows tall and the bitmap declares 2 — it cannot fill
+        // it. (A bitmap *taller* than its destination was the original example
+        // here; #422 made that a normal update, so it is no longer a discard.)
+        assert!(processor.process_bitmap_update(&mut image, update(3, 2)).is_ok());
+        assert_eq!(processor.invalid_destinations, 1, "the discard path must count it");
+
+        // Rectangles the gate accepts must not touch the counter — the exact
+        // size, and one row of surplus.
+        assert!(processor.process_bitmap_update(&mut image, update(3, 4)).is_ok());
+        assert!(processor.process_bitmap_update(&mut image, update(3, 5)).is_ok());
+        assert_eq!(processor.invalid_destinations, 1, "an accepted rectangle is not a discard");
+    }
 
     #[test]
     fn raw_bitmap_removes_byte_padding_without_changing_source_stride() {
