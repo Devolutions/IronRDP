@@ -454,11 +454,17 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channels: StaticChannelSet,
-    sound_factory: Option<Box<dyn SoundServerFactory>>,
-    cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+    // `Rc`, not `Box`: a future consumer of this connection-setup path (e.g.
+    // a candidate connection negotiating concurrently with the live one, which
+    // holds `&mut self` for its whole lifetime) can build its channels from a
+    // cheaply cloned reference to these instead of reaching through `self`.
+    // Set once at construction and never reassigned, so sharing them costs
+    // nothing at steady state.
+    sound_factory: Option<Rc<dyn SoundServerFactory>>,
+    cliprdr_factory: Option<Rc<dyn CliprdrServerFactory>>,
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
-    gfx_factory: Option<Box<dyn GfxServerFactory>>,
+    gfx_factory: Option<Rc<dyn GfxServerFactory>>,
     #[cfg(feature = "egfx")]
     gfx_handle: Option<crate::gfx::GfxServerHandle>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
@@ -580,6 +586,189 @@ enum RunState {
     DeactivationReactivation { desktop_size: DesktopSize },
 }
 
+/// The GFX server handle [`attach_channels_impl`] hands back, so the caller
+/// decides when to install it on `RdpServer::gfx_handle` — a type alias so the
+/// signature needs no `#[cfg]` variant of its own.
+#[cfg(feature = "egfx")]
+type AttachedGfxHandle = Option<crate::gfx::GfxServerHandle>;
+#[cfg(not(feature = "egfx"))]
+type AttachedGfxHandle = ();
+
+/// The channel-attaching half of connection setup, factored out of
+/// [`RdpServer::attach_channels`] into a free function that borrows its
+/// factories rather than reading `self`. This is what lets alternate
+/// connection-setup paths reuse the exact same channel wiring without
+/// requiring `&mut self` for the whole call.
+///
+/// Returns the GFX handle instead of writing it to a field, so the caller
+/// decides when (or whether) to install it.
+fn attach_channels_impl(
+    acceptor: &mut Acceptor,
+    cliprdr_factory: Option<&dyn CliprdrServerFactory>,
+    sound_factory: Option<&dyn SoundServerFactory>,
+    #[cfg(feature = "egfx")] gfx_factory: Option<&dyn GfxServerFactory>,
+    display: &Arc<Mutex<Box<dyn RdpServerDisplay>>>,
+    handler: &Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
+    echo_handle: &EchoServerHandle,
+) -> AttachedGfxHandle {
+    if let Some(cliprdr_factory) = cliprdr_factory {
+        let backend = cliprdr_factory.build_cliprdr_backend();
+
+        let cliprdr = CliprdrServer::new(backend);
+
+        acceptor.attach_static_channel(cliprdr);
+    }
+
+    if let Some(factory) = sound_factory {
+        let backend = factory.build_backend();
+
+        acceptor.attach_static_channel(RdpsndServer::new(backend));
+    }
+
+    let dcs_backend = DisplayControlBackend::new(Arc::clone(display));
+    let dvc = dvc::DrdynvcServer::new()
+        .with_dynamic_channel(AInputHandler {
+            handler: Arc::clone(handler),
+        })
+        .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
+
+    let dvc = {
+        let echo_handle = echo_handle.clone();
+        dvc.with_dynamic_channel(EchoDvcBridge::new(echo_handle))
+    };
+
+    #[cfg(feature = "egfx")]
+    let (dvc, gfx_handle) = {
+        let mut dvc = dvc;
+        let mut gfx_handle = None;
+        if let Some(gfx_factory) = gfx_factory {
+            if let Some((bridge, handle)) = gfx_factory.build_server_with_handle() {
+                gfx_handle = Some(handle);
+                dvc = dvc.with_dynamic_channel(bridge);
+            } else {
+                let handler = gfx_factory.build_gfx_handler();
+                let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(handler);
+                dvc = dvc.with_dynamic_channel(gfx_server);
+            }
+        }
+        (dvc, gfx_handle)
+    };
+    #[cfg(not(feature = "egfx"))]
+    let gfx_handle = ();
+
+    acceptor.attach_static_channel(dvc);
+
+    gfx_handle
+}
+
+/// Which transport a connection ended up on after
+/// [`negotiate_and_authenticate`], carrying the framed stream in the shape the
+/// finalize step needs. The three variants exist to preserve the three
+/// pre-existing finalize behaviours exactly.
+enum NegotiatedTransport<S> {
+    /// Never upgraded ([`RdpServerSecurity::None`]): finalize without a
+    /// stream shutdown, matching the old `BeginResult::Continue` arm.
+    Continued(TokioFramed<S>),
+    /// Upgraded in-band by us ([`TransportTls::Managed`]).
+    Tls(Box<TokioFramed<tokio_rustls::server::TlsStream<S>>>),
+    /// Already past TLS at a lower layer ([`TransportTls::AlreadyDone`]).
+    Offloaded(TokioFramed<S>),
+}
+
+/// Negotiate `stream` and, where the security mode provides it, AUTHENTICATE
+/// it — everything up to (but not including) `accept_finalize`.
+///
+/// A free function taking `&RdpServerSecurity` + `&mut Acceptor` rather than
+/// `&mut self`, so it can be driven without holding a mutable borrow of the
+/// whole server for the duration.
+///
+/// `Ok(None)` means the TLS handshake failed and was already logged — the
+/// caller should abandon the connection quietly rather than treat it as a
+/// connection error (preserving the pre-existing `return Ok(())` behaviour).
+async fn negotiate_and_authenticate<S>(
+    security: &RdpServerSecurity,
+    acceptor: &mut Acceptor,
+    stream: S,
+    tls: TransportTls,
+) -> Result<Option<NegotiatedTransport<S>>>
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    let framed = TokioFramed::new(stream);
+
+    let res = ironrdp_acceptor::accept_begin(framed, acceptor)
+        .await
+        .context("accept_begin failed")?;
+
+    match res {
+        // The only thing that varies between the two modes is who performs
+        // the TLS handshake; everything past it is identical.
+        BeginResult::ShouldUpgrade(stream) => {
+            let mut negotiated = match tls {
+                TransportTls::Managed => {
+                    let tls_acceptor = match security {
+                        RdpServerSecurity::Tls(acceptor) => acceptor,
+                        RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
+                        RdpServerSecurity::None => unreachable!(),
+                    };
+                    let accept = match tls_acceptor.accept(stream).await {
+                        Ok(accept) => accept,
+                        Err(e) => {
+                            warn!("Failed to TLS accept: {}", e);
+                            return Ok(None);
+                        }
+                    };
+                    NegotiatedTransport::Tls(Box::new(TokioFramed::new(accept)))
+                }
+                // The stream is already past TLS (terminated at a lower
+                // layer, e.g. a WSS terminator); do NOT call
+                // tls_acceptor.accept on it.
+                TransportTls::AlreadyDone => NegotiatedTransport::Offloaded(TokioFramed::new(stream)),
+            };
+
+            acceptor.mark_security_upgrade_as_done();
+
+            if let RdpServerSecurity::Hybrid((_, pub_key)) = security {
+                // Generic streams don't expose peer address. Use a neutral
+                // placeholder; it's unclear whether CredSSP/NTLM actually
+                // uses this value in practice.
+                let client_name = "rdp-client".to_owned();
+                let network_client = &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new();
+
+                match &mut negotiated {
+                    NegotiatedTransport::Tls(framed) => {
+                        ironrdp_acceptor::accept_credssp(
+                            framed.as_mut(),
+                            acceptor,
+                            network_client,
+                            client_name.into(),
+                            pub_key.clone(),
+                            None,
+                        )
+                        .await?;
+                    }
+                    NegotiatedTransport::Offloaded(framed) => {
+                        ironrdp_acceptor::accept_credssp(
+                            framed,
+                            acceptor,
+                            network_client,
+                            client_name.into(),
+                            pub_key.clone(),
+                            None,
+                        )
+                        .await?;
+                    }
+                    NegotiatedTransport::Continued(_) => unreachable!("ShouldUpgrade never yields Continued"),
+                }
+            }
+
+            Ok(Some(negotiated))
+        }
+
+        BeginResult::Continue(framed) => Ok(Some(NegotiatedTransport::Continued(framed))),
+    }
+}
+
 impl RdpServer {
     #[expect(
         clippy::too_many_arguments,
@@ -612,11 +801,11 @@ impl RdpServer {
             handler: Arc::new(Mutex::new(handler)),
             display: Arc::new(Mutex::new(display)),
             static_channels: StaticChannelSet::new(),
-            sound_factory,
-            cliprdr_factory,
+            sound_factory: sound_factory.map(Rc::from),
+            cliprdr_factory: cliprdr_factory.map(Rc::from),
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
-            gfx_factory,
+            gfx_factory: gfx_factory.map(Rc::from),
             #[cfg(feature = "egfx")]
             gfx_handle: None,
             ev_sender,
@@ -913,50 +1102,32 @@ impl RdpServer {
         self.gfx_handle.as_ref()
     }
 
+    #[cfg_attr(
+        not(feature = "egfx"),
+        expect(
+            unit_bindings,
+            clippy::let_unit_value,
+            reason = "attach_channels_impl yields a GFX handle only when `egfx` is enabled"
+        )
+    )]
     fn attach_channels(&mut self, acceptor: &mut Acceptor) {
-        if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
-            let backend = cliprdr_factory.build_cliprdr_backend();
-
-            let cliprdr = CliprdrServer::new(backend);
-
-            acceptor.attach_static_channel(cliprdr);
-        }
-
-        if let Some(factory) = self.sound_factory.as_deref() {
-            let backend = factory.build_backend();
-
-            acceptor.attach_static_channel(RdpsndServer::new(backend));
-        }
-
-        let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
-        let dvc = dvc::DrdynvcServer::new()
-            .with_dynamic_channel(AInputHandler {
-                handler: Arc::clone(&self.handler),
-            })
-            .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
-
-        let dvc = {
-            let echo_handle = self.echo_handle.clone();
-            dvc.with_dynamic_channel(EchoDvcBridge::new(echo_handle))
-        };
-
+        let gfx_handle = attach_channels_impl(
+            acceptor,
+            self.cliprdr_factory.as_deref(),
+            self.sound_factory.as_deref(),
+            #[cfg(feature = "egfx")]
+            self.gfx_factory.as_deref(),
+            &self.display,
+            &self.handler,
+            &self.echo_handle,
+        );
         #[cfg(feature = "egfx")]
-        let dvc = {
-            let mut dvc = dvc;
-            if let Some(gfx_factory) = self.gfx_factory.as_deref() {
-                if let Some((bridge, handle)) = gfx_factory.build_server_with_handle() {
-                    self.gfx_handle = Some(handle);
-                    dvc = dvc.with_dynamic_channel(bridge);
-                } else {
-                    let handler = gfx_factory.build_gfx_handler();
-                    let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(handler);
-                    dvc = dvc.with_dynamic_channel(gfx_server);
-                }
-            }
-            dvc
-        };
-
-        acceptor.attach_static_channel(dvc);
+        {
+            self.gfx_handle = gfx_handle;
+        }
+        // Without `egfx` there is no handle to install; consume the unit.
+        #[cfg(not(feature = "egfx"))]
+        let () = gfx_handle;
     }
 
     /// Run a single RDP connection over `stream`, performing the
@@ -1056,8 +1227,6 @@ impl RdpServer {
         // `set_display_suppressed_handle()`.
         self.display_suppressed.store(false, Ordering::Relaxed);
 
-        let framed = TokioFramed::new(stream);
-
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
         let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities, self.creds.clone());
@@ -1065,80 +1234,53 @@ impl RdpServer {
 
         self.attach_channels(&mut acceptor);
 
-        let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
-            .await
-            .context("accept_begin failed")?;
+        let Some(negotiated) = negotiate_and_authenticate(&self.opts.security, &mut acceptor, stream, tls).await?
+        else {
+            return Ok(());
+        };
 
-        match res {
-            // The only thing that varies between the two modes is who performs
-            // the TLS handshake; everything past it is `finalize_after_upgrade`.
-            BeginResult::ShouldUpgrade(stream) => match tls {
-                TransportTls::Managed => {
-                    let tls_acceptor = match &self.opts.security {
-                        RdpServerSecurity::Tls(acceptor) => acceptor,
-                        RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
-                        RdpServerSecurity::None => unreachable!(),
-                    };
-                    let accept = match tls_acceptor.accept(stream).await {
-                        Ok(accept) => accept,
-                        Err(e) => {
-                            warn!("Failed to TLS accept: {}", e);
-                            return Ok(());
-                        }
-                    };
-                    self.finalize_after_upgrade(TokioFramed::new(accept), acceptor, "TLS connection")
-                        .await?;
-                }
-                TransportTls::AlreadyDone => {
-                    // The stream is already past TLS (terminated at a lower
-                    // layer, e.g. a WSS terminator); do NOT call
-                    // tls_acceptor.accept on it.
-                    self.finalize_after_upgrade(TokioFramed::new(stream), acceptor, "TLS-offloaded stream")
-                        .await?;
-                }
-            },
+        self.finalize_negotiated(negotiated, acceptor).await
+    }
 
-            BeginResult::Continue(framed) => {
+    /// Finalize a connection that has already negotiated (and, under Hybrid,
+    /// authenticated) via [`negotiate_and_authenticate`], then shut its stream
+    /// down. Single-sourcing this is what keeps the managed, TLS-offloaded and
+    /// no-security paths structurally identical past the handshake, so
+    /// per-connection state handling cannot drift between them.
+    async fn finalize_negotiated<S>(&mut self, negotiated: NegotiatedTransport<S>, acceptor: Acceptor) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
+    {
+        match negotiated {
+            // No security upgrade happened, so there is no TLS session to shut
+            // down — matches the pre-existing `BeginResult::Continue` arm.
+            NegotiatedTransport::Continued(framed) => {
                 self.accept_finalize(framed, acceptor).await?;
             }
-        };
+            NegotiatedTransport::Tls(framed) => {
+                self.finalize_and_shutdown(*framed, acceptor, "TLS connection").await?;
+            }
+            NegotiatedTransport::Offloaded(framed) => {
+                self.finalize_and_shutdown(framed, acceptor, "TLS-offloaded stream")
+                    .await?;
+            }
+        }
 
         Ok(())
     }
 
-    /// Shared post-handshake tail for both [`TransportTls`] modes: mark the
-    /// security upgrade complete, run the optional Hybrid CredSSP exchange,
-    /// finalize, and shut the stream down. Single-sourcing this is what keeps
-    /// the managed and TLS-offloaded paths structurally identical past the
-    /// handshake, so per-connection state handling cannot drift between them.
-    async fn finalize_after_upgrade<S>(
+    /// Finalize an upgraded stream and shut it down afterwards. The
+    /// negotiation and authentication that used to precede this now live in
+    /// [`negotiate_and_authenticate`].
+    async fn finalize_and_shutdown<S>(
         &mut self,
-        mut framed: TokioFramed<S>,
-        mut acceptor: Acceptor,
+        framed: TokioFramed<S>,
+        acceptor: Acceptor,
         shutdown_label: &str,
     ) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
-        acceptor.mark_security_upgrade_as_done();
-
-        if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
-            // Generic streams don't expose peer address. Use a neutral
-            // placeholder; it's unclear whether CredSSP/NTLM actually
-            // uses this value in practice.
-            let client_name = "rdp-client".to_owned();
-
-            ironrdp_acceptor::accept_credssp(
-                &mut framed,
-                &mut acceptor,
-                &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
-                client_name.into(),
-                pub_key.clone(),
-                None,
-            )
-            .await?;
-        }
-
         let framed = self.accept_finalize(framed, acceptor).await?;
         debug!("Shutting down {}", shutdown_label);
         let (mut inner, _) = framed.into_inner();
