@@ -1,8 +1,8 @@
 use expect_test::expect;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::nego::{
-    ConnectionConfirm, ConnectionRequest, Cookie, FailureCode, NegoRequestData, RequestFlags, ResponseFlags,
-    RoutingToken, SecurityProtocol,
+    ConnectionConfirm, ConnectionRequest, Cookie, CorrelationInfo, FailureCode, NegoRequestData, RequestFlags,
+    ResponseFlags, RoutingToken, SecurityProtocol,
 };
 use ironrdp_pdu::tpdu::{TpduCode, TpduHeader};
 use ironrdp_pdu::tpkt::TpktHeader;
@@ -79,6 +79,7 @@ encode_decode_test! {
             nego_data: None,
             flags: RequestFlags::empty(),
             protocol: SecurityProtocol::empty(),
+            correlation_info: None,
         }),
         [
             // tpkt header
@@ -100,6 +101,7 @@ encode_decode_test! {
             nego_data: Some(NegoRequestData::Cookie(Cookie("User".to_owned()))),
             flags: RequestFlags::empty(),
             protocol: SecurityProtocol::empty(),
+            correlation_info: None,
         }),
         [
             // tpkt header
@@ -123,6 +125,7 @@ encode_decode_test! {
             nego_data: Some(NegoRequestData::Cookie(Cookie("User".to_owned()))),
             flags: RequestFlags::empty(),
             protocol: SecurityProtocol::HYBRID | SecurityProtocol::SSL,
+            correlation_info: None,
         }),
         [
             // tpkt header
@@ -146,6 +149,7 @@ encode_decode_test! {
             nego_data: Some(NegoRequestData::Cookie(Cookie("User".to_owned()))),
             flags: RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED | RequestFlags::REDIRECTED_AUTHENTICATION_MODE_REQUIRED,
             protocol: SecurityProtocol::HYBRID | SecurityProtocol::SSL,
+            correlation_info: None,
         }),
         [
             // tpkt header
@@ -166,6 +170,30 @@ encode_decode_test! {
             0x03, // flags
             0x08, 0x00, // length
             0x03, 0x00, 0x00, 0x00, // request message
+        ];
+
+    nego_connection_request_with_correlation_info:
+        X224(ConnectionRequest {
+            nego_data: None,
+            flags: RequestFlags::CORRELATION_INFO_PRESENT,
+            protocol: SecurityProtocol::SSL,
+            correlation_info: Some(CorrelationInfo {
+                correlation_id: [0x01; 16],
+            }),
+        }),
+        [
+            // tpkt header
+            0x03, 0x00, 0x00, 0x37,
+            // tpdu header
+            0x32, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            // RDP_NEG_REQ
+            0x01, 0x08, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
+            // RDP_NEG_CORRELATION_INFO
+            0x06, 0x00, 0x24, 0x00,
+            0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+            0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
 
     nego_confirm_response:
@@ -212,6 +240,65 @@ encode_decode_test! {
             0x08, 0x00, // length
             0x06, 0x00, 0x00, 0x00, // failure code
         ];
+}
+
+#[test]
+fn nego_connection_request_rejects_invalid_correlation_info() {
+    let valid = ironrdp_core::encode_vec(&X224(ConnectionRequest {
+        nego_data: None,
+        flags: RequestFlags::CORRELATION_INFO_PRESENT,
+        protocol: SecurityProtocol::SSL,
+        correlation_info: Some(CorrelationInfo {
+            correlation_id: [0x01; 16],
+        }),
+    }))
+    .unwrap();
+
+    // TPKT (4 bytes) + X.224 connection request header (7 bytes) +
+    // RDP_NEG_REQ (8 bytes).
+    const CORRELATION_INFO_OFFSET: usize = 19;
+
+    let mut invalid_type = valid.clone();
+    invalid_type[CORRELATION_INFO_OFFSET] = 0x05;
+    assert!(ironrdp_core::decode::<X224<ConnectionRequest>>(&invalid_type).is_err());
+
+    let mut invalid_flags = valid.clone();
+    invalid_flags[CORRELATION_INFO_OFFSET + 1] = 0x01;
+    assert!(ironrdp_core::decode::<X224<ConnectionRequest>>(&invalid_flags).is_err());
+
+    let mut invalid_length = valid.clone();
+    invalid_length[CORRELATION_INFO_OFFSET + 2] = 0x23;
+    assert!(ironrdp_core::decode::<X224<ConnectionRequest>>(&invalid_length).is_err());
+
+    let mut invalid_reserved = valid;
+    invalid_reserved[CORRELATION_INFO_OFFSET + 20] = 0x01;
+    assert!(ironrdp_core::decode::<X224<ConnectionRequest>>(&invalid_reserved).is_err());
+}
+
+#[test]
+fn nego_connection_request_rejects_truncated_negotiation_request() {
+    const RDP_NEG_REQ_PREFIX: [u8; 7] = [0x01, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00];
+
+    for truncated_size in 1..=RDP_NEG_REQ_PREFIX.len() {
+        let mut payload = vec![
+            // tpkt header
+            0x03,
+            0x00,
+            0x00,
+            u8::try_from(11 + truncated_size).expect("TPKT size fits in u8"),
+            // tpdu header
+            u8::try_from(6 + truncated_size).expect("TPDU size fits in u8"),
+            0xE0,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+        payload.extend_from_slice(&RDP_NEG_REQ_PREFIX[..truncated_size]);
+
+        assert!(ironrdp_core::decode::<X224<ConnectionRequest>>(&payload).is_err());
+    }
 }
 
 #[test]
