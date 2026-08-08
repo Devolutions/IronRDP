@@ -193,6 +193,17 @@ pub struct Config {
     /// computers.
     #[doc(alias("enable_nla", "nla"))]
     pub enable_credssp: bool,
+    /// Allow Standard RDP Security (`PROTOCOL_RDP`, empty X.224 flags).
+    ///
+    /// When both [`enable_tls`](Self::enable_tls) and [`enable_credssp`](Self::enable_credssp) are
+    /// `false`, the connector would otherwise advertise no enhanced protocols. IronRDP only supports
+    /// the `ENCRYPTION_LEVEL_NONE` variant of standard RDP security (no RC4 Security Exchange), which
+    /// is appropriate for trusted local transports such as Windows Sandbox named pipes — not for
+    /// ordinary TCP sessions.
+    ///
+    /// Defaults should stay `false`. Enable this only for known-local paths that opt in explicitly
+    /// (e.g. `Transport::NamedPipe`).
+    pub enable_standard_rdp_security: bool,
     pub credentials: Credentials,
     pub domain: Option<String>,
     /// The build number of the client.

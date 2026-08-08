@@ -7,3 +7,8 @@
 pub mod cli;
 
 pub(crate) mod help;
+
+#[cfg(windows)]
+pub(crate) mod sandbox;
+#[cfg(windows)]
+pub(crate) mod sandbox_grpc;

@@ -108,6 +108,30 @@ enum Command {
     },
     /// Execute commands over the session's NOW DVC endpoint.
     Now(NowArgs),
+    /// Windows Sandbox lifecycle helpers (list/config/stop via WindowsSandboxServer gRPC).
+    #[cfg(windows)]
+    Sandbox(SandboxArgs),
+}
+
+#[cfg(windows)]
+#[derive(Args, Debug)]
+struct SandboxArgs {
+    #[command(subcommand)]
+    command: SandboxCommand,
+}
+
+#[cfg(windows)]
+#[derive(Subcommand, Debug)]
+enum SandboxCommand {
+    /// List running sandbox ids (`EnumerateSandboxVMs`).
+    List,
+    /// Show RDP config for a sandbox (password redacted).
+    Config {
+        /// Sandbox id from `wsb start` / `sandbox list`.
+        id: String,
+    },
+    /// Shut down a running sandbox (`ShutdownSandbox`).
+    Stop { id: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -313,6 +337,16 @@ struct ConnectArgs {
     /// verbosity up-front when troubleshooting a connection.
     #[arg(long)]
     log_directive: Option<String>,
+    /// Connect to a running Windows Sandbox by id (fetches pipe path + creds via gRPC).
+    /// Prefer creating the VM with `wsb start` first.
+    #[cfg(windows)]
+    #[arg(long, value_name = "GUID", conflicts_with_all = ["server", "sandbox_pipe"])]
+    sandbox_id: Option<String>,
+    /// Low-level escape hatch: connect over a Windows Sandbox named pipe path
+    /// (`\\.\pipe\{VMId}` or bare VMId). Requires `--username` / `--password`.
+    #[cfg(windows)]
+    #[arg(long, value_name = "PIPE", conflicts_with = "server")]
+    sandbox_pipe: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -464,6 +498,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             return Ok(());
         }
         Command::Connect(args) => build_connect_request(args)?,
+        #[cfg(windows)]
+        Command::Sandbox(args) => {
+            return run_sandbox_command(args);
+        }
         Command::Disconnect => Request::Disconnect,
         Command::Status => Request::Status,
         Command::QueryProps(args) => Request::QueryProps {
@@ -554,10 +592,71 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
         properties.set_domain(domain);
     }
 
+    #[cfg(windows)]
+    {
+        // Sandbox defaults are the base; explicit .rdp / --prop / named flags win on conflict.
+        // Transport/security invariants from the sandbox path are re-applied last so a file
+        // cannot force TLS/CredSSP onto a NamedPipe session.
+        if let Some(sandbox_id) = args.sandbox_id {
+            let sandbox_props =
+                crate::sandbox::properties_for_sandbox_id(&sandbox_id).context("resolve Windows Sandbox RDP config")?;
+            let mut merged = sandbox_props;
+            merged.merge(&properties);
+            crate::sandbox::reassert_named_pipe_security(&mut merged);
+            properties = merged;
+        } else if let Some(pipe) = args.sandbox_pipe {
+            let user = properties
+                .username()
+                .map(str::to_owned)
+                .context("--sandbox-pipe requires --username (or username in the .rdp file)")?;
+            let pass = properties
+                .clear_text_password()
+                .map(str::to_owned)
+                .context("--sandbox-pipe requires --password (or ClearTextPassword in the .rdp file)")?;
+            let mut merged = crate::sandbox::properties_for_pipe(&pipe, &user, &pass);
+            merged.merge(&properties);
+            // Keep the explicit pipe path and plain-security defaults after user overrides.
+            merged.set_named_pipe(if pipe.starts_with(r"\\.\pipe\") || pipe.starts_with(r"\\?\pipe\") {
+                pipe
+            } else {
+                format!(r"\\.\pipe\{pipe}")
+            });
+            crate::sandbox::reassert_named_pipe_security(&mut merged);
+            properties = merged;
+        }
+    }
+
     Ok(Request::Connect {
         properties,
         log_directive: args.log_directive,
     })
+}
+
+#[cfg(windows)]
+fn run_sandbox_command(args: SandboxArgs) -> anyhow::Result<()> {
+    match args.command {
+        SandboxCommand::List => {
+            let ids = crate::sandbox::list_sandbox_ids().context("list Windows sandboxes")?;
+            if ids.is_empty() {
+                println!("(no running sandboxes)");
+            } else {
+                for id in ids {
+                    println!("{id}");
+                }
+            }
+            Ok(())
+        }
+        SandboxCommand::Config { id } => {
+            let cfg = crate::sandbox::get_rdp_config(&id).context("get sandbox RDP config")?;
+            crate::sandbox::print_config_summary(&cfg);
+            Ok(())
+        }
+        SandboxCommand::Stop { id } => {
+            crate::sandbox::stop_sandbox(&id).context("stop sandbox")?;
+            println!("stopped {id}");
+            Ok(())
+        }
+    }
 }
 
 async fn run_now(endpoint: &Endpoint, args: NowArgs) -> anyhow::Result<Option<u32>> {

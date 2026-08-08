@@ -29,14 +29,28 @@ ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" }
 ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.1" }
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "rt"] }
 
 # CLI
 clap = { version = "4.6", features = ["derive", "cargo", "env"] }
 
 # Utils
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+# Windows Sandbox control plane: gRPC/HTTP2 over a per-user named pipe.
+bytes = "1"
+h2 = "0.4"
+http = "1"
+md-5 = "0.10"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
 
 [lints]
 workspace = true

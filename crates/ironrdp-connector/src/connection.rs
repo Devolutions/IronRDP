@@ -309,10 +309,22 @@ impl ClientConnector {
             security_protocol.insert(nego::SecurityProtocol::SSL);
         }
         if self.config.enable_credssp {
+            // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
+            // PROTOCOL_HYBRID "SHOULD" also set PROTOCOL_SSL, but it is not a MUST.
+            // IronRDP intentionally omits SSL unless enable_tls is set so the server
+            // cannot silently downgrade NLA to TLS-only.
             security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
         }
+
+        // PROTOCOL_RDP (empty flags) is standard RDP security. IronRDP only supports the
+        // ENCRYPTION_LEVEL_NONE variant (no RC4 Security Exchange). Keep it opt-in so
+        // `enable_tls = false` + `enable_credssp = false` cannot silently open a plaintext
+        // TCP session; local named-pipe transports set `enable_standard_rdp_security`.
         if security_protocol.is_standard_rdp_security() {
-            return Err(reason_err!("Initiation", "standard RDP security is not supported"));
+            if !self.config.enable_standard_rdp_security {
+                return Err(reason_err!("Initiation", "standard RDP security is not supported"));
+            }
+            debug!("Advertising standard RDP security (PROTOCOL_RDP / no enhanced protocols)");
         }
 
         Ok(security_protocol)
@@ -780,7 +792,14 @@ impl Sequence for ClientConnector {
 
                 info!(?selected_protocol, ?flags, "Server confirmed connection");
 
-                if !selected_protocol.intersects(requested_protocol) {
+                // PROTOCOL_RDP is encoded as an empty bitset. `intersects` is false for two empty
+                // sets, so treat standard RDP security as a special case.
+                let protocol_ok = if selected_protocol.is_standard_rdp_security() {
+                    requested_protocol.is_standard_rdp_security()
+                } else {
+                    selected_protocol.intersects(requested_protocol)
+                };
+                if !protocol_ok {
                     return Err(reason_err!(
                         "Initiation",
                         "client advertised {requested_protocol}, but server selected {selected_protocol}",
@@ -794,10 +813,14 @@ impl Sequence for ClientConnector {
             }
 
             //== Upgrade to Enhanced RDP Security ==//
-            // NOTE: we assume the selected protocol is never the standard RDP security (RC4).
-            // User code should match this variant and perform the appropriate upgrade (TLS handshake, etc).
+            // When PROTOCOL_RDP is selected there is no TLS/CredSSP front-end: the caller should
+            // still invoke mark_security_upgrade_as_done() (a no-op upgrade) before continuing.
+            // When SSL/HYBRID is selected, user code must perform the TLS handshake first.
             ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => {
-                let next_state = if selected_protocol
+                let next_state = if selected_protocol.is_standard_rdp_security() {
+                    debug!("Standard RDP security selected; skipping TLS and CredSSP");
+                    ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
+                } else if selected_protocol
                     .intersects(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX)
                 {
                     debug!("Begin NLA using CredSSP");
@@ -929,9 +952,10 @@ impl Sequence for ClientConnector {
             }
 
             //== RDP Security Commencement ==//
-            // When using standard RDP security (RC4), a Security Exchange PDU is sent at this point.
-            // However, IronRDP does not support this unsecure security protocol (purposefully) and
-            // this part of the sequence is not implemented.
+            // With standard RDP security and ENCRYPTION_LEVEL_NONE, no Security Exchange PDU is
+            // sent (MS-RDPBCGR 5.3.2). IronRDP only supports that no-encryption path; RC4/FIPS
+            // would require a Security Exchange here and is rejected earlier when the server's
+            // SC_SECURITY block is not ServerSecurityData::no_security().
             //==============================//
 
             //== Secure Settings Exchange ==//
