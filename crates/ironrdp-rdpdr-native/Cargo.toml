@@ -14,6 +14,7 @@ categories.workspace = true
 
 [lib]
 doctest = false
+test = false
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
@@ -37,6 +38,10 @@ windows = { version = "0.62", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
 ] }
+
+[dev-dependencies]
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7" }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" }
 
 [lints]
 workspace = true

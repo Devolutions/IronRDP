@@ -588,7 +588,7 @@ mod tests {
 
         let set = ServerDriveSetInformationRequest {
             device_io_request: request_header(file_id, MajorFunction::SetInformation),
-            set_buffer: FileInformationClass::EndOfFile(FileEndOfFileInformation { end_of_file: 3 }),
+            set_buffer: FileInformationClass::EndOfFile(FileEndOfFileInformation { end_of_file: 5 }),
         };
         let set_response = backend
             .handle_drive_io_request(ServerDriveIoRequest::ServerDriveSetInformationRequest(set))
@@ -596,7 +596,7 @@ mod tests {
         assert_eq!(response_status(&set_response), NtStatus::SUCCESS);
         assert_eq!(
             std::fs::read(fixture.root.join("root").join("report.txt")).expect("read test file"),
-            b"hel"
+            b"hello"
         );
 
         let close_response = backend
