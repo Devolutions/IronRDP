@@ -397,6 +397,14 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
             ));
         };
 
+        if variable_part_rest_size > 0 && variable_part_rest_size < usize::from(Self::RDP_NEG_REQ_SIZE) {
+            return Err(invalid_field_err!(
+                Self::NAME,
+                "TPDU header variable part",
+                "has a truncated negotiation request"
+            ));
+        }
+
         if variable_part_rest_size >= usize::from(Self::RDP_NEG_REQ_SIZE) {
             let msg_type = NegoMsgType::from(src.read_u8());
 

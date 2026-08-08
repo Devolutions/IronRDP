@@ -276,6 +276,32 @@ fn nego_connection_request_rejects_invalid_correlation_info() {
 }
 
 #[test]
+fn nego_connection_request_rejects_truncated_negotiation_request() {
+    const RDP_NEG_REQ_PREFIX: [u8; 7] = [0x01, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00];
+
+    for truncated_size in 1..=RDP_NEG_REQ_PREFIX.len() {
+        let mut payload = vec![
+            // tpkt header
+            0x03,
+            0x00,
+            0x00,
+            u8::try_from(11 + truncated_size).expect("TPKT size fits in u8"),
+            // tpdu header
+            u8::try_from(6 + truncated_size).expect("TPDU size fits in u8"),
+            0xE0,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+        payload.extend_from_slice(&RDP_NEG_REQ_PREFIX[..truncated_size]);
+
+        assert!(ironrdp_core::decode::<X224<ConnectionRequest>>(&payload).is_err());
+    }
+}
+
+#[test]
 fn nego_request_unexpected_rdp_msg_type() {
     let payload = [
         // tpkt header
