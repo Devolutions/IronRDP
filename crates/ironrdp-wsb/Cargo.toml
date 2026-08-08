@@ -1,0 +1,25 @@
+[package]
+name = "ironrdp-wsb"
+version = "0.1.0"
+readme = "README.md"
+description = "Experimental Windows Sandbox UDK lifecycle bindings for IronRDP"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_System_LibraryLoader", "Win32_System_WinRT"] }
+windows-collections = "0.3"
+windows-core = "0.62"
+windows-future = "0.3"
+
+[lints]
+workspace = true
