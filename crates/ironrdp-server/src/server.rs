@@ -1468,6 +1468,26 @@ impl RdpServer {
                         let request = ad.send_rtt_request(now_ms);
                         let data = encode_autodetect_request(request, message_channel_id, user_channel_id)?;
                         writer.write_all(&data).await?;
+
+                        // Report the measured characteristics back to the client so it
+                        // can size its receive buffers ([MS-RDPBCGR] 2.2.14.1.5). Skipped
+                        // until RTT samples exist; the client does not reply. The emission
+                        // cadence follows the caller's request cadence.
+                        if let Some(result) = ad.build_netchar_result() {
+                            let data = encode_autodetect_request(result, message_channel_id, user_channel_id)?;
+                            writer.write_all(&data).await?;
+                        }
+
+                        // Periodically measure bandwidth: Start → Payload → Stop sent
+                        // back-to-back so the client counts only the payload window, then
+                        // replies with a Bandwidth Measure Results PDU. The measured value
+                        // upgrades the next characteristics result to the all-fields form.
+                        if let Some(bw_pdus) = ad.build_bandwidth_measure() {
+                            for pdu in bw_pdus {
+                                let data = encode_autodetect_request(pdu, message_channel_id, user_channel_id)?;
+                                writer.write_all(&data).await?;
+                            }
+                        }
                     }
                 }
             }

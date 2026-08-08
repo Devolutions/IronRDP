@@ -1,4 +1,4 @@
-use ironrdp_pdu::rdp::autodetect::AutoDetectResponse;
+use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
 use ironrdp_server::autodetect::AutoDetectManager;
 
 #[test]
@@ -58,6 +58,81 @@ fn snapshot_reflects_measurements() {
     assert_eq!(snap.min_ms, 10);
     assert_eq!(snap.max_ms, 30);
     assert_eq!(snap.avg_ms, 20);
+}
+
+#[test]
+fn netchar_result_none_without_measurements() {
+    let mut mgr = AutoDetectManager::new();
+    assert!(
+        mgr.build_netchar_result().is_none(),
+        "no result should be produced before any RTT sample"
+    );
+}
+
+#[test]
+fn netchar_result_reports_measured_rtt() {
+    let mut mgr = AutoDetectManager::new();
+
+    for _ in 0..3 {
+        let req = mgr.send_rtt_request(0);
+        let response = AutoDetectResponse::RttResponse {
+            sequence_number: req.sequence_number(),
+        };
+        let _ = mgr.handle_response(&response, 20);
+    }
+
+    let snap = mgr.snapshot().expect("should have data");
+    match mgr.build_netchar_result().expect("result once samples exist") {
+        AutoDetectRequest::NetworkCharacteristicsResult {
+            base_rtt_ms,
+            bandwidth_kbps,
+            average_rtt_ms,
+            ..
+        } => {
+            assert_eq!(base_rtt_ms, Some(snap.min_ms), "baseRTT is the lowest observed RTT");
+            assert_eq!(average_rtt_ms, snap.avg_ms, "averageRTT matches the window average");
+            assert_eq!(bandwidth_kbps, None, "RTT-only variant omits bandwidth");
+        }
+        other => panic!("expected NetworkCharacteristicsResult, got {other:?}"),
+    }
+}
+
+#[test]
+fn bandwidth_measure_transacts_and_upgrades_netchar() {
+    let mut mgr = AutoDetectManager::new();
+    let req = mgr.send_rtt_request(0);
+    let _ = mgr.handle_response(
+        &AutoDetectResponse::RttResponse {
+            sequence_number: req.sequence_number(),
+        },
+        20,
+    );
+
+    // Drive a bandwidth measurement to completion (paced internally).
+    let pdus = loop {
+        if let Some(p) = mgr.build_bandwidth_measure() {
+            break p;
+        }
+    };
+    assert_eq!(
+        pdus[0].sequence_number(),
+        pdus[2].sequence_number(),
+        "Start and Stop share the transaction sequence"
+    );
+    let results = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: pdus[0].sequence_number(),
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 10,
+        byte_count: 100_000,
+    };
+    assert!(mgr.handle_response(&results, 20).is_none());
+
+    match mgr.build_netchar_result().expect("result once samples exist") {
+        AutoDetectRequest::NetworkCharacteristicsResult { bandwidth_kbps, .. } => {
+            assert_eq!(bandwidth_kbps, Some(80_000), "byte_count * 8 / time_delta_ms");
+        }
+        other => panic!("expected NetworkCharacteristicsResult, got {other:?}"),
+    }
 }
 
 #[test]
