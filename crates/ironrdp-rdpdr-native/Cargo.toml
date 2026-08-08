@@ -23,3 +23,22 @@ ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
 ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7" } # public
 nix = { version = "0.31", features = ["fs", "dir"] }
 tracing = { version = "0.1", features = ["log"] }
+
+[target.'cfg(windows)'.dependencies]
+ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7" } # public
+windows = { version = "0.62", features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Wdk_System_SystemServices",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7" }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" }
