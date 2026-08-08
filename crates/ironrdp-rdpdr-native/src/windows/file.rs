@@ -720,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn root_open_rejects_unapplicable_mutation_options() {
+    fn root_open_rejects_inapplicable_mutation_options() {
         let system_drive = std::env::var("SystemDrive").expect("SystemDrive is set on Windows");
         let drive =
             RedirectedDrive::new(1, "Test", format!(r"{system_drive}\"), false).expect("valid redirected drive");
