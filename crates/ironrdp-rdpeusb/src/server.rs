@@ -220,16 +220,27 @@ pub trait UrbdrcDeviceServerBackend: Send {
         request_id: RequestId,
         completion: TransferOutCompletionResult,
     ) -> PduResult<()>;
+
+    /// Notifies the backend that the per-device dynamic channel has closed.
+    fn close(&mut self, _channel_id: u32) {}
 }
 
 pub struct UrbdrcDeviceServer {
     msg_alloc: IdAllocator,
     request_id_alloc: RequestIdAllocator,
+    state: DeviceState,
     udev_iface: Option<InterfaceId>,
     comp_iface: InterfaceId,
     no_ack_isoch_write_jitter_buf_size: Option<NoAckIsochWriteJitterBufSizeInMs>,
     pending_io: BTreeMap<RequestId, Pending>,
     backend: Box<dyn UrbdrcDeviceServerBackend>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DeviceState {
+    AwaitingDevice,
+    Ready,
+    Retracted,
 }
 
 enum Pending {
@@ -292,6 +303,7 @@ impl UrbdrcDeviceServer {
         Ok(Self {
             msg_alloc: IdAllocator::new(),
             request_id_alloc: RequestIdAllocator::new(),
+            state: DeviceState::AwaitingDevice,
             udev_iface: None,
             comp_iface,
             no_ack_isoch_write_jitter_buf_size: None,
@@ -454,16 +466,20 @@ impl UrbdrcDeviceServer {
 
     pub fn retract_device(&mut self, reason: UsbRetractReason) -> PduResult<DvcMessage> {
         let udev_iface = self.usb_device_iface()?;
-        self.pending_io.clear();
-        self.no_ack_isoch_write_jitter_buf_size = None;
-        Ok(Box::new(RetractDevice {
+        let message = Box::new(RetractDevice {
             msg_id: self.msg_alloc.alloc(),
             udev_iface,
             reason,
-        }))
+        });
+        self.state = DeviceState::Retracted;
+        Ok(message)
     }
 
     fn usb_device_iface(&self) -> PduResult<InterfaceId> {
+        if self.state != DeviceState::Ready {
+            return Err(pdu_other_err!("USB device is not ready for I/O"));
+        }
+
         self.udev_iface
             .ok_or_else(|| pdu_other_err!("USB device uninitialized"))
     }
@@ -646,6 +662,14 @@ impl DvcProcessor for UrbdrcDeviceServer {
     }
 
     fn process(&mut self, channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        // SPEC [3.1.5]: Messages received after RETRACT_DEVICE are out of sequence and
+        // MUST be ignored while the containing DVC is being closed.
+        //
+        // [3.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/f31cc9ef-a8c3-4a4d-b64d-f027ed0752b0
+        if self.state == DeviceState::Retracted {
+            return Ok(Vec::new());
+        }
+
         let pdu = UrbdrcClientDevicePdu::decode(&mut ReadCursor::new(payload)).map_err(|e| decode_err!(e))?;
         let mut resp: Vec<DvcMessage> = Vec::new();
 
@@ -661,17 +685,18 @@ impl DvcProcessor for UrbdrcDeviceServer {
             AddDev(add_dev_pdu) => {
                 // In the case of the server receiving a duplicate interface ID, the server MUST
                 // ignore the ADD_DEVICE message.
-                if self.udev_iface.is_some() {
+                if self.state != DeviceState::AwaitingDevice {
                     return Ok(resp);
                 }
                 let udev_iface = add_dev_pdu.usb_device;
                 let no_ack_isoch_write_jitter_buf_size = add_dev_pdu.usb_device_caps.no_ack_isoch_write_jitter_buf_size;
-                self.udev_iface = Some(udev_iface);
 
                 let device = add_dev_pdu.try_into()?;
 
                 self.backend.add_device(device)?;
+                self.udev_iface = Some(udev_iface);
                 self.no_ack_isoch_write_jitter_buf_size = Some(no_ack_isoch_write_jitter_buf_size);
+                self.state = DeviceState::Ready;
                 resp.push(Box::new(InterfaceRelease {
                     msg_id: self.msg_alloc.alloc(),
                     iface_id: InterfaceId::DEVICE_SINK.with_mask(Mask::Proxy),
@@ -706,6 +731,10 @@ impl DvcProcessor for UrbdrcDeviceServer {
                 Ok(resp)
             }
         }
+    }
+
+    fn close(&mut self, channel_id: u32) {
+        self.backend.close(channel_id);
     }
 }
 

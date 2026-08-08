@@ -57,6 +57,9 @@ enum ClientEvent {
 
 #[derive(Debug)]
 enum ServerEvent {
+    Closed {
+        channel_id: u32,
+    },
     DeviceText(DeviceText),
     IoControlCompleted {
         channel_id: u32,
@@ -263,6 +266,10 @@ impl UrbdrcDeviceServerBackend for ChannelDeviceServerBackend {
             completion,
         });
         Ok(())
+    }
+
+    fn close(&mut self, channel_id: u32) {
+        self.send(ServerEvent::Closed { channel_id });
     }
 }
 

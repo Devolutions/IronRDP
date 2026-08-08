@@ -1,4 +1,7 @@
-use ironrdp_rdpeusb::io::{InternalIoControlPacket, IoControlCompletionResult, IoControlPacket, IoctlInternalUsb};
+use ironrdp_dvc::DvcProcessor as _;
+use ironrdp_rdpeusb::io::{
+    InternalIoControlPacket, IoControlCompletionResult, IoControlPacket, IoctlInternalUsb, UsbRetractReason,
+};
 use rstest::rstest;
 
 use super::{
@@ -214,4 +217,51 @@ fn cancel_pending_request() {
     };
     assert_eq!(channel_id, CHANNEL_ID);
     assert_eq!(backend_request_id, request_id);
+}
+
+// Ref: [Processing a Retract Device Message][3.3.5.3.8].
+// [3.3.5.3.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/8a86b746-b361-4e4a-8e47-53c90089893d
+#[test]
+fn retract_makes_device_terminal_until_channel_close() {
+    let mut device = ConnectedDevice::new();
+    let request = device
+        .server
+        .io_control(IoControlPacket {
+            ioctl_code: IoctlInternalUsb::GetPortStatus,
+            input_buffer: Vec::new(),
+            output_buffer_size: 4,
+        })
+        .expect("IO control should succeed");
+    let request_id = request.request_id;
+    assert!(device.send_to_client(request.message).is_empty());
+    assert!(matches!(device.next_client_event(), ClientEvent::IoControl { .. }));
+
+    let retract = device
+        .server
+        .retract_device(UsbRetractReason::BlockedByPolicy)
+        .expect("retract should succeed");
+    assert!(device.send_to_client(retract).is_empty());
+    assert!(!device.client.ready_for_io());
+
+    assert!(
+        device
+            .server
+            .io_control(IoControlPacket {
+                ioctl_code: IoctlInternalUsb::GetPortStatus,
+                input_buffer: Vec::new(),
+                output_buffer_size: 4,
+            })
+            .is_err(),
+        "new I/O should be rejected after retract"
+    );
+    assert!(
+        device.server.cancel_request(request_id).is_err(),
+        "cancel should not be sent after retract"
+    );
+
+    device.server.close(CHANNEL_ID);
+    let ServerEvent::Closed { channel_id } = device.next_server_event() else {
+        panic!("expected device close event");
+    };
+    assert_eq!(channel_id, CHANNEL_ID);
 }
