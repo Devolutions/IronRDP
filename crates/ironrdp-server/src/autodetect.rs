@@ -48,14 +48,33 @@ impl AutoDetectManager {
 
     /// Generate an RTT Measure Request PDU for continuous detection.
     ///
-    /// The caller must encode and send the returned [`AutoDetectRequest`] as
-    /// a Share Data PDU on the IO channel. `now_ms` is recorded as the send time and
-    /// is what [`handle_response()`](Self::handle_response) measures against.
+    /// The caller must encode and send the returned [`AutoDetectRequest`] on
+    /// the MCS message channel, framed by a `SEC_AUTODETECT_REQ` security
+    /// header ([MS-RDPBCGR] 2.2.14.3). `now_ms` is recorded as the send time
+    /// and is what [`handle_response()`](Self::handle_response) measures against.
     pub fn send_rtt_request(&mut self, now_ms: u64) -> AutoDetectRequest {
         let seq = self.next_sequence;
         self.next_sequence = seq.wrapping_add(1);
         self.pending_probes.push((seq, now_ms));
         AutoDetectRequest::rtt_continuous(seq)
+    }
+
+    /// Build a Network Characteristics Result reporting the measured RTT.
+    ///
+    /// Returns `None` until at least one RTT sample has been recorded. The
+    /// result carries baseRTT (lowest observed) and averageRTT over the current
+    /// window; bandwidth is omitted. Like [`send_rtt_request()`](Self::send_rtt_request),
+    /// the caller sends the returned PDU on the MCS message channel. The client
+    /// does not reply to it.
+    pub fn build_netchar_result(&mut self) -> Option<AutoDetectRequest> {
+        let snapshot = self.snapshot()?;
+        let seq = self.next_sequence;
+        self.next_sequence = seq.wrapping_add(1);
+        Some(AutoDetectRequest::netchar_result_rtt(
+            seq,
+            snapshot.min_ms,
+            snapshot.avg_ms,
+        ))
     }
 
     /// Process an RTT Measure Response from the client.
@@ -250,6 +269,38 @@ mod tests {
             sequence_number: req.sequence_number(),
         };
         assert_eq!(mgr.handle_response(&response, u64::from(u32::MAX) + 1), Some(u32::MAX));
+    }
+
+    #[test]
+    fn netchar_result_none_without_samples() {
+        let mut mgr = AutoDetectManager::new();
+        assert!(mgr.build_netchar_result().is_none());
+    }
+
+    #[test]
+    fn netchar_result_reports_measured_rtt() {
+        let mut mgr = AutoDetectManager::new();
+
+        let req = mgr.send_rtt_request(0);
+        let response = AutoDetectResponse::RttResponse {
+            sequence_number: req.sequence_number(),
+        };
+        let _ = mgr.handle_response(&response, 20);
+
+        let snap = mgr.snapshot().expect("one sample recorded");
+        match mgr.build_netchar_result().expect("result once samples exist") {
+            AutoDetectRequest::NetworkCharacteristicsResult {
+                base_rtt_ms,
+                bandwidth_kbps,
+                average_rtt_ms,
+                ..
+            } => {
+                assert_eq!(base_rtt_ms, Some(snap.min_ms));
+                assert_eq!(average_rtt_ms, snap.avg_ms);
+                assert_eq!(bandwidth_kbps, None, "RTT-only variant omits bandwidth");
+            }
+            other => panic!("expected NetworkCharacteristicsResult, got {other:?}"),
+        }
     }
 
     #[test]
