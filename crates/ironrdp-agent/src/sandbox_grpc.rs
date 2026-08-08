@@ -25,11 +25,19 @@ const ERROR_PIPE_BUSY: i32 = 231;
 /// Resolve the per-user WindowsSandboxServer gRPC pipe path.
 pub(crate) fn grpc_pipe_path() -> anyhow::Result<String> {
     let sid = current_user_sid_string()?;
+    Ok(grpc_pipe_path_for_sid(&sid))
+}
+
+/// Map a Windows SID string to the SandboxCore named-pipe path.
+///
+/// Product layout: `\\.\pipe\wsandbox\{Guid(MD5(UTF-8(SID)))}` using .NET `Guid(byte[])`
+/// mixed-endian field order.
+fn grpc_pipe_path_for_sid(sid: &str) -> String {
     let digest = Md5::digest(sid.as_bytes());
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest);
     let guid = guid_string_from_dotnet_bytes(&bytes);
-    Ok(format!(r"\\.\pipe\wsandbox\{guid}"))
+    format!(r"\\.\pipe\wsandbox\{guid}")
 }
 
 /// `EnumerateSandboxVMs` → sandbox id list.
@@ -485,6 +493,18 @@ mod tests {
         assert_eq!(
             guid_string_from_dotnet_bytes(&md5),
             "4b6a999d-8a64-9e3b-dc96-aefb3c47388b"
+        );
+    }
+
+    #[test]
+    fn grpc_pipe_path_matches_live_windows_sandbox_server() {
+        // Captured on a Windows 11 host where `\\.\pipe\wsandbox\{guid}` existed and
+        // EnumerateSandboxVMs / GetRdpClientConfig succeeded. SID form is
+        // ConvertSidToStringSidW / .NET WindowsIdentity.User.Value; hash is MD5(UTF-8).
+        const SID: &str = "S-1-12-1-3573885804-1222524852-3860206477-1718224648";
+        assert_eq!(
+            grpc_pipe_path_for_sid(SID),
+            r"\\.\pipe\wsandbox\4b6a999d-8a64-9e3b-dc96-aefb3c47388b"
         );
     }
 

@@ -2394,17 +2394,21 @@ enum ActiveXTransport {
     RDCleanPath(RDCleanPathConfig),
 }
 
-fn active_x_transport_from_client_transport(transport: &Transport) -> ActiveXTransport {
+fn active_x_transport_from_client_transport(
+    transport: &Transport,
+) -> core::result::Result<ActiveXTransport, &'static str> {
     match transport {
-        Transport::Direct => ActiveXTransport::Direct,
-        Transport::Gateway(gateway) => ActiveXTransport::Gateway {
+        Transport::Direct => Ok(ActiveXTransport::Direct),
+        Transport::Gateway(gateway) => Ok(ActiveXTransport::Gateway {
             endpoint: gateway.endpoint.clone(),
             username: gateway.username.clone(),
             password: gateway.password.clone(),
-        },
-        Transport::RDCleanPath(rdcleanpath) => ActiveXTransport::RDCleanPath(rdcleanpath.clone()),
+        }),
+        Transport::RDCleanPath(rdcleanpath) => Ok(ActiveXTransport::RDCleanPath(rdcleanpath.clone())),
         // Named-pipe RDP (e.g. Windows Sandbox) is agent/desktop-client only.
-        Transport::NamedPipe { .. } => ActiveXTransport::Direct,
+        Transport::NamedPipe { .. } => {
+            Err("Windows named-pipe transport is not supported by the ActiveX host")
+        }
     }
 }
 
@@ -6606,20 +6610,21 @@ impl Control {
                 "RDCleanPath URL must use the ws or wss scheme",
             );
         }
-        if matches!(config.transport(), Transport::NamedPipe { .. }) {
-            return ironrdp_agent::ipc::Response::typed_error(
-                ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
-                "Windows named-pipe transport is not supported by the ActiveX host",
-            );
-        }
+        let rpc_transport = match active_x_transport_from_client_transport(config.transport()) {
+            Ok(transport) => transport,
+            Err(message) => {
+                return ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    message,
+                );
+            }
+        };
         let Credentials::UsernamePassword { username, password } = &config.connector().credentials else {
             return ironrdp_agent::ipc::Response::typed_error(
                 ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
                 "smart card credentials are not supported by the ActiveX host",
             );
         };
-
-        let rpc_transport = active_x_transport_from_client_transport(config.transport());
         {
             let mut settings = self.settings.borrow_mut();
             settings.server = config.destination().name().to_owned();
@@ -6672,7 +6677,7 @@ impl Control {
                 certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate;
             compatibility.authentication_level = if compatibility.authentication_level_set { 0 } else { 1 };
             match config.transport() {
-                Transport::Direct | Transport::NamedPipe { .. } => {
+                Transport::Direct => {
                     compatibility.gateway_usage_method = GatewayUsageMethod::Direct.as_i64() as u32;
                 }
                 Transport::Gateway(gateway) => {
@@ -6690,6 +6695,10 @@ impl Control {
                     compatibility.gateway_domain.clear();
                     compatibility.gateway_usage_method = GatewayUsageMethod::Direct.as_i64() as u32;
                     compatibility.gateway_creds_source = GatewayCredentialsSource::UseServerCredentials.as_i64() as u32;
+                }
+                // Rejected by `active_x_transport_from_client_transport` before settings apply.
+                Transport::NamedPipe { .. } => {
+                    unreachable!("NamedPipe must fail RPC connect before compatibility settings")
                 }
             }
         }
@@ -12307,12 +12316,35 @@ mod tests {
             .build()
             .expect("ActiveX RDCleanPath configuration is valid");
 
-        let ActiveXTransport::RDCleanPath(rdcleanpath) = active_x_transport_from_client_transport(config.transport())
+        let ActiveXTransport::RDCleanPath(rdcleanpath) =
+            active_x_transport_from_client_transport(config.transport()).expect("RDCleanPath maps")
         else {
             panic!("client RDCleanPath transport must be retained");
         };
         assert_eq!(rdcleanpath.url.as_str(), "wss://rdcleanpath.example.test/rdp");
         assert_eq!(rdcleanpath.auth_token, "test-token");
+    }
+
+    #[test]
+    fn activex_rejects_named_pipe_transport_mapping() {
+        let config = ConfigBuilder::new()
+            .with_destination(Destination::from_parts("sandbox", 3389))
+            .with_username("user")
+            .with_password("password")
+            .with_client_build(10_000)
+            .with_client_dir("C:\\")
+            .with_client_name("IronRDP ActiveX")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_transport(TransportKind::NamedPipe {
+                path: r"\\.\pipe\test".into(),
+            })
+            .build()
+            .expect("NamedPipe configuration is valid for client builders");
+
+        assert!(matches!(
+            active_x_transport_from_client_transport(config.transport()),
+            Err("Windows named-pipe transport is not supported by the ActiveX host")
+        ));
     }
 
     #[test]
