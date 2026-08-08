@@ -33,10 +33,13 @@ pub(crate) struct SandboxRdpConfig {
 
 /// Re-apply NamedPipe transport security after user property merges.
 ///
-/// Clipboard and credentials may be overridden by the caller; TLS/CredSSP must stay off for
-/// the default Sandbox named-pipe path so we do not advertise enhanced protocols the server
-/// will reject (and so we do not silently open a plaintext TCP session).
+/// No-op unless `ironrdp_named_pipe` is set, so a Sandbox TCP config (TLS+CredSSP) is not
+/// rewritten into plain security. When the pipe path is present, TLS/CredSSP stay off and
+/// autologon stays on so we do not advertise enhanced protocols the pipe server rejects.
 pub(crate) fn reassert_named_pipe_security(ps: &mut PropertySet) {
+    if ps.named_pipe().is_none() {
+        return;
+    }
     ps.set_enable_tls(false);
     ps.set_enable_credssp_support(false);
     ps.set_autologon(true);
@@ -236,5 +239,54 @@ mod tests {
             cfg.pipe_path.as_deref(),
             Some(r"\\.\pipe\606cf61b-dd6c-4d4c-8700-4af99a73f7ab")
         );
+
+        let props = properties_from_config(&cfg).expect("named pipe props");
+        assert!(props.named_pipe().is_some());
+        assert_eq!(props.enable_tls(), Some(false));
+        assert_eq!(props.enable_credssp_support(), Some(false));
+    }
+
+    #[test]
+    fn reassert_named_pipe_security_only_when_pipe_set() {
+        let mut tcp = PropertySet::new();
+        tcp.set_enable_tls(true);
+        tcp.set_enable_credssp_support(true);
+        tcp.set_autologon(false);
+        reassert_named_pipe_security(&mut tcp);
+        assert_eq!(tcp.enable_tls(), Some(true));
+        assert_eq!(tcp.enable_credssp_support(), Some(true));
+        assert_eq!(tcp.autologon(), Some(false));
+
+        let mut pipe = PropertySet::new();
+        pipe.set_named_pipe(r"\\.\pipe\test");
+        pipe.set_enable_tls(true);
+        pipe.set_enable_credssp_support(true);
+        pipe.set_autologon(false);
+        reassert_named_pipe_security(&mut pipe);
+        assert_eq!(pipe.enable_tls(), Some(false));
+        assert_eq!(pipe.enable_credssp_support(), Some(false));
+        assert_eq!(pipe.autologon(), Some(true));
+    }
+
+    #[test]
+    fn properties_from_config_tcp_keeps_credssp() {
+        let cfg = SandboxRdpConfig {
+            sandbox_id: "id".into(),
+            vm_id: "vm".into(),
+            username: "u".into(),
+            password: "p".into(),
+            rdp_transport: "Tcp".into(),
+            ip_address: "10.0.0.2".into(),
+            pipe_path: Some(r"\\.\pipe\vm".into()),
+            clipboard_redirection: false,
+            smartcard_redirection: false,
+        };
+        let mut props = properties_from_config(&cfg).expect("tcp props");
+        assert!(props.named_pipe().is_none());
+        assert_eq!(props.enable_tls(), Some(true));
+        assert_eq!(props.enable_credssp_support(), Some(true));
+        reassert_named_pipe_security(&mut props);
+        assert_eq!(props.enable_tls(), Some(true));
+        assert_eq!(props.enable_credssp_support(), Some(true));
     }
 }
