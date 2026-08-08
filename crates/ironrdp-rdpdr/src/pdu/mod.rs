@@ -7,11 +7,11 @@ use ironrdp_core::{
 use ironrdp_svc::SvcEncode;
 
 use self::efs::{
-    ClientDeviceListAnnounce, ClientDeviceListRemove, ClientDriveQueryDirectoryResponse,
-    ClientDriveQueryInformationResponse, ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse,
-    ClientNameRequest, CoreCapability, CoreCapabilityKind, DeviceCloseResponse, DeviceControlResponse,
-    DeviceCreateResponse, DeviceIoRequest, DeviceReadResponse, DeviceWriteResponse, ServerDeviceAnnounceResponse,
-    VersionAndIdPdu, VersionAndIdPduKind,
+    ClientDeviceListAnnounce, ClientDeviceListRemove, ClientDriveLockControlResponse,
+    ClientDriveNotifyChangeDirectoryResponse, ClientDriveQueryDirectoryResponse, ClientDriveQueryInformationResponse,
+    ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse, ClientNameRequest, CoreCapability,
+    CoreCapabilityKind, DeviceCloseResponse, DeviceControlResponse, DeviceCreateResponse, DeviceIoRequest,
+    DeviceReadResponse, DeviceWriteResponse, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
 };
 
 pub mod efs;
@@ -31,10 +31,12 @@ pub enum RdpdrPdu {
     ClientDriveQueryInformationResponse(ClientDriveQueryInformationResponse),
     DeviceCloseResponse(DeviceCloseResponse),
     ClientDriveQueryDirectoryResponse(ClientDriveQueryDirectoryResponse),
+    ClientDriveNotifyChangeDirectoryResponse(ClientDriveNotifyChangeDirectoryResponse),
     ClientDriveQueryVolumeInformationResponse(ClientDriveQueryVolumeInformationResponse),
     DeviceReadResponse(DeviceReadResponse),
     DeviceWriteResponse(DeviceWriteResponse),
     ClientDriveSetInformationResponse(ClientDriveSetInformationResponse),
+    ClientDriveLockControlResponse(ClientDriveLockControlResponse),
     UserLoggedon,
     EmptyResponse,
 }
@@ -92,10 +94,12 @@ impl RdpdrPdu {
             | RdpdrPdu::ClientDriveQueryInformationResponse(_)
             | RdpdrPdu::DeviceCloseResponse(_)
             | RdpdrPdu::ClientDriveQueryDirectoryResponse(_)
+            | RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(_)
             | RdpdrPdu::ClientDriveQueryVolumeInformationResponse(_)
             | RdpdrPdu::DeviceReadResponse(_)
             | RdpdrPdu::DeviceWriteResponse(_)
             | RdpdrPdu::ClientDriveSetInformationResponse(_)
+            | RdpdrPdu::ClientDriveLockControlResponse(_)
             | RdpdrPdu::EmptyResponse => SharedHeader {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreDeviceIoCompletion,
@@ -150,10 +154,12 @@ impl Encode for RdpdrPdu {
             RdpdrPdu::ClientDriveQueryInformationResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceCloseResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDriveQueryDirectoryResponse(pdu) => pdu.encode(dst),
+            RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDriveQueryVolumeInformationResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceReadResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceWriteResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.encode(dst),
+            RdpdrPdu::ClientDriveLockControlResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::UserLoggedon => Ok(()),
             RdpdrPdu::EmptyResponse => {
                 // https://github.com/FreeRDP/FreeRDP/blob/dfa231c0a55b005af775b833f92f6bcd30363d77/channels/drive/client/drive_main.c#L601
@@ -177,10 +183,12 @@ impl Encode for RdpdrPdu {
             RdpdrPdu::ClientDriveQueryInformationResponse(pdu) => pdu.name(),
             RdpdrPdu::DeviceCloseResponse(pdu) => pdu.name(),
             RdpdrPdu::ClientDriveQueryDirectoryResponse(pdu) => pdu.name(),
+            RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(pdu) => pdu.name(),
             RdpdrPdu::ClientDriveQueryVolumeInformationResponse(pdu) => pdu.name(),
             RdpdrPdu::DeviceReadResponse(pdu) => pdu.name(),
             RdpdrPdu::DeviceWriteResponse(pdu) => pdu.name(),
             RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.name(),
+            RdpdrPdu::ClientDriveLockControlResponse(pdu) => pdu.name(),
             RdpdrPdu::UserLoggedon => "UserLoggedon",
             RdpdrPdu::EmptyResponse => "EmptyResponse",
         }
@@ -201,10 +209,12 @@ impl Encode for RdpdrPdu {
                 RdpdrPdu::ClientDriveQueryInformationResponse(pdu) => pdu.size(),
                 RdpdrPdu::DeviceCloseResponse(pdu) => pdu.size(),
                 RdpdrPdu::ClientDriveQueryDirectoryResponse(pdu) => pdu.size(),
+                RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(pdu) => pdu.size(),
                 RdpdrPdu::ClientDriveQueryVolumeInformationResponse(pdu) => pdu.size(),
                 RdpdrPdu::DeviceReadResponse(pdu) => pdu.size(),
                 RdpdrPdu::DeviceWriteResponse(pdu) => pdu.size(),
                 RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.size(),
+                RdpdrPdu::ClientDriveLockControlResponse(pdu) => pdu.size(),
                 RdpdrPdu::UserLoggedon => 0,
                 RdpdrPdu::EmptyResponse => size_of::<u32>(),
             }
@@ -252,6 +262,9 @@ impl fmt::Debug for RdpdrPdu {
             Self::ClientDriveQueryDirectoryResponse(it) => {
                 write!(f, "RdpdrPdu({it:?})")
             }
+            Self::ClientDriveNotifyChangeDirectoryResponse(it) => {
+                write!(f, "RdpdrPdu({it:?})")
+            }
             Self::ClientDriveQueryVolumeInformationResponse(it) => {
                 write!(f, "RdpdrPdu({it:?})")
             }
@@ -262,6 +275,9 @@ impl fmt::Debug for RdpdrPdu {
                 write!(f, "RdpdrPdu({it:?})")
             }
             Self::ClientDriveSetInformationResponse(it) => {
+                write!(f, "RdpdrPdu({it:?})")
+            }
+            Self::ClientDriveLockControlResponse(it) => {
                 write!(f, "RdpdrPdu({it:?})")
             }
             Self::UserLoggedon => {
@@ -304,6 +320,12 @@ impl From<ClientDriveQueryDirectoryResponse> for RdpdrPdu {
     }
 }
 
+impl From<ClientDriveNotifyChangeDirectoryResponse> for RdpdrPdu {
+    fn from(value: ClientDriveNotifyChangeDirectoryResponse) -> Self {
+        Self::ClientDriveNotifyChangeDirectoryResponse(value)
+    }
+}
+
 impl From<ClientDriveQueryVolumeInformationResponse> for RdpdrPdu {
     fn from(value: ClientDriveQueryVolumeInformationResponse) -> Self {
         Self::ClientDriveQueryVolumeInformationResponse(value)
@@ -325,6 +347,12 @@ impl From<DeviceWriteResponse> for RdpdrPdu {
 impl From<ClientDriveSetInformationResponse> for RdpdrPdu {
     fn from(value: ClientDriveSetInformationResponse) -> Self {
         Self::ClientDriveSetInformationResponse(value)
+    }
+}
+
+impl From<ClientDriveLockControlResponse> for RdpdrPdu {
+    fn from(value: ClientDriveLockControlResponse) -> Self {
+        Self::ClientDriveLockControlResponse(value)
     }
 }
 

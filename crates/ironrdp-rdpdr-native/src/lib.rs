@@ -13,3 +13,8 @@
 mod nix;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use nix::backend;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::{RedirectedDrive, RedirectedDriveError, WindowsRdpdrBackend, WindowsRdpdrBackendFactory};
