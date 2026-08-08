@@ -111,3 +111,10 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "egfx_surface_state"
+path = "fuzz_targets/egfx_surface_state.rs"
+test = false
+doc = false
+bench = false
+
