@@ -1121,9 +1121,17 @@ impl RdpServer {
             &self.handler,
             &self.echo_handle,
         );
+        // Only overwrite on `Some`, matching the pre-refactor code exactly:
+        // it only ever wrote `self.gfx_handle = Some(handle)` from inside the
+        // `build_server_with_handle()` success arm, and never touched the
+        // field when that returned `None` (the `build_gfx_handler()`
+        // fallback). An unconditional overwrite here would clear a handle
+        // left over from a previous connection whenever the factory falls
+        // back on a later call, which is an observable behavior change
+        // `gfx_handle()` callers do not expect from this refactor.
         #[cfg(feature = "egfx")]
-        {
-            self.gfx_handle = gfx_handle;
+        if let Some(handle) = gfx_handle {
+            self.gfx_handle = Some(handle);
         }
         // Without `egfx` there is no handle to install; consume the unit.
         #[cfg(not(feature = "egfx"))]
