@@ -154,7 +154,7 @@ struct DisplayUpdates;
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for DisplayUpdates {
-    async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
+    async fn next_update(&mut self) -> ironrdp::server::ServerResult<Option<DisplayUpdate>> {
         sleep(Duration::from_millis(100)).await;
         let mut rng = rand::rng();
 
@@ -206,7 +206,7 @@ impl RdpServerDisplay for Handler {
         }
     }
 
-    async fn updates(&mut self) -> anyhow::Result<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self) -> ironrdp::server::ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(DisplayUpdates {}))
     }
 }
@@ -429,5 +429,5 @@ async fn run(
         domain: None,
     }));
 
-    server.run().await
+    server.run().await.map_err(|e| anyhow::anyhow!(e))
 }

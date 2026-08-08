@@ -33,7 +33,6 @@ nscodec = ["dep:ironrdp-nscodec"]
 __bench = ["dep:visibility"]
 
 [dependencies]
-anyhow = "1.0"
 rand = "0.9"
 tokio = { version = "1", features = ["net", "macros", "sync", "rt", "time"] } # public
 tokio-rustls = "0.26" # public
@@ -42,6 +41,7 @@ ironrdp-async = { path = "../ironrdp-async", version = "0.10" }
 ironrdp-ainput = { path = "../ironrdp-ainput", version = "0.8" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.3", optional = true }
+ironrdp-error = { path = "../ironrdp-error", version = "0.2", features = ["std"] } # public
 ironrdp-nscodec = { path = "../ironrdp-nscodec", version = "0.2", optional = true, features = ["encoder"] }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
