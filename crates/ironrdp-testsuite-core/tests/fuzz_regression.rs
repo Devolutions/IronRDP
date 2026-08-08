@@ -66,3 +66,8 @@ fn check_egfx_avc420_decode() {
 fn check_egfx_multi_frame() {
     check!(egfx_multi_frame);
 }
+
+#[test]
+fn check_message_decoding_invariants() {
+    check!(message_decoding_invariants);
+}
