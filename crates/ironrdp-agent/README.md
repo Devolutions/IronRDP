@@ -34,10 +34,11 @@ created separately (preferred) and speak RDP over the product's default **named-
 `ENCRYPTION_LEVEL_NONE`).
 
 ```bat
-:: create headless (prints Id only)
+:: bootstrap WindowsSandboxServer, then create headless (prints Id only)
 wsb start
 
-:: inspect / list via WindowsSandboxServer gRPC
+:: create, inspect, and stop via WindowsSandboxServer gRPC
+ironrdp-agent sandbox start
 ironrdp-agent sandbox list
 ironrdp-agent sandbox config <sandbox-id>
 
@@ -49,7 +50,13 @@ ironrdp-agent screenshot sandbox.png
 
 The agent speaks `sandboxserver.SandboxCore` in-process over the per-user named pipe
 (`\\.\pipe\wsandbox\<md5(user SID)>`) — no .NET helper is required. WindowsSandboxServer must
-already be running (starting a sandbox with `wsb start` / the Sandbox UI is enough).
+already be running (starting the Sandbox UI or `wsb` once is enough). `sandbox start` accepts
+`--id <GUID>` and `--config <XML>` (the same configuration XML accepted by `wsb start --config`)
+and prints the created sandbox Id.
+
+On retail Windows builds, WindowsSandboxServer can reject a second active sandbox. That policy is
+controlled by Windows licensing/build state, so the agent reports it rather than attempting to
+bypass it.
 
 Low-level escape hatch when you already have the pipe path and guest password:
 

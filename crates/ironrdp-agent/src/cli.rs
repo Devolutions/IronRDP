@@ -108,7 +108,7 @@ enum Command {
     },
     /// Execute commands over the session's NOW DVC endpoint.
     Now(NowArgs),
-    /// Windows Sandbox lifecycle helpers (list/config/stop via WindowsSandboxServer gRPC).
+    /// Windows Sandbox lifecycle helpers via WindowsSandboxServer gRPC.
     #[cfg(windows)]
     Sandbox(SandboxArgs),
 }
@@ -123,6 +123,15 @@ struct SandboxArgs {
 #[cfg(windows)]
 #[derive(Subcommand, Debug)]
 enum SandboxCommand {
+    /// Start a sandbox through the running WindowsSandboxServer.
+    Start {
+        /// Optional sandbox ID. The server generates one when omitted.
+        #[arg(long, value_name = "GUID")]
+        id: Option<String>,
+        /// Optional Windows Sandbox configuration XML. The server uses its default configuration when omitted.
+        #[arg(long, value_name = "XML")]
+        config: Option<String>,
+    },
     /// List running sandbox ids (`EnumerateSandboxVMs`).
     List,
     /// Show RDP config for a sandbox (password redacted).
@@ -635,6 +644,12 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
 #[cfg(windows)]
 fn run_sandbox_command(args: SandboxArgs) -> anyhow::Result<()> {
     match args.command {
+        SandboxCommand::Start { id, config } => {
+            let cfg =
+                crate::sandbox::start_sandbox(config.as_deref(), id.as_deref()).context("start Windows Sandbox")?;
+            println!("{}", cfg.sandbox_id);
+            Ok(())
+        }
         SandboxCommand::List => {
             let ids = crate::sandbox::list_sandbox_ids().context("list Windows sandboxes")?;
             if ids.is_empty() {

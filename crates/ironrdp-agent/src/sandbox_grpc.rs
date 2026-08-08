@@ -21,6 +21,8 @@ const PIPE_BUSY_RETRY: Duration = Duration::from_millis(50);
 const RPC_TIMEOUT: Duration = Duration::from_secs(15);
 /// `ERROR_PIPE_BUSY` — another client still holds the pipe instance.
 const ERROR_PIPE_BUSY: i32 = 231;
+/// `CO_E_APPSINGLEUSE` — the Windows Sandbox policy permits only one active VM.
+const CO_E_APPSINGLEUSE: i32 = -2_147_221_002;
 
 /// Resolve the per-user WindowsSandboxServer gRPC pipe path.
 pub(crate) fn grpc_pipe_path() -> anyhow::Result<String> {
@@ -48,6 +50,28 @@ pub(crate) fn enumerate_sandbox_vms() -> anyhow::Result<Vec<String>> {
     Ok(ids)
 }
 
+/// `StartSandbox` → serialized `RdpClientConfig` for the new sandbox.
+///
+/// `recipe` is the Windows Sandbox configuration XML. When omitted, the server uses its default
+/// recipe. `sandbox_id` is optional; the server generates an ID when it is absent.
+pub(crate) fn start_sandbox(recipe: Option<&str>, sandbox_id: Option<&str>) -> anyhow::Result<String> {
+    let mut req = Vec::new();
+    if let Some(recipe) = recipe {
+        req.extend_from_slice(&encode_string_field(1, recipe));
+    }
+    if let Some(sandbox_id) = sandbox_id {
+        req.extend_from_slice(&encode_string_field(2, sandbox_id));
+    }
+
+    let payload = block_on(unary("StartSandbox", &req))?;
+    let (hr, _, cfg) = parse_reply(&payload, ParseMode::Config)?;
+    ensure_ok(hr, "StartSandbox")?;
+    if cfg.is_empty() {
+        bail!("empty RdpClientConfig from WindowsSandboxServer");
+    }
+    Ok(cfg)
+}
+
 /// `GetRdpClientConfig` → serialized RdpClientConfig XML.
 pub(crate) fn get_rdp_client_config_xml(sandbox_id: &str) -> anyhow::Result<String> {
     let req = encode_string_field(1, sandbox_id);
@@ -70,6 +94,9 @@ pub(crate) fn shutdown_sandbox(sandbox_id: &str) -> anyhow::Result<()> {
 }
 
 fn ensure_ok(hr: i32, method: &str) -> anyhow::Result<()> {
+    if hr == CO_E_APPSINGLEUSE {
+        bail!("multiple Windows Sandbox instances are not permitted by this Windows build or license");
+    }
     if hr != 0 {
         bail!("{method} failed with hresult=0x{hr:08X}");
     }
@@ -527,5 +554,22 @@ mod tests {
         let (hr, _, cfg) = parse_reply(&msg, ParseMode::Config).unwrap();
         assert_eq!(hr, 0);
         assert_eq!(cfg, "hi");
+    }
+
+    #[test]
+    fn start_request_encodes_optional_recipe_and_id() {
+        let mut request = encode_string_field(1, "<Configuration/>");
+        request.extend_from_slice(&encode_string_field(2, "sandbox-id"));
+
+        assert_eq!(request, b"\x0a\x10<Configuration/>\x12\nsandbox-id",);
+    }
+
+    #[test]
+    fn single_instance_policy_error_is_actionable() {
+        let error = ensure_ok(CO_E_APPSINGLEUSE, "StartSandbox").expect_err("single-instance policy must fail");
+        assert_eq!(
+            error.to_string(),
+            "multiple Windows Sandbox instances are not permitted by this Windows build or license"
+        );
     }
 }
