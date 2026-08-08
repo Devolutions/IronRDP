@@ -1,8 +1,11 @@
 use std::path::Path;
 
-use windows::Win32::System::{
-    LibraryLoader::{GetProcAddress, LoadLibraryW},
-    WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
+use windows::Win32::{
+    Foundation::ERROR_ACCESS_DENIED,
+    System::{
+        LibraryLoader::{GetProcAddress, LoadLibraryW},
+        WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
+    },
 };
 use windows_core::{Error, GUID, HRESULT, HSTRING, s};
 
@@ -11,7 +14,7 @@ use crate::windows_udk::bindings::WindowsUdk::Security::Isolation::{
     ManagedWindowsVM, VMNetworkingMode, VMOptions, VMRunningReference,
 };
 
-/// The private Windows Sandbox runtime initialized for a package-identity process.
+/// The private Windows Sandbox runtime initialized for the current process.
 ///
 /// The Windows App Runtime library must remain loaded for the process lifetime. This type performs
 /// the same `WindowsAppRuntime_EnsureIsLoaded` call made by `WindowsSandboxServer.exe`.
@@ -21,14 +24,24 @@ pub struct SandboxRuntime;
 impl SandboxRuntime {
     /// Initializes the Windows App Runtime library shipped with the Windows Sandbox package.
     ///
-    /// `windows_app_runtime_path` must name that package's `Microsoft.WindowsAppRuntime.dll`. The
-    /// calling process must have a compatible Windows Sandbox full-trust package identity.
+    /// `windows_app_runtime_path` must name the package's `Microsoft.WindowsAppRuntime.dll`.
+    /// Windows restricts executable mapping of the installed file to processes carrying the
+    /// Windows Sandbox package identity.
     pub fn initialize(windows_app_runtime_path: &Path) -> Result<Self> {
         let windows_app_runtime_path = HSTRING::from(windows_app_runtime_path.to_string_lossy().as_ref());
 
         // SAFETY: The path is NUL-free because HSTRING owns a Windows string. The module is deliberately
         // retained for the process lifetime so the private WinRT classes remain available after initialization.
-        let module = unsafe { LoadLibraryW(&windows_app_runtime_path)? };
+        let module = unsafe { LoadLibraryW(&windows_app_runtime_path) }.map_err(|error| {
+            if error.code() == HRESULT::from_win32(ERROR_ACCESS_DENIED.0) {
+                Error::new(
+                    error.code(),
+                    "loading the Windows App Runtime library failed with access denied; the installed Sandbox path can only be image-mapped by a process carrying the Windows Sandbox package identity",
+                )
+            } else {
+                error
+            }
+        })?;
         // SAFETY: `module` was returned by LoadLibraryW and the requested export name is NUL-terminated.
         let procedure =
             unsafe { GetProcAddress(module, s!("WindowsAppRuntime_EnsureIsLoaded")).ok_or_else(Error::from_thread)? };
@@ -37,12 +50,10 @@ impl SandboxRuntime {
 
         // SAFETY: The package's managed projection declares this exact export with the same system ABI.
         let ensure_is_loaded: EnsureIsLoaded = unsafe { core::mem::transmute(procedure) };
-        // SAFETY: `ensure_is_loaded` was resolved from the loaded Windows App Runtime module with its documented ABI.
+        // SAFETY: `ensure_is_loaded` was resolved from the loaded Windows App Runtime module with the ABI
+        // declared by the Sandbox managed projection.
         if let Err(error) = unsafe { ensure_is_loaded().ok() } {
-            return Err(Error::new(
-                error.code(),
-                "Windows App Runtime initialization failed; the process may require Windows Sandbox package identity",
-            ));
+            return Err(Error::new(error.code(), "Windows App Runtime initialization failed"));
         }
 
         Ok(Self)
