@@ -692,7 +692,7 @@ impl Daemon {
             .with_client_build(client_build())
             .with_client_dir("C:\\Windows\\System32\\mstscax.dll")
             .with_platform(current_platform())
-            .with_client_name(client_name())
+            .with_client_name(client_name(&properties))
             .with_dvc_pipe_proxy(now_endpoint.dvc_proxy_info())
             .with_certificate_validation(certificate_validation)
             // The headless agent observes validated RAIL state but does not implement local
@@ -1663,8 +1663,26 @@ fn client_build() -> u32 {
         .saturating_add(patch)
 }
 
-fn client_name() -> String {
-    whoami::hostname().unwrap_or_else(|_| "ironrdp-agent".to_owned())
+fn client_name(properties: &PropertySet) -> String {
+    properties
+        .named_pipe()
+        .and_then(sandbox_client_name_from_pipe)
+        .unwrap_or_else(|| whoami::hostname().unwrap_or_else(|_| "ironrdp-agent".to_owned()))
+}
+
+/// Returns a stable, per-VM RDP client name for Windows Sandbox's GUID-named pipes.
+///
+/// The GCC Client Core Data field is limited to 15 UTF-16 code units. Mstsc receives
+/// the full VM GUID from Windows Sandbox and truncates it to this protocol limit.
+fn sandbox_client_name_from_pipe(pipe_path: &str) -> Option<String> {
+    let pipe_name = pipe_path.rsplit('\\').next()?;
+    let is_vm_guid = pipe_name.len() == 36
+        && pipe_name
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 8 | 13 | 18 | 23) && byte == b'-' || byte.is_ascii_hexdigit());
+
+    is_vm_guid.then(|| pipe_name[..15].to_owned())
 }
 
 fn current_platform() -> MajorPlatformType {
@@ -1788,7 +1806,7 @@ mod tests {
     use super::{
         ConnState, Daemon, DaemonOptions, Live, MAX_PENDING_RAIL_LAUNCHES, MAX_RAIL_RETAINED_EVENTS,
         MAX_UNICODE_TEXT_CHARS, NowEndpoint, OperationManager, RailLedger, RdpdrDriveConfig, ResizeError, Session,
-        consume_output, enqueue_unicode_text, notify,
+        consume_output, enqueue_unicode_text, notify, sandbox_client_name_from_pipe,
     };
     use crate::ipc::{Payload, Response};
     use ironrdp_rpc::ipc::{RailEventKind, RailExecuteRequest, RailLaunchInfo};
@@ -2286,6 +2304,15 @@ mod tests {
 
         assert!(matches!(response, Response::Err(error) if error.message == "RAIL is not enabled for this session"));
         assert!(matches!(input_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn sandbox_pipe_client_name_is_unique_per_vm() {
+        assert_eq!(
+            sandbox_client_name_from_pipe(r"\\.\pipe\512BD3B8-70C2-4CBC-B32E-94C54B66F350").as_deref(),
+            Some("512BD3B8-70C2-4")
+        );
+        assert_eq!(sandbox_client_name_from_pipe(r"\\.\pipe\not-a-vm"), None);
     }
 
     #[test]
