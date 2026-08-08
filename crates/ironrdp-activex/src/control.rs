@@ -2406,9 +2406,7 @@ fn active_x_transport_from_client_transport(
         }),
         Transport::RDCleanPath(rdcleanpath) => Ok(ActiveXTransport::RDCleanPath(rdcleanpath.clone())),
         // Named-pipe RDP (e.g. Windows Sandbox) is agent/desktop-client only.
-        Transport::NamedPipe { .. } => {
-            Err("Windows named-pipe transport is not supported by the ActiveX host")
-        }
+        Transport::NamedPipe { .. } => Err("Windows named-pipe transport is not supported by the ActiveX host"),
     }
 }
 
