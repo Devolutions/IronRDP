@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ironrdp_core as _;
 use ironrdp_pdu as _;
-use ironrdp_rdpdr::RdpdrBackend;
+use ironrdp_rdpdr::{RdpdrBackend, backend::RdpdrBackendFactory};
 use ironrdp_rdpdr::pdu::efs::{
     AnyIoCtlCode, CreateDisposition, CreateOptions, DecodedDeviceControlRequest, DesiredAccess, DeviceCloseRequest,
     DeviceControlRequest, DeviceCreateRequest, DeviceFlushBuffersRequest, DeviceIoRequest, DeviceReadRequest,
@@ -16,7 +16,7 @@ use ironrdp_rdpdr::pdu::efs::{
     ServerDriveQueryVolumeInformationRequest, ServerDriveSetInformationRequest, ServerDriveSetSecurityRequest,
     SharedAccess,
 };
-use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackend, WindowsRdpdrBackendFactory};
+use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
 use ironrdp_svc::SvcMessage;
 use tracing as _;
 use windows as _;
@@ -27,7 +27,7 @@ const MAX_STATIC_IO_SIZE: usize = 1_024 * 1_024;
 fn filesystem_lifecycle_is_handle_relative_and_bounded() {
     let fixture = Fixture::new();
     let mut backend = fixture.backend();
-    activate(&mut backend);
+    activate(backend.as_mut());
 
     let create = create_request(&fixture.relative(r"root\report.txt"), CreateDisposition::FILE_OPEN_IF);
     let create_response = backend
@@ -108,7 +108,7 @@ fn filesystem_lifecycle_is_handle_relative_and_bounded() {
 fn synchronous_nonalert_create_option_is_accepted() {
     let fixture = Fixture::new();
     let mut backend = fixture.backend();
-    activate(&mut backend);
+    activate(backend.as_mut());
 
     let mut create = create_request(
         &fixture.relative(r"root\synchronous.txt"),
@@ -129,7 +129,7 @@ fn read_only_drives_allow_reads_and_reject_mutations() {
     std::fs::write(&file_path, b"safe").expect("write read-only fixture");
 
     let mut backend = fixture.read_only_backend();
-    activate(&mut backend);
+    activate(backend.as_mut());
 
     let mut open = create_request(&fixture.relative(r"root\read-only.txt"), CreateDisposition::FILE_OPEN);
     open.desired_access = DesiredAccess::from_bits_retain(0x0010_0081);
@@ -194,7 +194,7 @@ fn read_only_drives_allow_reads_and_reject_mutations() {
 fn static_io_limit_is_inclusive() {
     let fixture = Fixture::new();
     let mut backend = fixture.backend();
-    activate(&mut backend);
+    activate(backend.as_mut());
 
     let create_response = backend
         .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create_request(
@@ -246,7 +246,7 @@ fn static_io_limit_is_inclusive() {
 fn hostile_paths_never_open_outside_the_selected_volume() {
     let fixture = Fixture::new();
     let mut backend = fixture.backend();
-    activate(&mut backend);
+    activate(backend.as_mut());
 
     for path in [
         r"\..\outside.txt",
@@ -280,7 +280,7 @@ fn reparse_points_cannot_escape_the_trusted_volume_root() {
     }
 
     let mut backend = fixture.backend();
-    activate(&mut backend);
+    activate(backend.as_mut());
     let response = backend
         .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create_request(
             &fixture.relative(r"root\escape\sentinel.txt"),
@@ -299,7 +299,7 @@ fn reparse_points_cannot_escape_the_trusted_volume_root() {
 fn advanced_filesystem_operations_are_handle_bound() {
     let fixture = Fixture::new();
     let mut backend = fixture.backend();
-    activate(&mut backend);
+    activate(backend.as_mut());
 
     let file_response = backend
         .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create_request(
@@ -401,7 +401,7 @@ fn advanced_filesystem_operations_are_handle_bound() {
 fn directory_notifications_are_cancelled_by_close() {
     let fixture = Fixture::new();
     let mut backend = fixture.backend();
-    activate(&mut backend);
+    activate(backend.as_mut());
 
     let directory_response = backend
         .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(
@@ -431,7 +431,7 @@ fn directory_notifications_are_cancelled_by_close() {
     assert_eq!(response_status(&close_response[..1]), NtStatus::SUCCESS);
     assert_eq!(response_status(&close_response[1..]), NtStatus::SUCCESS);
     assert!(
-        RdpdrBackend::poll_deferred_messages(&mut backend)
+        RdpdrBackend::poll_deferred_messages(backend.as_mut())
             .expect("poll cancelled notification")
             .is_empty()
     );
@@ -441,7 +441,7 @@ fn directory_notifications_are_cancelled_by_close() {
 fn security_descriptor_query_and_set_use_the_opened_handle() {
     let fixture = Fixture::new();
     let mut backend = fixture.backend();
-    activate(&mut backend);
+    activate(backend.as_mut());
 
     let mut create = create_request(&fixture.relative(r"root\security.txt"), CreateDisposition::FILE_OPEN_IF);
     create.desired_access = DesiredAccess::from_bits_retain(0x0016_0083);
@@ -484,7 +484,7 @@ fn security_descriptor_query_and_set_use_the_opened_handle() {
     assert_eq!(response_status(&set_response), NtStatus::SUCCESS);
 }
 
-fn activate(backend: &mut WindowsRdpdrBackend) {
+fn activate(backend: &mut dyn RdpdrBackend) {
     RdpdrBackend::restore_drive(backend, 1).expect("activate test drive");
 }
 
@@ -568,19 +568,23 @@ impl Fixture {
         }
     }
 
-    fn backend(&self) -> WindowsRdpdrBackend {
+    fn backend(&self) -> Box<dyn RdpdrBackend> {
         self.backend_with_read_only(false)
     }
 
-    fn read_only_backend(&self) -> WindowsRdpdrBackend {
+    fn read_only_backend(&self) -> Box<dyn RdpdrBackend> {
         self.backend_with_read_only(true)
     }
 
-    fn backend_with_read_only(&self, read_only: bool) -> WindowsRdpdrBackend {
+    fn backend_with_read_only(&self, read_only: bool) -> Box<dyn RdpdrBackend> {
         WindowsRdpdrBackendFactory::new(
-            RedirectedDrive::new(1, "Test", &self.volume_root, read_only).expect("valid test drive"),
+            vec![RedirectedDrive::new(1, "Test", &self.volume_root, read_only).expect("valid test drive")],
         )
-        .build()
+        .expect("unique test drive ID")
+        .with_initial_device_ids([])
+        .build_rdpdr_backend()
+        .expect("build test backend")
+        .backend
     }
 
     fn relative(&self, suffix: &str) -> String {
