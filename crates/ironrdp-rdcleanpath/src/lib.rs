@@ -199,8 +199,6 @@ pub struct RDCleanPathPdu {
     /// Sent from proxy to client only.
     #[asn1(context_specific = "7", optional = "true")]
     pub server_cert_chain: Option<Vec<OctetString>>,
-    // #[asn1(context_specific = "8", optional = "true")]
-    // pub ocsp_response: Option<String>,
     /// IPv4 or IPv6 address of the server found by resolving the destination field on proxy side.
     ///
     /// Sent from proxy to client only.
@@ -266,7 +264,7 @@ impl RDCleanPathPdu {
 
         match der::asn1::ContextSpecific::<u64>::decode_explicit(&mut slice_reader, der::TagNumber(0)) {
             Ok(Some(version)) if version.value == VERSION_1 => DetectionResult::Detected {
-                version: VERSION_1,
+                version: version.value,
                 total_length,
             },
             Ok(Some(_)) => DetectionResult::Failed,
@@ -324,6 +322,17 @@ impl RDCleanPathPdu {
         })
     }
 
+    /// Request with PCB only: proxy writes PCB and does TLS; client runs CredSSP then X.224.
+    pub fn new_request_with_pcb(destination: String, proxy_auth: String, preconnection_blob: String) -> Self {
+        Self {
+            version: VERSION_1,
+            destination: Some(destination),
+            proxy_auth: Some(proxy_auth),
+            preconnection_blob: Some(preconnection_blob),
+            ..Self::default()
+        }
+    }
+
     pub fn new_response(
         server_addr: String,
         x224_pdu: Vec<u8>,
@@ -332,6 +341,24 @@ impl RDCleanPathPdu {
         Ok(Self {
             version: VERSION_1,
             x224_connection_pdu: Some(OctetString::new(x224_pdu)?),
+            server_cert_chain: Some(
+                x509_chain
+                    .into_iter()
+                    .map(OctetString::new)
+                    .collect::<der::Result<_>>()?,
+            ),
+            server_addr: Some(server_addr),
+            ..Self::default()
+        })
+    }
+
+    /// Response after PCB-front TLS: cert chain only, no X.224.
+    pub fn new_response_with_pcb(
+        server_addr: String,
+        x509_chain: impl IntoIterator<Item = Vec<u8>>,
+    ) -> der::Result<Self> {
+        Ok(Self {
+            version: VERSION_1,
             server_cert_chain: Some(
                 x509_chain
                     .into_iter()
@@ -410,10 +437,12 @@ pub enum RDCleanPath {
         proxy_auth: String,
         server_auth: Option<String>,
         preconnection_blob: Option<String>,
-        x224_connection_request: OctetString,
+        /// Absent means the proxy should do PCB → TLS and leave CredSSP/X.224 to the client.
+        x224_connection_request: Option<OctetString>,
     },
     Response {
-        x224_connection_response: OctetString,
+        /// Absent means the proxy already did PCB → TLS; client must run CredSSP then X.224.
+        x224_connection_response: Option<OctetString>,
         server_cert_chain: Vec<OctetString>,
         server_addr: String,
     },
@@ -434,7 +463,7 @@ pub struct MissingRDCleanPathField(&'static str);
 
 impl fmt::Display for MissingRDCleanPathField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "RDCleanPath is missing {} field", self.0)
+        write!(f, "missing RDCleanPath field: {}", self.0)
     }
 }
 
@@ -445,20 +474,20 @@ impl TryFrom<RDCleanPathPdu> for RDCleanPath {
 
     fn try_from(pdu: RDCleanPathPdu) -> Result<Self, Self::Error> {
         let rdcleanpath = if let Some(destination) = pdu.destination {
+            let proxy_auth = pdu.proxy_auth.ok_or(MissingRDCleanPathField("proxy_auth"))?;
+            if pdu.x224_connection_pdu.is_none() && pdu.preconnection_blob.is_none() {
+                return Err(MissingRDCleanPathField("x224_connection_pdu or preconnection_blob"));
+            }
             Self::Request {
                 destination,
-                proxy_auth: pdu.proxy_auth.ok_or(MissingRDCleanPathField("proxy_auth"))?,
+                proxy_auth,
                 server_auth: pdu.server_auth,
                 preconnection_blob: pdu.preconnection_blob,
-                x224_connection_request: pdu
-                    .x224_connection_pdu
-                    .ok_or(MissingRDCleanPathField("x224_connection_pdu"))?,
+                x224_connection_request: pdu.x224_connection_pdu,
             }
         } else if let Some(server_addr) = pdu.server_addr {
             Self::Response {
-                x224_connection_response: pdu
-                    .x224_connection_pdu
-                    .ok_or(MissingRDCleanPathField("x224_connection_pdu"))?,
+                x224_connection_response: pdu.x224_connection_pdu,
                 server_cert_chain: pdu
                     .server_cert_chain
                     .ok_or(MissingRDCleanPathField("server_cert_chain"))?,
@@ -493,7 +522,7 @@ impl From<RDCleanPath> for RDCleanPathPdu {
                 proxy_auth: Some(proxy_auth),
                 server_auth,
                 preconnection_blob,
-                x224_connection_pdu: Some(x224_connection_request),
+                x224_connection_pdu: x224_connection_request,
                 ..Default::default()
             },
             RDCleanPath::Response {
@@ -502,7 +531,7 @@ impl From<RDCleanPath> for RDCleanPathPdu {
                 server_addr,
             } => Self {
                 version: VERSION_1,
-                x224_connection_pdu: Some(x224_connection_response),
+                x224_connection_pdu: x224_connection_response,
                 server_cert_chain: Some(server_cert_chain),
                 server_addr: Some(server_addr),
                 ..Default::default()

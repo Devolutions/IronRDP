@@ -65,12 +65,29 @@ pub fn encode_preconnection_blob(vm_id: &str, mode: Mode) -> ConnectorResult<Vec
         Mode::Enhanced => format!("{vm_id}{ENHANCED_MODE_SUFFIX}"),
         Mode::Basic => vm_id.to_owned(),
     };
+    encode_preconnection_blob_payload(payload)
+}
+
+/// Encode a PCB V2 containing an opaque routing payload.
+pub fn encode_preconnection_blob_payload(payload: String) -> ConnectorResult<Vec<u8>> {
     encode_vec(&PreconnectionBlob {
         id: 0,
         version: PcbVersion::V2,
         v2_payload: Some(payload),
     })
     .map_err(ConnectorError::encode)
+}
+
+/// Encode a PCB V2 as the byte-preserving string used by RDCleanPath.
+pub fn encode_preconnection_blob_string(vm_id: &str, mode: Mode) -> ConnectorResult<String> {
+    String::from_utf8(encode_preconnection_blob(vm_id, mode)?)
+        .map_err(|e| custom_err!("encode preconnection blob as RDCleanPath string", e))
+}
+
+/// Encode an opaque PCB payload as the byte-preserving string used by RDCleanPath.
+pub fn encode_preconnection_blob_payload_string(payload: String) -> ConnectorResult<String> {
+    String::from_utf8(encode_preconnection_blob_payload(payload)?)
+        .map_err(|e| custom_err!("encode preconnection blob as RDCleanPath string", e))
 }
 
 /// Write the Preconnection Blob on a pre-TLS stream. Returns a [`PcbSent`] for [`connect_front`].
@@ -92,6 +109,11 @@ where
     Ok(PcbSent)
 }
 
+/// Receipt after an RDCleanPath proxy has written the PCB and established TLS.
+pub fn pcb_sent_via_proxy() -> PcbSent {
+    PcbSent
+}
+
 /// After TLS: CredSSP, then X.224. Consumes [`PcbSent`]; returns [`Upgraded`] for
 /// [`ironrdp_async::connect_finalize`].
 ///
@@ -109,7 +131,7 @@ pub async fn connect_front<S, N>(
     kerberos_config: Option<KerberosConfig>,
 ) -> ConnectorResult<Upgraded>
 where
-    S: Sync + FramedRead + FramedWrite,
+    S: FramedRead + FramedWrite,
     N: NetworkClient,
 {
     prepare_connector(connector)?;
@@ -160,16 +182,10 @@ where
 /// through [`connect_front`], so this is the single choke point.
 fn prepare_connector(connector: &mut ClientConnector) -> ConnectorResult<()> {
     if !connector.config.enable_tls {
-        return Err(reason_err!(
-            "vmconnect",
-            "TLS is required for a Hyper-V console connection",
-        ));
+        return Err(reason_err!("vmconnect", "vmconnect requires TLS"));
     }
     if !connector.config.enable_credssp {
-        return Err(reason_err!(
-            "vmconnect",
-            "CredSSP is required for a Hyper-V console connection",
-        ));
+        return Err(reason_err!("vmconnect", "vmconnect requires CredSSP"));
     }
     Ok(())
 }

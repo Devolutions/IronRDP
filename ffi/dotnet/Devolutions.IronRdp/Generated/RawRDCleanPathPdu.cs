@@ -30,6 +30,19 @@ public partial struct RDCleanPathPdu
     public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewRequest(byte* x224Pdu, nuint x224PduSz, byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* pcb, nuint pcbSz);
 
     /// <summary>
+    /// Request with PCB only: proxy does PCB + TLS; client runs CredSSP then X.224.
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_new_request_with_pcb", ExactSpelling = true)]
+    public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewRequestWithPcb(byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* pcbPayload, nuint pcbPayloadSz);
+
+    /// <summary>
+    /// True when the PDU has no X.224 payload (PCB-front request or response).
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_has_x224", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static unsafe extern bool HasX224(RDCleanPathPdu* self);
+
+    /// <summary>
     /// Decodes a RDCleanPath PDU from DER-encoded bytes
     /// </summary>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_from_der", ExactSpelling = true)]

@@ -60,23 +60,59 @@ pub mod ffi {
             };
 
             match connector.state {
-                ClientConnectorState::Credssp { selected_protocol } => {
-                    let (credssp_sequence, ts_request) = ironrdp::connector::credssp::CredsspSequence::init(
-                        connector.config.credentials.clone(),
-                        connector.config.domain.as_deref(),
-                        selected_protocol,
-                        server_name.into(),
-                        server_public_key.to_owned(),
-                        kerbero_configs.map(|config| config.0.clone()),
-                    )?;
-
-                    Ok(Box::new(CredsspSequenceInitResult {
-                        credssp_sequence: Some(Box::new(CredsspSequence(credssp_sequence))),
-                        ts_request: Some(Box::new(TsRequest(ts_request))),
-                    }))
-                }
+                ClientConnectorState::Credssp { selected_protocol } => Self::init_with_selected_protocol(
+                    connector,
+                    server_name,
+                    server_public_key,
+                    selected_protocol,
+                    kerbero_configs,
+                ),
                 _ => Err(ironrdp::connector::general_err!("invalid connector state for CredSSP sequence").into()),
             }
+        }
+
+        /// Init CredSSP with an explicit protocol (pre-X.224 VMConnect front).
+        pub fn init_with_protocol(
+            connector: &ClientConnector,
+            server_name: &str,
+            server_public_key: &[u8],
+            selected_protocol: u32,
+            kerbero_configs: Option<&KerberosConfig>,
+        ) -> Result<Box<CredsspSequenceInitResult>, Box<IronRdpError>> {
+            let Some(connector) = connector.0.as_ref() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            let selected_protocol = ironrdp::pdu::nego::SecurityProtocol::from_bits(selected_protocol)
+                .ok_or_else(|| ironrdp::connector::general_err!("invalid security protocol"))?;
+            Self::init_with_selected_protocol(
+                connector,
+                server_name,
+                server_public_key,
+                selected_protocol,
+                kerbero_configs,
+            )
+        }
+
+        fn init_with_selected_protocol(
+            connector: &ironrdp::connector::ClientConnector,
+            server_name: &str,
+            server_public_key: &[u8],
+            selected_protocol: ironrdp::pdu::nego::SecurityProtocol,
+            kerbero_configs: Option<&KerberosConfig>,
+        ) -> Result<Box<CredsspSequenceInitResult>, Box<IronRdpError>> {
+            let (credssp_sequence, ts_request) = ironrdp::connector::credssp::CredsspSequence::init(
+                connector.config.credentials.clone(),
+                connector.config.domain.as_deref(),
+                selected_protocol,
+                server_name.into(),
+                server_public_key.to_owned(),
+                kerbero_configs.map(|config| config.0.clone()),
+            )?;
+
+            Ok(Box::new(CredsspSequenceInitResult {
+                credssp_sequence: Some(Box::new(CredsspSequence(credssp_sequence))),
+                ts_request: Some(Box::new(TsRequest(ts_request))),
+            }))
         }
 
         pub fn decode_server_message(&mut self, pdu: &[u8]) -> Result<Option<Box<TsRequest>>, Box<IronRdpError>> {

@@ -1037,8 +1037,8 @@ impl ConfigBuilder {
     /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
     ///
     /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
-    /// embedder (error if disabled). This builder only rejects transports that cannot target port
-    /// 2179 yet (RDCleanPath / RDS Gateway in [`build`](Self::build)).
+    /// embedder (error if disabled). Works over Direct and RDCleanPath. RDS Gateway is rejected
+    /// until it can propagate the VMConnect target port.
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
@@ -1375,9 +1375,6 @@ impl ConfigBuilder {
             }
             if !self.enable_credssp.unwrap_or(true) {
                 anyhow::bail!("vmconnect requires CredSSP");
-            }
-            if matches!(transport, Transport::RDCleanPath(_)) {
-                anyhow::bail!("vmconnect cannot be used over an RDCleanPath proxy");
             }
             #[cfg(feature = "gateway")]
             if matches!(transport, Transport::Gateway(_)) {

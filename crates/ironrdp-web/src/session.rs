@@ -1602,24 +1602,37 @@ async fn connect(
         );
     }
 
-    let (upgraded, server_public_key) =
-        connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, pcb).await?;
+    let kerberos_config = url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str())
+        .ok()
+        .map(|url| KerberosConfig {
+            kdc_proxy_url: Some(url),
+            // HACK: It's supposed to be the computer name of the client, but since it's not easy to retrieve this information in the browser,
+            // we set the destination hostname instead because it happens to work.
+            hostname: destination.clone(),
+        });
+
+    let mut network_client = WasmNetworkClient;
+    let server_name = connector::ServerName::from(destination.as_str());
+    let (upgraded, server_public_key) = connect_rdcleanpath(
+        &mut framed,
+        &mut connector,
+        &mut network_client,
+        server_name.clone(),
+        destination.clone(),
+        proxy_auth_token,
+        pcb,
+        kerberos_config.clone(),
+    )
+    .await?;
 
     let connection_result = ironrdp_futures::connect_finalize(
         upgraded,
         connector,
         &mut framed,
-        &mut WasmNetworkClient,
-        (&destination).into(),
+        &mut network_client,
+        server_name,
         server_public_key,
-        url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str()) // if kdc_proxy_url does not exit, give url parser a empty string, it will fail anyway and map to a None
-            .ok()
-            .map(|url| KerberosConfig {
-                kdc_proxy_url: Some(url),
-                // HACK: It's supposed to be the computer name of the client, but since it's not easy to retrieve this information in the browser,
-                // we set the destination hostname instead because it happens to work.
-                hostname: destination,
-            }),
+        kerberos_config,
     )
     .await?;
 
@@ -1628,15 +1641,19 @@ async fn connect(
     Ok((connection_result, ws))
 }
 
-async fn connect_rdcleanpath<S>(
+async fn connect_rdcleanpath<S, N>(
     framed: &mut ironrdp_futures::Framed<S>,
     connector: &mut ClientConnector,
+    network_client: &mut N,
+    server_name: connector::ServerName,
     destination: String,
     proxy_auth_token: String,
     pcb: Option<String>,
+    kerberos_config: Option<KerberosConfig>,
 ) -> Result<(ironrdp_futures::Upgraded, Vec<u8>), IronError>
 where
     S: ironrdp_futures::FramedRead + FramedWrite,
+    N: ironrdp_futures::NetworkClient,
 {
     use ironrdp::connector::Sequence as _;
     use x509_cert::der::Decode as _;
@@ -1664,22 +1681,28 @@ where
     info!("Begin connection procedure");
 
     {
-        // RDCleanPath request
+        let rdcleanpath_req = if let Some(pcb) = pcb {
+            let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_payload_string(pcb)
+                .context("encode preconnection blob")?;
+            Ok(ironrdp_rdcleanpath::RDCleanPathPdu::new_request_with_pcb(
+                destination,
+                proxy_auth_token,
+                preconnection_blob,
+            ))
+        } else {
+            let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
+                return Err(anyhow::Error::msg("invalid connector state (send request)").into());
+            };
 
-        let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
-            return Err(anyhow::Error::msg("invalid connector state (send request)").into());
-        };
+            debug_assert!(connector.next_pdu_hint().is_none());
 
-        debug_assert!(connector.next_pdu_hint().is_none());
-
-        let written = connector.step_no_input(&mut buf)?;
-        let x224_pdu_len = written.size().expect("written size");
-        debug_assert_eq!(x224_pdu_len, buf.filled_len());
-        let x224_pdu = buf.filled().to_vec();
-
-        let rdcleanpath_req =
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
-                .context("new RDCleanPath request")?;
+            let written = connector.step_no_input(&mut buf)?;
+            let x224_pdu_len = written.size().expect("written size");
+            debug_assert_eq!(x224_pdu_len, buf.filled_len());
+            let x224_pdu = buf.filled().to_vec();
+            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, None)
+        }
+        .context("new RDCleanPath request")?;
         debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
         let rdcleanpath_req = rdcleanpath_req.to_der().context("RDCleanPath request encode")?;
 
@@ -1690,8 +1713,6 @@ where
     }
 
     {
-        // RDCleanPath response
-
         let rdcleanpath_res = framed
             .read_by_hint(&RDCLEANPATH_HINT)
             .await
@@ -1727,13 +1748,11 @@ where
                 ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
                     x224_connection_response,
                 } => {
-                    // Try to decode as X.224 Connection Confirm to extract negotiation failure details.
                     if let Ok(x224_confirm) = ironrdp_core::decode::<
                         ironrdp::pdu::x224::X224<ironrdp::pdu::nego::ConnectionConfirm>,
                     >(&x224_connection_response)
                     {
                         if let ironrdp::pdu::nego::ConnectionConfirm::Failure { code } = x224_confirm.0 {
-                            // Convert to negotiation failure instead of generic RDCleanPath error.
                             let negotiation_failure = connector::NegotiationFailure::from(code);
                             return Err(IronError::from(
                                 anyhow::Error::new(negotiation_failure).context("RDP negotiation failed"),
@@ -1742,24 +1761,12 @@ where
                         }
                     }
 
-                    // Fallback to generic error if we can't decode the negotiation failure.
                     return Err(
                         IronError::from(anyhow::Error::msg("received an RDCleanPath negotiation error"))
                             .with_kind(IronErrorKind::RDCleanPath),
                     );
                 }
             };
-
-        let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
-            return Err(anyhow::Error::msg("invalid connector state (wait confirm)").into());
-        };
-
-        debug_assert!(connector.next_pdu_hint().is_some());
-
-        buf.clear();
-        let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
-
-        debug_assert!(written.is_nothing());
 
         let server_cert = server_cert_chain
             .into_iter()
@@ -1777,11 +1784,32 @@ where
             .context("subject public key BIT STRING is not aligned")?
             .to_owned();
 
-        let should_upgrade = ironrdp_futures::skip_connect_begin(connector);
+        let upgraded = if let Some(x224_connection_response) = x224_connection_response {
+            let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
+                return Err(anyhow::Error::msg("invalid connector state (wait confirm)").into());
+            };
 
-        // At this point, proxy established the TLS session.
+            debug_assert!(connector.next_pdu_hint().is_some());
 
-        let upgraded = ironrdp_futures::mark_as_upgraded(should_upgrade, connector);
+            buf.clear();
+            let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
+            debug_assert!(written.is_nothing());
+
+            let should_upgrade = ironrdp_futures::skip_connect_begin(connector);
+            ironrdp_futures::mark_as_upgraded(should_upgrade, connector)
+        } else {
+            ironrdp_vmconnect::connect_front(
+                ironrdp_vmconnect::pcb_sent_via_proxy(),
+                framed,
+                connector,
+                network_client,
+                server_name,
+                &server_public_key,
+                kerberos_config,
+            )
+            .await
+            .context("Hyper-V front over RDCleanPath")?
+        };
 
         Ok((upgraded, server_public_key))
     }
