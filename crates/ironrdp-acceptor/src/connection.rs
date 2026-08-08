@@ -1,6 +1,7 @@
 use core::any::TypeId;
 use core::mem;
 
+use ironrdp_connector::sspi::AuthIdentity;
 use ironrdp_connector::{
     ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State, Written, encode_x224_packet,
     general_err, reason_err,
@@ -38,7 +39,8 @@ pub struct Acceptor {
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
-    received_credentials: Option<Credentials>,
+    received_credentials: Option<ReceivedCredentials>,
+    credentials_handled: bool,
     received_auto_reconnect: Option<ClientAutoReconnect>,
     reactivation: bool,
     honor_client_desktop_size: Option<DesktopSize>,
@@ -76,6 +78,35 @@ fn set_bitmap_desktop_size(capabilities: &mut [CapabilitySet], size: DesktopSize
     }
 }
 
+/// Protocol source and handshake-authentication status of received credentials.
+///
+/// Servers must not infer this from their configured security mode: the origin
+/// records what the acceptor actually received during negotiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialOrigin {
+    /// Received in the ClientInfoPdu (MS-RDPBCGR 2.2.1.11).
+    ///
+    /// These credentials are client-supplied and have not been authenticated by
+    /// the protocol handshake. A server should validate them before using them
+    /// to select identity-bound resources.
+    ClientInfo,
+    /// Delegated TSPasswordCreds decrypted by CredSSP (MS-CSSP).
+    ///
+    /// CredSSP authenticated the principal during the exchange. A server may
+    /// still run authorization policy before starting or selecting a session.
+    CredSspDelegated,
+}
+
+/// Credentials received by the acceptor together with their protocol origin.
+///
+/// Keeping both values in one type makes it impossible to expose credentials
+/// without the provenance required to interpret their authentication status.
+#[derive(Clone, Debug)]
+pub struct ReceivedCredentials {
+    pub credentials: Credentials,
+    pub origin: CredentialOrigin,
+}
+
 #[derive(Debug)]
 pub struct AcceptorResult {
     pub static_channels: StaticChannelSet,
@@ -109,11 +140,11 @@ pub struct AcceptorResult {
     /// Credentials received from the client during SecureSettingsExchange.
     ///
     /// Present for TLS-mode connections where the client sends credentials
-    /// in the ClientInfoPdu. `None` for CredSSP/Hybrid connections (where
-    /// authentication happens during the CredSSP exchange instead).
+    /// in the ClientInfoPdu. For CredSSP/Hybrid connections, credentials are
+    /// handled before capability exchange and are not exposed here.
     ///
     /// Servers that need to validate credentials (e.g., via PAM or LDAP)
-    /// can use this field for post-handshake validation.
+    /// should use a [`CredentialsHandler`](crate::CredentialsHandler).
     pub credentials: Option<Credentials>,
     /// Client Auto-Reconnect Packet received in the Client Info PDU.
     ///
@@ -145,6 +176,7 @@ impl Acceptor {
             saved_for_reactivation: Default::default(),
             creds,
             received_credentials: None,
+            credentials_handled: false,
             received_auto_reconnect: None,
             reactivation: false,
             honor_client_desktop_size: None,
@@ -231,6 +263,7 @@ impl Acceptor {
             saved_for_reactivation,
             creds: consumed.creds,
             received_credentials: consumed.received_credentials,
+            credentials_handled: consumed.credentials_handled,
             received_auto_reconnect: consumed.received_auto_reconnect,
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
@@ -295,6 +328,47 @@ impl Acceptor {
         matches!(self.state, AcceptorState::Credssp { .. })
     }
 
+    pub fn desktop_size(&self) -> DesktopSize {
+        self.desktop_size
+    }
+
+    pub fn is_reactivation(&self) -> bool {
+        self.reactivation
+    }
+
+    pub fn is_ready_for_capability_exchange(&self) -> bool {
+        matches!(self.state, AcceptorState::CapabilitiesSendServer { .. })
+    }
+
+    /// Returns credentials received during the current handshake, if any.
+    pub fn received_credentials(&self) -> Option<&ReceivedCredentials> {
+        self.received_credentials.as_ref()
+    }
+
+    /// Takes credentials received during the current handshake, if any.
+    pub fn credentials_need_handling(&self) -> bool {
+        self.received_credentials.is_some() && !self.credentials_handled
+    }
+
+    pub fn mark_credentials_handled(&mut self) {
+        self.credentials_handled = true;
+    }
+
+    /// Store credentials delegated by CredSSP/NLA so server code can use the
+    /// same post-handshake validation and binding path as TLS ClientInfo
+    /// credentials.
+    pub(crate) fn set_received_credssp_credentials(&mut self, identity: AuthIdentity) {
+        self.received_credentials = Some(ReceivedCredentials {
+            credentials: Credentials {
+                username: identity.username.account_name().to_owned(),
+                password: identity.password.as_ref().clone(),
+                domain: identity.username.domain_name().map(str::to_owned),
+            },
+            origin: CredentialOrigin::CredSspDelegated,
+        });
+        self.credentials_handled = false;
+    }
+
     /// # Panics
     ///
     /// Panics if state is not [AcceptorState::Credssp].
@@ -321,7 +395,7 @@ impl Acceptor {
                 keyboard_layout: self.keyboard_layout,
                 multitransport_flags: self.multitransport_flags,
                 reactivation: self.reactivation,
-                credentials: self.received_credentials.take(),
+                credentials: self.received_credentials.take().map(|received| received.credentials),
                 auto_reconnect: self.received_auto_reconnect.take(),
             }),
             previous_state => {
@@ -799,7 +873,11 @@ impl Sequence for Acceptor {
                     }
 
                     // Store credentials for later retrieval via AcceptorResult.
-                    self.received_credentials = Some(creds);
+                    self.received_credentials = Some(ReceivedCredentials {
+                        credentials: creds,
+                        origin: CredentialOrigin::ClientInfo,
+                    });
+                    self.credentials_handled = false;
                 }
 
                 (

@@ -1,9 +1,8 @@
 name: Fuzz
 
+# Fork policy: fuzzing is opt-in; upstream owns scheduled fuzz runs.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '12 3 * * 0' # At 03:12 AM UTC on Sunday.
 
 env:
   CARGO_INCREMENTAL: 0
