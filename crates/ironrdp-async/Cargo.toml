@@ -22,6 +22,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"]
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
 tracing = { version = "0.1", features = ["log"] }
 bytes = "1" # public
+web-time = "1.1"
 
 [lints]
 workspace = true

@@ -2492,6 +2492,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "tracing",
+ "web-time",
 ]
 
 [[package]]
@@ -3022,6 +3023,7 @@ dependencies = [
  "expect-test",
  "hex",
  "ironrdp-acceptor",
+ "ironrdp-async",
  "ironrdp-bulk",
  "ironrdp-cfg",
  "ironrdp-cliprdr",

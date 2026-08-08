@@ -337,15 +337,55 @@ impl Written {
     }
 }
 
+/// A point on a monotonic millisecond clock owned by the I/O driver.
+///
+/// The epoch is arbitrary and carries no meaning; only differences between two
+/// instants do. The clock deliberately lives outside the sans-I/O sequences,
+/// because a sequence reading a clock itself would measure how quickly it
+/// drained an already-filled buffer rather than how long the bytes took to
+/// arrive. Only the driver that performed the read knows the latter, and a
+/// driver whose caller owns the read loop does not know it either: that is what
+/// the `None` in [`Sequence::step`] is for, and why it stays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MonotonicInstant(u64);
+
+impl MonotonicInstant {
+    /// Builds an instant from a monotonic millisecond reading.
+    #[must_use]
+    pub fn from_millis(milliseconds: u64) -> Self {
+        Self(milliseconds)
+    }
+
+    /// The time elapsed since `earlier`, saturating at zero if the clock went
+    /// backwards or the arguments were transposed.
+    #[must_use]
+    pub fn duration_since(self, earlier: Self) -> core::time::Duration {
+        core::time::Duration::from_millis(self.0.saturating_sub(earlier.0))
+    }
+}
+
 pub trait Sequence: Send {
     fn next_pdu_hint(&self) -> Option<&dyn PduHint>;
 
     fn state(&self) -> &dyn State;
 
-    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written>;
+    /// Advances the sequence.
+    ///
+    /// `received_at` is when `input` arrived on the wire, as observed by the I/O
+    /// driver, or `None` from a driver that does not observe arrival times. The
+    /// absence of a reading is deliberately not expressible as an instant: a
+    /// driver that cannot measure has taken no measurement, which is a different
+    /// thing from one that measured no elapsed time, and only the sequence
+    /// knows which of the two its reply may be derived from.
+    fn step(
+        &mut self,
+        input: &[u8],
+        received_at: Option<MonotonicInstant>,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written>;
 
     fn step_no_input(&mut self, output: &mut WriteBuf) -> ConnectorResult<Written> {
-        self.step(&[], output)
+        self.step(&[], None, output)
     }
 }
 
