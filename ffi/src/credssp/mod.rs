@@ -72,6 +72,9 @@ pub mod ffi {
         }
 
         /// Init CredSSP with an explicit protocol (pre-X.224 VMConnect front).
+        ///
+        /// Enforces the same TLS + CredSSP prerequisites as
+        /// [`ironrdp_vmconnect::prepare_connector`] / [`ironrdp_vmconnect::connect_front`].
         pub fn init_with_protocol(
             connector: &ClientConnector,
             server_name: &str,
@@ -82,6 +85,7 @@ pub mod ffi {
             let Some(connector) = connector.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
+            ironrdp_vmconnect::prepare_connector(connector)?;
             let selected_protocol = ironrdp::pdu::nego::SecurityProtocol::from_bits(selected_protocol)
                 .ok_or_else(|| ironrdp::connector::general_err!("invalid security protocol"))?;
             Self::init_with_selected_protocol(

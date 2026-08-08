@@ -138,6 +138,15 @@ public static class RDCleanPathConnection
             System.Diagnostics.Debug.WriteLine("RDCleanPath handshake successful!");
 
             var hasX224 = rdCleanPathResp.HasX224();
+            if (pcbFront == hasX224)
+            {
+                throw new IronRdpLibException(
+                    IronRdpLibExceptionType.ConnectionFailed,
+                    pcbFront
+                        ? "RDCleanPath response includes X.224 for a PCB-front request"
+                        : "RDCleanPath response missing X.224 for an ordinary request");
+            }
+
             if (hasX224)
             {
                 var x224Response = rdCleanPathResp.GetX224Response();

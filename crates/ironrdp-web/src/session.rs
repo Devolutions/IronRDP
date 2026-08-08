@@ -1621,11 +1621,13 @@ async fn connect(
         &mut framed,
         &mut connector,
         &mut network_client,
-        server_name.clone(),
-        destination.clone(),
-        proxy_auth_token,
-        pcb,
-        kerberos_config.clone(),
+        RDCleanPathConnectParams {
+            server_name: server_name.clone(),
+            destination: destination.clone(),
+            proxy_auth_token,
+            pcb,
+            kerberos_config: kerberos_config.clone(),
+        },
     )
     .await?;
 
@@ -1645,15 +1647,19 @@ async fn connect(
     Ok((connection_result, ws))
 }
 
-async fn connect_rdcleanpath<S, N>(
-    framed: &mut ironrdp_futures::Framed<S>,
-    connector: &mut ClientConnector,
-    network_client: &mut N,
+struct RDCleanPathConnectParams {
     server_name: connector::ServerName,
     destination: String,
     proxy_auth_token: String,
     pcb: Option<String>,
     kerberos_config: Option<KerberosConfig>,
+}
+
+async fn connect_rdcleanpath<S, N>(
+    framed: &mut ironrdp_futures::Framed<S>,
+    connector: &mut ClientConnector,
+    network_client: &mut N,
+    params: RDCleanPathConnectParams,
 ) -> Result<(ironrdp_futures::Upgraded, Vec<u8>), IronError>
 where
     S: ironrdp_futures::FramedRead + FramedWrite,
@@ -1680,6 +1686,15 @@ where
         }
     }
 
+    let RDCleanPathConnectParams {
+        server_name,
+        destination,
+        proxy_auth_token,
+        pcb,
+        kerberos_config,
+    } = params;
+    let request_pcb_front = pcb.is_some();
+
     let mut buf = WriteBuf::new();
 
     info!("Begin connection procedure");
@@ -1688,11 +1703,11 @@ where
         let rdcleanpath_req = if let Some(pcb) = pcb {
             let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_payload_string(pcb)
                 .context("encode preconnection blob")?;
-            Ok(ironrdp_rdcleanpath::RDCleanPathPdu::new_request_with_pcb(
+            ironrdp_rdcleanpath::RDCleanPathPdu::new_request_with_pcb(
                 destination,
                 proxy_auth_token,
                 preconnection_blob,
-            ))
+            )
         } else {
             let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
                 return Err(anyhow::Error::msg("invalid connector state (send request)").into());
@@ -1705,8 +1720,8 @@ where
             debug_assert_eq!(x224_pdu_len, buf.filled_len());
             let x224_pdu = buf.filled().to_vec();
             ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, None)
-        }
-        .context("new RDCleanPath request")?;
+                .context("new RDCleanPath request")?
+        };
         debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
         let rdcleanpath_req = rdcleanpath_req.to_der().context("RDCleanPath request encode")?;
 
@@ -1772,6 +1787,9 @@ where
                 }
             };
 
+        let response_has_x224 = x224_connection_response.is_some();
+        ensure_rdcleanpath_front_mode(request_pcb_front, response_has_x224)?;
+
         let server_cert = server_cert_chain
             .into_iter()
             .next()
@@ -1788,21 +1806,22 @@ where
             .context("subject public key BIT STRING is not aligned")?
             .to_owned();
 
-        let upgraded = if let Some(x224_connection_response) = x224_connection_response {
-            let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
-                return Err(anyhow::Error::msg("invalid connector state (wait confirm)").into());
-            };
+        let upgraded = match x224_connection_response {
+            Some(x224_connection_response) => {
+                let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
+                    return Err(anyhow::Error::msg("invalid connector state (wait confirm)").into());
+                };
 
-            debug_assert!(connector.next_pdu_hint().is_some());
+                debug_assert!(connector.next_pdu_hint().is_some());
 
-            buf.clear();
-            let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
-            debug_assert!(written.is_nothing());
+                buf.clear();
+                let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
+                debug_assert!(written.is_nothing());
 
-            let should_upgrade = ironrdp_futures::skip_connect_begin(connector);
-            ironrdp_futures::mark_as_upgraded(should_upgrade, connector)
-        } else {
-            ironrdp_vmconnect::connect_front(
+                let should_upgrade = ironrdp_futures::skip_connect_begin(connector);
+                ironrdp_futures::mark_as_upgraded(should_upgrade, connector)
+            }
+            None => ironrdp_vmconnect::connect_front(
                 ironrdp_vmconnect::pcb_sent_via_proxy(),
                 framed,
                 connector,
@@ -1812,10 +1831,24 @@ where
                 kerberos_config,
             )
             .await
-            .context("Hyper-V front over RDCleanPath")?
+            .context("Hyper-V front over RDCleanPath")?,
         };
 
         Ok((upgraded, server_public_key))
+    }
+}
+
+fn ensure_rdcleanpath_front_mode(request_pcb_front: bool, response_has_x224: bool) -> Result<(), IronError> {
+    match (request_pcb_front, response_has_x224) {
+        (true, false) | (false, true) => Ok(()),
+        (true, true) => Err(anyhow::Error::msg(
+            "RDCleanPath response includes X.224 for a PCB-front request",
+        )
+        .into()),
+        (false, false) => Err(anyhow::Error::msg(
+            "RDCleanPath response missing X.224 for an ordinary request",
+        )
+        .into()),
     }
 }
 
