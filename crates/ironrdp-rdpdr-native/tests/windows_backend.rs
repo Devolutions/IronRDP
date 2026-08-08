@@ -16,6 +16,8 @@ use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackend, WindowsRdpdrBac
 use ironrdp_svc::SvcMessage;
 use windows as _;
 
+const MAX_STATIC_IO_SIZE: usize = 1_024 * 1_024;
+
 #[test]
 fn filesystem_lifecycle_is_handle_relative_and_bounded() {
     let fixture = Fixture::new();
@@ -95,6 +97,144 @@ fn filesystem_lifecycle_is_handle_relative_and_bounded() {
         }))
         .expect("complete close");
     assert_eq!(response_status(&close_response), NtStatus::SUCCESS);
+}
+
+#[test]
+fn synchronous_nonalert_create_option_is_accepted() {
+    let fixture = Fixture::new();
+    let mut backend = fixture.backend();
+    activate(&mut backend);
+
+    let mut create = create_request(
+        &fixture.relative(r"root\synchronous.txt"),
+        CreateDisposition::FILE_OPEN_IF,
+    );
+    create.create_options = CreateOptions::FILE_SYNCHRONOUS_IO_NONALERT;
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create))
+        .expect("complete synchronous create");
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+}
+
+#[test]
+fn read_only_drives_allow_reads_and_reject_mutations() {
+    let fixture = Fixture::new();
+    let file_path = fixture.root.join("root").join("read-only.txt");
+    std::fs::write(&file_path, b"safe").expect("write read-only fixture");
+
+    let mut backend = fixture.read_only_backend();
+    activate(&mut backend);
+
+    let mut open = create_request(&fixture.relative(r"root\read-only.txt"), CreateDisposition::FILE_OPEN);
+    open.desired_access = DesiredAccess::from_bits_retain(0x0010_0081);
+    let open_response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(open))
+        .expect("complete read-only open");
+    assert_eq!(response_status(&open_response), NtStatus::SUCCESS);
+    let file_id = response_file_id(&open_response);
+
+    let read_response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceReadRequest(DeviceReadRequest {
+            device_io_request: request_header(file_id, MajorFunction::Read),
+            length: 4,
+            offset: 0,
+        }))
+        .expect("complete read-only read");
+    assert_eq!(response_status(&read_response), NtStatus::SUCCESS);
+    let bytes = read_response[0].encode_unframed_pdu().expect("encode read response");
+    assert_eq!(&bytes[20..], b"safe");
+
+    let access_response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create_request(
+            &fixture.relative(r"root\read-only.txt"),
+            CreateDisposition::FILE_OPEN,
+        )))
+        .expect("complete write-access open");
+    assert_eq!(response_status(&access_response), NtStatus::MEDIA_WRITE_PROTECTED);
+
+    let mut create = create_request(&fixture.relative(r"root\new.txt"), CreateDisposition::FILE_OPEN_IF);
+    create.desired_access = DesiredAccess::from_bits_retain(0x0010_0081);
+    let create_response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create))
+        .expect("complete create on read-only drive");
+    assert_eq!(response_status(&create_response), NtStatus::MEDIA_WRITE_PROTECTED);
+    assert!(!fixture.root.join("root").join("new.txt").exists());
+
+    let write_response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 0,
+            write_data: b"overwrite".to_vec(),
+        }))
+        .expect("complete write on read-only drive");
+    assert_eq!(response_status(&write_response), NtStatus::MEDIA_WRITE_PROTECTED);
+
+    let set_response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerDriveSetInformationRequest(
+            ServerDriveSetInformationRequest {
+                device_io_request: request_header(file_id, MajorFunction::SetInformation),
+                set_buffer: FileInformationClass::EndOfFile(FileEndOfFileInformation { end_of_file: 0 }),
+            },
+        ))
+        .expect("complete metadata update on read-only drive");
+    assert_eq!(response_status(&set_response), NtStatus::MEDIA_WRITE_PROTECTED);
+    assert_eq!(
+        std::fs::read(file_path).expect("read fixture after rejected mutations"),
+        b"safe"
+    );
+}
+
+#[test]
+fn static_io_limit_is_inclusive() {
+    let fixture = Fixture::new();
+    let mut backend = fixture.backend();
+    activate(&mut backend);
+
+    let create_response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create_request(
+            &fixture.relative(r"root\bounded.bin"),
+            CreateDisposition::FILE_OPEN_IF,
+        )))
+        .expect("complete bounded create");
+    assert_eq!(response_status(&create_response), NtStatus::SUCCESS);
+    let file_id = response_file_id(&create_response);
+
+    let write_response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 0,
+            write_data: vec![0xA5; MAX_STATIC_IO_SIZE],
+        }))
+        .expect("complete maximum write");
+    assert_eq!(response_status(&write_response), NtStatus::SUCCESS);
+
+    let read_response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceReadRequest(DeviceReadRequest {
+            device_io_request: request_header(file_id, MajorFunction::Read),
+            length: u32::try_from(MAX_STATIC_IO_SIZE).expect("static I/O size fits in u32"),
+            offset: 0,
+        }))
+        .expect("complete maximum read");
+    assert_eq!(response_status(&read_response), NtStatus::SUCCESS);
+
+    let oversized_write = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 0,
+            write_data: vec![0; MAX_STATIC_IO_SIZE + 1],
+        }))
+        .expect("complete oversized write");
+    assert_eq!(response_status(&oversized_write), NtStatus::INVALID_PARAMETER);
+
+    let oversized_read = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceReadRequest(DeviceReadRequest {
+            device_io_request: request_header(file_id, MajorFunction::Read),
+            length: u32::try_from(MAX_STATIC_IO_SIZE + 1).expect("oversized I/O size fits in u32"),
+            offset: 0,
+        }))
+        .expect("complete oversized read");
+    assert_eq!(response_status(&oversized_read), NtStatus::INVALID_PARAMETER);
 }
 
 #[test]
@@ -222,8 +362,16 @@ impl Fixture {
     }
 
     fn backend(&self) -> WindowsRdpdrBackend {
+        self.backend_with_read_only(false)
+    }
+
+    fn read_only_backend(&self) -> WindowsRdpdrBackend {
+        self.backend_with_read_only(true)
+    }
+
+    fn backend_with_read_only(&self, read_only: bool) -> WindowsRdpdrBackend {
         WindowsRdpdrBackendFactory::new(
-            RedirectedDrive::new(1, "Test", &self.volume_root, false).expect("valid test drive"),
+            RedirectedDrive::new(1, "Test", &self.volume_root, read_only).expect("valid test drive"),
         )
         .build()
     }

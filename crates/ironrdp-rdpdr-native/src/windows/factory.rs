@@ -77,7 +77,7 @@ pub enum RedirectedDriveError {
 impl fmt::Display for RedirectedDriveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ReservedDeviceId => f.write_str("RDPDR device ID zero is reserved"),
+            Self::ReservedDeviceId => f.write_str("device ID zero is reserved for RDPDR"),
             Self::EmptyDisplayName => f.write_str("redirected drive display name must not be empty"),
             Self::EmbeddedNul => f.write_str("redirected drive display name must not contain NUL"),
         }

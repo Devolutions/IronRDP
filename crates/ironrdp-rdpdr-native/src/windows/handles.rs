@@ -8,8 +8,8 @@ use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
     FILE_BASIC_INFORMATION, FILE_INFORMATION_CLASS, FILE_OPEN, FILE_STANDARD_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT,
     FileAttributeTagInformation, FileBasicInformation, FileEndOfFileInformation, FileStandardInformation,
-    NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS, NtCreateFile, NtFlushBuffersFile,
-    NtQueryInformationFile, NtReadFile, NtSetInformationFile, NtWriteFile,
+    NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS, NtCreateFile, NtQueryInformationFile, NtReadFile,
+    NtSetInformationFile, NtWriteFile,
 };
 use windows::Wdk::System::SystemServices::FILE_END_OF_FILE_INFORMATION;
 use windows::Win32::Foundation::{
@@ -185,18 +185,6 @@ impl FileHandle {
             status,
             transferred: io_status.Information.min(buffer.len()),
         })
-    }
-
-    pub(crate) fn flush(&self) -> Result<(), NTSTATUS> {
-        let mut io_status = IO_STATUS_BLOCK::default();
-
-        // SAFETY: The handle and IO status remain valid for the synchronous call.
-        let status = unsafe { NtFlushBuffersFile(self.0, core::ptr::addr_of_mut!(io_status)) };
-        if status.0 < 0 {
-            return Err(status);
-        }
-
-        Ok(())
     }
 
     fn query_information<T: Default>(&self, information_class: FILE_INFORMATION_CLASS) -> Result<T, NTSTATUS> {

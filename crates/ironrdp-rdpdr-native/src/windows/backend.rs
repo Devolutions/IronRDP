@@ -49,12 +49,17 @@ const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
 const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
 const FILE_WRITE_THROUGH: u32 = 0x0000_0002;
 const FILE_SEQUENTIAL_ONLY: u32 = 0x0000_0004;
+const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
 const FILE_RANDOM_ACCESS: u32 = 0x0000_0800;
 const FILE_DELETE_ON_CLOSE: u32 = 0x0000_1000;
 const FILE_OPEN_BY_FILE_ID: u32 = 0x0000_2000;
 const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-const ALLOWED_CREATE_OPTIONS: u32 =
-    FILE_DIRECTORY_FILE | FILE_NON_DIRECTORY_FILE | FILE_WRITE_THROUGH | FILE_SEQUENTIAL_ONLY | FILE_RANDOM_ACCESS;
+const ALLOWED_CREATE_OPTIONS: u32 = FILE_DIRECTORY_FILE
+    | FILE_NON_DIRECTORY_FILE
+    | FILE_WRITE_THROUGH
+    | FILE_SEQUENTIAL_ONLY
+    | FILE_SYNCHRONOUS_IO_NONALERT
+    | FILE_RANDOM_ACCESS;
 
 /// Windows backend that safely opens files below explicitly configured roots.
 #[derive(Debug)]
@@ -75,10 +80,10 @@ impl WindowsRdpdrBackend {
 
     fn activate_drive(&mut self, device_id: u32) -> PduResult<()> {
         if device_id != self.drive.device_id() {
-            return Err(pdu_other_err!("Windows RDPDR drive is not configured"));
+            return Err(pdu_other_err!("windows RDPDR drive is not configured"));
         }
         if self.root.is_some() {
-            return Err(pdu_other_err!("Windows RDPDR drive is already active"));
+            return Err(pdu_other_err!("windows RDPDR drive is already active"));
         }
         let root = RootDirectory::open(self.drive.root_path())
             .map_err(|_status| pdu_other_err!("open configured Windows RDPDR volume root"))?;
@@ -245,7 +250,6 @@ impl WindowsRdpdrBackend {
         if completion.transferred != req.write_data.len() {
             return Err(NtStatus::UNSUCCESSFUL);
         }
-        file.handle.flush().map_err(from_ntstatus)?;
         u32::try_from(completion.transferred).map_err(|_| NtStatus::UNSUCCESSFUL)
     }
 
