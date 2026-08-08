@@ -45,7 +45,14 @@ use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
+#[cfg(feature = "usb")]
+use crate::urbdrc::{
+    DeviceFactory, SentIoRequest, ServerDeviceIoData, UrbdrcDeviceServerMessage, UrbdrcServerMessage, UsbControlHandle,
+    UsbDeviceHandle,
+};
 use crate::{SoundServerFactory, builder, capabilities};
+#[cfg(feature = "usb")]
+use ironrdp_rdpeusb::{InterfaceAlloc, server::UrbdrcControlServer, server::UrbdrcDeviceServer};
 
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
@@ -373,6 +380,22 @@ impl DisplayControlHandler for DisplayControlBackend {
     }
 }
 
+#[cfg(feature = "usb")]
+struct ServerUsbManager {
+    inner: Box<dyn DeviceFactory>,
+    comp_iface_alloc: InterfaceAlloc,
+}
+
+#[cfg(feature = "usb")]
+impl ServerUsbManager {
+    fn new(inner: Box<dyn DeviceFactory>) -> Self {
+        Self {
+            inner,
+            comp_iface_alloc: InterfaceAlloc::default(),
+        }
+    }
+}
+
 /// Selects who performs the TLS handshake for a connection accepted via
 /// [`RdpServer::run_connection_with`].
 #[derive(Debug, Clone, Copy)]
@@ -461,6 +484,8 @@ pub struct RdpServer {
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "egfx")]
     gfx_handle: Option<crate::gfx::GfxServerHandle>,
+    #[cfg(feature = "usb")]
+    usb_man: Option<ServerUsbManager>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
@@ -543,6 +568,8 @@ pub enum ServerEvent {
     Egfx(EgfxServerMessage),
     /// Trigger an RTT measurement probe (requires auto-detect enabled).
     AutoDetectRttRequest,
+    #[cfg(feature = "usb")]
+    Usb(UrbdrcServerMessage),
 }
 
 impl fmt::Debug for ServerEvent {
@@ -594,6 +621,7 @@ impl RdpServer {
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
         display_suppressed: Option<Arc<AtomicBool>>,
+        #[cfg(feature = "usb")] usb_factory: Option<Box<dyn DeviceFactory>>,
         autodetect_rtt: Option<Arc<AtomicU32>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
@@ -607,6 +635,7 @@ impl RdpServer {
         if let Some(gfx) = gfx_factory.as_mut() {
             gfx.set_sender(ev_sender.clone());
         }
+
         Self {
             opts,
             handler: Arc::new(Mutex::new(handler)),
@@ -619,6 +648,8 @@ impl RdpServer {
             gfx_factory,
             #[cfg(feature = "egfx")]
             gfx_handle: None,
+            #[cfg(feature = "usb")]
+            usb_man: usb_factory.map(ServerUsbManager::new),
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
@@ -952,6 +983,17 @@ impl RdpServer {
                     let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(handler);
                     dvc = dvc.with_dynamic_channel(gfx_server);
                 }
+            }
+            dvc
+        };
+
+        #[cfg(feature = "usb")]
+        let dvc = {
+            let mut dvc = dvc;
+            if self.usb_man.is_some() {
+                dvc = dvc.with_dynamic_channel(UrbdrcControlServer::new(Box::new(UsbControlHandle::new(
+                    self.ev_sender.clone(),
+                ))));
             }
             dvc
         };
@@ -1446,6 +1488,103 @@ impl RdpServer {
 
                         let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
                         writer.write_all(&data).await?;
+                    }
+                },
+                #[cfg(feature = "usb")]
+                ServerEvent::Usb(msg) => match msg {
+                    UrbdrcServerMessage::AddChan => {
+                        let create_dvc_msg = {
+                            let Some(usb_man) = self.usb_man.as_mut() else {
+                                warn!("Missing USB device factory");
+                                continue;
+                            };
+                            let Some(drdynvc) = self
+                                .static_channels
+                                .get_by_type_mut::<dvc::DrdynvcServer>()
+                                .and_then(|svc| svc.channel_processor_downcast_mut::<dvc::DrdynvcServer>())
+                            else {
+                                warn!("No drdynvc channel, dropping URBDRC request");
+                                continue;
+                            };
+                            let Some(dvc_reservation) = drdynvc.reserve_channel() else {
+                                warn!("Run out of dynamic channel");
+                                continue;
+                            };
+                            let Some(comp_iface) = usb_man.comp_iface_alloc.alloc() else {
+                                warn!("Run out of URBDRC interface IDs");
+                                continue;
+                            };
+
+                            let dvc_channel_id = dvc_reservation.channel_id();
+                            let handle = UsbDeviceHandle::new(self.ev_sender.clone(), dvc_channel_id);
+                            let Some(device_backend) = usb_man.inner.create_device(handle) else {
+                                warn!("Failed to create USB device backend");
+                                continue;
+                            };
+
+                            dvc_reservation.create(
+                                UrbdrcDeviceServer::new(device_backend, comp_iface)
+                                    .expect("interface ID allocated by InterfaceAlloc must be valid"),
+                            )?
+                        };
+
+                        let drdynvc_channel_id = self
+                            .get_channel_id_by_type::<dvc::DrdynvcServer>()
+                            .context("DRDYNVC channel not found")?;
+                        let data =
+                            server_encode_svc_messages(vec![create_dvc_msg], drdynvc_channel_id, user_channel_id)?;
+
+                        writer.write_all(&data).await?;
+                    }
+                    UrbdrcServerMessage::Device { dvc_id, dev_msg } => {
+                        let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
+                            warn!("No drdynvc channel, dropping URBDRC request");
+                            continue;
+                        };
+
+                        let Some(mut dvc) = drdynvc.dvc_by_id_mut::<UrbdrcDeviceServer>(dvc_id) else {
+                            warn!("channel id mismatch");
+                            continue;
+                        };
+                        let processor = dvc.processor_mut();
+
+                        let (request, io_result) = match dev_msg {
+                            UrbdrcDeviceServerMessage::QueryDeviceText { text_type, locale_id } => {
+                                (processor.query_device_text(text_type, locale_id)?, None)
+                            }
+                            UrbdrcDeviceServerMessage::Io { data, tx } => {
+                                let request = match data {
+                                    ServerDeviceIoData::IoControl(packet) => processor.io_control(packet),
+                                    ServerDeviceIoData::InternalIoControl(packet) => {
+                                        processor.internal_io_control(packet)
+                                    }
+                                    ServerDeviceIoData::TransferOut(packet) => processor.transfer_out(packet),
+                                    ServerDeviceIoData::TransferIn(packet) => processor.transfer_in(packet),
+                                }?;
+                                let sent = SentIoRequest {
+                                    request_id: request.request_id,
+                                    expects_completion: request.expects_completion,
+                                };
+
+                                (request.message, Some((tx, sent)))
+                            }
+                            UrbdrcDeviceServerMessage::Retract(reason) => (processor.retract_device(reason)?, None),
+                            UrbdrcDeviceServerMessage::CancelRequest(req_id) => {
+                                (processor.cancel_request(req_id)?, None)
+                            }
+                        };
+
+                        let messages = dvc::encode_dvc_messages(dvc_id, vec![request], ChannelFlags::SHOW_PROTOCOL)?;
+
+                        let drdynvc_channel_id = self
+                            .get_channel_id_by_type::<dvc::DrdynvcServer>()
+                            .context("DRDYNVC channel not found")?;
+
+                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
+                        writer.write_all(&data).await?;
+                        if let Some((sender, req)) = io_result {
+                            let _ = sender.send(req);
+                        }
                     }
                 },
                 #[cfg(feature = "egfx")]

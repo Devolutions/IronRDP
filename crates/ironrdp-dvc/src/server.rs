@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::collections::btree_map::VacantEntry;
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
@@ -39,6 +40,39 @@ impl Drop for DynamicChannel {
         if self.state == ChannelState::Opened {
             self.processor.close(self.channel_id);
         }
+    }
+}
+
+/// A reserved dynamic channel ID awaiting a channel processor.
+///
+/// Dropping this value without calling [`Self::create`] does not consume the reserved ID.
+pub struct DynamicChannelReservation<'a> {
+    next_channel_id: &'a mut u32,
+    entry: VacantEntry<'a, u32, DynamicChannel>,
+    type_id_to_channel_id: &'a mut BTreeMap<TypeId, u32>,
+}
+
+impl DynamicChannelReservation<'_> {
+    /// Returns the reserved dynamic channel ID.
+    pub fn channel_id(&self) -> u32 {
+        *self.entry.key()
+    }
+
+    /// Registers the channel and returns its DVC Create Request message.
+    pub fn create<T>(self, channel: T) -> PduResult<SvcMessage>
+    where
+        T: DvcServerProcessor + 'static,
+    {
+        let channel_name = channel.channel_name().into();
+        let channel_id = self.channel_id();
+        self.entry
+            .insert(DynamicChannel::new(channel, channel_id, ChannelState::Creation));
+        self.type_id_to_channel_id
+            .entry(TypeId::of::<T>())
+            .or_insert(channel_id);
+        let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(channel_id, channel_name));
+        *self.next_channel_id += 1;
+        as_svc_msg_with_flag(req)
     }
 }
 
@@ -83,8 +117,18 @@ impl DynamicChannelAllocator {
         self.next_channel_id = self
             .next_channel_id
             .checked_add(1)
-            .expect("dynamic channels reaches `u32::MAX`");
+            .expect("dynamic channels reached `u32::MAX`");
         channel_id
+    }
+
+    fn entry_channel(&mut self) -> Option<(&mut u32, VacantEntry<'_, u32, DynamicChannel>)> {
+        let channel_id = self.next_channel_id;
+        self.next_channel_id.checked_add(1)?;
+
+        let alloc::collections::btree_map::Entry::Vacant(entry) = self.dynamic_channels.entry(channel_id) else {
+            unreachable!("next dynamic channel ID must be vacant");
+        };
+        Some((&mut self.next_channel_id, entry))
     }
 
     fn get(&self, channel_id: u32) -> Option<&DynamicChannel> {
@@ -150,6 +194,9 @@ impl DrdynvcServer {
         }
     }
 
+    /// Returns the channel ID associated with the processor type.
+    ///
+    /// If multiple processors of the same type are added, this returns the first registered one.
     pub fn get_channel_id_by_type<T>(&self) -> Option<u32>
     where
         T: DvcServerProcessor + 'static,
@@ -169,14 +216,16 @@ impl DrdynvcServer {
     ///
     /// # Panics
     ///
-    /// Panics if the number of registered dynamic channels reaches `u32::MAX`.
+    /// Panics if the number of registered dynamic channels reached `u32::MAX`.
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
         T: DvcServerProcessor + 'static,
     {
         let channel_id = self.dynamic_channels.insert_channel(channel, ChannelState::Pending);
-        self.type_id_to_channel_id.insert(TypeId::of::<T>(), channel_id);
+        self.type_id_to_channel_id
+            .entry(TypeId::of::<T>())
+            .or_insert(channel_id);
         self
     }
 
@@ -224,15 +273,30 @@ impl DrdynvcServer {
         let channel_name = channel.channel_name().into();
 
         let channel_id = self.dynamic_channels.insert_channel(channel, ChannelState::Creation);
+        self.type_id_to_channel_id
+            .entry(TypeId::of::<T>())
+            .or_insert(channel_id);
         let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(channel_id, channel_name));
         as_svc_msg_with_flag(req)
+    }
+
+    /// Reserves the next dynamic channel ID without creating the channel.
+    ///
+    /// `None` if the dynamic channel ID space is exhausted.
+    #[must_use]
+    pub fn reserve_channel(&mut self) -> Option<DynamicChannelReservation<'_>> {
+        let (next_channel_id, entry) = self.dynamic_channels.entry_channel()?;
+        Some(DynamicChannelReservation {
+            next_channel_id,
+            entry,
+            type_id_to_channel_id: &mut self.type_id_to_channel_id,
+        })
     }
 
     fn remove_by_channel_id(&mut self, id: u32) -> Option<DynamicChannel> {
         self.dynamic_channels.remove(id).inspect(|dvc| {
             let type_id = dvc.processor_type_id();
 
-            // Only matters for pre-registered channels
             if let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id)
                 && entry.get() == &id
             {

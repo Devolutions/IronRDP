@@ -46,3 +46,25 @@ impl<T> core::fmt::Display for InvalidDeviceInterfaceId<T> {
         )
     }
 }
+
+pub struct InterfaceAlloc {
+    id: u32,
+}
+
+impl Default for InterfaceAlloc {
+    fn default() -> Self {
+        Self { id: 3 }
+    }
+}
+
+impl InterfaceAlloc {
+    #[inline]
+    pub const fn alloc(&mut self) -> Option<pdu::header::InterfaceId> {
+        self.id += 1;
+        if self.id > 0x3F_FF_FF_FF {
+            None
+        } else {
+            Some(pdu::header::InterfaceId::from_raw(self.id))
+        }
+    }
+}

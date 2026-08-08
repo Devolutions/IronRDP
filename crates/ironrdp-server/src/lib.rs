@@ -20,6 +20,8 @@ mod handler;
 mod helper;
 mod server;
 mod sound;
+#[cfg(feature = "usb")]
+mod urbdrc;
 
 pub use clipboard::CliprdrServerFactory;
 pub use display::{
@@ -39,6 +41,8 @@ pub use server::{
     ServerEvent, ServerEventSender, TransportTls,
 };
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
+#[cfg(feature = "usb")]
+pub use urbdrc::{DeviceFactory, UsbDeviceHandle};
 
 #[cfg(feature = "__bench")]
 pub mod bench {

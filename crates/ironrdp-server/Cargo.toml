@@ -23,6 +23,7 @@ rayon = ["dep:rayon"]
 qoi = ["dep:qoicoubeh", "ironrdp-pdu/qoi"]
 qoiz = ["dep:zstd-safe", "qoi", "ironrdp-pdu/qoiz"]
 egfx = ["dep:ironrdp-egfx"]
+usb = ["dep:ironrdp-rdpeusb"]
 # Opt-in NSCodec encoder. Off by default so consumers that don't need a legacy
 # bitmap codec fallback (e.g., RemoteFX-only or H.264-capable clients) don't
 # pay the extra build cost.
@@ -53,6 +54,7 @@ ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.10", features = ["reqw
 ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.10" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.9" } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9" } # public
+ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.1", optional = true }
 tracing = { version = "0.1", features = ["log"] }
 x509-cert = { version = "0.3", optional = true }
 rustls-pemfile = { version = "2.2", optional = true }
