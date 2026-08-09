@@ -75,7 +75,7 @@ Fork-origin pull requests are subject to daily UTC limits on automatic runs.
 The first five pull requests from a fork author may use automation, while authors with at least 15 qualifying merged IronRDP pull requests may use ten.
 Across all forks, the workflow stops LLM automation after 30 fork-origin pull requests were opened that day.
 This GitHub-only global limit is best-effort under concurrent submissions.
-A high-confidence non-legitimate classifier result also stops automated review and hands the pull request to a human.
+A high-confidence non-legitimate classifier result adds `triage/legitimacy`, records the flagged commit in a permanent comment, and hands the pull request to a human.
 
 ## Trust boundaries
 
@@ -130,6 +130,12 @@ The classifier alone controls `scope/cross-cutting`, which requires a material b
 Multiple files, tests, generated companions, and manifest updates alone do not qualify.
 The classifier also controls `kind/technical-debt` and documentation-only labels.
 `origin/fuzzing` remains manual because paths cannot establish how a defect was discovered.
+
+### Legitimacy triage
+
+`triage/legitimacy` records that at least one commit received a high-confidence non-legitimate classification.
+The label remains until a maintainer removes it, and SHA-bound comments remain as an audit trail even when later classifications differ.
+Automated review remains blocked while the label is present.
 
 ### Label setup
 

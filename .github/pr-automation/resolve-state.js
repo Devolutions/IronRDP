@@ -7,7 +7,8 @@ const { validateReviewer } = require("./validate-reviewer");
 
 const RISK = ["risk/low", "risk/medium", "risk/high", "risk/unknown"];
 const AI_COUNTS = ["ai-reviewed/1", "ai-reviewed/2"];
-const LEGITIMACY_MARKER = "<!-- ironrdp-pr-automation:legitimacy:v1 -->";
+const LEGITIMACY_LABEL = "triage/legitimacy";
+const LEGITIMACY_MARKER_PREFIX = "<!-- ironrdp-pr-automation:legitimacy:v2:";
 const DUPLICATE_MARKER = "<!-- ironrdp-pr-automation:duplicate -->";
 const XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
@@ -24,7 +25,7 @@ function labelsOf(labels) {
 function reviewPolicyEligible({ labels, legitimacyStopped, protocolRelated } = {}) {
   const present = labelsOf(labels);
   if (present.has("ai-reviewed/2") || present.has("duplicate") || present.has("size/XL") ||
-      legitimacyStopped === true) return false;
+      present.has(LEGITIMACY_LABEL) || legitimacyStopped === true) return false;
   // Risk gates the non-protocol route only. Risk measures how much human scrutiny a change needs,
   // not how much an automated review is worth, so a protocol-related change is always reviewed.
   if (protocolRelated === true) return true;
@@ -165,23 +166,28 @@ function resolveClassificationState({
     ...optional.map(([label, enabled]) => ({ owned: [label], desired: enabled ? [label] : [] })),
     { owned: ["breaking-change"], desired: breaking ? ["breaking-change"] : [] },
   ];
-  const addLabels = ["maintainer-required"];
   const legitimacyStopped = model.likely_non_legitimate;
+  const addLabels = [
+    "maintainer-required",
+    ...(legitimacyStopped ? [LEGITIMACY_LABEL] : []),
+  ];
   const comments = [
     ...(duplicate ? [{
       kind: "duplicate", marker: DUPLICATE_MARKER,
       url: model.duplicate.similar_pr_url, rationale: model.duplicate.rationale,
     }] : []),
     ...(isXl && !forced ? [{ kind: "xl", marker: XL_MARKER }] : []),
+  ];
+  const auditComments = [
     ...(legitimacyStopped ? [{
-      kind: "legitimacy", marker: LEGITIMACY_MARKER, reason: model.non_legitimate_reason,
+      kind: "legitimacy", marker: `${LEGITIMACY_MARKER_PREFIX}${expectedSha} -->`,
+      sha: expectedSha, reason: model.non_legitimate_reason,
     }] : []),
   ];
   return {
-    ok: true, mode: "classification", expectedSha, labelSets, addLabels, comments,
+    ok: true, mode: "classification", expectedSha, labelSets, addLabels, comments, auditComments,
     dispatchReview: !forced,
     removeCommentMarkers: [
-      ...(legitimacyStopped ? [] : [LEGITIMACY_MARKER]),
       // A later push can make a previously reported duplicate or XL verdict wrong, and stale
       // guidance would then contradict the labels this run just wrote.
       ...(duplicate ? [] : [DUPLICATE_MARKER]),
@@ -332,7 +338,7 @@ function resolveReviewState({
 }
 
 module.exports = {
-  AI_COUNTS, DUPLICATE_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGITIMACY_MARKER, RISK,
-  XL_MARKER, ELIGIBLE_MERGED_PRS, contributorEligibility, isExcludedHistory, qualifyingMergedPrs,
-  resolveClassificationState, resolveReviewState, reviewPolicyEligible,
+  AI_COUNTS, DUPLICATE_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGITIMACY_LABEL,
+  LEGITIMACY_MARKER_PREFIX, RISK, XL_MARKER, ELIGIBLE_MERGED_PRS, contributorEligibility, isExcludedHistory,
+  qualifyingMergedPrs, resolveClassificationState, resolveReviewState, reviewPolicyEligible,
 };

@@ -105,6 +105,11 @@
     "description": "Maintainer review or intervention is required"
   },
   {
+    "name": "triage/legitimacy",
+    "color": "fbca04",
+    "description": "A classifier flagged at least one commit for legitimacy triage"
+  },
+  {
     "name": "ai-reviewed/1",
     "color": "000000",
     "description": "One automated review completed"
