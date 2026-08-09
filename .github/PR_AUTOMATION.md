@@ -1,7 +1,7 @@
 # Pull request automation
 
-`.github/workflows/labeler.yml` classifies ready, open pull requests and runs at most two automated reviews.
-The workflow never runs an LLM for `ai-reviewed/2`; that label is terminal and requires human review.
+`.github/workflows/labeler.yml` automatically classifies ready, open pull requests and runs at most two automated reviews.
+Automatic routes never run an LLM for `ai-reviewed/2`; that label is terminal unless a maintainer uses force mode.
 
 ## Review pipeline
 
@@ -47,7 +47,7 @@ The protocol and skeptical review stages select Opus with `--model opus` and use
 | Protocol conformance | Opus | Default `high` | Performs the protocol analysis worth the higher cost. |
 | Skeptical review | Opus | Default `high` | Evaluates correctness and the validated protocol handoff. |
 
-The heavy stages run at most twice per pull request.
+Automatic heavy stages run at most twice per pull request.
 `haiku` is cheaper than Sonnet at `low` effort but supports no effort level, so the classifier does not use it.
 Model names are floating aliases, so each stage tracks the latest model in its tier.
 
@@ -55,12 +55,13 @@ Model names are floating aliases, so each stage tracks the latest model in its t
 
 ### Bot-authored pull requests
 
-Bot-authored pull requests, including Dependabot's and `devolutionsbot`'s release-plz pull requests, are excluded from this workflow.
-Dependabot is the sole owner of dependency and language labels, so this automation never adds, removes, or reconciles labels on bot pull requests.
+Bot-authored pull requests, including Dependabot's and `devolutionsbot`'s release-plz pull requests, are excluded from automatic routes.
+Dependabot is the sole owner of dependency and language labels, so automatic routes never add, remove, or reconcile labels on bot pull requests.
+A maintainer can explicitly override this exclusion with force mode.
 
 ### Oversized pull requests
 
-For a `size/XL` pull request with 800 or more changed source lines, the workflow skips classification and review before any model runs.
+For a `size/XL` pull request with 800 or more changed source lines, automatic routes skip classification and review before any model runs.
 Classification falls back to deterministic scope, size, first-time-contributor, and `cargo-semver-checks` results, while every classified pull request retains exactly one `size/*` label.
 
 The workflow comments once to explain the exclusion and point to [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) for splitting dependent work.
@@ -70,7 +71,7 @@ Duplicate and legitimacy verdicts are model-derived, so an oversized run leaves 
 
 ### Fork automation limits
 
-Fork-origin pull requests are subject to daily UTC automation limits.
+Fork-origin pull requests are subject to daily UTC limits on automatic runs.
 The first five pull requests from a fork author may use automation, while authors with at least 15 qualifying merged IronRDP pull requests may use ten.
 Across all forks, the workflow stops LLM automation after 30 fork-origin pull requests were opened that day.
 This GitHub-only global limit is best-effort under concurrent submissions.
@@ -138,15 +139,29 @@ It never deletes repository labels.
 
 ## Review routing
 
-Risk measures maintainer scrutiny, so it does not decide whether a protocol change is worth reviewing.
+On automatic routes, risk measures maintainer scrutiny, so it does not decide whether a protocol change is worth reviewing.
 A `protocol_related` classification is review-eligible at any risk level, subject to the remaining review gates.
 For every other change, `risk/low` without `breaking-change` skips the review.
-Duplicates, `size/XL`, a legitimacy stop, and the terminal review count stop every route.
+Duplicates, `size/XL`, a legitimacy stop, and the terminal review count stop every automatic route.
 
 ## Review prerequisites
 
-The first heavy review requires successful `CI` for the exact classified head and an author with at least three qualifying merged IronRDP pull requests; a second requires a later push and matching successful CI.
-Manual dispatch bypasses only the CI-success requirement, not draft status, duplicate or XL handling, contributor history, classification, risk, terminal state, or SHA validation.
+Automatic review requires successful `CI` for the exact classified head and an author with at least three qualifying merged IronRDP pull requests.
+A second automatic review requires a later push and matching successful CI.
+
+## Manual force mode
+
+The `workflow_dispatch` route accepts a pull request number, a route selector, and a `force` flag.
+The workflow ignores `force` on every other event.
+
+For classification, force mode bypasses completed-classification cache, fork quota, `size/XL`, terminal review count, draft status, and bot authorship.
+Forced classification does not enqueue a review; select the review route explicitly when one is required.
+For review, it also bypasses classification, CI, duplicate, legitimacy, risk, contributor-history, and review-count eligibility.
+Forced review uses valid protocol state from the current-head classification when available.
+Without valid protocol state, it uses the trusted not-applicable handoff and runs the skeptical reviewer without protocol analysis.
+
+Force mode cannot target a closed pull request or select an older head.
+It does not bypass evidence retrieval, hostile-output validation, protocol handoff validation, or the final stale-head check.
 
 ## Secrets and versioning
 

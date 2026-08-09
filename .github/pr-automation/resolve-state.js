@@ -105,27 +105,28 @@ function xlClassification(expectedSha, deterministic, semverStatus) {
 }
 
 function resolveClassificationState({
-  expectedSha, labels, deterministic, classifier, classificationGate, changedPaths, prNumber, semver, rateLimit,
+  expectedSha, labels, deterministic, classifier, classificationGate, changedPaths, prNumber, semver, rateLimit, force,
 } = {}) {
   const existing = labelsOf(labels);
+  const forced = force === true;
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
-  if (existing.has("ai-reviewed/2")) {
+  if (!forced && existing.has("ai-reviewed/2")) {
     return failedClassification(expectedSha, deterministic, "terminal AI review count", rateLimit);
   }
   const semverStatus = boundStatus(semver, expectedSha, ["suspected", "not-suspected"]);
   // Checked before the classifier is consulted: an oversized pull request never reaches a model, so
   // there is no classifier output to validate and no quota to charge.
-  if (deterministic?.ok && deterministic.sizeLabel === "size/XL") {
+  if (!forced && deterministic?.ok && deterministic.sizeLabel === "size/XL") {
     return xlClassification(expectedSha, deterministic, semverStatus);
   }
-  if (rateLimit && rateLimit.status !== "allowed") {
+  if (!forced && rateLimit && rateLimit.status !== "allowed") {
     return failedClassification(expectedSha, deterministic, "fork LLM quota unavailable", rateLimit, semverStatus);
   }
   if (!deterministic?.ok) {
     const reason = deterministic?.reason || "deterministic analysis unavailable";
     return failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus);
   }
-  if (classificationGate?.available === false) {
+  if (!forced && classificationGate?.available === false) {
     const reason = classificationGate.reason || "classification gate unavailable";
     return failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus);
   }
@@ -176,6 +177,7 @@ function resolveClassificationState({
   ];
   return {
     ok: true, mode: "classification", expectedSha, labelSets, addLabels, comments,
+    dispatchReview: !forced,
     removeCommentMarkers: [
       ...(legitimacyStopped ? [] : [LEGITIMACY_MARKER]),
       // A later push can make a previously reported duplicate or XL verdict wrong, and stale
@@ -244,9 +246,10 @@ async function contributorEligibility({ github, owner, repo, author, currentPrNu
 
 function resolveReviewState({
   expectedSha, labels, reviewer, changedPaths, changedLines, gate, contributor,
-  rateLimit, protocolStatus, protocolReason, reviewerReason, evidenceReason,
+  rateLimit, protocolStatus, protocolReason, reviewerReason, evidenceReason, force, reviewMarkerId,
 } = {}) {
   const existing = labelsOf(labels);
+  const forced = force === true;
   const fail = (reason, report = false) => {
     const comment = quotaComment(rateLimit);
     return {
@@ -261,16 +264,25 @@ function resolveReviewState({
     };
   };
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
-  if (existing.has("ai-reviewed/2")) return fail("terminal AI review count");
-  if (rateLimit && rateLimit.status !== "allowed") return fail("fork LLM quota unavailable");
-  if (!gate?.ok || gate.head_sha !== expectedSha || gate.classificationCheck !== true ||
-      (gate.ciGreen !== true && gate.bypassCi !== true) || contributor?.status !== "eligible") {
-    return fail("review gate unavailable");
+  if (forced) {
+    if (gate?.force !== true || gate.head_sha !== expectedSha) return fail("forced review gate unavailable");
+    if (typeof reviewMarkerId !== "string" || !/^[1-9]\d{0,19}$/.test(reviewMarkerId)) {
+      return fail("forced review marker unavailable");
+    }
+  } else {
+    if (existing.has("ai-reviewed/2")) return fail("terminal AI review count");
+    if (rateLimit && rateLimit.status !== "allowed") return fail("fork LLM quota unavailable");
+    if (!gate?.ok || gate.head_sha !== expectedSha || gate.classificationCheck !== true ||
+        gate.ciGreen !== true || contributor?.status !== "eligible") {
+      return fail("review gate unavailable");
+    }
+    if (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true) {
+      return fail("second review is not eligible");
+    }
+    if (!reviewPolicyEligible({
+      labels, legitimacyStopped: gate.legitimacyStopped, protocolRelated: gate.protocolRelated,
+    })) return fail("review is not eligible");
   }
-  if (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true) return fail("second review is not eligible");
-  if (!reviewPolicyEligible({
-    labels, legitimacyStopped: gate.legitimacyStopped, protocolRelated: gate.protocolRelated,
-  })) return fail("review is not eligible");
   if (evidenceReason) return fail(evidenceReason, true);
   // A protocol-related review is only publishable when the protocol stage produced a validated
   // handoff; anything else fails closed to humans.
@@ -283,13 +295,17 @@ function resolveReviewState({
   if (!reviewerResult?.ok || reviewerResult.value?.head_sha !== expectedSha) {
     return fail(reviewerReason || reviewerResult?.reason || "reviewer unavailable", true);
   }
-  const nextCount = existing.has("ai-reviewed/1") ? "ai-reviewed/2" : "ai-reviewed/1";
+  const nextCount = existing.has("ai-reviewed/2") ? "ai-reviewed/2"
+    : existing.has("ai-reviewed/1") ? "ai-reviewed/2"
+    : "ai-reviewed/1";
   const hasFindings = reviewerResult.value.has_findings;
+  const reviewMarker = `<!-- ironrdp-pr-automation:review:${expectedSha}` +
+    `${forced ? `:force:${reviewMarkerId}` : ""} -->`;
   return {
     ok: true, mode: "review", expectedSha, labelSets: [{ owned: AI_COUNTS, desired: [nextCount] }],
     addLabels: nextCount === "ai-reviewed/2" || !hasFindings ? ["maintainer-required"] : [],
     removeLabels: nextCount === "ai-reviewed/1" && hasFindings ? ["maintainer-required"] : [],
-    comments: hasFindings ? [{ kind: "review", marker: `<!-- ironrdp-pr-automation:review:${expectedSha} -->`,
+    comments: hasFindings ? [{ kind: "review", marker: reviewMarker,
       review: reviewerResult.value }] : [],
     check: { name: "AI automated review", externalId: `${REVIEWER_SCHEMA_VERSION}:${expectedSha}` },
     reviewerSchemaVersion: REVIEWER_SCHEMA_VERSION,

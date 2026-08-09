@@ -235,7 +235,7 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
     }
     if (state.check) {
       const created = await ensureClassificationCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
-      if (created && state.check.title === "Classification complete") {
+      if (created && state.check.title === "Classification complete" && state.dispatchReview !== false) {
         await dispatchClassificationComplete(github, owner, repo, prNumber, state.expectedSha);
       }
     }

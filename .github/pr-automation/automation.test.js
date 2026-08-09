@@ -43,6 +43,13 @@ const review = (changes = {}) => ({
   ...changes,
 });
 
+function workflowJob(workflow, name) {
+  const start = workflow.indexOf(`  ${name}:\n`);
+  assert.notEqual(start, -1, `${name} job is missing`);
+  const following = workflow.slice(start + 1).search(/\n  [a-z][a-z0-9-]+:\n/);
+  return workflow.slice(start, following === -1 ? undefined : start + following + 1);
+}
+
 test("workflow does not overwrite github-script result outputs", () => {
   const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
   assert.doesNotMatch(workflow, /core\.setOutput\("result"/);
@@ -64,12 +71,48 @@ test("workflow does not overwrite github-script result outputs", () => {
 test("workflow does not resolve or write state after cancellation", () => {
   const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
   for (const name of ["resolve-classification-state", "resolve-review-state", "write-state"]) {
-    const start = workflow.indexOf(`  ${name}:\n`);
-    assert.notEqual(start, -1, `${name} job is missing`);
-    const following = workflow.slice(start + 1).search(/\n  [a-z][a-z0-9-]+:\n/);
-    const job = workflow.slice(start, following === -1 ? undefined : start + following + 1);
-    assert.match(job, /^    if: always\(\) && !cancelled\(\) &&/m);
+    assert.match(workflowJob(workflow, name), /^    if: always\(\) && !cancelled\(\) &&/m);
   }
+});
+
+test("workflow force mode bypasses model policy gates without changing automatic branches", () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  assert.match(workflow, /^\s{6}force:\n\s{8}description:/m);
+  assert.doesNotMatch(workflow, /bypass-ci|bypassCi|BYPASS_CI/);
+
+  const classificationGate = workflowJob(workflow, "classification-gate");
+  assert.match(classificationGate, /if \(force\) \{/);
+  assert.match(classificationGate, /setOutput\("required", true\)/);
+
+  const classifierJob = workflowJob(workflow, "classifier");
+  assert.match(classifierJob, /if: >-\n\s+always\(\) && !cancelled\(\) &&/);
+  for (const automaticGate of [
+    "classification-gate.outputs.available == 'true'",
+    "classification-gate.outputs.required == 'true'",
+    "deterministic-analysis.outputs.size-label != 'size/XL'",
+    "fork-rate-limit.outputs.allowed == 'true'",
+    "'ai-reviewed/2'",
+  ]) assert.equal(classifierJob.includes(automaticGate), true, automaticGate);
+  assert.match(classifierJob, /needs\.resolve-pr\.outputs\.force == 'true' \|\|/);
+
+  const reviewGate = workflowJob(workflow, "review-gate");
+  assert.match(reviewGate, /ok: true, force: true, head_sha: headSha/);
+  assert.match(reviewGate, /labels: force \? resolvedLabels : \[\], protocolRelated: false/);
+  for (const name of ["protocol-reviewer", "validate-protocol-review", "skeptical-reviewer"]) {
+    assert.match(workflowJob(workflow, name), /needs\.resolve-pr\.outputs\.force == 'true' \|\|/);
+  }
+  for (const name of ["semver", "protocol-reviewer", "skeptical-reviewer"]) {
+    assert.match(workflowJob(workflow, name), /if: >-\n\s+always\(\) && !cancelled\(\) &&/);
+  }
+  for (const name of ["protocol-reviewer", "validate-protocol-review", "skeptical-reviewer"]) {
+    assert.match(workflowJob(workflow, name), /needs\.resolve-pr\.outputs\.review-route == 'true'/);
+  }
+
+  const reviewState = workflowJob(workflow, "resolve-review-state");
+  assert.match(reviewState, /const force = process\.env\.FORCE === "true"/);
+  assert.match(reviewState, /parse\(process\.env\.GATE, force \? \{/);
+  assert.match(reviewState, /REVIEW_MARKER_ID: \$\{\{ github\.run_id \}\}/);
+  assert.match(reviewGate, /classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
 });
 
 test("review skills own methodology while stage prompts own pipeline contracts", () => {
@@ -426,6 +469,49 @@ test("bot authors are excluded from automation", async () => {
   assert.equal(human.reviewRoute, true);
 });
 
+test("force is dispatch-only and bypasses draft and bot eligibility", async () => {
+  const pullRequest = (changes = {}) => ({
+    number: 7, draft: false, state: "open", labels: [],
+    user: { node_id: "U_1", login: "contributor", type: "User" },
+    head: { sha: SHA, repo: { full_name: "Devolutions/IronRDP" } }, base: { sha: "b".repeat(40) },
+    ...changes,
+  });
+  const resolve = async ({ eventName = "workflow_dispatch", inputs = {}, changes = {} }) => resolvePr({
+    github: { rest: { pulls: {
+      get: async () => ({ data: pullRequest(changes) }),
+      list: async () => ({ data: [pullRequest(changes)] }),
+    } } },
+    context: {
+      eventName, repo: { owner: "Devolutions", repo: "IronRDP" },
+      payload: eventName === "workflow_run"
+        ? { workflow_run: { name: "CI", head_sha: SHA, pull_requests: [{ number: 7 }] } }
+        : { inputs: { "pr-number": "7", force: inputs.force, review: inputs.review } },
+    },
+    inputs: { prNumber: 7, ...inputs },
+  });
+
+  const forcedDraft = await resolve({ inputs: { force: true }, changes: { draft: true } });
+  assert.equal(forcedDraft.ok, true);
+  assert.equal(forcedDraft.force, true);
+  assert.equal(forcedDraft.headSha, SHA);
+
+  const forcedBot = await resolve({
+    inputs: { force: "true", review: true },
+    changes: { user: { node_id: "U_2", login: "dependabot[bot]", type: "Bot" } },
+  });
+  assert.equal(forcedBot.ok, true);
+  assert.equal(forcedBot.force, true);
+  assert.equal(forcedBot.reviewRequested, true);
+
+  assert.equal((await resolve({ changes: { draft: true } })).reason, "pull request is draft");
+  const automaticBot = await resolve({
+    eventName: "workflow_run", inputs: { force: true },
+    changes: { user: { node_id: "U_2", login: "dependabot[bot]", type: "Bot" } },
+  });
+  assert.equal(automaticBot.ok, false);
+  assert.equal(automaticBot.reason, "bot-authored pull request");
+});
+
 test("deterministic semver outranks the model and a model-only break cannot stay low", () => {
   const deterministic = { ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S", sizeLabels: ["size/S"],
     firstTime: false };
@@ -707,6 +793,79 @@ test("quota decisions stop classification and review with a bounded human handof
   assert.equal(review.comments[0].kind, "global-quota");
 });
 
+test("forced classification bypasses policy, quota, and cache but still validates output", () => {
+  const deterministic = {
+    ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/XL",
+    sizeLabels: ["size/L", "size/XL"], firstTime: false,
+  };
+  const args = {
+    expectedSha: SHA,
+    labels: ["ai-reviewed/2"],
+    deterministic,
+    classifier: classifier(),
+    classificationGate: { available: false, reason: "checks unavailable" },
+    rateLimit: { status: "limited", scope: "global", quota: 30, count: 31 },
+    semver: { head_sha: SHA, status: "not-suspected" },
+    force: true,
+  };
+  const state = resolveClassificationState(args);
+  assert.equal(state.failed, undefined);
+  assert.equal(state.oversized, undefined);
+  assert.equal(state.check.title, "Classification complete");
+  assert.equal(state.dispatchReview, false);
+  assert.equal(state.comments.some((comment) => comment.kind === "xl"), true);
+
+  const invalid = resolveClassificationState({ ...args, classifier: "" });
+  assert.equal(invalid.failed, true);
+  assert.equal(invalid.reason, "invalid classifier object");
+  const wrongHead = resolveClassificationState({
+    ...args, classifier: classifier({ head_sha: "b".repeat(40) }),
+  });
+  assert.equal(wrongHead.failed, true);
+});
+
+test("forced review bypasses eligibility while retaining trusted publication gates", () => {
+  const reviewer = {
+    head_sha: SHA, has_findings: false, summary: "none",
+    protocol_handoff: { received: false, disposition: "not_applicable", rationale: "" }, findings: [],
+  };
+  const args = {
+    expectedSha: SHA,
+    labels: ["ai-reviewed/2", "duplicate", "size/XL", "risk/low"],
+    reviewer,
+    gate: { ok: true, force: true, head_sha: SHA, protocolRelated: false },
+    contributor: { status: "ineligible" },
+    rateLimit: { status: "limited", scope: "global", quota: 30, count: 31 },
+    protocolStatus: "not_applicable",
+    force: true,
+    reviewMarkerId: "1234",
+  };
+  const state = resolveReviewState(args);
+  assert.equal(state.failed, undefined);
+  assert.deepEqual(state.labelSets[0].desired, ["ai-reviewed/2"]);
+  const findingState = resolveReviewState({
+    ...args, reviewer: review(), changedPaths: ["src/lib.rs"], changedLines: { "src/lib.rs": [4] },
+  });
+  assert.equal(findingState.comments[0].marker,
+    `<!-- ironrdp-pr-automation:review:${SHA}:force:1234 -->`);
+
+  assert.equal(resolveReviewState({
+    ...args, gate: { ...args.gate, head_sha: "b".repeat(40) },
+  }).reason, "forced review gate unavailable");
+  assert.equal(resolveReviewState({
+    ...args, protocolStatus: "unavailable", protocolReason: "protocol validation failed",
+  }).reason, "protocol validation failed");
+  assert.equal(resolveReviewState({
+    ...args, reviewer: review({ head_sha: "b".repeat(40) }),
+  }).failed, true);
+  assert.equal(resolveReviewState({
+    ...args, evidenceReason: "changed file retrieval unavailable",
+  }).reason, "changed file retrieval unavailable");
+  assert.equal(resolveReviewState({
+    ...args, reviewMarkerId: "",
+  }).reason, "forced review marker unavailable");
+});
+
 test("review transition is terminal-safe and preserves human triage on no findings", () => {
   const reviewer = {
     head_sha: SHA, has_findings: false, summary: "none",
@@ -878,6 +1037,71 @@ test("writer upgrades a neutral automated review check instead of creating a dup
   assert.equal(update.check_run_id, 7);
   assert.equal(update.conclusion, "success");
   assert.equal(update.output.title, "Automated review complete");
+});
+
+test("writer dispatches automatic but not forced completed classifications", async () => {
+  const writeClassification = async (dispatchReview) => {
+    let dispatches = 0;
+    const github = {
+      paginate: { iterator: async function* () { yield { data: [] }; } },
+      rest: {
+        checks: { listForRef: () => {}, create: async () => {} },
+        pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+        issues: { get: async () => ({ data: { labels: [] } }) },
+        repos: { createDispatchEvent: async () => { dispatches += 1; } },
+      },
+    };
+    await writeState({
+      github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+      state: {
+        ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: [],
+        comments: [], removeCommentMarkers: [], dispatchReview,
+        check: {
+          name: "AI classification", externalId: `classifier-v2:${SHA}`,
+          title: "Classification complete", summary: "Validated classification.",
+          machineState: { protocolRelated: false },
+        },
+      },
+    });
+    return dispatches;
+  };
+
+  assert.equal(await writeClassification(true), 1);
+  assert.equal(await writeClassification(false), 0);
+});
+
+test("writer deduplicates one forced review invocation but publishes a later one", async () => {
+  const existingMarker = `<!-- ironrdp-pr-automation:review:${SHA}:force:1234 -->`;
+  const publish = async (marker) => {
+    let published = 0;
+    const listReviews = () => {};
+    const github = {
+      paginate: { iterator: async function* (method) {
+        yield { data: method === listReviews
+          ? [{ user: { login: "github-actions[bot]" }, body: existingMarker }]
+          : [] };
+      } },
+      rest: {
+        pulls: {
+          listReviews,
+          get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
+          createReview: async () => { published += 1; },
+        },
+        issues: { get: async () => ({ data: { labels: [] } }) },
+      },
+    };
+    await writeState({
+      github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+      state: {
+        ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [],
+        comments: [{ kind: "review", marker, review: review() }],
+      },
+    });
+    return published;
+  };
+
+  assert.equal(await publish(existingMarker), 0);
+  assert.equal(await publish(`<!-- ironrdp-pr-automation:review:${SHA}:force:5678 -->`), 1);
 });
 
 function paginated(pages) {
