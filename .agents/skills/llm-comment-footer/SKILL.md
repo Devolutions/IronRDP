@@ -5,7 +5,8 @@ description: Add required LLM attribution to GitHub issue bodies and issue or pu
 
 # LLM comment footer
 
-Append exactly one of these footers to the issue body or comment Markdown after a blank line:
+Include exactly one attribution.
+Append one of these footers to the issue body or comment Markdown after a blank line unless using a helper-managed byline:
 
 - `_LLM-assisted comment: auto-replied (no human feedback)._`
 - `_LLM-assisted comment: tuned by human._`
@@ -13,8 +14,7 @@ Append exactly one of these footers to the issue body or comment Markdown after 
 Use `auto-replied` only when the comment is posted without human review, edits, or feedback.
 Use `tuned by human` when a human reviews, edits, or provides feedback that shapes the final comment.
 
-For app-owned `agent-merge` and other helper-driven replies, treat the helper's app-managed byline as separate from the reply content.
-Include one allowed footer in the reply Markdown unless the helper's configured byline exactly matches an allowed footer.
-Never silently assume the helper will add the footer.
+For app-owned `agent-merge` and other helper-driven replies, use an allowed footer in the reply Markdown or the helper's configured app-managed byline.
+Ensure the chosen attribution is actually inserted; never assume the helper will add it or include both.
 
 Do not add the footer to pull request bodies because it conflicts with pull request guidelines.
