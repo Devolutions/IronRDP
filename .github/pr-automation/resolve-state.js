@@ -277,11 +277,11 @@ function resolveReviewState({
   } else {
     if (existing.has("ai-reviewed/2")) return fail("terminal AI review count");
     if (rateLimit && rateLimit.status !== "allowed") return fail("fork LLM quota unavailable");
-    if (!gate?.ok || gate.head_sha !== expectedSha || gate.classificationCheck !== true ||
-        gate.ciGreen !== true) {
+    if (!gate || gate.head_sha !== expectedSha || typeof gate.ok !== "boolean" || gate.reason) {
       const reason = gate?.reason ? `review gate unavailable: ${gate.reason}` : "review gate unavailable";
       return fail(reason);
     }
+    if (gate.classificationCheck !== true || gate.ciGreen !== true) return fail("review gate unavailable");
     if (contributor?.status === "ineligible") {
       const reason = Number.isSafeInteger(contributor.merged)
         ? `contributor history ineligible (merged: ${contributor.merged}, required: ${ELIGIBLE_MERGED_PRS})`
@@ -300,6 +300,7 @@ function resolveReviewState({
     if (!reviewPolicyEligible({
       labels, legitimacyStopped: gate.legitimacyStopped, protocolRelated: gate.protocolRelated,
     })) return fail("review is not eligible");
+    if (!gate.ok) return fail("review gate unavailable");
   }
   if (evidenceReason) return fail(evidenceReason, true);
   // A protocol-related review is only publishable when the protocol stage produced a validated

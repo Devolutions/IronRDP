@@ -1011,6 +1011,18 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.equal(unavailable.ok, true);
   assert.equal(unavailable.failed, true);
   assert.equal(unavailable.reason, "contributor history unavailable: GitHub API unavailable");
+
+  const secondReview = resolveReviewState({
+    ...args, labels: ["ai-reviewed/1", "risk/high"],
+    gate: { ...args.gate, ok: false, secondReviewEligible: false },
+  });
+  assert.equal(secondReview.reason, "second review is not eligible");
+
+  const policy = resolveReviewState({
+    ...args, labels: ["risk/low"],
+    gate: { ...args.gate, ok: false, policyEligible: false, protocolRelated: false },
+  });
+  assert.equal(policy.reason, "review is not eligible");
 });
 
 test("an unavailable protocol handoff blocks the review count", () => {
