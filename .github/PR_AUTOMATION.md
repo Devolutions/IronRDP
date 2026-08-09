@@ -105,8 +105,8 @@ Each resolved, non-cancelled workflow run that reaches the final writer records 
 The trace records event resolution, every gate and deterministic-analysis result, normalized classification and review states, and the selected label additions, removals, comments, and check mutation.
 Jobs skipped by a gate appear in the final trace with their job outcome.
 Cancelled runs and runs without a successfully resolved pull request retain only the earlier job logs and do not emit this final trace.
-After every LLM stage, the log records the action outcome and its complete schema-bound structured output.
-These values are untrusted pull-request-derived evidence, so they are emitted through `core.info` and never interpolated into or executed as a shell command.
+After every LLM stage, the log records the action outcome, selected source, failure reason, and whether structured output was present with its UTF-8 byte size.
+This bounded metadata is emitted through `core.info`; the untrusted pull-request-derived output itself is validated but not logged.
 
 ## Labels
 
