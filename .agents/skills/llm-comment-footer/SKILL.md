@@ -9,12 +9,12 @@ Include exactly one attribution.
 Append one of these footers to the issue body or comment Markdown after a blank line unless using a helper-managed byline:
 
 - `> [!NOTE]`
-  `> LLM-assisted auto-reply (no human feedback).`
+  `> LLM-assisted content (no human feedback).`
 - `> [!NOTE]`
-  `> Human-tuned, LLM-assisted reply.`
+  `> Human-tuned, LLM-assisted content.`
 
-Use the auto-reply footer only when the comment is posted without human review, edits, or feedback.
-Use the human-tuned footer when a human reviews, edits, or provides feedback that shapes the final comment.
+Use the no-human-feedback footer only when the content is posted without human review, edits, or feedback.
+Use the human-tuned footer when a human reviews, edits, or provides feedback that shapes the final content.
 
 For app-owned `agent-merge` and other helper-driven replies, use an allowed footer in the reply Markdown or the helper's configured app-managed byline.
 Ensure the chosen attribution is actually inserted; never assume the helper will add it or include both.
