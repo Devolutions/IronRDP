@@ -191,12 +191,11 @@ fn validate_body(body: &str) -> Result<bool, String> {
 
     let mut saw_footer = false;
     let mut breaking = false;
+    let paragraphs = body.split("\n\n").filter(|paragraph| !paragraph.is_empty());
+    let paragraph_count = paragraphs.clone().count();
 
-    for paragraph in body.split("\n\n") {
-        if paragraph.is_empty() {
-            continue;
-        }
-
+    for (paragraph_index, paragraph) in paragraphs.enumerate() {
+        let final_paragraph = paragraph_index + 1 == paragraph_count;
         let mut footer_lines = 0;
         let mut known_footer = false;
         let mut content_lines = 0;
@@ -207,16 +206,13 @@ fn validate_body(body: &str) -> Result<bool, String> {
                 continue;
             }
 
-            if malformed_breaking_change(line) {
-                return Err(
-                    "breaking-change footer must use `BREAKING CHANGE: <description>` or `BREAKING-CHANGE: <description>`"
-                        .into(),
-                );
+            if let Some(token) = malformed_footer(line) {
+                return Err(format!("footer `{token}` must use `: <value>` or ` #<value>`"));
             }
 
             if let Some(token) = footer_token(line)? {
                 let known = is_known_footer(token);
-                if known || footer_started || saw_footer {
+                if known || footer_started || saw_footer || final_paragraph {
                     footer_lines += 1;
                     known_footer |= known;
                     footer_started = true;
@@ -263,10 +259,22 @@ fn is_checklist_item(line: &str) -> bool {
     })
 }
 
-fn malformed_breaking_change(line: &str) -> bool {
-    ["BREAKING CHANGE", "BREAKING-CHANGE"].iter().any(|token| {
+fn malformed_footer(line: &str) -> Option<&'static str> {
+    const KNOWN_FOOTERS: &[&str] = &["BREAKING CHANGE", "BREAKING-CHANGE", "Issue", "Co-authored-by"];
+
+    KNOWN_FOOTERS.iter().copied().find(|token| {
         line.strip_prefix(token).is_some_and(|suffix| {
-            suffix.is_empty() || suffix.starts_with(':') && !suffix.starts_with(": ") || suffix.starts_with(" #")
+            if suffix.is_empty() && matches!(*token, "BREAKING CHANGE" | "BREAKING-CHANGE") {
+                return true;
+            }
+
+            let trimmed = suffix.trim_start();
+            let malformed_colon = trimmed.starts_with(':') && !suffix.starts_with(": ");
+            let malformed_hash = trimmed.starts_with('#') && !suffix.starts_with(" #");
+            let forbidden_breaking_hash =
+                matches!(*token, "BREAKING CHANGE" | "BREAKING-CHANGE") && suffix.starts_with(" #");
+
+            malformed_colon || malformed_hash || forbidden_breaking_hash
         })
     })
 }
