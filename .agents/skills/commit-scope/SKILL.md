@@ -19,7 +19,6 @@ client viewer agent daemon rpc activex server web ffi replay
 xtask release pr-automation agents
 ```
 
-The workspace-excluded glutin crates deliberately have no scope.
 Most scopes match an `ironrdp-*` component after removing the prefix.
 Use these aggregate mappings:
 
