@@ -41,13 +41,12 @@ find pr-head -depth \
   -exec rm -rf {} +
 rm -rf pr-head/.github/copilot-instructions.md pr-head/.github/instructions
 
-# The resolved base is the same snapshot GitHub uses for the pull request file list. Using the current
-# master merge base can reintroduce changes already present in the resolved base after history diverges.
+# Pinning the base avoids races with master while the merge-base comparison excludes base-only changes.
 mkdir -p pr-evidence
 git -C pr-head diff --no-color --find-renames --name-status \
-  origin/pull-request-base origin/pull-request-head > pr-evidence/changed-files.txt
+  origin/pull-request-base...origin/pull-request-head > pr-evidence/changed-files.txt
 git -C pr-head diff --no-color --find-renames --unified=3 \
-  origin/pull-request-base origin/pull-request-head > pr-evidence/pull-request.diff
+  origin/pull-request-base...origin/pull-request-head > pr-evidence/pull-request.diff
 
 # A single oversized file would otherwise crowd out the rest of the evidence. Oversized pull
 # requests are already excluded upstream, so this only guards against pathological single changes.

@@ -247,9 +247,9 @@ test("LLM evidence is bound to the resolved pull request base", () => {
   assert.match(evidenceScript, /\+\$base_sha:refs\/remotes\/origin\/pull-request-base/);
   assert.match(
     evidenceScript,
-    /origin\/pull-request-base origin\/pull-request-head > pr-evidence\/changed-files\.txt/,
+    /origin\/pull-request-base\.\.\.origin\/pull-request-head > pr-evidence\/changed-files\.txt/,
   );
-  assert.doesNotMatch(evidenceScript, /merge-base|origin\/master/);
+  assert.doesNotMatch(evidenceScript, /origin\/master/);
 });
 
 test("every deterministic label is declared and the repository rules classify tooling changes", () => {
@@ -533,11 +533,19 @@ test("heavy review output validates paths against the resolved pull request base
     fs.writeFileSync(path.join(repository, "base.txt"), "base\n");
     execFileSync("git", ["add", "base.txt"], { cwd: repository });
     execFileSync("git", ["commit", "--quiet", "-m", "base"], { cwd: repository });
-    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
-    execFileSync("git", ["update-ref", "refs/remotes/origin/pull-request-base", baseSha], { cwd: repository });
+    const commonSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
     fs.writeFileSync(path.join(repository, "pull-request.txt"), "change\n");
     execFileSync("git", ["add", "pull-request.txt"], { cwd: repository });
     execFileSync("git", ["commit", "--quiet", "-m", "pull request"], { cwd: repository });
+    const headSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
+    execFileSync("git", ["checkout", "--quiet", "--detach", commonSha], { cwd: repository });
+    fs.writeFileSync(path.join(repository, "base-only.txt"), "base change\n");
+    execFileSync("git", ["add", "base-only.txt"], { cwd: repository });
+    execFileSync("git", ["commit", "--quiet", "-m", "advance base"], { cwd: repository });
+    execFileSync("git", [
+      "update-ref", "refs/remotes/origin/pull-request-base", "HEAD",
+    ], { cwd: repository });
+    execFileSync("git", ["checkout", "--quiet", "--detach", headSha], { cwd: repository });
 
     assert.deepEqual(changedPathsFromRepository(repository), {
       ok: true, paths: ["pull-request.txt"],

@@ -72,8 +72,7 @@ function parseChangedPaths(source) {
 function changedPathsFromRepository(repository) {
   try {
     return parseChangedPaths(execFileSync("git", [
-      "-C", repository, "diff", "--find-renames", "--name-only", "-z",
-      "origin/pull-request-base", "HEAD",
+      "-C", repository, "diff", "--find-renames", "--name-only", "-z", "origin/pull-request-base...HEAD",
     ], { encoding: "buffer", maxBuffer: MAX_FILES * (MAX_PATH_BYTES + 1) }));
   } catch {
     return invalid("changed path evidence unavailable");
