@@ -15,4 +15,6 @@ In source formats where newlines render as spaces, start each sentence on its ow
 Do not apply that convention to code blocks, tables, headings, link definitions, generated files, or formats where line breaks affect rendering.
 
 Write the requested prose directly instead of discussing these rules unless the user asks.
+When rewriting existing prose without adding requested information, preserve or reduce its word count.
+Treat source line breaks as formatting, not justification for growth.
 Before finishing, reread from the reader's perspective and remove anything that does not help them understand or act.

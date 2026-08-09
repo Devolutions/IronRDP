@@ -7,6 +7,7 @@ description: Write clear, concise technical documentation that helps readers com
 
 Invoke `prose-writer` before drafting and apply its rules throughout.
 Identify the intended reader, their goal, and the prerequisites they need.
+Before restructuring existing documentation, inventory its unique facts so none are lost or restated.
 Present the outcome or shortest successful path before internal mechanics and edge cases.
 Use only the headings needed to answer distinct reader questions.
 Explain one path completely before introducing alternatives, and link to existing material instead of repeating it.
@@ -15,4 +16,5 @@ Place warnings and constraints beside the step they affect.
 Preserve established terminology and verify technical claims against the implementation.
 
 Write the requested documentation directly.
+For rewrites that add no requested information, recover the cost of new headings, tables, and transitions by compressing the body.
 Before finishing, remove repetition and confirm that a reader can find the next action without reconstructing it from implementation details.
