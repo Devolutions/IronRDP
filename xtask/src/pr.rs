@@ -200,6 +200,7 @@ fn validate_body(body: &str) -> Result<bool, String> {
         let mut footer_lines = 0;
         let mut known_footer = false;
         let mut content_lines = 0;
+        let mut footer_started = false;
 
         for line in paragraph.lines() {
             if line.is_empty() {
@@ -214,9 +215,17 @@ fn validate_body(body: &str) -> Result<bool, String> {
             }
 
             if let Some(token) = footer_token(line)? {
-                footer_lines += 1;
-                known_footer |= is_known_footer(token);
-                breaking |= matches!(token, "BREAKING CHANGE" | "BREAKING-CHANGE");
+                let known = is_known_footer(token);
+                if known || footer_started || saw_footer {
+                    footer_lines += 1;
+                    known_footer |= known;
+                    footer_started = true;
+                    breaking |= matches!(token, "BREAKING CHANGE" | "BREAKING-CHANGE");
+                } else {
+                    content_lines += 1;
+                }
+            } else if footer_started {
+                continue;
             } else {
                 content_lines += 1;
             }
@@ -226,7 +235,7 @@ fn validate_body(body: &str) -> Result<bool, String> {
             return Err("commit body and footers must be separated by a blank line".into());
         }
 
-        if footer_lines > 0 && (known_footer || saw_footer) {
+        if footer_lines > 0 {
             saw_footer = true;
         } else if saw_footer && content_lines > 0 {
             return Err("commit body content must not follow a footer block".into());
@@ -238,15 +247,27 @@ fn validate_body(body: &str) -> Result<bool, String> {
 
 fn is_checklist_item(line: &str) -> bool {
     let line = line.trim_start();
-    ["- [ ]", "- [x]", "- [X]", "* [ ]", "* [x]", "* [X]"]
+    let item = ["- ", "* ", "+ "]
         .iter()
-        .any(|prefix| line.starts_with(prefix))
+        .find_map(|marker| line.strip_prefix(marker))
+        .or_else(|| {
+            let (marker, item) = line.split_once(". ").or_else(|| line.split_once(") "))?;
+            (!marker.is_empty() && marker.chars().all(|character| character.is_ascii_digit())).then_some(item)
+        });
+
+    item.is_some_and(|item| {
+        ["[ ]", "[x]", "[X]"].iter().any(|checkbox| {
+            item.strip_prefix(checkbox)
+                .is_some_and(|rest| rest.is_empty() || rest.as_bytes()[0].is_ascii_whitespace())
+        })
+    })
 }
 
 fn malformed_breaking_change(line: &str) -> bool {
     ["BREAKING CHANGE", "BREAKING-CHANGE"].iter().any(|token| {
-        line.strip_prefix(token)
-            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with(':') && !suffix.starts_with(": "))
+        line.strip_prefix(token).is_some_and(|suffix| {
+            suffix.is_empty() || suffix.starts_with(':') && !suffix.starts_with(": ") || suffix.starts_with(" #")
+        })
     })
 }
 
