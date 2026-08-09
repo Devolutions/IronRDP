@@ -82,10 +82,8 @@ async function deleteMarkedComment(github, owner, repo, prNumber, expectedSha, b
 }
 
 function reviewBody(marker, review) {
-  const findings = review.findings.map((finding, index) => {
-    const location = finding.start_line === null ? escapeMarkdown(finding.path) :
-      `${escapeMarkdown(finding.path)}:${finding.start_line}-${finding.end_line}`;
-    return `${index + 1}. **${finding.classification}** / ${finding.severity} — ${location}\n   ${escapeMarkdown(finding.rationale)}`;
+  const findings = review.findings.filter((finding) => finding.start_line === null).map((finding, index) => {
+    return `${index + 1}. **${finding.classification}** / ${finding.severity} — ${escapeMarkdown(finding.path)}\n   ${escapeMarkdown(finding.rationale)}`;
   }).join("\n");
   const handoff = review.protocol_handoff.received
     ? `\n\nProtocol analysis: ${review.protocol_handoff.disposition} — ${escapeMarkdown(review.protocol_handoff.rationale)}`
