@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { SIZE_LABELS, addedLinesByPath, analyzeFiles, parseLabelerRules } = require("./deterministic-analysis");
@@ -17,7 +18,7 @@ const {
   corpusFromDirectory, notApplicableHandoff, validateProtocolReview,
 } = require("./validate-protocol-review");
 const {
-  isSessionId, parseChangedPaths, recoverExecutionOutput, validateModelOutput,
+  changedPathsFromRepository, isSessionId, parseChangedPaths, recoverExecutionOutput, validateModelOutput,
 } = require("../actions/resilient-review-output/validate");
 
 const SHA = "a".repeat(40);
@@ -232,6 +233,23 @@ test("review skills own methodology while stage prompts own pipeline contracts",
     assert.match(stagePrompt, /pr-evidence\/changed-files\.txt/);
     assert.match(stagePrompt, /Return only the required .*JSON/);
   }
+});
+
+test("LLM evidence is bound to the resolved pull request base", () => {
+  const githubDirectory = path.join(__dirname, "..");
+  const workflow = fs.readFileSync(path.join(githubDirectory, "workflows", "labeler.yml"), "utf8");
+  const evidenceScript = fs.readFileSync(path.join(__dirname, "fetch-pr-evidence.sh"), "utf8");
+  for (const name of ["classifier", "protocol-reviewer", "skeptical-reviewer"]) {
+    const job = workflowJob(workflow, name);
+    assert.match(job, /BASE_SHA: \$\{\{ needs\.resolve-pr\.outputs\.base-sha \}\}/);
+    assert.match(job, /fetch-pr-evidence\.sh "\$HEAD_SHA" "\$BASE_SHA"/);
+  }
+  assert.match(evidenceScript, /\+\$base_sha:refs\/remotes\/origin\/pull-request-base/);
+  assert.match(
+    evidenceScript,
+    /origin\/pull-request-base origin\/pull-request-head > pr-evidence\/changed-files\.txt/,
+  );
+  assert.doesNotMatch(evidenceScript, /merge-base|origin\/master/);
 });
 
 test("every deterministic label is declared and the repository rules classify tooling changes", () => {
@@ -504,6 +522,29 @@ test("heavy review output rejects malformed changed-path evidence", () => {
   });
   assert.equal(parseChangedPaths(Buffer.from("../outside\0")).ok, false);
   assert.equal(parseChangedPaths(Buffer.from("unterminated")).ok, false);
+});
+
+test("heavy review output validates paths against the resolved pull request base", () => {
+  const repository = fs.mkdtempSync(path.join(os.tmpdir(), "ironrdp-pr-base-"));
+  try {
+    execFileSync("git", ["init", "--quiet"], { cwd: repository });
+    execFileSync("git", ["config", "user.email", "automation@example.invalid"], { cwd: repository });
+    execFileSync("git", ["config", "user.name", "PR automation"], { cwd: repository });
+    fs.writeFileSync(path.join(repository, "base.txt"), "base\n");
+    execFileSync("git", ["add", "base.txt"], { cwd: repository });
+    execFileSync("git", ["commit", "--quiet", "-m", "base"], { cwd: repository });
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
+    execFileSync("git", ["update-ref", "refs/remotes/origin/pull-request-base", baseSha], { cwd: repository });
+    fs.writeFileSync(path.join(repository, "pull-request.txt"), "change\n");
+    execFileSync("git", ["add", "pull-request.txt"], { cwd: repository });
+    execFileSync("git", ["commit", "--quiet", "-m", "pull request"], { cwd: repository });
+
+    assert.deepEqual(changedPathsFromRepository(repository), {
+      ok: true, paths: ["pull-request.txt"],
+    });
+  } finally {
+    fs.rmSync(repository, { recursive: true, force: true });
+  }
 });
 
 test("corpus reader indexes real headings and refuses traversal", () => {

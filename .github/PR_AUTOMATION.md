@@ -87,7 +87,7 @@ Each Claude action uses only an explicit file or skill invocation, which injects
 Trusted workflow code writes the target head SHA and handoff-receipt status to `pr-automation-context.json` instead of interpolating them into instructions.
 
 The evidence script writes `pr-evidence/changed-files.txt` and `pr-evidence/pull-request.diff`.
-Both files are computed against the merge base so unrelated commits landing on `master` are not attributed to the pull request.
+Both files are computed between the resolved base and head SHAs so they match GitHub's pull request file list even when branch history has diverged.
 The head tree remains available in `pr-head` for surrounding context.
 
 Before exposing that tree to filesystem-reading tools, the script removes every symlink so a pull request cannot redirect a read outside the checkout.

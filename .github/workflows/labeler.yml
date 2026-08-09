@@ -382,6 +382,7 @@ jobs:
         shell: bash
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
         run: |
           set -euo pipefail
           export GIT_CONFIG_NOSYSTEM=1
@@ -391,7 +392,7 @@ jobs:
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git fetch --no-tags origin +master:refs/remotes/origin/master
           git checkout --detach origin/master
-          bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA"
+          bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"
 
       - id: claude-args
         uses: actions/github-script@v8
@@ -664,6 +665,7 @@ jobs:
         shell: bash
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
         run: |
           set -euo pipefail
           export GIT_CONFIG_NOSYSTEM=1
@@ -673,7 +675,7 @@ jobs:
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git fetch --no-tags origin +master:refs/remotes/origin/master
           git checkout --detach origin/master
-          bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA"
+          bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"
           # Stage the skill from the corpus default branch. It is a Devolutions-maintained
           # repository, so tracking master keeps the specifications current. No npm, package
           # lifecycle script, or repository credential is involved. The resolved commit is exported
@@ -858,6 +860,7 @@ jobs:
         shell: bash
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
         run: |
           set -euo pipefail
           export GIT_CONFIG_NOSYSTEM=1
@@ -867,7 +870,7 @@ jobs:
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git fetch --no-tags origin +master:refs/remotes/origin/master
           git checkout --detach origin/master
-          bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA"
+          bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"
           mkdir -p .claude/skills
           cp -R .agents/skills/skeptical-reviewer .claude/skills/skeptical-reviewer
           test -f .claude/skills/skeptical-reviewer/SKILL.md

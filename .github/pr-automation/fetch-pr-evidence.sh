@@ -11,12 +11,13 @@
 # below is a security boundary, and three hand-maintained copies of it would eventually drift.
 set -euo pipefail
 
-if [ "$#" -ne 1 ]; then
-  echo "usage: fetch-pr-evidence.sh <head-sha>" >&2
+if [ "$#" -ne 2 ]; then
+  echo "usage: fetch-pr-evidence.sh <head-sha> <base-sha>" >&2
   exit 1
 fi
 
 head_sha="$1"
+base_sha="$2"
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL=/dev/null
 
@@ -24,7 +25,7 @@ git init pr-head
 git -C pr-head config --local core.hooksPath /dev/null
 git -C pr-head remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
 git -C pr-head fetch --no-tags origin "+$head_sha:refs/remotes/origin/pull-request-head"
-git -C pr-head fetch --no-tags origin +master:refs/remotes/origin/master
+git -C pr-head fetch --no-tags origin "+$base_sha:refs/remotes/origin/pull-request-base"
 git -C pr-head checkout --detach origin/pull-request-head
 
 # The head tree is contributor-controlled. Remove symlinks before granting filesystem-reading tools
@@ -40,14 +41,13 @@ find pr-head -depth \
   -exec rm -rf {} +
 rm -rf pr-head/.github/copilot-instructions.md pr-head/.github/instructions
 
-# Compared against the merge base rather than the base tip so that unrelated commits landing on
-# master while the pull request is open are not attributed to it.
-base_sha="$(git -C pr-head merge-base origin/master origin/pull-request-head)"
+# The resolved base is the same snapshot GitHub uses for the pull request file list. Using the current
+# master merge base can reintroduce changes already present in the resolved base after history diverges.
 mkdir -p pr-evidence
 git -C pr-head diff --no-color --find-renames --name-status \
-  "$base_sha" origin/pull-request-head > pr-evidence/changed-files.txt
+  origin/pull-request-base origin/pull-request-head > pr-evidence/changed-files.txt
 git -C pr-head diff --no-color --find-renames --unified=3 \
-  "$base_sha" origin/pull-request-head > pr-evidence/pull-request.diff
+  origin/pull-request-base origin/pull-request-head > pr-evidence/pull-request.diff
 
 # A single oversized file would otherwise crowd out the rest of the evidence. Oversized pull
 # requests are already excluded upstream, so this only guards against pathological single changes.
