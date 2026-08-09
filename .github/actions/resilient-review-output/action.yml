@@ -85,8 +85,11 @@ runs:
             validateModelOutput,
           } = require("./.github/actions/resilient-review-output/validate");
           const output = process.env.STRUCTURED_OUTPUT || "";
-          const result = output === "" && process.env.OUTCOME === "failure"
-            ? { ok: false, reason: "initial model action failed without structured output" }
+          const result = output === "" && process.env.OUTCOME !== "success"
+            ? {
+                ok: false,
+                reason: `initial model action ${process.env.OUTCOME} before producing structured output`,
+              }
             : validateModelOutput(output, {
               stage: process.env.STAGE, expectedSha: process.env.EXPECTED_SHA,
               prNumber: Number(process.env.PR_NUMBER),
@@ -151,8 +154,11 @@ runs:
           let reason = process.env.INITIAL_REASON;
           if (!selected && process.env.RETRY_ATTEMPTED === "true") {
             const retryOutput = process.env.RETRY_OUTPUT || "";
-            const retry = retryOutput === "" && process.env.RETRY_OUTCOME === "failure"
-              ? { ok: false, reason: "resumed model action failed without structured output" }
+            const retry = retryOutput === "" && process.env.RETRY_OUTCOME !== "success"
+              ? {
+                  ok: false,
+                  reason: `resumed model action ${process.env.RETRY_OUTCOME} before producing structured output`,
+                }
               : validateModelOutput(retryOutput, {
                 stage: process.env.STAGE, expectedSha: process.env.EXPECTED_SHA,
                 prNumber: Number(process.env.PR_NUMBER),
