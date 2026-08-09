@@ -6,8 +6,10 @@ description: Analyze IronRDP changes for RDP protocol conformance against Micros
 # Protocol reviewer
 
 Use the `windows-protocols` skill when it is available to consult the local Microsoft Open
-Specifications corpus. If it is unavailable, use another authoritative specification source provided
-in the task and state any resulting evidence gap.
+Specifications corpus. If it is unavailable, use the Microsoft Learn MCP server when configured:
+search with `microsoft_docs_search`, then retrieve relevant `learn.microsoft.com/openspecs` pages with
+`microsoft_docs_fetch`. If neither source is available, use another authoritative specification source
+provided in the task and state any resulting evidence gap.
 
 Keep the review focused on protocol conformance rather than general code quality. Identify changed
 wire formats, PDUs, fields, constants, state transitions, capability negotiation, security behavior,

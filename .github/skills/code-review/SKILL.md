@@ -1,9 +1,9 @@
 ---
-name: review-orchestrator
-description: Run an efficient, multi-perspective IronRDP diff review and return one evidence-checked report. Use for comprehensive code reviews or whenever protocol correctness, code compression, documentation compression, prose style, and skeptical design review may need coordinated coverage.
+name: code-review
+description: Review IronRDP pull requests and diffs using focused protocol, compression, prose, and skeptical passes. Use whenever Copilot code review is requested or a proposed change needs review.
 ---
 
-# Review orchestrator
+# Code review
 
 Inspect the diff, its stated goal, and repository guidance before selecting reviewers:
 
