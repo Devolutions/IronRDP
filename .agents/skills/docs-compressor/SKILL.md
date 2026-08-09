@@ -5,12 +5,9 @@ description: Review documentation changes for concise, human-readable prose with
 
 # Documentation compressor
 
-Make the shortest version that remains accurate and useful to its intended reader.
-Remove repetition, throat-clearing, redundant headings, inflated wording, unnecessary examples, and details already clear from nearby context.
-Prefer direct sentences, concrete verbs, familiar words, and a structure that presents the reader's goal before implementation detail.
-
-Preserve technical precision, prerequisites, warnings, terminology, links, examples that carry unique information, and distinctions that affect behavior.
-Do not compress prose into fragments, erase useful rationale, or replace established project vocabulary merely to shorten it.
+Invoke `docs-writer` and `prose-writer`, then use their rules as review criteria without following their generation workflows.
+Challenge every paragraph, heading, example, and aside that does not add information or help the reader act.
+Look for the same meaning expressed with less structure, repetition, or wording while preserving the writer rules.
 
 Report only material readability gains.
 For each finding, cite the location, explain what obstructs the reader, and provide a concise replacement or a precise deletion.
