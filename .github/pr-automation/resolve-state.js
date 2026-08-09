@@ -278,8 +278,21 @@ function resolveReviewState({
     if (existing.has("ai-reviewed/2")) return fail("terminal AI review count");
     if (rateLimit && rateLimit.status !== "allowed") return fail("fork LLM quota unavailable");
     if (!gate?.ok || gate.head_sha !== expectedSha || gate.classificationCheck !== true ||
-        gate.ciGreen !== true || contributor?.status !== "eligible") {
-      return fail("review gate unavailable");
+        gate.ciGreen !== true) {
+      const reason = gate?.reason ? `review gate unavailable: ${gate.reason}` : "review gate unavailable";
+      return fail(reason);
+    }
+    if (contributor?.status === "ineligible") {
+      const reason = Number.isSafeInteger(contributor.merged)
+        ? `contributor history ineligible (merged: ${contributor.merged}, required: ${ELIGIBLE_MERGED_PRS})`
+        : `contributor history ineligible${contributor.reason ? `: ${contributor.reason}` : ""}`;
+      return fail(reason);
+    }
+    if (contributor?.status !== "eligible") {
+      const reason = contributor?.reason
+        ? `contributor history unavailable: ${contributor.reason}`
+        : "contributor history unavailable";
+      return fail(reason);
     }
     if (existing.has("ai-reviewed/1") && gate.secondReviewEligible !== true) {
       return fail("second review is not eligible");

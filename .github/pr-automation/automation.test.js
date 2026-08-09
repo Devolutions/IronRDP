@@ -148,6 +148,14 @@ test("resilient model output reports interrupted attempts without validating emp
   assert.match(action, /initial model action \$\{process\.env\.OUTCOME} before producing structured output/);
   assert.match(action, /process\.env\.RETRY_OUTCOME !== "success"/);
   assert.match(action, /resumed model action \$\{process\.env\.RETRY_OUTCOME} before producing structured output/);
+  assert.match(action, /transcriptOutcome && transcriptOutcome !== "success"/);
+  assert.match(action, /core\.notice\(/);
+  assert.match(action, /Recovered valid \$\{process\.env\.STAGE} output from the execution transcript/);
+  assert.match(action, /Buffer\.byteLength\(value, "utf8"\)/);
+  assert.match(action, /initialStructuredOutput: outputMetadata\(process\.env\.INITIAL_OUTPUT \|\| ""\)/);
+  assert.match(action, /retryStructuredOutput: process\.env\.RETRY_ATTEMPTED === "true"\s+\? outputMetadata\(retryStructuredOutput\) : null/);
+  assert.doesNotMatch(action, /initialStructuredOutput: process\.env\.INITIAL_OUTPUT \|\| null/);
+  assert.doesNotMatch(action, /\? retryStructuredOutput \|\| null : null/);
 });
 
 test("workflow force mode bypasses model policy gates without changing automatic branches", () => {
@@ -975,6 +983,34 @@ test("review transition is terminal-safe and preserves human triage on no findin
     expectedSha: SHA, labels: ["ai-reviewed/2"], reviewer, protocolStatus: "not_applicable",
     gate: { ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true }, contributor: { status: "eligible" },
   }).failed, true);
+});
+
+test("review blockers distinguish gate and contributor history failures", () => {
+  const args = {
+    expectedSha: SHA, labels: ["risk/high"], reviewer: review(), protocolStatus: "not_applicable",
+    gate: { ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true },
+    contributor: { status: "eligible" },
+  };
+  const invalidGate = resolveReviewState({
+    ...args, gate: { ...args.gate, ok: false, reason: "checks unavailable" },
+  });
+  assert.equal(invalidGate.ok, true);
+  assert.equal(invalidGate.failed, true);
+  assert.equal(invalidGate.reason, "review gate unavailable: checks unavailable");
+
+  const ineligible = resolveReviewState({
+    ...args, contributor: { status: "ineligible", merged: 1 },
+  });
+  assert.equal(ineligible.ok, true);
+  assert.equal(ineligible.failed, true);
+  assert.equal(ineligible.reason, "contributor history ineligible (merged: 1, required: 3)");
+
+  const unavailable = resolveReviewState({
+    ...args, contributor: { status: "unavailable", reason: "GitHub API unavailable" },
+  });
+  assert.equal(unavailable.ok, true);
+  assert.equal(unavailable.failed, true);
+  assert.equal(unavailable.reason, "contributor history unavailable: GitHub API unavailable");
 });
 
 test("an unavailable protocol handoff blocks the review count", () => {
