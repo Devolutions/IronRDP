@@ -16,5 +16,6 @@ Place warnings and constraints beside the step they affect.
 Preserve established terminology and verify technical claims against the implementation.
 
 Write the requested documentation directly.
-For rewrites that add no requested information, recover the cost of new headings, tables, and transitions by compressing the body.
+Prefer no net word-count growth when restructuring existing documentation without adding requested information.
+New structure should replace or consolidate prose; allow small justified growth when it materially improves navigation without duplication.
 Before finishing, remove repetition and confirm that a reader can find the next action without reconstructing it from implementation details.
