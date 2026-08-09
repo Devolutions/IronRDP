@@ -1198,6 +1198,50 @@ test("writer deduplicates one forced review invocation but publishes a later one
   assert.equal(await publish(`<!-- ironrdp-pr-automation:review:${SHA}:force:5678 -->`), 1);
 });
 
+test("writer publishes each finding either inline or in the review body", async () => {
+  let published;
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [] }; } },
+    rest: {
+      pulls: {
+        listReviews: () => {},
+        get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
+        createReview: async (payload) => { published = payload; },
+      },
+      issues: { get: async () => ({ data: { labels: [] } }) },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+    state: {
+      ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [],
+      comments: [{
+        kind: "review",
+        marker: `<!-- ironrdp-pr-automation:review:${SHA} -->`,
+        review: review({
+          summary: "review summary",
+          protocol_handoff: { received: true, disposition: "accepted", rationale: "protocol rationale" },
+          findings: [
+            finding({ rationale: "inline-only rationale" }),
+            finding({
+              path: "src/other.rs", start_line: null, end_line: null,
+              rationale: "body-only rationale",
+            }),
+          ],
+        }),
+      }],
+    },
+  });
+
+  assert.equal(published.comments.length, 1);
+  assert.match(published.comments[0].body, /inline-only rationale/);
+  assert.doesNotMatch(published.comments[0].body, /body-only rationale/);
+  assert.match(published.body, /review summary/);
+  assert.match(published.body, /protocol rationale/);
+  assert.match(published.body, /body-only rationale/);
+  assert.doesNotMatch(published.body, /inline-only rationale/);
+});
+
 function paginated(pages) {
   return {
     paginate: { iterator: async function* (_method, options) {
