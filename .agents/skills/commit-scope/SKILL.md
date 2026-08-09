@@ -19,6 +19,7 @@ client viewer agent daemon rpc activex server web ffi replay
 xtask release pr-automation agents
 ```
 
+The workspace-excluded glutin crates deliberately have no scope.
 Most scopes match an `ironrdp-*` component after removing the prefix.
 Use these aggregate mappings:
 
@@ -40,7 +41,7 @@ Use these aggregate mappings:
 ## Selection rules
 
 1. Scope the contract or behavior being changed, not every touched path.
-2. Ignore supporting tests, documentation, generated files, manifests, lockfiles, and call-site adaptations.
+2. When another component owns the change, ignore supporting tests, documentation, generated files, manifests, lockfiles, and call-site adaptations.
 3. Prefer the component defining the behavior over components that merely consume it.
 4. Split independent contract changes when practical.
 5. Omit the scope when an indivisible change has multiple equal owners.
