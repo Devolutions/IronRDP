@@ -6,6 +6,7 @@ publish = false
 
 [[bin]]
 name = "xtask"
+test = false
 
 [dependencies]
 anyhow = "1"
