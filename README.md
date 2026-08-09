@@ -13,7 +13,7 @@
 </p>
 
 IronRDP is a modular Rust implementation of RDP, the protocol behind Windows Remote Desktop.
-Its crates provide PDU codecs, connection and session state machines, virtual channels, and image codecs for native, WebAssembly, and .NET clients, servers, and proxies.
+It is not a monolithic client: its composable crates provide PDU codecs, connection and session state machines, virtual channels, and image codecs for native, WebAssembly, and .NET clients, servers, and proxies.
 The continuously fuzzed, `no_std`-compatible core performs no I/O, so applications supply the transport and runtime.
 
 ## Highlights
