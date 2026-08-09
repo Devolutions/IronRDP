@@ -102,9 +102,16 @@ function validateClassifier(raw, { expectedSha, changedPaths, documentationOnlyP
   return { ok: true, status: "valid", schemaVersion: SCHEMA_VERSION, value: normalized };
 }
 
-function encodeCheckState({ protocolRelated } = {}) {
+function encodeCheckState({ protocolRelated, automaticReviewEligible = true } = {}) {
   if (typeof protocolRelated !== "boolean") throw new Error("protocolRelated must be a boolean");
-  return `${CHECK_STATE_MARKER} ${JSON.stringify({ schema_version: SCHEMA_VERSION, protocol_related: protocolRelated })}`;
+  if (typeof automaticReviewEligible !== "boolean") {
+    throw new Error("automaticReviewEligible must be a boolean");
+  }
+  return `${CHECK_STATE_MARKER} ${JSON.stringify({
+    schema_version: SCHEMA_VERSION,
+    protocol_related: protocolRelated,
+    automatic_review_eligible: automaticReviewEligible,
+  })}`;
 }
 
 function parseCheckState(text) {
@@ -114,9 +121,16 @@ function parseCheckState(text) {
   if (!line) return null;
   let parsed;
   try { parsed = JSON.parse(line.slice(CHECK_STATE_MARKER.length)); } catch { return null; }
-  if (!exactKeys(parsed, ["schema_version", "protocol_related"]) ||
-      parsed.schema_version !== SCHEMA_VERSION || typeof parsed.protocol_related !== "boolean") return null;
-  return { protocolRelated: parsed.protocol_related };
+  const legacyKeys = ["schema_version", "protocol_related"];
+  const currentKeys = [...legacyKeys, "automatic_review_eligible"];
+  if ((!exactKeys(parsed, legacyKeys) && !exactKeys(parsed, currentKeys)) ||
+      parsed.schema_version !== SCHEMA_VERSION || typeof parsed.protocol_related !== "boolean" ||
+      (parsed.automatic_review_eligible !== undefined &&
+      typeof parsed.automatic_review_eligible !== "boolean")) return null;
+  return {
+    protocolRelated: parsed.protocol_related,
+    automaticReviewEligible: parsed.automatic_review_eligible ?? true,
+  };
 }
 
 module.exports = {
