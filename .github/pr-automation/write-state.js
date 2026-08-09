@@ -44,7 +44,7 @@ function markerBody(comment, owner, repo) {
     return `${comment.marker}\n\nThis pull request is \`size/XL\`, so automated review is disabled for it: a change this large is hard to review well in one piece, whether by a human or a model.\n\nPlease split it into focused pull requests that can each be reviewed on their own. When the parts build on each other, [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) let you open each one on top of the last without waiting for the one below to merge. Stacks require every branch to live in this repository, so from a fork, please open separate pull requests instead.\n\nAutomated review resumes once the change is below the \`size/XL\` threshold.`;
   }
   if (comment.kind === "legitimacy") {
-    return `${comment.marker}\n\nAutomated review stopped because this pull request has strong indicators requiring maintainer triage.\n\n${escapeMarkdown(comment.reason)}\n\nMaintainer review is required.`;
+    return `${comment.marker}\n\nAutomated review stopped because commit \`${escapeMarkdown(comment.sha)}\` has strong indicators requiring maintainer triage.\n\n${escapeMarkdown(comment.reason)}\n\nThis comment remains as an audit record if later classifications differ. Maintainer review is required.`;
   }
   if (comment.kind === "fork-quota") {
     return `${comment.marker}\n\nAutomated classification and review capacity is unavailable because this fork account has reached its daily UTC quota of ${comment.quota} pull requests.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Maintainer review is required.`;
@@ -227,6 +227,8 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
     if (state.check) await ensureReviewCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
   } else {
     for (const comment of state.comments || []) await upsertMarkedComment(
+      github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
+    for (const comment of state.auditComments || []) await upsertMarkedComment(
       github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
     for (const marker of new Set(state.removeCommentMarkers || [])) {
       await deleteMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, marker);

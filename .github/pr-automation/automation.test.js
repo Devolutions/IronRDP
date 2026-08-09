@@ -8,7 +8,10 @@ const assert = require("node:assert/strict");
 const { SIZE_LABELS, addedLinesByPath, analyzeFiles, parseLabelerRules } = require("./deterministic-analysis");
 const { validateClassifier } = require("./validate-classifier");
 const { validateReviewer } = require("./validate-reviewer");
-const { resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER, LEGITIMACY_MARKER, XL_MARKER } = require("./resolve-state");
+const {
+  resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER,
+  LEGITIMACY_LABEL, LEGITIMACY_MARKER_PREFIX, XL_MARKER,
+} = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
 const { StaleHeadError, applyLabels, escapeMarkdown, markerBody, writeState } = require("./write-state");
 const { forkRateLimit } = require("./fork-rate-limit");
@@ -21,6 +24,7 @@ const {
 } = require("../actions/resilient-review-output/validate");
 
 const SHA = "a".repeat(40);
+const OTHER_SHA = "b".repeat(40);
 const classifier = (changes = {}) => ({
   schema_version: "1", head_sha: SHA, risk: "low", technical_debt: false, documentation_only: false,
   cross_cutting: false,
@@ -240,7 +244,9 @@ test("every deterministic label is declared and the repository rules classify to
   const declaredLabels = new Set(JSON.parse(
     fs.readFileSync(path.join(__dirname, "labels.json"), "utf8"),
   ).map((label) => label.name));
-  for (const label of [...Object.keys(rules), ...SIZE_LABELS, "contributor/first-time", "kind/protocol"]) {
+  for (const label of [
+    ...Object.keys(rules), ...SIZE_LABELS, "contributor/first-time", "kind/protocol", LEGITIMACY_LABEL,
+  ]) {
     assert.equal(declaredLabels.has(label), true, `${label} is missing from labels.json`);
   }
   for (const [label, patterns] of Object.entries(rules)) {
@@ -734,7 +740,7 @@ test("protocol relevance overrides risk suppression but no other exclusion", () 
   assert.equal(reviewPolicyEligible({ labels: ["risk/low"], protocolRelated: false }), false);
   assert.equal(reviewPolicyEligible({ labels: ["risk/low", "breaking-change"] }), true);
   assert.equal(reviewPolicyEligible({ labels: ["risk/medium"] }), true);
-  for (const blocking of ["size/XL", "duplicate", "ai-reviewed/2"]) {
+  for (const blocking of ["size/XL", "duplicate", "ai-reviewed/2", LEGITIMACY_LABEL]) {
     assert.equal(reviewPolicyEligible({ labels: ["risk/high", blocking], protocolRelated: true }), false);
   }
   assert.equal(reviewPolicyEligible({
@@ -845,7 +851,7 @@ test("model text cannot smuggle active markup into a bot comment", () => {
   assert.equal(escapeMarkdown("<img src=x>"), "&lt;img src=x&gt;");
 });
 
-test("legitimacy stop is human-owned and clears only after a valid false result", () => {
+test("legitimacy flags leave SHA-bound audit records for maintainer triage", () => {
   const deterministic = { ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S", sizeLabels: ["size/S"],
     firstTime: false };
   const stopped = resolveClassificationState({
@@ -856,15 +862,34 @@ test("legitimacy stop is human-owned and clears only after a valid false result"
   });
   assert.equal(stopped.legitimacyStopped, true);
   assert.equal(stopped.check.title, "Automation stopped");
-  assert.equal(stopped.comments[0].kind, "legitimacy");
-  assert.equal(stopped.removeCommentMarkers.includes(LEGITIMACY_MARKER), false);
+  assert.deepEqual(stopped.comments, []);
+  assert.equal(stopped.auditComments[0].kind, "legitimacy");
+  assert.equal(stopped.auditComments[0].marker, `${LEGITIMACY_MARKER_PREFIX}${SHA} -->`);
+  assert.deepEqual(stopped.addLabels, ["maintainer-required", LEGITIMACY_LABEL]);
+  assert.match(markerBody(stopped.auditComments[0]), new RegExp(SHA));
+  assert.match(markerBody(stopped.auditComments[0]), /remains as an audit record/);
+
+  const laterStopped = resolveClassificationState({
+    expectedSha: OTHER_SHA, labels: [LEGITIMACY_LABEL], deterministic,
+    classifier: classifier({
+      head_sha: OTHER_SHA,
+      likely_non_legitimate: true,
+      non_legitimate_confidence: 0.95,
+      non_legitimate_reason: "different evidence",
+    }),
+    semver: { head_sha: OTHER_SHA, status: "not-suspected" },
+  });
+  assert.notEqual(laterStopped.auditComments[0].marker, stopped.auditComments[0].marker);
 
   const cleared = resolveClassificationState({
-    expectedSha: SHA, labels: [], deterministic, classifier: classifier(),
-    semver: { head_sha: SHA, status: "not-suspected" },
+    expectedSha: OTHER_SHA, labels: ["risk/high", LEGITIMACY_LABEL], deterministic,
+    classifier: classifier({ head_sha: OTHER_SHA }),
+    semver: { head_sha: OTHER_SHA, status: "not-suspected" },
   });
   assert.equal(cleared.check.title, "Classification complete");
-  assert.equal(cleared.removeCommentMarkers.includes(LEGITIMACY_MARKER), true);
+  assert.deepEqual(cleared.auditComments, []);
+  assert.equal(cleared.addLabels.includes(LEGITIMACY_LABEL), false);
+  assert.equal(cleared.labelSets.some((set) => set.owned.includes(LEGITIMACY_LABEL)), false);
 });
 
 test("quota decisions stop classification and review with a bounded human handoff", () => {
@@ -1080,6 +1105,34 @@ test("writer stops before mutations when the head is stale", async () => {
     state: { ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: ["maintainer-required"] },
   }), StaleHeadError);
   assert.equal(writes, 0);
+});
+
+test("writer publishes classification audit comments", async () => {
+  let body = null;
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [] }; } },
+    rest: {
+      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+      issues: {
+        get: async () => ({ data: { labels: [] } }),
+        listComments: () => {},
+        createComment: async (payload) => { body = payload.body; },
+      },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+    state: {
+      ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: [], comments: [],
+      auditComments: [{
+        kind: "legitimacy", marker: `${LEGITIMACY_MARKER_PREFIX}${SHA} -->`,
+        sha: SHA, reason: "suspicious evidence",
+      }],
+      removeCommentMarkers: [],
+    },
+  });
+  assert.match(body, new RegExp(SHA));
+  assert.match(body, /suspicious evidence/);
 });
 
 test("writer batches the label delta and tolerates an absent label removal", async () => {
