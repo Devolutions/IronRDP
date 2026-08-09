@@ -139,9 +139,11 @@ jobs:
               const externalId = `${SCHEMA_VERSION}:${process.env.HEAD_SHA}`;
               // A check without the current machine-readable state cannot satisfy the review gate,
               // so it must not suppress reclassification either.
-              const completed = data.check_runs.some((run) =>
-                run.external_id === externalId && run.conclusion === "success" &&
-                run.app?.slug === "github-actions" && parseCheckState(run.output?.summary) !== null);
+              const completed = data.check_runs.some((run) => {
+                const state = parseCheckState(run.output?.summary);
+                return run.external_id === externalId && run.conclusion === "success" &&
+                  run.app?.slug === "github-actions" && state?.automaticReviewEligible === true;
+              });
               core.setOutput("required", !completed);
               core.setOutput("available", true);
               core.setOutput("reason", "");
@@ -548,6 +550,7 @@ jobs:
               // and wait for a later classification event to rewrite it.
               const protocolState = trusted ? parseCheckState(classification.output?.summary) : null;
               const classificationCheck = trusted && protocolState !== null &&
+                protocolState.automaticReviewEligible === true &&
                 classification.output?.title === "Classification complete";
               const legitimacyStopped = trusted && classification.output?.title === "Automation stopped";
               const protocolRelated = protocolState?.protocolRelated === true;

@@ -155,7 +155,8 @@ The `workflow_dispatch` route accepts a pull request number, a route selector, a
 The workflow ignores `force` on every other event.
 
 For classification, force mode bypasses completed-classification cache, fork quota, `size/XL`, terminal review count, draft status, and bot authorship.
-Forced classification does not enqueue a review; select the review route explicitly when one is required.
+Its SHA-bound check retains protocol state for a later forced review but cannot open an automatic review route.
+Select the review route explicitly when one is required.
 For review, it also bypasses classification, CI, duplicate, legitimacy, risk, contributor-history, and review-count eligibility.
 Forced review uses valid protocol state from the current-head classification when available.
 Without valid protocol state, it uses the trusted not-applicable handoff and runs the skeptical reviewer without protocol analysis.

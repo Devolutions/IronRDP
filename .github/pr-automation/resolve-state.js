@@ -109,9 +109,10 @@ function resolveClassificationState({
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
+  const failureRateLimit = forced ? undefined : rateLimit;
   if (typeof expectedSha !== "string") return { ok: false, reason: "missing expected SHA" };
   if (!forced && existing.has("ai-reviewed/2")) {
-    return failedClassification(expectedSha, deterministic, "terminal AI review count", rateLimit);
+    return failedClassification(expectedSha, deterministic, "terminal AI review count", failureRateLimit);
   }
   const semverStatus = boundStatus(semver, expectedSha, ["suspected", "not-suspected"]);
   // Checked before the classifier is consulted: an oversized pull request never reaches a model, so
@@ -120,25 +121,26 @@ function resolveClassificationState({
     return xlClassification(expectedSha, deterministic, semverStatus);
   }
   if (!forced && rateLimit && rateLimit.status !== "allowed") {
-    return failedClassification(expectedSha, deterministic, "fork LLM quota unavailable", rateLimit, semverStatus);
+    return failedClassification(expectedSha, deterministic, "fork LLM quota unavailable", failureRateLimit, semverStatus);
   }
   if (!deterministic?.ok) {
     const reason = deterministic?.reason || "deterministic analysis unavailable";
-    return failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus);
+    return failedClassification(expectedSha, deterministic, reason, failureRateLimit, semverStatus);
   }
   if (!forced && classificationGate?.available === false) {
     const reason = classificationGate.reason || "classification gate unavailable";
-    return failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus);
+    return failedClassification(expectedSha, deterministic, reason, failureRateLimit, semverStatus);
   }
   const classifierResult = validateClassifier(classifier, {
     expectedSha, changedPaths, documentationOnlyPaths: deterministic.documentationOnlyPaths, prNumber,
   });
   if (!classifierResult?.ok || classifierResult.value?.head_sha !== expectedSha) {
     const reason = classifierResult?.reason || "classifier output unavailable";
-    return failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus);
+    return failedClassification(expectedSha, deterministic, reason, failureRateLimit, semverStatus);
   }
   if (semverStatus === "unavailable") {
-    return failedClassification(expectedSha, deterministic, "public API compatibility unavailable", rateLimit, semverStatus);
+    return failedClassification(
+      expectedSha, deterministic, "public API compatibility unavailable", failureRateLimit, semverStatus);
   }
   const model = classifierResult.value;
   const breaking = semverStatus === "suspected" || model.breaking_change_suspected;
@@ -170,7 +172,7 @@ function resolveClassificationState({
       kind: "duplicate", marker: DUPLICATE_MARKER,
       url: model.duplicate.similar_pr_url, rationale: model.duplicate.rationale,
     }] : []),
-    ...(isXl ? [{ kind: "xl", marker: XL_MARKER }] : []),
+    ...(isXl && !forced ? [{ kind: "xl", marker: XL_MARKER }] : []),
     ...(legitimacyStopped ? [{
       kind: "legitimacy", marker: LEGITIMACY_MARKER, reason: model.non_legitimate_reason,
     }] : []),
@@ -183,7 +185,7 @@ function resolveClassificationState({
       // A later push can make a previously reported duplicate or XL verdict wrong, and stale
       // guidance would then contradict the labels this run just wrote.
       ...(duplicate ? [] : [DUPLICATE_MARKER]),
-      ...(isXl ? [] : [XL_MARKER]),
+      ...(isXl && !forced ? [] : [XL_MARKER]),
     ],
     legitimacyStopped,
     check: {
@@ -193,7 +195,10 @@ function resolveClassificationState({
       summary: legitimacyStopped
         ? "Validated human-triage classification is bound to this commit."
         : "Validated AI classification is bound to this commit.",
-      machineState: { protocolRelated: model.protocol_related },
+      machineState: {
+        protocolRelated: model.protocol_related,
+        automaticReviewEligible: !forced,
+      },
     },
   };
 }
@@ -251,7 +256,7 @@ function resolveReviewState({
   const existing = labelsOf(labels);
   const forced = force === true;
   const fail = (reason, report = false) => {
-    const comment = quotaComment(rateLimit);
+    const comment = forced ? null : quotaComment(rateLimit);
     return {
       ok: true, mode: "review", expectedSha, failed: true, reason,
       labelSets: [], addLabels: ["maintainer-required"], comments: comment ? [comment] : [],

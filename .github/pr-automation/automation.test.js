@@ -83,6 +83,7 @@ test("workflow force mode bypasses model policy gates without changing automatic
   const classificationGate = workflowJob(workflow, "classification-gate");
   assert.match(classificationGate, /if \(force\) \{/);
   assert.match(classificationGate, /setOutput\("required", true\)/);
+  assert.match(classificationGate, /state\?\.automaticReviewEligible === true/);
 
   const classifierJob = workflowJob(workflow, "classifier");
   assert.match(classifierJob, /if: >-\n\s+always\(\) && !cancelled\(\) &&/);
@@ -98,6 +99,7 @@ test("workflow force mode bypasses model policy gates without changing automatic
   const reviewGate = workflowJob(workflow, "review-gate");
   assert.match(reviewGate, /ok: true, force: true, head_sha: headSha/);
   assert.match(reviewGate, /labels: force \? resolvedLabels : \[\], protocolRelated: false/);
+  assert.match(reviewGate, /protocolState\.automaticReviewEligible === true/);
   for (const name of ["protocol-reviewer", "validate-protocol-review", "skeptical-reviewer"]) {
     assert.match(workflowJob(workflow, name), /needs\.resolve-pr\.outputs\.force == 'true' \|\|/);
   }
@@ -434,8 +436,20 @@ test("corpus reader indexes real headings and refuses traversal", () => {
 });
 
 test("classification check state survives a round trip and fails closed when absent", () => {
-  const encoded = `Validated AI classification is bound to this commit.\n\n${encodeCheckState({ protocolRelated: true })}`;
-  assert.deepEqual(parseCheckState(encoded), { protocolRelated: true });
+  const encoded = `Validated AI classification is bound to this commit.\n\n${encodeCheckState({
+    protocolRelated: true,
+    automaticReviewEligible: false,
+  })}`;
+  assert.deepEqual(parseCheckState(encoded), {
+    protocolRelated: true,
+    automaticReviewEligible: false,
+  });
+  assert.deepEqual(parseCheckState(
+    "ironrdp-pr-automation-state: {\"schema_version\":\"classifier-v2\",\"protocol_related\":true}",
+  ), {
+    protocolRelated: true,
+    automaticReviewEligible: true,
+  });
   assert.equal(parseCheckState("Validated AI classification is bound to this commit."), null);
   assert.equal(parseCheckState("ironrdp-pr-automation-state: {\"schema_version\":\"classifier-v1\",\"protocol_related\":true}"), null);
   assert.equal(parseCheckState("ironrdp-pr-automation-state: {\"schema_version\":\"classifier-v2\"}"), null);
@@ -813,11 +827,14 @@ test("forced classification bypasses policy, quota, and cache but still validate
   assert.equal(state.oversized, undefined);
   assert.equal(state.check.title, "Classification complete");
   assert.equal(state.dispatchReview, false);
-  assert.equal(state.comments.some((comment) => comment.kind === "xl"), true);
+  assert.equal(state.check.machineState.automaticReviewEligible, false);
+  assert.equal(state.comments.some((comment) => comment.kind === "xl"), false);
+  assert.equal(state.removeCommentMarkers.includes(XL_MARKER), true);
 
   const invalid = resolveClassificationState({ ...args, classifier: "" });
   assert.equal(invalid.failed, true);
   assert.equal(invalid.reason, "invalid classifier object");
+  assert.deepEqual(invalid.comments, []);
   const wrongHead = resolveClassificationState({
     ...args, classifier: classifier({ head_sha: "b".repeat(40) }),
   });
@@ -858,9 +875,11 @@ test("forced review bypasses eligibility while retaining trusted publication gat
   assert.equal(resolveReviewState({
     ...args, reviewer: review({ head_sha: "b".repeat(40) }),
   }).failed, true);
-  assert.equal(resolveReviewState({
+  const evidenceFailure = resolveReviewState({
     ...args, evidenceReason: "changed file retrieval unavailable",
-  }).reason, "changed file retrieval unavailable");
+  });
+  assert.equal(evidenceFailure.reason, "changed file retrieval unavailable");
+  assert.deepEqual(evidenceFailure.comments, []);
   assert.equal(resolveReviewState({
     ...args, reviewMarkerId: "",
   }).reason, "forced review marker unavailable");
