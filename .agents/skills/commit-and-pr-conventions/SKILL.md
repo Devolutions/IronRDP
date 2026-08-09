@@ -16,7 +16,9 @@ Treat the PR title and initial body as the exact commit message that squash-and-
 - For standalone commits, wrap body lines at 72 characters. Explain why the change was needed, how it solves it, and material side effects.
 - Put an existing ticket key or link in a footer, not the subject: `Issue: PROJECT-123`. Follow repository-specific footer format when an issue exists. When none exists, omit the footer rather than fabricating `Issue: N/A`.
 - Add applicable Conventional Commit footers and `Co-authored-by: Name <email>` trailers for collaborators.
-- Use `fix` for bugs, `feat` for features, `build` for build or dependencies, `chore` for non-product tools or configuration, `ci` for automation, `docs` for documentation only, `style` for non-semantic edits, `refactor` for non-breaking restructuring, `test` for tests, and `perf` for performance.
+- Choose the type by the affected surface, not by whether the change fixes a defect.
+- Use `ci` for CI, workflow, and automation changes, including fixes to that automation, and reserve `fix` for product or runtime bugs.
+- Use `feat` for features, `build` for build or dependencies, `chore` for non-product tools or configuration, `docs` for documentation only, `style` for non-semantic edits, `refactor` for non-breaking restructuring, `test` for tests, and `perf` for performance.
 - Use `fix`, not `refactor`, for breaking restructuring and mark the change with `!` or a `BREAKING CHANGE` footer.
 - Keep every non-squashed development commit coherent and conventional.
 
