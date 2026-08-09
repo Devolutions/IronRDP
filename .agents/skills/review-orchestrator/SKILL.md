@@ -13,7 +13,7 @@ Inspect the diff, its stated goal, and repository guidance before selecting revi
 - Run `prose-verifier` when hand-maintained prose changes in a format where source line breaks are stylistic.
 - Run `skeptical-reviewer` last for every diff.
 
-Prefer one `general-purpose` sub-agent per applicable skill.
+Prefer one `rubber-duck` sub-agent per applicable skill.
 Run the protocol, compression, and prose reviews in parallel.
 Give every agent the change goal, review scope, base and head references, relevant repository guidance, and an instruction to invoke its named skill, inspect the diff itself, make no edits, and return only evidence-backed findings.
 If sub-agents or skill invocation are unavailable, apply the same skills directly and keep the ordering.
