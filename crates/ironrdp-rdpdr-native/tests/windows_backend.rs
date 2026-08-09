@@ -5,7 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ironrdp_core as _;
 use ironrdp_pdu as _;
-use ironrdp_rdpdr::{RdpdrBackend, backend::RdpdrBackendFactory};
 use ironrdp_rdpdr::pdu::efs::{
     AnyIoCtlCode, CreateDisposition, CreateOptions, DecodedDeviceControlRequest, DesiredAccess, DeviceCloseRequest,
     DeviceControlRequest, DeviceCreateRequest, DeviceFlushBuffersRequest, DeviceIoRequest, DeviceReadRequest,
@@ -16,6 +15,7 @@ use ironrdp_rdpdr::pdu::efs::{
     ServerDriveQueryVolumeInformationRequest, ServerDriveSetInformationRequest, ServerDriveSetSecurityRequest,
     SharedAccess,
 };
+use ironrdp_rdpdr::{RdpdrBackend, backend::RdpdrBackendFactory};
 use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
 use ironrdp_svc::SvcMessage;
 use tracing as _;
@@ -577,9 +577,9 @@ impl Fixture {
     }
 
     fn backend_with_read_only(&self, read_only: bool) -> Box<dyn RdpdrBackend> {
-        WindowsRdpdrBackendFactory::new(
-            vec![RedirectedDrive::new(1, "Test", &self.volume_root, read_only).expect("valid test drive")],
-        )
+        WindowsRdpdrBackendFactory::new(vec![
+            RedirectedDrive::new(1, "Test", &self.volume_root, read_only).expect("valid test drive"),
+        ])
         .expect("unique test drive ID")
         .with_initial_device_ids([])
         .build_rdpdr_backend()
