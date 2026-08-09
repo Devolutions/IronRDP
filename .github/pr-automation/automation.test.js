@@ -134,6 +134,22 @@ test("workflow does not resolve or write state after cancellation", () => {
   }
 });
 
+test("workflow isolates CI completion concurrency by source commit", () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  assert.match(workflow, /pr-automation-\$\{\{ github\.event_name }}-\$\{\{/);
+  assert.match(workflow, /github\.event\.workflow_run\.head_sha \|\|/);
+  assert.doesNotMatch(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number/);
+});
+
+test("resilient model output reports interrupted attempts without validating empty output", () => {
+  const action = fs.readFileSync(
+    path.join(__dirname, "..", "actions", "resilient-review-output", "action.yml"), "utf8");
+  assert.match(action, /process\.env\.OUTCOME !== "success"/);
+  assert.match(action, /initial model action \$\{process\.env\.OUTCOME} before producing structured output/);
+  assert.match(action, /process\.env\.RETRY_OUTCOME !== "success"/);
+  assert.match(action, /resumed model action \$\{process\.env\.RETRY_OUTCOME} before producing structured output/);
+});
+
 test("workflow force mode bypasses model policy gates without changing automatic branches", () => {
   const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
   assert.match(workflow, /^\s{6}force:\n\s{8}description:/m);

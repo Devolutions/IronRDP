@@ -88,12 +88,13 @@ runs:
           const actionOutput = process.env.STRUCTURED_OUTPUT || "";
           const output = actionOutput || (recovered.ok ? recovered.structuredOutput : "");
           const source = actionOutput ? "initial" : output ? "initial-transcript" : "";
-          const result = output === "" && process.env.OUTCOME === "failure"
+          const result = output === "" && process.env.OUTCOME !== "success"
             ? {
               ok: false,
               reason: recovered.ok
-                ? "initial model action failed without structured output"
-                : `initial model action failed without structured output; ${recovered.reason}`,
+                ? `initial model action ${process.env.OUTCOME} before producing structured output`
+                : `initial model action ${process.env.OUTCOME} before producing structured output; ` +
+                  recovered.reason,
             }
             : validateModelOutput(output, {
               stage: process.env.STAGE, expectedSha: process.env.EXPECTED_SHA,
@@ -169,12 +170,13 @@ runs:
             const actionOutput = retryStructuredOutput;
             const retryOutput = actionOutput || (recovered.ok ? recovered.structuredOutput : "");
             retryStructuredOutput = retryOutput;
-            const retry = retryOutput === "" && process.env.RETRY_OUTCOME === "failure"
+            const retry = retryOutput === "" && process.env.RETRY_OUTCOME !== "success"
               ? {
                 ok: false,
                 reason: recovered.ok
-                  ? "resumed model action failed without structured output"
-                  : `resumed model action failed without structured output; ${recovered.reason}`,
+                  ? `resumed model action ${process.env.RETRY_OUTCOME} before producing structured output`
+                  : `resumed model action ${process.env.RETRY_OUTCOME} before producing structured output; ` +
+                    recovered.reason,
               }
               : validateModelOutput(retryOutput, {
                 stage: process.env.STAGE, expectedSha: process.env.EXPECTED_SHA,
