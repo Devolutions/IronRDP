@@ -82,20 +82,31 @@ runs:
       with:
         script: |
           const {
-            validateModelOutput,
+            isSessionId, recoverExecutionOutput, validateModelOutput,
           } = require("./.github/actions/resilient-review-output/validate");
-          const output = process.env.STRUCTURED_OUTPUT || "";
+          const recovered = recoverExecutionOutput(process.env.RUNNER_TEMP);
+          const actionOutput = process.env.STRUCTURED_OUTPUT || "";
+          const output = actionOutput || (recovered.ok ? recovered.structuredOutput : "");
+          const source = actionOutput ? "initial" : output ? "initial-transcript" : "";
           const result = output === "" && process.env.OUTCOME === "failure"
-            ? { ok: false, reason: "initial model action failed without structured output" }
+            ? {
+              ok: false,
+              reason: recovered.ok
+                ? "initial model action failed without structured output"
+                : `initial model action failed without structured output; ${recovered.reason}`,
+            }
             : validateModelOutput(output, {
               stage: process.env.STAGE, expectedSha: process.env.EXPECTED_SHA,
               prNumber: Number(process.env.PR_NUMBER),
             });
           core.setOutput("valid", result.ok);
+          core.setOutput("output", result.ok ? output : "");
+          core.setOutput("source", result.ok ? source : "");
           core.setOutput("reason", result.ok ? "" : result.reason);
-          const sessionId = process.env.SESSION_ID;
-          if (!result.ok &&
-              /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
+          const sessionId = isSessionId(process.env.SESSION_ID)
+            ? process.env.SESSION_ID
+            : recovered.ok ? recovered.sessionId : "";
+          if (!result.ok && sessionId) {
             core.setOutput("retry-args", `${process.env.RETRY_ARGS} --resume ${sessionId}`);
           }
 
@@ -135,31 +146,43 @@ runs:
         EXPECTED_SHA: ${{ inputs.expected_sha }}
         PR_NUMBER: ${{ inputs.pr_number }}
         INITIAL_VALID: ${{ steps.validate-initial.outputs.valid }}
+        INITIAL_SOURCE: ${{ steps.validate-initial.outputs.source }}
         INITIAL_REASON: ${{ steps.validate-initial.outputs.reason }}
         INITIAL_OUTCOME: ${{ steps.initial.outcome }}
-        INITIAL_OUTPUT: ${{ steps.initial.outputs.structured_output }}
+        INITIAL_OUTPUT: ${{ steps.validate-initial.outputs.output }}
         RETRY_ATTEMPTED: ${{ steps.validate-initial.outputs.retry-args != '' }}
         RETRY_OUTCOME: ${{ steps.retry.outcome }}
         RETRY_OUTPUT: ${{ steps.retry.outputs.structured_output }}
       with:
         script: |
           const {
-            validateModelOutput,
+            recoverExecutionOutput, validateModelOutput,
           } = require("./.github/actions/resilient-review-output/validate");
           let output = process.env.INITIAL_OUTPUT || "";
-          let selected = process.env.INITIAL_VALID === "true" ? "initial" : null;
+          let selected = process.env.INITIAL_VALID === "true"
+            ? process.env.INITIAL_SOURCE || "initial"
+            : null;
           let reason = process.env.INITIAL_REASON;
+          let retryStructuredOutput = process.env.RETRY_OUTPUT || "";
           if (!selected && process.env.RETRY_ATTEMPTED === "true") {
-            const retryOutput = process.env.RETRY_OUTPUT || "";
+            const recovered = recoverExecutionOutput(process.env.RUNNER_TEMP);
+            const actionOutput = retryStructuredOutput;
+            const retryOutput = actionOutput || (recovered.ok ? recovered.structuredOutput : "");
+            retryStructuredOutput = retryOutput;
             const retry = retryOutput === "" && process.env.RETRY_OUTCOME === "failure"
-              ? { ok: false, reason: "resumed model action failed without structured output" }
+              ? {
+                ok: false,
+                reason: recovered.ok
+                  ? "resumed model action failed without structured output"
+                  : `resumed model action failed without structured output; ${recovered.reason}`,
+              }
               : validateModelOutput(retryOutput, {
                 stage: process.env.STAGE, expectedSha: process.env.EXPECTED_SHA,
                 prNumber: Number(process.env.PR_NUMBER),
               });
             if (retry.ok) {
               output = retryOutput;
-              selected = "resumed";
+              selected = actionOutput ? "resumed" : "resumed-transcript";
               reason = "";
             } else {
               reason = `initial: ${reason}; resumed: ${retry.reason}`;
@@ -173,7 +196,7 @@ runs:
             retryOutcome: process.env.RETRY_ATTEMPTED === "true" ? process.env.RETRY_OUTCOME : null,
             initialStructuredOutput: process.env.INITIAL_OUTPUT || null,
             retryStructuredOutput: process.env.RETRY_ATTEMPTED === "true"
-              ? process.env.RETRY_OUTPUT || null : null,
+              ? retryStructuredOutput || null : null,
             reason: selected ? null : reason,
           }));
           if (!selected) core.warning(`No valid ${process.env.STAGE} output: ${reason}`);

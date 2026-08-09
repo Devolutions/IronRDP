@@ -414,7 +414,7 @@ jobs:
             // Sonnet at its lowest effort: the heavy stages are where deep reasoning is worth
             // paying for. Haiku is cheaper still but supports no effort control at all.
             const common = `--model sonnet --effort low --add-dir pr-head --add-dir pr-evidence --allowedTools "Read,Glob,Grep" --disallowedTools "Bash,Edit,Write,WebFetch,Task" --json-schema '${schema}'`;
-            core.setOutput("value", `${common} --max-turns 8`);
+            core.setOutput("value", `${common} --max-turns 10`);
             core.setOutput("retry", `${common} --max-turns 3`);
 
       - id: claude
