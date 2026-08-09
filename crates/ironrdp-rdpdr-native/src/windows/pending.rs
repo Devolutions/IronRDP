@@ -6,16 +6,14 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use super::handles::{DirectoryChange, FileHandle};
+use super::locks::lock_error_status;
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::{
     ClientDriveLockControlResponse, ClientDriveNotifyChangeDirectoryResponse, DeviceIoRequest, NtStatus,
     ServerDriveNotifyChangeDirectoryRequest,
 };
 use ironrdp_svc::SvcMessage;
-use windows::Win32::System::IO::CancelIoEx;
-
-use super::handles::{DirectoryChange, FileHandle};
-use super::locks::lock_error_status;
 
 const MAX_DEFERRED_OPERATIONS: usize = 128;
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
@@ -52,7 +50,7 @@ struct PendingDirectoryNotification {
     device_id: u32,
     file_id: u32,
     request: DeviceIoRequest,
-    handle: usize,
+    handle: Arc<FileHandle>,
     cancellation: Arc<DirectoryCancellation>,
     worker: thread::JoinHandle<()>,
 }
@@ -168,7 +166,7 @@ impl DeferredOperations {
         let directory_change = handle
             .begin_directory_changes(watch_tree, completion_filter)
             .map_err(|error| lock_error_status(&error))?;
-        let notification_handle = directory_change.handle().0.expose_provenance();
+        let notification_handle = directory_change.cancellation_handle();
         let worker = thread::Builder::new()
             .name("ironrdp-rdpdr-notify".to_owned())
             .spawn(move || {
@@ -537,12 +535,7 @@ fn cancel_directory_notification(notification: PendingDirectoryNotification) {
         // until it marks itself finished. Repeating the cancellation closes the
         // race where this thread requests cancellation before the I/O manager
         // has observed the just-submitted notification request.
-        let _ = unsafe {
-            CancelIoEx(
-                windows::Win32::Foundation::HANDLE(core::ptr::with_exposed_provenance_mut(notification.handle)),
-                None,
-            )
-        };
+        let _ = unsafe { windows::Win32::System::IO::CancelIoEx(notification.handle.as_raw(), None) };
         thread::sleep(Duration::from_millis(1));
     }
     join_directory_worker(notification);

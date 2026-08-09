@@ -14,7 +14,6 @@ categories.workspace = true
 
 [lib]
 doctest = false
-test = false
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
@@ -26,9 +25,9 @@ tracing = { version = "0.1", features = ["log"] }
 
 [target.'cfg(windows)'.dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
-ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7" }
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7" } # public
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
 tracing = { version = "0.1", features = ["log"] }
 windows = { version = "0.62", features = [
     "Wdk_Foundation",

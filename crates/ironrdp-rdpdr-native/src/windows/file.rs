@@ -192,10 +192,10 @@ pub(super) fn create_inner(
     backend: &mut WindowsRdpdrBackend,
     req: &DeviceCreateRequest,
 ) -> Result<(u32, Information), NtStatus> {
-    let (read_only, root) = backend
+    let read_only = backend
         .roots
         .get(&req.device_io_request.device_id)
-        .map(|root| (root.read_only, &root.root))
+        .map(|root| root.read_only)
         .ok_or(NtStatus::INVALID_PARAMETER)?;
     let path = RelativePath::parse(&req.path).map_err(from_path_policy)?;
     let is_root = path.components().len() == 0;
@@ -237,27 +237,48 @@ pub(super) fn create_inner(
         create_options: (req.create_options.bits() & !FILE_OPEN_FOR_BACKUP_INTENT) | FILE_SYNCHRONOUS_IO_NONALERT,
     };
     let _security_privilege = security::enable_for_access_system_security(req.desired_access.bits())?;
-    let (handle, information) = root.open_relative_file(&path, options).map_err(|error| {
-        let status = from_open_file(error);
-        debug!(
-            device_id = req.device_io_request.device_id,
-            completion_id = req.device_io_request.completion_id,
-            ?status,
-            "Native filesystem create failed"
-        );
-        status
-    })?;
-    let information = create_information(information)?;
-    let file_id = backend
+    let reservation = backend
         .open_files
-        .insert(OpenFile {
+        .reserve_file_id()
+        .map_err(|_| NtStatus::UNSUCCESSFUL)?;
+    let open_result = match backend.roots.get(&req.device_io_request.device_id) {
+        Some(root) => root.root.open_relative_file(&path, options),
+        None => {
+            backend.open_files.release_file_id(reservation);
+            return Err(NtStatus::INVALID_PARAMETER);
+        }
+    };
+    let (handle, information) = match open_result {
+        Ok(result) => result,
+        Err(error) => {
+            backend.open_files.release_file_id(reservation);
+            let status = from_open_file(error);
+            debug!(
+                device_id = req.device_io_request.device_id,
+                completion_id = req.device_io_request.completion_id,
+                ?status,
+                "Native filesystem create failed"
+            );
+            return Err(status);
+        }
+    };
+    let information = match create_information(information) {
+        Ok(information) => information,
+        Err(status) => {
+            backend.open_files.release_file_id(reservation);
+            return Err(status);
+        }
+    };
+    let file_id = backend.open_files.insert_reserved(
+        reservation,
+        OpenFile {
             device_id: req.device_io_request.device_id,
             read_only,
             path,
             handle,
             directory_query_handle: None,
-        })
-        .map_err(|_| NtStatus::UNSUCCESSFUL)?;
+        },
+    );
 
     Ok((file_id, information))
 }

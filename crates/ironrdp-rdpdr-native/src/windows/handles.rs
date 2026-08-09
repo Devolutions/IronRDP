@@ -242,6 +242,9 @@ pub(crate) struct FileHandle(HANDLE);
 // wrapper has unique ownership and only closes its handle on drop, so moving it
 // between the client and RDP worker threads cannot create concurrent access.
 unsafe impl Send for FileHandle {}
+// SAFETY: shared access only obtains the immutable native handle value. The
+// owning guard closes it once after every shared reference is released.
+unsafe impl Sync for FileHandle {}
 
 /// Synchronous completion from a native offset-based file I/O request.
 #[derive(Clone, Copy, Debug)]
@@ -425,7 +428,7 @@ impl FileHandle {
         // event is owned by `DirectoryChange` until the I/O operation ends.
         let event = unsafe { CreateEventW(None, true, false, None) }?;
         let mut operation = Box::new(DirectoryChange {
-            handle: self,
+            handle: std::sync::Arc::new(self),
             event,
             buffer: vec![0; MAX_DIRECTORY_NOTIFY_SIZE],
             overlapped: OVERLAPPED {
@@ -921,7 +924,7 @@ impl FileHandle {
 
 /// An asynchronous directory-change request registered on a dedicated handle.
 pub(crate) struct DirectoryChange {
-    handle: FileHandle,
+    handle: std::sync::Arc<FileHandle>,
     event: HANDLE,
     buffer: Vec<u8>,
     overlapped: OVERLAPPED,
@@ -932,8 +935,8 @@ pub(crate) struct DirectoryChange {
 unsafe impl Send for DirectoryChange {}
 
 impl DirectoryChange {
-    pub(crate) fn handle(&self) -> HANDLE {
-        self.handle.as_raw()
+    pub(crate) fn cancellation_handle(&self) -> std::sync::Arc<FileHandle> {
+        std::sync::Arc::clone(&self.handle)
     }
 
     #[expect(
@@ -1423,7 +1426,7 @@ mod tests {
         let directory_change = directory_handle
             .begin_directory_changes(false, 1)
             .expect("register asynchronous directory notification");
-        let notification_handle = directory_change.handle().0.expose_provenance();
+        let cancellation_handle = directory_change.cancellation_handle();
         let (result_sender, result_receiver) = mpsc::channel();
         let watcher = thread::spawn(move || {
             result_sender
@@ -1439,15 +1442,9 @@ mod tests {
         let result = match result_receiver.recv_timeout(Duration::from_secs(2)) {
             Ok(result) => result,
             Err(error) => {
-                // SAFETY: the worker owns the asynchronous directory handle
-                // until it reports completion. Cancelling here guarantees the
-                // test can join it before reporting the timeout.
-                let _ = unsafe {
-                    CancelIoEx(
-                        HANDLE(core::ptr::with_exposed_provenance_mut(notification_handle)),
-                        None,
-                    )
-                };
+                // SAFETY: the shared cancellation handle remains open until
+                // this test joins the worker.
+                let _ = unsafe { CancelIoEx(cancellation_handle.as_raw(), None) };
                 let _ = result_receiver
                     .recv_timeout(Duration::from_secs(1))
                     .expect("cancelled directory notification worker exits");
