@@ -587,8 +587,9 @@ enum RunState {
 }
 
 /// The GFX server handle [`attach_channels_impl`] hands back, so the caller
-/// decides when to install it on `RdpServer::gfx_handle` — a type alias so the
-/// signature needs no `#[cfg]` variant of its own.
+/// decides when to install it on `RdpServer::gfx_handle`. A type alias because
+/// a return type cannot itself carry a `#[cfg]`; without `egfx` there is no
+/// handle type to name, so it degrades to `()`.
 #[cfg(feature = "egfx")]
 type AttachedGfxHandle = Option<crate::gfx::GfxServerHandle>;
 #[cfg(not(feature = "egfx"))]
@@ -702,71 +703,76 @@ where
 
     match res {
         // The only thing that varies between the two modes is who performs
-        // the TLS handshake; everything past it is identical.
-        BeginResult::ShouldUpgrade(stream) => {
-            let mut negotiated = match tls {
-                TransportTls::Managed => {
-                    let tls_acceptor = match security {
-                        RdpServerSecurity::Tls(acceptor) => acceptor,
-                        RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
-                        RdpServerSecurity::None => unreachable!(),
-                    };
-                    let accept = match tls_acceptor.accept(stream).await {
-                        Ok(accept) => accept,
-                        Err(e) => {
-                            warn!("Failed to TLS accept: {}", e);
-                            return Ok(None);
-                        }
-                    };
-                    NegotiatedTransport::Tls(Box::new(TokioFramed::new(accept)))
-                }
-                // The stream is already past TLS (terminated at a lower
-                // layer, e.g. a WSS terminator); do NOT call
-                // tls_acceptor.accept on it.
-                TransportTls::AlreadyDone => NegotiatedTransport::Offloaded(TokioFramed::new(stream)),
-            };
-
-            acceptor.mark_security_upgrade_as_done();
-
-            if let RdpServerSecurity::Hybrid((_, pub_key)) = security {
-                // Generic streams don't expose peer address. Use a neutral
-                // placeholder; it's unclear whether CredSSP/NTLM actually
-                // uses this value in practice.
-                let client_name = "rdp-client".to_owned();
-                let network_client = &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new();
-
-                match &mut negotiated {
-                    NegotiatedTransport::Tls(framed) => {
-                        ironrdp_acceptor::accept_credssp(
-                            framed.as_mut(),
-                            acceptor,
-                            network_client,
-                            client_name.into(),
-                            pub_key.clone(),
-                            None,
-                        )
-                        .await?;
+        // the TLS handshake; everything past it is `complete_security_upgrade`.
+        BeginResult::ShouldUpgrade(stream) => match tls {
+            TransportTls::Managed => {
+                let tls_acceptor = match security {
+                    RdpServerSecurity::Tls(acceptor) => acceptor,
+                    RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
+                    RdpServerSecurity::None => unreachable!(),
+                };
+                let accept = match tls_acceptor.accept(stream).await {
+                    Ok(accept) => accept,
+                    Err(e) => {
+                        warn!("Failed to TLS accept: {}", e);
+                        return Ok(None);
                     }
-                    NegotiatedTransport::Offloaded(framed) => {
-                        ironrdp_acceptor::accept_credssp(
-                            framed,
-                            acceptor,
-                            network_client,
-                            client_name.into(),
-                            pub_key.clone(),
-                            None,
-                        )
-                        .await?;
-                    }
-                    NegotiatedTransport::Continued(_) => unreachable!("ShouldUpgrade never yields Continued"),
-                }
+                };
+                let mut framed = TokioFramed::new(accept);
+                complete_security_upgrade(security, &mut framed, acceptor).await?;
+                Ok(Some(NegotiatedTransport::Tls(Box::new(framed))))
             }
-
-            Ok(Some(negotiated))
-        }
+            // The stream is already past TLS (terminated at a lower
+            // layer, e.g. a WSS terminator); do NOT call
+            // tls_acceptor.accept on it.
+            TransportTls::AlreadyDone => {
+                let mut framed = TokioFramed::new(stream);
+                complete_security_upgrade(security, &mut framed, acceptor).await?;
+                Ok(Some(NegotiatedTransport::Offloaded(framed)))
+            }
+        },
 
         BeginResult::Continue(framed) => Ok(Some(NegotiatedTransport::Continued(framed))),
     }
+}
+
+/// Advance a stream that is now past the security upgrade: mark the acceptor
+/// accordingly and, under [`RdpServerSecurity::Hybrid`], run the CredSSP
+/// exchange.
+///
+/// Generic over the stream so both [`TransportTls`] modes share one definition
+/// of the exchange — the two differ only in what the framed stream wraps, and
+/// keeping a single call site means a future change to the argument list or to
+/// the client-name placeholder cannot be applied to one mode and missed on the
+/// other.
+async fn complete_security_upgrade<S>(
+    security: &RdpServerSecurity,
+    framed: &mut TokioFramed<S>,
+    acceptor: &mut Acceptor,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    acceptor.mark_security_upgrade_as_done();
+
+    if let RdpServerSecurity::Hybrid((_, pub_key)) = security {
+        // Generic streams don't expose peer address. Use a neutral
+        // placeholder; it's unclear whether CredSSP/NTLM actually
+        // uses this value in practice.
+        let client_name = "rdp-client".to_owned();
+
+        ironrdp_acceptor::accept_credssp(
+            framed,
+            acceptor,
+            &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+            client_name.into(),
+            pub_key.clone(),
+            None,
+        )
+        .await?;
+    }
+
+    Ok(())
 }
 
 impl RdpServer {
@@ -1105,13 +1111,12 @@ impl RdpServer {
     #[cfg_attr(
         not(feature = "egfx"),
         expect(
-            unit_bindings,
             clippy::let_unit_value,
             reason = "attach_channels_impl yields a GFX handle only when `egfx` is enabled"
         )
     )]
     fn attach_channels(&mut self, acceptor: &mut Acceptor) {
-        let gfx_handle = attach_channels_impl(
+        let _gfx_handle: AttachedGfxHandle = attach_channels_impl(
             acceptor,
             self.cliprdr_factory.as_deref(),
             self.sound_factory.as_deref(),
@@ -1130,12 +1135,9 @@ impl RdpServer {
         // back on a later call, which is an observable behavior change
         // `gfx_handle()` callers do not expect from this refactor.
         #[cfg(feature = "egfx")]
-        if let Some(handle) = gfx_handle {
+        if let Some(handle) = _gfx_handle {
             self.gfx_handle = Some(handle);
         }
-        // Without `egfx` there is no handle to install; consume the unit.
-        #[cfg(not(feature = "egfx"))]
-        let () = gfx_handle;
     }
 
     /// Run a single RDP connection over `stream`, performing the
