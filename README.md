@@ -163,7 +163,7 @@ They are under _Computer Configuration → Administrative Templates → Windows 
 
 ## Rust version (MSRV)
 
-IronRDP's MSRV is the oldest of the six-month-old stable Rust release, [Fedora stable]'s packaged version, and [Debian stable-backports]' version.
+IronRDP's MSRV is the oldest of three versions: the latest stable Rust release at least six months old, the version packaged by [Fedora stable], and the version available in [Debian stable-backports].
 `rust-toolchain.toml` pins both the project toolchain and the MSRV validated by CI.
 See the [architecture policy] for details.
 
