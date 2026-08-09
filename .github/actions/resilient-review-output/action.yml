@@ -58,6 +58,16 @@ runs:
         settings: ${{ inputs.settings }}
         prompt: ${{ inputs.prompt }}
 
+    - id: clean-before-validation
+      if: always()
+      # claude-code-action can leave an untracked, malformed package manifest in the base checkout.
+      # The repository does not track one, and Node refuses every subsequent require until it is removed.
+      run: |
+        if ! git ls-files --error-unmatch -- package.json >/dev/null 2>&1; then
+          rm -f -- package.json
+        fi
+      shell: bash
+
     - id: validate-initial
       if: always()
       uses: actions/github-script@v8
@@ -107,6 +117,15 @@ runs:
         prompt: >-
           ${{ inputs.retry_prompt }}
           Trusted validation reason: ${{ steps.validate-initial.outputs.reason }}.
+
+    - id: clean-before-selection
+      if: always()
+      # See the cleanup before validate-initial. The resumed model invocation can recreate the file.
+      run: |
+        if ! git ls-files --error-unmatch -- package.json >/dev/null 2>&1; then
+          rm -f -- package.json
+        fi
+      shell: bash
 
     - id: select
       if: always()
