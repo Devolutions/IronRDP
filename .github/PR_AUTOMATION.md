@@ -24,9 +24,7 @@ Each LLM stage similarly injects its pipeline-specific evidence and output contr
 ## Validation and recovery
 
 Protocol-related reviews normally consume two calls against `ANTHROPIC_API_KEY_REVIEWER`, while non-protocol reviews normally consume one.
-Each heavy stage validates its structured output immediately.
-If an action reaches its turn limit or validation rejects the result, it resumes the same Claude session once with a six-turn output-only budget.
-This retry preserves the analysis already paid for instead of starting over.
+After validating its structured output, a heavy stage that reaches its turn limit or fails validation resumes the same Claude session once with a six-turn output-only budget, preserving existing analysis.
 The separately isolated publication jobs still revalidate the selected result against GitHub's pull request data and the pinned protocol corpus.
 
 If both attempts fail, the AI review count is unchanged and the pull request stays `maintainer-required`.
@@ -61,10 +59,8 @@ Dependabot is the sole owner of dependency and language labels, so this automati
 
 ### Oversized pull requests
 
-A `size/XL` pull request has 800 or more changed source lines and is excluded from automated review before any model runs.
-The classifier is also skipped so no LLM call is spent on a change that cannot be reviewed well.
-Classification falls back to deterministic scope, size, first-time-contributor, and `cargo-semver-checks` results.
-Every classified pull request has exactly one `size/*` label.
+For a `size/XL` pull request with 800 or more changed source lines, the workflow skips classification and review before any model runs.
+Classification falls back to deterministic scope, size, first-time-contributor, and `cargo-semver-checks` results, while every classified pull request retains exactly one `size/*` label.
 
 The workflow comments once to explain the exclusion and point to [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) for splitting dependent work.
 Because stacks require every branch to live in this repository, fork authors should open separate pull requests.
@@ -120,9 +116,8 @@ Every classified pull request has exactly one risk label:
 - `risk/low` means a self-contained change with no cross-crate behavioral effect.
 - `risk/unknown` means the classifier could not produce a valid judgment.
 
-A `cargo-semver-checks` incompatibility always produces `risk/high`, even when the classifier is unavailable.
-That check runs against the `ironrdp` facade, so every incompatibility it reports is a core public API break.
-A breaking change suspected only by the classifier raises its own `low` verdict to `risk/medium` without lowering a `medium` or `high` judgment.
+A `cargo-semver-checks` incompatibility always produces `risk/high`, even without a classifier result, because the check runs against the `ironrdp` facade and reports core public API breaks.
+A breaking change suspected only by the classifier promotes its `low` verdict to `risk/medium` without lowering a `medium` or `high` judgment.
 
 ### Scope and kind labels
 
@@ -147,10 +142,8 @@ Duplicates, `size/XL`, a legitimacy stop, and the terminal review count stop eve
 
 ## Review prerequisites
 
-The first heavy review requires a successful `CI` run for the exact classified head.
-A second review requires a later push and its matching successful CI run.
-Manual dispatch can bypass only the CI-success requirement.
-It cannot bypass draft status, duplicate or XL handling, contributor history, classification, risk, terminal state, or SHA validation.
+The first heavy review requires successful `CI` for the exact classified head; a second requires a later push and matching successful CI.
+Manual dispatch bypasses only the CI-success requirement, not draft status, duplicate or XL handling, contributor history, classification, risk, terminal state, or SHA validation.
 
 ## Secrets and versioning
 
