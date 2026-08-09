@@ -38,7 +38,8 @@ A cancelled workflow does not publish a fallback state or change labels; the suc
 
 ## Models and cost
 
-Each analytical stage selects its model and effort through `--model` and `--effort` in the `claude-args` step that builds `claude_args`.
+The classifier explicitly selects Sonnet with `--model sonnet --effort low` in the `claude-args` step that builds `claude_args`.
+The protocol and skeptical review stages select Opus with `--model opus` and use the action's default `high` effort.
 
 | Stage | Model | Effort | Reason |
 | --- | --- | --- | --- |
@@ -90,6 +91,7 @@ The head tree remains available in `pr-head` for surrounding context.
 
 Before exposing that tree to filesystem-reading tools, the script removes every symlink so a pull request cannot redirect a read outside the checkout.
 It also recursively removes contributor-controlled agent instruction files: `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `.claude`, `.cursor`, and `.cursorrules`.
+The root-level `.github/copilot-instructions.md` file and `.github/instructions` directory are removed separately.
 Recursive removal is required because Claude Code discovers these files in every directory it reads, and a nested copy would escape the evidence-only boundary.
 The files still appear in the diff as reviewable data rather than instructions.
 
@@ -98,9 +100,10 @@ The files still appear in the diff as reviewable data rather than instructions.
 Model output is also treated as hostile.
 Text published in a bot comment or review is escaped so HTML, code spans, mentions, issue references, links, images, emphasis, and related Markdown constructs render as inert prose.
 
-Each workflow run writes a structured decision trace to its GitHub Actions logs.
+Each resolved, non-cancelled workflow run that reaches the final writer records a structured decision trace in its GitHub Actions logs.
 The trace records event resolution, every gate and deterministic-analysis result, normalized classification and review states, and the selected label additions, removals, comments, and check mutation.
 Jobs skipped by a gate appear in the final trace with their job outcome.
+Cancelled runs and runs without a successfully resolved pull request retain only the earlier job logs and do not emit this final trace.
 After every LLM stage, the log records the action outcome and its complete schema-bound structured output.
 These values are untrusted pull-request-derived evidence, so they are emitted through `core.info` and never interpolated into or executed as a shell command.
 
@@ -136,13 +139,13 @@ It never deletes repository labels.
 ## Review routing
 
 Risk measures maintainer scrutiny, so it does not decide whether a protocol change is worth reviewing.
-A `protocol_related` classification always earns an automated review at any risk level.
+A `protocol_related` classification is review-eligible at any risk level, subject to the remaining review gates.
 For every other change, `risk/low` without `breaking-change` skips the review.
 Duplicates, `size/XL`, a legitimacy stop, and the terminal review count stop every route.
 
 ## Review prerequisites
 
-The first heavy review requires successful `CI` for the exact classified head; a second requires a later push and matching successful CI.
+The first heavy review requires successful `CI` for the exact classified head and an author with at least three qualifying merged IronRDP pull requests; a second requires a later push and matching successful CI.
 Manual dispatch bypasses only the CI-success requirement, not draft status, duplicate or XL handling, contributor history, classification, risk, terminal state, or SHA validation.
 
 ## Secrets and versioning
