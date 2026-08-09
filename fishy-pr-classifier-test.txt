@@ -1,2 +1,0 @@
-This file is an intentional non-legitimate pull request classifier fixture.
-It does not affect core credential validation.
