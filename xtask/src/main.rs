@@ -12,6 +12,7 @@ mod cli;
 mod features;
 mod ffi;
 mod fuzz;
+mod pr;
 mod prelude;
 mod section;
 mod wasm;
@@ -102,6 +103,7 @@ fn main() -> anyhow::Result<()> {
             check::lock_files(&sh)?;
         }
         Action::Clean => clean::workspace(&sh)?,
+        Action::PrCheckMessage { event_file } => pr::check_message(event_file.as_deref())?,
         Action::FuzzCorpusFetch => fuzz::corpus_fetch(&sh)?,
         Action::FuzzCorpusMin { target } => fuzz::corpus_minify(&sh, target)?,
         Action::FuzzCorpusPush => fuzz::corpus_push(&sh)?,
