@@ -134,7 +134,7 @@ The classifier also controls `kind/technical-debt` and documentation-only labels
 ### Legitimacy triage
 
 `triage/legitimacy` records that at least one commit received a high-confidence non-legitimate classification.
-The label remains until a maintainer removes it, and SHA-bound comments remain as an audit trail even when later classifications differ.
+The label remains until a maintainer removes it, and SHA-bound comments remain as an audit trail even if a later classification marks the pull request legitimate.
 Automated review remains blocked while the label is present.
 
 ### Label setup
