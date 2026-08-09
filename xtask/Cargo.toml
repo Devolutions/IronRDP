@@ -6,7 +6,6 @@ publish = false
 
 [[bin]]
 name = "xtask"
-test = false
 
 [dependencies]
 anyhow = "1"
@@ -16,4 +15,3 @@ tinyjson = "2.5"
 
 [lints]
 workspace = true
-
