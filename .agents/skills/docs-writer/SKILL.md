@@ -5,7 +5,8 @@ description: Write clear, concise technical documentation that helps readers com
 
 # Documentation writer
 
-Invoke `prose-writer` before drafting and apply its rules throughout.
+For Markdown, invoke `markdown-writer`; otherwise invoke `prose-writer`.
+Apply the selected writer's rules throughout.
 Identify the intended reader, their goal, and the prerequisites they need.
 Before restructuring existing documentation, inventory its unique facts so none are lost or restated.
 Present the outcome or shortest successful path before internal mechanics and edge cases.
