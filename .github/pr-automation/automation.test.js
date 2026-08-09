@@ -55,6 +55,10 @@ test("workflow does not overwrite github-script result outputs", () => {
   const resilientAction = fs.readFileSync(
     path.join(__dirname, "..", "actions", "resilient-review-output", "action.yml"), "utf8");
   assert.match(resilientAction, /--resume \$\{sessionId\}/);
+  assert.equal(
+    (resilientAction.match(/git ls-files --error-unmatch -- package\.json/g) || []).length,
+    2,
+  );
 });
 
 test("workflow does not resolve or write state after cancellation", () => {
