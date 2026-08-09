@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -16,7 +17,7 @@ const {
   corpusFromDirectory, notApplicableHandoff, validateProtocolReview,
 } = require("./validate-protocol-review");
 const {
-  parseChangedPaths, validateModelOutput,
+  isSessionId, parseChangedPaths, recoverExecutionOutput, validateModelOutput,
 } = require("../actions/resilient-review-output/validate");
 
 const SHA = "a".repeat(40);
@@ -58,14 +59,72 @@ test("workflow does not overwrite github-script result outputs", () => {
   assert.equal((workflow.match(/uses: \.\/\.github\/actions\/resilient-review-output/g) || []).length, 3);
   assert.match(workflow, /stage: classifier/);
   assert.match(workflow, /pr_number: \$\{\{ needs\.resolve-pr\.outputs\.pr-number \}\}/);
+  assert.match(workflow, /core\.setOutput\("value", `\$\{common\} --max-turns 10`\)/);
   assert.match(workflow, /core\.setOutput\("retry", `\$\{common\} --max-turns 3`\)/);
   const resilientAction = fs.readFileSync(
     path.join(__dirname, "..", "actions", "resilient-review-output", "action.yml"), "utf8");
   assert.match(resilientAction, /--resume \$\{sessionId\}/);
+  assert.match(resilientAction, /steps\.validate-initial\.outputs\.output/);
+  assert.equal((resilientAction.match(/recoverExecutionOutput\(process\.env\.RUNNER_TEMP\)/g) || []).length, 2);
   assert.equal(
     (resilientAction.match(/git ls-files --error-unmatch -- package\.json/g) || []).length,
     2,
   );
+});
+
+test("execution transcript recovers rejected successful output", () => {
+  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "ironrdp-llm-output-"));
+  const sessionId = "4e9d7d9e-a05f-42bd-b731-8359f4ad5ce0";
+  const output = classifier();
+  try {
+    fs.writeFileSync(path.join(runnerTemp, "claude-execution-output.json"), JSON.stringify([
+      { type: "system", subtype: "init", session_id: sessionId },
+      {
+        type: "result", subtype: "success", is_error: false, num_turns: 9,
+        structured_output: output,
+      },
+    ]));
+    assert.deepEqual(recoverExecutionOutput(runnerTemp), {
+      ok: true, sessionId, structuredOutput: JSON.stringify(output),
+    });
+  } finally {
+    fs.rmSync(runnerTemp, { recursive: true, force: true });
+  }
+});
+
+test("execution transcript recovers a max-turn session for resume", () => {
+  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "ironrdp-llm-session-"));
+  const sessionId = "6c793474-453b-42c3-aa68-826d1837109e";
+  try {
+    fs.writeFileSync(path.join(runnerTemp, "claude-execution-output.json"), JSON.stringify([
+      { type: "system", subtype: "init", session_id: sessionId },
+      { type: "result", subtype: "error_max_turns", is_error: true },
+    ]));
+    assert.deepEqual(recoverExecutionOutput(runnerTemp), {
+      ok: true, sessionId, structuredOutput: "",
+    });
+  } finally {
+    fs.rmSync(runnerTemp, { recursive: true, force: true });
+  }
+});
+
+test("execution transcript rejects malformed recovery data", () => {
+  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), "ironrdp-llm-invalid-"));
+  try {
+    fs.writeFileSync(path.join(runnerTemp, "claude-execution-output.json"), JSON.stringify([
+      { type: "system", subtype: "init", session_id: "--resume attacker-controlled" },
+      {
+        type: "result", subtype: "error_max_turns", is_error: true,
+        structured_output: classifier(),
+      },
+    ]));
+    assert.deepEqual(recoverExecutionOutput(runnerTemp), {
+      ok: true, sessionId: "", structuredOutput: "",
+    });
+    assert.equal(isSessionId("--resume attacker-controlled"), false);
+  } finally {
+    fs.rmSync(runnerTemp, { recursive: true, force: true });
+  }
 });
 
 test("workflow does not resolve or write state after cancellation", () => {

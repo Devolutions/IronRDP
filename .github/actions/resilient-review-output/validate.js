@@ -5,7 +5,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
 const { MAX_FILES } = require("../../pr-automation/deterministic-analysis");
-const { invalid, REPO_PATH, SHA } = require("../../pr-automation/validation");
+const { invalid, isPlainObject, REPO_PATH, SHA } = require("../../pr-automation/validation");
 const {
   corpusFromDirectory, validateProtocolReview,
 } = require("../../pr-automation/validate-protocol-review");
@@ -13,6 +13,47 @@ const { validateClassifier } = require("../../pr-automation/validate-classifier"
 const { validateReviewer } = require("../../pr-automation/validate-reviewer");
 
 const MAX_PATH_BYTES = 500;
+const MAX_EXECUTION_BYTES = 64 * 1024 * 1024;
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isSessionId(value) {
+  return typeof value === "string" && SESSION_ID.test(value);
+}
+
+function recoverExecutionOutput(runnerTemp) {
+  if (typeof runnerTemp !== "string" || runnerTemp.length === 0) {
+    return invalid("execution transcript path unavailable");
+  }
+  const executionFile = path.join(runnerTemp, "claude-execution-output.json");
+  let messages;
+  try {
+    const size = fs.statSync(executionFile).size;
+    if (size === 0 || size > MAX_EXECUTION_BYTES) {
+      return invalid("execution transcript size is invalid");
+    }
+    messages = JSON.parse(fs.readFileSync(executionFile, "utf8"));
+  } catch {
+    return invalid("execution transcript unavailable");
+  }
+  if (!Array.isArray(messages)) return invalid("execution transcript is invalid");
+
+  let sessionId = "";
+  let structuredOutput = "";
+  for (const message of messages) {
+    if (!isPlainObject(message)) continue;
+    if (message.type === "system" && message.subtype === "init" &&
+        isSessionId(message.session_id)) {
+      sessionId = message.session_id;
+    }
+    if (message.type === "result" && message.subtype === "success" && message.is_error === false &&
+        Object.hasOwn(message, "structured_output") && message.structured_output !== null) {
+      structuredOutput = typeof message.structured_output === "string"
+        ? message.structured_output
+        : JSON.stringify(message.structured_output);
+    }
+  }
+  return { ok: true, sessionId, structuredOutput };
+}
 
 function parseChangedPaths(source) {
   if (!Buffer.isBuffer(source) || source.length === 0 ||
@@ -75,4 +116,6 @@ function validateModelOutput(raw, {
   });
 }
 
-module.exports = { changedPathsFromRepository, parseChangedPaths, validateModelOutput };
+module.exports = {
+  changedPathsFromRepository, isSessionId, parseChangedPaths, recoverExecutionOutput, validateModelOutput,
+};
