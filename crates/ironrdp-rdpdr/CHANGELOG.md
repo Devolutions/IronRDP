@@ -6,6 +6,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-v0.7.0...ironrdp-rdpdr-v0.8.0)] - 2026-08-09
+
+### <!-- 1 -->Features
+
+- Add filesystem PDU foundation ([#1566](https://github.com/Devolutions/IronRDP/issues/1566)) ([161409e18d](https://github.com/Devolutions/IronRDP/commit/161409e18dd185de9bb30730303e56f5e8d28941)) 
+
+  ## Summary
+  - Add portable MS-RDPEFS/MS-FSCC filesystem request and completion
+  codecs with malformed-input validation and wire tests.
+  - Keep RDPDR runtime dispatch, Windows-native backend implementation,
+  and client/session integration out of this foundation.
+  
+  ## Follow-up
+  Later stacked PRs provide the backend implementation and runtime
+  integration.
+  
+  ---------
+
+- Add filesystem backend dispatch ([#1578](https://github.com/Devolutions/IronRDP/issues/1578)) ([8f5f3e2515](https://github.com/Devolutions/IronRDP/commit/8f5f3e25154a5edd324a8e89e30ef509a682dbaa)) 
+
+  Route confirmed filesystem requests through portable backend contracts
+  and make lifecycle, completion, and announcement state explicit.
+  Validate filesystem close padding, release dynamically activated drives
+  after rejected announcements, and prevent raw device removal from
+  bypassing backend cleanup. The noop backend now rejects unsupported
+  filesystem I/O.
+  
+  Later stacked PRs supply the concrete Windows backend and host
+  integration.
+
+- Add Windows filesystem backend ([#1587](https://github.com/Devolutions/IronRDP/issues/1587)) ([7dce8a306f](https://github.com/Devolutions/IronRDP/commit/7dce8a306f43462677879905642967066c42337f)) 
+
+  Add a handle-relative Windows RDPDR backend for one selected volume.
+  It confines protocol paths below an opened root and supports bounded
+  file I/O
+  and basic metadata.
+  
+  Unsupported advanced filesystem operations return STATUS_NOT_SUPPORTED;
+  later
+  stack layers will add advanced Windows semantics and host integration.
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-v0.6.0...ironrdp-rdpdr-v0.7.0)] - 2026-07-10
 
 ### <!-- 7 -->Build

@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-native-v0.7.0...ironrdp-rdpdr-native-v0.7.1)] - 2026-08-09
+
+### <!-- 1 -->Features
+
+- Add Windows filesystem backend ([#1587](https://github.com/Devolutions/IronRDP/issues/1587)) ([7dce8a306f](https://github.com/Devolutions/IronRDP/commit/7dce8a306f43462677879905642967066c42337f)) 
+
+  Add a handle-relative Windows RDPDR backend for one selected volume.
+  It confines protocol paths below an opened root and supports bounded
+  file I/O
+  and basic metadata.
+  
+  Unsupported advanced filesystem operations return STATUS_NOT_SUPPORTED;
+  later
+  stack layers will add advanced Windows semantics and host integration.
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-native-v0.6.0...ironrdp-rdpdr-native-v0.7.0)] - 2026-07-10
 
 ### <!-- 7 -->Build
