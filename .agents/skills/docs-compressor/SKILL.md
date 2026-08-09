@@ -5,7 +5,7 @@ description: Review documentation changes for concise, human-readable prose with
 
 # Documentation compressor
 
-Invoke `docs-writer` and `prose-writer`, then use their rules as review criteria without following their generation workflows.
+Invoke `docs-writer`, then use its rules as review criteria without following its generation workflow.
 Challenge every paragraph, heading, example, and aside that does not add information or help the reader act.
 Look for the same meaning expressed with less structure, repetition, or wording while preserving the writer rules.
 For substantial rewrites, compare word counts before and after.
