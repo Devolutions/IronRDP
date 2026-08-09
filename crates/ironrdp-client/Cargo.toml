@@ -32,7 +32,7 @@ native-tls = [
 
 sound = ["dep:ironrdp-rdpsnd", "dep:ironrdp-rdpsnd-native"]
 clipboard = ["dep:ironrdp-cliprdr", "dep:ironrdp-cliprdr-native"]
-rdpdr = ["dep:ironrdp-rdpdr"]
+rdpdr = ["dep:ironrdp-rdpdr", "dep:ironrdp-rdpsnd"]
 smartcard = ["rdpdr"]
 gateway = ["dep:ironrdp-mstsgu"]
 qoi = ["ironrdp-connector/qoi", "ironrdp-session/qoi"]
