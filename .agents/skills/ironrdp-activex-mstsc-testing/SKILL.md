@@ -44,8 +44,8 @@ Treat that README and `ironrdp-agent --help-agent` as the current behavior contr
    Add `RDP_AUTOLOGON=1` only for an explicitly authorized unattended run.
    Add `IRONRDP_ACTIVEX_RPC=1` when post-connect inspection through `ironrdp-agent --backend active-x` is useful.
 3. Snapshot existing `mstsc.exe` processes, then start the architecture-matched `mstscex.exe` without `/axhost`.
-   Identify exactly one new `mstsc.exe` child by parent PID and creation time.
-   Stop if pre-existing processes make the target ambiguous.
+   Poll every 250 ms for up to 15 seconds for exactly one new `mstsc.exe` child, identified by parent PID and creation time.
+   Fail the launch if the timeout expires or pre-existing processes make the target ambiguous.
 4. Target UI Automation at that child.
    Set the visible **Computer** field and invoke **Connect**.
    Approve CredUI for an interactive run, then handle any certificate warning according to the authorized test policy.
@@ -64,7 +64,7 @@ Treat that README and `ironrdp-agent --help-agent` as the current behavior contr
 ## Exercise and assess
 
 Wait for a connected state and a rendered frame before stress testing.
-Use `ironrdp-agent --backend active-x status` and `screenshot` when RPC is enabled.
+When RPC is enabled, use `ironrdp-agent --backend active-x status` and `ironrdp-agent --backend active-x screenshot <session-artifacts>\frame.png`.
 
 Apply a bounded sequence of moves, valid resizes, minimize/restore, maximize/restore, hide/show, activation, invalidation, safe pointer input, wheel input, and a harmless key press such as `VK_F24`.
 Exercise SmartSizing or Zoom only when the native UI exposes it.
@@ -85,6 +85,6 @@ Fail on a connection failure, fatal event, unexpected disconnect, process exit, 
 ## Teardown and report
 
 Close the native shell through its UI and accept the standard disconnect confirmation.
-Wait for the selected child and launcher PIDs to exit.
-If normal teardown fails, stop only those known PIDs.
+Poll every 250 ms for up to 10 seconds for the selected child and launcher PIDs to exit.
+If either remains, stop only those known PIDs and fail the teardown.
 Require `IConnectionPoint::Unadvise` in the trace, clear the process-local environment variables, and report only aggregate case results, liveness, value-free markers, and non-sensitive artifact paths.
