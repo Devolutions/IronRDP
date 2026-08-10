@@ -237,6 +237,33 @@ struct Session {
     operations: OperationManager,
 }
 
+fn enqueue_unicode_text(input_tx: &RdpInputSender, input_db: &mut Database, text: &str) -> Response {
+    // Reserve every queue slot before changing keyboard state. A full queue therefore sends no
+    // prefix of the requested text.
+    let mut permits = Vec::with_capacity(text.chars().count());
+    for _ in text.chars() {
+        let permit = match input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        permits.push(permit);
+    }
+
+    for (permit, ch) in permits.into_iter().zip(text.chars()) {
+        let events = input_db.apply([Operation::UnicodeKeyPressed(ch), Operation::UnicodeKeyReleased(ch)]);
+        if !events.is_empty() {
+            permit.send(RdpInputEvent::FastPath(events));
+        }
+    }
+
+    Response::ok()
+}
+
 /// Per-session state shared with the output-consumer task.
 struct Live {
     /// Live property bag, seeded from `Config::properties` and updated on (re)negotiation.
@@ -756,32 +783,7 @@ impl Daemon {
             return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
         };
 
-        // Reserve every queue slot before changing keyboard state. A full queue therefore sends no
-        // prefix of the requested text.
-        let mut permits = Vec::with_capacity(char_count);
-        for _ in 0..char_count {
-            let permit = match session.input_tx.try_reserve() {
-                Ok(permit) => permit,
-                Err(_) => {
-                    return Response::typed_error(
-                        crate::ipc::AgentErrorCategory::Unavailable,
-                        "session input channel is unavailable",
-                    );
-                }
-            };
-            permits.push(permit);
-        }
-
-        for (permit, ch) in permits.into_iter().zip(text.chars()) {
-            let events = session
-                .input_db
-                .apply([Operation::UnicodeKeyPressed(ch), Operation::UnicodeKeyReleased(ch)]);
-            if !events.is_empty() {
-                permit.send(RdpInputEvent::FastPath(events));
-            }
-        }
-
-        Response::ok()
+        enqueue_unicode_text(&session.input_tx, &mut session.input_db, text)
     }
 
     /// Sends input operations to the active RDP session in one FastPath message.
@@ -1173,9 +1175,14 @@ mod tests {
 
     use tokio::sync::mpsc;
 
+    use ironrdp_client::rdp::{RdpInputEvent, RdpInputSender};
+    use ironrdp_input::{Database, Operation};
+    use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
     use ironrdp_propertyset::PropertySet;
 
-    use super::{Daemon, DaemonOptions, MAX_UNICODE_TEXT_CHARS, RdpdrDriveConfig, ResizeError, notify};
+    use super::{
+        Daemon, DaemonOptions, MAX_UNICODE_TEXT_CHARS, RdpdrDriveConfig, ResizeError, enqueue_unicode_text, notify,
+    };
     use crate::ipc::Response;
     use ironrdp_tls::CertificateValidation;
 
@@ -1218,6 +1225,67 @@ mod tests {
 
         assert!(
             matches!(daemon.unicode_text(&text), Response::Err(error) if error.message == "text exceeds the 96-character limit")
+        );
+    }
+
+    #[test]
+    fn unicode_text_enqueues_ordered_utf16_events() {
+        let (sender, mut receiver) = RdpInputSender::channel(2);
+        let mut database = Database::new();
+
+        assert_eq!(
+            enqueue_unicode_text(&sender, &mut database, "A\u{1f600}"),
+            Response::ok()
+        );
+        let first = match receiver.try_recv().expect("first character is enqueued") {
+            RdpInputEvent::FastPath(events) => events,
+            event => panic!("expected FastPath input, got {event:?}"),
+        };
+        assert_eq!(
+            first.as_slice(),
+            [
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0x0041),
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, 0x0041),
+            ]
+        );
+        let second = match receiver.try_recv().expect("second character is enqueued") {
+            RdpInputEvent::FastPath(events) => events,
+            event => panic!("expected FastPath input, got {event:?}"),
+        };
+        assert_eq!(
+            second.as_slice(),
+            [
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0xD83D),
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0xDE00),
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, 0xD83D),
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, 0xDE00),
+            ]
+        );
+        assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn unicode_text_backpressure_enqueues_no_prefix_or_input_state() {
+        let (sender, mut receiver) = RdpInputSender::channel(2);
+        let mut database = Database::new();
+        sender
+            .try_send(RdpInputEvent::Resize {
+                width: 1024,
+                height: 768,
+                scale_factor: 100,
+                physical_size: None,
+            })
+            .expect("the first queue slot is available");
+
+        assert!(matches!(
+            enqueue_unicode_text(&sender, &mut database, "A\u{1f600}"),
+            Response::Err(error) if error.message == "session input channel is unavailable"
+        ));
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::Resize { .. })));
+        assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+        assert_eq!(
+            database.apply([Operation::UnicodeKeyPressed('A')]).as_slice(),
+            [FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0x0041)]
         );
     }
 

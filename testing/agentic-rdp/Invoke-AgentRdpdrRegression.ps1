@@ -260,11 +260,14 @@ try {
     New-Item -ItemType Directory -Path $script:PayloadDirectory -ErrorAction Stop | Out-Null
 
     $payloadPath = Join-Path $script:PayloadDirectory 'payload.bin'
+    $explorerPayloadName = "ironrdp-rdpdr-explorer-$script:RunId.bin"
+    $explorerPayloadPath = Join-Path $script:PayloadDirectory $explorerPayloadName
     $payloadBytes = [byte[]]::new(65536)
     for ($index = 0; $index -lt $payloadBytes.Length; $index++) {
         $payloadBytes[$index] = $index % 251
     }
     [IO.File]::WriteAllBytes($payloadPath, $payloadBytes)
+    [IO.File]::WriteAllBytes($explorerPayloadPath, $payloadBytes)
     $expectedHash = (Get-FileHash -LiteralPath $payloadPath -Algorithm SHA256).Hash
 
     $previousLogLevel = $env:IRONRDP_LOG
@@ -307,6 +310,7 @@ try {
 
     $remoteDirectory = "\\tsclient\$DriveName\$script:RunName"
     $remotePayloadPath = Join-Path $remoteDirectory 'payload.bin'
+    $remoteExplorerPayloadPath = Join-Path $remoteDirectory $explorerPayloadName
     $directResultPath = Join-Path $script:PayloadDirectory 'direct.sha256'
     $explorerResultPath = Join-Path $script:PayloadDirectory 'explorer.sha256'
     $remoteScriptDirectory = 'C:\Users\Public\Documents'
@@ -360,7 +364,7 @@ $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
 Remove-Item -LiteralPath $destination -Force
 Remove-Item -LiteralPath $PSCommandPath -Force
 '@
-    $explorerScript = $explorerScript.Replace('__SOURCE__', $remotePayloadPath).Replace('__DESTINATION__', $explorerDestination).Replace('__RESULT__', (Join-Path $remoteDirectory 'explorer.sha256')).Replace('__LENGTH__', $payloadBytes.Length)
+    $explorerScript = $explorerScript.Replace('__SOURCE__', $remoteExplorerPayloadPath).Replace('__DESTINATION__', $explorerDestination).Replace('__RESULT__', (Join-Path $remoteDirectory 'explorer.sha256')).Replace('__LENGTH__', $payloadBytes.Length)
     Write-RemoteScript $explorerScriptPath $explorerScript
     Invoke-RemoteRunDialogCommand "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -File $explorerScriptPath"
     $explorerHash = Wait-RedirectedResult $explorerResultPath
