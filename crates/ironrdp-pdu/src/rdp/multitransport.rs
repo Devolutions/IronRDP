@@ -1,9 +1,13 @@
-//! Initiate Multitransport Request and Response PDU types.
+//! RDP multitransport bootstrapping and tunnel PDU types.
 //!
-//! Defined in [\[MS-RDPBCGR\] 2.2.15.1] and [\[MS-RDPBCGR\] 2.2.15.2].
+//! The bootstrapping PDUs are defined in [\[MS-RDPBCGR\] 2.2.15.1] and
+//! [\[MS-RDPBCGR\] 2.2.15.2]. Tunnel PDUs are defined in [\[MS-RDPEMT\] 2.2.1]
+//! and [\[MS-RDPEMT\] 2.2.2].
 //!
 //! [\[MS-RDPBCGR\] 2.2.15.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/de783158-8b01-4818-8fb0-62523a5b3490
 //! [\[MS-RDPBCGR\] 2.2.15.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/44044233-e498-46f8-8e16-1ffa595a8e8b
+//! [\[MS-RDPEMT\] 2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/d22b606c-32c4-4647-b356-86f75e23a22c
+//! [\[MS-RDPEMT\] 2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/d22b606c-32c4-4647-b356-86f75e23a22c
 
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
@@ -19,7 +23,7 @@ const SECURITY_COOKIE_LEN: usize = 16;
 ///
 /// Defined in [\[MS-RDPEMT\] 2.2.1.1.1].
 ///
-/// [\[MS-RDPEMT\] 2.2.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/5d6ce64a-ec26-4ee2-8375-28040bc7f3f9
+/// [\[MS-RDPEMT\] 2.2.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/d22b606c-32c4-4647-b356-86f75e23a22c
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TunnelSubheader {
@@ -38,9 +42,6 @@ impl TunnelSubheader {
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let length: u8 = cast_length!("subHeaderLength", self.size())?;
-        if usize::from(length) < Self::FIXED_PART_SIZE {
-            return Err(invalid_field_err!("subHeaderLength", "must be at least two bytes"));
-        }
 
         dst.write_u8(length);
         dst.write_u8(self.ty);
@@ -69,7 +70,7 @@ impl TunnelSubheader {
 ///
 /// Defined in [\[MS-RDPEMT\] 2.2.1.1].
 ///
-/// [\[MS-RDPEMT\] 2.2.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/80d0849e-91a0-4fe7-83ad-ea9eaa7d15e9
+/// [\[MS-RDPEMT\] 2.2.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/d22b606c-32c4-4647-b356-86f75e23a22c
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[repr(u8)]
@@ -110,18 +111,24 @@ struct TunnelHeader {
 impl TunnelHeader {
     const FIXED_PART_SIZE: usize = 1 /* action and flags */ + 2 /* payloadLength */ + 1 /* headerLength */;
 
-    fn size(&self) -> usize {
-        Self::FIXED_PART_SIZE + self.subheaders.iter().map(TunnelSubheader::size).sum::<usize>()
+    fn encoded_size(subheaders: &[TunnelSubheader]) -> usize {
+        Self::FIXED_PART_SIZE + subheaders.iter().map(TunnelSubheader::size).sum::<usize>()
     }
 
-    fn encode(&self, payload_length: usize, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+    fn encode(
+        action: TunnelAction,
+        subheaders: &[TunnelSubheader],
+        payload_length: usize,
+        dst: &mut WriteCursor<'_>,
+    ) -> EncodeResult<()> {
         let payload_length: u16 = cast_length!("payloadLength", payload_length)?;
-        let header_length: u8 = cast_length!("headerLength", self.size())?;
+        let header_length: u8 = cast_length!("headerLength", Self::encoded_size(subheaders))?;
+        ensure_size!(in: dst, size: usize::from(header_length) + usize::from(payload_length));
 
-        dst.write_u8(self.action.as_u8());
+        dst.write_u8(action.as_u8());
         dst.write_u16(payload_length);
         dst.write_u8(header_length);
-        self.subheaders.iter().try_for_each(|subheader| subheader.encode(dst))
+        subheaders.iter().try_for_each(|subheader| subheader.encode(dst))
     }
 
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<(Self, usize)> {
@@ -149,12 +156,7 @@ impl TunnelHeader {
             subheaders.push(TunnelSubheader::decode(&mut subheaders_cursor)?);
         }
 
-        if src.len() != payload_length {
-            return Err(invalid_field_err!(
-                "payloadLength",
-                "does not match the bytes following the tunnel header"
-            ));
-        }
+        ensure_size!(in: src, size: payload_length);
 
         Ok((Self { action, subheaders }, payload_length))
     }
@@ -164,7 +166,7 @@ impl TunnelHeader {
 ///
 /// Defined in [\[MS-RDPEMT\] 2.2.2.1].
 ///
-/// [\[MS-RDPEMT\] 2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/4cee15bd-2f65-4624-95d2-a3aa6c08d588
+/// [\[MS-RDPEMT\] 2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/d22b606c-32c4-4647-b356-86f75e23a22c
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TunnelCreateRequestPdu {
@@ -189,11 +191,7 @@ impl TunnelCreateRequestPdu {
 
 impl Encode for TunnelCreateRequestPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        TunnelHeader {
-            action: TunnelAction::CreateRequest,
-            subheaders: Vec::new(),
-        }
-        .encode(Self::PAYLOAD_SIZE, dst)?;
+        TunnelHeader::encode(TunnelAction::CreateRequest, &[], Self::PAYLOAD_SIZE, dst)?;
         dst.write_u32(self.request_id);
         dst.write_u32(0);
         dst.write_slice(&self.security_cookie);
@@ -206,12 +204,7 @@ impl Encode for TunnelCreateRequestPdu {
     }
 
     fn size(&self) -> usize {
-        TunnelHeader {
-            action: TunnelAction::CreateRequest,
-            subheaders: Vec::new(),
-        }
-        .size()
-            + Self::PAYLOAD_SIZE
+        TunnelHeader::encoded_size(&[]) + Self::PAYLOAD_SIZE
     }
 }
 
@@ -252,7 +245,7 @@ impl<'de> Decode<'de> for TunnelCreateRequestPdu {
 ///
 /// Defined in [\[MS-RDPEMT\] 2.2.2.2].
 ///
-/// [\[MS-RDPEMT\] 2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/8676e0f6-b5f3-45fb-8c3e-18a9414ea98f
+/// [\[MS-RDPEMT\] 2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/d22b606c-32c4-4647-b356-86f75e23a22c
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TunnelCreateResponsePdu {
@@ -264,7 +257,7 @@ impl TunnelCreateResponsePdu {
     const PAYLOAD_SIZE: usize = 4 /* hrResponse */;
     const NAME: &'static str = "TunnelCreateResponsePdu";
 
-    /// `S_OK`.
+    /// Exact `S_OK` response value.
     pub const S_OK: u32 = 0;
 
     /// Whether the server accepted the tunnel.
@@ -275,11 +268,7 @@ impl TunnelCreateResponsePdu {
 
 impl Encode for TunnelCreateResponsePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        TunnelHeader {
-            action: TunnelAction::CreateResponse,
-            subheaders: Vec::new(),
-        }
-        .encode(Self::PAYLOAD_SIZE, dst)?;
+        TunnelHeader::encode(TunnelAction::CreateResponse, &[], Self::PAYLOAD_SIZE, dst)?;
         dst.write_u32(self.hr_response);
 
         Ok(())
@@ -290,12 +279,7 @@ impl Encode for TunnelCreateResponsePdu {
     }
 
     fn size(&self) -> usize {
-        TunnelHeader {
-            action: TunnelAction::CreateResponse,
-            subheaders: Vec::new(),
-        }
-        .size()
-            + Self::PAYLOAD_SIZE
+        TunnelHeader::encoded_size(&[]) + Self::PAYLOAD_SIZE
     }
 }
 
@@ -328,7 +312,7 @@ impl<'de> Decode<'de> for TunnelCreateResponsePdu {
 ///
 /// Defined in [\[MS-RDPEMT\] 2.2.2.3].
 ///
-/// [\[MS-RDPEMT\] 2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/0c9108e9-fa9f-4d44-a030-810e2902a2c6
+/// [\[MS-RDPEMT\] 2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/d22b606c-32c4-4647-b356-86f75e23a22c
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct TunnelDataPdu {
@@ -352,11 +336,7 @@ impl TunnelDataPdu {
 
 impl Encode for TunnelDataPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        TunnelHeader {
-            action: TunnelAction::Data,
-            subheaders: self.subheaders.clone(),
-        }
-        .encode(self.data.len(), dst)?;
+        TunnelHeader::encode(TunnelAction::Data, &self.subheaders, self.data.len(), dst)?;
         dst.write_slice(&self.data);
 
         Ok(())
@@ -367,12 +347,7 @@ impl Encode for TunnelDataPdu {
     }
 
     fn size(&self) -> usize {
-        TunnelHeader {
-            action: TunnelAction::Data,
-            subheaders: self.subheaders.clone(),
-        }
-        .size()
-            + self.data.len()
+        TunnelHeader::encoded_size(&self.subheaders) + self.data.len()
     }
 }
 
@@ -394,7 +369,7 @@ impl<'de> Decode<'de> for TunnelDataPdu {
 ///
 /// Defined in [\[MS-RDPEMT\] 2.2.2].
 ///
-/// [\[MS-RDPEMT\] 2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/9f9aefd5-c7dc-47d7-8767-1224a92f4e9f
+/// [\[MS-RDPEMT\] 2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/d22b606c-32c4-4647-b356-86f75e23a22c
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum TunnelPdu {
@@ -958,6 +933,55 @@ mod tests {
         );
         let decoded = ironrdp_core::decode::<TunnelPdu>(&encoded).unwrap();
         assert_eq!(decoded, pdu);
+    }
+
+    #[test]
+    fn tunnel_decoder_leaves_the_next_pdu_in_the_cursor() {
+        let first = ironrdp_core::encode_vec(&TunnelCreateResponsePdu {
+            hr_response: TunnelCreateResponsePdu::S_OK,
+        })
+        .unwrap();
+        let second = ironrdp_core::encode_vec(&TunnelCreateResponsePdu {
+            hr_response: 0x8000_4004,
+        })
+        .unwrap();
+        let mut wire = first;
+        wire.extend_from_slice(&second);
+
+        let mut cursor = ReadCursor::new(&wire);
+        assert_eq!(
+            TunnelCreateResponsePdu::decode(&mut cursor).unwrap().hr_response,
+            TunnelCreateResponsePdu::S_OK
+        );
+        assert_eq!(
+            TunnelCreateResponsePdu::decode(&mut cursor).unwrap().hr_response,
+            0x8000_4004
+        );
+        assert!(cursor.is_empty());
+    }
+
+    #[test]
+    fn tunnel_decoder_rejects_truncated_payloads() {
+        let wire = [
+            0x01, // action = create response, flags = 0
+            0x04, 0x00, // payloadLength = 4
+            0x04, // headerLength = 4
+            0x00, 0x00, 0x00, // incomplete hrResponse
+        ];
+        assert!(ironrdp_core::decode::<TunnelCreateResponsePdu>(&wire).is_err());
+    }
+
+    #[test]
+    fn tunnel_encoders_return_errors_for_small_buffers() {
+        let request = TunnelCreateRequestPdu::new(7, [0xAB; SECURITY_COOKIE_LEN]);
+        let response = TunnelCreateResponsePdu {
+            hr_response: TunnelCreateResponsePdu::S_OK,
+        };
+        let data = TunnelDataPdu::new(vec![1]);
+
+        assert!(ironrdp_core::encode(&request, &mut [0; 1]).is_err());
+        assert!(ironrdp_core::encode(&response, &mut [0; 1]).is_err());
+        assert!(ironrdp_core::encode(&data, &mut [0; 1]).is_err());
     }
 
     #[test]

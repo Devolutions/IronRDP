@@ -4,14 +4,14 @@
 //! common header, connection-initialization, acknowledgement, and source-data
 //! structures used by reliable RDP-UDP versions 1 and 2.
 //!
-//! Defined in [\[MS-RDPEUDP\] 2.2.2.1, 2.2.2.4-2.2.2.7].
+//! Defined in [\[MS-RDPEUDP\] 2.2.2.1, 2.2.2.4, 2.2.2.5, and 2.2.2.7].
 //!
-//! [\[MS-RDPEUDP\] 2.2.2.1, 2.2.2.4-2.2.2.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/2b8a6f10-cf3a-49f6-b989-51de4d2f99e6
+//! [\[MS-RDPEUDP\] 2.2.2.1, 2.2.2.4, 2.2.2.5, and 2.2.2.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/2744a3ee-04fb-407b-a9e3-b3b2ded422b1
 
 use bitflags::bitflags;
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
-    ensure_size, invalid_field_err,
+    ensure_size, invalid_field_err, read_padding,
 };
 
 /// Minimum MTU accepted during reliable RDP-UDP negotiation.
@@ -26,7 +26,7 @@ bitflags! {
     ///
     /// Defined in [\[MS-RDPEUDP\] 2.2.2.1].
     ///
-    /// [\[MS-RDPEUDP\] 2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/2b8a6f10-cf3a-49f6-b989-51de4d2f99e6
+    /// [\[MS-RDPEUDP\] 2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/2744a3ee-04fb-407b-a9e3-b3b2ded422b1
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct RdpUdpFlags: u16 {
@@ -44,6 +44,8 @@ bitflags! {
         const CN = 0x0020;
         /// Congestion-window reset.
         const CWR = 0x0040;
+        /// Selective ACK option; currently unused by the protocol.
+        const SACK_OPTION = 0x0080;
         /// ACK-of-ACK vector follows the ACK vector.
         const ACK_OF_ACKS = 0x0100;
         /// Requests lossy transport; this is unsupported by the reliable-only engine.
@@ -63,7 +65,7 @@ bitflags! {
 ///
 /// Defined in [\[MS-RDPEUDP\] 2.2.2.1].
 ///
-/// [\[MS-RDPEUDP\] 2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/2b8a6f10-cf3a-49f6-b989-51de4d2f99e6
+/// [\[MS-RDPEUDP\] 2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/2744a3ee-04fb-407b-a9e3-b3b2ded422b1
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RdpUdpFecHeader {
@@ -103,8 +105,7 @@ impl<'de> Decode<'de> for RdpUdpFecHeader {
         ensure_fixed_part_size!(in: src);
         let source_ack = src.read_u32_be();
         let receive_window_size = src.read_u16_be();
-        let flags = RdpUdpFlags::from_bits(src.read_u16_be())
-            .ok_or_else(|| invalid_field_err!("uFlags", "contains reserved bits"))?;
+        let flags = RdpUdpFlags::from_bits_truncate(src.read_u16_be());
 
         Ok(Self {
             source_ack,
@@ -118,7 +119,7 @@ impl<'de> Decode<'de> for RdpUdpFecHeader {
 ///
 /// Defined in [\[MS-RDPEUDP\] 2.2.2.5].
 ///
-/// [\[MS-RDPEUDP\] 2.2.2.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/da754206-a6d0-4a5b-9ef7-4a8e5352701f
+/// [\[MS-RDPEUDP\] 2.2.2.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/2744a3ee-04fb-407b-a9e3-b3b2ded422b1
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RdpUdpSynData {
@@ -196,49 +197,11 @@ impl<'de> Decode<'de> for RdpUdpSynData {
     }
 }
 
-/// RDP-UDP protocol version advertised in extended SYN data.
-///
-/// Defined in [\[MS-RDPEUDP\] 2.2.2.9].
-///
-/// [\[MS-RDPEUDP\] 2.2.2.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/2399ce13-049d-4c02-bd3c-9226b38d14f2
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-#[repr(u16)]
-pub enum RdpUdpProtocolVersion {
-    /// Legacy reliable RDP-UDP with 500 ms minimum retransmission timeout.
-    V1 = 0x0001,
-    /// Legacy reliable RDP-UDP with 300 ms minimum retransmission timeout.
-    V2 = 0x0002,
-    /// RDP-UDP2 transfer after RDP-UDP initialization.
-    V3 = 0x0101,
-}
-
-impl RdpUdpProtocolVersion {
-    /// Converts a protocol-version integer received on the wire.
-    pub fn from_u16(value: u16) -> Option<Self> {
-        match value {
-            0x0001 => Some(Self::V1),
-            0x0002 => Some(Self::V2),
-            0x0101 => Some(Self::V3),
-            _ => None,
-        }
-    }
-
-    #[expect(
-        clippy::as_conversions,
-        reason = "repr(u16) guarantees discriminant layout, and as is the only way to cast enum -> primitive"
-    )]
-    /// Converts this version to its wire representation.
-    pub fn as_u16(self) -> u16 {
-        self as u16
-    }
-}
-
 /// RDP-UDP ACK vector with DWORD alignment padding.
 ///
 /// Defined in [\[MS-RDPEUDP\] 2.2.2.7].
 ///
-/// [\[MS-RDPEUDP\] 2.2.2.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/16ff7b1e-f60b-4369-b5de-d49eff260f05
+/// [\[MS-RDPEUDP\] 2.2.2.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/2744a3ee-04fb-407b-a9e3-b3b2ded422b1
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RdpUdpAckVector {
@@ -289,9 +252,7 @@ impl<'de> Decode<'de> for RdpUdpAckVector {
         let padding_size = Self::padding_size(encoded_len);
         ensure_size!(in: src, size: encoded_len + padding_size);
         let encoded = src.read_slice(encoded_len).to_vec();
-        if src.read_slice(padding_size).iter().any(|&byte| byte != 0) {
-            return Err(invalid_field_err!("padding", "must be zero"));
-        }
+        read_padding(src, padding_size);
 
         Ok(Self { encoded })
     }
@@ -301,7 +262,7 @@ impl<'de> Decode<'de> for RdpUdpAckVector {
 ///
 /// Defined in [\[MS-RDPEUDP\] 2.2.2.4].
 ///
-/// [\[MS-RDPEUDP\] 2.2.2.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/916af634-f96b-4dcc-bfdf-5646d5dc7f7d
+/// [\[MS-RDPEUDP\] 2.2.2.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/2744a3ee-04fb-407b-a9e3-b3b2ded422b1
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RdpUdpSourcePayload {
@@ -368,11 +329,51 @@ mod tests {
     }
 
     #[test]
+    fn accepts_documented_and_unknown_flags() {
+        let encoded = [
+            0xFF, 0xFF, 0xFF, 0xFF, // snSourceAck
+            0x04, 0x00, // uReceiveWindowSize
+            0x80, 0x84, // ACK | SACK_OPTION | unknown flag
+        ];
+        let header = ironrdp_core::decode::<RdpUdpFecHeader>(&encoded).unwrap();
+        assert_eq!(header.flags, RdpUdpFlags::ACK | RdpUdpFlags::SACK_OPTION);
+    }
+
+    #[test]
     fn ack_vector_round_trip_and_padding() {
-        let vector = RdpUdpAckVector { encoded: vec![0x04] };
-        let encoded = ironrdp_core::encode_vec(&vector).unwrap();
-        assert_eq!(encoded.as_slice(), &[0x00, 0x01, 0x04, 0x00]);
-        assert_eq!(ironrdp_core::decode::<RdpUdpAckVector>(&encoded).unwrap(), vector);
+        for encoded in [
+            vec![],
+            vec![0x04],
+            vec![0x04, 0x05],
+            vec![0x04, 0x05, 0x06],
+            vec![0x04; 2048],
+        ] {
+            let vector = RdpUdpAckVector { encoded };
+            let encoded = ironrdp_core::encode_vec(&vector).unwrap();
+            assert_eq!(ironrdp_core::decode::<RdpUdpAckVector>(&encoded).unwrap(), vector);
+        }
+    }
+
+    #[test]
+    fn ack_vector_ignores_non_zero_padding() {
+        let encoded = [0x00, 0x01, 0x04, 0xFF];
+        assert_eq!(
+            ironrdp_core::decode::<RdpUdpAckVector>(&encoded).unwrap(),
+            RdpUdpAckVector { encoded: vec![0x04] }
+        );
+    }
+
+    #[test]
+    fn accepts_mtu_boundaries() {
+        for mtu in [MIN_MTU, MAX_MTU] {
+            let syn = RdpUdpSynData {
+                initial_sequence_number: 1,
+                upstream_mtu: mtu,
+                downstream_mtu: mtu,
+            };
+            let encoded = ironrdp_core::encode_vec(&syn).unwrap();
+            assert_eq!(ironrdp_core::decode::<RdpUdpSynData>(&encoded).unwrap(), syn);
+        }
     }
 
     #[test]
