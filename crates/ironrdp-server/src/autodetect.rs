@@ -16,6 +16,24 @@ const RTT_WINDOW_SIZE: usize = 8;
 /// Probes older than this are discarded as unresponsive.
 pub(crate) const RTT_PROBE_MAX_AGE_MS: u64 = 30_000;
 
+/// Run a bandwidth measurement once every this many RTT ticks. Bandwidth
+/// changes far more slowly than RTT and each measurement sends a payload, so it
+/// is sampled less often than the per-tick RTT probe.
+const BW_MEASURE_INTERVAL_TICKS: u32 = 8;
+
+/// Minimum spacing between Network Characteristics Result PDUs.
+///
+/// The reported figures are averaged over a window and change far more slowly
+/// than the RTT probe cadence, so pacing the result independently keeps an
+/// aggressive probe rate from turning into an equally aggressive stream of
+/// unsolicited PDUs.
+const NETCHAR_RESULT_MIN_INTERVAL_MS: u64 = 1_000;
+
+/// Size of the synthetic Bandwidth Measure Payload, in bytes. Large enough that
+/// the client's measured time delta is meaningful on a real link, small enough
+/// not to be a noticeable periodic cost.
+const BW_PAYLOAD_LEN: usize = 8192;
+
 /// Server-side auto-detect state machine.
 ///
 /// Tracks outstanding RTT probes and computes round-trip statistics from
@@ -35,6 +53,30 @@ pub struct AutoDetectManager {
     /// Outstanding probes as `(sequence_number, sent_at_ms)`.
     pending_probes: Vec<(u16, u64)>,
     rtt_samples: VecDeque<u32>,
+    /// Sequence number of an in-flight bandwidth measurement, if any. A new
+    /// measurement is not started while one is outstanding.
+    pending_bw: Option<u16>,
+    /// Most recently measured bandwidth in kilobits per second.
+    bandwidth_kbps: Option<u32>,
+    /// Counts RTT ticks to pace bandwidth measurements (see [`BW_MEASURE_INTERVAL_TICKS`]).
+    bw_tick_count: u32,
+    /// When the last Network Characteristics Result was built, for pacing.
+    last_netchar_result_ms: Option<u64>,
+    /// Lowest RTT observed over the whole session, for the wire `baseRTT`.
+    ///
+    /// [MS-RDPBCGR] 2.2.14.1.5 defines that field as "the lowest detected
+    /// round-trip time" with no window scoping, so it is tracked separately from
+    /// the sliding window behind [`snapshot()`](Self::snapshot). A floor derived
+    /// from the window can rise once a low sample is evicted, which would make
+    /// the baseRTT / averageRTT pair unusable for the queueing-delay difference
+    /// a client computes from it.
+    min_rtt_ms: Option<u32>,
+    /// Set when a client response updates the measured figures, cleared when a
+    /// Network Characteristics Result reports them.
+    ///
+    /// Without it a client that stops answering leaves the last window values
+    /// being advertised indefinitely, since they never age out of `rtt_samples`.
+    measurement_is_fresh: bool,
 }
 
 impl AutoDetectManager {
@@ -43,14 +85,21 @@ impl AutoDetectManager {
             next_sequence: 0,
             pending_probes: Vec::new(),
             rtt_samples: VecDeque::with_capacity(RTT_WINDOW_SIZE),
+            pending_bw: None,
+            bandwidth_kbps: None,
+            bw_tick_count: 0,
+            last_netchar_result_ms: None,
+            measurement_is_fresh: false,
+            min_rtt_ms: None,
         }
     }
 
     /// Generate an RTT Measure Request PDU for continuous detection.
     ///
-    /// The caller must encode and send the returned [`AutoDetectRequest`] as
-    /// a Share Data PDU on the IO channel. `now_ms` is recorded as the send time and
-    /// is what [`handle_response()`](Self::handle_response) measures against.
+    /// The caller must encode and send the returned [`AutoDetectRequest`] on
+    /// the MCS message channel, framed by a `SEC_AUTODETECT_REQ` security
+    /// header ([MS-RDPBCGR] 2.2.14.3). `now_ms` is recorded as the send time
+    /// and is what [`handle_response()`](Self::handle_response) measures against.
     pub fn send_rtt_request(&mut self, now_ms: u64) -> AutoDetectRequest {
         let seq = self.next_sequence;
         self.next_sequence = seq.wrapping_add(1);
@@ -58,30 +107,123 @@ impl AutoDetectManager {
         AutoDetectRequest::rtt_continuous(seq)
     }
 
-    /// Process an RTT Measure Response from the client.
+    /// Build a Bandwidth Measure transaction (Start → Payload → Stop) when one
+    /// is due, or `None` otherwise.
     ///
-    /// Returns the measured RTT in milliseconds if the sequence number
-    /// matches an outstanding probe, or `None` if it was unexpected.
+    /// Paced to one measurement per [`BW_MEASURE_INTERVAL_TICKS`] calls and
+    /// suppressed while a prior measurement is still outstanding. The three PDUs
+    /// must be sent back-to-back on the MCS message channel; the client counts
+    /// the bytes received between Start and Stop and replies with a Bandwidth
+    /// Measure Results PDU, processed by [`handle_response()`](Self::handle_response).
+    pub fn build_bandwidth_measure(&mut self) -> Option<[AutoDetectRequest; 3]> {
+        self.bw_tick_count = self.bw_tick_count.wrapping_add(1);
+        if self.pending_bw.is_some() || !self.bw_tick_count.is_multiple_of(BW_MEASURE_INTERVAL_TICKS) {
+            return None;
+        }
+        let seq = self.next_sequence;
+        self.next_sequence = seq.wrapping_add(1);
+        self.pending_bw = Some(seq);
+        Some([
+            AutoDetectRequest::bw_start_continuous(seq),
+            AutoDetectRequest::bw_payload(seq, vec![0u8; BW_PAYLOAD_LEN]),
+            AutoDetectRequest::bw_stop_continuous(seq),
+        ])
+    }
+
+    /// Build a Network Characteristics Result reporting the measured network.
+    ///
+    /// Returns `None` until the network has actually been characterised, which
+    /// means both an RTT sample and a completed bandwidth measurement. A result
+    /// carrying RTT alone reports part of the picture as though it were the
+    /// whole, so it is not sent; the same is true of the reference
+    /// implementations, which return early with no bandwidth figure to report.
+    ///
+    /// Also returns `None` when one was sent less than
+    /// [`NETCHAR_RESULT_MIN_INTERVAL_MS`] ago. The RTT probe cadence is set by
+    /// the caller and can be far faster than the rate at which the reported
+    /// figures meaningfully change, so the result is paced independently rather
+    /// than emitted once per probe.
+    ///
+    /// Finally, returns `None` unless a client response has updated the figures
+    /// since the last result. Samples do not age out of the window, so a client
+    /// that stops answering would otherwise leave the last values being
+    /// advertised forever. `snapshot()` still reports them, where staleness is
+    /// the embedder's to judge, but they are not put on the wire as a current
+    /// claim.
+    ///
+    /// `baseRTT` is the lowest RTT seen over the whole session, not the lowest in
+    /// the current window, so it never rises. `averageRTT` is the window average
+    /// and does track current conditions; the difference between the two is what
+    /// a client reads as queueing delay.
+    ///
+    /// Like [`send_rtt_request()`](Self::send_rtt_request), the caller sends the
+    /// returned PDU on the MCS message channel. The client does not reply to it.
+    pub fn build_netchar_result(&mut self, now_ms: u64) -> Option<AutoDetectRequest> {
+        if !self.measurement_is_fresh {
+            return None;
+        }
+        let bandwidth_kbps = self.bandwidth_kbps?;
+        let base_rtt_ms = self.min_rtt_ms?;
+        let snapshot = self.snapshot()?;
+
+        if let Some(last) = self.last_netchar_result_ms {
+            if now_ms.saturating_sub(last) < NETCHAR_RESULT_MIN_INTERVAL_MS {
+                return None;
+            }
+        }
+        self.last_netchar_result_ms = Some(now_ms);
+        self.measurement_is_fresh = false;
+
+        let seq = self.next_sequence;
+        self.next_sequence = seq.wrapping_add(1);
+        Some(AutoDetectRequest::netchar_result(
+            seq,
+            base_rtt_ms,
+            bandwidth_kbps,
+            snapshot.avg_ms,
+        ))
+    }
+
+    /// Process an Auto-Detect Response from the client.
+    ///
+    /// For an RTT Measure Response, records the sample and returns the measured
+    /// RTT in milliseconds. For a Bandwidth Measure Results, records the
+    /// computed bandwidth internally and returns `None`. Returns `None` for an
+    /// unexpected or unmatched response.
+    ///
     /// `now_ms` is the receipt time on the same clock passed to
     /// [`send_rtt_request()`](Self::send_rtt_request).
     pub fn handle_response(&mut self, response: &AutoDetectResponse, now_ms: u64) -> Option<u32> {
-        let AutoDetectResponse::RttResponse { sequence_number } = response else {
-            return None;
-        };
+        match response {
+            AutoDetectResponse::RttResponse { sequence_number } => {
+                let idx = self.pending_probes.iter().position(|(s, _)| *s == *sequence_number)?;
+                let (_, sent_at_ms) = self.pending_probes.remove(idx);
 
-        let idx = self.pending_probes.iter().position(|(s, _)| *s == *sequence_number)?;
-        let (_, sent_at_ms) = self.pending_probes.remove(idx);
+                // Saturating rather than wrapping: a caller whose clock went backwards gets
+                // a zero sample, not a nonsense one near u32::MAX.
+                let rtt_ms = u32::try_from(now_ms.saturating_sub(sent_at_ms)).unwrap_or(u32::MAX);
 
-        // Saturating rather than wrapping: a caller whose clock went backwards gets a
-        // zero sample, not a nonsense one near u32::MAX.
-        let rtt_ms = u32::try_from(now_ms.saturating_sub(sent_at_ms)).unwrap_or(u32::MAX);
+                if self.rtt_samples.len() >= RTT_WINDOW_SIZE {
+                    self.rtt_samples.pop_front();
+                }
+                self.rtt_samples.push_back(rtt_ms);
+                self.min_rtt_ms = Some(self.min_rtt_ms.map_or(rtt_ms, |m| m.min(rtt_ms)));
+                self.measurement_is_fresh = true;
 
-        if self.rtt_samples.len() >= RTT_WINDOW_SIZE {
-            self.rtt_samples.pop_front();
+                Some(rtt_ms)
+            }
+            AutoDetectResponse::BandwidthMeasureResults { sequence_number, .. } => {
+                if self.pending_bw == Some(*sequence_number) {
+                    self.pending_bw = None;
+                    if let Some(kbps) = response.computed_bandwidth_kbps() {
+                        self.bandwidth_kbps = Some(kbps);
+                        self.measurement_is_fresh = true;
+                    }
+                }
+                None
+            }
+            _ => None,
         }
-        self.rtt_samples.push_back(rtt_ms);
-
-        Some(rtt_ms)
     }
 
     /// Get current RTT statistics, or `None` if no measurements yet.
@@ -132,7 +274,10 @@ impl Default for AutoDetectManager {
 /// Snapshot of RTT measurement results.
 #[derive(Debug, Clone, Copy)]
 pub struct RttSnapshot {
-    /// Minimum observed RTT in milliseconds.
+    /// Minimum RTT in milliseconds over the current window.
+    ///
+    /// Not the `baseRTT` sent on the wire, which is the session-lifetime lowest
+    /// per [MS-RDPBCGR] 2.2.14.1.5. This one can rise as low samples age out.
     pub min_ms: u32,
     /// Maximum observed RTT in milliseconds.
     pub max_ms: u32,

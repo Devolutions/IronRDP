@@ -956,6 +956,15 @@ mod tests {
         0x14, 0x00, 0x00, 0x00, // averageRTT = 20
     ];
 
+    const NETCHAR_RTT_WIRE: &[u8] = &[
+        0x0E, // headerLength
+        0x00, // headerTypeId
+        0x07, 0x00, // sequenceNumber = 7
+        0x40, 0x08, // requestType = NETCHAR_RESULT_RTT (0x0840)
+        0x08, 0x00, 0x00, 0x00, // baseRTT = 8
+        0x12, 0x00, 0x00, 0x00, // averageRTT = 18
+    ];
+
     #[test]
     fn decode_rtt_request() {
         let pdu = ironrdp_core::decode::<AutoDetectRequest>(RTT_REQUEST_WIRE).unwrap();
@@ -1096,6 +1105,27 @@ mod tests {
         let pdu = AutoDetectRequest::netchar_result(6, 10, 1000, 20);
         let encoded = ironrdp_core::encode_vec(&pdu).unwrap();
         assert_eq!(encoded.as_slice(), NETCHAR_ALL_WIRE);
+    }
+
+    #[test]
+    fn decode_netchar_rtt() {
+        let pdu = ironrdp_core::decode::<AutoDetectRequest>(NETCHAR_RTT_WIRE).unwrap();
+        match pdu {
+            AutoDetectRequest::NetworkCharacteristicsResult {
+                sequence_number,
+                request_type,
+                base_rtt_ms,
+                bandwidth_kbps,
+                average_rtt_ms,
+            } => {
+                assert_eq!(sequence_number, 7);
+                assert_eq!(request_type, NETCHAR_RESULT_RTT);
+                assert_eq!(base_rtt_ms, Some(8));
+                assert_eq!(bandwidth_kbps, None);
+                assert_eq!(average_rtt_ms, 18);
+            }
+            other => panic!("expected NetworkCharacteristicsResult, got {other:?}"),
+        }
     }
 
     #[test]
