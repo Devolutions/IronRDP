@@ -1,6 +1,6 @@
 //! Typed error types for the public API of the `ironrdp-server` crate.
 //!
-//! Mirrors the shape of [`ironrdp_connector::ConnectorError`]: a thin
+//! Mirrors the shape of `ironrdp_connector::ConnectorError`: a thin
 //! [`ironrdp_error::Error`] wrapper around a typed [`ServerErrorKind`] enum,
 //! with a static `&'static str` context and an opaque `source` for arbitrary
 //! upstream errors. The wrapper provides `with_source` so concrete errors
@@ -39,8 +39,6 @@ pub enum ServerErrorKind {
     Unsupported,
     /// Generic failure with a runtime description. Prefer a specific variant.
     Reason(String),
-    /// Catch-all with no specific cause. Prefer a specific variant.
-    General,
     /// Custom failure with the actual source attached via
     /// [`ironrdp_error::Error::with_source`].
     Custom,
@@ -55,7 +53,6 @@ impl fmt::Display for ServerErrorKind {
             Self::Channel => write!(f, "channel error"),
             Self::Unsupported => write!(f, "unsupported"),
             Self::Reason(reason) => write!(f, "reason: {reason}"),
-            Self::General => write!(f, "general error"),
             Self::Custom => write!(f, "custom error"),
         }
     }
@@ -67,7 +64,7 @@ impl core::error::Error for ServerErrorKind {
             Self::Encode(e) => Some(e),
             Self::Decode(e) => Some(e),
             Self::Io(e) => Some(e),
-            Self::Channel | Self::Unsupported | Self::Reason(_) | Self::General | Self::Custom => None,
+            Self::Channel | Self::Unsupported | Self::Reason(_) | Self::Custom => None,
         }
     }
 }
@@ -83,7 +80,7 @@ pub type ServerError = ironrdp_error::Error<ServerErrorKind>;
 pub type ServerResult<T> = Result<T, ServerError>;
 
 /// Constructors for [`ServerError`] that match the shape of
-/// [`ironrdp_connector::ConnectorErrorExt`].
+/// `ironrdp_connector::ConnectorErrorExt`.
 pub trait ServerErrorExt {
     /// Build a [`ServerErrorKind::Encode`] error from an [`EncodeError`].
     fn encode(error: EncodeError) -> Self;
@@ -98,8 +95,6 @@ pub trait ServerErrorExt {
     /// Build a [`ServerErrorKind::Unsupported`] error with the unsupported
     /// feature named in the context.
     fn unsupported(context: &'static str) -> Self;
-    /// Build a [`ServerErrorKind::General`] error with a static context.
-    fn general(context: &'static str) -> Self;
     /// Build a [`ServerErrorKind::Reason`] error with a static context and a
     /// runtime description.
     fn reason(context: &'static str, reason: impl Into<String>) -> Self;
@@ -131,10 +126,6 @@ impl ServerErrorExt for ServerError {
         Self::new(context, ServerErrorKind::Unsupported)
     }
 
-    fn general(context: &'static str) -> Self {
-        Self::new(context, ServerErrorKind::General)
-    }
-
     fn reason(context: &'static str, reason: impl Into<String>) -> Self {
         Self::new(context, ServerErrorKind::Reason(reason.into()))
     }
@@ -147,7 +138,7 @@ impl ServerErrorExt for ServerError {
     }
 }
 
-/// Result-side helpers mirroring [`ironrdp_connector::ConnectorResultExt`].
+/// Result-side helpers mirroring `ironrdp_connector::ConnectorResultExt`.
 pub trait ServerResultExt {
     /// Replace the `&'static str` context on any error in `Self`.
     #[must_use]
@@ -180,8 +171,8 @@ impl<T> ServerResultExt for ServerResult<T> {
 ///
 /// Internal call sites still use `anyhow::Result`; conversion happens here so
 /// the public signatures can advertise [`ServerResult`] today without forcing
-/// every internal site to convert in this PR. PR #2 in the staged migration
-/// (see [#1209]) removes the remaining `anyhow` usage and this helper.
+/// every internal site to convert in this PR. Later steps of the migration
+/// (see [#1209]) remove the remaining `anyhow` usage and this helper.
 ///
 /// [#1209]: https://github.com/Devolutions/IronRDP/issues/1209
 pub(crate) fn from_anyhow(error: anyhow::Error) -> ServerError {
@@ -194,8 +185,12 @@ pub(crate) fn from_anyhow(error: anyhow::Error) -> ServerError {
 struct AnyhowError(anyhow::Error);
 
 impl fmt::Display for AnyhowError {
+    /// Prints only the outermost context. Anyhow's alternate form (`{:#}`)
+    /// would flatten the whole cause chain here, and since [`Self::source`]
+    /// exposes that same chain, every level below the outermost would then be
+    /// printed twice by `ErrorReport`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#}", self.0)
+        write!(f, "{}", self.0)
     }
 }
 
