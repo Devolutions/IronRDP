@@ -23,8 +23,8 @@ use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
 use ironrdp_rpc::ipc::{
-    AgentError, KeyFilter, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind,
-    OperationInfo, OperationState, Payload, PropValue, Request, Response,
+    AgentError, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent,
+    OperationEventKind, OperationInfo, OperationState, Payload, PropValue, Request, Response,
 };
 use ironrdp_rpc::transport::{self, Endpoint};
 
@@ -98,6 +98,11 @@ enum Command {
         character: char,
         #[arg(long, action = clap::ArgAction::Set)]
         pressed: bool,
+    },
+    /// Type bounded Unicode text without exposing a bulk-input operation to ActiveX.
+    TypeUnicode {
+        #[arg(long, value_parser = parse_unicode_text)]
+        text: String,
     },
     /// Resize the remote desktop.
     Resize {
@@ -306,6 +311,12 @@ struct DaemonArgs {
     /// property without a dedicated flag existing for it.
     #[arg(long = "prop", value_name = "KEY:TYPE:VALUE")]
     prop: Vec<PropOverride>,
+    /// Skip TLS certificate and hostname validation for this daemon.
+    ///
+    /// Use only for an explicitly authorized test endpoint. This startup-only flag accepts any
+    /// certificate and is vulnerable to on-path attacks.
+    #[arg(long)]
+    skip_certificate_check: bool,
     /// Named local Windows volume exposed as an RDPDR filesystem drive.
     ///
     /// Repeat this flag to redirect multiple volumes. `NAME` is protocol-visible
@@ -458,6 +469,19 @@ fn parse_scancode(input: &str) -> Result<u16, core::num::ParseIntError> {
     }
 }
 
+fn parse_unicode_text(input: &str) -> Result<String, String> {
+    let char_count = input.chars().count();
+    if char_count == 0 {
+        return Err("text must not be empty".to_owned());
+    }
+    if char_count > MAX_UNICODE_TEXT_CHARS {
+        return Err(format!(
+            "text must contain at most {MAX_UNICODE_TEXT_CHARS} Unicode characters"
+        ));
+    }
+    Ok(input.to_owned())
+}
+
 #[cfg(windows)]
 fn parse_rdpdr_drive(input: &str) -> Result<ironrdp_daemon::daemon::RdpdrDriveConfig, String> {
     let (display_name, root_path) = input
@@ -496,7 +520,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let rdpdr_drives = args.rdpdr_drives;
             #[cfg(not(windows))]
             let rdpdr_drives = Vec::new();
-            return ironrdp_daemon::daemon::run(endpoint, overlay, rdpdr_drives).await;
+            let options = ironrdp_daemon::daemon::DaemonOptions::default()
+                .with_certificate_check_skipped(args.skip_certificate_check)
+                .with_rdpdr_drives(rdpdr_drives);
+            return ironrdp_daemon::daemon::run(endpoint, overlay, options).await;
         }
         Command::Now(args) => {
             let format = args.format;
@@ -554,6 +581,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Wheel { delta, horizontal } => Request::Wheel { delta, horizontal },
         Command::KeyScancode { scancode, pressed } => Request::KeyScancode { scancode, pressed },
         Command::KeyUnicode { character, pressed } => Request::KeyUnicode { ch: character, pressed },
+        Command::TypeUnicode { text } => Request::UnicodeText { text },
         Command::Resize { width, height } => Request::Resize { width, height },
     };
 
@@ -1327,9 +1355,7 @@ fn property_description(key: &str) -> Option<&'static str> {
         "ironrdp_rdpdr" => "enable the RDPDR device-redirection channel (0/1)",
         "ironrdp_smartcard" => "enable smart-card device redirection (0/1)",
         "ironrdp_tls" => "use plain TLS security instead of CredSSP/Hybrid (0/1)",
-        "ironrdp_certificate_validation" => {
-            "TLS certificate validation policy: strict or dangerously_accept_invalid_certificate (disables certificate and hostname validation; testing only)"
-        }
+        "ironrdp_certificate_validation" => "agent daemon TLS certificate validation policy set at daemon startup",
         "ironrdp_fakeeventsinterval" => "interval in minutes between synthetic keep-alive input events",
         "ironrdp_rdcleanpathtoken" => "RDCleanPath authentication token (secret)",
         "ironrdp_rdcleanpathurl" => "RDCleanPath proxy URL",
@@ -1346,9 +1372,11 @@ mod tests {
 
     use clap::{CommandFactory as _, Parser as _};
 
-    #[cfg(windows)]
     use super::Command;
-    use super::{Backend, Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution, endpoint_from_arg};
+    use super::{
+        Backend, Cli, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, build_now_execution,
+        endpoint_from_arg,
+    };
 
     #[test]
     fn backend_endpoint_selection_is_distinct_and_overridable() {
@@ -1402,6 +1430,22 @@ mod tests {
     }
 
     #[test]
+    fn daemon_start_can_skip_certificate_check() {
+        let cli = Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--skip-certificate-check"])
+            .expect("valid explicit certificate-validation override");
+
+        let Some(Command::DaemonStart(args)) = cli.command else {
+            panic!("expected daemon-start command");
+        };
+        assert!(args.skip_certificate_check);
+    }
+
+    #[test]
+    fn daemon_start_rejects_superseded_certificate_flag() {
+        assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--ignore-certificates"]).is_err());
+    }
+
+    #[test]
     fn connection_flags_use_process_local_environment_defaults() {
         let command = Cli::command();
         let connect = command
@@ -1425,6 +1469,21 @@ mod tests {
     #[test]
     fn shell_is_not_an_agent_command() {
         assert!(Cli::try_parse_from(["ironrdp-agent", "now", "shell"]).is_err());
+    }
+
+    #[test]
+    fn unicode_text_rejects_empty_and_oversized_requests() {
+        assert!(Cli::try_parse_from(["ironrdp-agent", "type-unicode", "--text", ""]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "ironrdp-agent",
+                "type-unicode",
+                "--text",
+                &"x".repeat(MAX_UNICODE_TEXT_CHARS + 1),
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["ironrdp-agent", "type-unicode", "--text", "test"]).is_ok());
     }
 
     #[test]

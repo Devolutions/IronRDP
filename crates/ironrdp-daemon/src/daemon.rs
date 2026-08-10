@@ -26,8 +26,8 @@ use std::collections::BTreeSet;
 use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
 
 use crate::ipc::{
-    ConnState, KeyFilter, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response,
-    StatusInfo,
+    ConnState, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry,
+    Request, Response, StatusInfo,
 };
 use crate::logbuf::{self, LogBuffer};
 use crate::now::NowEndpoint;
@@ -38,11 +38,10 @@ use crate::transport::{Endpoint, Listener, read_message, write_message};
 ///
 /// `overlay` is an operator-provided [`PropertySet`] layered on top of every `Connect` request
 /// (overlay wins), so any setting — credentials in particular — can be preconfigured without the
-/// caller ever supplying it. `rdpdr_drives` is a fixed set of Windows filesystem volumes exposed
-/// through every connection that this daemon creates.
-pub async fn run(endpoint: Endpoint, overlay: PropertySet, rdpdr_drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<()> {
+/// caller ever supplying it.
+pub async fn run(endpoint: Endpoint, overlay: PropertySet, options: DaemonOptions) -> anyhow::Result<()> {
     init_daemon_logging();
-    let daemon = Arc::new(Daemon::with_rdpdr_drives(overlay, rdpdr_drives)?);
+    let daemon = Arc::new(Daemon::with_options(overlay, options)?);
     serve(endpoint, daemon).await
 }
 
@@ -176,6 +175,37 @@ impl RdpdrDriveConfig {
     }
 }
 
+/// Startup-only settings that are deliberately unavailable through session IPC.
+#[derive(Clone, Debug, Default)]
+pub struct DaemonOptions {
+    skip_certificate_check: bool,
+    rdpdr_drives: Vec<RdpdrDriveConfig>,
+}
+
+impl DaemonOptions {
+    /// Skips TLS certificate and hostname validation for this daemon.
+    #[must_use]
+    pub fn with_certificate_check_skipped(mut self, skip: bool) -> Self {
+        self.skip_certificate_check = skip;
+        self
+    }
+
+    fn certificate_validation(&self) -> CertificateValidation {
+        if self.skip_certificate_check {
+            CertificateValidation::DangerouslyAcceptInvalidCertificate
+        } else {
+            CertificateValidation::Strict
+        }
+    }
+
+    /// Configures fixed local volumes for filesystem redirection.
+    #[must_use]
+    pub fn with_rdpdr_drives(mut self, rdpdr_drives: Vec<RdpdrDriveConfig>) -> Self {
+        self.rdpdr_drives = rdpdr_drives;
+        self
+    }
+}
+
 /// The daemon's mutable state: the (single) current session, plus the shared log buffer.
 pub struct Daemon {
     state: Mutex<Option<Session>>,
@@ -189,6 +219,7 @@ pub struct Daemon {
     /// Whether [`Self::overlay`] contributes any secret (password/token) value, i.e. whether the
     /// caller can omit credentials of its own.
     credentials_loaded: bool,
+    certificate_validation: CertificateValidation,
     #[cfg(windows)]
     rdpdr_backend_factory: Option<WindowsRdpdrBackendFactory>,
     /// Notifies an optional GUI frontend whenever retained live state changes.
@@ -204,6 +235,33 @@ struct Session {
     live: Arc<Mutex<Live>>,
     now_endpoint: Arc<NowEndpoint>,
     operations: OperationManager,
+}
+
+fn enqueue_unicode_text(input_tx: &RdpInputSender, input_db: &mut Database, text: &str) -> Response {
+    // Reserve every queue slot before changing keyboard state. A full queue therefore sends no
+    // prefix of the requested text.
+    let mut permits = Vec::with_capacity(text.chars().count());
+    for _ in text.chars() {
+        let permit = match input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        permits.push(permit);
+    }
+
+    for (permit, ch) in permits.into_iter().zip(text.chars()) {
+        let events = input_db.apply([Operation::UnicodeKeyPressed(ch), Operation::UnicodeKeyReleased(ch)]);
+        if !events.is_empty() {
+            permit.send(RdpInputEvent::FastPath(events));
+        }
+    }
+
+    Response::ok()
 }
 
 /// Per-session state shared with the output-consumer task.
@@ -227,11 +285,16 @@ pub struct Frame {
 }
 
 impl Daemon {
-    fn new(logs: Arc<LogBuffer>, overlay: PropertySet, rdpdr_drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<Self> {
+    fn new(logs: Arc<LogBuffer>, overlay: PropertySet, options: DaemonOptions) -> anyhow::Result<Self> {
         // Credentials are considered "loaded" when the overlay provides at least one secret value,
         // which is what frees the caller from supplying a password.
         let credentials_loaded = overlay.iter().any(|(key, _)| ironrdp_cfg::is_secret_key(key));
         let (shutdown, _) = tokio::sync::watch::channel(());
+        let certificate_validation = options.certificate_validation();
+        if certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate {
+            warn!("TLS certificate and hostname validation are disabled by explicit daemon configuration");
+        }
+        let DaemonOptions { rdpdr_drives, .. } = options;
         #[cfg(windows)]
         let rdpdr_backend_factory = rdpdr_backend_factory(rdpdr_drives)?;
         #[cfg(not(windows))]
@@ -245,6 +308,7 @@ impl Daemon {
             logs,
             overlay,
             credentials_loaded,
+            certificate_validation,
             #[cfg(windows)]
             rdpdr_backend_factory,
             notification: None,
@@ -258,12 +322,17 @@ impl Daemon {
     ///
     /// Panics if the default daemon configuration becomes invalid.
     pub fn with_overlay(overlay: PropertySet) -> Self {
-        Self::with_rdpdr_drives(overlay, Vec::new()).expect("default daemon configuration is valid")
+        Self::with_options(overlay, DaemonOptions::default()).expect("default daemon configuration is valid")
+    }
+
+    /// Creates a daemon with startup-only settings that are not available to IPC callers.
+    pub fn with_options(overlay: PropertySet, options: DaemonOptions) -> anyhow::Result<Self> {
+        Self::new(LogBuffer::new(), overlay, options)
     }
 
     /// Creates a daemon with fixed Windows filesystem drives for every connection.
     pub fn with_rdpdr_drives(overlay: PropertySet, rdpdr_drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<Self> {
-        Self::new(LogBuffer::new(), overlay, rdpdr_drives)
+        Self::with_options(overlay, DaemonOptions::default().with_rdpdr_drives(rdpdr_drives))
     }
 
     /// Adds a capacity-one notification channel for frontends that render retained live state.
@@ -333,6 +402,7 @@ impl Daemon {
             } else {
                 Operation::UnicodeKeyReleased(ch)
             })),
+            Request::UnicodeText { text } => DaemonResponse::Single(self.unicode_text(&text)),
             Request::Resize { width, height } => DaemonResponse::Single(self.resize(width, height)),
             Request::NowCapabilities => DaemonResponse::Single(self.now_capabilities().await),
             Request::NowRun { command, directory } => DaemonResponse::Single(self.now_run(command, directory).await),
@@ -391,16 +461,11 @@ impl Daemon {
             }
         };
         let certificate_validation = match properties.get::<&str>("ironrdp_certificate_validation") {
-            None | Some("dangerously_accept_invalid_certificate") => {
-                CertificateValidation::DangerouslyAcceptInvalidCertificate
-            }
-            Some("strict") => CertificateValidation::Strict,
+            None | Some("strict") => self.certificate_validation,
             Some(value) => {
                 return Response::typed_error(
                     crate::ipc::AgentErrorCategory::InvalidRequest,
-                    format!(
-                        "invalid certificate validation policy '{value}'; expected 'strict' or 'dangerously_accept_invalid_certificate'"
-                    ),
+                    format!("invalid certificate validation policy '{value}'; configure it when starting the daemon"),
                 );
             }
         };
@@ -702,6 +767,23 @@ impl Daemon {
     /// Panics if the daemon state mutex is poisoned.
     pub fn input(&self, operation: Operation) -> Response {
         self.input_operations([operation])
+    }
+
+    fn unicode_text(&self, text: &str) -> Response {
+        let char_count = text.chars().count();
+        if char_count > MAX_UNICODE_TEXT_CHARS {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                format!("text exceeds the {MAX_UNICODE_TEXT_CHARS}-character limit"),
+            );
+        }
+
+        let mut guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_mut() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+
+        enqueue_unicode_text(&session.input_tx, &mut session.input_db, text)
     }
 
     /// Sends input operations to the active RDP session in one FastPath message.
@@ -1093,10 +1175,16 @@ mod tests {
 
     use tokio::sync::mpsc;
 
+    use ironrdp_client::rdp::{RdpInputEvent, RdpInputSender};
+    use ironrdp_input::{Database, Operation};
+    use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
     use ironrdp_propertyset::PropertySet;
 
-    use super::{Daemon, RdpdrDriveConfig, ResizeError, notify};
+    use super::{
+        Daemon, DaemonOptions, MAX_UNICODE_TEXT_CHARS, RdpdrDriveConfig, ResizeError, enqueue_unicode_text, notify,
+    };
     use crate::ipc::Response;
+    use ironrdp_tls::CertificateValidation;
 
     #[test]
     fn framebuffer_notifications_are_coalesced() {
@@ -1116,6 +1204,89 @@ mod tests {
 
         assert_eq!(daemon.try_resize(1024, 768), Err(ResizeError::NoSession));
         assert!(matches!(daemon.resize(1024, 768), Response::Err(error) if error.message == "no active session"));
+    }
+
+    #[test]
+    fn daemon_options_default_to_strict_certificate_validation() {
+        let strict = DaemonOptions::default();
+        let insecure = DaemonOptions::default().with_certificate_check_skipped(true);
+
+        assert_eq!(strict.certificate_validation(), CertificateValidation::Strict);
+        assert_eq!(
+            insecure.certificate_validation(),
+            CertificateValidation::DangerouslyAcceptInvalidCertificate
+        );
+    }
+
+    #[test]
+    fn unicode_text_rejects_requests_that_exceed_the_bounded_queue_capacity() {
+        let daemon = Daemon::with_overlay(PropertySet::new());
+        let text = "x".repeat(MAX_UNICODE_TEXT_CHARS + 1);
+
+        assert!(
+            matches!(daemon.unicode_text(&text), Response::Err(error) if error.message == "text exceeds the 96-character limit")
+        );
+    }
+
+    #[test]
+    fn unicode_text_enqueues_ordered_utf16_events() {
+        let (sender, mut receiver) = RdpInputSender::channel(2);
+        let mut database = Database::new();
+
+        assert_eq!(
+            enqueue_unicode_text(&sender, &mut database, "A\u{1f600}"),
+            Response::ok()
+        );
+        let first = match receiver.try_recv().expect("first character is enqueued") {
+            RdpInputEvent::FastPath(events) => events,
+            event => panic!("expected FastPath input, got {event:?}"),
+        };
+        assert_eq!(
+            first.as_slice(),
+            [
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0x0041),
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, 0x0041),
+            ]
+        );
+        let second = match receiver.try_recv().expect("second character is enqueued") {
+            RdpInputEvent::FastPath(events) => events,
+            event => panic!("expected FastPath input, got {event:?}"),
+        };
+        assert_eq!(
+            second.as_slice(),
+            [
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0xD83D),
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0xDE00),
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, 0xD83D),
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, 0xDE00),
+            ]
+        );
+        assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn unicode_text_backpressure_enqueues_no_prefix_or_input_state() {
+        let (sender, mut receiver) = RdpInputSender::channel(2);
+        let mut database = Database::new();
+        sender
+            .try_send(RdpInputEvent::Resize {
+                width: 1024,
+                height: 768,
+                scale_factor: 100,
+                physical_size: None,
+            })
+            .expect("the first queue slot is available");
+
+        assert!(matches!(
+            enqueue_unicode_text(&sender, &mut database, "A\u{1f600}"),
+            Response::Err(error) if error.message == "session input channel is unavailable"
+        ));
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::Resize { .. })));
+        assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+        assert_eq!(
+            database.apply([Operation::UnicodeKeyPressed('A')]).as_slice(),
+            [FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0x0041)]
+        );
     }
 
     #[test]

@@ -33,6 +33,18 @@ For example, `ironrdp-agent daemon-start --rdpdr-drive System=C:\ --rdpdr-drive 
 Each root must be a unique existing local volume root in the exact `C:\` form, and each protocol-visible name must be unique case-insensitively and contain at most seven ASCII letters, numbers, spaces, underscores, hyphens, periods, or a trailing colon.
 The configured drives are fixed for the daemon lifetime; hot-plug and rescan are not supported.
 
+## TLS certificate validation
+
+The daemon performs strict certificate and hostname validation by default.
+For an explicitly authorized test endpoint, start the daemon with `--skip-certificate-check`.
+This startup-only flag accepts any certificate and server name, so it is vulnerable to on-path attacks and is unavailable through `connect`.
+
+## Bounded Unicode input
+
+`type-unicode --text TEXT` sends at most 96 Unicode characters in ordered FastPath input events.
+The daemon reserves all queue slots before changing keyboard state, so queue backpressure sends none of a rejected request.
+The ActiveX backend explicitly rejects this bulk input operation.
+
 ## Windows Sandbox
 
 On Windows with the Windows Sandbox feature enabled, the agent can attach to a sandbox that was
