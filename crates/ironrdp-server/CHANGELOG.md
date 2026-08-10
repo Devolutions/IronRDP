@@ -6,6 +6,414 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.14.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-server-v0.13.0...ironrdp-server-v0.14.0)] - 2026-08-10
+
+### <!-- 0 -->Security
+
+- Send the Server Auto-Reconnect Cookie during logon ([#1405](https://github.com/Devolutions/IronRDP/issues/1405)) ([7d35d65248](https://github.com/Devolutions/IronRDP/commit/7d35d6524886ab4e9f610b4b70566eaa21ea8177)) 
+
+  ## What
+  
+  Adds an optional **Server Auto-Reconnect Cookie** (MS-RDPBCGR 2.2.4.3
+  `ARC_SC_PRIVATE_PACKET`) to `ironrdp-server`. When set, `RdpServer`
+  sends a Save Session Info PDU (`LogonExtended` +
+  `AUTO_RECONNECT_COOKIE`) carrying it once per connection, right after
+  activation (Confirm Active processed, encoder built), on the IO channel.
+  
+  ## Why
+  
+  A client only enters its **automatic reconnection sequence** (MS-RDPBCGR
+  1.3.1.5) on an *ungraceful* disconnect if it was handed this cookie
+  during logon. Without it, a dropped connection just reports as
+  disconnected — **mstsc in particular won't auto-reconnect at all**.
+  Today `ironrdp-server` never sends the cookie, so there's no way for a
+  server to opt into that behavior.
+  
+  The concrete use case: a server that *intentionally* drops a connection
+  and expects the client to come straight back — e.g. a recovery path that
+  cycles the session — currently forces the user to reconnect by hand.
+  With the cookie provisioned, the client re-establishes on its own
+  (re-authenticating via NLA/CredSSP from cached credentials). It's also
+  just standard behavior a real RDP server provides.
+  
+  ## API
+  
+  Mirrors the existing `credential_validator` pattern exactly — a builder
+  method plus a runtime setter:
+  
+  ```rust
+  // build time
+  RdpServer::builder()
+      .with_auto_reconnect_cookie(Some(ServerAutoReconnect { logon_id, random_bits }))
+      // ...
+  
+  // or dynamically
+  server.set_auto_reconnect_cookie(Some(cookie));
+  ```
+  
+  `ServerAutoReconnect` (already public in
+  `ironrdp-pdu::rdp::session_info`) carries a `logon_id` and a 16-byte
+  `random_bits` (generate from a CSPRNG). A per-connection guard
+  (`auto_reconnect_sent`, reset in `run_connection_with`) sends it exactly
+  once — not again on a Deactivation-Reactivation.
+  
+  ## Scope / additive
+  
+  - **Additive, non-breaking.** Default is `None` (send nothing); existing
+  servers are byte-for-byte unaffected.
+  - All PDU types already exist in `ironrdp-pdu`
+  (`rdp::session_info::{SaveSessionInfoPdu, LogonInfoExtended,
+  LogonExFlags, ServerAutoReconnect, InfoType, InfoData}`) — this is
+  purely wiring the server-side send.
+  - Reuses the existing `encode_share_data_pdu` helper.
+  
+  ## Design point for review — the returning cookie
+  
+  This PR implements the **send** side only: it *enables* the client's
+  automatic reconnection. It does **not** validate the
+  `ARC_CS_PRIVATE_PACKET` the client sends back on reconnect (MS-RDPBCGR
+  2.2.4.4). For a server that re-authenticates every connection by other
+  means (NLA/CredSSP) that's sufficient and safe, and it's documented as
+  such on the setter. If you'd prefer the crate to also offer *validation*
+  of the returning cookie (so it can be an authentication factor — the
+  server would store issued `(logon_id, random_bits)` and verify the
+  client's `SecurityData`/`ARC_CS` on the next connect), I'm happy to do
+  that as a follow-up, or fold it in here — it's a larger, stateful
+  feature so I kept this PR to the send path. Let me know which you'd
+  prefer.
+  
+  Built + `clippy --features egfx -D warnings` clean; tests compile.
+  
+  ---------
+
+- Validate auto-reconnect cookies ([#1509](https://github.com/Devolutions/IronRDP/issues/1509)) ([44f675e244](https://github.com/Devolutions/IronRDP/commit/44f675e244ee76b5311756668ffbbe28e98c7175)) 
+
+  ## Summary
+  - parse and carry `ARC_CS_PRIVATE_PACKET` data through the acceptor
+  - validate returning Enhanced RDP Security cookies with HMAC-MD5 before
+  reconnecting
+  - rotate reconnect randoms per connection and hourly, with runtime
+  cookie updates
+  - restrict cookie authentication to TLS/Hybrid and document the behavior
+  
+  ## Testing
+  - `cargo test -p ironrdp-pdu -p ironrdp-acceptor -p ironrdp-server`
+  - `cargo clippy -p ironrdp-pdu -p ironrdp-acceptor -p ironrdp-server
+  --all-targets -- -D warnings`
+
+- [**breaking**] Support session resume via the auto-reconnect cookie ([#1501](https://github.com/Devolutions/IronRDP/issues/1501)) ([74b3365c1f](https://github.com/Devolutions/IronRDP/commit/74b3365c1f98c0da6feed7507779c67e1b8e6d08)) 
+
+  > **Rebased onto post-#1522 master.** #1509 landed the server half of
+  #1508 while this was open, including the `ClientAutoReconnect`
+  structure. This PR no longer declares it; it extends it, and picks up
+  the parts #1509 did not build.
+  
+  ## What
+  
+  The client half of automatic reconnection. The session layer surfaces
+  the Server Auto-Reconnect Cookie, `ironrdp-pdu` derives and verifies the
+  client's response to it, and the connector sends that response when
+  resuming a session.
+  
+  ## Why
+  
+  A client whose connection drops ungracefully can reattach to its session
+  instead of making the user log on again, provided it returns the cookie
+  the server issued during logon ([MS-RDPBCGR] 1.3.1.5).
+  
+  #1509 built the server side of that: it validates a returning
+  `ARC_CS_PRIVATE_PACKET` and rotates the random. Nothing answers it.
+  `ironrdp-session` decodes the cookie and drops it, `ironrdp-connector`
+  has no way to send one back, and `TODO([#271](https://github.com/Devolutions/IronRDP/issues/271))` still sits in
+  `ironrdp-client`. So `ironrdp-client` cannot resume a session against
+  `ironrdp-server`, and the validation #1509 added has no in-tree
+  counterpart to exercise it.
+  
+  The wire encoding was already there. `ExtendedClientOptionalInfo`
+  carries, encodes and decodes a 28-byte `autoReconnectCookie` and its
+  builder already had a `reconnect_cookie` step; `ServerAutoReconnect`
+  already decoded; #1509 added `ClientAutoReconnect` and its decode.
+  Nothing connected them.
+  
+  ## The three parts
+  
+  **Receive.** `SaveSessionInfo` now also surfaces the cookie, as
+  `ProcessorOutput::AutoReconnectCookie` and
+  `ActiveStageOutput::AutoReconnectCookie`. #1522 added a `SaveSessionInfo
+  { logon_complete }` output on that same handler; the two coexist rather
+  than compete, since both are read off one PDU and neither supersedes the
+  other. The handler emits the logon notification unconditionally and
+  appends the cookie when one is present, and a test pins that surfacing
+  the cookie does not suppress the notification. #1509's server replaces
+  the cookie whenever a client connects and again hourly ([MS-RDPBCGR]
+  3.3.6.2), so this can arrive more than once in a session and the
+  consumer keeps the most recent.
+  
+  **Derive.** `ClientAutoReconnect::from_server_cookie` implements
+  [MS-RDPBCGR] 5.5:
+  
+  > The auto-reconnect random is used to key the HMAC function
+  ([RFC2104]), which uses MD5 as the iterative hash function. The security
+  verifier is derived by applying the HMAC to the client random received
+  in Step 3.
+  >
+  > `SecurityVerifier = HMAC(AutoReconnectRandom, ClientRandom)`
+  >
+  > When Enhanced RDP Security is in effect the client random value is not
+  generated (section 5.3.2). In this case, for the purpose of generating
+  the security verifier, the client random is assumed to be an array of 32
+  zero bytes.
+  
+  IronRDP implements no Standard RDP Security path (there is no Security
+  Exchange PDU), so the zero-client-random case is the only one that
+  arises. As 5.5 notes, that makes the verifier constant for a given
+  cookie, so it proves possession of the cookie and nothing more; session
+  security comes from the outer TLS/CredSSP handshake.
+  
+  @clintcan independently confirmed this construction against real
+  **mstsc** while validating #1509
+  ([comment](https://github.com/Devolutions/IronRDP/pull/1509#issuecomment-5151200681)):
+  a Windows client's `ARC_CS_PRIVATE_PACKET` verifies against
+  `HMAC-MD5(random_bits, [0u8; 32])`. That is the same derivation
+  implemented here, so the two halves interoperate with Microsoft's client
+  and not only with each other.
+  
+  **Send.** `ClientConnector::with_auto_reconnect_cookie` takes the cookie
+  last received and makes the connector put the derived Client
+  Auto-Reconnect Packet ([MS-RDPBCGR] 2.2.4.3) in the Client Info PDU.
+  Absent, that PDU is byte-for-byte what it was.
+  
+  Unlike the server packet, this structure has no enclosing logon-info
+  field header, so it encodes to exactly the 28 bytes the cookie field
+  expects. `to_bytes` writes that layout directly rather than going
+  through `Encode`, so filling a fixed-size field has no error path a
+  caller must handle; a test pins the two to agree.
+  
+  ## One derivation, not two
+  
+  Putting `from_server_cookie` in `ironrdp-pdu` would leave the workspace
+  with two implementations of 5.5, since #1509 added a private HMAC to
+  `ironrdp-server`. So `ClientAutoReconnect` also gains `verify`, and the
+  server routes through it.
+  
+  `verify` keeps the constant-time comparison the server had. The verifier
+  is the whole credential, so a comparison returning early on the first
+  differing byte would let a peer recover it a byte at a time from the
+  timing; the session identifier is not secret and is compared normally.
+  `ironrdp-server` keeps the policy around the check, which cookies are
+  live and whether the security protocol permits auto-reconnect, and drops
+  its `hmac` and `md-5` dependencies. `hmac` moves to `ironrdp-pdu` as
+  `default-features = false`; the crate's full feature powerset still
+  checks clean, including `--no-default-features`.
+  
+  I would rather not have reached into `ironrdp-server` in a
+  `pdu,session,connector` change, but the alternative was shipping the
+  duplicate and filing a follow-up to remove it, which is a worse trade
+  for reviewer time.
+  
+  ## Tests that were not running
+  
+  That move also rehomes the known-answer tests @clintcan contributed on
+  #1509. They went in as an inline `#[cfg(test)]` module in
+  `crates/ironrdp-server/src/server.rs`, and that crate sets `[lib] test =
+  false`, so they have never executed in CI. They now live in
+  `ironrdp-testsuite-core` against the public API, where CI runs them: his
+  HMAC-MD5 reference vector is kept as a second vector alongside a
+  differently-keyed one, plus the cases for a tampered verifier and a
+  mismatched logon ID.
+  
+  Worth flagging separately: `ironrdp-server` is not alone.
+  `ironrdp-agent`, `ironrdp-session` and `ironrdp-web` also set `[lib]
+  test = false` and between them carry 16 files of inline `#[cfg(test)]`
+  modules that CI never runs. That is out of scope here, but I am happy to
+  open an issue if it would be useful.
+  
+  ## Breaking changes
+  
+  `ActiveStageOutput` and `x224::ProcessorOutput` gain a variant, and
+  `ClientConnector` gains a public field, so exhaustive matches and struct
+  literals need updating.
+  
+  Confirmed with `cargo-semver-checks` against the merge-base: those three
+  are the only findings this branch introduces. The others it reports on
+  `master` today (`ShareDataPdu::Compressed` and the `ShareDataCtx` fields
+  from #1518, `ProcessorBuilder.bulk_decompressor` from #1518,
+  `ServerEvent::SetAutoReconnectCookie` from #1509) are present on
+  `master` unchanged. The `ironrdp-pdu` additions are additive.
+  
+  ## Scope
+  
+  This is the library half. `ironrdp-client`, `ironrdp-web` and the FFI
+  bindings gain an arm for the new output but none of them reconnect
+  automatically yet; that is the remaining part of #271, and the existing
+  `TODO([#271](https://github.com/Devolutions/IronRDP/issues/271))` in `ironrdp-client` marks where it goes.
+  
+  I kept receive, derive and send together deliberately. Split up, none of
+  them is usable on its own: without the receive half there is no way to
+  obtain a cookie, and without the send half there is nothing to do with
+  one.
+  
+  ## Tests
+  
+  Thirteen, all in `ironrdp-testsuite-core`.
+  
+  On the packet and the derivation: the `SecurityVerifier` matches two
+  independently computed HMAC-MD5 vectors of 32 zero bytes under different
+  keys, so the tests pin the derivation rather than restating the code;
+  the logon ID carries over from the server cookie; the encoding matches
+  the 2.2.4.3 field layout byte for byte with `cbLen` fixed at `0x1C`;
+  `to_bytes` agrees with `Encode`; it round-trips; and it rejects both a
+  wrong packet length and an unknown version.
+  
+  On verification: a derived answer is accepted, a single flipped byte in
+  the verifier is rejected, a correct verifier under a different logon ID
+  is rejected, and an answer derived from a different random is rejected.
+  
+  On the surfacing path: a Save Session Info PDU framed the way a server
+  sends it, through the real x224 processor, yields an
+  `AutoReconnectCookie` carrying the right logon ID and random bits,
+  alongside #1522's logon notification rather than in place of it; and one
+  without a cookie surfaces no cookie.
+  
+  ## Verification
+  
+  `cargo xtask check fmt/lints/tests/typos/locks` all pass on 1.94.1,
+  including a `fuzz/` build before the lock check.
+  
+  ## Note
+  
+  #1496 also touches the `ClientAutoReconnect` declaration. Whichever of
+  the two lands second needs a one-line rebase on the derive attribute;
+  happy to take that in either order.
+
+### <!-- 1 -->Features
+
+- [**breaking**] Clamp honored client desktop size to an operator maximum ([#1404](https://github.com/Devolutions/IronRDP/issues/1404)) ([d3747a05b2](https://github.com/Devolutions/IronRDP/commit/d3747a05b202ba2d87ac19698354ae7e487850a2)) 
+
+  Follow-up to #1373 (the resource-hardening angle you flagged in review —
+  thanks for the go-ahead 🙂).
+  
+  ## Problem
+  
+  `#1373` gated honor-client-desktop-size behind a bare `bool`. With it
+  on, the acceptor adopts the client-requested desktop size bounded only
+  by the protocol range `[200, 8192]`. But the desktop size is a
+  client-controlled `u16`, and the server still builds its
+  framebuffer/encoder from the negotiated size — so a client could request
+  e.g. `8192x8192` and drive the server's allocation off an untrusted
+  number (~256 MiB per frame buffer). Mild, and only on an opt-in
+  default-off path, but it's a resource-exhaustion vector driven purely by
+  a number the client picks.
+  
+  Your review comment: *"[200, 8192] is a protocol ceiling, not a resource
+  guard … tracked the 'clamp/range policy rather than a bare bool' idea as
+  a future follow-up (an operator-set max size)."* This is that PR.
+  
+  ## Change
+  
+  Replace the `bool` with `Option<DesktopSize>` carrying an **operator-set
+  maximum**:
+  
+  - `None` (default) — disabled; always enforce the server-provided size
+  (unchanged behavior).
+  - `Some(max)` — honor the client's request, **clamped per dimension to
+  `max`**. The client can ask for a smaller desktop, never a larger one.
+  
+  The acceptor clamps the requested `width`/`height` to `max` *before* the
+  existing `validate_desktop_size` protocol-range check, so the negotiated
+  size can never exceed what the operator is willing to render — set `max`
+  to the host display's native resolution (or whatever ceiling the server
+  can afford).
+
+- Support runtime-defined static virtual channels ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba)) 
+
+  ## Summary
+  - add keyed runtime-defined static-channel registration, lookup, and
+  negotiated ID attachment
+  - enforce the static-channel limit and reject malformed SVC fragment
+  sequences
+  - wire generic connector, acceptor, and session name-based dispatch
+  support
+  
+  ## Testing
+  - `cargo test -p ironrdp-testsuite-core --test integration_tests_core
+  svc::`
+  - `cargo clippy -p ironrdp-testsuite-core --test integration_tests_core
+  -- -D warnings`
+  
+  ---------
+
+### <!-- 7 -->Build
+
+- Bump the crypto group across 1 directory with 3 updates ([#1449](https://github.com/Devolutions/IronRDP/issues/1449)) ([e1725e8c8a](https://github.com/Devolutions/IronRDP/commit/e1725e8c8a581b83835647b6ee563a5b3f6c7a1b)) 
+
+### Refactor
+
+- [**breaking**] Take auto-detect timestamps from the caller ([#1487](https://github.com/Devolutions/IronRDP/issues/1487)) ([f614e4acfc](https://github.com/Devolutions/IronRDP/commit/f614e4acfcb8abf7113e0f5c653112af94ed80af)) 
+
+  ## Summary
+  
+  - `AutoDetectManager` read the clock itself: `std::time::Instant` in
+  `pending_probes`, `Instant::now()` in `send_rtt_request`, and
+  `Instant::elapsed()` in `handle_response` and `expire_stale_probes`.
+  - It now takes `now_ms`, a caller-supplied monotonic millisecond counter
+  whose epoch is arbitrary as long as it's consistent across calls.
+  `ironrdp-server` supplies it from a process-wide monotonic origin in
+  `server.rs`, so the clock lives in the I/O driver rather than in the
+  state machine.
+  
+  ## Why
+  
+  - **Testability.** The RTT assertions were wall-clock dependent.
+  `snapshot_reflects_measurements` could only check that the average came
+  out under an arbitrary 100 ms bound, which almost any bug would satisfy.
+  It now supplies both timestamps and asserts exact values: samples of 10,
+  20 and 30 ms giving min 10, max 30, average 20.
+  - **Portability.** `std::time::Instant::now` panics on
+  `wasm32-unknown-unknown`, so a type that reads it internally can't be
+  reused from a WASM build.
+  - **Layering.** A state machine that reads ambient time can't satisfy
+  the no-I/O rule the Core Tier crates follow, which forecloses moving
+  this code in that direction later.
+  
+  Also covers the edges of the arithmetic the injected clock exposes.
+  There are two `saturating_sub` sites and they saturate in opposite
+  directions:
+  
+  - `handle_response`: a clock that ran backwards between request and
+  response yields a zero sample rather than a wrapped value near
+  `u32::MAX`, and the zero reaches the sample window, not just the return
+  value.
+  - `expire_stale_probes`: the same backwards clock makes the age zero,
+  which is below any maximum, so the probe stays pending. Wrapping would
+  make it look older than any limit and drop a probe whose response is
+  still in flight.
+  
+  A third test covers the `u32::try_from(..).unwrap_or(u32::MAX)` on the
+  first of those lines, where a gap wider than about 49.7 days clamps
+  rather than truncating to the low 32 bits.
+  
+  ## Validation
+  
+  `cargo xtask check fmt/lints/tests/typos/locks` all pass.
+  
+  Each of the three new tests was checked against a mutation of the code
+  it guards rather than only for passing: the two backwards-clock tests
+  fail if either `saturating_sub` becomes `wrapping_sub`, and the clamp
+  test fails if the `try_from` becomes a truncating `as u32`, which
+  reports `Some(0)` for a 49.7 day gap.
+  
+  ## Notes
+  
+  - Came out of the discussion on #1465, where the same question arises on
+  the connector side. `ironrdp-connector` reads no clock at all today, and
+  answering a connect-time Bandwidth Measure properly needs one; taking
+  the timestamp from the caller is the shape that works on every target.
+  - `AutoDetectManager` arrived in #1177 with the internal clock, so this
+  corrects code I wrote rather than anyone else's.
+
+
+
 ## [[0.13.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-server-v0.12.0...ironrdp-server-v0.13.0)] - 2026-07-10
 
 ### <!-- 0 -->Security

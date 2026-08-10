@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.5.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-pipe-proxy-v0.5.0...ironrdp-dvc-pipe-proxy-v0.5.1)] - 2026-08-10
+
+### <!-- 4 -->Bug Fixes
+
+- Handle pre-connected Windows clients ([#1447](https://github.com/Devolutions/IronRDP/issues/1447)) ([079b48422b](https://github.com/Devolutions/IronRDP/commit/079b48422b0b78d37beb76994950a2a07c442a94)) 
+
+
+
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-pipe-proxy-v0.4.1...ironrdp-dvc-pipe-proxy-v0.5.0)] - 2026-07-10
 
 ### <!-- 4 -->Bug Fixes

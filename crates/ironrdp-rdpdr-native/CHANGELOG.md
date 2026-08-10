@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-native-v0.7.0...ironrdp-rdpdr-native-v0.7.1)] - 2026-08-10
+
+### <!-- 0 -->Security
+
+- Add advanced Windows filesystem semantics ([#1590](https://github.com/Devolutions/IronRDP/issues/1590)) ([d1c63ecd7b](https://github.com/Devolutions/IronRDP/commit/d1c63ecd7bd13c9ae3d88f3ae84176f214f41f61)) 
+
+  Extend the Windows-native RDPDR backend with confined directory,
+  notification, lock, security, stream, control, and volume support.
+  Decode only the portable IRPs and capability needed to dispatch these
+  native operations.
+
+### <!-- 1 -->Features
+
+- Add Windows filesystem backend ([#1587](https://github.com/Devolutions/IronRDP/issues/1587)) ([7dce8a306f](https://github.com/Devolutions/IronRDP/commit/7dce8a306f43462677879905642967066c42337f)) 
+
+  Add a handle-relative Windows RDPDR backend for one selected volume.
+  It confines protocol paths below an opened root and supports bounded
+  file I/O
+  and basic metadata.
+  
+  Unsupported advanced filesystem operations return STATUS_NOT_SUPPORTED;
+  later
+  stack layers will add advanced Windows semantics and host integration.
+
+- Wire RDPDR backends into client connections ([#1600](https://github.com/Devolutions/IronRDP/issues/1600)) ([1fbc9bab0b](https://github.com/Devolutions/IronRDP/commit/1fbc9bab0bc26d8fe0789d5215005d7ea22e2a54)) 
+
+  Build a fresh RDPDR backend product for every connection attempt.
+  
+  Attach RDPDR only when its product has filesystem devices, advertise
+  RDPSND for Windows interoperability, and deliver deferred responses.
+
+- Add static drive redirection ([#1616](https://github.com/Devolutions/IronRDP/issues/1616)) ([a724f783d1](https://github.com/Devolutions/IronRDP/commit/a724f783d1638b4e215507849c1cf148887f30d5)) 
+
+  Expose Windows logical volumes through the ActiveX drive collection and
+  configure a static RDPDR backend from the selected pre-connect snapshot.
+  
+  DisableRdpdr remains a hard override.
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-native-v0.6.0...ironrdp-rdpdr-native-v0.7.0)] - 2026-07-10
 
 ### <!-- 7 -->Build
