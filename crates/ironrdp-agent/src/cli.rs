@@ -1346,7 +1346,9 @@ mod tests {
 
     use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Backend, Cli, Command, CommonExecutionArgs, NowExecutionKind, build_now_execution, endpoint_from_arg};
+    #[cfg(windows)]
+    use super::Command;
+    use super::{Backend, Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution, endpoint_from_arg};
 
     #[test]
     fn backend_endpoint_selection_is_distinct_and_overridable() {
