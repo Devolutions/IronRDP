@@ -54,8 +54,15 @@ public partial struct ActiveStage
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_encoded_resize", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultOptBoxActiveStageOutputIteratorBoxIronRdpError EncodedResize(ActiveStage* self, uint width, uint height);
 
+    /// <summary>
+    /// Rebuilds active-stage processors for a Deactivation-Reactivation Sequence.
+    /// </summary>
+    /// <remarks>
+    /// This retains negotiated bulk compression and applies the refreshed server-pointer state
+    /// and static channel chunk size.
+    /// </remarks>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_set_fastpath_processor", ExactSpelling = true)]
-    public static unsafe extern void SetFastpathProcessor(ActiveStage* self, ushort ioChannelId, ushort userChannelId, uint shareId, [MarshalAs(UnmanagedType.U1)] bool enableServerPointer, [MarshalAs(UnmanagedType.U1)] bool pointerSoftwareRendering);
+    public static unsafe extern SessionFfiResultVoidBoxIronRdpError SetFastpathProcessor(ActiveStage* self, ushort ioChannelId, ushort userChannelId, uint shareId, [MarshalAs(UnmanagedType.U1)] bool enableServerPointer, [MarshalAs(UnmanagedType.U1)] bool pointerSoftwareRendering, nuint staticChannelChunkSize);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_set_enable_server_pointer", ExactSpelling = true)]
     public static unsafe extern void SetEnableServerPointer(ActiveStage* self, [MarshalAs(UnmanagedType.U1)] bool enableServerPointer);

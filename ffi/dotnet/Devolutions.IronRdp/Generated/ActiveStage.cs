@@ -317,7 +317,15 @@ public partial class ActiveStage: IDisposable
         }
     }
 
-    public void SetFastpathProcessor(ushort ioChannelId, ushort userChannelId, uint shareId, bool enableServerPointer, bool pointerSoftwareRendering)
+    /// <summary>
+    /// Rebuilds active-stage processors for a Deactivation-Reactivation Sequence.
+    /// </summary>
+    /// <remarks>
+    /// This retains negotiated bulk compression and applies the refreshed server-pointer state
+    /// and static channel chunk size.
+    /// </remarks>
+    /// <exception cref="IronRdpException"></exception>
+    public void SetFastpathProcessor(ushort ioChannelId, ushort userChannelId, uint shareId, bool enableServerPointer, bool pointerSoftwareRendering, nuint staticChannelChunkSize)
     {
         unsafe
         {
@@ -325,7 +333,11 @@ public partial class ActiveStage: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStage");
             }
-            Raw.ActiveStage.SetFastpathProcessor(_inner, ioChannelId, userChannelId, shareId, enableServerPointer, pointerSoftwareRendering);
+            Raw.SessionFfiResultVoidBoxIronRdpError result = Raw.ActiveStage.SetFastpathProcessor(_inner, ioChannelId, userChannelId, shareId, enableServerPointer, pointerSoftwareRendering, staticChannelChunkSize);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
         }
     }
 

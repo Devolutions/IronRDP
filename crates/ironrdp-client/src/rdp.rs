@@ -1849,14 +1849,14 @@ async fn active_session(
                             debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
                             image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                             resize_queue.completed();
-                            active_stage.reactivate(
+                            if !active_stage.reactivate(
                                 connection_activation.io_channel_id(),
                                 connection_activation.user_channel_id(),
                                 share_id,
                                 enable_server_pointer,
                                 pointer_software_rendering,
-                            );
-                            if !active_stage.set_static_channel_chunk_size(static_channel_chunk_size) {
+                                static_channel_chunk_size,
+                            ) {
                                 return Err(ironrdp_session::general_err!("invalid static channel chunk size"));
                             }
                             refresh_rect_support = reactivated_refresh_rect_support;

@@ -103,12 +103,14 @@ pub mod ffi {
                     input_flags: _,
                     enable_server_pointer,
                     pointer_software_rendering,
+                    static_channel_chunk_size,
                     ..
                 } => Ok(Box::new(ConnectionActivationStateFinalized {
                     share_id: *share_id,
                     desktop_size: *desktop_size,
                     enable_server_pointer: *enable_server_pointer,
                     pointer_software_rendering: *pointer_software_rendering,
+                    static_channel_chunk_size: *static_channel_chunk_size,
                 })),
                 _ => Err(IncorrectEnumTypeError::on_variant("Finalized")
                     .of_enum("ConnectionActivationState")
@@ -135,6 +137,7 @@ pub mod ffi {
         pub desktop_size: ironrdp::connector::DesktopSize,
         pub enable_server_pointer: bool,
         pub pointer_software_rendering: bool,
+        pub static_channel_chunk_size: usize,
     }
 
     impl ConnectionActivationStateFinalized {
@@ -152,6 +155,10 @@ pub mod ffi {
 
         pub fn get_pointer_software_rendering(&self) -> bool {
             self.pointer_software_rendering
+        }
+
+        pub fn get_static_channel_chunk_size(&self) -> usize {
+            self.static_channel_chunk_size
         }
     }
 }

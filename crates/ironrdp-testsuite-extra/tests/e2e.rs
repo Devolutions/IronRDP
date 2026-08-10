@@ -104,6 +104,7 @@ async fn test_deactivation_reactivation() {
                                 input_flags: _,
                                 enable_server_pointer,
                                 pointer_software_rendering,
+                                static_channel_chunk_size,
                                 ..
                             } = connection_activation.connection_activation_state()
                             {
@@ -111,13 +112,14 @@ async fn test_deactivation_reactivation() {
                                 // Update image size with the new desktop size.
                                 // image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                                 // Update the active stage with the new channel IDs and pointer settings.
-                                stage.reactivate(
+                                assert!(stage.reactivate(
                                     connection_activation.io_channel_id(),
                                     connection_activation.user_channel_id(),
                                     share_id,
                                     enable_server_pointer,
                                     pointer_software_rendering,
-                                );
+                                    static_channel_chunk_size,
+                                ));
                                 break 'activation_seq;
                             }
                         }
@@ -154,7 +156,7 @@ fn test_reactivation_preserves_bulk_decompression_history() {
         .process(&mut image, pdu::Action::FastPath, &first_frame)
         .expect("compressed FastPath update before reactivation");
 
-    stage.reactivate(1003, 1001, 2, false, false);
+    assert!(stage.reactivate(1003, 1001, 2, false, false, 1600));
 
     let (second_frame, second_flags) = compressed_bitmap_fastpath_frame(&mut compressor);
     assert_ne!(second_flags & bulk_flags::PACKET_COMPRESSED, 0);

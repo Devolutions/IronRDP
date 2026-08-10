@@ -268,7 +268,7 @@ fn static_channel_chunk_size_defaults_to_1600_and_rejects_out_of_range_values() 
 }
 
 #[test]
-fn reactivated_session_preserves_the_static_channel_chunk_size() {
+fn reactivated_session_applies_the_static_channel_chunk_size() {
     let channel_name = ChannelName::from_utf8("runtime").expect("valid static channel name");
     let mut channels = StaticChannelSet::new();
     let key = channels
@@ -287,8 +287,7 @@ fn reactivated_session_preserves_the_static_channel_chunk_size() {
         pointer_software_rendering: false,
     }
     .build();
-    assert!(active_stage.set_static_channel_chunk_size(4096));
-    active_stage.reactivate(1003, 1002, 2, false, false);
+    assert!(active_stage.reactivate(1003, 1002, 2, false, false, 4096));
     let frame = active_stage
         .process_svc_messages_by_name(&channel_name, vec![SvcMessage::from(vec![0; 4097])])
         .expect("runtime channel should be encodable");
