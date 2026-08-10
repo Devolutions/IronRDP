@@ -196,6 +196,33 @@ encode_decode_test! {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
 
+    nego_connection_request_with_cookie_and_correlation_info:
+        X224(ConnectionRequest {
+            nego_data: Some(NegoRequestData::Cookie(Cookie("User".to_owned()))),
+            flags: RequestFlags::CORRELATION_INFO_PRESENT,
+            protocol: SecurityProtocol::SSL,
+            correlation_info: Some(CorrelationInfo {
+                correlation_id: [0x01; 16],
+            }),
+        }),
+        [
+            // tpkt header
+            0x03, 0x00, 0x00, 0x4E,
+            // tpdu header
+            0x49, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            // cookie
+            0x43, 0x6F, 0x6F, 0x6B, 0x69, 0x65, 0x3A, 0x20, 0x6D, 0x73, 0x74, 0x73, 0x68, 0x61, 0x73, 0x68, 0x3D, 0x55,
+            0x73, 0x65, 0x72, 0x0D, 0x0A,
+            // RDP_NEG_REQ
+            0x01, 0x08, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
+            // RDP_NEG_CORRELATION_INFO
+            0x06, 0x00, 0x24, 0x00,
+            0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+            0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+
     nego_confirm_response:
         X224(ConnectionConfirm::Response {
             flags: ResponseFlags::from_bits_retain(0x1F),
@@ -273,6 +300,61 @@ fn nego_connection_request_rejects_invalid_correlation_info() {
     let mut invalid_reserved = valid;
     invalid_reserved[CORRELATION_INFO_OFFSET + 20] = 0x01;
     assert!(ironrdp_core::decode::<X224<ConnectionRequest>>(&invalid_reserved).is_err());
+
+    let mut oversized = ironrdp_core::encode_vec(&X224(ConnectionRequest {
+        nego_data: None,
+        flags: RequestFlags::CORRELATION_INFO_PRESENT,
+        protocol: SecurityProtocol::SSL,
+        correlation_info: Some(CorrelationInfo {
+            correlation_id: [0x01; 16],
+        }),
+    }))
+    .unwrap();
+    oversized[3] += 1; // TPKT length
+    oversized[4] += 1; // X.224 length indicator
+    oversized.push(0);
+    assert!(ironrdp_core::decode::<X224<ConnectionRequest>>(&oversized).is_err());
+}
+
+#[test]
+fn nego_connection_request_derives_correlation_info_flag() {
+    let correlation_info = CorrelationInfo {
+        correlation_id: [0x01; 16],
+    };
+
+    let request_with_correlation_info = ConnectionRequest {
+        nego_data: None,
+        flags: RequestFlags::empty(),
+        protocol: SecurityProtocol::SSL,
+        correlation_info: Some(correlation_info),
+    };
+    let encoded = ironrdp_core::encode_vec(&X224(request_with_correlation_info)).unwrap();
+    assert_eq!(encoded[12], RequestFlags::CORRELATION_INFO_PRESENT.bits());
+
+    let request_without_correlation_info = ConnectionRequest {
+        nego_data: None,
+        flags: RequestFlags::CORRELATION_INFO_PRESENT | RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED,
+        protocol: SecurityProtocol::SSL,
+        correlation_info: None,
+    };
+    let encoded = ironrdp_core::encode_vec(&X224(request_without_correlation_info)).unwrap();
+    assert_eq!(encoded[12], RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED.bits());
+}
+
+#[test]
+fn nego_connection_request_rejects_unexpected_trailing_data() {
+    let request = ConnectionRequest {
+        nego_data: None,
+        flags: RequestFlags::empty(),
+        protocol: SecurityProtocol::SSL,
+        correlation_info: None,
+    };
+    let mut encoded = ironrdp_core::encode_vec(&X224(request)).unwrap();
+    encoded[3] += 1; // TPKT length
+    encoded[4] += 1; // X.224 length indicator
+    encoded.push(0);
+
+    assert!(ironrdp_core::decode::<X224<ConnectionRequest>>(&encoded).is_err());
 }
 
 #[test]

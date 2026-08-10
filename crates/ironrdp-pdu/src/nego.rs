@@ -281,18 +281,13 @@ impl ConnectionRequest {
 /// Defined in [\[MS-RDPBCGR\] 2.2.1.1.2].
 ///
 /// [\[MS-RDPBCGR\] 2.2.1.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/981b2aa8-2aa3-4bfb-8ac8-fc8efad2c0cd
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorrelationInfo {
     /// The client-selected connection correlation identifier.
+    ///
+    /// The first byte should not be `0x00` or `0xF4`, and no byte should
+    /// be `0x0D`.
     pub correlation_id: [u8; 16],
-}
-
-impl fmt::Debug for CorrelationInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CorrelationInfo")
-            .field("correlation_id", &"<redacted>")
-            .finish()
-    }
 }
 
 impl CorrelationInfo {
@@ -351,30 +346,14 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
         // [MS-RDPBCGR] mentions the following payload as optional, but it appears that on recent
         // versions of Windows, the server always expect to find this payload.
         dst.write_u8(u8::from(NegoMsgType::REQUEST));
-        dst.write_u8(self.flags.bits());
+        let mut flags = self.flags;
+        flags.set(RequestFlags::CORRELATION_INFO_PRESENT, self.correlation_info.is_some());
+        dst.write_u8(flags.bits());
         dst.write_u16(Self::RDP_NEG_REQ_SIZE);
         dst.write_u32(self.protocol.bits());
 
-        match (
-            self.flags.contains(RequestFlags::CORRELATION_INFO_PRESENT),
-            self.correlation_info.as_ref(),
-        ) {
-            (true, Some(correlation_info)) => correlation_info.write(dst)?,
-            (true, None) => {
-                return Err(invalid_field_err!(
-                    Self::NAME,
-                    "flags",
-                    "CORRELATION_INFO_PRESENT requires correlation information"
-                ));
-            }
-            (false, Some(_)) => {
-                return Err(invalid_field_err!(
-                    Self::NAME,
-                    "correlation_info",
-                    "requires CORRELATION_INFO_PRESENT"
-                ));
-            }
-            (false, None) => {}
+        if let Some(correlation_info) = &self.correlation_info {
+            correlation_info.write(dst)?;
         }
 
         Ok(())
