@@ -1,7 +1,6 @@
 use core::fmt;
 use core::num::NonZeroU16;
 
-use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _};
 use ironrdp_acceptor::DesktopSize;
 use ironrdp_graphics::diff::{Rect, find_different_rects_sub};
 use ironrdp_pdu::codecs::rfx::Quant;
@@ -18,6 +17,7 @@ use tracing::{debug, warn};
 use self::bitmap::BitmapEncoder;
 use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
+use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _};
 use crate::macros::time_warn;
 use crate::{ColorPointer, DisplayUpdate, Framebuffer, RGBAPointer};
 
@@ -590,7 +590,7 @@ impl BitmapUpdateHandler for BitmapHandler {
                             buffer.resize(buffer.len() * 2, 0);
                             debug!("encoder buffer resized to: {}", buffer.len() * 2);
                         }
-                        _ => return Err(ServerError::encode(e)),
+                        _ => return Err(ServerError::encode(e)).with_context("bitmap encode error"),
                     },
                     BitmapEncodeError::Rle(e) => return Err(ServerError::custom("bitmap RLE encode error", e)),
                 },
@@ -637,7 +637,7 @@ impl BitmapUpdateHandler for RemoteFxHandler {
                         buffer.resize(buffer.len() * 2, 0);
                         debug!("encoder buffer resized to: {}", buffer.len() * 2);
                     }
-                    _ => return Err(ServerError::encode(e)),
+                    _ => return Err(ServerError::encode(e)).with_context("RemoteFX encode error"),
                 },
                 Ok(len) => break len,
             }
