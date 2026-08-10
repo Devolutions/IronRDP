@@ -1372,7 +1372,6 @@ mod tests {
 
     use clap::{CommandFactory as _, Parser as _};
 
-    #[cfg(windows)]
     use super::Command;
     use super::{
         Backend, Cli, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, build_now_execution,
