@@ -311,6 +311,12 @@ struct DaemonArgs {
     /// property without a dedicated flag existing for it.
     #[arg(long = "prop", value_name = "KEY:TYPE:VALUE")]
     prop: Vec<PropOverride>,
+    /// Disable TLS certificate and hostname validation for this daemon.
+    ///
+    /// Use only for an explicitly authorized test endpoint. This startup-only flag accepts any
+    /// certificate and is vulnerable to on-path attacks.
+    #[arg(long)]
+    dangerously_accept_invalid_certificate: bool,
     /// Named local Windows volume exposed as an RDPDR filesystem drive.
     ///
     /// Repeat this flag to redirect multiple volumes. `NAME` is protocol-visible
@@ -514,7 +520,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let rdpdr_drives = args.rdpdr_drives;
             #[cfg(not(windows))]
             let rdpdr_drives = Vec::new();
-            let options = ironrdp_daemon::daemon::DaemonOptions::default().with_rdpdr_drives(rdpdr_drives);
+            let options = ironrdp_daemon::daemon::DaemonOptions::default()
+                .with_dangerously_accept_invalid_certificate(args.dangerously_accept_invalid_certificate)
+                .with_rdpdr_drives(rdpdr_drives);
             return ironrdp_daemon::daemon::run(endpoint, overlay, options).await;
         }
         Command::Now(args) => {
@@ -1347,7 +1355,7 @@ fn property_description(key: &str) -> Option<&'static str> {
         "ironrdp_rdpdr" => "enable the RDPDR device-redirection channel (0/1)",
         "ironrdp_smartcard" => "enable smart-card device redirection (0/1)",
         "ironrdp_tls" => "use plain TLS security instead of CredSSP/Hybrid (0/1)",
-        "ironrdp_certificate_validation" => "agent daemon TLS certificate validation policy: strict only",
+        "ironrdp_certificate_validation" => "agent daemon TLS certificate validation policy set at daemon startup",
         "ironrdp_fakeeventsinterval" => "interval in minutes between synthetic keep-alive input events",
         "ironrdp_rdcleanpathtoken" => "RDCleanPath authentication token (secret)",
         "ironrdp_rdcleanpathurl" => "RDCleanPath proxy URL",
@@ -1423,16 +1431,18 @@ mod tests {
     }
 
     #[test]
-    fn daemon_start_rejects_certificate_pinning() {
-        assert!(
-            Cli::try_parse_from([
-                "ironrdp-agent",
-                "daemon-start",
-                "--certificate-sha256",
-                "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD",
-            ])
-            .is_err()
-        );
+    fn daemon_start_can_explicitly_accept_invalid_certificates() {
+        let cli = Cli::try_parse_from([
+            "ironrdp-agent",
+            "daemon-start",
+            "--dangerously-accept-invalid-certificate",
+        ])
+        .expect("valid explicit certificate-validation override");
+
+        let Some(Command::DaemonStart(args)) = cli.command else {
+            panic!("expected daemon-start command");
+        };
+        assert!(args.dangerously_accept_invalid_certificate);
     }
 
     #[test]

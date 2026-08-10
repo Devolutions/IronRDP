@@ -178,10 +178,26 @@ impl RdpdrDriveConfig {
 /// Startup-only settings that are deliberately unavailable through session IPC.
 #[derive(Clone, Debug, Default)]
 pub struct DaemonOptions {
+    dangerously_accept_invalid_certificate: bool,
     rdpdr_drives: Vec<RdpdrDriveConfig>,
 }
 
 impl DaemonOptions {
+    /// Disables TLS certificate and hostname validation for this daemon.
+    #[must_use]
+    pub fn with_dangerously_accept_invalid_certificate(mut self, accept: bool) -> Self {
+        self.dangerously_accept_invalid_certificate = accept;
+        self
+    }
+
+    fn certificate_validation(&self) -> CertificateValidation {
+        if self.dangerously_accept_invalid_certificate {
+            CertificateValidation::DangerouslyAcceptInvalidCertificate
+        } else {
+            CertificateValidation::Strict
+        }
+    }
+
     /// Configures fixed local volumes for filesystem redirection.
     #[must_use]
     pub fn with_rdpdr_drives(mut self, rdpdr_drives: Vec<RdpdrDriveConfig>) -> Self {
@@ -203,6 +219,7 @@ pub struct Daemon {
     /// Whether [`Self::overlay`] contributes any secret (password/token) value, i.e. whether the
     /// caller can omit credentials of its own.
     credentials_loaded: bool,
+    certificate_validation: CertificateValidation,
     #[cfg(windows)]
     rdpdr_backend_factory: Option<WindowsRdpdrBackendFactory>,
     /// Notifies an optional GUI frontend whenever retained live state changes.
@@ -246,7 +263,11 @@ impl Daemon {
         // which is what frees the caller from supplying a password.
         let credentials_loaded = overlay.iter().any(|(key, _)| ironrdp_cfg::is_secret_key(key));
         let (shutdown, _) = tokio::sync::watch::channel(());
-        let DaemonOptions { rdpdr_drives } = options;
+        let certificate_validation = options.certificate_validation();
+        if certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate {
+            warn!("TLS certificate and hostname validation are disabled by explicit daemon configuration");
+        }
+        let DaemonOptions { rdpdr_drives, .. } = options;
         #[cfg(windows)]
         let rdpdr_backend_factory = rdpdr_backend_factory(rdpdr_drives)?;
         #[cfg(not(windows))]
@@ -260,6 +281,7 @@ impl Daemon {
             logs,
             overlay,
             credentials_loaded,
+            certificate_validation,
             #[cfg(windows)]
             rdpdr_backend_factory,
             notification: None,
@@ -412,11 +434,11 @@ impl Daemon {
             }
         };
         let certificate_validation = match properties.get::<&str>("ironrdp_certificate_validation") {
-            None | Some("strict") => CertificateValidation::Strict,
+            None | Some("strict") => self.certificate_validation,
             Some(value) => {
                 return Response::typed_error(
                     crate::ipc::AgentErrorCategory::InvalidRequest,
-                    format!("invalid certificate validation policy '{value}'; agent sessions require 'strict'"),
+                    format!("invalid certificate validation policy '{value}'; configure it when starting the daemon"),
                 );
             }
         };
@@ -1153,8 +1175,9 @@ mod tests {
 
     use ironrdp_propertyset::PropertySet;
 
-    use super::{Daemon, MAX_UNICODE_TEXT_CHARS, RdpdrDriveConfig, ResizeError, notify};
+    use super::{Daemon, DaemonOptions, MAX_UNICODE_TEXT_CHARS, RdpdrDriveConfig, ResizeError, notify};
     use crate::ipc::Response;
+    use ironrdp_tls::CertificateValidation;
 
     #[test]
     fn framebuffer_notifications_are_coalesced() {
@@ -1174,6 +1197,18 @@ mod tests {
 
         assert_eq!(daemon.try_resize(1024, 768), Err(ResizeError::NoSession));
         assert!(matches!(daemon.resize(1024, 768), Response::Err(error) if error.message == "no active session"));
+    }
+
+    #[test]
+    fn daemon_options_default_to_strict_certificate_validation() {
+        let strict = DaemonOptions::default();
+        let insecure = DaemonOptions::default().with_dangerously_accept_invalid_certificate(true);
+
+        assert_eq!(strict.certificate_validation(), CertificateValidation::Strict);
+        assert_eq!(
+            insecure.certificate_validation(),
+            CertificateValidation::DangerouslyAcceptInvalidCertificate
+        );
     }
 
     #[test]

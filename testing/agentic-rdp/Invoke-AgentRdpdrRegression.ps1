@@ -22,6 +22,9 @@ param(
 
     [string] $AgentPath = (Join-Path (Join-Path $PSScriptRoot '..\..') 'target\release\ironrdp-agent.exe'),
 
+    # Disables certificate and hostname validation for this authorized test endpoint.
+    [switch] $DangerouslyAcceptInvalidCertificate,
+
     [string] $ArtifactsDir = (Join-Path $env:TEMP 'ironrdp-rdpdr-regression-artifacts'),
 
     # Performs input, path, and credential-boundary validation without contacting the endpoint.
@@ -243,6 +246,7 @@ try {
             AuthorizedEndpoint = $AuthorizedEndpoint
             DriveName = $DriveName
             VolumeRoot = $VolumeRoot
+            InvalidCertificateAcceptance = $DangerouslyAcceptInvalidCertificate
         }
         return
     }
@@ -271,6 +275,9 @@ try {
             'daemon-start',
             '--rdpdr-drive', "$DriveName=$VolumeRoot"
         )
+        if ($DangerouslyAcceptInvalidCertificate) {
+            $daemonArguments += '--dangerously-accept-invalid-certificate'
+        }
         $script:DaemonProcess = Start-Process `
             -FilePath $AgentPath `
             -ArgumentList $daemonArguments `

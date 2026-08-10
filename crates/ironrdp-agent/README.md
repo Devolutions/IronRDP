@@ -35,8 +35,9 @@ The configured drives are fixed for the daemon lifetime; hot-plug and rescan are
 
 ## TLS certificate validation
 
-The daemon always performs strict certificate and hostname validation.
-The daemon does not accept an insecure certificate-validation policy.
+The daemon performs strict certificate and hostname validation by default.
+For an explicitly authorized test endpoint, start the daemon with `--dangerously-accept-invalid-certificate`.
+This startup-only flag accepts any certificate and server name, so it is vulnerable to on-path attacks and is unavailable through `connect`.
 
 ## Bounded Unicode input
 
