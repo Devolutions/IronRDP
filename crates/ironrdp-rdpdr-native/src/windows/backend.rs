@@ -31,16 +31,21 @@ const DEFAULT_MAX_OPEN_FILES: usize = 1_024;
 /// `STATUS_NOT_SUPPORTED` response rather than leaving an IRP unanswered.
 #[derive(Debug)]
 pub struct WindowsRdpdrBackend {
-    drive: RedirectedDrive,
+    drives: HashMap<u32, RedirectedDrive>,
     pub(super) roots: HashMap<u32, RedirectedRoot>,
     pub(super) open_files: FileTable<OpenFile>,
     deferred_operations: DeferredOperations,
 }
 
 impl WindowsRdpdrBackend {
+    #[cfg(test)]
     pub(crate) fn from_drive(drive: RedirectedDrive) -> Self {
+        Self::from_drives(vec![drive])
+    }
+
+    pub(crate) fn from_drives(drives: Vec<RedirectedDrive>) -> Self {
         Self {
-            drive,
+            drives: drives.into_iter().map(|drive| (drive.device_id(), drive)).collect(),
             roots: HashMap::new(),
             open_files: FileTable::new(DEFAULT_MAX_OPEN_FILES),
             deferred_operations: DeferredOperations::new(),
@@ -58,20 +63,21 @@ impl WindowsRdpdrBackend {
     }
 
     fn activate_drive(&mut self, device_id: u32) -> PduResult<()> {
-        if device_id != self.drive.device_id() {
-            return Err(pdu_other_err!("windows RDPDR drive is not configured"));
-        }
+        let drive = self
+            .drives
+            .get(&device_id)
+            .ok_or_else(|| pdu_other_err!("windows RDPDR drive is not configured"))?;
         if self.roots.contains_key(&device_id) {
             return Err(pdu_other_err!("windows RDPDR drive is already active"));
         }
 
-        let root = RootDirectory::open(self.drive.root_path())
+        let root = RootDirectory::open(drive.root_path())
             .map_err(|error| pdu_other_err!("open configured Windows RDPDR volume root").with_source(error))?;
         let previous = self.roots.insert(
             device_id,
             RedirectedRoot {
                 root,
-                read_only: self.drive.read_only(),
+                read_only: drive.read_only(),
             },
         );
         debug_assert!(
@@ -82,8 +88,8 @@ impl WindowsRdpdrBackend {
     }
 
     fn deactivate_drive(&mut self, device_id: u32) -> PduResult<Vec<SvcMessage>> {
-        if device_id != self.drive.device_id() || !self.roots.contains_key(&device_id) {
-            return Err(pdu_other_err!("windows RDPDR drive is not active"));
+        if !self.drives.contains_key(&device_id) || !self.roots.contains_key(&device_id) {
+            return Err(pdu_other_err!("windows RDPDR drive is not configured"));
         }
 
         let cancelled = self.deferred_operations.cancel_drive(device_id);
@@ -222,4 +228,25 @@ pub(super) struct OpenFile {
     /// MS-RDPEFS requires continuation queries to ignore their `Path` field, so
     /// this owns the native cursor selected by the preceding initial query.
     pub(super) directory_query_handle: Option<FileHandle>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_restores_each_selected_drive() {
+        let system_drive = std::env::var("SystemDrive").expect("SystemDrive is set on Windows");
+        let root = format!(r"{system_drive}\");
+        let mut backend = WindowsRdpdrBackend::from_drives(vec![
+            RedirectedDrive::new(1, "System", &root, false).expect("valid system drive"),
+            RedirectedDrive::new(2, "System copy", root, false).expect("valid system drive copy"),
+        ]);
+
+        ironrdp_rdpdr::RdpdrBackend::restore_drive(&mut backend, 1).expect("restore first selected drive");
+        ironrdp_rdpdr::RdpdrBackend::restore_drive(&mut backend, 2).expect("restore second selected drive");
+
+        assert!(backend.roots.contains_key(&1));
+        assert!(backend.roots.contains_key(&2));
+    }
 }
