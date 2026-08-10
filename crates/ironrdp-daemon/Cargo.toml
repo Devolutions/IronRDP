@@ -23,7 +23,6 @@ ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
 anyhow = "1"
 now-client = "0.1.0"
 png = "0.18"
-sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
