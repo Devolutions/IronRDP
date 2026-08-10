@@ -22,7 +22,7 @@ const REQUEST_DER: &[u8] = &[
 ];
 
 fn vmconnect_request() -> RDCleanPathPdu {
-    RDCleanPathPdu::new_vmconnect_request("destination".to_owned(), "proxy auth".to_owned(), "PCB".to_owned())
+    RDCleanPathPdu::new_vmconnect_request("destination".to_owned(), "proxy auth".to_owned(), "PCB".to_owned()).unwrap()
 }
 
 const VMCONNECT_REQUEST_DER: &[u8] = &[
@@ -166,6 +166,7 @@ fn detect_not_enough(#[case] payload: &[u8]) {
 fn vmconnect_payload_roundtrips_as_unicode_instead_of_binary_pcb() {
     let payload = format!("{};EnhancedMode=1;名字=虚拟机", "a".repeat(64));
     let pdu = RDCleanPathPdu::new_vmconnect_request("destination".to_owned(), "proxy auth".to_owned(), payload.clone());
+    let pdu = pdu.unwrap();
 
     let decoded = RDCleanPathPdu::from_der(&pdu.to_der().unwrap())
         .unwrap()
@@ -200,6 +201,25 @@ fn request_without_x224_or_vmconnect_payload_is_rejected() {
     };
 
     assert!(pdu.into_enum().is_err());
+}
+
+#[test]
+fn vmconnect_request_rejects_empty_payload() {
+    assert!(
+        RDCleanPathPdu::new_vmconnect_request("destination".to_owned(), "proxy auth".to_owned(), String::new(),)
+            .is_err()
+    );
+
+    assert!(
+        RDCleanPathMessage::VmConnectRequest {
+            destination: "destination".to_owned(),
+            proxy_auth: "proxy auth".to_owned(),
+            server_auth: None,
+            pcb_payload: "   ".to_owned(),
+        }
+        .into_pdu()
+        .is_err()
+    );
 }
 
 #[test]

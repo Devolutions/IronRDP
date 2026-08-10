@@ -39,6 +39,9 @@ public static class RDCleanPathConnection
     /// <summary>
     /// Connects to a Hyper-V VM through an RDCleanPath-compatible gateway.
     /// </summary>
+    /// <remarks>
+    /// The supplied configuration must enable TLS and CredSSP.
+    /// </remarks>
     public static Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectVmConnectRDCleanPath(
         Config config,
         string gatewayUrl,
@@ -50,7 +53,7 @@ public static class RDCleanPathConnection
     {
         if (string.IsNullOrWhiteSpace(vmId))
         {
-            throw new ArgumentException("VMConnect requires a VM ID", nameof(vmId));
+            throw new ArgumentException("vmconnect requires a VM ID", nameof(vmId));
         }
 
         var pcbPayload = mode == VmConnectMode.Enhanced ? $"{vmId};EnhancedMode=1" : vmId;
@@ -183,8 +186,8 @@ public static class RDCleanPathConnection
                 throw new IronRdpLibException(
                     IronRdpLibExceptionType.ConnectionFailed,
                     vmconnect
-                        ? "RDCleanPath response includes X.224 for a VMConnect request"
-                        : "RDCleanPath response missing X.224 for an ordinary request");
+                        ? "response from RDCleanPath includes X.224 for a VMConnect request"
+                        : "response from RDCleanPath is missing X.224 for an ordinary request");
             }
 
             if (hasX224)
@@ -228,13 +231,13 @@ public static class RDCleanPathConnection
             var errorMessage = rdCleanPathResp.GetErrorMessage();
             throw new IronRdpLibException(
                 IronRdpLibExceptionType.ConnectionFailed,
-                $"RDCleanPath error (code {errorCode}): {errorMessage}");
+                $"error from RDCleanPath (code {errorCode}): {errorMessage}");
         }
         else if (resultType == RDCleanPathResultType.NegotiationError)
         {
             throw new IronRdpLibException(
                 IronRdpLibExceptionType.ConnectionFailed,
-                "RDCleanPath negotiation error: Server rejected connection parameters");
+                "negotiation error from RDCleanPath: server rejected connection parameters");
         }
         else
         {

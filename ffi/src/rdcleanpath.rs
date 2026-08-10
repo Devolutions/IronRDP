@@ -46,17 +46,14 @@ pub mod ffi {
             proxy_auth: &str,
             pcb_payload: &str,
         ) -> Result<Box<RDCleanPathPdu>, Box<IronRdpError>> {
-            if pcb_payload.is_empty() {
-                return Err(GenericError(anyhow::anyhow!("VMConnect PCB payload is empty")).into());
-            }
-
-            Ok(Box::new(RDCleanPathPdu(
-                ironrdp_rdcleanpath::RDCleanPathPdu::new_vmconnect_request(
-                    destination.to_owned(),
-                    proxy_auth.to_owned(),
-                    pcb_payload.to_owned(),
-                ),
-            )))
+            let pdu = ironrdp_rdcleanpath::RDCleanPathPdu::new_vmconnect_request(
+                destination.to_owned(),
+                proxy_auth.to_owned(),
+                pcb_payload.to_owned(),
+            )
+            .context("failed to create VMConnect RDCleanPath request")
+            .map_err(GenericError)?;
+            Ok(Box::new(RDCleanPathPdu(pdu)))
         }
 
         /// True when the PDU carries an X.224 payload.
@@ -97,7 +94,13 @@ pub mod ffi {
                     return Err(Self::missing_field("proxy_auth"));
                 }
 
-                if self.0.x224_connection_pdu.is_none() && self.0.preconnection_blob.is_none() {
+                if self.0.x224_connection_pdu.is_none()
+                    && self
+                        .0
+                        .preconnection_blob
+                        .as_deref()
+                        .is_none_or(|payload| payload.trim().is_empty())
+                {
                     return Err(Self::missing_field("x224_connection_pdu or preconnection_blob"));
                 }
 
@@ -147,10 +150,10 @@ pub mod ffi {
 
                     Ok(Box::new(VecU8(x224.as_bytes().to_vec())))
                 } else {
-                    Err(GenericError(anyhow::anyhow!("RDCleanPath variant does not contain X.224 response")).into())
+                    Err(GenericError(anyhow::anyhow!("message variant does not contain X.224 response")).into())
                 }
             } else {
-                Err(GenericError(anyhow::anyhow!("RDCleanPath variant does not contain X.224 response")).into())
+                Err(GenericError(anyhow::anyhow!("message variant does not contain X.224 response")).into())
             }
         }
 
@@ -167,10 +170,7 @@ pub mod ffi {
                 let certs: Vec<Vec<u8>> = certs.iter().map(|cert| cert.as_bytes().to_vec()).collect();
                 Ok(Box::new(CertificateChainIterator { certs, index: 0 }))
             } else {
-                Err(GenericError(anyhow::anyhow!(
-                    "RDCleanPath variant does not contain certificate chain"
-                ))
-                .into())
+                Err(GenericError(anyhow::anyhow!("message variant does not contain certificate chain")).into())
             }
         }
 

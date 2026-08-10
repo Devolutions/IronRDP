@@ -1276,8 +1276,9 @@ where
         let rdcleanpath_req = {
             #[cfg(feature = "vmconnect")]
             if let Some((vm_id, mode)) = vmconnect {
-                let pcb_payload = ironrdp_vmconnect::preconnection_blob_payload(&vm_id, mode);
+                let pcb_payload = ironrdp_vmconnect::preconnection_blob_payload(&vm_id, mode)?;
                 ironrdp_rdcleanpath::RDCleanPathPdu::new_vmconnect_request(destination, proxy_auth_token, pcb_payload)
+                    .map_err(|e| ironrdp_connector::custom_err!("build VMConnect RDCleanPath request", e))?
             } else {
                 build_ordinary_rdcleanpath_request(connector, &mut buf, destination, proxy_auth_token)?
             }
@@ -1294,7 +1295,7 @@ where
         );
         let rdcleanpath_req = rdcleanpath_req
             .to_der()
-            .map_err(|e| ironrdp_connector::custom_err!("RDCleanPath request encode", e))?;
+            .map_err(|e| ironrdp_connector::custom_err!("encode RDCleanPath request", e))?;
         framed
             .write_all(&rdcleanpath_req)
             .await
@@ -1307,7 +1308,7 @@ where
             .await
             .map_err(|e| ironrdp_connector::custom_err!("read RDCleanPath response", e))?;
         let rdcleanpath_res = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_res)
-            .map_err(|e| ironrdp_connector::custom_err!("RDCleanPath response decode", e))?;
+            .map_err(|e| ironrdp_connector::custom_err!("decode RDCleanPath response", e))?;
         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
         let (x224_connection_response, server_cert_chain) = match (
@@ -1339,12 +1340,12 @@ where
             ) => (None, server_cert_chain),
             (true, ironrdp_rdcleanpath::RDCleanPathMessage::Response { .. }) => {
                 return Err(ironrdp_connector::general_err!(
-                    "RDCleanPath response includes X.224 for a VMConnect request"
+                    "response from RDCleanPath includes X.224 for a VMConnect request"
                 ));
             }
             (false, ironrdp_rdcleanpath::RDCleanPathMessage::VmConnectResponse { .. }) => {
                 return Err(ironrdp_connector::general_err!(
-                    "RDCleanPath response missing X.224 for an ordinary request"
+                    "response from RDCleanPath is missing X.224 for an ordinary request"
                 ));
             }
             (_, ironrdp_rdcleanpath::RDCleanPathMessage::GeneralErr(error)) => {
@@ -1425,7 +1426,7 @@ where
                 {
                     let _ = (framed, network_client, server_name, kerberos_config);
                     return Err(ironrdp_connector::general_err!(
-                        "RDCleanPath VMConnect response requires the vmconnect feature"
+                        "vmconnect response from RDCleanPath requires the vmconnect feature"
                     ));
                 }
             }

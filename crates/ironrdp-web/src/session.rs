@@ -1717,6 +1717,7 @@ where
     {
         let rdcleanpath_req = if let Some(pcb_payload) = vmconnect {
             ironrdp_rdcleanpath::RDCleanPathPdu::new_vmconnect_request(destination, proxy_auth_token, pcb_payload)
+                .context("build VMConnect RDCleanPath request")?
         } else {
             let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
                 return Err(anyhow::Error::msg("invalid connector state (send request)").into());
@@ -1732,7 +1733,7 @@ where
                 .context("new RDCleanPath request")?
         };
         debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
-        let rdcleanpath_req = rdcleanpath_req.to_der().context("RDCleanPath request encode")?;
+        let rdcleanpath_req = rdcleanpath_req.to_der().context("encode RDCleanPath request")?;
 
         framed
             .write_all(&rdcleanpath_req)
@@ -1747,7 +1748,7 @@ where
             .context("read RDCleanPath request")?;
 
         let rdcleanpath_res =
-            ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_res).context("RDCleanPath response decode")?;
+            ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_res).context("decode RDCleanPath response")?;
 
         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
@@ -1775,10 +1776,14 @@ where
                 },
             ) => (None, server_cert_chain),
             (true, ironrdp_rdcleanpath::RDCleanPathMessage::Response { .. }) => {
-                return Err(anyhow::Error::msg("RDCleanPath response includes X.224 for a VMConnect request").into());
+                return Err(
+                    anyhow::Error::msg("response from RDCleanPath includes X.224 for a VMConnect request").into(),
+                );
             }
             (false, ironrdp_rdcleanpath::RDCleanPathMessage::VmConnectResponse { .. }) => {
-                return Err(anyhow::Error::msg("RDCleanPath response missing X.224 for an ordinary request").into());
+                return Err(
+                    anyhow::Error::msg("response from RDCleanPath is missing X.224 for an ordinary request").into(),
+                );
             }
             (_, ironrdp_rdcleanpath::RDCleanPathMessage::GeneralErr(error)) => {
                 let details = iron_remote_desktop::RDCleanPathDetails::new(
@@ -1859,7 +1864,7 @@ where
                 kerberos_config,
             )
             .await
-            .context("Hyper-V front over RDCleanPath")?,
+            .context("connect Hyper-V front over RDCleanPath")?,
         };
 
         Ok((upgraded, server_public_key))

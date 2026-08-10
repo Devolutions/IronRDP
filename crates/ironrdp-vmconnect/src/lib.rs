@@ -61,16 +61,20 @@ pub struct PcbSent;
 
 /// Encode a PCB V2 for the selected console mode.
 pub fn encode_preconnection_blob(vm_id: &str, mode: Mode) -> ConnectorResult<Vec<u8>> {
-    let payload = preconnection_blob_payload(vm_id, mode);
+    let payload = preconnection_blob_payload(vm_id, mode)?;
     encode_preconnection_blob_payload(payload)
 }
 
 /// Build the Unicode PCB V2 payload used to select a VM and console mode.
-pub fn preconnection_blob_payload(vm_id: &str, mode: Mode) -> String {
-    match mode {
+pub fn preconnection_blob_payload(vm_id: &str, mode: Mode) -> ConnectorResult<String> {
+    if vm_id.trim().is_empty() {
+        return Err(reason_err!("vmconnect", "vmconnect VM ID is empty"));
+    }
+
+    Ok(match mode {
         Mode::Enhanced => format!("{vm_id}{ENHANCED_MODE_SUFFIX}"),
         Mode::Basic => vm_id.to_owned(),
-    }
+    })
 }
 
 /// Encode a PCB V2 containing an opaque routing payload.

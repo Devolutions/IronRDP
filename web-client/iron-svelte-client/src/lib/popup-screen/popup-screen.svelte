@@ -46,15 +46,15 @@
                 .withDesktopSize(desktopSize)
                 .withExtension(displayControl(true));
 
-            if (pcb !== '') {
+            if (typeof pcb === 'string' && pcb !== '') {
                 configBuilder.withExtension(preConnectionBlob(pcb));
             }
 
-            if (vmconnectId !== '') {
-                configBuilder.withExtension(vmConnect(vmconnectId, vmconnectMode));
+            if (typeof vmconnectId === 'string' && vmconnectId !== '') {
+                configBuilder.withExtension(vmConnect(vmconnectId, vmconnectMode ?? 'enhanced'));
             }
 
-            if (kdc_proxy_url !== '') {
+            if (typeof kdc_proxy_url === 'string' && kdc_proxy_url !== '') {
                 configBuilder.withExtension(kdcProxyUrl(kdc_proxy_url));
             }
 

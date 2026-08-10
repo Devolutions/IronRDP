@@ -34,7 +34,7 @@ export type VmConnectMode = 'enhanced' | 'basic';
 
 export function vmConnect(vmId: string, mode: VmConnectMode = 'enhanced'): Extension {
     if (vmId.trim() === '') {
-        throw new Error('VMConnect requires a VM ID');
+        throw new Error('vmconnect requires a VM ID');
     }
 
     const payload = mode === 'enhanced' ? `${vmId};EnhancedMode=1` : vmId;

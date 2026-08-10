@@ -1312,6 +1312,11 @@ impl ConfigBuilder {
         }
 
         #[cfg(feature = "vmconnect")]
+        if let Some(vm_id) = &self.vm_id {
+            anyhow::ensure!(!vm_id.trim().is_empty(), "vmconnect VM ID is empty");
+        }
+
+        #[cfg(feature = "vmconnect")]
         if self.vm_id.is_some()
             && let Some(destination) = self.destination.as_mut()
             && destination.port.is_none()
