@@ -1,6 +1,7 @@
 use ironrdp_core::{ReadCursor, decode, decode_cursor, encode_vec};
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
 use ironrdp_pdu::mcs;
+use ironrdp_pdu::rdp::headers::ShareControlHeader;
 use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
 use ironrdp_pdu::x224::X224;
 use ironrdp_session::{ActiveStageBuilder, x224::Processor};
@@ -288,6 +289,7 @@ fn reactivated_session_applies_the_static_channel_chunk_size() {
     }
     .build();
     assert!(active_stage.reactivate(1003, 1002, 2, false, false, 4096));
+    assert!(!active_stage.reactivate(2003, 2002, 3, true, true, CHANNEL_CHUNK_LENGTH - 1));
     let frame = active_stage
         .process_svc_messages_by_name(&channel_name, vec![SvcMessage::from(vec![0; 4097])])
         .expect("runtime channel should be encodable");
@@ -298,6 +300,7 @@ fn reactivated_session_applies_the_static_channel_chunk_size() {
     assert!(cursor.is_empty());
 
     let first_header = decode::<ChannelPduHeader>(first.0.user_data.as_ref()).expect("first header should decode");
+    assert_eq!(first.0.initiator_id, 1002);
     assert_eq!(first_header.length, 4097);
     assert_eq!(first.0.user_data.len() - 8, 4096);
     assert!(
@@ -316,6 +319,23 @@ fn reactivated_session_applies_the_static_channel_chunk_size() {
             .contains(ChannelControlFlags::FLAG_LAST | ChannelControlFlags::FLAG_SHOW_PROTOCOL)
     );
     assert!(!second_header.flags.contains(ChannelControlFlags::FLAG_FIRST));
+
+    let shutdown = active_stage
+        .graceful_shutdown()
+        .expect("shutdown should encode")
+        .pop()
+        .expect("shutdown should have a response frame");
+    let ironrdp_session::ActiveStageOutput::ResponseFrame(shutdown) = shutdown else {
+        panic!("shutdown should have a response frame");
+    };
+    let shutdown = decode::<X224<mcs::SendDataRequest<'_>>>(&shutdown)
+        .expect("shutdown should decode")
+        .0;
+    let shutdown_header =
+        decode::<ShareControlHeader>(shutdown.user_data.as_ref()).expect("shutdown header should decode");
+    assert_eq!(shutdown.initiator_id, 1002);
+    assert_eq!(shutdown.channel_id, 1003);
+    assert_eq!(shutdown_header.share_id, 2);
 }
 
 #[test]

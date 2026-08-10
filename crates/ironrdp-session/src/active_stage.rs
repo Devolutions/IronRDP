@@ -249,6 +249,11 @@ impl ActiveStage {
         self.x224_processor.set_static_channel_chunk_size(maximum_chunk_size)
     }
 
+    /// Returns the negotiated maximum payload length of outgoing static virtual channel chunks.
+    pub fn static_channel_chunk_size(&self) -> usize {
+        self.x224_processor.static_channel_chunk_size()
+    }
+
     pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
         self.enable_server_pointer = enable_server_pointer;
     }

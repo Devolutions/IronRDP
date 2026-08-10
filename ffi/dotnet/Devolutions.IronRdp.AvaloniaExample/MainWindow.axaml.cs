@@ -537,7 +537,7 @@ public partial class MainWindow : Window
                         _decodedImage = DecodedImage.New(PixelFormat.RgbA32, desktopSize.GetWidth(),
                             desktopSize.GetHeight());
 
-                        _activeStage!.SetFastpathProcessor(
+                        _activeStage!.Reactivate(
                             ioChannelId,
                             userChannelId,
                             shareId,

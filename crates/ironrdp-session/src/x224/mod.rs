@@ -121,6 +121,11 @@ impl Processor {
         self.static_channels.set_maximum_chunk_size(maximum_chunk_size)
     }
 
+    /// Returns the negotiated maximum payload length of outgoing static virtual channel chunks.
+    pub fn static_channel_chunk_size(&self) -> usize {
+        self.static_channels.maximum_chunk_size()
+    }
+
     pub fn get_svc_processor<T: SvcProcessor + 'static>(&self) -> Option<&T> {
         self.static_channels
             .get_by_type::<T>()

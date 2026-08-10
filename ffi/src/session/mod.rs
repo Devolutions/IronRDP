@@ -186,11 +186,30 @@ pub mod ffi {
                 .transpose()?)
         }
 
+        pub fn set_fastpath_processor(
+            &mut self,
+            io_channel_id: u16,
+            user_channel_id: u16,
+            share_id: u32,
+            enable_server_pointer: bool,
+            pointer_software_rendering: bool,
+        ) {
+            let static_channel_chunk_size = self.0.static_channel_chunk_size();
+            debug_assert!(self.0.reactivate(
+                io_channel_id,
+                user_channel_id,
+                share_id,
+                enable_server_pointer,
+                pointer_software_rendering,
+                static_channel_chunk_size,
+            ));
+        }
+
         /// Rebuilds active-stage processors for a Deactivation-Reactivation Sequence.
         ///
         /// This retains negotiated bulk compression and applies the refreshed server-pointer state
         /// and static channel chunk size.
-        pub fn set_fastpath_processor(
+        pub fn reactivate(
             &mut self,
             io_channel_id: u16,
             user_channel_id: u16,
