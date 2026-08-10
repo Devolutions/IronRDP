@@ -20,8 +20,10 @@ use tracing::{debug, trace, warn};
 pub mod backend;
 pub mod pdu;
 
-pub use self::backend::RdpdrBackend;
 pub use self::backend::noop::NoopRdpdrBackend;
+pub use self::backend::{
+    RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive,
+};
 use crate::pdu::efs::ServerDriveIoRequest;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
