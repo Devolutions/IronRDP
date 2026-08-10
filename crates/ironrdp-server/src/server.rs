@@ -454,17 +454,11 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channels: StaticChannelSet,
-    // `Rc`, not `Box`: a future consumer of this connection-setup path (e.g.
-    // a candidate connection negotiating concurrently with the live one, which
-    // holds `&mut self` for its whole lifetime) can build its channels from a
-    // cheaply cloned reference to these instead of reaching through `self`.
-    // Set once at construction and never reassigned, so sharing them costs
-    // nothing at steady state.
-    sound_factory: Option<Rc<dyn SoundServerFactory>>,
-    cliprdr_factory: Option<Rc<dyn CliprdrServerFactory>>,
+    sound_factory: Option<Box<dyn SoundServerFactory>>,
+    cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
-    gfx_factory: Option<Rc<dyn GfxServerFactory>>,
+    gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "egfx")]
     gfx_handle: Option<crate::gfx::GfxServerHandle>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
@@ -584,82 +578,6 @@ enum RunState {
     Continue,
     Disconnect,
     DeactivationReactivation { desktop_size: DesktopSize },
-}
-
-/// The GFX server handle [`attach_channels_impl`] hands back, so the caller
-/// decides when to install it on `RdpServer::gfx_handle`. A type alias because
-/// a return type cannot itself carry a `#[cfg]`; without `egfx` there is no
-/// handle type to name, so it degrades to `()`.
-#[cfg(feature = "egfx")]
-type AttachedGfxHandle = Option<crate::gfx::GfxServerHandle>;
-#[cfg(not(feature = "egfx"))]
-type AttachedGfxHandle = ();
-
-/// The channel-attaching half of connection setup, factored out of
-/// [`RdpServer::attach_channels`] into a free function that borrows its
-/// factories rather than reading `self`. This is what lets alternate
-/// connection-setup paths reuse the exact same channel wiring without
-/// requiring `&mut self` for the whole call.
-///
-/// Returns the GFX handle instead of writing it to a field, so the caller
-/// decides when (or whether) to install it.
-fn attach_channels_impl(
-    acceptor: &mut Acceptor,
-    cliprdr_factory: Option<&dyn CliprdrServerFactory>,
-    sound_factory: Option<&dyn SoundServerFactory>,
-    #[cfg(feature = "egfx")] gfx_factory: Option<&dyn GfxServerFactory>,
-    display: &Arc<Mutex<Box<dyn RdpServerDisplay>>>,
-    handler: &Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
-    echo_handle: &EchoServerHandle,
-) -> AttachedGfxHandle {
-    if let Some(cliprdr_factory) = cliprdr_factory {
-        let backend = cliprdr_factory.build_cliprdr_backend();
-
-        let cliprdr = CliprdrServer::new(backend);
-
-        acceptor.attach_static_channel(cliprdr);
-    }
-
-    if let Some(factory) = sound_factory {
-        let backend = factory.build_backend();
-
-        acceptor.attach_static_channel(RdpsndServer::new(backend));
-    }
-
-    let dcs_backend = DisplayControlBackend::new(Arc::clone(display));
-    let dvc = dvc::DrdynvcServer::new()
-        .with_dynamic_channel(AInputHandler {
-            handler: Arc::clone(handler),
-        })
-        .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
-
-    let dvc = {
-        let echo_handle = echo_handle.clone();
-        dvc.with_dynamic_channel(EchoDvcBridge::new(echo_handle))
-    };
-
-    #[cfg(feature = "egfx")]
-    let (dvc, gfx_handle) = {
-        let mut dvc = dvc;
-        let mut gfx_handle = None;
-        if let Some(gfx_factory) = gfx_factory {
-            if let Some((bridge, handle)) = gfx_factory.build_server_with_handle() {
-                gfx_handle = Some(handle);
-                dvc = dvc.with_dynamic_channel(bridge);
-            } else {
-                let handler = gfx_factory.build_gfx_handler();
-                let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(handler);
-                dvc = dvc.with_dynamic_channel(gfx_server);
-            }
-        }
-        (dvc, gfx_handle)
-    };
-    #[cfg(not(feature = "egfx"))]
-    let gfx_handle = ();
-
-    acceptor.attach_static_channel(dvc);
-
-    gfx_handle
 }
 
 /// Which transport a connection ended up on after
@@ -807,11 +725,11 @@ impl RdpServer {
             handler: Arc::new(Mutex::new(handler)),
             display: Arc::new(Mutex::new(display)),
             static_channels: StaticChannelSet::new(),
-            sound_factory: sound_factory.map(Rc::from),
-            cliprdr_factory: cliprdr_factory.map(Rc::from),
+            sound_factory,
+            cliprdr_factory,
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
-            gfx_factory: gfx_factory.map(Rc::from),
+            gfx_factory,
             #[cfg(feature = "egfx")]
             gfx_handle: None,
             ev_sender,
@@ -1108,36 +1026,50 @@ impl RdpServer {
         self.gfx_handle.as_ref()
     }
 
-    #[cfg_attr(
-        not(feature = "egfx"),
-        expect(
-            clippy::let_unit_value,
-            reason = "attach_channels_impl yields a GFX handle only when `egfx` is enabled"
-        )
-    )]
     fn attach_channels(&mut self, acceptor: &mut Acceptor) {
-        let _gfx_handle: AttachedGfxHandle = attach_channels_impl(
-            acceptor,
-            self.cliprdr_factory.as_deref(),
-            self.sound_factory.as_deref(),
-            #[cfg(feature = "egfx")]
-            self.gfx_factory.as_deref(),
-            &self.display,
-            &self.handler,
-            &self.echo_handle,
-        );
-        // Only overwrite on `Some`, matching the pre-refactor code exactly:
-        // it only ever wrote `self.gfx_handle = Some(handle)` from inside the
-        // `build_server_with_handle()` success arm, and never touched the
-        // field when that returned `None` (the `build_gfx_handler()`
-        // fallback). An unconditional overwrite here would clear a handle
-        // left over from a previous connection whenever the factory falls
-        // back on a later call, which is an observable behavior change
-        // `gfx_handle()` callers do not expect from this refactor.
-        #[cfg(feature = "egfx")]
-        if let Some(handle) = _gfx_handle {
-            self.gfx_handle = Some(handle);
+        if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
+            let backend = cliprdr_factory.build_cliprdr_backend();
+
+            let cliprdr = CliprdrServer::new(backend);
+
+            acceptor.attach_static_channel(cliprdr);
         }
+
+        if let Some(factory) = self.sound_factory.as_deref() {
+            let backend = factory.build_backend();
+
+            acceptor.attach_static_channel(RdpsndServer::new(backend));
+        }
+
+        let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
+        let dvc = dvc::DrdynvcServer::new()
+            .with_dynamic_channel(AInputHandler {
+                handler: Arc::clone(&self.handler),
+            })
+            .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
+
+        let dvc = {
+            let echo_handle = self.echo_handle.clone();
+            dvc.with_dynamic_channel(EchoDvcBridge::new(echo_handle))
+        };
+
+        #[cfg(feature = "egfx")]
+        let dvc = {
+            let mut dvc = dvc;
+            if let Some(gfx_factory) = self.gfx_factory.as_deref() {
+                if let Some((bridge, handle)) = gfx_factory.build_server_with_handle() {
+                    self.gfx_handle = Some(handle);
+                    dvc = dvc.with_dynamic_channel(bridge);
+                } else {
+                    let handler = gfx_factory.build_gfx_handler();
+                    let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(handler);
+                    dvc = dvc.with_dynamic_channel(gfx_server);
+                }
+            }
+            dvc
+        };
+
+        acceptor.attach_static_channel(dvc);
     }
 
     /// Run a single RDP connection over `stream`, performing the
