@@ -1,0 +1,36 @@
+[package]
+name = "ironrdp-rdpemt"
+version = "0.1.0"
+readme = "README.md"
+description = "Multitransport Extension ([MS-RDPEMT]) tunnel implementation for IronRDP"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+# test = false # FIXME: turn off and keep tests in testsuite crates
+
+[features]
+# Matches `ironrdp-pdu` and `ironrdp-rdpeusb`: `no_std` unless a consumer asks
+# for `std`. The `alloc` crate is not optional here, because tunnel payloads
+# are owned buffers, so there is no useful build without it and no `alloc`
+# feature is offered.
+default = []
+std = ["ironrdp-core/std", "ironrdp-error/std"]
+# Structure-aware fuzzing support, mirroring `ironrdp-pdu`.
+# `arbitrary` needs the standard library, so structure-aware fuzzing implies `std`.
+arbitrary = ["dep:arbitrary", "std"]
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"], optional = true }
+ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
+ironrdp-error = { path = "../ironrdp-error", version = "0.2", features = ["alloc"] } # public
+
+[lints]
+workspace = true
