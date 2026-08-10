@@ -106,7 +106,7 @@ pub(crate) unsafe trait IMsRdpClientNonScriptable3: IMsRdpClientNonScriptable2 {
     fn get_NegotiateSecurityLayer(&self, value: *mut i16) -> Result<()>;
     fn put_EnableCredSspSupport(&self, value: i16) -> Result<()>;
     fn get_EnableCredSspSupport(&self, value: *mut i16) -> Result<()>;
-    pub(crate) fn put_RedirectDynamicDrives(&self, value: i16) -> Result<()>;
+    fn put_RedirectDynamicDrives(&self, value: i16) -> Result<()>;
     fn get_RedirectDynamicDrives(&self, value: *mut i16) -> Result<()>;
     fn put_RedirectDynamicDevices(&self, value: i16) -> Result<()>;
     fn get_RedirectDynamicDevices(&self, value: *mut i16) -> Result<()>;

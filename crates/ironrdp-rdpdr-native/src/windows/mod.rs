@@ -13,7 +13,4 @@ mod status;
 mod volume;
 
 pub use backend::WindowsRdpdrBackend;
-pub use factory::{
-    RedirectedDrive, RedirectedDriveError, WindowsRdpdrBackendFactory, WindowsRdpdrDriveRegistry,
-    WindowsRdpdrDriveRegistryError,
-};
+pub use factory::{RedirectedDrive, RedirectedDriveError, WindowsRdpdrBackendFactory};

@@ -162,6 +162,7 @@ impl RdpdrBackendProduct {
             initial_drives,
         }
     }
+
     /// Returns the filesystem devices announced when the server accepts RDPDR.
     pub fn initial_drives(&self) -> &[RdpdrDrive] {
         &self.initial_drives
