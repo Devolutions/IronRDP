@@ -36,8 +36,6 @@ The configured drives are fixed for the daemon lifetime; hot-plug and rescan are
 ## TLS certificate validation
 
 The daemon always performs strict certificate and hostname validation.
-For an explicitly authorized endpoint with a self-signed or privately issued leaf certificate, start one daemon with `--certificate-sha256 HEX` or set `IRONRDP_AGENT_CERTIFICATE_SHA256` in that daemon process.
-The SHA-256 leaf fingerprint is considered only after normal validation fails, so it does not disable certificate or hostname validation globally.
 The daemon does not accept an insecure certificate-validation policy.
 
 ## Bounded Unicode input

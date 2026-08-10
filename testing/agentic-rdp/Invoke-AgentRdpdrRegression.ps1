@@ -22,8 +22,6 @@ param(
 
     [string] $AgentPath = (Join-Path (Join-Path $PSScriptRoot '..\..') 'target\release\ironrdp-agent.exe'),
 
-    [string] $CertificateSha256 = $env:IRONRDP_AGENT_CERTIFICATE_SHA256,
-
     [string] $ArtifactsDir = (Join-Path $env:TEMP 'ironrdp-rdpdr-regression-artifacts'),
 
     # Performs input, path, and credential-boundary validation without contacting the endpoint.
@@ -75,12 +73,6 @@ function Assert-RegressionConfiguration {
     }
     if ($VolumeRoot.Length -ne 3) {
         throw 'volume root must use the exact X:\ form'
-    }
-    if (-not [string]::IsNullOrWhiteSpace($CertificateSha256)) {
-        $normalizedFingerprint = $CertificateSha256 -replace '[:-]', ''
-        if ($normalizedFingerprint -notmatch '^[0-9A-Fa-f]{64}$') {
-            throw 'certificate SHA-256 fingerprint must contain 64 hexadecimal characters'
-        }
     }
 }
 
@@ -251,7 +243,6 @@ try {
             AuthorizedEndpoint = $AuthorizedEndpoint
             DriveName = $DriveName
             VolumeRoot = $VolumeRoot
-            CertificatePinConfigured = -not [string]::IsNullOrWhiteSpace($CertificateSha256)
         }
         return
     }
@@ -280,9 +271,6 @@ try {
             'daemon-start',
             '--rdpdr-drive', "$DriveName=$VolumeRoot"
         )
-        if (-not [string]::IsNullOrWhiteSpace($CertificateSha256)) {
-            $daemonArguments += @('--certificate-sha256', $CertificateSha256)
-        }
         $script:DaemonProcess = Start-Process `
             -FilePath $AgentPath `
             -ArgumentList $daemonArguments `

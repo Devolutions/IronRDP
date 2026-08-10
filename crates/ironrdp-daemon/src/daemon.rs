@@ -15,7 +15,6 @@ use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
 use ironrdp_tls::CertificateValidation;
-use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
@@ -130,40 +129,6 @@ pub enum ResizeError {
     Closed,
 }
 
-/// SHA-256 fingerprint accepted only when normal certificate validation fails.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CertificateSha256([u8; 32]);
-
-impl CertificateSha256 {
-    fn matches(self, certificate: &[u8]) -> bool {
-        let actual: [u8; 32] = Sha256::digest(certificate).into();
-        actual == self.0
-    }
-}
-
-impl core::str::FromStr for CertificateSha256 {
-    type Err = String;
-
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let normalized: String = input
-            .chars()
-            .filter(|character| !matches!(character, ':' | '-'))
-            .collect();
-        if normalized.len() != 64 || !normalized.is_ascii() {
-            return Err("certificate SHA-256 fingerprint must contain 64 hexadecimal characters".to_owned());
-        }
-
-        let mut bytes = [0; 32];
-        for (hex, byte) in normalized.as_bytes().chunks_exact(2).zip(&mut bytes) {
-            let hex = core::str::from_utf8(hex)
-                .map_err(|_| "certificate SHA-256 fingerprint must be hexadecimal".to_owned())?;
-            *byte = u8::from_str_radix(hex, 16)
-                .map_err(|_| "certificate SHA-256 fingerprint must be hexadecimal".to_owned())?;
-        }
-        Ok(Self(bytes))
-    }
-}
-
 /// Windows volume definition exposed as one static RDPDR filesystem drive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RdpdrDriveConfig {
@@ -213,18 +178,10 @@ impl RdpdrDriveConfig {
 /// Startup-only settings that are deliberately unavailable through session IPC.
 #[derive(Clone, Debug, Default)]
 pub struct DaemonOptions {
-    certificate_pin: Option<CertificateSha256>,
     rdpdr_drives: Vec<RdpdrDriveConfig>,
 }
 
 impl DaemonOptions {
-    /// Accepts a known leaf certificate only when normal strict validation fails.
-    #[must_use]
-    pub fn with_certificate_pin(mut self, certificate_pin: Option<CertificateSha256>) -> Self {
-        self.certificate_pin = certificate_pin;
-        self
-    }
-
     /// Configures fixed local volumes for filesystem redirection.
     #[must_use]
     pub fn with_rdpdr_drives(mut self, rdpdr_drives: Vec<RdpdrDriveConfig>) -> Self {
@@ -246,7 +203,6 @@ pub struct Daemon {
     /// Whether [`Self::overlay`] contributes any secret (password/token) value, i.e. whether the
     /// caller can omit credentials of its own.
     credentials_loaded: bool,
-    certificate_pin: Option<CertificateSha256>,
     #[cfg(windows)]
     rdpdr_backend_factory: Option<WindowsRdpdrBackendFactory>,
     /// Notifies an optional GUI frontend whenever retained live state changes.
@@ -290,10 +246,7 @@ impl Daemon {
         // which is what frees the caller from supplying a password.
         let credentials_loaded = overlay.iter().any(|(key, _)| ironrdp_cfg::is_secret_key(key));
         let (shutdown, _) = tokio::sync::watch::channel(());
-        let DaemonOptions {
-            certificate_pin,
-            rdpdr_drives,
-        } = options;
+        let DaemonOptions { rdpdr_drives } = options;
         #[cfg(windows)]
         let rdpdr_backend_factory = rdpdr_backend_factory(rdpdr_drives)?;
         #[cfg(not(windows))]
@@ -307,7 +260,6 @@ impl Daemon {
             logs,
             overlay,
             credentials_loaded,
-            certificate_pin,
             #[cfg(windows)]
             rdpdr_backend_factory,
             notification: None,
@@ -491,14 +443,6 @@ impl Daemon {
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true);
-        let builder = match self.certificate_pin {
-            Some(certificate_pin) => {
-                let callback: ironrdp_tls::CertificateValidationCallback =
-                    Arc::new(move |certificate, _reason| certificate_pin.matches(certificate));
-                builder.with_certificate_validation_callback(callback)
-            }
-            None => builder,
-        };
         #[cfg(windows)]
         let builder = if self.rdpdr_backend_factory.is_some() {
             builder.with_rdpdr(true)
@@ -1209,7 +1153,7 @@ mod tests {
 
     use ironrdp_propertyset::PropertySet;
 
-    use super::{CertificateSha256, Daemon, MAX_UNICODE_TEXT_CHARS, RdpdrDriveConfig, ResizeError, notify};
+    use super::{Daemon, MAX_UNICODE_TEXT_CHARS, RdpdrDriveConfig, ResizeError, notify};
     use crate::ipc::Response;
 
     #[test]
@@ -1230,17 +1174,6 @@ mod tests {
 
         assert_eq!(daemon.try_resize(1024, 768), Err(ResizeError::NoSession));
         assert!(matches!(daemon.resize(1024, 768), Response::Err(error) if error.message == "no active session"));
-    }
-
-    #[test]
-    fn certificate_sha256_parses_fingerprints_and_matches_leaf_certificates() {
-        let fingerprint =
-            "BA:78-16:BF-8F:01-CF:EA-41:41-40:DE-5D:AE-22:23-B0:03-61:A3-96:17-7A:9C-B4:10-FF:61-F2:00-15:AD";
-        let fingerprint: CertificateSha256 = fingerprint.parse().expect("valid fingerprint");
-
-        assert!(fingerprint.matches(b"abc"));
-        assert!(!fingerprint.matches(b"abcd"));
-        assert!("not-a-fingerprint".parse::<CertificateSha256>().is_err());
     }
 
     #[test]

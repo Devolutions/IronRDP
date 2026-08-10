@@ -28,7 +28,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Lifecycle
 
-- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--certificate-sha256 HEX] [--rdpdr-drive NAME=VOLUME_ROOT]...`
+- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--rdpdr-drive NAME=VOLUME_ROOT]...`
                                  Start the daemon (foreground). Run this first. `--overlay`
                                  preloads a .rdp file as an overlay applied to every `connect`
                                  (overlay wins), letting an operator provision any setting out of
@@ -45,8 +45,6 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  set is fixed for the daemon lifetime; drive hot-plug and rescan are
                                  not supported.
                                  TLS certificate and hostname validation is always strict.
-                                 For one explicitly authorized endpoint whose leaf certificate cannot pass normal validation, set `--certificate-sha256` or process-local `IRONRDP_AGENT_CERTIFICATE_SHA256` to its SHA-256 leaf fingerprint.
-                                 The pin is used only after normal validation fails; there is no insecure-accept option.
 - `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. Precedence (low to high): .rdp file -> `--prop`
