@@ -16,7 +16,7 @@ tls mstsgu vmconnect
 
 client viewer agent daemon rpc activex server web ffi replay
 
-xtask release pr-automation agents
+xtask fuzz release pr-automation agents
 ```
 
 Most scopes match an `ironrdp-*` component after removing the prefix.
@@ -33,6 +33,7 @@ Use these aggregate mappings:
 - `web`: WASM bindings, the Rust web helper, and everything under `web-client`.
 - `ffi`: the Rust FFI and generated or manual .NET bindings, but not ActiveX.
 - `replay`: `ironrdp-replay-client`.
+- `fuzz`: fuzz targets, harnesses, corpora, and fuzzing automation.
 - `release`: changelog, packaging, publishing, and release automation.
 - `pr-automation`: automated PR classification and review infrastructure.
 - `agents`: agent instructions and reusable skills.
