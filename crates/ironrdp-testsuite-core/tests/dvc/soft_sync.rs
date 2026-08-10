@@ -29,6 +29,43 @@ fn decodes_soft_sync_request() {
 }
 
 #[test]
+fn decodes_soft_sync_request_with_unknown_tunnel_type() {
+    let mut request = REQUEST_ENCODED;
+    request[10] = 0x7F;
+
+    test_decodes(
+        &request,
+        &DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![SoftSyncChannelList::new(
+            SoftSyncTunnelType::from(0x7F),
+            vec![CHANNEL_ID],
+        )])),
+    );
+}
+
+#[test]
+fn decodes_soft_sync_request_with_empty_channel_list() {
+    let request = [
+        0x80, 0x00, 0x0E, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+
+    test_decodes(
+        &request,
+        &DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![SoftSyncChannelList::new(
+            SoftSyncTunnelType::RELIABLE_UDP,
+            Vec::new(),
+        )])),
+    );
+}
+
+#[test]
+fn decodes_soft_sync_request_without_channel_list_flag() {
+    let mut encoded = REQUEST_ENCODED;
+    encoded[6] = 0x01;
+
+    test_decodes(&encoded, &DrdynvcServerPdu::SoftSyncRequest(request()));
+}
+
+#[test]
 fn encodes_soft_sync_response() {
     test_encodes(&DrdynvcClientPdu::SoftSyncResponse(response()), &RESPONSE_ENCODED);
 }
