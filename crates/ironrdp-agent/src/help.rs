@@ -28,7 +28,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Lifecycle
 
-- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--dangerously-accept-invalid-certificate] [--rdpdr-drive NAME=VOLUME_ROOT]...`
+- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--ignore-certificates] [--rdpdr-drive NAME=VOLUME_ROOT]...`
                                  Start the daemon (foreground). Run this first. `--overlay`
                                  preloads a .rdp file as an overlay applied to every `connect`
                                  (overlay wins), letting an operator provision any setting out of
@@ -45,7 +45,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  set is fixed for the daemon lifetime; drive hot-plug and rescan are
                                  not supported.
                                  TLS certificate and hostname validation is strict by default.
-                                 `--dangerously-accept-invalid-certificate` disables both for this daemon only.
+                                 `--ignore-certificates` disables both for this daemon only.
                                  Use it only for an explicitly authorized test endpoint because it accepts any certificate and is vulnerable to on-path attacks.
 - `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and

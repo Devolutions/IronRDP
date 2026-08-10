@@ -316,7 +316,7 @@ struct DaemonArgs {
     /// Use only for an explicitly authorized test endpoint. This startup-only flag accepts any
     /// certificate and is vulnerable to on-path attacks.
     #[arg(long)]
-    dangerously_accept_invalid_certificate: bool,
+    ignore_certificates: bool,
     /// Named local Windows volume exposed as an RDPDR filesystem drive.
     ///
     /// Repeat this flag to redirect multiple volumes. `NAME` is protocol-visible
@@ -521,7 +521,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             #[cfg(not(windows))]
             let rdpdr_drives = Vec::new();
             let options = ironrdp_daemon::daemon::DaemonOptions::default()
-                .with_dangerously_accept_invalid_certificate(args.dangerously_accept_invalid_certificate)
+                .with_certificate_validation_ignored(args.ignore_certificates)
                 .with_rdpdr_drives(rdpdr_drives);
             return ironrdp_daemon::daemon::run(endpoint, overlay, options).await;
         }
@@ -1431,18 +1431,14 @@ mod tests {
     }
 
     #[test]
-    fn daemon_start_can_explicitly_accept_invalid_certificates() {
-        let cli = Cli::try_parse_from([
-            "ironrdp-agent",
-            "daemon-start",
-            "--dangerously-accept-invalid-certificate",
-        ])
-        .expect("valid explicit certificate-validation override");
+    fn daemon_start_can_ignore_certificates() {
+        let cli = Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--ignore-certificates"])
+            .expect("valid explicit certificate-validation override");
 
         let Some(Command::DaemonStart(args)) = cli.command else {
             panic!("expected daemon-start command");
         };
-        assert!(args.dangerously_accept_invalid_certificate);
+        assert!(args.ignore_certificates);
     }
 
     #[test]

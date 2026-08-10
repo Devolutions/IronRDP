@@ -178,20 +178,20 @@ impl RdpdrDriveConfig {
 /// Startup-only settings that are deliberately unavailable through session IPC.
 #[derive(Clone, Debug, Default)]
 pub struct DaemonOptions {
-    dangerously_accept_invalid_certificate: bool,
+    ignore_certificates: bool,
     rdpdr_drives: Vec<RdpdrDriveConfig>,
 }
 
 impl DaemonOptions {
     /// Disables TLS certificate and hostname validation for this daemon.
     #[must_use]
-    pub fn with_dangerously_accept_invalid_certificate(mut self, accept: bool) -> Self {
-        self.dangerously_accept_invalid_certificate = accept;
+    pub fn with_certificate_validation_ignored(mut self, ignore: bool) -> Self {
+        self.ignore_certificates = ignore;
         self
     }
 
     fn certificate_validation(&self) -> CertificateValidation {
-        if self.dangerously_accept_invalid_certificate {
+        if self.ignore_certificates {
             CertificateValidation::DangerouslyAcceptInvalidCertificate
         } else {
             CertificateValidation::Strict
@@ -1202,7 +1202,7 @@ mod tests {
     #[test]
     fn daemon_options_default_to_strict_certificate_validation() {
         let strict = DaemonOptions::default();
-        let insecure = DaemonOptions::default().with_dangerously_accept_invalid_certificate(true);
+        let insecure = DaemonOptions::default().with_certificate_validation_ignored(true);
 
         assert_eq!(strict.certificate_validation(), CertificateValidation::Strict);
         assert_eq!(
