@@ -21,8 +21,6 @@ use tracing::{debug, error, info, trace, warn};
 
 #[cfg(windows)]
 use std::collections::BTreeSet;
-#[cfg(windows)]
-use std::path::{Component, Prefix};
 
 #[cfg(windows)]
 use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
@@ -1059,17 +1057,22 @@ fn rdpdr_backend_factory(drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<Option
 
 #[cfg(windows)]
 fn validate_rdpdr_volume_root(root_path: &Path) -> anyhow::Result<String> {
-    let mut components = root_path.components();
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let mut path = root_path.as_os_str().encode_wide();
     let is_disk_root = matches!(
-        (components.next(), components.next(), components.next()),
+        (path.next(), path.next(), path.next(), path.next()),
         (
-            Some(Component::Prefix(prefix)),
-            Some(Component::RootDir),
+            Some(drive_letter),
+            Some(colon),
+            Some(separator),
             None
-        ) if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+        ) if matches!(drive_letter, 65..=90 | 97..=122)
+            && colon == u16::from(b':')
+            && separator == u16::from(b'\\')
     );
     if !is_disk_root {
-        anyhow::bail!("rdpdr volume root must be a full local Windows volume root");
+        anyhow::bail!("rdpdr volume root must use the X:\\ form");
     }
 
     let metadata =
@@ -1180,9 +1183,21 @@ mod tests {
 
         let result = Daemon::with_rdpdr_drives(PropertySet::new(), vec![drive]);
 
-        assert!(matches!(
-            result,
-            Err(error) if error.to_string() == "rdpdr volume root must be a full local Windows volume root"
-        ));
+        assert!(matches!(result, Err(error) if error.to_string() == "rdpdr volume root must use the X:\\ form"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rdpdr_daemon_rejects_noncanonical_volume_root_spellings() {
+        for root in ["C:/", r"C:\.", r"\\?\C:\"] {
+            let drive = RdpdrDriveConfig::new(PathBuf::from(root), "Data".to_owned()).expect("non-empty drive config");
+
+            let result = Daemon::with_rdpdr_drives(PropertySet::new(), vec![drive]);
+
+            assert!(matches!(
+                result,
+                Err(error) if error.to_string() == "rdpdr volume root must use the X:\\ form"
+            ));
+        }
     }
 }

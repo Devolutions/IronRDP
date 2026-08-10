@@ -40,7 +40,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  credentials are already loaded before supplying any yourself.
                                  On Windows, repeat `--rdpdr-drive NAME=VOLUME_ROOT` to opt in to
                                  static filesystem redirection. Each root must be a unique existing
-                                 local volume root such as `C:\`, and each one-to-seven-character
+                                 local volume root in the exact `C:\` form, and each one-to-seven-character
                                  ASCII drive name must be unique (case-insensitive). The configured
                                  set is fixed for the daemon lifetime; drive hot-plug and rescan are
                                  not supported.
