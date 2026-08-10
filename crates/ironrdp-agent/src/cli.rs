@@ -311,12 +311,12 @@ struct DaemonArgs {
     /// property without a dedicated flag existing for it.
     #[arg(long = "prop", value_name = "KEY:TYPE:VALUE")]
     prop: Vec<PropOverride>,
-    /// Disable TLS certificate and hostname validation for this daemon.
+    /// Skip TLS certificate and hostname validation for this daemon.
     ///
     /// Use only for an explicitly authorized test endpoint. This startup-only flag accepts any
     /// certificate and is vulnerable to on-path attacks.
     #[arg(long)]
-    ignore_certificates: bool,
+    skip_certificate_check: bool,
     /// Named local Windows volume exposed as an RDPDR filesystem drive.
     ///
     /// Repeat this flag to redirect multiple volumes. `NAME` is protocol-visible
@@ -521,7 +521,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             #[cfg(not(windows))]
             let rdpdr_drives = Vec::new();
             let options = ironrdp_daemon::daemon::DaemonOptions::default()
-                .with_certificate_validation_ignored(args.ignore_certificates)
+                .with_certificate_check_skipped(args.skip_certificate_check)
                 .with_rdpdr_drives(rdpdr_drives);
             return ironrdp_daemon::daemon::run(endpoint, overlay, options).await;
         }
@@ -1431,14 +1431,19 @@ mod tests {
     }
 
     #[test]
-    fn daemon_start_can_ignore_certificates() {
-        let cli = Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--ignore-certificates"])
+    fn daemon_start_can_skip_certificate_check() {
+        let cli = Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--skip-certificate-check"])
             .expect("valid explicit certificate-validation override");
 
         let Some(Command::DaemonStart(args)) = cli.command else {
             panic!("expected daemon-start command");
         };
-        assert!(args.ignore_certificates);
+        assert!(args.skip_certificate_check);
+    }
+
+    #[test]
+    fn daemon_start_rejects_superseded_certificate_flag() {
+        assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--ignore-certificates"]).is_err());
     }
 
     #[test]

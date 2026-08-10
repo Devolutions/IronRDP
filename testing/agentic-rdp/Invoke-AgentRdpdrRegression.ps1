@@ -23,7 +23,7 @@ param(
     [string] $AgentPath = (Join-Path (Join-Path $PSScriptRoot '..\..') 'target\release\ironrdp-agent.exe'),
 
     # Disables certificate and hostname validation for this authorized test endpoint.
-    [switch] $IgnoreCertificates,
+    [switch] $SkipCertificateCheck,
 
     [string] $ArtifactsDir = (Join-Path $env:TEMP 'ironrdp-rdpdr-regression-artifacts'),
 
@@ -246,7 +246,7 @@ try {
             AuthorizedEndpoint = $AuthorizedEndpoint
             DriveName = $DriveName
             VolumeRoot = $VolumeRoot
-            CertificatesIgnored = $IgnoreCertificates
+            CertificateCheckSkipped = $SkipCertificateCheck.IsPresent
         }
         return
     }
@@ -275,8 +275,8 @@ try {
             'daemon-start',
             '--rdpdr-drive', "$DriveName=$VolumeRoot"
         )
-        if ($IgnoreCertificates) {
-            $daemonArguments += '--ignore-certificates'
+        if ($SkipCertificateCheck) {
+            $daemonArguments += '--skip-certificate-check'
         }
         $script:DaemonProcess = Start-Process `
             -FilePath $AgentPath `
