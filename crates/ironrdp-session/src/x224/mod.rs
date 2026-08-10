@@ -10,7 +10,9 @@ use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::rdp::session_info::{InfoData, SaveSessionInfoPdu, ServerAutoReconnect};
 use ironrdp_pdu::x224::X224;
-use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages, client_encode_svc_messages};
+use ironrdp_svc::{
+    StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages, client_encode_svc_messages_with_max_chunk_len,
+};
 use tracing::debug;
 
 use crate::{SessionError, SessionErrorExt as _, SessionResult, reason_err};
@@ -114,6 +116,11 @@ impl Processor {
         self.share_id = share_id;
     }
 
+    /// Updates the negotiated maximum payload length of outgoing static virtual channel chunks.
+    pub fn set_static_channel_chunk_size(&mut self, maximum_chunk_size: usize) -> bool {
+        self.static_channels.set_maximum_chunk_size(maximum_chunk_size)
+    }
+
     pub fn get_svc_processor<T: SvcProcessor + 'static>(&self) -> Option<&T> {
         self.static_channels
             .get_by_type::<T>()
@@ -137,7 +144,12 @@ impl Processor {
             .get_channel_id_by_type::<C>()
             .ok_or_else(|| reason_err!("SVC", "channel not found"))?;
 
-        process_svc_messages(messages.into(), channel_id, self.user_channel_id)
+        process_svc_messages(
+            messages.into(),
+            channel_id,
+            self.user_channel_id,
+            self.static_channels.maximum_chunk_size(),
+        )
     }
 
     /// Completes an SVC request for a runtime-defined channel name.
@@ -151,7 +163,12 @@ impl Processor {
             .get_channel_id_by_channel_name(channel_name)
             .ok_or_else(|| reason_err!("SVC", "channel not found"))?;
 
-        process_svc_messages(messages, channel_id, self.user_channel_id)
+        process_svc_messages(
+            messages,
+            channel_id,
+            self.user_channel_id,
+            self.static_channels.maximum_chunk_size(),
+        )
     }
 
     pub fn get_dvc<T: DvcClientProcessor + 'static>(&self) -> Option<DynamicChannelRef<'_, T>> {
@@ -181,12 +198,15 @@ impl Processor {
             self.process_io_channel(data_ctx, bulk_decompressor)
         } else if self.message_channel_id == Some(channel_id) {
             self.process_message_channel(data_ctx)
-        } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
-            let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
-            process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id)
-                .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
         } else {
-            Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
+            let maximum_chunk_size = self.static_channels.maximum_chunk_size();
+            if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
+                let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
+                process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id, maximum_chunk_size)
+                    .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
+            } else {
+                Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
+            }
         }
     }
 
@@ -394,8 +414,14 @@ fn is_logon_complete(session_info: &SaveSessionInfoPdu) -> bool {
 /// The messages returned here are ready to be sent to the server.
 ///
 /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
-fn process_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> SessionResult<Vec<u8>> {
-    client_encode_svc_messages(messages, channel_id, initiator_id).map_err(SessionError::encode)
+fn process_svc_messages(
+    messages: Vec<SvcMessage>,
+    channel_id: u16,
+    initiator_id: u16,
+    maximum_chunk_size: usize,
+) -> SessionResult<Vec<u8>> {
+    client_encode_svc_messages_with_max_chunk_len(messages, channel_id, initiator_id, maximum_chunk_size)
+        .map_err(SessionError::encode)
 }
 
 #[cfg(test)]

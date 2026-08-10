@@ -228,6 +228,19 @@ impl Sequence for ConnectionActivationSequence {
                     })
                     .unwrap_or_else(InputFlags::empty);
 
+                let static_channel_chunk_size = capability_sets
+                    .iter()
+                    .find_map(|c| match c {
+                        CapabilitySet::VirtualChannel(channel) => channel
+                            .chunk_size
+                            .and_then(|chunk_size| usize::try_from(chunk_size).ok()),
+                        _ => None,
+                    })
+                    .filter(|chunk_size| {
+                        (ironrdp_svc::CHANNEL_CHUNK_LENGTH..=ironrdp_svc::MAX_CHANNEL_CHUNK_LENGTH).contains(chunk_size)
+                    })
+                    .unwrap_or(ironrdp_svc::CHANNEL_CHUNK_LENGTH);
+
                 // At this point we have already sent a requested desktop size to the server -- either as a part of the
                 // [`TS_UD_CS_CORE`] (on initial connection) or the [`DISPLAYCONTROL_MONITOR_LAYOUT`] (on resize event).
                 //
@@ -274,6 +287,7 @@ impl Sequence for ConnectionActivationSequence {
                         desktop_size,
                         share_id,
                         input_flags,
+                        static_channel_chunk_size,
                         refresh_rect_support,
                         suppress_output_support,
                         connection_finalization: ConnectionFinalizationSequence::new(
@@ -288,6 +302,7 @@ impl Sequence for ConnectionActivationSequence {
                 desktop_size,
                 share_id,
                 input_flags,
+                static_channel_chunk_size,
                 refresh_rect_support,
                 suppress_output_support,
                 mut connection_finalization,
@@ -301,6 +316,7 @@ impl Sequence for ConnectionActivationSequence {
                         desktop_size,
                         share_id,
                         input_flags,
+                        static_channel_chunk_size,
                         refresh_rect_support,
                         suppress_output_support,
                         connection_finalization,
@@ -310,6 +326,7 @@ impl Sequence for ConnectionActivationSequence {
                         desktop_size,
                         share_id,
                         input_flags,
+                        static_channel_chunk_size,
                         enable_server_pointer: self.config.enable_server_pointer,
                         pointer_software_rendering: self.config.pointer_software_rendering,
                         refresh_rect_support,
@@ -337,6 +354,8 @@ pub enum ConnectionActivationState {
         share_id: u32,
         /// The server's Input capability flags from the Server Demand Active PDU.
         input_flags: InputFlags,
+        /// The validated `VCChunkSize` from the server Virtual Channel Capability Set.
+        static_channel_chunk_size: usize,
         refresh_rect_support: bool,
         suppress_output_support: bool,
         connection_finalization: ConnectionFinalizationSequence,
@@ -351,6 +370,8 @@ pub enum ConnectionActivationState {
         ///
         /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b8e7c588-51cb-455b-bb73-92d480903133
         input_flags: InputFlags,
+        /// The validated `VCChunkSize` from the server Virtual Channel Capability Set.
+        static_channel_chunk_size: usize,
         enable_server_pointer: bool,
         pointer_software_rendering: bool,
         /// Whether the server permits client Refresh Rect PDUs for visual recovery.

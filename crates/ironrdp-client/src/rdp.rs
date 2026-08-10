@@ -1841,6 +1841,7 @@ async fn active_session(
                             input_flags: _,
                             enable_server_pointer,
                             pointer_software_rendering,
+                            static_channel_chunk_size,
                             refresh_rect_support: reactivated_refresh_rect_support,
                             suppress_output_support: reactivated_suppress_output_support,
                         } = connection_activation.connection_activation_state()
@@ -1855,6 +1856,9 @@ async fn active_session(
                                 enable_server_pointer,
                                 pointer_software_rendering,
                             );
+                            if !active_stage.set_static_channel_chunk_size(static_channel_chunk_size) {
+                                return Err(ironrdp_session::general_err!("invalid static channel chunk size"));
+                            }
                             refresh_rect_support = reactivated_refresh_rect_support;
                             suppress_output_support = reactivated_suppress_output_support;
                             break 'activation_seq;

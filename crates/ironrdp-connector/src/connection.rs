@@ -1233,31 +1233,39 @@ impl Sequence for ClientConnector {
                             desktop_size,
                             share_id,
                             input_flags,
+                            static_channel_chunk_size,
                             enable_server_pointer,
                             pointer_software_rendering,
                             refresh_rect_support,
                             suppress_output_support,
-                        } => ClientConnectorState::Connected {
-                            result: ConnectionResult {
-                                io_channel_id: connection_activation.io_channel_id(),
-                                user_channel_id: connection_activation.user_channel_id(),
-                                message_channel_id: self.message_channel_id,
-                                share_id,
-                                static_channels: mem::take(&mut self.static_channels),
-                                desktop_size,
-                                input_flags,
-                                enable_server_pointer,
-                                pointer_software_rendering,
-                                refresh_rect_support,
-                                suppress_output_support,
-                                activation_factory: ConnectionActivationFactory::new(
-                                    self.config.clone(),
-                                    connection_activation.io_channel_id(),
-                                    connection_activation.user_channel_id(),
-                                ),
-                                compression_type: self.config.compression_type,
-                            },
-                        },
+                        } => {
+                            let mut static_channels = mem::take(&mut self.static_channels);
+                            if !static_channels.set_maximum_chunk_size(static_channel_chunk_size) {
+                                return Err(general_err!("invalid static channel chunk size"));
+                            }
+
+                            ClientConnectorState::Connected {
+                                result: ConnectionResult {
+                                    io_channel_id: connection_activation.io_channel_id(),
+                                    user_channel_id: connection_activation.user_channel_id(),
+                                    message_channel_id: self.message_channel_id,
+                                    share_id,
+                                    static_channels,
+                                    desktop_size,
+                                    input_flags,
+                                    enable_server_pointer,
+                                    pointer_software_rendering,
+                                    refresh_rect_support,
+                                    suppress_output_support,
+                                    activation_factory: ConnectionActivationFactory::new(
+                                        self.config.clone(),
+                                        connection_activation.io_channel_id(),
+                                        connection_activation.user_channel_id(),
+                                    ),
+                                    compression_type: self.config.compression_type,
+                                },
+                            }
+                        }
                         _ => return Err(general_err!("invalid state (this is a bug)")),
                     }
                 };
