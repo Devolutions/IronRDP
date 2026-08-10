@@ -4,6 +4,7 @@ use core::fmt;
 use std::path::{Path, PathBuf};
 
 use super::backend::WindowsRdpdrBackend;
+use ironrdp_rdpdr::{RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive};
 
 /// Immutable logical-volume definition selected for Windows RDPDR redirection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +121,18 @@ impl WindowsRdpdrBackendFactory {
     }
 }
 
+impl RdpdrBackendFactory for WindowsRdpdrBackendFactory {
+    fn build_rdpdr_backend(&self) -> RdpdrBackendFactoryResult<RdpdrBackendProduct> {
+        Ok(RdpdrBackendProduct::new(
+            Box::new(self.build()),
+            self.initial_drives()
+                .into_iter()
+                .map(|(device_id, name)| RdpdrDrive::new(device_id, name))
+                .collect(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +144,22 @@ mod tests {
         );
 
         assert_eq!(factory.initial_drives(), vec![(1, "System".to_owned())]);
+    }
+
+    #[test]
+    fn factory_builds_a_portable_rdpdr_product() {
+        let factory = WindowsRdpdrBackendFactory::new(
+            RedirectedDrive::new(1, "System", r"C:\", false).expect("valid system drive"),
+        );
+
+        let product = factory.build_rdpdr_backend().expect("build RDPDR product");
+        assert_eq!(
+            product
+                .initial_drives()
+                .iter()
+                .map(|drive| (drive.device_id(), drive.name()))
+                .collect::<Vec<_>>(),
+            vec![(1, "System")]
+        );
     }
 }

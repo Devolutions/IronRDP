@@ -72,7 +72,7 @@ ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # pub
 
 # Optional protocol crates (activated by features above)
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7", optional = true } # public
-ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7", optional = true }
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7", optional = true } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9", optional = true }
 
 # Optional backend crates (activated by features above)
