@@ -23,10 +23,8 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::pdu_other_err;
 #[cfg(feature = "rdpdr")]
 pub use ironrdp_rdpdr::backend::{RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive};
-#[cfg(feature = "clipboard")]
-use ironrdp_session::ActiveStage;
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
+use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
@@ -2272,7 +2270,10 @@ mod tests {
         queue.defer(request);
         let deadline = queue.deadline().expect("pending resize must have a deadline");
 
-        assert_eq!(queue.timed_out_request(deadline - Duration::from_millis(1)), None);
+        assert_eq!(
+            queue.timed_out_request(deadline - Duration::from_millis(1)),
+            None
+        );
         assert_eq!(
             queue.timed_out_request(deadline),
             Some((request, DisplayResizeFallbackReason::CapabilitiesTimedOut))
