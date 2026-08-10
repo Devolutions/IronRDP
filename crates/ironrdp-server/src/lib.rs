@@ -23,8 +23,8 @@ mod sound;
 
 pub use clipboard::CliprdrServerFactory;
 pub use display::{
-    BitmapUpdate, ColorPointer, DesktopSize, DisplayUpdate, Framebuffer, PixelFormat, RGBAPointer, RdpServerDisplay,
-    RdpServerDisplayUpdates,
+    BitmapUpdate, ColorPointer, DesktopSize, DisplayUpdate, Framebuffer, PixelFormat, PreEncodedSurface, RGBAPointer,
+    RdpServerDisplay, RdpServerDisplayUpdates,
 };
 pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoServerMessage};
 #[cfg(feature = "egfx")]
