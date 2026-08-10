@@ -2647,6 +2647,7 @@ dependencies = [
  "now-client",
  "now-proto-pdu",
  "png",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
  "tracing-subscriber",

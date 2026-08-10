@@ -84,6 +84,9 @@ fn request_variants_round_trip() {
             ch: '\u{00e9}',
             pressed: true,
         },
+        Request::UnicodeText {
+            text: "Hello, \u{4e16}\u{754c}".to_owned(),
+        },
         Request::NowCapabilities,
         Request::NowRun {
             command: "echo secret".to_owned(),

@@ -390,6 +390,10 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             })
             .await
         }
+        Request::UnicodeText { .. } => Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "bulk Unicode text input is unsupported by ActiveX",
+        ),
         Request::Resize { width, height } => {
             queue_command(shared, dispatcher, |response| Command::Resize {
                 width,
@@ -748,6 +752,25 @@ mod tests {
     fn screenshot_without_a_frame_is_unavailable() {
         let rpc = rpc();
         assert!(!screenshot(&rpc.shared).is_ok());
+    }
+
+    #[tokio::test]
+    async fn unicode_text_is_explicitly_unsupported() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) = handle_request(
+            &rpc.shared,
+            0,
+            Request::UnicodeText {
+                text: "test".to_owned(),
+            },
+        )
+        .await
+        else {
+            panic!("bulk Unicode text input must be rejected");
+        };
+        assert_eq!(error.category, AgentErrorCategory::InvalidRequest);
+        assert_eq!(error.message, "bulk Unicode text input is unsupported by ActiveX");
     }
 
     #[test]
