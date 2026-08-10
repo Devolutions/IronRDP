@@ -9,13 +9,13 @@ const RESPONSE_ENCODED: [u8; 10] = [0x90, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x
 
 fn request() -> SoftSyncRequestPdu {
     SoftSyncRequestPdu::new(vec![SoftSyncChannelList::new(
-        SoftSyncTunnelType::ReliableUdp,
+        SoftSyncTunnelType::RELIABLE_UDP,
         vec![CHANNEL_ID],
     )])
 }
 
 fn response() -> SoftSyncResponsePdu {
-    SoftSyncResponsePdu::new(vec![SoftSyncTunnelType::ReliableUdp])
+    SoftSyncResponsePdu::new(vec![SoftSyncTunnelType::RELIABLE_UDP])
 }
 
 #[test]
@@ -66,4 +66,33 @@ fn rejects_soft_sync_response_with_duplicate_tunnel_type() {
 
     let mut src = ReadCursor::new(&response);
     assert!(DrdynvcClientPdu::decode(&mut src).is_err());
+}
+
+#[test]
+fn rejects_soft_sync_response_with_too_many_tunnels() {
+    let response = [0x90, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];
+
+    let mut src = ReadCursor::new(&response);
+    assert!(DrdynvcClientPdu::decode(&mut src).is_err());
+}
+
+#[test]
+fn rejects_soft_sync_request_with_too_many_tunnels() {
+    let request = [0x80, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF];
+
+    let mut src = ReadCursor::new(&request);
+    assert!(DrdynvcServerPdu::decode(&mut src).is_err());
+}
+
+#[test]
+fn decodes_unknown_soft_sync_tunnel_type() {
+    let response = [0x90, 0x00, 0x01, 0x00, 0x00, 0x00, 0x7F, 0x00, 0x00, 0x00];
+
+    let mut src = ReadCursor::new(&response);
+    let decoded = DrdynvcClientPdu::decode(&mut src).unwrap();
+    let DrdynvcClientPdu::SoftSyncResponse(response) = decoded else {
+        panic!("expected Soft-Sync response");
+    };
+
+    assert_eq!(response.tunnels_to_switch(), &[SoftSyncTunnelType::from(0x7F)]);
 }

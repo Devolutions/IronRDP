@@ -14,6 +14,7 @@ use ironrdp_svc::SvcEncode;
 use crate::{DynamicChannelId, String, Vec};
 
 /// Dynamic Virtual Channel PDU's that are sent by both client and server.
+#[non_exhaustive]
 #[derive(Debug, PartialEq)]
 pub enum DrdynvcDataPdu {
     DataFirst(DataFirstPdu),
@@ -56,6 +57,7 @@ impl Encode for DrdynvcDataPdu {
 }
 
 /// Dynamic Virtual Channel PDU's that are sent by the client.
+#[non_exhaustive]
 #[derive(Debug, PartialEq)]
 pub enum DrdynvcClientPdu {
     Capabilities(CapabilitiesResponsePdu),
@@ -115,6 +117,7 @@ impl Decode<'_> for DrdynvcClientPdu {
 }
 
 /// Dynamic Virtual Channel PDU's that are sent by the server.
+#[non_exhaustive]
 #[derive(Debug, PartialEq)]
 pub enum DrdynvcServerPdu {
     Capabilities(CapabilitiesRequestPdu),
@@ -185,33 +188,24 @@ impl SvcEncode for DrdynvcServerPdu {}
 /// [\[MS-RDPEDYC\] 2.2.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/20a29627-6966-4085-b5f1-00112a6114e3
 /// [\[MS-RDPEDYC\] 2.2.5.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/2f9c83aa-8c82-4d85-a7fe-b4c6301a9f90
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum SoftSyncTunnelType {
+pub struct SoftSyncTunnelType(u32);
+
+impl SoftSyncTunnelType {
     /// Reliable RDP-UDP FEC tunnel.
-    ReliableUdp = 0x0000_0001,
+    pub const RELIABLE_UDP: Self = Self(0x0000_0001);
     /// Lossy RDP-UDP FEC tunnel.
-    LossyUdp = 0x0000_0003,
+    pub const LOSSY_UDP: Self = Self(0x0000_0003);
 }
 
-impl TryFrom<u32> for SoftSyncTunnelType {
-    type Error = DecodeError;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        match value {
-            0x0000_0001 => Ok(Self::ReliableUdp),
-            0x0000_0003 => Ok(Self::LossyUdp),
-            _ => Err(invalid_field_err!("TunnelType", "unsupported tunnel type")),
-        }
+impl From<u32> for SoftSyncTunnelType {
+    fn from(value: u32) -> Self {
+        Self(value)
     }
 }
 
 impl From<SoftSyncTunnelType> for u32 {
-    #[expect(
-        clippy::as_conversions,
-        reason = "repr(u32) guarantees discriminant layout, and as is the only way to cast enum -> primitive"
-    )]
     fn from(value: SoftSyncTunnelType) -> Self {
-        value as u32
+        value.0
     }
 }
 
@@ -259,11 +253,8 @@ impl SoftSyncChannelList {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::FIXED_PART_SIZE);
 
-        let tunnel_type = SoftSyncTunnelType::try_from(src.read_u32())?;
+        let tunnel_type = SoftSyncTunnelType::from(src.read_u32());
         let number_of_dvcs = usize::from(src.read_u16());
-        if number_of_dvcs == 0 {
-            return Err(invalid_field_err!("NumberOfDVCs", "must be nonzero"));
-        }
         ensure_size!(in: src, size: number_of_dvcs * 4 /* ListOfDVCIds */);
 
         let mut channel_ids = Vec::with_capacity(number_of_dvcs);
@@ -295,7 +286,6 @@ pub struct SoftSyncRequestPdu {
 impl SoftSyncRequestPdu {
     const TCP_FLUSHED: u16 = 0x0001;
     const CHANNEL_LIST_PRESENT: u16 = 0x0002;
-    const FLAGS_MASK: u16 = Self::TCP_FLUSHED | Self::CHANNEL_LIST_PRESENT;
     const LENGTH_FIXED_PART_SIZE: usize = 4 /* Length */ + 2 /* Flags */ + 2 /* NumberOfTunnels */;
     const FIXED_PART_SIZE: usize = Header::FIXED_PART_SIZE + 1 /* Pad */ + Self::LENGTH_FIXED_PART_SIZE;
 
@@ -324,9 +314,6 @@ impl SoftSyncRequestPdu {
         let mut channel_ids = BTreeSet::new();
 
         for list in &self.channel_lists {
-            if list.channel_ids.is_empty() {
-                return Err(invalid_field_err!("NumberOfDVCs", "must be nonzero"));
-            }
             let _: u16 = cast_length!("NumberOfDVCs", list.channel_ids.len())?;
             if !tunnel_types.insert(list.tunnel_type) {
                 return Err(invalid_field_err!(
@@ -369,19 +356,15 @@ impl SoftSyncRequestPdu {
         }
 
         let flags = src.read_u16();
-        if flags & !Self::FLAGS_MASK != 0 {
-            return Err(invalid_field_err!("Flags", "contains unsupported flags"));
-        }
         if flags & Self::TCP_FLUSHED == 0 {
             return Err(invalid_field_err!("Flags", "SOFT_SYNC_TCP_FLUSHED must be set"));
         }
 
         let number_of_tunnels = usize::from(src.read_u16());
-        let channel_list_present = flags & Self::CHANNEL_LIST_PRESENT != 0;
-        if channel_list_present != (number_of_tunnels != 0) {
+        if number_of_tunnels > src.len() / SoftSyncChannelList::FIXED_PART_SIZE {
             return Err(invalid_field_err!(
-                "Flags",
-                "SOFT_SYNC_CHANNEL_LIST_PRESENT must agree with NumberOfTunnels"
+                "NumberOfTunnels",
+                "does not fit in the remaining bytes"
             ));
         }
 
@@ -491,12 +474,19 @@ impl SoftSyncResponsePdu {
         }
         let number_of_tunnels =
             usize::try_from(src.read_u32()).map_err(|_| invalid_field_err!("NumberOfTunnels", "is too large"))?;
-        ensure_size!(in: src, size: number_of_tunnels * 4 /* TunnelsToSwitch */);
+        if number_of_tunnels > src.len() / 4
+        /* TunnelsToSwitch */
+        {
+            return Err(invalid_field_err!(
+                "NumberOfTunnels",
+                "does not fit in the remaining bytes"
+            ));
+        }
 
         let mut tunnels_to_switch = Vec::with_capacity(number_of_tunnels);
         let mut tunnels = BTreeSet::new();
         for _ in 0..number_of_tunnels {
-            let tunnel = SoftSyncTunnelType::try_from(src.read_u32())?;
+            let tunnel = SoftSyncTunnelType::from(src.read_u32());
             if !tunnels.insert(tunnel) {
                 return Err(invalid_field_err!(
                     "TunnelsToSwitch",

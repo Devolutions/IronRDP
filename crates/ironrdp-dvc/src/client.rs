@@ -293,12 +293,15 @@ impl DrdynvcClient {
         Some(SvcMessage::from(DrdynvcClientPdu::Close(ClosePdu::new(channel_id))))
     }
 
-    /// Enables a multitransport tunnel for a future Soft-Sync request.
+    /// Marks a multitransport tunnel as ready for a future Soft-Sync request.
+    ///
+    /// Call this only after the tunnel's Initiate Multitransport Response has
+    /// been sent successfully.
     pub fn enable_soft_sync_tunnel(&mut self, tunnel_type: SoftSyncTunnelType) {
         self.available_tunnels.insert(tunnel_type);
     }
 
-    /// Returns whether a Soft-Sync response has been encoded but not yet sent on TCP.
+    /// Returns whether a Soft-Sync response has been queued but not yet sent on TCP.
     pub fn has_pending_soft_sync_response(&self) -> bool {
         self.pending_tunnel_channels.is_some()
     }
@@ -363,13 +366,22 @@ impl DrdynvcClient {
         let mut tunnels_to_switch = Vec::new();
         for list in request.channel_lists() {
             if !self.available_tunnels.contains(&list.tunnel_type()) {
-                continue;
+                return Err(pdu_other_err!("soft-sync request selected an unavailable tunnel"));
             }
+
+            let mut selected_channels = Vec::new();
             for channel_id in list.channel_ids() {
                 if self.dynamic_channels.get_by_channel_id(*channel_id).is_none() {
-                    return Err(pdu_other_err!("Soft-Sync request contains an unknown dynamic channel"));
+                    selected_channels.clear();
+                    break;
                 }
-                tunnel_channels.insert(*channel_id, list.tunnel_type());
+                selected_channels.push(*channel_id);
+            }
+            if selected_channels.is_empty() && !list.channel_ids().is_empty() {
+                continue;
+            }
+            for channel_id in selected_channels {
+                tunnel_channels.insert(channel_id, list.tunnel_type());
             }
             tunnels_to_switch.push(list.tunnel_type());
         }
@@ -619,5 +631,57 @@ mod tests {
         assert!(channels.has_listener_by_type_id(TypeId::of::<TestDvc>()));
         assert!(channels.try_create_channel(&"test".to_owned(), 1).is_some());
         assert!(!channels.has_listener_by_type_id(TypeId::of::<TestDvc>()));
+    }
+
+    fn add_active_channel(client: &mut DrdynvcClient, channel_id: DynamicChannelId) {
+        client
+            .dynamic_channels
+            .active_channels
+            .insert(channel_id, DynamicVirtualChannel::from_boxed(Box::new(TestDvc)));
+    }
+
+    #[test]
+    fn soft_sync_routes_a_selected_channel_after_response_is_sent() {
+        let mut client = DrdynvcClient::new();
+        add_active_channel(&mut client, 1);
+        client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+
+        let request = crate::pdu::SoftSyncRequestPdu::new(alloc::vec![crate::pdu::SoftSyncChannelList::new(
+            SoftSyncTunnelType::RELIABLE_UDP,
+            alloc::vec![1],
+        )]);
+        client.process_soft_sync_request(request).unwrap();
+
+        assert!(client.has_pending_soft_sync_response());
+        assert_eq!(client.tunnel_for_channel(1), None);
+
+        client.complete_soft_sync_response().unwrap();
+
+        assert!(client.soft_sync_complete());
+        assert_eq!(client.tunnel_for_channel(1), Some(SoftSyncTunnelType::RELIABLE_UDP));
+
+        let tcp_data = ironrdp_core::encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(
+            crate::pdu::DataPdu::new(1, Vec::new()),
+        )))
+        .unwrap();
+        assert!(client.process(&tcp_data).is_err());
+
+        client.close_channel(1).unwrap();
+        assert_eq!(client.tunnel_for_channel(1), None);
+    }
+
+    #[test]
+    fn soft_sync_rejects_an_unavailable_tunnel() {
+        let mut client = DrdynvcClient::new();
+        add_active_channel(&mut client, 1);
+
+        let request = crate::pdu::SoftSyncRequestPdu::new(alloc::vec![crate::pdu::SoftSyncChannelList::new(
+            SoftSyncTunnelType::RELIABLE_UDP,
+            alloc::vec![1],
+        )]);
+
+        assert!(client.process_soft_sync_request(request).is_err());
+        assert!(!client.has_pending_soft_sync_response());
+        assert!(!client.soft_sync_complete());
     }
 }
