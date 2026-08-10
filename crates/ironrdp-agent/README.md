@@ -26,6 +26,13 @@ connection flags. Explicit flags override those process-local values. The native
 these only when it is explicitly enabled; `RDP_AUTOLOGON` is active only when its value is exactly
 `1`, and requires nonempty username and password values.
 
+## Windows filesystem redirection
+
+On Windows, start the daemon with one or more `--rdpdr-drive NAME=VOLUME_ROOT` options to opt in to static filesystem redirection.
+For example, `ironrdp-agent daemon-start --rdpdr-drive System=C:\ --rdpdr-drive Data=D:\` exposes two local volumes to every session created by that daemon.
+Each root must be a unique existing local volume root in the exact `C:\` form, and each protocol-visible name must be unique case-insensitively and contain at most seven ASCII letters, numbers, spaces, underscores, hyphens, periods, or a trailing colon.
+The configured drives are fixed for the daemon lifetime; hot-plug and rescan are not supported.
+
 ## Windows Sandbox
 
 On Windows with the Windows Sandbox feature enabled, the agent can attach to a sandbox that was

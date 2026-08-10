@@ -306,6 +306,13 @@ struct DaemonArgs {
     /// property without a dedicated flag existing for it.
     #[arg(long = "prop", value_name = "KEY:TYPE:VALUE")]
     prop: Vec<PropOverride>,
+    /// Named local Windows volume exposed as an RDPDR filesystem drive.
+    ///
+    /// Repeat this flag to redirect multiple volumes. `NAME` is protocol-visible
+    /// and must be unique.
+    #[cfg(windows)]
+    #[arg(long = "rdpdr-drive", value_name = "NAME=VOLUME_ROOT", value_parser = parse_rdpdr_drive)]
+    rdpdr_drives: Vec<ironrdp_daemon::daemon::RdpdrDriveConfig>,
 }
 
 #[derive(Args, Debug)]
@@ -451,6 +458,15 @@ fn parse_scancode(input: &str) -> Result<u16, core::num::ParseIntError> {
     }
 }
 
+#[cfg(windows)]
+fn parse_rdpdr_drive(input: &str) -> Result<ironrdp_daemon::daemon::RdpdrDriveConfig, String> {
+    let (display_name, root_path) = input
+        .split_once('=')
+        .ok_or_else(|| "rdpdr drive must use NAME=VOLUME_ROOT syntax".to_owned())?;
+    ironrdp_daemon::daemon::RdpdrDriveConfig::new(PathBuf::from(root_path), display_name.to_owned())
+        .map_err(|error| error.to_string())
+}
+
 /// Entry point shared by the binary: dispatches the parsed [`Cli`].
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     if cli.help_agent {
@@ -476,7 +492,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 anyhow::bail!("daemon-start requires --backend daemon");
             }
             let overlay = load_overlay(args.overlay.as_deref(), args.prop)?;
-            return ironrdp_daemon::daemon::run(endpoint, overlay).await;
+            #[cfg(windows)]
+            let rdpdr_drives = args.rdpdr_drives;
+            #[cfg(not(windows))]
+            let rdpdr_drives = Vec::new();
+            return ironrdp_daemon::daemon::run(endpoint, overlay, rdpdr_drives).await;
         }
         Command::Now(args) => {
             let format = args.format;
@@ -1321,8 +1341,13 @@ fn property_description(key: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use std::path::PathBuf;
+
     use clap::{CommandFactory as _, Parser as _};
 
+    #[cfg(windows)]
+    use super::Command;
     use super::{Backend, Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution, endpoint_from_arg};
 
     #[test]
@@ -1343,6 +1368,37 @@ mod tests {
             endpoint_from_arg(Some("custom-rpc-endpoint".to_owned()), Backend::ActiveX).to_string(),
             "custom-rpc-endpoint"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn daemon_rdpdr_drive_flags_parse_multiple_static_volumes() {
+        let cli = Cli::try_parse_from([
+            "ironrdp-agent",
+            "daemon-start",
+            "--rdpdr-drive",
+            r"System=C:\",
+            "--rdpdr-drive",
+            r"Data=D:\",
+        ])
+        .expect("valid multiple-drive configuration");
+
+        let Some(Command::DaemonStart(args)) = cli.command else {
+            panic!("expected daemon-start command");
+        };
+        assert_eq!(args.rdpdr_drives.len(), 2);
+        assert_eq!(args.rdpdr_drives[0].display_name(), "System");
+        assert_eq!(args.rdpdr_drives[0].root_path(), PathBuf::from(r"C:\"));
+        assert_eq!(args.rdpdr_drives[1].display_name(), "Data");
+        assert_eq!(args.rdpdr_drives[1].root_path(), PathBuf::from(r"D:\"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn daemon_rdpdr_drive_flags_reject_invalid_definitions() {
+        for drive in ["C:\\", "=C:\\", "Data=", "too-long=C:\\", "Data/C:\\"] {
+            assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--rdpdr-drive", drive]).is_err());
+        }
     }
 
     #[test]
