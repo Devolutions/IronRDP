@@ -361,9 +361,12 @@ impl Written {
 /// here. The clock deliberately lives outside the sans-I/O sequences, because
 /// a sequence reading a clock itself would measure how quickly it drained an
 /// already-filled buffer rather than how long the bytes took to arrive. Only
-/// the driver that performed the read knows the latter, and a driver whose
-/// caller owns the read loop does not know it either: that is what the `None`
-/// in [`Sequence::step`] is for, and why it stays.
+/// the driver that performed the read knows the latter, which is what the
+/// `None` in [`Sequence::step`] is for: a driver with no reading to pass on.
+/// The FFI connector is in that position today because its own `step` has no
+/// parameter to receive one through, not because its caller is unable to
+/// supply it. A caller that owns the read loop does know when the read
+/// completed.
 pub use ironrdp_core::MonotonicInstant;
 
 pub trait Sequence: Send {
@@ -379,6 +382,15 @@ pub trait Sequence: Send {
     /// driver that cannot measure has taken no measurement, which is a different
     /// thing from one that measured no elapsed time, and only the sequence
     /// knows which of the two its reply may be derived from.
+    ///
+    /// A driver that always passes `None` never opens a connect-time bandwidth
+    /// window, so the Bandwidth Measure Results it sends report only the Stop's
+    /// own payload against the untimed floor. The byte count is measurement-gated
+    /// on purpose: [MS-RDPBCGR] 3.2.5.14 states the Payload increment
+    /// unconditionally, but a full count paired with a `timeDelta` the client
+    /// never measured yields a bandwidth figure that grows with whatever the
+    /// server chose to send. A server acting on 3.3.5.14 reads the low figure and
+    /// picks conservative bandwidth-dependent settings for that client.
     fn step(
         &mut self,
         input: &[u8],

@@ -833,13 +833,21 @@ impl ClientConnector {
             // is a real bound on a real measurement rather than a stand-in for a missing
             // one, and the quotient it yields is honest.
             //
-            // Only the 0x002B Stop is answered. 3.2.5.14 keys this whole step to that
-            // request type, gives 0x0429 and 0x0629 their own procedures on a
-            // multitransport channel, and requires a sequence-number correlation for
-            // 0x0629 that this phase does not track. The header size follows the same
-            // split: 2.2.14.1.4 sets `headerLength` to 0x08 for 0x002B and 0x06
-            // otherwise, so the fixed addend in `counted_len` is only right for the
-            // connect-time Stop.
+            // Only the 0x002B Stop is answered. 3.2.5.14 keys this whole step to the
+            // request type, and only 0x002B increments the byte count and replies with
+            // responseType 0x0003. The other two report 0x000B and count nothing.
+            //
+            // 0x0629 is always answered over the lossy UDP multitransport channel, and
+            // carries a sequence-number correlation this phase does not track. 0x0429 is
+            // not simply the reliable-UDP counterpart: 3.2.5.14 gives it two forms, and
+            // the one encapsulated in an Auto-Detect Request PDU is answered on the main
+            // RDP channel, not a multitransport one. What puts it out of scope here is
+            // 2.2.14.1.4, which scopes that form to an Auto-Detect Request sent after the
+            // RDP Connection Sequence has completed, and this state runs during it.
+            //
+            // The header size follows the same split: 2.2.14.1.4 sets `headerLength` to
+            // 0x08 for 0x002B and 0x06 otherwise, so the fixed addend in `counted_len` is
+            // only right for the connect-time Stop.
             AutoDetectRequest::BandwidthMeasureStop {
                 sequence_number,
                 request_type,
