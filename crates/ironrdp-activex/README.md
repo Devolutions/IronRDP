@@ -285,14 +285,11 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | WinForms `AxHost` lifecycle | Windowed OLE activation, focus, sizing, the inherited `IMsRdpClient` through `IMsRdpClient10` raw interfaces, and the RDM virtual channels `RDMJump`, `RDMLog`, and `RDMCmd` are supported. |
 | Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio, clipboard, CredSSP, client-device name, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
 | Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, and writable confirm-close events are delivered on the creating apartment. Warning and auto-reconnect events remain unfired until an IronRDP worker produces their real state. |
-| Optional RDM interfaces | Non-scriptable device, drive, camera, clipboard, monitor, and preferred-redirection interfaces expose only available backend capabilities. Empty collections and disabled capabilities never advertise RDPDR, RemoteApp, camera, or multimonitor support. |
+| Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. Non-filesystem device, camera, monitor, and preferred-redirection capabilities remain unavailable. |
 
-The audit also identified RDM settings that have no IronRDP ActiveX backend: input throttling,
-automatic reconnect, authentication policy, device/printer/port/smart-card
-redirection, RemoteApp, audio capture, video policy, PCB, load balancing, and Microsoft workspace
-extensions. Their audited AdvancedSettings vtable slots use their exact published ABI signatures,
-initialize out parameters, and return `E_NOTIMPL`; the control does not report success for settings
-that cannot affect the connection.
+The audit also identified RDM settings with no IronRDP ActiveX backend: input throttling, automatic reconnect, authentication policy, printer/port/smart-card and non-filesystem device redirection, RemoteApp, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
+Their audited AdvancedSettings vtable slots use their exact published ABI signatures, initialize out parameters, and return `E_NOTIMPL`.
+The control does not report success for settings that cannot affect the connection.
 
 The control exposes a standard `IConnectionPointContainer` and an event connection point for the
 published `IMsTscAxEvents` IID `{336D5562-EFA8-482E-8CB3-C5C0FC7A7DB6}`. Lifecycle events are delivered
@@ -358,9 +355,7 @@ credential, certificate, or remote-error details. A genuine terminal connection 
 existing `OnFatalError` and `OnDisconnected` events first, then shows a bounded generic failure
 dialog with no remote error text.
 
-RDPDR-style redirection warning UI remains unsupported: `ShowRedirectionWarningDialog`,
-printer/device/drive redirection warnings, and DirectX redirection continue to return `E_NOTIMPL`
-because this ActiveX backend does not advertise the corresponding protocol capabilities.
+RDPDR-style redirection warning UI remains unsupported: `ShowRedirectionWarningDialog`, printer/device/drive redirection warnings, and DirectX redirection continue to return `E_NOTIMPL`.
 
 Every independently returned COM child object, including settings objects, empty capability
 collections, clipboard capabilities, connection points, and OLE or connection enumerators, keeps
@@ -486,9 +481,14 @@ logged-on-user, and system-default gateway-policy modes return `E_NOTIMPL` rathe
 changing authentication or routing behavior. Every remaining setting is an explicit
 `TODO(activex)` stub and returns `E_NOTIMPL`; it must not be treated as enabled.
 `EnableMouse` now gates renderer mouse movement, buttons, and wheel forwarding while retaining
-keyboard forwarding. `DisableRdpdr` reports disabled because this ActiveX host has no safe RDPDR
-device backend; attempting to enable RDPDR returns `E_NOTIMPL` instead of claiming unsupported
-drive, printer, port, smart-card, or PnP device redirection.
+keyboard forwarding.
+`IMsRdpDriveCollection` exposes Windows logical volumes with initially unselected `IMsRdpDrive::RedirectionState` values.
+`RescanDrives` preserves known selections and applies its Boolean argument only to newly discovered volumes.
+`RedirectDrives` selects or clears the current catalog before connecting.
+`DisableRdpdr` is a hard preconnect override, so it suppresses RDPDR even when drives are selected.
+The worker receives only a snapshot of selected drive names and roots through a `WindowsRdpdrBackendFactory`.
+Drive selection, catalog refresh, and `DisableRdpdr` are sealed after connection setup.
+`RedirectDynamicDrives` remains unsupported, so the collection does not modify an active session.
 `IMsRdpPreferredRedirectionInfo::UseRedirectionServerName` likewise reports disabled and rejects
 enabling it because IronRDP does not currently consume load-balancing redirection names. Remote
 actions also return `E_NOTIMPL` until an IronRDP session-operation mapping exists.
@@ -704,5 +704,5 @@ sink for the event interface IID before retaining its `IDispatch`.
 
 This is an Automation, lifecycle, hosting, framebuffer, basic input, persistence, static
 virtual-channel, and Unicode-text OLE clipboard-snapshot foundation.
-It does not yet implement RemoteApp, non-text or writable OLE clipboard exchange, monikers, RDPDR device redirection, or arbitrary persisted designer state.
+It does not yet implement RemoteApp, non-text or writable OLE clipboard exchange, monikers, non-filesystem RDPDR device redirection, or arbitrary persisted designer state.
 Those contracts must be added as exact ABI implementations before advertising their individual methods as supported.

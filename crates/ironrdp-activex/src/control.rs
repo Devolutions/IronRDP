@@ -6,7 +6,7 @@ use core::slice;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::Duration;
@@ -45,6 +45,7 @@ use windows::Win32::Security::Credentials::{
     CREDUI_FLAGS_ALWAYS_SHOW_UI, CREDUI_FLAGS_DO_NOT_PERSIST, CREDUI_FLAGS_GENERIC_CREDENTIALS, CREDUI_INFOW,
     CredUIPromptForCredentialsW,
 };
+use windows::Win32::Storage::FileSystem::GetLogicalDrives;
 use windows::Win32::System::Com::{
     CONNECTDATA, CoTaskMemAlloc, DATADIR_GET, DATADIR_SET, DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET,
     DISPATCH_PROPERTYPUT, DISPPARAMS, DVASPECT, DVASPECT_CONTENT, DVTARGETDEVICE, EXCEPINFO, FORMATETC, IAdviseSink,
@@ -115,9 +116,10 @@ use crate::mstsc::{
     IMsRdpClientNonScriptable5_Impl, IMsRdpClientNonScriptable6, IMsRdpClientNonScriptable6_Impl,
     IMsRdpClientNonScriptable7, IMsRdpClientNonScriptable7_Impl, IMsRdpClientNonScriptable8,
     IMsRdpClientNonScriptable8_Impl, IMsRdpClipboard, IMsRdpClipboard_Impl, IMsRdpDeviceCollection,
-    IMsRdpDeviceCollection_Impl, IMsRdpDriveCollection, IMsRdpDriveCollection_Impl, IMsRdpExtendedSettings,
-    IMsRdpExtendedSettings_Impl, IMsRdpPreferredRedirectionInfo, IMsRdpPreferredRedirectionInfo_Impl, IMsTscAx_Impl,
-    IMsTscAx_Redist_Impl, IMsTscNonScriptable, IMsTscNonScriptable_Impl, InterfaceOut,
+    IMsRdpDeviceCollection_Impl, IMsRdpDrive, IMsRdpDrive_Impl, IMsRdpDriveCollection, IMsRdpDriveCollection_Impl,
+    IMsRdpExtendedSettings, IMsRdpExtendedSettings_Impl, IMsRdpPreferredRedirectionInfo,
+    IMsRdpPreferredRedirectionInfo_Impl, IMsTscAx_Impl, IMsTscAx_Redist_Impl, IMsTscNonScriptable,
+    IMsTscNonScriptable_Impl, InterfaceOut,
 };
 use crate::rpc::{self, ActiveXRpc, Command as RpcCommand};
 use ironrdp_rpc as ironrdp_agent;
@@ -425,7 +427,7 @@ impl Drop for TestHostTracePath {
     }
 }
 
-fn append_host_trace(path: impl AsRef<std::path::Path>, name: &str) {
+fn append_host_trace(path: impl AsRef<Path>, name: &str) {
     // Host startup may carry credentials in Automation values, so log method names only.
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = std::io::Write::write_all(&mut file, format!("{name}\n").as_bytes());
@@ -925,6 +927,9 @@ struct CompatibilitySettings {
     enable_mouse: bool,
     enable_windows_key: bool,
     redirect_clipboard: bool,
+    redirect_drives: bool,
+    disable_rdpdr: bool,
+    drive_catalog: Rc<RefCell<DriveCatalog>>,
     warn_about_sending_credentials: bool,
     warn_about_clipboard_redirection: bool,
     performance_flags: PerformanceFlags,
@@ -991,6 +996,9 @@ impl Default for CompatibilitySettings {
             enable_mouse: true,
             enable_windows_key: true,
             redirect_clipboard: true,
+            redirect_drives: false,
+            disable_rdpdr: false,
+            drive_catalog: Rc::new(RefCell::new(DriveCatalog::new())),
             warn_about_sending_credentials: false,
             warn_about_clipboard_redirection: false,
             performance_flags: PerformanceFlags::default(),
@@ -1764,7 +1772,6 @@ advanced_put_not_implemented!(
     (93, advanced_put_bitmap_persistence, i32),
     (95, advanced_put_minutes_to_idle_timeout, i32),
     (112, advanced_put_load_balance_info, Bstr),
-    (114, advanced_put_redirect_drives, i16),
     (116, advanced_put_redirect_printers, i16),
     (118, advanced_put_redirect_ports, i16),
     (120, advanced_put_redirect_smart_cards, i16),
@@ -1786,7 +1793,6 @@ advanced_get_not_implemented!(
     (92, advanced_get_connect_to_server_console, i16),
     (94, advanced_get_bitmap_persistence, i32),
     (96, advanced_get_minutes_to_idle_timeout, i32),
-    (115, advanced_get_redirect_drives, i16),
     (117, advanced_get_redirect_printers, i16),
     (119, advanced_get_redirect_ports, i16),
     (121, advanced_get_redirect_smart_cards, i16),
@@ -2288,18 +2294,53 @@ unsafe extern "system" fn advanced_get_keyboard_function_key(this: *mut c_void, 
     }
 }
 
-unsafe extern "system" fn advanced_put_disable_rdpdr(_this: *mut c_void, value: i32) -> HRESULT {
-    if value == 0 {
-        // The ActiveX connection owns no RDPDR host backend, so enabling the channel would falsely
-        // advertise drives, printers, ports, or devices that cannot be serviced.
-        E_NOTIMPL
-    } else {
-        S_OK
+unsafe extern "system" fn advanced_put_disable_rdpdr(this: *mut c_void, value: i32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
     }
+    settings.disable_rdpdr = value != 0;
+    mark_compatibility_persistence_dirty(&settings);
+    S_OK
 }
 
-unsafe extern "system" fn advanced_get_disable_rdpdr(_this: *mut c_void, value: *mut i32) -> HRESULT {
-    write_out(value, 1).map_or_else(|error| error.code(), |_| S_OK)
+unsafe extern "system" fn advanced_get_disable_rdpdr(this: *mut c_void, output: *mut i32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let value = i32::from(object.settings.borrow().disable_rdpdr);
+    write_out(output, value).map_or_else(|error| error.code(), |_| S_OK)
+}
+
+unsafe extern "system" fn advanced_put_redirect_drives(this: *mut c_void, value: i16) -> HRESULT {
+    let value = match normalize_variant_bool(value) {
+        Ok(value) => value == VARIANT_TRUE.0,
+        Err(error) => return error.code(),
+    };
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let catalog = {
+        let mut settings = object.settings.borrow_mut();
+        if settings.connection_settings_sealed {
+            return E_FAIL;
+        }
+        settings.redirect_drives = value;
+        mark_compatibility_persistence_dirty(&settings);
+        Rc::clone(&settings.drive_catalog)
+    };
+    catalog.borrow().set_redirection_state(value);
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_redirect_drives(this: *mut c_void, value: *mut i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    write_out(
+        value,
+        if object.settings.borrow().redirect_drives {
+            VARIANT_TRUE.0
+        } else {
+            VARIANT_FALSE.0
+        },
+    )
+    .map_or_else(|error| error.code(), |_| S_OK)
 }
 
 unsafe extern "system" fn advanced_put_enable_mouse(this: *mut c_void, value: i32) -> HRESULT {
@@ -3840,32 +3881,219 @@ impl IMsRdpDeviceCollection_Impl for EmptyDeviceCollection_Impl {
     }
 }
 
-#[implement(IMsRdpDriveCollection)]
-struct EmptyDriveCollection {
-    _lifetime: ServerObjectLifetime,
+struct DriveCatalogEntry {
+    device_id: u32,
+    name: String,
+    root_path: PathBuf,
+    redirection_state: Cell<bool>,
 }
 
-impl EmptyDriveCollection {
+struct DriveCatalog {
+    entries: Vec<Rc<DriveCatalogEntry>>,
+    known_entries: BTreeMap<PathBuf, Rc<DriveCatalogEntry>>,
+    next_device_id: u32,
+}
+
+impl DriveCatalog {
     fn new() -> Self {
+        Self::from_roots(logical_volume_roots(), false)
+    }
+
+    fn from_roots(roots: Vec<PathBuf>, redirect_new_drives: bool) -> Self {
+        let mut catalog = Self {
+            entries: Vec::new(),
+            known_entries: BTreeMap::new(),
+            next_device_id: 1,
+        };
+        catalog.rescan_from_roots(roots, redirect_new_drives);
+        catalog
+    }
+
+    fn rescan(&mut self, redirect_new_drives: bool) {
+        self.rescan_from_roots(logical_volume_roots(), redirect_new_drives);
+    }
+
+    fn rescan_from_roots(&mut self, roots: Vec<PathBuf>, redirect_new_drives: bool) {
+        self.entries = roots
+            .into_iter()
+            .map(|root_path| {
+                Rc::clone(self.known_entries.entry(root_path.clone()).or_insert_with(|| {
+                    let device_id = self.next_device_id;
+                    self.next_device_id = self
+                        .next_device_id
+                        .checked_add(1)
+                        .expect("logical-volume RDPDR device IDs must not exhaust u32");
+                    Rc::new(DriveCatalogEntry {
+                        device_id,
+                        name: logical_volume_name(&root_path),
+                        root_path,
+                        redirection_state: Cell::new(redirect_new_drives),
+                    })
+                }))
+            })
+            .collect();
+    }
+
+    fn set_redirection_state(&self, value: bool) {
+        for entry in &self.entries {
+            entry.redirection_state.set(value);
+        }
+    }
+
+    fn selected_drives(&self) -> Result<Vec<ironrdp_rdpdr_native::RedirectedDrive>> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.redirection_state.get())
+            .map(|entry| {
+                ironrdp_rdpdr_native::RedirectedDrive::new(
+                    entry.device_id,
+                    entry.name.clone(),
+                    entry.root_path.clone(),
+                    false,
+                )
+                .map_err(|error| Error::new(E_FAIL, format!("invalid redirected drive: {error}")))
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn selected_drive_names(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.redirection_state.get())
+            .map(|entry| entry.name.clone())
+            .collect()
+    }
+}
+
+fn logical_volume_roots() -> Vec<PathBuf> {
+    let mask = unsafe { GetLogicalDrives() };
+    if mask == 0 {
+        tracing::warn!("Unable to enumerate logical drives for ActiveX RDPDR redirection");
+    }
+
+    (0..26)
+        .filter(|index| mask & (1u32 << index) != 0)
+        .map(|index| PathBuf::from(format!("{}:\\", char::from(b'A' + index))))
+        .collect()
+}
+
+fn logical_volume_name(root_path: &Path) -> String {
+    root_path.to_string_lossy().trim_end_matches(['\\', '/']).to_owned()
+}
+
+#[implement(IMsRdpDrive)]
+struct Drive {
+    _lifetime: ServerObjectLifetime,
+    catalog: Rc<RefCell<DriveCatalog>>,
+    entry: Rc<DriveCatalogEntry>,
+    settings: Rc<RefCell<CompatibilitySettings>>,
+}
+
+impl Drive {
+    fn new(
+        catalog: Rc<RefCell<DriveCatalog>>,
+        entry: Rc<DriveCatalogEntry>,
+        settings: Rc<RefCell<CompatibilitySettings>>,
+    ) -> Self {
         Self {
             _lifetime: ServerObjectLifetime::new(),
+            catalog,
+            entry,
+            settings,
         }
     }
 }
 
-impl IMsRdpDriveCollection_Impl for EmptyDriveCollection_Impl {
-    unsafe fn RescanDrives(&self, _dynamic_redirection: i16) -> Result<()> {
-        // TODO(activex): enumerate drives after IronRDP RDPDR exposes a host-drive backend.
+impl IMsRdpDrive_Impl for Drive_Impl {
+    unsafe fn get_Name(&self, name: BstrOut) -> Result<()> {
+        // mstscax returns a volume-root name with an embedded terminal NUL in the BSTR payload.
+        write_bstr(name, &format!("{}\\\0", self.entry.name))
+    }
+
+    unsafe fn put_RedirectionState(&self, state: i16) -> Result<()> {
+        let state = normalize_variant_bool(state)? == VARIANT_TRUE.0;
+        if !self
+            .catalog
+            .borrow()
+            .entries
+            .iter()
+            .any(|entry| Rc::ptr_eq(entry, &self.entry))
+        {
+            return Err(Error::from_hresult(E_FAIL));
+        }
+
+        let settings = self.settings.borrow();
+        if settings.connection_settings_sealed {
+            return Err(Error::from_hresult(E_FAIL));
+        }
+        self.entry.redirection_state.set(state);
+        mark_compatibility_persistence_dirty(&settings);
         Ok(())
     }
 
-    unsafe fn get_DriveByIndex(&self, _index: u32, drive: InterfaceOut) -> Result<()> {
-        write_out(drive, ptr::null_mut())?;
-        Err(Error::from_hresult(E_INVALIDARG))
+    unsafe fn get_RedirectionState(&self, state: *mut i16) -> Result<()> {
+        write_out(
+            state,
+            if self.entry.redirection_state.get() {
+                VARIANT_TRUE.0
+            } else {
+                VARIANT_FALSE.0
+            },
+        )
+    }
+}
+
+#[implement(IMsRdpDriveCollection)]
+struct DriveCollection {
+    _lifetime: ServerObjectLifetime,
+    catalog: Rc<RefCell<DriveCatalog>>,
+    settings: Rc<RefCell<CompatibilitySettings>>,
+}
+
+impl DriveCollection {
+    fn new(catalog: Rc<RefCell<DriveCatalog>>, settings: Rc<RefCell<CompatibilitySettings>>) -> Self {
+        Self {
+            _lifetime: ServerObjectLifetime::new(),
+            catalog,
+            settings,
+        }
+    }
+}
+
+impl IMsRdpDriveCollection_Impl for DriveCollection_Impl {
+    unsafe fn RescanDrives(&self, redirect_new_drives: i16) -> Result<()> {
+        let redirect_new_drives = normalize_variant_bool(redirect_new_drives)? == VARIANT_TRUE.0;
+        if self.settings.borrow().connection_settings_sealed {
+            return Err(Error::from_hresult(E_FAIL));
+        }
+        self.catalog.borrow_mut().rescan(redirect_new_drives);
+        mark_compatibility_persistence_dirty(&self.settings.borrow());
+        Ok(())
+    }
+
+    unsafe fn get_DriveByIndex(&self, index: u32, output: InterfaceOut) -> Result<()> {
+        if output.is_null() {
+            return Err(Error::from_hresult(E_POINTER));
+        }
+        let entry = self
+            .catalog
+            .borrow()
+            .entries
+            .get(usize::try_from(index).map_err(|_| Error::from_hresult(E_INVALIDARG))?)
+            .cloned()
+            // mstscax returns E_UNEXPECTED and does not overwrite the output pointer for an
+            // out-of-range index.
+            .ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?;
+        let drive: IMsRdpDrive = Drive::new(Rc::clone(&self.catalog), entry, Rc::clone(&self.settings)).into();
+        write_out(output, drive.into_raw().cast())
     }
 
     unsafe fn get_DriveCount(&self, count: *mut u32) -> Result<()> {
-        write_out(count, 0)
+        write_out(
+            count,
+            u32::try_from(self.catalog.borrow().entries.len()).map_err(|_| Error::from_hresult(E_FAIL))?,
+        )
     }
 }
 
@@ -4324,6 +4552,7 @@ pub(crate) struct Control {
     class_id: GUID,
     settings: RefCell<Settings>,
     compatibility: Rc<RefCell<CompatibilitySettings>>,
+    drive_collection: IMsRdpDriveCollection,
     state: Cell<ConnectionState>,
     last_disconnect: Cell<DisconnectInfo>,
     clipboard_state: Rc<ClipboardState>,
@@ -4428,10 +4657,14 @@ impl Control {
         let persistence_dirty = Rc::new(Cell::new(false));
         let compatibility = Rc::new(RefCell::new(CompatibilitySettings::default()));
         compatibility.borrow_mut().persistence_dirty = Some(Rc::clone(&persistence_dirty));
+        let drive_catalog = Rc::clone(&compatibility.borrow().drive_catalog);
+        let drive_collection: IMsRdpDriveCollection =
+            DriveCollection::new(drive_catalog, Rc::clone(&compatibility)).into();
         Self {
             class_id,
             settings: RefCell::new(Settings::default()),
             compatibility,
+            drive_collection,
             state: Cell::new(ConnectionState::Disconnected),
             last_disconnect: Cell::new(DisconnectInfo::no_info()),
             clipboard_state: Rc::new(ClipboardState {
@@ -6800,6 +7033,16 @@ impl Control {
         let clipboard = compatibility.redirect_clipboard;
         let warn_about_credentials = compatibility.warn_about_sending_credentials;
         let warn_about_clipboard = clipboard && compatibility.warn_about_clipboard_redirection;
+        let redirected_drives = if compatibility.disable_rdpdr {
+            Vec::new()
+        } else {
+            compatibility.drive_catalog.borrow().selected_drives()?
+        };
+        let rdpdr_factory = (!redirected_drives.is_empty())
+            .then(|| ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(redirected_drives))
+            .transpose()
+            .map_err(|error| Error::new(E_FAIL, format!("invalid redirected-drive configuration: {error}")))?;
+        let rdpdr_enabled = rdpdr_factory.is_some();
         let audio_redirection_mode = audio_mode_from_raw(compatibility.audio_redirection_mode)?;
         let keyboard_type = compatibility.keyboard_type;
         let keyboard_subtype = compatibility.keyboard_subtype;
@@ -6956,7 +7199,8 @@ impl Control {
                 ClipboardType::Enable
             } else {
                 ClipboardType::Disable
-            });
+            })
+            .with_rdpdr(rdpdr_enabled);
         let builder = if let Some(kerberos_config) = self.rpc_kerberos_config.borrow_mut().take() {
             builder.with_kerberos_config(kerberos_config)
         } else {
@@ -7054,6 +7298,11 @@ impl Control {
             client.with_cliprdr_backend_factory(factory)
         } else {
             self.stop_clipboard_redirection();
+            client
+        };
+        let client = if let Some(factory) = rdpdr_factory {
+            client.with_rdpdr_backend_factory(Box::new(factory))
+        } else {
             client
         };
         self.compatibility.borrow_mut().connection_settings_sealed = true;
@@ -9065,8 +9314,7 @@ impl IMsRdpClientNonScriptable3_Impl for Control_Impl {
         if output.is_null() {
             return Err(Error::from_hresult(E_POINTER));
         }
-        let collection: IMsRdpDriveCollection = EmptyDriveCollection::new().into();
-        write_out(output, collection.into_raw().cast())
+        write_out(output, self.drive_collection.clone().into_raw().cast())
     }
 
     unsafe fn put_WarnAboutSendingCredentials(&self, value: i16) -> Result<()> {
@@ -13137,9 +13385,19 @@ mod tests {
 
         let mut disable_rdpdr = 0;
         assert_eq!(unsafe { advanced_get_disable_rdpdr(this, &mut disable_rdpdr) }, S_OK);
-        assert_eq!(disable_rdpdr, 1);
-        assert_eq!(unsafe { advanced_put_disable_rdpdr(this, 0) }, E_NOTIMPL);
+        assert_eq!(disable_rdpdr, 0);
         assert_eq!(unsafe { advanced_put_disable_rdpdr(this, 1) }, S_OK);
+        assert_eq!(unsafe { advanced_get_disable_rdpdr(this, &mut disable_rdpdr) }, S_OK);
+        assert_eq!(disable_rdpdr, 1);
+        assert_eq!(unsafe { advanced_put_disable_rdpdr(this, 0) }, S_OK);
+
+        assert_eq!(unsafe { advanced_put_redirect_drives(this, VARIANT_TRUE.0) }, S_OK);
+        let mut redirect_drives = VARIANT_FALSE.0;
+        assert_eq!(
+            unsafe { advanced_get_redirect_drives(this, &mut redirect_drives) },
+            S_OK
+        );
+        assert_eq!(redirect_drives, VARIANT_TRUE.0);
 
         assert_eq!(unsafe { advanced_put_enable_mouse(this, 0) }, S_OK);
         let mut enable_mouse = -1;
@@ -13782,7 +14040,9 @@ mod tests {
     #[test]
     fn independently_returned_com_children_keep_the_server_loaded() {
         let _devices: IMsRdpDeviceCollection = EmptyDeviceCollection::new().into();
-        let _drives: IMsRdpDriveCollection = EmptyDriveCollection::new().into();
+        let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
+        let _drives: IMsRdpDriveCollection =
+            DriveCollection::new(Rc::clone(&settings.borrow().drive_catalog), Rc::clone(&settings)).into();
         let _cameras: IMsRdpCameraRedirConfigCollection = EmptyCameraRedirConfigCollection::new().into();
         let _clipboard: IMsRdpClipboard = ClipboardCapabilities::new(Rc::new(ClipboardState {
             enabled_for_session: Cell::new(false),
@@ -16543,5 +16803,103 @@ mod tests {
             seen.lock().expect("event sink state").as_ref(),
             Some(&("alpha".to_owned(), "\0\u{ff}".to_owned()))
         );
+    }
+
+    #[test]
+    fn drive_catalog_preserves_selection_and_defaults_only_new_volumes() {
+        let mut catalog = DriveCatalog::from_roots(vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\")], false);
+        catalog.entries[0].redirection_state.set(true);
+
+        catalog.rescan_from_roots(
+            vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\"), PathBuf::from(r"E:\")],
+            true,
+        );
+
+        assert_eq!(catalog.selected_drive_names(), vec!["C:".to_owned(), "E:".to_owned()]);
+        assert!(!catalog.entries[1].redirection_state.get());
+
+        catalog.rescan_from_roots(vec![PathBuf::from(r"D:\"), PathBuf::from(r"E:\")], false);
+        catalog.rescan_from_roots(
+            vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\"), PathBuf::from(r"E:\")],
+            false,
+        );
+        assert_eq!(catalog.selected_drive_names(), vec!["C:".to_owned(), "E:".to_owned()]);
+    }
+
+    #[test]
+    fn drive_collection_exposes_selected_volume_snapshots() {
+        let catalog = Rc::new(RefCell::new(DriveCatalog::from_roots(
+            vec![PathBuf::from(r"C:\"), PathBuf::from(r"D:\")],
+            false,
+        )));
+        let persistence_dirty = Rc::new(Cell::new(false));
+        let settings = Rc::new(RefCell::new(CompatibilitySettings {
+            drive_catalog: Rc::clone(&catalog),
+            persistence_dirty: Some(Rc::clone(&persistence_dirty)),
+            ..Default::default()
+        }));
+        let collection: IMsRdpDriveCollection = DriveCollection::new(Rc::clone(&catalog), Rc::clone(&settings)).into();
+
+        let mut count = 0;
+        unsafe { collection.get_DriveCount(&mut count) }.expect("get drive count");
+        assert_eq!(count, 2);
+
+        let mut drive = ptr::null_mut();
+        unsafe { collection.get_DriveByIndex(0, &mut drive) }.expect("get first drive");
+        let drive = unsafe { IMsRdpDrive::from_raw(drive) };
+
+        let mut name = ptr::null();
+        unsafe { drive.get_Name(&mut name) }.expect("get drive name");
+        let name = unsafe { BSTR::from_raw(name) };
+        assert_eq!(String::try_from(&name).expect("valid drive name"), "C:\\\0");
+
+        let mut state = VARIANT_TRUE.0;
+        unsafe { drive.get_RedirectionState(&mut state) }.expect("get initial redirection state");
+        assert_eq!(state, VARIANT_FALSE.0);
+        unsafe { drive.put_RedirectionState(VARIANT_TRUE.0) }.expect("select first drive");
+        assert_eq!(catalog.borrow().selected_drive_names(), vec!["C:".to_owned()]);
+
+        let snapshot = catalog.borrow().selected_drives().expect("snapshot selected drive");
+        let factory =
+            ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(snapshot).expect("create drive factory");
+        assert_eq!(factory.initial_drives(), vec![(1, "C:".to_owned())]);
+
+        settings.borrow_mut().connection_settings_sealed = true;
+        assert_eq!(
+            unsafe { drive.put_RedirectionState(VARIANT_FALSE.0) }
+                .expect_err("connection snapshots seal drive selection")
+                .code(),
+            E_FAIL
+        );
+
+        let mut missing: *mut c_void = ptr::dangling_mut();
+        assert_eq!(
+            unsafe { collection.get_DriveByIndex(2, &mut missing) }
+                .expect_err("out-of-range drive index is rejected")
+                .code(),
+            E_UNEXPECTED
+        );
+        assert_eq!(missing, ptr::dangling_mut());
+
+        settings.borrow_mut().connection_settings_sealed = false;
+        persistence_dirty.set(false);
+        unsafe { collection.RescanDrives(VARIANT_TRUE.0) }.expect("rescan drives");
+        assert!(persistence_dirty.get());
+    }
+
+    #[test]
+    fn control_retains_its_drive_collection() {
+        let control: IMsRdpClient10 = Control::new().into();
+        let non_scriptable = control
+            .cast::<IMsRdpClientNonScriptable3>()
+            .expect("control supports the drive collection contract");
+
+        let mut first = ptr::null_mut();
+        let mut second = ptr::null_mut();
+        unsafe { non_scriptable.get_DriveCollection(&mut first) }.expect("get first drive collection");
+        unsafe { non_scriptable.get_DriveCollection(&mut second) }.expect("get second drive collection");
+        assert_eq!(first, second);
+        drop(unsafe { IMsRdpDriveCollection::from_raw(first) });
+        drop(unsafe { IMsRdpDriveCollection::from_raw(second) });
     }
 }
