@@ -93,7 +93,7 @@ public partial class RDCleanPathPdu: IDisposable
     /// * `x224_pdu` - The X.224 Connection Request PDU bytes
     /// * `destination` - The destination RDP server address (e.g., "10.10.0.3:3389")
     /// * `proxy_auth` - The JWT authentication token
-    /// * `pcb` - Optional preconnection blob (for Hyper-V VM connections, empty string if not needed)
+    /// * `pcb` - Optional legacy complete preconnection blob represented as a string
     /// </remarks>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
@@ -133,13 +133,13 @@ public partial class RDCleanPathPdu: IDisposable
     }
 
     /// <summary>
-    /// Request with PCB only: proxy does PCB + TLS; client runs CredSSP then X.224.
+    /// VMConnect request: proxy encodes the payload as PCB V2 and does TLS; client runs CredSSP then X.224.
     /// </summary>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>RDCleanPathPdu</c> allocated on Rust side.
     /// </returns>
-    public static RDCleanPathPdu NewRequestWithPcb(string destination, string proxyAuth, string pcbPayload)
+    public static RDCleanPathPdu NewVmconnectRequest(string destination, string proxyAuth, string pcbPayload)
     {
         unsafe
         {
@@ -155,7 +155,7 @@ public partial class RDCleanPathPdu: IDisposable
                 {
                     fixed (byte* pcbPayloadBufPtr = pcbPayloadBuf)
                     {
-                        Raw.RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError result = Raw.RDCleanPathPdu.NewRequestWithPcb(destinationBufPtr, destinationBufLength, proxyAuthBufPtr, proxyAuthBufLength, pcbPayloadBufPtr, pcbPayloadBufLength);
+                        Raw.RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError result = Raw.RDCleanPathPdu.NewVmconnectRequest(destinationBufPtr, destinationBufLength, proxyAuthBufPtr, proxyAuthBufLength, pcbPayloadBufPtr, pcbPayloadBufLength);
                         if (!result.isOk)
                         {
                             throw new IronRdpException(new IronRdpError(result.Err));
@@ -169,7 +169,7 @@ public partial class RDCleanPathPdu: IDisposable
     }
 
     /// <summary>
-    /// True when the PDU has no X.224 payload (PCB-front request or response).
+    /// True when the PDU carries an X.224 payload.
     /// </summary>
     public bool HasX224()
     {

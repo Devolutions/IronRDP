@@ -24,19 +24,19 @@ public partial struct RDCleanPathPdu
     /// * `x224_pdu` - The X.224 Connection Request PDU bytes
     /// * `destination` - The destination RDP server address (e.g., "10.10.0.3:3389")
     /// * `proxy_auth` - The JWT authentication token
-    /// * `pcb` - Optional preconnection blob (for Hyper-V VM connections, empty string if not needed)
+    /// * `pcb` - Optional legacy complete preconnection blob represented as a string
     /// </remarks>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_new_request", ExactSpelling = true)]
     public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewRequest(byte* x224Pdu, nuint x224PduSz, byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* pcb, nuint pcbSz);
 
     /// <summary>
-    /// Request with PCB only: proxy does PCB + TLS; client runs CredSSP then X.224.
+    /// VMConnect request: proxy encodes the payload as PCB V2 and does TLS; client runs CredSSP then X.224.
     /// </summary>
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_new_request_with_pcb", ExactSpelling = true)]
-    public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewRequestWithPcb(byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* pcbPayload, nuint pcbPayloadSz);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_new_vmconnect_request", ExactSpelling = true)]
+    public static unsafe extern RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError NewVmconnectRequest(byte* destination, nuint destinationSz, byte* proxyAuth, nuint proxyAuthSz, byte* pcbPayload, nuint pcbPayloadSz);
 
     /// <summary>
-    /// True when the PDU has no X.224 payload (PCB-front request or response).
+    /// True when the PDU carries an X.224 payload.
     /// </summary>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "RDCleanPathPdu_has_x224", ExactSpelling = true)]
     [return: MarshalAs(UnmanagedType.U1)]

@@ -3,7 +3,7 @@
     import { userInteractionService } from '../../services/session.service';
     import type { UserInteraction } from '../../../static/iron-remote-desktop';
     import { Backend } from '../../../static/iron-remote-desktop-rdp';
-    import { preConnectionBlob, displayControl, kdcProxyUrl } from '../../../static/iron-remote-desktop-rdp';
+    import { preConnectionBlob, displayControl, kdcProxyUrl, vmConnect } from '../../../static/iron-remote-desktop-rdp';
 
     let userInteraction: UserInteraction;
     let cursorOverrideActive = false;
@@ -21,8 +21,19 @@
             }
 
             const parsedData = JSON.parse(atob(data));
-            const { hostname, gatewayAddress, domain, username, password, authtoken, kdc_proxy_url, pcb, desktopSize } =
-                parsedData;
+            const {
+                hostname,
+                gatewayAddress,
+                domain,
+                username,
+                password,
+                authtoken,
+                kdc_proxy_url,
+                pcb,
+                vmconnectId,
+                vmconnectMode,
+                desktopSize,
+            } = parsedData;
 
             const configBuilder = userInteraction
                 .configBuilder()
@@ -37,6 +48,10 @@
 
             if (pcb !== '') {
                 configBuilder.withExtension(preConnectionBlob(pcb));
+            }
+
+            if (vmconnectId !== '') {
+                configBuilder.withExtension(vmConnect(vmconnectId, vmconnectMode));
             }
 
             if (kdc_proxy_url !== '') {

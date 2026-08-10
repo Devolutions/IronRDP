@@ -23,9 +23,9 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::pdu_other_err;
 #[cfg(feature = "rdpdr")]
 pub use ironrdp_rdpdr::backend::{RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive};
-use ironrdp_session::image::DecodedImage;
 #[cfg(feature = "clipboard")]
 use ironrdp_session::ActiveStage;
+use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
@@ -1265,9 +1265,9 @@ where
     } = params;
 
     #[cfg(feature = "vmconnect")]
-    let request_pcb_front = vmconnect.is_some();
+    let request_vmconnect = vmconnect.is_some();
     #[cfg(not(feature = "vmconnect"))]
-    let request_pcb_front = false;
+    let request_vmconnect = false;
 
     let mut buf = WriteBuf::new();
     info!("Begin RDCleanPath connection procedure");
@@ -1276,12 +1276,8 @@ where
         let rdcleanpath_req = {
             #[cfg(feature = "vmconnect")]
             if let Some((vm_id, mode)) = vmconnect {
-                let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_string(&vm_id, mode)?;
-                ironrdp_rdcleanpath::RDCleanPathPdu::new_request_with_pcb(
-                    destination,
-                    proxy_auth_token,
-                    preconnection_blob,
-                )
+                let pcb_payload = ironrdp_vmconnect::preconnection_blob_payload(&vm_id, mode);
+                ironrdp_rdcleanpath::RDCleanPathPdu::new_vmconnect_request(destination, proxy_auth_token, pcb_payload)
             } else {
                 build_ordinary_rdcleanpath_request(connector, &mut buf, destination, proxy_auth_token)?
             }
@@ -1314,26 +1310,52 @@ where
             .map_err(|e| ironrdp_connector::custom_err!("RDCleanPath response decode", e))?;
         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
-        let (x224_connection_response, server_cert_chain) = match rdcleanpath_res
-            .into_enum()
-            .map_err(|e| ironrdp_connector::custom_err!("invalid RDCleanPath PDU", e))?
-        {
-            ironrdp_rdcleanpath::RDCleanPath::Request { .. } => {
+        let (x224_connection_response, server_cert_chain) = match (
+            request_vmconnect,
+            rdcleanpath_res
+                .into_message()
+                .map_err(|e| ironrdp_connector::custom_err!("invalid RDCleanPath PDU", e))?,
+        ) {
+            (_, ironrdp_rdcleanpath::RDCleanPathMessage::Request { .. })
+            | (_, ironrdp_rdcleanpath::RDCleanPathMessage::VmConnectRequest { .. }) => {
                 return Err(ironrdp_connector::general_err!(
                     "received unexpected RDCleanPath type (request)"
                 ));
             }
-            ironrdp_rdcleanpath::RDCleanPath::Response {
-                x224_connection_response,
-                server_cert_chain,
-                server_addr: _,
-            } => (x224_connection_response, server_cert_chain),
-            ironrdp_rdcleanpath::RDCleanPath::GeneralErr(error) => {
+            (
+                false,
+                ironrdp_rdcleanpath::RDCleanPathMessage::Response {
+                    x224_connection_response,
+                    server_cert_chain,
+                    server_addr: _,
+                },
+            ) => (Some(x224_connection_response), server_cert_chain),
+            (
+                true,
+                ironrdp_rdcleanpath::RDCleanPathMessage::VmConnectResponse {
+                    server_cert_chain,
+                    server_addr: _,
+                },
+            ) => (None, server_cert_chain),
+            (true, ironrdp_rdcleanpath::RDCleanPathMessage::Response { .. }) => {
+                return Err(ironrdp_connector::general_err!(
+                    "RDCleanPath response includes X.224 for a VMConnect request"
+                ));
+            }
+            (false, ironrdp_rdcleanpath::RDCleanPathMessage::VmConnectResponse { .. }) => {
+                return Err(ironrdp_connector::general_err!(
+                    "RDCleanPath response missing X.224 for an ordinary request"
+                ));
+            }
+            (_, ironrdp_rdcleanpath::RDCleanPathMessage::GeneralErr(error)) => {
                 return Err(ironrdp_connector::custom_err!("received RDCleanPath error", error));
             }
-            ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
-                x224_connection_response,
-            } => {
+            (
+                _,
+                ironrdp_rdcleanpath::RDCleanPathMessage::NegotiationErr {
+                    x224_connection_response,
+                },
+            ) => {
                 if let Ok(x224_confirm) = ironrdp_core::decode::<
                     ironrdp_pdu::x224::X224<ironrdp_pdu::nego::ConnectionConfirm>,
                 >(&x224_connection_response)
@@ -1351,9 +1373,6 @@ where
                 ));
             }
         };
-
-        let response_has_x224 = x224_connection_response.is_some();
-        ensure_rdcleanpath_front_mode(request_pcb_front, response_has_x224)?;
 
         let server_cert = server_cert_chain
             .into_iter()
@@ -1406,7 +1425,7 @@ where
                 {
                     let _ = (framed, network_client, server_name, kerberos_config);
                     return Err(ironrdp_connector::general_err!(
-                        "RDCleanPath PCB-front response requires the vmconnect feature"
+                        "RDCleanPath VMConnect response requires the vmconnect feature"
                     ));
                 }
             }
@@ -1436,18 +1455,6 @@ fn build_ordinary_rdcleanpath_request(
     let x224_pdu = buf.filled().to_vec();
     ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, None)
         .map_err(|e| ironrdp_connector::custom_err!("new RDCleanPath request", e))
-}
-
-fn ensure_rdcleanpath_front_mode(request_pcb_front: bool, response_has_x224: bool) -> ConnectorResult<()> {
-    match (request_pcb_front, response_has_x224) {
-        (true, false) | (false, true) => Ok(()),
-        (true, true) => Err(ironrdp_connector::general_err!(
-            "RDCleanPath response includes X.224 for a PCB-front request"
-        )),
-        (false, false) => Err(ironrdp_connector::general_err!(
-            "RDCleanPath response missing X.224 for an ordinary request"
-        )),
-    }
 }
 
 // ── Active session ────────────────────────────────────────────────────────────

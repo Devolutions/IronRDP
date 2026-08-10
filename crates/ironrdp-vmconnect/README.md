@@ -25,8 +25,12 @@ remains interactive.
 | `PORT` | 2179 |
 | `PCB_TRANSMIT_DEADLINE` | 10s bound for PCB after TCP connect |
 | `Mode` | Enhanced or basic console routing |
+| `preconnection_blob_payload` | Unicode payload for RDCleanPath VMConnect requests |
 | `encode_preconnection_blob` | PCB V2 bytes |
 | `send_preconnection_blob` | write PCB → `PcbSent` |
+| `pcb_sent_via_proxy` | receipt when an RDCleanPath proxy wrote the PCB |
+| `prepare_connector` | shared TLS + CredSSP prerequisite check |
+| `ensure_selected_credssp` | require HYBRID after post-CredSSP X.224 |
 | `connect_front` | CredSSP + X.224 after TLS; takes `PcbSent` → `Upgraded` |
 
 ```rust,ignore
@@ -38,5 +42,9 @@ let upgraded = ironrdp_vmconnect::connect_front(
 ).await?;
 let result = ironrdp_async::connect_finalize(upgraded, connector, /* ... */).await?;
 ```
+
+For RDCleanPath, send [`preconnection_blob_payload`](crate::preconnection_blob_payload) in an
+explicit VMConnect request. The proxy encodes and writes the PCB before TLS, then the client passes
+[`pcb_sent_via_proxy`](crate::pcb_sent_via_proxy) to `connect_front`.
 
 [IronRDP](https://github.com/Devolutions/IronRDP)

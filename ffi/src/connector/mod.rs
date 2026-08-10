@@ -9,7 +9,6 @@ pub mod ffi {
 
     use diplomat_runtime::DiplomatWriteable;
     use ironrdp::connector::Sequence as _;
-    use ironrdp::connector::State as _;
     use ironrdp::displaycontrol::client::DisplayControlClient;
     use ironrdp::dvc::DvcClientProcessor;
     use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
@@ -153,7 +152,7 @@ pub mod ffi {
             Ok(())
         }
 
-        /// Send X.224 with an explicit protocol set (Hyper-V PCB-front uses HYBRID only).
+        /// Send X.224 with an explicit protocol set (VMConnect uses HYBRID only).
         pub fn initiate_with_security_protocol(
             &mut self,
             security_protocol: u32,
@@ -187,26 +186,7 @@ pub mod ffi {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            match &connector.state {
-                ironrdp::connector::ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol }
-                    if *selected_protocol == ironrdp::pdu::nego::SecurityProtocol::HYBRID =>
-                {
-                    Ok(())
-                }
-                ironrdp::connector::ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => {
-                    Err(ironrdp::connector::reason_err!(
-                        "Initiation",
-                        "server must select HYBRID for a Hyper-V console, but it selected {selected_protocol}",
-                    )
-                    .into())
-                }
-                other => Err(ironrdp::connector::reason_err!(
-                    "Initiation",
-                    "expected EnhancedSecurityUpgrade after Hyper-V X.224 initiation, got {}",
-                    other.name(),
-                )
-                .into()),
-            }
+            ironrdp_vmconnect::ensure_selected_credssp(&connector.state).map_err(Into::into)
         }
 
         pub fn step(&mut self, input: &[u8], write_buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {

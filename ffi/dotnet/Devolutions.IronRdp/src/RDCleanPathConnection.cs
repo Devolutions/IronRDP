@@ -3,6 +3,12 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace Devolutions.IronRdp;
 
+public enum VmConnectMode
+{
+    Enhanced,
+    Basic,
+}
+
 /// <summary>
 /// Provides methods for connecting to RDP servers through an RDCleanPath-compatible gateway
 /// (such as Devolutions Gateway or Cloudflare) using WebSocket.
@@ -16,16 +22,49 @@ public static class RDCleanPathConnection
     /// <param name="gatewayUrl">The WebSocket URL to the RDCleanPath gateway (e.g., "ws://localhost:7171/jet/rdp")</param>
     /// <param name="authToken">The JWT authentication token for the RDCleanPath gateway</param>
     /// <param name="destination">The destination RDP server address (e.g., "10.10.0.3:3389")</param>
-    /// <param name="pcbPayload">Optional Hyper-V VMConnect PCB payload</param>
+    /// <param name="pcb">Optional legacy complete preconnection blob represented as a string</param>
     /// <param name="factory">Optional clipboard backend factory</param>
     /// <returns>A tuple containing the connection result and framed WebSocket stream</returns>
-    public static async Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectRDCleanPath(
+    public static Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectRDCleanPath(
         Config config,
         string gatewayUrl,
         string authToken,
         string destination,
-        string? pcbPayload = null,
+        string? pcb = null,
         CliprdrBackendFactory? factory = null)
+    {
+        return ConnectRDCleanPathCore(config, gatewayUrl, authToken, destination, pcb, null, factory);
+    }
+
+    /// <summary>
+    /// Connects to a Hyper-V VM through an RDCleanPath-compatible gateway.
+    /// </summary>
+    public static Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectVmConnectRDCleanPath(
+        Config config,
+        string gatewayUrl,
+        string authToken,
+        string destination,
+        string vmId,
+        VmConnectMode mode = VmConnectMode.Enhanced,
+        CliprdrBackendFactory? factory = null)
+    {
+        if (string.IsNullOrWhiteSpace(vmId))
+        {
+            throw new ArgumentException("VMConnect requires a VM ID", nameof(vmId));
+        }
+
+        var pcbPayload = mode == VmConnectMode.Enhanced ? $"{vmId};EnhancedMode=1" : vmId;
+        return ConnectRDCleanPathCore(config, gatewayUrl, authToken, destination, null, pcbPayload, factory);
+    }
+
+    private static async Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectRDCleanPathCore(
+        Config config,
+        string gatewayUrl,
+        string authToken,
+        string destination,
+        string? pcb,
+        string? vmconnectPayload,
+        CliprdrBackendFactory? factory)
     {
         // Step 1: Connect WebSocket to gateway
         System.Diagnostics.Debug.WriteLine($"Connecting to gateway at {gatewayUrl}...");
@@ -44,7 +83,7 @@ public static class RDCleanPathConnection
         // Step 4: Perform RDCleanPath handshake
         System.Diagnostics.Debug.WriteLine("Performing RDCleanPath handshake...");
         var (serverPublicKey, framedAfterHandshake, hasX224) = await ConnectRdCleanPath(
-            framed, connector, destination, authToken, pcbPayload ?? "");
+            framed, connector, destination, authToken, pcb ?? "", vmconnectPayload);
 
         if (hasX224)
         {
@@ -103,16 +142,17 @@ public static class RDCleanPathConnection
         ClientConnector connector,
         string destination,
         string authToken,
-        string pcb)
+        string pcb,
+        string? vmconnectPayload)
     {
         var writeBuf = WriteBuf.New();
-        var pcbFront = !string.IsNullOrEmpty(pcb);
+        var vmconnect = vmconnectPayload != null;
 
         System.Diagnostics.Debug.WriteLine($"Sending RDCleanPath request to {destination}...");
         RDCleanPathPdu rdCleanPathReq;
-        if (pcbFront)
+        if (vmconnect)
         {
-            rdCleanPathReq = RDCleanPathPdu.NewRequestWithPcb(destination, authToken, pcb);
+            rdCleanPathReq = RDCleanPathPdu.NewVmconnectRequest(destination, authToken, vmconnectPayload!);
         }
         else
         {
@@ -120,7 +160,7 @@ public static class RDCleanPathConnection
             var firstPduSize = (int)written.GetSize().Get();
             var firstPdu = new byte[firstPduSize];
             writeBuf.ReadIntoBuf(firstPdu);
-            rdCleanPathReq = RDCleanPathPdu.NewRequest(firstPdu, destination, authToken, string.Empty);
+            rdCleanPathReq = RDCleanPathPdu.NewRequest(firstPdu, destination, authToken, pcb);
         }
         var reqBytes = rdCleanPathReq.ToDer();
         var reqBytesArray = new byte[reqBytes.GetSize()];
@@ -138,12 +178,12 @@ public static class RDCleanPathConnection
             System.Diagnostics.Debug.WriteLine("RDCleanPath handshake successful!");
 
             var hasX224 = rdCleanPathResp.HasX224();
-            if (pcbFront == hasX224)
+            if (vmconnect == hasX224)
             {
                 throw new IronRdpLibException(
                     IronRdpLibExceptionType.ConnectionFailed,
-                    pcbFront
-                        ? "RDCleanPath response includes X.224 for a PCB-front request"
+                    vmconnect
+                        ? "RDCleanPath response includes X.224 for a VMConnect request"
                         : "RDCleanPath response missing X.224 for an ordinary request");
             }
 

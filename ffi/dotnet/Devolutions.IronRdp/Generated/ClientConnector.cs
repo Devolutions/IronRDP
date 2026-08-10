@@ -224,7 +224,7 @@ public partial class ClientConnector: IDisposable
     }
 
     /// <summary>
-    /// Send X.224 with an explicit protocol set (Hyper-V PCB-front uses HYBRID only).
+    /// Send X.224 with an explicit protocol set (VMConnect uses HYBRID only).
     /// </summary>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>

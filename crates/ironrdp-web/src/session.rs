@@ -63,6 +63,7 @@ struct SessionBuilderInner {
     proxy_address: Option<String>,
     auth_token: Option<String>,
     pcb: Option<String>,
+    vmconnect: Option<String>,
     kdc_proxy_url: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
@@ -103,6 +104,7 @@ impl Default for SessionBuilderInner {
             proxy_address: None,
             auth_token: None,
             pcb: None,
+            vmconnect: None,
             kdc_proxy_url: None,
             client_name: "ironrdp-web".to_owned(),
             desktop_size: DesktopSize {
@@ -245,6 +247,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         iron_remote_desktop::extension_match! {
             match ext;
             |pcb: String| { self.0.borrow_mut().pcb = Some(pcb) };
+            |vmconnect: String| { self.0.borrow_mut().vmconnect = Some(vmconnect) };
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
             |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
@@ -332,6 +335,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             proxy_address,
             auth_token,
             pcb,
+            vmconnect,
             kdc_proxy_url,
             client_name,
             desktop_size,
@@ -365,6 +369,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             proxy_address = inner.proxy_address.clone().context("proxy_address missing")?;
             auth_token = inner.auth_token.clone().context("auth_token missing")?;
             pcb = inner.pcb.clone();
+            vmconnect = inner.vmconnect.clone();
             kdc_proxy_url = inner.kdc_proxy_url.clone();
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size;
@@ -394,6 +399,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_device_id = inner.printer_device_id;
             printer_driver_name = inner.printer_driver_name.clone();
             outbound_message_size_limit = inner.outbound_message_size_limit;
+        }
+
+        if pcb.is_some() && vmconnect.is_some() {
+            return Err(anyhow::Error::msg("generic preconnection blob and VMConnect are mutually exclusive").into());
         }
 
         info!("Connect to RDP host");
@@ -480,6 +489,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             proxy_auth_token: auth_token,
             destination,
             pcb,
+            vmconnect,
             kdc_proxy_url,
             clipboard_backend: clipboard.as_ref().map(|clip| clip.backend()),
             printer_backend,
@@ -1514,6 +1524,7 @@ struct ConnectParams {
     proxy_auth_token: String,
     destination: String,
     pcb: Option<String>,
+    vmconnect: Option<String>,
     kdc_proxy_url: Option<String>,
     clipboard_backend: Option<WasmClipboardBackend>,
     printer_backend: Option<WasmPrinterBackend>,
@@ -1565,6 +1576,7 @@ async fn connect(
         proxy_auth_token,
         destination,
         pcb,
+        vmconnect,
         kdc_proxy_url,
         clipboard_backend,
         printer_backend,
@@ -1626,6 +1638,7 @@ async fn connect(
             destination: destination.clone(),
             proxy_auth_token,
             pcb,
+            vmconnect,
             kerberos_config: kerberos_config.clone(),
         },
     )
@@ -1652,6 +1665,7 @@ struct RDCleanPathConnectParams {
     destination: String,
     proxy_auth_token: String,
     pcb: Option<String>,
+    vmconnect: Option<String>,
     kerberos_config: Option<KerberosConfig>,
 }
 
@@ -1691,23 +1705,18 @@ where
         destination,
         proxy_auth_token,
         pcb,
+        vmconnect,
         kerberos_config,
     } = params;
-    let request_pcb_front = pcb.is_some();
+    let request_vmconnect = vmconnect.is_some();
 
     let mut buf = WriteBuf::new();
 
     info!("Begin connection procedure");
 
     {
-        let rdcleanpath_req = if let Some(pcb) = pcb {
-            let preconnection_blob = ironrdp_vmconnect::encode_preconnection_blob_payload_string(pcb)
-                .context("encode preconnection blob")?;
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_request_with_pcb(
-                destination,
-                proxy_auth_token,
-                preconnection_blob,
-            )
+        let rdcleanpath_req = if let Some(pcb_payload) = vmconnect {
+            ironrdp_rdcleanpath::RDCleanPathPdu::new_vmconnect_request(destination, proxy_auth_token, pcb_payload)
         } else {
             let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
                 return Err(anyhow::Error::msg("invalid connector state (send request)").into());
@@ -1719,7 +1728,7 @@ where
             let x224_pdu_len = written.size().expect("written size");
             debug_assert_eq!(x224_pdu_len, buf.filled_len());
             let x224_pdu = buf.filled().to_vec();
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, None)
+            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
                 .context("new RDCleanPath request")?
         };
         debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
@@ -1742,53 +1751,72 @@ where
 
         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
-        let (x224_connection_response, server_cert_chain) =
-            match rdcleanpath_res.into_enum().context("invalid RDCleanPath PDU")? {
-                ironrdp_rdcleanpath::RDCleanPath::Request { .. } => {
-                    return Err(anyhow::Error::msg("received an unexpected RDCleanPath type (request)").into());
-                }
-                ironrdp_rdcleanpath::RDCleanPath::Response {
+        let (x224_connection_response, server_cert_chain) = match (
+            request_vmconnect,
+            rdcleanpath_res.into_message().context("invalid RDCleanPath PDU")?,
+        ) {
+            (_, ironrdp_rdcleanpath::RDCleanPathMessage::Request { .. })
+            | (_, ironrdp_rdcleanpath::RDCleanPathMessage::VmConnectRequest { .. }) => {
+                return Err(anyhow::Error::msg("received an unexpected RDCleanPath type (request)").into());
+            }
+            (
+                false,
+                ironrdp_rdcleanpath::RDCleanPathMessage::Response {
                     x224_connection_response,
                     server_cert_chain,
                     server_addr: _,
-                } => (x224_connection_response, server_cert_chain),
-                ironrdp_rdcleanpath::RDCleanPath::GeneralErr(error) => {
-                    let details = iron_remote_desktop::RDCleanPathDetails::new(
-                        error.http_status_code,
-                        error.wsa_last_error,
-                        error.tls_alert_code,
-                    );
-                    return Err(
-                        IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
-                            .with_kind(IronErrorKind::RDCleanPath)
-                            .with_rdcleanpath_details(details),
-                    );
-                }
-                ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
+                },
+            ) => (Some(x224_connection_response), server_cert_chain),
+            (
+                true,
+                ironrdp_rdcleanpath::RDCleanPathMessage::VmConnectResponse {
+                    server_cert_chain,
+                    server_addr: _,
+                },
+            ) => (None, server_cert_chain),
+            (true, ironrdp_rdcleanpath::RDCleanPathMessage::Response { .. }) => {
+                return Err(anyhow::Error::msg("RDCleanPath response includes X.224 for a VMConnect request").into());
+            }
+            (false, ironrdp_rdcleanpath::RDCleanPathMessage::VmConnectResponse { .. }) => {
+                return Err(anyhow::Error::msg("RDCleanPath response missing X.224 for an ordinary request").into());
+            }
+            (_, ironrdp_rdcleanpath::RDCleanPathMessage::GeneralErr(error)) => {
+                let details = iron_remote_desktop::RDCleanPathDetails::new(
+                    error.http_status_code,
+                    error.wsa_last_error,
+                    error.tls_alert_code,
+                );
+                return Err(
+                    IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
+                        .with_kind(IronErrorKind::RDCleanPath)
+                        .with_rdcleanpath_details(details),
+                );
+            }
+            (
+                _,
+                ironrdp_rdcleanpath::RDCleanPathMessage::NegotiationErr {
                     x224_connection_response,
-                } => {
-                    if let Ok(x224_confirm) = ironrdp_core::decode::<
-                        ironrdp::pdu::x224::X224<ironrdp::pdu::nego::ConnectionConfirm>,
-                    >(&x224_connection_response)
-                    {
-                        if let ironrdp::pdu::nego::ConnectionConfirm::Failure { code } = x224_confirm.0 {
-                            let negotiation_failure = connector::NegotiationFailure::from(code);
-                            return Err(IronError::from(
-                                anyhow::Error::new(negotiation_failure).context("RDP negotiation failed"),
-                            )
-                            .with_kind(IronErrorKind::NegotiationFailure));
-                        }
+                },
+            ) => {
+                if let Ok(x224_confirm) = ironrdp_core::decode::<
+                    ironrdp::pdu::x224::X224<ironrdp::pdu::nego::ConnectionConfirm>,
+                >(&x224_connection_response)
+                {
+                    if let ironrdp::pdu::nego::ConnectionConfirm::Failure { code } = x224_confirm.0 {
+                        let negotiation_failure = connector::NegotiationFailure::from(code);
+                        return Err(IronError::from(
+                            anyhow::Error::new(negotiation_failure).context("RDP negotiation failed"),
+                        )
+                        .with_kind(IronErrorKind::NegotiationFailure));
                     }
-
-                    return Err(
-                        IronError::from(anyhow::Error::msg("received an RDCleanPath negotiation error"))
-                            .with_kind(IronErrorKind::RDCleanPath),
-                    );
                 }
-            };
 
-        let response_has_x224 = x224_connection_response.is_some();
-        ensure_rdcleanpath_front_mode(request_pcb_front, response_has_x224)?;
+                return Err(
+                    IronError::from(anyhow::Error::msg("received an RDCleanPath negotiation error"))
+                        .with_kind(IronErrorKind::RDCleanPath),
+                );
+            }
+        };
 
         let server_cert = server_cert_chain
             .into_iter()
@@ -1835,20 +1863,6 @@ where
         };
 
         Ok((upgraded, server_public_key))
-    }
-}
-
-fn ensure_rdcleanpath_front_mode(request_pcb_front: bool, response_has_x224: bool) -> Result<(), IronError> {
-    match (request_pcb_front, response_has_x224) {
-        (true, false) | (false, true) => Ok(()),
-        (true, true) => Err(anyhow::Error::msg(
-            "RDCleanPath response includes X.224 for a PCB-front request",
-        )
-        .into()),
-        (false, false) => Err(anyhow::Error::msg(
-            "RDCleanPath response missing X.224 for an ordinary request",
-        )
-        .into()),
     }
 }
 

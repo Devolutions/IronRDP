@@ -50,7 +50,7 @@ public partial struct ClientConnector
     public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError MarkCredsspAsDone(ClientConnector* self);
 
     /// <summary>
-    /// Send X.224 with an explicit protocol set (Hyper-V PCB-front uses HYBRID only).
+    /// Send X.224 with an explicit protocol set (VMConnect uses HYBRID only).
     /// </summary>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_initiate_with_security_protocol", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultBoxWrittenBoxIronRdpError InitiateWithSecurityProtocol(ClientConnector* self, uint securityProtocol, WriteBuf* writeBuf);

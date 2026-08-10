@@ -1,6 +1,7 @@
 use expect_test::{Expect, expect};
 use ironrdp_rdcleanpath::{
-    DetectionResult, GENERAL_ERROR_CODE, NEGOTIATION_ERROR_CODE, RDCleanPathErr, RDCleanPathPdu, VERSION_1,
+    DetectionResult, GENERAL_ERROR_CODE, NEGOTIATION_ERROR_CODE, RDCleanPathErr, RDCleanPathMessage, RDCleanPathPdu,
+    VERSION_1,
 };
 use rstest::rstest;
 
@@ -20,11 +21,11 @@ const REQUEST_DER: &[u8] = &[
     0x3, 0x50, 0x43, 0x42, 0xA6, 0x6, 0x4, 0x4, 0xDE, 0xAD, 0xBE, 0xFF,
 ];
 
-fn request_with_pcb() -> RDCleanPathPdu {
-    RDCleanPathPdu::new_request_with_pcb("destination".to_owned(), "proxy auth".to_owned(), "PCB".to_owned())
+fn vmconnect_request() -> RDCleanPathPdu {
+    RDCleanPathPdu::new_vmconnect_request("destination".to_owned(), "proxy auth".to_owned(), "PCB".to_owned())
 }
 
-const REQUEST_WITH_PCB_DER: &[u8] = &[
+const VMCONNECT_REQUEST_DER: &[u8] = &[
     0x30, 0x2A, 0xA0, 0x4, 0x2, 0x2, 0xD, 0x3E, 0xA2, 0xD, 0xC, 0xB, 0x64, 0x65, 0x73, 0x74, 0x69, 0x6E, 0x61, 0x74,
     0x69, 0x6F, 0x6E, 0xA3, 0xC, 0xC, 0xA, 0x70, 0x72, 0x6F, 0x78, 0x79, 0x20, 0x61, 0x75, 0x74, 0x68, 0xA5, 0x5, 0xC,
     0x3, 0x50, 0x43, 0x42,
@@ -49,8 +50,8 @@ const RESPONSE_SUCCESS_DER: &[u8] = &[
     0xC, 0xC, 0x31, 0x39, 0x32, 0x2E, 0x31, 0x36, 0x38, 0x2E, 0x37, 0x2E, 0x39, 0x35,
 ];
 
-fn response_with_pcb() -> RDCleanPathPdu {
-    RDCleanPathPdu::new_response_with_pcb(
+fn vmconnect_response() -> RDCleanPathPdu {
+    RDCleanPathPdu::new_vmconnect_response(
         "192.168.7.95".to_owned(),
         [
             vec![0xDE, 0xAD, 0xBE, 0xFF],
@@ -61,7 +62,7 @@ fn response_with_pcb() -> RDCleanPathPdu {
     .unwrap()
 }
 
-const RESPONSE_WITH_PCB_DER: &[u8] = &[
+const VMCONNECT_RESPONSE_DER: &[u8] = &[
     0x30, 0x2C, 0xA0, 0x4, 0x2, 0x2, 0xD, 0x3E, 0xA7, 0x14, 0x30, 0x12, 0x4, 0x4, 0xDE, 0xAD, 0xBE, 0xFF, 0x4, 0x4,
     0xDE, 0xAD, 0xBE, 0xFF, 0x4, 0x4, 0xDE, 0xAD, 0xBE, 0xFF, 0xA9, 0xE, 0xC, 0xC, 0x31, 0x39, 0x32, 0x2E, 0x31, 0x36,
     0x38, 0x2E, 0x37, 0x2E, 0x39, 0x35,
@@ -87,9 +88,9 @@ const RESPONSE_TLS_ERROR_DER: &[u8] = &[
 
 #[rstest]
 #[case(request())]
-#[case(request_with_pcb())]
+#[case(vmconnect_request())]
 #[case(response_success())]
-#[case(response_with_pcb())]
+#[case(vmconnect_response())]
 #[case(response_http_error())]
 #[case(response_tls_error())]
 fn smoke(#[case] message: RDCleanPathPdu) {
@@ -115,9 +116,9 @@ macro_rules! assert_serialization {
 
 #[rstest]
 #[case(request(), REQUEST_DER)]
-#[case(request_with_pcb(), REQUEST_WITH_PCB_DER)]
+#[case(vmconnect_request(), VMCONNECT_REQUEST_DER)]
 #[case(response_success(), RESPONSE_SUCCESS_DER)]
-#[case(response_with_pcb(), RESPONSE_WITH_PCB_DER)]
+#[case(vmconnect_response(), VMCONNECT_RESPONSE_DER)]
 #[case(response_http_error(), RESPONSE_HTTP_ERROR_DER)]
 #[case(response_tls_error(), RESPONSE_TLS_ERROR_DER)]
 fn serialization(#[case] message: RDCleanPathPdu, #[case] expected_der: &[u8]) {
@@ -127,9 +128,9 @@ fn serialization(#[case] message: RDCleanPathPdu, #[case] expected_der: &[u8]) {
 
 #[rstest]
 #[case(REQUEST_DER)]
-#[case(REQUEST_WITH_PCB_DER)]
+#[case(VMCONNECT_REQUEST_DER)]
 #[case(RESPONSE_SUCCESS_DER)]
-#[case(RESPONSE_WITH_PCB_DER)]
+#[case(VMCONNECT_RESPONSE_DER)]
 #[case(RESPONSE_HTTP_ERROR_DER)]
 #[case(RESPONSE_TLS_ERROR_DER)]
 fn detect(#[case] der: &[u8]) {
@@ -159,6 +160,58 @@ fn detect(#[case] der: &[u8]) {
 fn detect_not_enough(#[case] payload: &[u8]) {
     let result = RDCleanPathPdu::detect(payload);
     assert_eq!(result, DetectionResult::NotEnoughBytes);
+}
+
+#[test]
+fn vmconnect_payload_roundtrips_as_unicode_instead_of_binary_pcb() {
+    let payload = format!("{};EnhancedMode=1;名字=虚拟机", "a".repeat(64));
+    let pdu = RDCleanPathPdu::new_vmconnect_request("destination".to_owned(), "proxy auth".to_owned(), payload.clone());
+
+    let decoded = RDCleanPathPdu::from_der(&pdu.to_der().unwrap())
+        .unwrap()
+        .into_message()
+        .unwrap();
+
+    assert!(matches!(
+        decoded,
+        RDCleanPathMessage::VmConnectRequest { pcb_payload, .. } if pcb_payload == payload
+    ));
+}
+
+#[test]
+fn ordinary_request_keeps_generic_pcb_with_x224() {
+    let decoded = request().into_message().unwrap();
+
+    assert!(matches!(
+        decoded,
+        RDCleanPathMessage::Request {
+            preconnection_blob: Some(pcb),
+            ..
+        } if pcb == "PCB"
+    ));
+}
+
+#[test]
+fn request_without_x224_or_vmconnect_payload_is_rejected() {
+    let pdu = RDCleanPathPdu {
+        destination: Some("destination".to_owned()),
+        proxy_auth: Some("proxy auth".to_owned()),
+        ..RDCleanPathPdu::default()
+    };
+
+    assert!(pdu.into_enum().is_err());
+}
+
+#[test]
+fn response_shape_selects_explicit_semantic_variant() {
+    assert!(matches!(
+        response_success().into_message().unwrap(),
+        RDCleanPathMessage::Response { .. }
+    ));
+    assert!(matches!(
+        vmconnect_response().into_message().unwrap(),
+        RDCleanPathMessage::VmConnectResponse { .. }
+    ));
 }
 
 #[rstest]

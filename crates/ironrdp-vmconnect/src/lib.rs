@@ -61,11 +61,16 @@ pub struct PcbSent;
 
 /// Encode a PCB V2 for the selected console mode.
 pub fn encode_preconnection_blob(vm_id: &str, mode: Mode) -> ConnectorResult<Vec<u8>> {
-    let payload = match mode {
+    let payload = preconnection_blob_payload(vm_id, mode);
+    encode_preconnection_blob_payload(payload)
+}
+
+/// Build the Unicode PCB V2 payload used to select a VM and console mode.
+pub fn preconnection_blob_payload(vm_id: &str, mode: Mode) -> String {
+    match mode {
         Mode::Enhanced => format!("{vm_id}{ENHANCED_MODE_SUFFIX}"),
         Mode::Basic => vm_id.to_owned(),
-    };
-    encode_preconnection_blob_payload(payload)
+    }
 }
 
 /// Encode a PCB V2 containing an opaque routing payload.
@@ -76,18 +81,6 @@ pub fn encode_preconnection_blob_payload(payload: String) -> ConnectorResult<Vec
         v2_payload: Some(payload),
     })
     .map_err(ConnectorError::encode)
-}
-
-/// Encode a PCB V2 as the byte-preserving string used by RDCleanPath.
-pub fn encode_preconnection_blob_string(vm_id: &str, mode: Mode) -> ConnectorResult<String> {
-    String::from_utf8(encode_preconnection_blob(vm_id, mode)?)
-        .map_err(|e| custom_err!("encode preconnection blob as RDCleanPath string", e))
-}
-
-/// Encode an opaque PCB payload as the byte-preserving string used by RDCleanPath.
-pub fn encode_preconnection_blob_payload_string(payload: String) -> ConnectorResult<String> {
-    String::from_utf8(encode_preconnection_blob_payload(payload)?)
-        .map_err(|e| custom_err!("encode preconnection blob as RDCleanPath string", e))
 }
 
 /// Write the Preconnection Blob on a pre-TLS stream. Returns a [`PcbSent`] for [`connect_front`].
@@ -192,7 +185,8 @@ pub fn prepare_connector(connector: &ClientConnector) -> ConnectorResult<()> {
     Ok(())
 }
 
-fn ensure_selected_credssp(state: &ClientConnectorState) -> ConnectorResult<()> {
+/// Require the post-CredSSP X.224 response to select HYBRID.
+pub fn ensure_selected_credssp(state: &ClientConnectorState) -> ConnectorResult<()> {
     let selected = match state {
         ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => *selected_protocol,
         other => {

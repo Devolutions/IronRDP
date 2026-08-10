@@ -19,7 +19,7 @@ pub mod ffi {
         /// * `x224_pdu` - The X.224 Connection Request PDU bytes
         /// * `destination` - The destination RDP server address (e.g., "10.10.0.3:3389")
         /// * `proxy_auth` - The JWT authentication token
-        /// * `pcb` - Optional preconnection blob (for Hyper-V VM connections, empty string if not needed)
+        /// * `pcb` - Optional legacy complete preconnection blob represented as a string
         pub fn new_request(
             x224_pdu: &[u8],
             destination: &str,
@@ -40,24 +40,26 @@ pub mod ffi {
             Ok(Box::new(RDCleanPathPdu(pdu)))
         }
 
-        /// Request with PCB only: proxy does PCB + TLS; client runs CredSSP then X.224.
-        pub fn new_request_with_pcb(
+        /// VMConnect request: proxy encodes the payload as PCB V2 and does TLS; client runs CredSSP then X.224.
+        pub fn new_vmconnect_request(
             destination: &str,
             proxy_auth: &str,
             pcb_payload: &str,
         ) -> Result<Box<RDCleanPathPdu>, Box<IronRdpError>> {
-            let preconnection_blob =
-                ironrdp_vmconnect::encode_preconnection_blob_payload_string(pcb_payload.to_owned())?;
+            if pcb_payload.is_empty() {
+                return Err(GenericError(anyhow::anyhow!("VMConnect PCB payload is empty")).into());
+            }
+
             Ok(Box::new(RDCleanPathPdu(
-                ironrdp_rdcleanpath::RDCleanPathPdu::new_request_with_pcb(
+                ironrdp_rdcleanpath::RDCleanPathPdu::new_vmconnect_request(
                     destination.to_owned(),
                     proxy_auth.to_owned(),
-                    preconnection_blob,
+                    pcb_payload.to_owned(),
                 ),
             )))
         }
 
-        /// True when the PDU has no X.224 payload (PCB-front request or response).
+        /// True when the PDU carries an X.224 payload.
         pub fn has_x224(&self) -> bool {
             self.0.x224_connection_pdu.is_some()
         }
@@ -96,7 +98,7 @@ pub mod ffi {
                 }
 
                 if self.0.x224_connection_pdu.is_none() && self.0.preconnection_blob.is_none() {
-                    return Err(Self::missing_field("x224_connection_pdu"));
+                    return Err(Self::missing_field("x224_connection_pdu or preconnection_blob"));
                 }
 
                 Ok(RDCleanPathResultType::Request)
