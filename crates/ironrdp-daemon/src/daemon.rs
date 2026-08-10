@@ -5,6 +5,7 @@
 //! explicitly with `daemon-start` and runs in the foreground; the caller is expected to background
 //! it. On a clean shutdown the Unix socket file is removed (see [`crate::transport`]).
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
@@ -17,6 +18,14 @@ use ironrdp_tls::CertificateValidation;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
+
+#[cfg(windows)]
+use std::collections::BTreeSet;
+#[cfg(windows)]
+use std::path::{Component, Prefix};
+
+#[cfg(windows)]
+use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
 
 use crate::ipc::{
     ConnState, KeyFilter, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response,
@@ -31,10 +40,11 @@ use crate::transport::{Endpoint, Listener, read_message, write_message};
 ///
 /// `overlay` is an operator-provided [`PropertySet`] layered on top of every `Connect` request
 /// (overlay wins), so any setting — credentials in particular — can be preconfigured without the
-/// caller ever supplying it. Pass an empty set when no overlay is desired.
-pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()> {
+/// caller ever supplying it. `rdpdr_drives` is a fixed set of Windows filesystem volumes exposed
+/// through every connection that this daemon creates.
+pub async fn run(endpoint: Endpoint, overlay: PropertySet, rdpdr_drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<()> {
     init_daemon_logging();
-    let daemon = Arc::new(Daemon::with_overlay(overlay));
+    let daemon = Arc::new(Daemon::with_rdpdr_drives(overlay, rdpdr_drives)?);
     serve(endpoint, daemon).await
 }
 
@@ -122,6 +132,52 @@ pub enum ResizeError {
     Closed,
 }
 
+/// Windows volume definition exposed as one static RDPDR filesystem drive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RdpdrDriveConfig {
+    root_path: PathBuf,
+    display_name: String,
+}
+
+impl RdpdrDriveConfig {
+    /// Creates a filesystem-drive definition.
+    pub fn new(root_path: PathBuf, display_name: String) -> anyhow::Result<Self> {
+        if root_path.as_os_str().is_empty() {
+            anyhow::bail!("rdpdr volume root must not be empty");
+        }
+        if display_name.is_empty() {
+            anyhow::bail!("rdpdr drive name must not be empty");
+        }
+        if display_name.len() > 7 || !display_name.is_ascii() {
+            anyhow::bail!("rdpdr drive name must contain at most seven ASCII characters");
+        }
+        if !display_name.chars().enumerate().all(|(index, character)| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, ' ' | '_' | '-' | '.')
+                || (character == ':' && index + 1 == display_name.len())
+        }) {
+            anyhow::bail!("rdpdr drive name contains an invalid DOS device-name character");
+        }
+
+        Ok(Self {
+            root_path,
+            display_name,
+        })
+    }
+
+    /// Returns the volume root selected for redirection.
+    #[must_use]
+    pub fn root_path(&self) -> &Path {
+        &self.root_path
+    }
+
+    /// Returns the protocol-visible drive name.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+}
+
 /// The daemon's mutable state: the (single) current session, plus the shared log buffer.
 pub struct Daemon {
     state: Mutex<Option<Session>>,
@@ -135,6 +191,8 @@ pub struct Daemon {
     /// Whether [`Self::overlay`] contributes any secret (password/token) value, i.e. whether the
     /// caller can omit credentials of its own.
     credentials_loaded: bool,
+    #[cfg(windows)]
+    rdpdr_backend_factory: Option<WindowsRdpdrBackendFactory>,
     /// Notifies an optional GUI frontend whenever retained live state changes.
     notification: Option<mpsc::Sender<()>>,
     shutdown: tokio::sync::watch::Sender<()>,
@@ -171,25 +229,43 @@ pub struct Frame {
 }
 
 impl Daemon {
-    fn new(logs: Arc<LogBuffer>, overlay: PropertySet) -> Self {
+    fn new(logs: Arc<LogBuffer>, overlay: PropertySet, rdpdr_drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<Self> {
         // Credentials are considered "loaded" when the overlay provides at least one secret value,
         // which is what frees the caller from supplying a password.
         let credentials_loaded = overlay.iter().any(|(key, _)| ironrdp_cfg::is_secret_key(key));
         let (shutdown, _) = tokio::sync::watch::channel(());
-        Self {
+        #[cfg(windows)]
+        let rdpdr_backend_factory = rdpdr_backend_factory(rdpdr_drives)?;
+        #[cfg(not(windows))]
+        if !rdpdr_drives.is_empty() {
+            anyhow::bail!("rdpdr filesystem redirection is only available on Windows");
+        }
+
+        Ok(Self {
             state: Mutex::new(None),
             connect_lock: Mutex::new(()),
             logs,
             overlay,
             credentials_loaded,
+            #[cfg(windows)]
+            rdpdr_backend_factory,
             notification: None,
             shutdown,
-        }
+        })
     }
 
     /// Creates a daemon with no preconfigured connection properties.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the default daemon configuration becomes invalid.
     pub fn with_overlay(overlay: PropertySet) -> Self {
-        Self::new(LogBuffer::new(), overlay)
+        Self::with_rdpdr_drives(overlay, Vec::new()).expect("default daemon configuration is valid")
+    }
+
+    /// Creates a daemon with fixed Windows filesystem drives for every connection.
+    pub fn with_rdpdr_drives(overlay: PropertySet, rdpdr_drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<Self> {
+        Self::new(LogBuffer::new(), overlay, rdpdr_drives)
     }
 
     /// Adds a capacity-one notification channel for frontends that render retained live state.
@@ -353,6 +429,12 @@ impl Daemon {
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true);
+        #[cfg(windows)]
+        let builder = if self.rdpdr_backend_factory.is_some() {
+            builder.with_rdpdr(true)
+        } else {
+            builder
+        };
 
         let missing = builder.missing();
         if !missing.is_empty() {
@@ -382,6 +464,11 @@ impl Daemon {
 
         let (output_tx, output_rx) = mpsc::channel(16);
         let client = RdpClient::new(config, output_tx);
+        #[cfg(windows)]
+        let client = match &self.rdpdr_backend_factory {
+            Some(factory) => client.with_rdpdr_backend_factory(Box::new(factory.clone())),
+            None => client,
+        };
         let input_tx = client.input_sender();
 
         let live = Arc::new(Mutex::new(Live {
@@ -939,13 +1026,73 @@ fn current_platform() -> MajorPlatformType {
     }
 }
 
+#[cfg(windows)]
+fn rdpdr_backend_factory(drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<Option<WindowsRdpdrBackendFactory>> {
+    if drives.is_empty() {
+        return Ok(None);
+    }
+
+    let mut names = BTreeSet::new();
+    let mut roots = BTreeSet::new();
+    let drives = drives
+        .iter()
+        .enumerate()
+        .map(|(index, drive)| {
+            if !names.insert(drive.display_name.to_ascii_uppercase()) {
+                anyhow::bail!("rdpdr drive names must be unique");
+            }
+            if !roots.insert(validate_rdpdr_volume_root(&drive.root_path)?) {
+                anyhow::bail!("rdpdr volume roots must be unique");
+            }
+
+            let device_id =
+                u32::try_from(index + 1).map_err(|_| anyhow::anyhow!("too many rdpdr drive configurations"))?;
+            RedirectedDrive::new(device_id, &drive.display_name, &drive.root_path, false)
+                .map_err(|error| anyhow::anyhow!("invalid rdpdr drive configuration: {error}"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    WindowsRdpdrBackendFactory::from_drives(drives)
+        .map(Some)
+        .map_err(|error| anyhow::anyhow!("invalid rdpdr drive configuration: {error}"))
+}
+
+#[cfg(windows)]
+fn validate_rdpdr_volume_root(root_path: &Path) -> anyhow::Result<String> {
+    let mut components = root_path.components();
+    let is_disk_root = matches!(
+        (components.next(), components.next(), components.next()),
+        (
+            Some(Component::Prefix(prefix)),
+            Some(Component::RootDir),
+            None
+        ) if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+    );
+    if !is_disk_root {
+        anyhow::bail!("rdpdr volume root must be a full local Windows volume root");
+    }
+
+    let metadata =
+        std::fs::metadata(root_path).with_context(|| format!("inspect rdpdr volume root {}", root_path.display()))?;
+    if !metadata.is_dir() {
+        anyhow::bail!("rdpdr volume root must be a directory");
+    }
+
+    Ok(std::fs::canonicalize(root_path)
+        .with_context(|| format!("canonicalize rdpdr volume root {}", root_path.display()))?
+        .to_string_lossy()
+        .to_ascii_uppercase())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use tokio::sync::mpsc;
 
     use ironrdp_propertyset::PropertySet;
 
-    use super::{Daemon, ResizeError, notify};
+    use super::{Daemon, RdpdrDriveConfig, ResizeError, notify};
     use crate::ipc::Response;
 
     #[test]
@@ -976,5 +1123,66 @@ mod tests {
         daemon.shutdown();
 
         assert!(shutdown.has_changed().expect("shutdown sender is live"));
+    }
+
+    #[test]
+    fn rdpdr_drive_configuration_rejects_invalid_names_and_roots() {
+        assert!(RdpdrDriveConfig::new(PathBuf::new(), "Data".to_owned()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), String::new()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "too-long".to_owned()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "data/".to_owned()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "Data".to_owned()).is_ok());
+    }
+
+    #[cfg(windows)]
+    fn system_volume_root() -> PathBuf {
+        let system_drive = std::env::var("SystemDrive").expect("SystemDrive is set on Windows");
+        PathBuf::from(format!(r"{system_drive}\"))
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rdpdr_daemon_constructs_a_factory_for_a_volume_root() {
+        let drive = RdpdrDriveConfig::new(system_volume_root(), "System".to_owned()).expect("valid drive");
+        let daemon = Daemon::with_rdpdr_drives(PropertySet::new(), vec![drive]).expect("valid daemon options");
+
+        assert!(daemon.rdpdr_backend_factory.is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rdpdr_daemon_rejects_duplicate_names_and_roots() {
+        let root = system_volume_root();
+        let duplicate_name = Daemon::with_rdpdr_drives(
+            PropertySet::new(),
+            vec![
+                RdpdrDriveConfig::new(root.clone(), "System".to_owned()).expect("valid drive"),
+                RdpdrDriveConfig::new(root.clone(), "system".to_owned()).expect("valid drive"),
+            ],
+        );
+        assert!(matches!(duplicate_name, Err(error) if error.to_string() == "rdpdr drive names must be unique"));
+
+        let duplicate_root = Daemon::with_rdpdr_drives(
+            PropertySet::new(),
+            vec![
+                RdpdrDriveConfig::new(root.clone(), "System".to_owned()).expect("valid drive"),
+                RdpdrDriveConfig::new(root, "Data".to_owned()).expect("valid drive"),
+            ],
+        );
+        assert!(matches!(duplicate_root, Err(error) if error.to_string() == "rdpdr volume roots must be unique"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rdpdr_daemon_rejects_non_root_directories() {
+        let drive = RdpdrDriveConfig::new(std::env::current_dir().expect("current directory"), "Data".to_owned())
+            .expect("non-empty drive config");
+
+        let result = Daemon::with_rdpdr_drives(PropertySet::new(), vec![drive]);
+
+        assert!(matches!(
+            result,
+            Err(error) if error.to_string() == "rdpdr volume root must be a full local Windows volume root"
+        ));
     }
 }

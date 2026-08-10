@@ -28,7 +28,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Lifecycle
 
-- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]...`
+- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--rdpdr-drive NAME=VOLUME_ROOT]...`
                                  Start the daemon (foreground). Run this first. `--overlay`
                                  preloads a .rdp file as an overlay applied to every `connect`
                                  (overlay wins), letting an operator provision any setting out of
@@ -38,6 +38,12 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  file line (TYPE is `i` for integer or `s` for string), e.g.
                                  `--prop ironrdp_autologon:i:1`. Check `status` to see whether
                                  credentials are already loaded before supplying any yourself.
+                                 On Windows, repeat `--rdpdr-drive NAME=VOLUME_ROOT` to opt in to
+                                 static filesystem redirection. Each root must be a unique existing
+                                 local volume root such as `C:\`, and each one-to-seven-character
+                                 ASCII drive name must be unique (case-insensitive). The configured
+                                 set is fixed for the daemon lifetime; drive hot-plug and rescan are
+                                 not supported.
 - `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. Precedence (low to high): .rdp file -> `--prop`
