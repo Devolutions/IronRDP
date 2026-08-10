@@ -129,7 +129,6 @@ pub struct DrdynvcClient {
     /// Indicates whether the capability request/response handshake has been completed.
     cap_handshake_done: bool,
     available_tunnels: BTreeSet<SoftSyncTunnelType>,
-    pending_tunnel_channels: Option<BTreeMap<DynamicChannelId, SoftSyncTunnelType>>,
     tunnel_channels: BTreeMap<DynamicChannelId, SoftSyncTunnelType>,
     soft_sync_complete: bool,
 }
@@ -157,7 +156,6 @@ impl DrdynvcClient {
             dynamic_channels: DynamicChannelSet::new(),
             cap_handshake_done: false,
             available_tunnels: BTreeSet::new(),
-            pending_tunnel_channels: None,
             tunnel_channels: BTreeMap::new(),
             soft_sync_complete: false,
         }
@@ -287,9 +285,6 @@ impl DrdynvcClient {
     pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
         self.dynamic_channels.remove_by_channel_id(channel_id)?;
         self.tunnel_channels.remove(&channel_id);
-        if let Some(channels) = self.pending_tunnel_channels.as_mut() {
-            channels.remove(&channel_id);
-        }
         Some(SvcMessage::from(DrdynvcClientPdu::Close(ClosePdu::new(channel_id))))
     }
 
@@ -301,27 +296,8 @@ impl DrdynvcClient {
         self.available_tunnels.insert(tunnel_type);
     }
 
-    /// Returns whether a Soft-Sync response has been queued but not yet sent on TCP.
-    pub fn has_pending_soft_sync_response(&self) -> bool {
-        self.pending_tunnel_channels.is_some()
-    }
-
-    /// Activates the routing selected by the most recent Soft-Sync response.
-    ///
-    /// Call this only after the response has been successfully written over the
-    /// DRDYNVC static virtual channel.
-    pub fn complete_soft_sync_response(&mut self) -> PduResult<()> {
-        let pending = self
-            .pending_tunnel_channels
-            .take()
-            .ok_or_else(|| pdu_other_err!("no Soft-Sync response is pending"))?;
-        self.tunnel_channels = pending;
-        self.soft_sync_complete = true;
-        Ok(())
-    }
-
-    /// Returns whether the Soft-Sync response has been sent over TCP and
-    /// multitransport DVC data can be exchanged.
+    /// Returns whether the client has produced its Soft-Sync response and activated
+    /// its local routing state.
     pub const fn soft_sync_complete(&self) -> bool {
         self.soft_sync_complete
     }
@@ -358,7 +334,7 @@ impl DrdynvcClient {
     }
 
     fn process_soft_sync_request(&mut self, request: crate::pdu::SoftSyncRequestPdu) -> PduResult<SvcMessage> {
-        if self.pending_tunnel_channels.is_some() || self.soft_sync_complete {
+        if self.soft_sync_complete {
             return Err(pdu_other_err!("received duplicate Soft-Sync request"));
         }
 
@@ -386,10 +362,12 @@ impl DrdynvcClient {
             tunnels_to_switch.push(list.tunnel_type());
         }
 
-        self.pending_tunnel_channels = Some(tunnel_channels);
-        Ok(SvcMessage::from(DrdynvcClientPdu::SoftSyncResponse(
-            SoftSyncResponsePdu::new(tunnels_to_switch),
-        )))
+        let response = SvcMessage::from(DrdynvcClientPdu::SoftSyncResponse(SoftSyncResponsePdu::new(
+            tunnels_to_switch,
+        )));
+        self.tunnel_channels = tunnel_channels;
+        self.soft_sync_complete = true;
+        Ok(response)
     }
 }
 
@@ -641,10 +619,16 @@ mod tests {
     }
 
     #[test]
-    fn soft_sync_routes_a_selected_channel_after_response_is_sent() {
+    fn soft_sync_rejects_tunnel_data_until_a_response_is_generated() {
         let mut client = DrdynvcClient::new();
         add_active_channel(&mut client, 1);
         client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+
+        let tunnel_data = ironrdp_core::encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(
+            crate::pdu::DataPdu::new(1, Vec::new()),
+        )))
+        .unwrap();
+        assert!(client.process_tunnel(&tunnel_data).is_err());
 
         let request = crate::pdu::SoftSyncRequestPdu::new(alloc::vec![crate::pdu::SoftSyncChannelList::new(
             SoftSyncTunnelType::RELIABLE_UDP,
@@ -652,19 +636,11 @@ mod tests {
         )]);
         client.process_soft_sync_request(request).unwrap();
 
-        assert!(client.has_pending_soft_sync_response());
-        assert_eq!(client.tunnel_for_channel(1), None);
-
-        client.complete_soft_sync_response().unwrap();
-
         assert!(client.soft_sync_complete());
         assert_eq!(client.tunnel_for_channel(1), Some(SoftSyncTunnelType::RELIABLE_UDP));
+        assert!(client.process_tunnel(&tunnel_data).is_ok());
 
-        let tcp_data = ironrdp_core::encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(
-            crate::pdu::DataPdu::new(1, Vec::new()),
-        )))
-        .unwrap();
-        assert!(client.process(&tcp_data).is_err());
+        assert!(client.process(&tunnel_data).is_err());
 
         client.close_channel(1).unwrap();
         assert_eq!(client.tunnel_for_channel(1), None);
@@ -681,7 +657,6 @@ mod tests {
         )]);
 
         assert!(client.process_soft_sync_request(request).is_err());
-        assert!(!client.has_pending_soft_sync_response());
         assert!(!client.soft_sync_complete());
     }
 }

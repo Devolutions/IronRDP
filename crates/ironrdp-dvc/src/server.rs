@@ -30,10 +30,6 @@ enum ChannelState {
 
 enum SoftSyncState {
     Idle,
-    RequestPending {
-        tunnel_channels: BTreeMap<u32, SoftSyncTunnelType>,
-        requested_tunnels: BTreeSet<SoftSyncTunnelType>,
-    },
     Active {
         requested_tunnels: BTreeSet<SoftSyncTunnelType>,
         response_received: bool,
@@ -272,8 +268,9 @@ impl DrdynvcServer {
 
     /// Creates a Soft-Sync request that moves the supplied channels to reliable UDP.
     ///
-    /// Call [`Self::complete_soft_sync_request`] only after the returned message
-    /// has been successfully written over TCP.
+    /// This API emits exactly one `ReliableUdp` channel list and maps every supplied
+    /// channel to that list. A future multi-tunnel request API must establish an
+    /// explicit response-routing mapping before it is exposed.
     pub fn request_reliable_udp(&mut self, channel_ids: Vec<u32>) -> PduResult<SvcMessage> {
         if channel_ids.is_empty() {
             return Err(pdu_other_err!("soft-sync requires at least one dynamic channel"));
@@ -301,30 +298,13 @@ impl DrdynvcServer {
             SoftSyncTunnelType::RELIABLE_UDP,
             channel_ids,
         )]);
-        self.soft_sync_state = SoftSyncState::RequestPending {
-            tunnel_channels: selected_channels,
-            requested_tunnels: BTreeSet::from([SoftSyncTunnelType::RELIABLE_UDP]),
-        };
-        as_svc_msg_with_flag(DrdynvcServerPdu::SoftSyncRequest(request))
-    }
-
-    /// Begins server-to-client tunnel routing after a Soft-Sync request was sent over TCP.
-    pub fn complete_soft_sync_request(&mut self) -> PduResult<()> {
-        let state = core::mem::replace(&mut self.soft_sync_state, SoftSyncState::Idle);
-        let SoftSyncState::RequestPending {
-            tunnel_channels,
-            requested_tunnels,
-        } = state
-        else {
-            self.soft_sync_state = state;
-            return Err(pdu_other_err!("no Soft-Sync request is pending"));
-        };
-        self.outgoing_tunnel_channels = tunnel_channels;
+        let message = as_svc_msg_with_flag(DrdynvcServerPdu::SoftSyncRequest(request))?;
+        self.outgoing_tunnel_channels = selected_channels;
         self.soft_sync_state = SoftSyncState::Active {
-            requested_tunnels,
+            requested_tunnels: BTreeSet::from([SoftSyncTunnelType::RELIABLE_UDP]),
             response_received: false,
         };
-        Ok(())
+        Ok(message)
     }
 
     /// Returns whether server-to-client data for `channel_id` must be sent through a tunnel.
@@ -510,12 +490,41 @@ mod tests {
     impl DvcServerProcessor for TestDvc {}
 
     #[test]
+    fn soft_sync_rejects_tunnel_data_until_the_client_responds() {
+        let mut server = DrdynvcServer::new();
+        let channel_id = server.dynamic_channels.insert_channel(TestDvc, ChannelState::Opened);
+
+        server.request_reliable_udp(alloc::vec![channel_id]).unwrap();
+        assert_eq!(
+            server.tunnel_for_outgoing_channel(channel_id),
+            Some(SoftSyncTunnelType::RELIABLE_UDP)
+        );
+
+        let tunnel_data = ironrdp_core::encode_vec(&DrdynvcClientPdu::Data(crate::pdu::DrdynvcDataPdu::Data(
+            crate::pdu::DataPdu::new(channel_id, Vec::new()),
+        )))
+        .unwrap();
+        assert!(server.process_tunnel(&tunnel_data).is_err());
+
+        server
+            .process_soft_sync_response(crate::pdu::SoftSyncResponsePdu::new(alloc::vec![
+                SoftSyncTunnelType::RELIABLE_UDP,
+            ]))
+            .unwrap();
+
+        assert!(server.soft_sync_response_received());
+        assert!(server.process_tunnel(&tunnel_data).is_ok());
+
+        server.close_channel(channel_id).unwrap();
+        assert!(server.request_reliable_udp(alloc::vec![channel_id]).is_err());
+    }
+
+    #[test]
     fn soft_sync_accepts_a_response_after_the_selected_channel_closes() {
         let mut server = DrdynvcServer::new();
         let channel_id = server.dynamic_channels.insert_channel(TestDvc, ChannelState::Opened);
 
         server.request_reliable_udp(alloc::vec![channel_id]).unwrap();
-        server.complete_soft_sync_request().unwrap();
         server.close_channel(channel_id).unwrap();
 
         server
