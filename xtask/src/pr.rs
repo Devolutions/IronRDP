@@ -45,6 +45,7 @@ const CANONICAL_SCOPES: &[&str] = &[
     "web",
     "ffi",
     "replay",
+    "fuzz",
     "xtask",
     "release",
     "pr-automation",
