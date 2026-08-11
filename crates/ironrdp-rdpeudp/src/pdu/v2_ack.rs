@@ -7,6 +7,11 @@
 use alloc::vec::Vec;
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
 
+/// Maximum number of entries an [`AckVectorPayload`] can carry.
+///
+/// `codedAckVecSize` (MS-RDPEUDP2 Section 2.2.1.2.6) is a 7-bit field.
+pub const ACK_VECTOR_MAX_ENTRIES: usize = 127;
+
 // ── Acknowledgement Payload (ACK flag) ──
 
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -208,6 +213,8 @@ impl AckVectorEntry {
 /// - `BaseSeqNum(2)` + packed byte (`codedAckVecSize(7 bits) : TimeStampPresent(1 bit)`) = 3 bytes.
 /// - If `TimeStampPresent`: `TimeStamp(3)` + `SendAckTimeGapInMs(1)` = 4 bytes.
 /// - `codedAckVector(codedAckVecSize bytes)`.
+///
+/// `codedAckVecSize` is 7 bits, so at most [`ACK_VECTOR_MAX_ENTRIES`] entries fit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AckVectorPayload {
     /// Lower 16 bits of the base sequence number for this vector.
@@ -273,7 +280,7 @@ impl Encode for AckVectorPayload {
         dst.write_u16(self.base_seq_num);
 
         let vec_size: u8 = ironrdp_core::cast_length!("AckVectorPayload", "codedAckVecSize", self.entries.len())?;
-        if vec_size > 0x7F {
+        if usize::from(vec_size) > ACK_VECTOR_MAX_ENTRIES {
             return Err(ironrdp_core::invalid_field_err!(
                 "AckVectorPayload",
                 "codedAckVecSize",
