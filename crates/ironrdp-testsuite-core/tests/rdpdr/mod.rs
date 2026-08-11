@@ -1,13 +1,47 @@
-use ironrdp_core::encode_vec;
+use ironrdp_core::{encode_vec, impl_as_any};
+use ironrdp_pdu::PduResult;
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::{
     Capabilities, CapabilityMessage, ClientDeviceListAnnounce, CoreCapability, CoreCapabilityKind,
-    DEFAULT_PRINTER_DRIVER_NAME, DeviceAnnounceHeader, DeviceIoRequest, DeviceType, Devices, MajorFunction,
-    MinorFunction, NtStatus, PRINTER_CAPABILITY_VERSION_01, RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER,
-    RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
+    DEFAULT_PRINTER_DRIVER_NAME, DeviceAnnounceHeader, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices,
+    MajorFunction, MinorFunction, NtStatus, PRINTER_CAPABILITY_VERSION_01, RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER,
+    RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER, ServerDeviceAnnounceResponse, ServerDriveIoRequest,
+    VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
-use ironrdp_rdpdr::{NoopRdpdrBackend, Rdpdr};
+use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
+use ironrdp_rdpdr::{NoopRdpdrBackend, Rdpdr, RdpdrBackend};
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
+
+#[derive(Debug, Default)]
+struct ResetTrackingRdpdrBackend {
+    lifecycle: Vec<&'static str>,
+}
+
+impl_as_any!(ResetTrackingRdpdrBackend);
+
+impl RdpdrBackend for ResetTrackingRdpdrBackend {
+    fn reset(&mut self) -> PduResult<()> {
+        self.lifecycle.push("reset");
+        Ok(())
+    }
+
+    fn restore_drive(&mut self, _device_id: u32) -> PduResult<()> {
+        self.lifecycle.push("restore_drive");
+        Ok(())
+    }
+
+    fn handle_server_device_announce_response(&mut self, _pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
+        Ok(())
+    }
+
+    fn handle_scard_call(&mut self, _req: DeviceControlRequest<ScardIoCtlCode>, _call: ScardCall) -> PduResult<()> {
+        Ok(())
+    }
+
+    fn handle_drive_io_request(&mut self, _req: ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
+    }
+}
 
 fn read_u16(bytes: &[u8]) -> u16 {
     u16::from_le_bytes(bytes[..2].try_into().unwrap())
@@ -246,6 +280,95 @@ fn printer_announce_respects_explicit_driver() {
     let driver_bytes = &body[24 + pnp_name_len..24 + pnp_name_len + driver_name_len];
 
     assert_eq!(utf16le_to_string(driver_bytes), "Microsoft Print To PDF");
+}
+
+#[test]
+fn filesystem_drive_announce_encodes_unicode_data_and_valid_dos_name() {
+    let drive_name = "share \u{1F4C1}";
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned())
+        .with_drives(Some(vec![(42, drive_name.to_owned())]));
+
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    assert!(
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .unwrap()
+            .is_empty()
+    );
+    let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
+    assert_eq!(responses.len(), 1);
+
+    let encoded = responses[0].encode_unframed_pdu().unwrap();
+    assert_eq!(&encoded[..4], &[0x72, 0x44, 0x41, 0x44]); // RDPDR + DEVICELIST_ANNOUNCE
+    assert_eq!(read_u32(&encoded[4..]), 1);
+    assert_eq!(read_u32(&encoded[8..]), u32::from(DeviceType::Filesystem));
+    assert_eq!(read_u32(&encoded[12..]), 42);
+    assert_eq!(&encoded[16..24], b"share \0\0");
+
+    let device_data_length = read_u32_as_usize(&encoded[24..]);
+    let device_data = &encoded[28..28 + device_data_length];
+    assert_eq!(28 + device_data_length, encoded.len());
+    assert_eq!(utf16le_to_string(device_data), drive_name);
+}
+
+#[test]
+fn server_announce_reopens_post_logon_drive_announcements() {
+    let mut rdpdr =
+        Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_drives(Some(vec![(42, "share".to_owned())]));
+
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    assert!(
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .unwrap()
+            .is_empty()
+    );
+    let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
+    assert_eq!(announced_devices(&responses[0]), vec![(42, DeviceType::Filesystem)]);
+
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    assert!(
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .unwrap()
+            .is_empty()
+    );
+    let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
+    assert_eq!(announced_devices(&responses[0]), vec![(42, DeviceType::Filesystem)]);
+}
+
+#[test]
+fn server_announce_resets_backend_before_restoring_drives() {
+    let mut rdpdr = Rdpdr::new(Box::new(ResetTrackingRdpdrBackend::default()), "IronRDP".to_owned())
+        .with_drives(Some(vec![(42, "share".to_owned())]));
+
+    announce_client_id(&mut rdpdr, 12);
+
+    assert_eq!(
+        rdpdr.downcast_backend::<ResetTrackingRdpdrBackend>().unwrap().lifecycle,
+        ["reset", "restore_drive"]
+    );
+}
+
+#[test]
+fn client_announce_reply_uses_minor_version_13() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned());
+
+    let responses = rdpdr
+        .process(
+            &encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+                version_major: 1,
+                version_minor: 12,
+                client_id: 0x1234,
+                kind: VersionAndIdPduKind::ServerAnnounceRequest,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+    let encoded = responses[0].encode_unframed_pdu().unwrap();
+    assert_eq!(read_u16(&encoded[4..]), 1);
+    assert_eq!(read_u16(&encoded[6..]), 13);
 }
 
 #[test]
