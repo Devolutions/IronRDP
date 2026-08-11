@@ -348,7 +348,6 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.static_channel_factories,
             self.state.sound_factory,
             self.state.cliprdr_factory,
-            self.state.static_channel_factories,
             self.state.connection_handler,
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,
