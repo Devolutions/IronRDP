@@ -184,7 +184,10 @@ pub struct RDCleanPathPdu {
     /// Currently unused. Could be used by a custom RDP server eventually.
     #[asn1(context_specific = "4", optional = "true")]
     pub server_auth: Option<String>,
-    /// The RDP PCB forwarded by the proxy to the RDP server.
+    /// The preconnection data forwarded by the proxy to the RDP server.
+    ///
+    /// With X.224 present, this is the legacy complete PCB byte sequence represented as a string.
+    /// With X.224 absent, this is a VMConnect PCB V2 Unicode payload that the proxy encodes.
     ///
     /// Sent from client to proxy only.
     #[asn1(context_specific = "5", optional = "true")]
@@ -282,6 +285,10 @@ impl RDCleanPathPdu {
         RDCleanPath::try_from(self)
     }
 
+    pub fn into_message(self) -> Result<RDCleanPathMessage, MissingRDCleanPathField> {
+        RDCleanPathMessage::try_from(self)
+    }
+
     pub fn new_general_error() -> Self {
         Self {
             version: VERSION_1,
@@ -324,6 +331,25 @@ impl RDCleanPathPdu {
         })
     }
 
+    /// VMConnect request: proxy encodes the payload as PCB V2 and does TLS; client runs CredSSP then X.224.
+    pub fn new_vmconnect_request(
+        destination: String,
+        proxy_auth: String,
+        pcb_payload: String,
+    ) -> Result<Self, MissingRDCleanPathField> {
+        if pcb_payload.trim().is_empty() {
+            return Err(MissingRDCleanPathField("non-empty preconnection_blob"));
+        }
+
+        Ok(Self {
+            version: VERSION_1,
+            destination: Some(destination),
+            proxy_auth: Some(proxy_auth),
+            preconnection_blob: Some(pcb_payload),
+            ..Self::default()
+        })
+    }
+
     pub fn new_response(
         server_addr: String,
         x224_pdu: Vec<u8>,
@@ -332,6 +358,24 @@ impl RDCleanPathPdu {
         Ok(Self {
             version: VERSION_1,
             x224_connection_pdu: Some(OctetString::new(x224_pdu)?),
+            server_cert_chain: Some(
+                x509_chain
+                    .into_iter()
+                    .map(OctetString::new)
+                    .collect::<der::Result<_>>()?,
+            ),
+            server_addr: Some(server_addr),
+            ..Self::default()
+        })
+    }
+
+    /// Response after VMConnect PCB + TLS: cert chain only, no X.224.
+    pub fn new_vmconnect_response(
+        server_addr: String,
+        x509_chain: impl IntoIterator<Item = Vec<u8>>,
+    ) -> der::Result<Self> {
+        Ok(Self {
+            version: VERSION_1,
             server_cert_chain: Some(
                 x509_chain
                     .into_iter()
@@ -402,7 +446,203 @@ impl RDCleanPathPdu {
     }
 }
 
-/// Helper enum to leverage Rust pattern matching feature.
+/// Semantic RDCleanPath message model, including explicit VMConnect request and response variants.
+///
+/// See the [Gateway reference implementation] for the corresponding proxy behavior.
+///
+/// [Gateway reference implementation]: https://github.com/Devolutions/devolutions-gateway/pull/1372
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RDCleanPathMessage {
+    Request {
+        destination: String,
+        proxy_auth: String,
+        server_auth: Option<String>,
+        preconnection_blob: Option<String>,
+        x224_connection_request: OctetString,
+    },
+    VmConnectRequest {
+        destination: String,
+        proxy_auth: String,
+        server_auth: Option<String>,
+        pcb_payload: String,
+    },
+    Response {
+        x224_connection_response: OctetString,
+        server_cert_chain: Vec<OctetString>,
+        server_addr: String,
+    },
+    VmConnectResponse {
+        server_cert_chain: Vec<OctetString>,
+        server_addr: String,
+    },
+    GeneralErr(RDCleanPathErr),
+    NegotiationErr {
+        x224_connection_response: Vec<u8>,
+    },
+}
+
+impl RDCleanPathMessage {
+    pub fn into_pdu(self) -> Result<RDCleanPathPdu, MissingRDCleanPathField> {
+        RDCleanPathPdu::try_from(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MissingRDCleanPathField(&'static str);
+
+impl fmt::Display for MissingRDCleanPathField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RDCleanPath is missing {} field", self.0)
+    }
+}
+
+impl core::error::Error for MissingRDCleanPathField {}
+
+impl TryFrom<RDCleanPathPdu> for RDCleanPathMessage {
+    type Error = MissingRDCleanPathField;
+
+    fn try_from(pdu: RDCleanPathPdu) -> Result<Self, Self::Error> {
+        let rdcleanpath = if let Some(destination) = pdu.destination {
+            let proxy_auth = pdu.proxy_auth.ok_or(MissingRDCleanPathField("proxy_auth"))?;
+            match (pdu.x224_connection_pdu, pdu.preconnection_blob) {
+                (Some(x224_connection_request), preconnection_blob) => Self::Request {
+                    destination,
+                    proxy_auth,
+                    server_auth: pdu.server_auth,
+                    preconnection_blob,
+                    x224_connection_request,
+                },
+                (None, Some(pcb_payload)) if !pcb_payload.trim().is_empty() => Self::VmConnectRequest {
+                    destination,
+                    proxy_auth,
+                    server_auth: pdu.server_auth,
+                    pcb_payload,
+                },
+                (None, _) => {
+                    return Err(MissingRDCleanPathField(
+                        "x224_connection_pdu or non-empty preconnection_blob",
+                    ));
+                }
+            }
+        } else if let Some(server_addr) = pdu.server_addr {
+            let server_cert_chain = pdu
+                .server_cert_chain
+                .ok_or(MissingRDCleanPathField("server_cert_chain"))?;
+            if let Some(x224_connection_response) = pdu.x224_connection_pdu {
+                Self::Response {
+                    x224_connection_response,
+                    server_cert_chain,
+                    server_addr,
+                }
+            } else {
+                Self::VmConnectResponse {
+                    server_cert_chain,
+                    server_addr,
+                }
+            }
+        } else {
+            let error = pdu.error.ok_or(MissingRDCleanPathField("error"))?;
+            match (error.error_code, pdu.x224_connection_pdu) {
+                (NEGOTIATION_ERROR_CODE, Some(x224_pdu)) => Self::NegotiationErr {
+                    x224_connection_response: x224_pdu.as_bytes().to_vec(),
+                },
+                _ => Self::GeneralErr(error),
+            }
+        };
+
+        Ok(rdcleanpath)
+    }
+}
+
+impl TryFrom<RDCleanPathMessage> for RDCleanPathPdu {
+    type Error = MissingRDCleanPathField;
+
+    fn try_from(value: RDCleanPathMessage) -> Result<Self, Self::Error> {
+        if let RDCleanPathMessage::VmConnectRequest { pcb_payload, .. } = &value
+            && pcb_payload.trim().is_empty()
+        {
+            return Err(MissingRDCleanPathField("non-empty preconnection_blob"));
+        }
+
+        let pdu = match value {
+            RDCleanPathMessage::Request {
+                destination,
+                proxy_auth,
+                server_auth,
+                preconnection_blob,
+                x224_connection_request,
+            } => Self {
+                version: VERSION_1,
+                destination: Some(destination),
+                proxy_auth: Some(proxy_auth),
+                server_auth,
+                preconnection_blob,
+                x224_connection_pdu: Some(x224_connection_request),
+                ..Default::default()
+            },
+            RDCleanPathMessage::VmConnectRequest {
+                destination,
+                proxy_auth,
+                server_auth,
+                pcb_payload,
+            } => Self {
+                version: VERSION_1,
+                destination: Some(destination),
+                proxy_auth: Some(proxy_auth),
+                server_auth,
+                preconnection_blob: Some(pcb_payload),
+                ..Default::default()
+            },
+            RDCleanPathMessage::Response {
+                x224_connection_response,
+                server_cert_chain,
+                server_addr,
+            } => Self {
+                version: VERSION_1,
+                x224_connection_pdu: Some(x224_connection_response),
+                server_cert_chain: Some(server_cert_chain),
+                server_addr: Some(server_addr),
+                ..Default::default()
+            },
+            RDCleanPathMessage::VmConnectResponse {
+                server_cert_chain,
+                server_addr,
+            } => Self {
+                version: VERSION_1,
+                server_cert_chain: Some(server_cert_chain),
+                server_addr: Some(server_addr),
+                ..Default::default()
+            },
+            RDCleanPathMessage::GeneralErr(error) => Self {
+                version: VERSION_1,
+                error: Some(error),
+                ..Default::default()
+            },
+            RDCleanPathMessage::NegotiationErr {
+                x224_connection_response,
+            } => Self {
+                version: VERSION_1,
+                error: Some(RDCleanPathErr {
+                    error_code: NEGOTIATION_ERROR_CODE,
+                    http_status_code: None,
+                    wsa_last_error: None,
+                    tls_alert_code: None,
+                }),
+                x224_connection_pdu: Some(
+                    OctetString::new(x224_connection_response)
+                        .expect("x224_connection_response smaller than u32::MAX (256 MiB)"),
+                ),
+                ..Default::default()
+            },
+        };
+
+        Ok(pdu)
+    }
+}
+
+/// Legacy RDCleanPath semantic model.
+///
+/// Use [`RDCleanPathPdu::into_message`] for explicit VMConnect variants.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RDCleanPath {
     Request {
@@ -429,56 +669,59 @@ impl RDCleanPath {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MissingRDCleanPathField(&'static str);
-
-impl fmt::Display for MissingRDCleanPathField {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "RDCleanPath is missing {} field", self.0)
-    }
-}
-
-impl core::error::Error for MissingRDCleanPathField {}
-
 impl TryFrom<RDCleanPathPdu> for RDCleanPath {
     type Error = MissingRDCleanPathField;
 
     fn try_from(pdu: RDCleanPathPdu) -> Result<Self, Self::Error> {
-        let rdcleanpath = if let Some(destination) = pdu.destination {
-            Self::Request {
-                destination,
-                proxy_auth: pdu.proxy_auth.ok_or(MissingRDCleanPathField("proxy_auth"))?,
-                server_auth: pdu.server_auth,
-                preconnection_blob: pdu.preconnection_blob,
-                x224_connection_request: pdu
-                    .x224_connection_pdu
-                    .ok_or(MissingRDCleanPathField("x224_connection_pdu"))?,
-            }
-        } else if let Some(server_addr) = pdu.server_addr {
-            Self::Response {
-                x224_connection_response: pdu
-                    .x224_connection_pdu
-                    .ok_or(MissingRDCleanPathField("x224_connection_pdu"))?,
-                server_cert_chain: pdu
-                    .server_cert_chain
-                    .ok_or(MissingRDCleanPathField("server_cert_chain"))?,
-                server_addr,
-            }
-        } else {
-            let error = pdu.error.ok_or(MissingRDCleanPathField("error"))?;
-            match (error.error_code, pdu.x224_connection_pdu) {
-                (NEGOTIATION_ERROR_CODE, Some(x224_pdu)) => Self::NegotiationErr {
-                    x224_connection_response: x224_pdu.as_bytes().to_vec(),
-                },
-                _ => Self::GeneralErr(error),
-            }
-        };
+        if (pdu.destination.is_some() || pdu.server_addr.is_some()) && pdu.x224_connection_pdu.is_none() {
+            return Err(MissingRDCleanPathField("x224_connection_pdu"));
+        }
 
-        Ok(rdcleanpath)
+        match RDCleanPathMessage::try_from(pdu)? {
+            RDCleanPathMessage::Request {
+                destination,
+                proxy_auth,
+                server_auth,
+                preconnection_blob,
+                x224_connection_request,
+            } => Ok(Self::Request {
+                destination,
+                proxy_auth,
+                server_auth,
+                preconnection_blob,
+                x224_connection_request,
+            }),
+            RDCleanPathMessage::Response {
+                x224_connection_response,
+                server_cert_chain,
+                server_addr,
+            } => Ok(Self::Response {
+                x224_connection_response,
+                server_cert_chain,
+                server_addr,
+            }),
+            RDCleanPathMessage::GeneralErr(error) => Ok(Self::GeneralErr(error)),
+            RDCleanPathMessage::NegotiationErr {
+                x224_connection_response,
+            } => Ok(Self::NegotiationErr {
+                x224_connection_response,
+            }),
+            RDCleanPathMessage::VmConnectRequest { .. } | RDCleanPathMessage::VmConnectResponse { .. } => {
+                Err(MissingRDCleanPathField("x224_connection_pdu"))
+            }
+        }
     }
 }
 
 impl From<RDCleanPath> for RDCleanPathPdu {
+    fn from(value: RDCleanPath) -> Self {
+        RDCleanPathMessage::from(value)
+            .into_pdu()
+            .expect("legacy RDCleanPath messages always contain X.224")
+    }
+}
+
+impl From<RDCleanPath> for RDCleanPathMessage {
     fn from(value: RDCleanPath) -> Self {
         match value {
             RDCleanPath::Request {
@@ -487,46 +730,27 @@ impl From<RDCleanPath> for RDCleanPathPdu {
                 server_auth,
                 preconnection_blob,
                 x224_connection_request,
-            } => Self {
-                version: VERSION_1,
-                destination: Some(destination),
-                proxy_auth: Some(proxy_auth),
+            } => Self::Request {
+                destination,
+                proxy_auth,
                 server_auth,
                 preconnection_blob,
-                x224_connection_pdu: Some(x224_connection_request),
-                ..Default::default()
+                x224_connection_request,
             },
             RDCleanPath::Response {
                 x224_connection_response,
                 server_cert_chain,
                 server_addr,
-            } => Self {
-                version: VERSION_1,
-                x224_connection_pdu: Some(x224_connection_response),
-                server_cert_chain: Some(server_cert_chain),
-                server_addr: Some(server_addr),
-                ..Default::default()
+            } => Self::Response {
+                x224_connection_response,
+                server_cert_chain,
+                server_addr,
             },
-            RDCleanPath::GeneralErr(error) => Self {
-                version: VERSION_1,
-                error: Some(error),
-                ..Default::default()
-            },
+            RDCleanPath::GeneralErr(error) => Self::GeneralErr(error),
             RDCleanPath::NegotiationErr {
                 x224_connection_response,
-            } => Self {
-                version: VERSION_1,
-                error: Some(RDCleanPathErr {
-                    error_code: NEGOTIATION_ERROR_CODE,
-                    http_status_code: None,
-                    wsa_last_error: None,
-                    tls_alert_code: None,
-                }),
-                x224_connection_pdu: Some(
-                    OctetString::new(x224_connection_response)
-                        .expect("x224_connection_response smaller than u32::MAX (256 MiB)"),
-                ),
-                ..Default::default()
+            } => Self::NegotiationErr {
+                x224_connection_response,
             },
         }
     }

@@ -95,6 +95,55 @@ public partial class CredsspSequence: IDisposable
         }
     }
 
+    /// <summary>
+    /// Init CredSSP with an explicit protocol (pre-X.224 VMConnect front).
+    /// </summary>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>CredsspSequenceInitResult</c> allocated on Rust side.
+    /// </returns>
+    public static CredsspSequenceInitResult InitWithProtocol(ClientConnector connector, string serverName, byte[] serverPublicKey, uint selectedProtocol, KerberosConfig? kerberoConfigs)
+    {
+        unsafe
+        {
+            byte[] serverNameBuf = DiplomatUtils.StringToUtf8(serverName);
+            nuint serverPublicKeyLength = (nuint)serverPublicKey.Length;
+            nuint serverNameBufLength = (nuint)serverNameBuf.Length;
+            Raw.ClientConnector* connectorRaw;
+            connectorRaw = connector.AsFFI();
+            if (connectorRaw == null)
+            {
+                throw new ObjectDisposedException("ClientConnector");
+            }
+            Raw.KerberosConfig* kerberoConfigsRaw;
+            if (kerberoConfigs == null)
+            {
+                kerberoConfigsRaw = null;
+            }
+            else
+            {
+                kerberoConfigsRaw = kerberoConfigs.AsFFI();
+                if (kerberoConfigsRaw == null)
+                {
+                    throw new ObjectDisposedException("KerberosConfig");
+                }
+            }
+            fixed (byte* serverPublicKeyPtr = serverPublicKey)
+            {
+                fixed (byte* serverNameBufPtr = serverNameBuf)
+                {
+                    Raw.CredsspFfiResultBoxCredsspSequenceInitResultBoxIronRdpError result = Raw.CredsspSequence.InitWithProtocol(connectorRaw, serverNameBufPtr, serverNameBufLength, serverPublicKeyPtr, serverPublicKeyLength, selectedProtocol, kerberoConfigsRaw);
+                    if (!result.isOk)
+                    {
+                        throw new IronRdpException(new IronRdpError(result.Err));
+                    }
+                    Raw.CredsspSequenceInitResult* retVal = result.Ok;
+                    return new CredsspSequenceInitResult(retVal);
+                }
+            }
+        }
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>TsRequest</c> allocated on Rust side.
