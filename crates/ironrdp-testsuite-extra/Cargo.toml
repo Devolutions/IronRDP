@@ -24,7 +24,7 @@ harness = true
 [dev-dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
-ironrdp = { path = "../ironrdp", features = ["acceptor", "connector", "dvc", "echo", "pdu", "rdpdr", "rdpsnd", "server", "session", "svc"] }
+ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo"] }
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-agent.path = "../ironrdp-agent"
 ironrdp-daemon.path = "../ironrdp-daemon"
