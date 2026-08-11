@@ -176,7 +176,7 @@ impl<'de> Decode<'de> for RailPduHeader {
     }
 }
 
-/// A rectangle in virtual screen coordinates ([MS-RDPERP] 2.2.1.2.2).
+/// A window-move rectangle in virtual screen coordinates ([MS-RDPERP] 2.2.2.7.4/2.2.2.7.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rectangle {
     pub left: i16,
@@ -305,7 +305,6 @@ impl RailPdu {
                 | Self::GetApplicationIdResponse(_)
                 | Self::GetApplicationIdResponseEx(_)
                 | Self::LanguageBarInfo(_)
-                | Self::LanguageImeInfo(_)
                 | Self::CompartmentInfo(_)
                 | Self::ZOrderSync(_)
                 | Self::Cloak(_)
@@ -329,6 +328,10 @@ impl RailPdu {
                 | Self::GetApplicationIdRequest(_)
                 | Self::WindowMove(_)
                 | Self::SnapArrange(_)
+                | Self::LanguageBarInfo(_)
+                | Self::LanguageImeInfo(_)
+                | Self::CompartmentInfo(_)
+                | Self::Cloak(_)
                 | Self::TextScaleInfo(_)
                 | Self::CaretBlinkInfo(_)
         )
@@ -2001,11 +2004,7 @@ fn decode_body(kind: RailOrderType, src: &mut ReadCursor<'_>) -> DecodeResult<Ra
         RailOrderType::LocalMoveSize => {
             expect_exact(src, 12, "TS_RAIL_ORDER_LOCALMOVESIZE")?;
             let window_id = src.read_u32();
-            let is_start = match src.read_u16() {
-                0 => false,
-                1 => true,
-                _ => return Err(invalid_field_err!("IsMoveSizeStart", "must be zero or one")),
-            };
+            let is_start = src.read_u16() != 0;
             let move_size_type = MoveSizeType::try_from(src.read_u16())
                 .map_err(|_| invalid_field_err!("MoveSizeType", "unknown move/size type"))?;
             let x = src.read_i16();
@@ -2486,6 +2485,21 @@ mod tests {
     }
 
     #[test]
+    fn accepts_nonzero_move_size_start() {
+        let pdu = RailPdu::LocalMoveSize(LocalMoveSizePdu {
+            window_id: 1,
+            is_start: true,
+            move_size_type: MoveSizeType::Move,
+            x: 5,
+            y: 6,
+        });
+        let mut encoded = encode_vec(&pdu).unwrap();
+        encoded[8] = 2;
+
+        assert_eq!(decode::<RailPdu>(&encoded).unwrap(), pdu);
+    }
+
+    #[test]
     fn rejects_invalid_outbound_values() {
         let invalid_execute = RailPdu::Execute(ExecutePdu {
             flags: ExecutePdu::TRANSLATE_FILES,
@@ -2525,5 +2539,35 @@ mod tests {
                 .validate_direction(RailPduDirection::ClientToServer)
                 .is_err()
         );
+
+        let language_bar = RailPdu::LanguageBarInfo(LanguageBarInfoPdu { status: 1 });
+        assert!(language_bar.is_server_to_client());
+        assert!(language_bar.is_client_to_server());
+
+        let language_ime = RailPdu::LanguageImeInfo(LanguageImeInfoPdu {
+            profile_type: LanguageProfileType::KeyboardLayout,
+            language_id: 0x0409,
+            language_profile_clsid: RailGuid::NULL,
+            profile_guid: RailGuid::NULL,
+            keyboard_layout: 0x0001_0409,
+        });
+        assert!(!language_ime.is_server_to_client());
+        assert!(language_ime.is_client_to_server());
+
+        let compartment = RailPdu::CompartmentInfo(CompartmentInfoPdu {
+            ime_state: ImeState::Open,
+            ime_conversion_mode: 1,
+            ime_sentence_mode: 4,
+            kana_mode: KanaMode::On,
+        });
+        assert!(compartment.is_server_to_client());
+        assert!(compartment.is_client_to_server());
+
+        let cloak = RailPdu::Cloak(CloakPdu {
+            window_id: 1,
+            cloaked: true,
+        });
+        assert!(cloak.is_server_to_client());
+        assert!(cloak.is_client_to_server());
     }
 }
