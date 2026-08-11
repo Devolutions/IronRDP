@@ -2,8 +2,8 @@ use std::sync::LazyLock;
 
 use ironrdp_core::decode;
 use ironrdp_pdu::rdp::capability_sets::{
-    CapabilitySet, ClientConfirmActive, DemandActive, SERVER_CHANNEL_ID, ServerDemandActive, WindowList,
-    WindowSupportLevel,
+    CapabilitySet, ClientConfirmActive, DemandActive, Rail, RailSupportLevel, SERVER_CHANNEL_ID, ServerDemandActive,
+    WindowList, WindowSupportLevel,
 };
 
 pub const SERVER_DEMAND_ACTIVE_BUFFER: [u8; 357] = [
@@ -281,7 +281,9 @@ pub static SERVER_DEMAND_ACTIVE: LazyLock<ServerDemandActive> = LazyLock::new(||
             CapabilitySet::BitmapCacheHostSupport(SERVER_BITMAP_CACHE_HOST_SUPPORT_CAPABILITY_SET.to_vec()),
             CapabilitySet::Pointer(decode(SERVER_POINTER_CAPABILITY_SET.as_ref()).unwrap()),
             CapabilitySet::Input(decode(SERVER_INPUT_CAPABILITY_SET.as_ref()).unwrap()),
-            CapabilitySet::Rail(SERVER_RAIL_CAPABILITY_SET.to_vec()),
+            CapabilitySet::Rail(Rail {
+                support_level: RailSupportLevel::empty(),
+            }),
             CapabilitySet::WindowList(WindowList {
                 support_level: WindowSupportLevel::NotSupported,
                 num_icon_caches: 0,
