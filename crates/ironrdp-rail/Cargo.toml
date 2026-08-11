@@ -15,10 +15,10 @@ categories.workspace = true
 [features]
 default = ["std"]
 std = ["alloc", "ironrdp-core/std", "dep:ironrdp-svc"]
-alloc = ["ironrdp-core/alloc"]
+alloc = ["dep:ironrdp-core", "ironrdp-core/alloc"]
 
 [dependencies]
-ironrdp-core = { path = "../ironrdp-core", version = "0.2", default-features = false } # public
+ironrdp-core = { path = "../ironrdp-core", version = "0.2", default-features = false, optional = true } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8", optional = true } # public
 
 [lints]

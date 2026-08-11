@@ -6,7 +6,7 @@
 //! [MS-RDPERP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
 
 #[cfg(not(feature = "std"))]
-use alloc::{borrow::ToOwned, string::String, vec::Vec};
+use alloc::{borrow::ToOwned as _, string::String, vec::Vec};
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, invalid_field_err};
 #[cfg(feature = "std")]
 use ironrdp_svc::SvcEncode;
