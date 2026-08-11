@@ -1854,6 +1854,9 @@ async fn active_session(
                         ));
                     }
                 }
+                ActiveStageOutput::WindowingOrders(_) => {
+                    // This desktop client does not provide a consumer for windowing orders.
+                }
                 ActiveStageOutput::SaveSessionInfo { logon_complete: true } => {
                     if !post_logon_redraw_requested {
                         post_logon_redraw_requested = true;
@@ -1962,6 +1965,7 @@ async fn active_session(
                             static_channel_chunk_size,
                             refresh_rect_support: reactivated_refresh_rect_support,
                             suppress_output_support: reactivated_suppress_output_support,
+                            window_support_level,
                         } = connection_activation.connection_activation_state()
                         {
                             debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
@@ -1977,6 +1981,7 @@ async fn active_session(
                             ) {
                                 return Err(ironrdp_session::general_err!("invalid static channel chunk size"));
                             }
+                            active_stage.set_window_support_level(window_support_level);
                             refresh_rect_support = reactivated_refresh_rect_support;
                             suppress_output_support = reactivated_suppress_output_support;
                             break 'activation_seq;

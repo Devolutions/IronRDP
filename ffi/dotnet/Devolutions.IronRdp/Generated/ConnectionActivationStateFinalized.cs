@@ -55,6 +55,14 @@ public partial class ConnectionActivationStateFinalized: IDisposable
         }
     }
 
+    public sbyte WindowSupportLevel
+    {
+        get
+        {
+            return GetWindowSupportLevel();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>ConnectionActivationStateFinalized</c> from a raw handle.
     /// </summary>
@@ -133,6 +141,23 @@ public partial class ConnectionActivationStateFinalized: IDisposable
                 throw new ObjectDisposedException("ConnectionActivationStateFinalized");
             }
             nuint retVal = Raw.ConnectionActivationStateFinalized.GetStaticChannelChunkSize(_inner);
+            return retVal;
+        }
+    }
+
+    /// <summary>
+    /// Returns -1 when Window List support was not negotiated, otherwise
+    /// the negotiated Window List support level.
+    /// </summary>
+    public sbyte GetWindowSupportLevel()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConnectionActivationStateFinalized");
+            }
+            sbyte retVal = Raw.ConnectionActivationStateFinalized.GetWindowSupportLevel(_inner);
             return retVal;
         }
     }

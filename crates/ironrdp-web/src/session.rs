@@ -1010,6 +1010,9 @@ impl iron_remote_desktop::Session for Session {
                             hotspot_y,
                         })?;
                     }
+                    ActiveStageOutput::WindowingOrders(_) => {
+                        // Windowing orders are not meaningful to the protocol-agnostic web component.
+                    }
                     ActiveStageOutput::DeactivateAll => {
                         // Execute the Deactivation-Reactivation Sequence:
                         // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
@@ -1041,6 +1044,7 @@ impl iron_remote_desktop::Session for Session {
                                 enable_server_pointer,
                                 pointer_software_rendering,
                                 static_channel_chunk_size,
+                                window_support_level,
                                 ..
                             } = connection_activation.connection_activation_state()
                             {
@@ -1056,6 +1060,7 @@ impl iron_remote_desktop::Session for Session {
                                 ) {
                                     return Err(IronError::from(anyhow::anyhow!("invalid static channel chunk size")));
                                 }
+                                active_stage.set_window_support_level(window_support_level);
                                 break 'activation_seq;
                             }
                         }

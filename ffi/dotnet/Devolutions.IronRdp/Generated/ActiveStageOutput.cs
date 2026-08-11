@@ -79,6 +79,14 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
+    public BytesSlice WindowingOrders
+    {
+        get
+        {
+            return GetWindowingOrders();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>ActiveStageOutput</c> from a raw handle.
     /// </summary>
@@ -194,6 +202,28 @@ public partial class ActiveStageOutput: IDisposable
             }
             Raw.DecodedPointer* retVal = result.Ok;
             return new DecodedPointer(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>BytesSlice</c> allocated on Rust side.
+    /// </returns>
+    public BytesSlice GetWindowingOrders()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStageOutput");
+            }
+            Raw.SessionFfiResultBoxBytesSliceBoxIronRdpError result = Raw.ActiveStageOutput.GetWindowingOrders(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.BytesSlice* retVal = result.Ok;
+            return new BytesSlice(retVal);
         }
     }
 

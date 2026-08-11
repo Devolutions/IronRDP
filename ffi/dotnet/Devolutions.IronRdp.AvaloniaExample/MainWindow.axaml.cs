@@ -533,6 +533,7 @@ public partial class MainWindow : Window
                         var enableServerPointer = finalized.GetEnableServerPointer();
                         var pointerSoftwareRendering = finalized.GetPointerSoftwareRendering();
                         var staticChannelChunkSize = finalized.GetStaticChannelChunkSize();
+                        var windowSupportLevel = finalized.GetWindowSupportLevel();
 
                         _decodedImage = DecodedImage.New(PixelFormat.RgbA32, desktopSize.GetWidth(),
                             desktopSize.GetHeight());
@@ -543,7 +544,8 @@ public partial class MainWindow : Window
                             shareId,
                             enableServerPointer,
                             pointerSoftwareRendering,
-                            staticChannelChunkSize
+                            staticChannelChunkSize,
+                            windowSupportLevel
                         );
 
                         _activeStage.SetEnableServerPointer(enableServerPointer);

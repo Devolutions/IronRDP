@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
+use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
@@ -76,6 +77,11 @@ pub struct ConnectionResult {
     pub refresh_rect_support: bool,
     /// Whether the server permits Suppress Output PDUs for visual recovery.
     pub suppress_output_support: bool,
+    /// The Window List support level negotiated with the server.
+    ///
+    /// `None` means Window List was absent or disabled, so windowing orders
+    /// retain ordinary desktop-session handling.
+    pub window_support_level: Option<WindowSupportLevel>,
     /// Factory for producing connection activation sequences.
     ///
     /// Used to drive the [Deactivation-Reactivation Sequence] when a Server Deactivate All PDU is
@@ -1238,6 +1244,7 @@ impl Sequence for ClientConnector {
                             pointer_software_rendering,
                             refresh_rect_support,
                             suppress_output_support,
+                            window_support_level,
                         } => {
                             let mut static_channels = mem::take(&mut self.static_channels);
                             if !static_channels.set_maximum_chunk_size(static_channel_chunk_size) {
@@ -1257,6 +1264,7 @@ impl Sequence for ClientConnector {
                                     pointer_software_rendering,
                                     refresh_rect_support,
                                     suppress_output_support,
+                                    window_support_level,
                                     activation_factory: ConnectionActivationFactory::new(
                                         self.config.clone(),
                                         connection_activation.io_channel_id(),
