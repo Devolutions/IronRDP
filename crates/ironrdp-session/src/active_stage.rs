@@ -107,11 +107,6 @@ impl ActiveStage {
         self.fast_path_processor.update_mouse_pos(x, y);
     }
 
-    #[must_use]
-    pub fn set_static_channel_chunk_size(&mut self, chunk_size: usize) -> bool {
-        self.x224_processor.set_static_channel_chunk_size(chunk_size)
-    }
-
     /// Returns whether a malformed Fast-Path bitmap was discarded and needs a full visual recovery.
     ///
     /// The caller decides whether the negotiated capabilities permit a recovery request.

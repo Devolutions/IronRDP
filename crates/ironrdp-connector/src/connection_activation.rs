@@ -215,22 +215,6 @@ impl Sequence for ConnectionActivationSequence {
                     })
                     .unwrap_or((false, false));
 
-                let static_channel_chunk_size = capability_sets
-                    .iter()
-                    .find_map(|capability_set| {
-                        let CapabilitySet::VirtualChannel(virtual_channel) = capability_set else {
-                            return None;
-                        };
-
-                        virtual_channel.chunk_size.and_then(|chunk_size| {
-                            let chunk_size = usize::try_from(chunk_size).ok()?;
-                            (ironrdp_svc::CHANNEL_CHUNK_LENGTH..=ironrdp_svc::MAX_CHANNEL_CHUNK_LENGTH)
-                                .contains(&chunk_size)
-                                .then_some(chunk_size)
-                        })
-                    })
-                    .unwrap_or(ironrdp_svc::CHANNEL_CHUNK_LENGTH);
-
                 // Keep the server's Input capability flags so the session layer can tell whether
                 // fast-path input was negotiated: per [MS-RDPBCGR] 2.2.8.1.2, the client MUST NOT
                 // send fast-path input events unless the server advertised
@@ -306,7 +290,6 @@ impl Sequence for ConnectionActivationSequence {
                         static_channel_chunk_size,
                         refresh_rect_support,
                         suppress_output_support,
-                        static_channel_chunk_size,
                         connection_finalization: ConnectionFinalizationSequence::new(
                             self.io_channel_id,
                             self.user_channel_id,
@@ -322,7 +305,6 @@ impl Sequence for ConnectionActivationSequence {
                 static_channel_chunk_size,
                 refresh_rect_support,
                 suppress_output_support,
-                static_channel_chunk_size,
                 mut connection_finalization,
             } => {
                 debug!("Connection Finalization");
@@ -337,7 +319,6 @@ impl Sequence for ConnectionActivationSequence {
                         static_channel_chunk_size,
                         refresh_rect_support,
                         suppress_output_support,
-                        static_channel_chunk_size,
                         connection_finalization,
                     }
                 } else {
@@ -350,7 +331,6 @@ impl Sequence for ConnectionActivationSequence {
                         pointer_software_rendering: self.config.pointer_software_rendering,
                         refresh_rect_support,
                         suppress_output_support,
-                        static_channel_chunk_size,
                     }
                 };
 
@@ -378,7 +358,6 @@ pub enum ConnectionActivationState {
         static_channel_chunk_size: usize,
         refresh_rect_support: bool,
         suppress_output_support: bool,
-        static_channel_chunk_size: usize,
         connection_finalization: ConnectionFinalizationSequence,
     },
     Finalized {
@@ -399,7 +378,6 @@ pub enum ConnectionActivationState {
         refresh_rect_support: bool,
         /// Whether the server permits Suppress Output PDUs for visual recovery.
         suppress_output_support: bool,
-        static_channel_chunk_size: usize,
     },
 }
 
