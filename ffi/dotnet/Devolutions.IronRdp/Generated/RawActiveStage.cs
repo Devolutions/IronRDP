@@ -54,6 +54,14 @@ public partial struct ActiveStage
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_encoded_resize", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultOptBoxActiveStageOutputIteratorBoxIronRdpError EncodedResize(ActiveStage* self, uint width, uint height);
 
+    /// <summary>
+    /// Rebuilds the fast-path processor for a Deactivation-Reactivation Sequence, keeping the
+    /// negotiated bulk compression alive.
+    /// </summary>
+    /// <remarks>
+    /// The name is kept for ABI compatibility; this now also applies `enable_server_pointer`,
+    /// which previously only reached the processor and not the active stage itself.
+    /// </remarks>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_set_fastpath_processor", ExactSpelling = true)]
     public static unsafe extern void SetFastpathProcessor(ActiveStage* self, ushort ioChannelId, ushort userChannelId, uint shareId, [MarshalAs(UnmanagedType.U1)] bool enableServerPointer, [MarshalAs(UnmanagedType.U1)] bool pointerSoftwareRendering);
 

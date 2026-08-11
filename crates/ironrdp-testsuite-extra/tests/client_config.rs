@@ -330,6 +330,7 @@ fn generic_builder_options_reach_connector_configuration() {
         .with_performance_flags(performance_flags)
         .with_alternate_shell("powershell.exe")
         .with_work_dir("C:\\Users\\test-user")
+        .with_remote_application_mode(true)
         .build()
         .expect("valid generic configuration");
 
@@ -346,6 +347,18 @@ fn generic_builder_options_reach_connector_configuration() {
     assert_eq!(config.connector().performance_flags, performance_flags);
     assert_eq!(config.connector().alternate_shell, "powershell.exe");
     assert_eq!(config.connector().work_dir, "C:\\Users\\test-user");
+    assert!(config.connector().remote_application_mode);
+}
+
+#[test]
+fn remote_application_mode_is_parsed_from_rdp_file() {
+    let config = parse_config_from_rdp(
+        "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\nremoteapplicationmode:i:1\nalternate shell:s:powershell.exe\n",
+        &[],
+    );
+
+    assert!(config.connector().remote_application_mode);
+    assert_eq!(config.connector().alternate_shell, "powershell.exe");
 }
 
 #[test]

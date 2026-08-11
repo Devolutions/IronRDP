@@ -317,6 +317,14 @@ public partial class ActiveStage: IDisposable
         }
     }
 
+    /// <summary>
+    /// Rebuilds the fast-path processor for a Deactivation-Reactivation Sequence, keeping the
+    /// negotiated bulk compression alive.
+    /// </summary>
+    /// <remarks>
+    /// The name is kept for ABI compatibility; this now also applies `enable_server_pointer`,
+    /// which previously only reached the processor and not the active stage itself.
+    /// </remarks>
     public void SetFastpathProcessor(ushort ioChannelId, ushort userChannelId, uint shareId, bool enableServerPointer, bool pointerSoftwareRendering)
     {
         unsafe

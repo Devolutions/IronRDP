@@ -287,9 +287,12 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, and writable confirm-close events are delivered on the creating apartment. Warning and auto-reconnect events remain unfired until an IronRDP worker produces their real state. |
 | Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. Non-filesystem device, camera, monitor, and preferred-redirection capabilities remain unavailable. |
 
-The audit also identified RDM settings with no IronRDP ActiveX backend: input throttling, automatic reconnect, authentication policy, printer/port/smart-card and non-filesystem device redirection, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
-Their audited AdvancedSettings vtable slots use their exact published ABI signatures, initialize out parameters, and return `E_NOTIMPL`.
-The control does not report success for settings that cannot affect the connection.
+The audit also identified RDM settings with no IronRDP ActiveX backend: input throttling,
+automatic reconnect, authentication policy, printer/port/smart-card and non-filesystem device
+redirection, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
+Their audited AdvancedSettings vtable slots use their exact published ABI signatures, initialize out
+parameters, and return `E_NOTIMPL`. The control does not report success for settings that cannot
+affect the connection.
 
 The control exposes a standard `IConnectionPointContainer` and an event connection point for the
 published `IMsTscAxEvents` IID `{336D5562-EFA8-482E-8CB3-C5C0FC7A7DB6}`. Lifecycle events are delivered
@@ -687,9 +690,9 @@ harness reads these required, nonempty process-local environment variables by de
 
 | Variable | Used for |
 | --- | --- |
-| `IRONRDP_SMOKE_SERVER` | `Server` |
-| `IRONRDP_SMOKE_USERNAME` | `UserName` |
-| `IRONRDP_SMOKE_PASSWORD` | Write-only `IronRdpPassword` |
+| `RDP_HOSTNAME` | `Server` |
+| `RDP_USERNAME` | `UserName` |
+| `RDP_PASSWORD` | Write-only `IronRdpPassword` |
 
 Passwords are never accepted as command-line arguments and no input value is printed. The harness
 sets a `1024x768` desktop, invokes `Connect` through `IDispatch`, waits on the published
@@ -699,6 +702,14 @@ failure, timeout, or early window close exits unsuccessfully. `--timeout <second
 1–600-second timeout and defaults to 30 seconds. `--server` and `--username` override their
 respective environment values, while `--password-env <variable>` selects a password environment
 variable without exposing its value.
+
+Pass `--remoteapp <program>` to enable RemoteApp mode and queue the program as the initial RAIL
+execute request. `--remoteapp-args <arguments>` optionally supplies the execute arguments,
+including arguments beginning with `-`. This registration-free path sets IronRDP's preconnect
+`IMsRdpExtendedSettings` properties `IronRdpRemoteProgramMode`,
+`IronRdpRemoteApplicationProgram`, and `IronRdpRemoteApplicationArgs`; it does not require the
+Microsoft MSTSCLib type library or a registered `ironrdpax.dll`. The application identifier is
+server-specific; `||notepad` is only a common published-app alias.
 
 Set the environment variables through an approved local secret-management mechanism, then run:
 
@@ -712,6 +723,13 @@ To exercise the registration-free RemoteApp route, add a configured program and 
 ```powershell
 dotnet run --project .\crates\ironrdp-activex\tests\ironrdp-axhost --configuration Release -- `
     .\target\release\ironrdpax.dll connect --remoteapp-program 'calc.exe' --remoteapp-args '/server:example' --observe 10 --json
+```
+
+For a visible RAIL session:
+
+```powershell
+dotnet run --project .\crates\ironrdp-activex\tests\ironrdp-axhost --configuration Release -- `
+    .\target\release\ironrdpax.dll connect --remoteapp-program '||notepad' --show --observe 30 --json
 ```
 
 For the MsRdpEx route, set its two explicit backend-selection variables described above and replace

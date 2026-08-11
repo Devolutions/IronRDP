@@ -228,6 +228,97 @@ internal interface IMsRdpExtendedSettings
     void get_Property([MarshalAs(UnmanagedType.BStr)] string name, [Out] out object value);
 }
 
+internal static class RemoteProgramInterop
+{
+    // Slots include IUnknown, IDispatch, and all inherited published interface members.
+    private const int ImRdpClient5GetRemoteProgramSlot = 55;
+    private const int RemoteProgramServerStartProgramSlot = 9;
+    private static readonly Guid IMsRdpClient5Id = new("4EB5335B-6429-477D-B922-E06A28ECD8BF");
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int GetRemoteProgram(nint self, out nint remoteProgram);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int ServerStartProgram(
+        nint self,
+        nint executable,
+        nint file,
+        nint workingDirectory,
+        short expandWorkingDirectory,
+        nint arguments,
+        short expandArguments);
+
+    internal static void StartProgram(object control, string executable)
+    {
+        nint unknown = Marshal.GetIUnknownForObject(control);
+        nint client = 0;
+        nint remoteProgram = 0;
+        nint executableBstr = 0;
+        nint emptyFileBstr = 0;
+        nint emptyWorkingDirectoryBstr = 0;
+        nint emptyArgumentsBstr = 0;
+
+        try
+        {
+            Guid interfaceId = IMsRdpClient5Id;
+            Marshal.ThrowExceptionForHR(Marshal.QueryInterface(unknown, ref interfaceId, out client));
+            if (client == 0)
+                throw new InvalidOperationException("The ActiveX control returned a null IMsRdpClient5 interface.");
+
+            var getRemoteProgram = VtableMethod<GetRemoteProgram>(client, ImRdpClient5GetRemoteProgramSlot);
+            Marshal.ThrowExceptionForHR(getRemoteProgram(client, out remoteProgram));
+            if (remoteProgram == 0)
+                throw new InvalidOperationException("The ActiveX control returned a null RemoteProgram interface.");
+
+            executableBstr = Marshal.StringToBSTR(executable);
+            emptyFileBstr = Marshal.StringToBSTR(string.Empty);
+            emptyWorkingDirectoryBstr = Marshal.StringToBSTR(string.Empty);
+            emptyArgumentsBstr = Marshal.StringToBSTR(string.Empty);
+
+            var serverStartProgram = VtableMethod<ServerStartProgram>(
+                remoteProgram,
+                RemoteProgramServerStartProgramSlot);
+            Marshal.ThrowExceptionForHR(serverStartProgram(
+                remoteProgram,
+                executableBstr,
+                emptyFileBstr,
+                emptyWorkingDirectoryBstr,
+                0,
+                emptyArgumentsBstr,
+                0));
+        }
+        finally
+        {
+            FreeBstr(executableBstr);
+            FreeBstr(emptyFileBstr);
+            FreeBstr(emptyWorkingDirectoryBstr);
+            FreeBstr(emptyArgumentsBstr);
+            if (remoteProgram != 0)
+                Marshal.Release(remoteProgram);
+            if (client != 0)
+                Marshal.Release(client);
+            Marshal.Release(unknown);
+        }
+    }
+
+    private static T VtableMethod<T>(nint interfacePointer, int slot)
+        where T : Delegate
+    {
+        nint vtable = Marshal.ReadIntPtr(interfacePointer);
+        nint method = Marshal.ReadIntPtr(vtable, checked(slot * IntPtr.Size));
+        if (method == 0)
+            throw new InvalidOperationException("The requested ActiveX interface method is unavailable.");
+
+        return Marshal.GetDelegateForFunctionPointer<T>(method);
+    }
+
+    private static void FreeBstr(nint value)
+    {
+        if (value != 0)
+            Marshal.FreeBSTR(value);
+    }
+}
+
 [ComVisible(true)]
 public sealed class LifecycleSink : IMsTscAxEvents
 {
@@ -254,11 +345,15 @@ internal enum Operation
 
 internal sealed record ConnectionSettings(string Server, string UserName, string Password)
 {
+    internal const string DefaultServerVariable = "RDP_HOSTNAME";
+    internal const string DefaultUserNameVariable = "RDP_USERNAME";
+    internal const string DefaultPasswordVariable = "RDP_PASSWORD";
+
     internal static ConnectionSettings FromEnvironment(string? server, string? userName, string passwordVariable)
     {
         return new ConnectionSettings(
-            server ?? RequiredEnvironmentVariable("IRONRDP_SMOKE_SERVER"),
-            userName ?? RequiredEnvironmentVariable("IRONRDP_SMOKE_USERNAME"),
+            server ?? RequiredEnvironmentVariable(DefaultServerVariable),
+            userName ?? RequiredEnvironmentVariable(DefaultUserNameVariable),
             RequiredEnvironmentVariable(passwordVariable));
     }
 
@@ -277,6 +372,9 @@ internal sealed record AxHostOptions(
     Guid ClassId,
     Operation Operation,
     bool AutoLogon,
+    string? RemoteApplicationProgram,
+    string? RemoteApplicationArgs,
+    IReadOnlyList<string> RailLaunches,
     bool Show,
     bool Json,
     TimeSpan Timeout,
@@ -285,8 +383,8 @@ internal sealed record AxHostOptions(
     string? Server,
     string? UserName,
     string PasswordVariable,
-    string? RemoteApplicationProgram,
-    string? RemoteApplicationArgs);
+    int DesktopWidth,
+    int DesktopHeight);
 
 internal sealed record AxHostReport(
     string Operation,
@@ -361,6 +459,9 @@ internal sealed class LifecycleRunner
     private string? screenshot;
     private string? failure;
 
+    private bool HasRemoteAppConfiguration =>
+        options.RemoteApplicationProgram is not null || options.RailLaunches.Count != 0;
+
     internal LifecycleRunner(object control, DirectActiveXHost host, Form form, AxHostOptions options)
     {
         this.control = control;
@@ -411,8 +512,8 @@ internal sealed class LifecycleRunner
     {
         SetProperty("Server", settings.Server);
         SetProperty("UserName", settings.UserName);
-        SetProperty("DesktopWidth", 1024);
-        SetProperty("DesktopHeight", 768);
+        SetProperty("DesktopWidth", options.DesktopWidth);
+        SetProperty("DesktopHeight", options.DesktopHeight);
         SetProperty("IronRdpPassword", settings.Password);
         if (options.AutoLogon)
             SetExtendedSetting("IronRdpAutoLogon", true);
@@ -422,6 +523,10 @@ internal sealed class LifecycleRunner
             SetExtendedSetting("IronRdpRemoteApplicationProgram", options.RemoteApplicationProgram);
             if (options.RemoteApplicationArgs is not null)
                 SetExtendedSetting("IronRdpRemoteApplicationArgs", options.RemoteApplicationArgs);
+        }
+        else if (options.RailLaunches.Count != 0)
+        {
+            SetExtendedSetting("IronRdpRemoteProgramMode", true);
         }
     }
 
@@ -515,7 +620,34 @@ internal sealed class LifecycleRunner
         if (finished || observationDeadline is not null)
             return;
 
+        connectedProperty = true;
         events.Add("connected");
+        try
+        {
+            foreach (string executable in options.RailLaunches)
+            {
+                StartRemoteProgram(executable);
+                events.Add("rail-launch-dispatched");
+            }
+            if (options.Show && HasRemoteAppConfiguration)
+            {
+                // Projected RAIL windows are independent top-level HWNDs. Once connected, the
+                // AxHost form is only the unused desktop canvas and would otherwise show as black.
+                form.Hide();
+                events.Add("remoteapp-host-hidden");
+            }
+        }
+        catch (COMException)
+        {
+            Finish(false, "the ActiveX control rejected the requested RAIL launch");
+            return;
+        }
+        catch (InvalidOperationException)
+        {
+            Finish(false, "could not dispatch the requested RAIL launch");
+            return;
+        }
+
         if (options.ScreenshotPath is not null)
         {
             try
@@ -679,6 +811,9 @@ internal sealed class LifecycleRunner
         }
     }
 
+    private void StartRemoteProgram(string executable)
+        => RemoteProgramInterop.StartProgram(control, executable);
+
     private void InvokeMethod(string name) =>
         control.GetType().InvokeMember(name, DispatchFlags, null, control, null);
 }
@@ -687,7 +822,7 @@ internal static class Program
 {
     private static readonly Guid IronRdpClassId = new("5D3E2B4C-6860-462E-8E9D-0C4D2B094C5F");
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
-    private const string DefaultPasswordVariable = "IRONRDP_SMOKE_PASSWORD";
+    private const string DefaultPasswordVariable = ConnectionSettings.DefaultPasswordVariable;
 
     [STAThread]
     private static int Main(string[] args)
@@ -868,14 +1003,16 @@ internal static class Program
         bool operationSpecified = false;
         bool classIdSpecified = false;
         bool autoLogon = false;
+        bool remoteApplicationProgramSpecified = false;
+        bool remoteApplicationArgsSpecified = false;
         bool timeoutSpecified = false;
         bool observeSpecified = false;
         bool screenshotSpecified = false;
         bool serverSpecified = false;
         bool userNameSpecified = false;
         bool passwordVariableSpecified = false;
-        bool remoteApplicationProgramSpecified = false;
-        bool remoteApplicationArgsSpecified = false;
+        bool desktopWidthSpecified = false;
+        bool desktopHeightSpecified = false;
         bool show = false;
         bool json = false;
         TimeSpan timeout = DefaultTimeout;
@@ -883,9 +1020,12 @@ internal static class Program
         string? screenshotPath = null;
         string? server = null;
         string? userName = null;
-        string passwordVariable = DefaultPasswordVariable;
         string? remoteApplicationProgram = null;
         string? remoteApplicationArgs = null;
+        var railLaunches = new List<string>();
+        string passwordVariable = DefaultPasswordVariable;
+        int desktopWidth = 1024;
+        int desktopHeight = 768;
 
         for (int index = 1; index < args.Length; index++)
         {
@@ -926,6 +1066,26 @@ internal static class Program
             if (argument == "--autologon" && !autoLogon)
             {
                 autoLogon = true;
+                continue;
+            }
+
+            if ((argument is "--remoteapp" or "--remoteapp-program") && !remoteApplicationProgramSpecified)
+            {
+                remoteApplicationProgram = NextValue(args, ref index, argument);
+                remoteApplicationProgramSpecified = true;
+                continue;
+            }
+
+            if (argument == "--remoteapp-args" && !remoteApplicationArgsSpecified)
+            {
+                remoteApplicationArgs = NextValue(args, ref index, "--remoteapp-args", allowOptionLikeValue: true);
+                remoteApplicationArgsSpecified = true;
+                continue;
+            }
+
+            if (argument == "--rail-launch")
+            {
+                railLaunches.Add(NextValue(args, ref index, "--rail-launch"));
                 continue;
             }
 
@@ -977,17 +1137,17 @@ internal static class Program
                 continue;
             }
 
-            if (argument == "--remoteapp-program" && !remoteApplicationProgramSpecified)
+            if (argument == "--desktop-width" && !desktopWidthSpecified)
             {
-                remoteApplicationProgram = NextValue(args, ref index, "--remoteapp-program");
-                remoteApplicationProgramSpecified = true;
+                desktopWidth = ParseDesktopDimension(args, ref index, "--desktop-width");
+                desktopWidthSpecified = true;
                 continue;
             }
 
-            if (argument == "--remoteapp-args" && !remoteApplicationArgsSpecified)
+            if (argument == "--desktop-height" && !desktopHeightSpecified)
             {
-                remoteApplicationArgs = NextValue(args, ref index, "--remoteapp-args");
-                remoteApplicationArgsSpecified = true;
+                desktopHeight = ParseDesktopDimension(args, ref index, "--desktop-height");
+                desktopHeightSpecified = true;
                 continue;
             }
 
@@ -997,10 +1157,13 @@ internal static class Program
         if ((operation is Operation.Probe or Operation.Unload)
             && (server is not null
                 || userName is not null
+                || remoteApplicationProgram is not null
+                || remoteApplicationArgs is not null
+                || railLaunches.Count != 0
                 || screenshotPath is not null
                 || passwordVariable != DefaultPasswordVariable
-                || remoteApplicationProgram is not null
-                || remoteApplicationArgs is not null))
+                || desktopWidthSpecified
+                || desktopHeightSpecified))
         {
             throw new ArgumentException();
         }
@@ -1009,6 +1172,8 @@ internal static class Program
 
         if (show && observe == TimeSpan.Zero)
             observe = TimeSpan.FromSeconds(30);
+        if (railLaunches.Count != 0 && observe == TimeSpan.Zero)
+            throw new ArgumentException();
         if ((operation is Operation.Probe or Operation.Unload) && observe != TimeSpan.Zero && !show)
             throw new ArgumentException();
 
@@ -1017,6 +1182,9 @@ internal static class Program
             classId,
             operation,
             autoLogon,
+            remoteApplicationProgram,
+            remoteApplicationArgs,
+            railLaunches,
             show,
             json,
             timeout,
@@ -1025,8 +1193,8 @@ internal static class Program
             server,
             userName,
             passwordVariable,
-            remoteApplicationProgram,
-            remoteApplicationArgs);
+            desktopWidth,
+            desktopHeight);
     }
 
     private static TimeSpan ParseSeconds(string[] args, ref int index, string option)
@@ -1037,9 +1205,19 @@ internal static class Program
         return TimeSpan.FromSeconds(seconds);
     }
 
-    private static string NextValue(string[] args, ref int index, string option)
+    private static int ParseDesktopDimension(string[] args, ref int index, string option)
     {
-        if (++index >= args.Length || string.IsNullOrWhiteSpace(args[index]) || args[index].StartsWith("-", StringComparison.Ordinal))
+        if (!int.TryParse(NextValue(args, ref index, option), out int dimension) || dimension is < 200 or > 8192)
+            throw new ArgumentException();
+
+        return dimension;
+    }
+
+    private static string NextValue(string[] args, ref int index, string option, bool allowOptionLikeValue = false)
+    {
+        if (++index >= args.Length
+            || string.IsNullOrWhiteSpace(args[index])
+            || (!allowOptionLikeValue && args[index].StartsWith("-", StringComparison.Ordinal)))
             throw new ArgumentException($"{option} requires a value");
 
         return args[index];
@@ -1047,7 +1225,7 @@ internal static class Program
 
     private static void PrintUsage() =>
         Console.Error.WriteLine(
-            "Usage: ironrdp-axhost <com-server.dll> [class-id] [probe|connect|unload] [--autologon] [--json] [--show] [--timeout <seconds>] [--observe <seconds>] [--server <host[:port]>] [--username <name>] [--password-env <variable>] [--screenshot <path>] [--remoteapp-program <program>] [--remoteapp-args <arguments>]\nUse --help-agent for the machine-readable contract.");
+            "Usage: ironrdp-axhost <com-server.dll> [class-id] [probe|connect|unload] [--autologon] [--remoteapp-program <program>] [--remoteapp-args <arguments>] [--rail-launch <program>]... [--desktop-width <pixels>] [--desktop-height <pixels>] [--json] [--show] [--timeout <seconds>] [--observe <seconds>] [--server <host[:port]>] [--username <name>] [--password-env <variable>] [--screenshot <path>]\nUse --help-agent for the machine-readable contract.");
 
     private const string AgentGuide = """
 # ironrdp-axhost
@@ -1076,21 +1254,35 @@ failed. Exit `64` means the command line was invalid.
   `DllCanUnloadNow` to return `S_OK` before freeing the DLL. The JSON `unloadStatus` is that HRESULT.
 - `connect`: run the complete lifecycle: configure the control, subscribe to
   `IMsTscAxEvents`, invoke `Connect`, require the `Connected` property or `OnConnected`, then
-  disconnect and unadvise the sink. `events` records only `connecting`, `connected`,
-  `disconnected`, and `fatal-error`.
+  disconnect and unadvise the sink. `events` records lifecycle and RemoteApp dispatch diagnostics.
 
 Pass `--autologon` with `connect` to set the control's documented `IronRdpAutoLogon` extended
 setting before the connection begins.
-Pass `--remoteapp-program PROGRAM` with `connect` to launch one RemoteApp program.
-Pass `--remoteapp-args ARGUMENTS` with `connect` and `--remoteapp-program PROGRAM` to set the program's optional arguments.
+Pass `--remoteapp-program PROGRAM` with `connect` to enable RemoteApp and launch one program.
+`--remoteapp` remains an alias for compatibility.
+Pass `--remoteapp-args ARGUMENTS` with `connect` and `--remoteapp-program PROGRAM` to set the
+program's optional arguments.
+
+`--remoteapp-args <arguments>` accepts values beginning with `-`.
+The preconnect options configure private IronRDP extended settings through the activated control,
+so they do not require MSTSCLib registration or a system `mstscax.dll`.
+
+Pass one or more `--rail-launch <program>` options to exercise subsequent RemoteApp execute requests
+over the established RAIL channel. The host invokes the standard `ITSRemoteProgram::ServerStartProgram`
+control interface after it observes a connected state, emits one `rail-launch-dispatched` event per
+request, and requires an observation interval so the remote windows can be inspected.
+
+`--desktop-width` and `--desktop-height` set the RDP desktop dimensions (each 200-8192 pixels).
+Use a size that covers the RemoteApp server's monitor layout; the RAIL window coordinates and the
+retained graphics frame share this coordinate space.
 
 ## Credentials and configuration
 
 `connect` obtains values from process-local environment variables by default:
 
-- `IRONRDP_SMOKE_SERVER`
-- `IRONRDP_SMOKE_USERNAME`
-- `IRONRDP_SMOKE_PASSWORD`
+- `RDP_HOSTNAME`
+- `RDP_USERNAME`
+- `RDP_PASSWORD`
 
 Use `--server` or `--username` to override the two non-secret values. Use
 `--password-env NAME` to select a different password environment variable. Passwords are never
@@ -1101,14 +1293,16 @@ accepted on the command line, printed, or serialized into the JSON result.
 `--screenshot PATH` (connect only) saves the AxHost rendering surface after a connected state is
 observed. A screenshot failure fails the invocation. `--observe SECONDS` keeps the verified session
 open for a bounded period before clean shutdown, and `--show` makes that window visible. `--show`
-defaults `--observe` to 30 seconds. `--timeout SECONDS` bounds the wait for connection (default 30,
-range 1-600).
+defaults `--observe` to 30 seconds. With a RemoteApp configuration, AxHost hides its otherwise
+unused desktop canvas after connecting; the independently projected RAIL windows remain visible.
+`--timeout SECONDS` bounds the wait for connection (default 30, range 1-600).
 
 ## Examples
 
 ```powershell
 ironrdp-axhost .\target\release\ironrdpax.dll probe --json
 ironrdp-axhost .\target\release\ironrdpax.dll connect --timeout 60 --screenshot .\artifacts\frame.png --json
+ironrdp-axhost .\target\release\ironrdpax.dll connect --remoteapp-program '||notepad' --show --observe 30 --json
 ironrdp-axhost <path-to-MsRdpEx.dll> {7CACBD7B-0D99-468F-AC33-22E495C0AFE5} connect --json
 ```
 """;
