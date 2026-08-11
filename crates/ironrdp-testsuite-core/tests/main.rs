@@ -30,6 +30,7 @@ mod rdcleanpath;
 mod rdpdr;
 mod rdpeai;
 mod rdpei;
+mod rdpeudp;
 mod rdpeusb;
 mod rdpsnd;
 mod server;

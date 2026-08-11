@@ -3026,6 +3026,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpeudp"
+version = "0.1.0"
+dependencies = [
+ "arbitrary",
+ "bitflags 2.13.1",
+ "ironrdp-core 0.2.1",
+ "ironrdp-error 0.2.0",
+]
+
+[[package]]
 name = "ironrdp-rdpeusb"
 version = "0.1.0"
 dependencies = [
@@ -3209,6 +3219,7 @@ dependencies = [
  "ironrdp-rdpdr",
  "ironrdp-rdpeai",
  "ironrdp-rdpei",
+ "ironrdp-rdpeudp",
  "ironrdp-rdpeusb",
  "ironrdp-rdpfile",
  "ironrdp-rdpsnd",
