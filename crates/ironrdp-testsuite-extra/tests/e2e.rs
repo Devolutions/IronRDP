@@ -50,6 +50,7 @@ const PASSWORD: &str = "";
 const RDPDR_DEVICE_ID: u32 = 1;
 const RDPDR_CLIENT_ID: u32 = 0x1234;
 const RDPDR_COMPLETION_ID: u32 = 1;
+#[cfg(windows)]
 const RDPDR_READ_LENGTH: u32 = 32 * 1024;
 
 #[tokio::test]
