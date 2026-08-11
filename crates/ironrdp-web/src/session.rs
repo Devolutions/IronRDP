@@ -1034,6 +1034,7 @@ impl iron_remote_desktop::Session for Session {
                                 enable_server_pointer,
                                 pointer_software_rendering,
                                 static_channel_chunk_size,
+                                window_support_level,
                                 ..
                             } = connection_activation.connection_activation_state()
                             {
@@ -1049,6 +1050,7 @@ impl iron_remote_desktop::Session for Session {
                                 ) {
                                     return Err(IronError::from(anyhow::anyhow!("invalid static channel chunk size")));
                                 }
+                                active_stage.set_window_support_level(window_support_level);
                                 break 'activation_seq;
                             }
                         }

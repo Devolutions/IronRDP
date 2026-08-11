@@ -337,7 +337,7 @@ public partial class ActiveStage: IDisposable
     /// and static channel chunk size.
     /// </remarks>
     /// <exception cref="IronRdpException"></exception>
-    public void Reactivate(ushort ioChannelId, ushort userChannelId, uint shareId, bool enableServerPointer, bool pointerSoftwareRendering, nuint staticChannelChunkSize)
+    public void Reactivate(ushort ioChannelId, ushort userChannelId, uint shareId, bool enableServerPointer, bool pointerSoftwareRendering, nuint staticChannelChunkSize, sbyte windowSupportLevel)
     {
         unsafe
         {
@@ -345,7 +345,7 @@ public partial class ActiveStage: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStage");
             }
-            Raw.SessionFfiResultVoidBoxIronRdpError result = Raw.ActiveStage.Reactivate(_inner, ioChannelId, userChannelId, shareId, enableServerPointer, pointerSoftwareRendering, staticChannelChunkSize);
+            Raw.SessionFfiResultVoidBoxIronRdpError result = Raw.ActiveStage.Reactivate(_inner, ioChannelId, userChannelId, shareId, enableServerPointer, pointerSoftwareRendering, staticChannelChunkSize, windowSupportLevel);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));

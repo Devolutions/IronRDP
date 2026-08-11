@@ -645,9 +645,7 @@ fn process_slow_path_graphics(
             let Some(window_support_level) = window_support_level else {
                 return Ok((Vec::new(), None));
             };
-            let Some(orders) = try_decode_slow_path_windowing_orders(&mut src).map_err(SessionError::decode)? else {
-                return Ok((Vec::new(), None));
-            };
+            let orders = try_decode_slow_path_windowing_orders(&mut src).map_err(SessionError::decode)?;
             validate_windowing_orders_support(&orders, window_support_level)?;
             Ok((Vec::new(), Some(data.to_vec())))
         }
@@ -673,9 +671,7 @@ fn process_fast_path_windowing_orders(
     };
 
     let mut src = ReadCursor::new(data);
-    let Some(orders) = try_decode_fast_path_windowing_orders(&mut src).map_err(SessionError::decode)? else {
-        return Ok(None);
-    };
+    let orders = try_decode_fast_path_windowing_orders(&mut src).map_err(SessionError::decode)?;
     validate_windowing_orders_support(&orders, window_support_level)?;
 
     let mut normalized = Vec::with_capacity(
@@ -791,9 +787,14 @@ mod tests {
     fn window_order(fields_present: u32) -> Vec<u8> {
         let mut order = Vec::new();
         order.push(0x2e);
-        order.extend_from_slice(&11u16.to_le_bytes());
+        let client_area_size = (fields_present & 0x0001_0000 != 0).then_some([0; 8]);
+        let order_size: u16 = if client_area_size.is_some() { 19 } else { 11 };
+        order.extend_from_slice(&order_size.to_le_bytes());
         order.extend_from_slice(&fields_present.to_le_bytes());
         order.extend_from_slice(&7u32.to_le_bytes());
+        if let Some(client_area_size) = client_area_size {
+            order.extend_from_slice(&client_area_size);
+        }
         order
     }
 
@@ -853,7 +854,7 @@ mod tests {
 
     #[test]
     fn extended_windowing_orders_require_extended_support() {
-        let update = slow_path_orders_update(&window_order(0x2101_0000));
+        let update = slow_path_orders_update(&window_order(0x0101_0000));
         let mut processor = fast_path::ProcessorBuilder {
             io_channel_id: 0,
             user_channel_id: 0,

@@ -65,7 +65,7 @@ public partial struct ActiveStage
     /// and static channel chunk size.
     /// </remarks>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_reactivate", ExactSpelling = true)]
-    public static unsafe extern SessionFfiResultVoidBoxIronRdpError Reactivate(ActiveStage* self, ushort ioChannelId, ushort userChannelId, uint shareId, [MarshalAs(UnmanagedType.U1)] bool enableServerPointer, [MarshalAs(UnmanagedType.U1)] bool pointerSoftwareRendering, nuint staticChannelChunkSize);
+    public static unsafe extern SessionFfiResultVoidBoxIronRdpError Reactivate(ActiveStage* self, ushort ioChannelId, ushort userChannelId, uint shareId, [MarshalAs(UnmanagedType.U1)] bool enableServerPointer, [MarshalAs(UnmanagedType.U1)] bool pointerSoftwareRendering, nuint staticChannelChunkSize, sbyte windowSupportLevel);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_set_enable_server_pointer", ExactSpelling = true)]
     public static unsafe extern void SetEnableServerPointer(ActiveStage* self, [MarshalAs(UnmanagedType.U1)] bool enableServerPointer);

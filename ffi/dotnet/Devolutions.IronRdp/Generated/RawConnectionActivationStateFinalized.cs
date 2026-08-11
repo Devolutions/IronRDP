@@ -33,6 +33,13 @@ public partial struct ConnectionActivationStateFinalized
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateFinalized_get_static_channel_chunk_size", ExactSpelling = true)]
     public static unsafe extern nuint GetStaticChannelChunkSize(ConnectionActivationStateFinalized* self);
 
+    /// <summary>
+    /// Returns -1 when Window List support was not negotiated, otherwise
+    /// the negotiated Window List support level.
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateFinalized_get_window_support_level", ExactSpelling = true)]
+    public static unsafe extern sbyte GetWindowSupportLevel(ConnectionActivationStateFinalized* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateFinalized_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ConnectionActivationStateFinalized* self);
 }

@@ -211,6 +211,10 @@ pub mod ffi {
         ///
         /// This retains negotiated bulk compression and applies the refreshed server-pointer state
         /// and static channel chunk size.
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "the C-compatible reactivation entry point exposes the negotiated activation fields"
+        )]
         pub fn reactivate(
             &mut self,
             io_channel_id: u16,
@@ -219,7 +223,14 @@ pub mod ffi {
             enable_server_pointer: bool,
             pointer_software_rendering: bool,
             static_channel_chunk_size: usize,
+            window_support_level: i8,
         ) -> Result<(), Box<IronRdpError>> {
+            let window_support_level = match window_support_level {
+                -1 => None,
+                1 => Some(ironrdp::pdu::rdp::capability_sets::WindowSupportLevel::Supported),
+                2 => Some(ironrdp::pdu::rdp::capability_sets::WindowSupportLevel::SupportedEx),
+                _ => return Err("invalid Window List support level".into()),
+            };
             if !self.0.reactivate(
                 io_channel_id,
                 user_channel_id,
@@ -230,6 +241,7 @@ pub mod ffi {
             ) {
                 return Err("invalid static channel chunk size".into());
             }
+            self.0.set_window_support_level(window_support_level);
 
             Ok(())
         }

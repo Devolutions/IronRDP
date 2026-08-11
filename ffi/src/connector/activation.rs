@@ -104,6 +104,7 @@ pub mod ffi {
                     enable_server_pointer,
                     pointer_software_rendering,
                     static_channel_chunk_size,
+                    window_support_level,
                     ..
                 } => Ok(Box::new(ConnectionActivationStateFinalized {
                     share_id: *share_id,
@@ -111,6 +112,7 @@ pub mod ffi {
                     enable_server_pointer: *enable_server_pointer,
                     pointer_software_rendering: *pointer_software_rendering,
                     static_channel_chunk_size: *static_channel_chunk_size,
+                    window_support_level: *window_support_level,
                 })),
                 _ => Err(IncorrectEnumTypeError::on_variant("Finalized")
                     .of_enum("ConnectionActivationState")
@@ -138,6 +140,7 @@ pub mod ffi {
         pub enable_server_pointer: bool,
         pub pointer_software_rendering: bool,
         pub static_channel_chunk_size: usize,
+        pub window_support_level: Option<ironrdp::pdu::rdp::capability_sets::WindowSupportLevel>,
     }
 
     impl ConnectionActivationStateFinalized {
@@ -159,6 +162,17 @@ pub mod ffi {
 
         pub fn get_static_channel_chunk_size(&self) -> usize {
             self.static_channel_chunk_size
+        }
+
+        /// Returns -1 when Window List support was not negotiated, otherwise
+        /// the negotiated Window List support level.
+        pub fn get_window_support_level(&self) -> i8 {
+            match self.window_support_level {
+                None => -1,
+                Some(ironrdp::pdu::rdp::capability_sets::WindowSupportLevel::Supported) => 1,
+                Some(ironrdp::pdu::rdp::capability_sets::WindowSupportLevel::SupportedEx) => 2,
+                Some(ironrdp::pdu::rdp::capability_sets::WindowSupportLevel::NotSupported) => 0,
+            }
         }
     }
 }
