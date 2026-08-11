@@ -24,7 +24,7 @@ harness = true
 [dev-dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
-ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo"] }
+ironrdp = { path = "../ironrdp", features = ["acceptor", "server", "pdu", "connector", "session", "svc", "dvc", "echo"] }
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-agent.path = "../ironrdp-agent"
 ironrdp-daemon.path = "../ironrdp-daemon"
@@ -36,6 +36,7 @@ ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
 ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-input.path = "../ironrdp-input"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
+ironrdp-rdpdr.path = "../ironrdp-rdpdr"
 ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }
 ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-tokio.path = "../ironrdp-tokio"
@@ -46,6 +47,9 @@ tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["sync", "time", "net", "rt", "macros", "io-util"] }
 uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"
 
 [lints]
 workspace = true
