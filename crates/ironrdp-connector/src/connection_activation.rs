@@ -1,7 +1,7 @@
 use core::mem;
 
 use ironrdp_pdu::rdp;
-use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, InputFlags};
+use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, InputFlags, WindowList, WindowSupportLevel};
 use tracing::{debug, warn};
 
 use crate::{
@@ -202,6 +202,9 @@ impl Sequence for ConnectionActivationSequence {
                     ));
                 };
 
+                let window_list = server_window_list(&capability_sets);
+                let window_support_level = negotiated_window_support_level(window_list.as_ref());
+
                 let (refresh_rect_support, suppress_output_support) = capability_sets
                     .iter()
                     .find_map(|capability_set| {
@@ -267,7 +270,7 @@ impl Sequence for ConnectionActivationSequence {
                 let share_id = share_control_ctx.share_id;
 
                 let client_confirm_active = rdp::headers::ShareControlPdu::ClientConfirmActive(
-                    create_client_confirm_active(&self.config, capability_sets, desktop_size)?,
+                    create_client_confirm_active(&self.config, capability_sets, desktop_size, window_list)?,
                 );
 
                 debug!(message = ?client_confirm_active, "Send");
@@ -290,6 +293,7 @@ impl Sequence for ConnectionActivationSequence {
                         static_channel_chunk_size,
                         refresh_rect_support,
                         suppress_output_support,
+                        window_support_level,
                         connection_finalization: ConnectionFinalizationSequence::new(
                             self.io_channel_id,
                             self.user_channel_id,
@@ -305,6 +309,7 @@ impl Sequence for ConnectionActivationSequence {
                 static_channel_chunk_size,
                 refresh_rect_support,
                 suppress_output_support,
+                window_support_level,
                 mut connection_finalization,
             } => {
                 debug!("Connection Finalization");
@@ -319,6 +324,7 @@ impl Sequence for ConnectionActivationSequence {
                         static_channel_chunk_size,
                         refresh_rect_support,
                         suppress_output_support,
+                        window_support_level,
                         connection_finalization,
                     }
                 } else {
@@ -331,6 +337,7 @@ impl Sequence for ConnectionActivationSequence {
                         pointer_software_rendering: self.config.pointer_software_rendering,
                         refresh_rect_support,
                         suppress_output_support,
+                        window_support_level,
                     }
                 };
 
@@ -358,6 +365,8 @@ pub enum ConnectionActivationState {
         static_channel_chunk_size: usize,
         refresh_rect_support: bool,
         suppress_output_support: bool,
+        /// The server-negotiated Window List support level.
+        window_support_level: Option<WindowSupportLevel>,
         connection_finalization: ConnectionFinalizationSequence,
     },
     Finalized {
@@ -378,6 +387,8 @@ pub enum ConnectionActivationState {
         refresh_rect_support: bool,
         /// Whether the server permits Suppress Output PDUs for visual recovery.
         suppress_output_support: bool,
+        /// The server-negotiated Window List support level.
+        window_support_level: Option<WindowSupportLevel>,
     },
 }
 
@@ -402,10 +413,27 @@ impl State for ConnectionActivationState {
 
 const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
 
+fn server_window_list(capability_sets: &[CapabilitySet]) -> Option<WindowList> {
+    capability_sets.iter().find_map(|capability_set| {
+        if let CapabilitySet::WindowList(window_list) = capability_set {
+            Some(window_list.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn negotiated_window_support_level(window_list: Option<&WindowList>) -> Option<WindowSupportLevel> {
+    window_list.and_then(|window_list| {
+        (window_list.support_level != WindowSupportLevel::NotSupported).then_some(window_list.support_level)
+    })
+}
+
 fn create_client_confirm_active(
     config: &Config,
     mut server_capability_sets: Vec<CapabilitySet>,
     desktop_size: DesktopSize,
+    window_list: Option<WindowList>,
 ) -> ConnectorResult<rdp::capability_sets::ClientConfirmActive> {
     use ironrdp_pdu::rdp::capability_sets::{
         BITMAP_CACHE_ENTRIES_NUM, Bitmap, BitmapCache, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry,
@@ -528,6 +556,9 @@ fn create_client_confirm_active(
             max_request_size: 8 * 1024 * 1024, // 8 MB
         }));
     }
+    if let Some(window_list) = window_list {
+        server_capability_sets.push(CapabilitySet::WindowList(window_list));
+    }
 
     Ok(ClientConfirmActive {
         originator_id: SERVER_CHANNEL_ID,
@@ -560,7 +591,9 @@ fn requested_bitmap_color_depth(bitmap: Option<&crate::BitmapConfig>) -> Connect
 
 #[cfg(test)]
 mod tests {
-    use super::requested_bitmap_color_depth;
+    use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, WindowList, WindowSupportLevel};
+
+    use super::{negotiated_window_support_level, requested_bitmap_color_depth, server_window_list};
     use crate::BitmapConfig;
 
     #[test]
@@ -578,5 +611,30 @@ mod tests {
                 expected_color_depth
             );
         }
+    }
+
+    #[test]
+    fn window_list_capability_preserves_supported_level() {
+        let window_list = WindowList {
+            support_level: WindowSupportLevel::SupportedEx,
+            num_icon_caches: 3,
+            num_icon_cache_entries: 12,
+        };
+        let capabilities = vec![CapabilitySet::WindowList(window_list.clone())];
+
+        assert_eq!(server_window_list(&capabilities), Some(window_list));
+        assert_eq!(
+            negotiated_window_support_level(server_window_list(&capabilities).as_ref()),
+            Some(WindowSupportLevel::SupportedEx)
+        );
+        assert_eq!(negotiated_window_support_level(None), None);
+        assert_eq!(
+            negotiated_window_support_level(Some(&WindowList {
+                support_level: WindowSupportLevel::NotSupported,
+                num_icon_caches: 0,
+                num_icon_cache_entries: 0,
+            })),
+            None
+        );
     }
 }

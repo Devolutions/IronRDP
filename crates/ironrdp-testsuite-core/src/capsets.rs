@@ -2,7 +2,8 @@ use std::sync::LazyLock;
 
 use ironrdp_core::decode;
 use ironrdp_pdu::rdp::capability_sets::{
-    CapabilitySet, ClientConfirmActive, DemandActive, SERVER_CHANNEL_ID, ServerDemandActive,
+    CapabilitySet, ClientConfirmActive, DemandActive, SERVER_CHANNEL_ID, ServerDemandActive, WindowList,
+    WindowSupportLevel,
 };
 
 pub const SERVER_DEMAND_ACTIVE_BUFFER: [u8; 357] = [
@@ -281,7 +282,11 @@ pub static SERVER_DEMAND_ACTIVE: LazyLock<ServerDemandActive> = LazyLock::new(||
             CapabilitySet::Pointer(decode(SERVER_POINTER_CAPABILITY_SET.as_ref()).unwrap()),
             CapabilitySet::Input(decode(SERVER_INPUT_CAPABILITY_SET.as_ref()).unwrap()),
             CapabilitySet::Rail(SERVER_RAIL_CAPABILITY_SET.to_vec()),
-            CapabilitySet::WindowList(SERVER_WINDOW_LIST_CAPABILITY_SET.to_vec()),
+            CapabilitySet::WindowList(WindowList {
+                support_level: WindowSupportLevel::NotSupported,
+                num_icon_caches: 0,
+                num_icon_cache_entries: 0,
+            }),
         ],
     },
 });
@@ -315,7 +320,11 @@ pub static CLIENT_DEMAND_ACTIVE_WITH_INCOMPLETE_CAPABILITY_SET: LazyLock<ClientC
                 CapabilitySet::MultiFragmentUpdate(
                     decode(CLIENT_MULTI_FRAGMENT_UPDATE_CAPABILITY_SET.as_ref()).unwrap(),
                 ),
-                CapabilitySet::WindowList(CLIENT_WINDOW_LIST_CAPABILITY_SET.to_vec()),
+                CapabilitySet::WindowList(WindowList {
+                    support_level: WindowSupportLevel::Supported,
+                    num_icon_caches: 3,
+                    num_icon_cache_entries: 12,
+                }),
             ],
         },
     });

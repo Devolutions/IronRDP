@@ -1000,6 +1000,9 @@ impl iron_remote_desktop::Session for Session {
                             hotspot_y,
                         })?;
                     }
+                    ActiveStageOutput::WindowingOrders(_) => {
+                        // Windowing orders are not meaningful to the protocol-agnostic web component.
+                    }
                     ActiveStageOutput::DeactivateAll => {
                         // Execute the Deactivation-Reactivation Sequence:
                         // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432

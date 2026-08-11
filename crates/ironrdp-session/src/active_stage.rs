@@ -9,6 +9,7 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
+use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
@@ -16,9 +17,12 @@ use ironrdp_pdu::rdp::refresh_rectangle::RefreshRectanglePdu;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::rdp::suppress_output::SuppressOutputPdu;
 use ironrdp_pdu::slow_path::{self, GraphicsUpdateType};
+use ironrdp_pdu::window::{
+    WindowingOrdersUpdate, try_decode_fast_path_windowing_orders, try_decode_slow_path_windowing_orders,
+};
 use ironrdp_pdu::{Action, mcs};
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
@@ -39,6 +43,7 @@ pub struct ActiveStage {
     /// Shared server-to-client compression history across all output transports.
     bulk_decompressor: Option<BulkCompressor>,
     enable_server_pointer: bool,
+    window_support_level: Option<WindowSupportLevel>,
 }
 
 /// Builder for [`ActiveStage`].
@@ -94,6 +99,7 @@ impl ActiveStageBuilder {
             fast_path_processor,
             bulk_decompressor: new_bulk_decompressor(compression_type),
             enable_server_pointer,
+            window_support_level: None,
         }
     }
 }
@@ -187,8 +193,16 @@ impl ActiveStage {
                 for output in x224_outputs {
                     match output {
                         x224::ProcessorOutput::GraphicsUpdate(data) => {
-                            let updates = process_slow_path_graphics(&mut self.fast_path_processor, image, &data)?;
+                            let (updates, windowing_orders) = process_slow_path_graphics(
+                                &mut self.fast_path_processor,
+                                image,
+                                self.window_support_level,
+                                &data,
+                            )?;
                             processor_updates.extend(updates);
+                            if let Some(windowing_orders) = windowing_orders {
+                                stage_outputs.push(ActiveStageOutput::WindowingOrders(windowing_orders));
+                            }
                         }
                         x224::ProcessorOutput::PointerUpdate(data) => {
                             let updates = process_slow_path_pointer(&mut self.fast_path_processor, image, &data)?;
@@ -207,6 +221,13 @@ impl ActiveStage {
         for update in processor_updates {
             match update {
                 UpdateKind::None => {}
+                UpdateKind::Orders(data) => {
+                    if let Some(windowing_orders) =
+                        process_fast_path_windowing_orders(self.window_support_level, &data)?
+                    {
+                        stage_outputs.push(ActiveStageOutput::WindowingOrders(windowing_orders));
+                    }
+                }
                 UpdateKind::Region(region) => {
                     stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
                 }
@@ -256,6 +277,13 @@ impl ActiveStage {
 
     pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
         self.enable_server_pointer = enable_server_pointer;
+    }
+
+    /// Sets Window List support for the current activation.
+    ///
+    /// `None` preserves desktop-session behavior by ignoring drawing orders.
+    pub fn set_window_support_level(&mut self, window_support_level: Option<WindowSupportLevel>) {
+        self.window_support_level = window_support_level;
     }
 
     /// Rebuilds the fast-path processor for a [Deactivation-Reactivation Sequence].
@@ -493,6 +521,11 @@ pub enum ActiveStageOutput {
         y: u16,
     },
     PointerBitmap(Arc<DecodedPointer>),
+    /// Validated Windowing Alternate Secondary Drawing Orders.
+    ///
+    /// The payload is a complete slow-path Orders graphics update. It remains
+    /// protocol data rather than a RAIL message.
+    WindowingOrders(Vec<u8>),
     Terminate(GracefulDisconnectReason),
     /// Server Save Session Info notification ([MS-RDPBCGR] 2.2.10.1).
     ///
@@ -595,31 +628,80 @@ impl core::fmt::Display for GracefulDisconnectReason {
 fn process_slow_path_graphics(
     fast_path_processor: &mut fast_path::Processor,
     image: &mut DecodedImage,
+    window_support_level: Option<WindowSupportLevel>,
     data: &[u8],
-) -> SessionResult<Vec<UpdateKind>> {
+) -> SessionResult<(Vec<UpdateKind>, Option<Vec<u8>>)> {
     let mut src = ReadCursor::new(data);
     let update_type = slow_path::read_graphics_update_type(&mut src).map_err(SessionError::decode)?;
 
     match update_type {
         GraphicsUpdateType::Bitmap => {
             let bitmap = slow_path::decode_slow_path_bitmap(&mut src).map_err(SessionError::decode)?;
-            fast_path_processor.process_bitmap_update(image, bitmap)
+            fast_path_processor
+                .process_bitmap_update(image, bitmap)
+                .map(|updates| (updates, None))
         }
         GraphicsUpdateType::Orders => {
-            warn!("Slow-path drawing orders not supported (MS-RDPEGDI)");
-            Ok(Vec::new())
+            let Some(window_support_level) = window_support_level else {
+                return Ok((Vec::new(), None));
+            };
+            let Some(orders) = try_decode_slow_path_windowing_orders(&mut src).map_err(SessionError::decode)? else {
+                return Ok((Vec::new(), None));
+            };
+            validate_windowing_orders_support(&orders, window_support_level)?;
+            Ok((Vec::new(), Some(data.to_vec())))
         }
         GraphicsUpdateType::Palette => {
             fast_path_processor.process_palette_update(data);
-            Ok(Vec::new())
+            Ok((Vec::new(), None))
         }
         // Synchronize is an artifact from the T.128 multipoint protocol
         // and carries no data. Safe to ignore.
         GraphicsUpdateType::Synchronize => {
             debug!("Ignoring slow-path synchronize update");
-            Ok(Vec::new())
+            Ok((Vec::new(), None))
         }
     }
+}
+
+fn process_fast_path_windowing_orders(
+    window_support_level: Option<WindowSupportLevel>,
+    data: &[u8],
+) -> SessionResult<Option<Vec<u8>>> {
+    let Some(window_support_level) = window_support_level else {
+        return Ok(None);
+    };
+
+    let mut src = ReadCursor::new(data);
+    let Some(orders) = try_decode_fast_path_windowing_orders(&mut src).map_err(SessionError::decode)? else {
+        return Ok(None);
+    };
+    validate_windowing_orders_support(&orders, window_support_level)?;
+
+    let mut normalized = Vec::with_capacity(
+        2 /* updateType */ + 2 /* pad2OctetsA */ + data.len() + 2, /* pad2OctetsB */
+    );
+    normalized.extend_from_slice(&0u16.to_le_bytes());
+    normalized.extend_from_slice(&0u16.to_le_bytes());
+    normalized.extend_from_slice(&data[..2]);
+    normalized.extend_from_slice(&0u16.to_le_bytes());
+    normalized.extend_from_slice(&data[2..]);
+    Ok(Some(normalized))
+}
+
+fn validate_windowing_orders_support(
+    orders: &WindowingOrdersUpdate<'_>,
+    window_support_level: WindowSupportLevel,
+) -> SessionResult<()> {
+    if window_support_level == WindowSupportLevel::SupportedEx
+        || !orders.orders.iter().any(|order| order.requires_extended_support())
+    {
+        return Ok(());
+    }
+
+    Err(SessionError::general(
+        "received extended window order fields without negotiated extended window support",
+    ))
 }
 
 /// Parse and process a slow-path pointer update through the shared pointer pipeline.
@@ -679,9 +761,11 @@ mod tests {
         .build();
         let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
 
-        let palette_updates = process_slow_path_graphics(&mut processor, &mut image, &palette_data)
-            .expect("slow-path palette update should succeed");
+        let (palette_updates, windowing_orders) =
+            process_slow_path_graphics(&mut processor, &mut image, None, &palette_data)
+                .expect("slow-path palette update should succeed");
         assert!(palette_updates.is_empty());
+        assert!(windowing_orders.is_none());
 
         let pointer = PointerAttribute {
             xor_bpp: 8,
@@ -702,5 +786,96 @@ mod tests {
             panic!("expected an accelerated pointer bitmap");
         };
         assert_eq!(pointer.bitmap_data, [0x10, 0x20, 0x30, 0xff]);
+    }
+
+    fn window_order(fields_present: u32) -> Vec<u8> {
+        let mut order = Vec::new();
+        order.push(0x2e);
+        order.extend_from_slice(&11u16.to_le_bytes());
+        order.extend_from_slice(&fields_present.to_le_bytes());
+        order.extend_from_slice(&7u32.to_le_bytes());
+        order
+    }
+
+    fn slow_path_orders_update(order: &[u8]) -> Vec<u8> {
+        let mut update = Vec::new();
+        update.extend_from_slice(&0u16.to_le_bytes());
+        update.extend_from_slice(&0u16.to_le_bytes());
+        update.extend_from_slice(&1u16.to_le_bytes());
+        update.extend_from_slice(&0u16.to_le_bytes());
+        update.extend_from_slice(order);
+        update
+    }
+
+    #[test]
+    fn slow_path_windowing_orders_require_negotiated_support() {
+        let mut processor = fast_path::ProcessorBuilder {
+            io_channel_id: 0,
+            user_channel_id: 0,
+            share_id: 0,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let update = slow_path_orders_update(&window_order(0x2100_0000));
+
+        let (_, orders) = process_slow_path_graphics(&mut processor, &mut image, None, &update).unwrap();
+        assert!(orders.is_none());
+
+        let (_, orders) =
+            process_slow_path_graphics(&mut processor, &mut image, Some(WindowSupportLevel::Supported), &update)
+                .unwrap();
+        assert_eq!(orders.as_deref(), Some(update.as_slice()));
+    }
+
+    #[test]
+    fn fast_path_windowing_orders_are_normalized_for_forwarding() {
+        let order = window_order(0x2100_0000);
+        let mut update = Vec::new();
+        update.extend_from_slice(&1u16.to_le_bytes());
+        update.extend_from_slice(&order);
+
+        let normalized = process_fast_path_windowing_orders(Some(WindowSupportLevel::Supported), &update)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            normalized,
+            [
+                0, 0, // updateType
+                0, 0, // pad2OctetsA
+                1, 0, // numberOrders
+                0, 0, // pad2OctetsB
+                0x2e, 11, 0, 0, 0, 0, 0x21, 7, 0, 0, 0,
+            ]
+        );
+    }
+
+    #[test]
+    fn extended_windowing_orders_require_extended_support() {
+        let update = slow_path_orders_update(&window_order(0x2101_0000));
+        let mut processor = fast_path::ProcessorBuilder {
+            io_channel_id: 0,
+            user_channel_id: 0,
+            share_id: 0,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+
+        assert!(
+            process_slow_path_graphics(&mut processor, &mut image, Some(WindowSupportLevel::Supported), &update)
+                .is_err()
+        );
+        assert!(
+            process_slow_path_graphics(
+                &mut processor,
+                &mut image,
+                Some(WindowSupportLevel::SupportedEx),
+                &update
+            )
+            .is_ok()
+        );
     }
 }

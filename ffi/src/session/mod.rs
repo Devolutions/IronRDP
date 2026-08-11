@@ -49,7 +49,8 @@ pub mod ffi {
             // Retain the factory to drive the Deactivation-Reactivation Sequence.
             let activation_factory = connection_result.activation_factory;
 
-            let stage = ironrdp::session::ActiveStageBuilder {
+            let window_support_level = connection_result.window_support_level;
+            let mut stage = ironrdp::session::ActiveStageBuilder {
                 static_channels: connection_result.static_channels,
                 user_channel_id: connection_result.user_channel_id,
                 io_channel_id: connection_result.io_channel_id,
@@ -60,6 +61,7 @@ pub mod ffi {
                 pointer_software_rendering: connection_result.pointer_software_rendering,
             }
             .build();
+            stage.set_window_support_level(window_support_level);
 
             Ok(Box::new(ActiveStage(stage, activation_factory)))
         }
@@ -238,21 +240,22 @@ pub mod ffi {
     }
 
     pub enum ActiveStageOutputType {
-        ResponseFrame,
-        GraphicsUpdate,
-        PointerDefault,
-        PointerHidden,
-        PointerPosition,
-        PointerBitmap,
-        Terminate,
-        DeactivateAll,
-        MultitransportRequest,
+        ResponseFrame = 0,
+        GraphicsUpdate = 1,
+        PointerDefault = 2,
+        PointerHidden = 3,
+        PointerPosition = 4,
+        PointerBitmap = 5,
+        Terminate = 6,
+        DeactivateAll = 7,
+        MultitransportRequest = 8,
         /// Auto-detect network characteristics from server.
         /// Use `get_autodetect_network_characteristics()` to retrieve
         /// RTT and bandwidth values for connection quality monitoring.
-        AutoDetect,
-        SaveSessionInfo,
-        AutoReconnectCookie,
+        AutoDetect = 9,
+        SaveSessionInfo = 10,
+        AutoReconnectCookie = 11,
+        WindowingOrders = 12,
     }
 
     impl ActiveStageOutput {
@@ -264,6 +267,7 @@ pub mod ffi {
                 ironrdp::session::ActiveStageOutput::PointerHidden => ActiveStageOutputType::PointerHidden,
                 ironrdp::session::ActiveStageOutput::PointerPosition { .. } => ActiveStageOutputType::PointerPosition,
                 ironrdp::session::ActiveStageOutput::PointerBitmap { .. } => ActiveStageOutputType::PointerBitmap,
+                ironrdp::session::ActiveStageOutput::WindowingOrders(_) => ActiveStageOutputType::WindowingOrders,
                 ironrdp::session::ActiveStageOutput::Terminate { .. } => ActiveStageOutputType::Terminate,
                 ironrdp::session::ActiveStageOutput::DeactivateAll => ActiveStageOutputType::DeactivateAll,
                 ironrdp::session::ActiveStageOutput::MultitransportRequest { .. } => {
@@ -316,6 +320,15 @@ pub mod ffi {
                     .into()),
             }
             .map(Box::new)
+        }
+
+        pub fn get_windowing_orders(&self) -> Result<Box<BytesSlice<'_>>, Box<IronRdpError>> {
+            match &self.0 {
+                ironrdp::session::ActiveStageOutput::WindowingOrders(orders) => Ok(Box::new(BytesSlice(orders))),
+                _ => Err(IncorrectEnumTypeError::on_variant("WindowingOrders")
+                    .of_enum("ActiveStageOutput")
+                    .into()),
+            }
         }
 
         pub fn get_terminate(&self) -> Result<Box<GracefulDisconnectReason>, Box<IronRdpError>> {
