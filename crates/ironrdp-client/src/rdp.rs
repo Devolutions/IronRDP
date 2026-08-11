@@ -2270,10 +2270,7 @@ mod tests {
         queue.defer(request);
         let deadline = queue.deadline().expect("pending resize must have a deadline");
 
-        assert_eq!(
-            queue.timed_out_request(deadline - Duration::from_millis(1)),
-            None
-        );
+        assert_eq!(queue.timed_out_request(deadline - Duration::from_millis(1)), None);
         assert_eq!(
             queue.timed_out_request(deadline),
             Some((request, DisplayResizeFallbackReason::CapabilitiesTimedOut))
