@@ -2,6 +2,8 @@ pub mod image;
 
 #[diplomat::bridge]
 pub mod ffi {
+    use std::collections::VecDeque;
+
     use super::image::ffi::DecodedImage;
     use crate::clipboard::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse};
     use crate::connector::activation::ffi::ConnectionActivationSequence;
@@ -23,7 +25,7 @@ pub mod ffi {
     pub struct ActiveStageOutput(pub ironrdp::session::ActiveStageOutput);
 
     #[diplomat::opaque]
-    pub struct ActiveStageOutputIterator(pub Vec<ironrdp::session::ActiveStageOutput>);
+    pub struct ActiveStageOutputIterator(pub VecDeque<ironrdp::session::ActiveStageOutput>);
 
     impl ActiveStageOutputIterator {
         pub fn len(&self) -> usize {
@@ -35,7 +37,7 @@ pub mod ffi {
         }
 
         pub fn next(&mut self) -> Option<Box<ActiveStageOutput>> {
-            self.0.pop().map(ActiveStageOutput).map(Box::new)
+            self.0.pop_front().map(ActiveStageOutput).map(Box::new)
         }
     }
 
@@ -80,7 +82,7 @@ pub mod ffi {
             payload: &[u8],
         ) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
             let outputs = self.0.process(&mut image.0, action.0, payload)?;
-            Ok(Box::new(ActiveStageOutputIterator(outputs)))
+            Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
         pub fn process_fastpath_input(
@@ -91,7 +93,7 @@ pub mod ffi {
             Ok(self
                 .0
                 .process_fastpath_input(&mut image.0, &fastpath_input.0)
-                .map(|outputs| Box::new(ActiveStageOutputIterator(outputs)))?)
+                .map(|outputs| Box::new(ActiveStageOutputIterator(outputs.into())))?)
         }
 
         pub fn initiate_clipboard_copy(
@@ -164,7 +166,7 @@ pub mod ffi {
 
         pub fn graceful_shutdown(&mut self) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
             let outputs = self.0.graceful_shutdown()?;
-            Ok(Box::new(ActiveStageOutputIterator(outputs)))
+            Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
         pub fn encoded_resize(
@@ -178,9 +180,9 @@ pub mod ffi {
                 .encode_resize(width, height, None, Some((width, height)))
                 .map(|outputs| {
                     outputs.map(|outputs| {
-                        Box::new(ActiveStageOutputIterator(vec![
-                            ironrdp::session::ActiveStageOutput::ResponseFrame(outputs),
-                        ]))
+                        Box::new(ActiveStageOutputIterator(
+                            vec![ironrdp::session::ActiveStageOutput::ResponseFrame(outputs)].into(),
+                        ))
                     })
                 })
                 .transpose()?)
@@ -396,4 +398,33 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct GracefulDisconnectReason(pub ironrdp::session::GracefulDisconnectReason);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+
+    use super::ffi::ActiveStageOutputIterator;
+
+    #[test]
+    fn active_stage_output_iterator_preserves_response_frame_order() {
+        let mut iterator = ActiveStageOutputIterator(VecDeque::from([
+            ironrdp::session::ActiveStageOutput::ResponseFrame(vec![1]),
+            ironrdp::session::ActiveStageOutput::ResponseFrame(vec![2]),
+        ]));
+
+        let first = iterator.next().unwrap();
+        let ironrdp::session::ActiveStageOutput::ResponseFrame(first) = &first.0 else {
+            panic!("expected a response frame");
+        };
+        assert_eq!(first, &[1]);
+
+        let second = iterator.next().unwrap();
+        let ironrdp::session::ActiveStageOutput::ResponseFrame(second) = &second.0 else {
+            panic!("expected a response frame");
+        };
+        assert_eq!(second, &[2]);
+
+        assert!(iterator.next().is_none());
+    }
 }
