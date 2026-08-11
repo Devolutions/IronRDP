@@ -126,14 +126,15 @@ impl ActiveStage {
         }
 
         // Mouse move events are prevalent, so we can preallocate space for
-        // response frame + graphics update
-        let mut output = Vec::with_capacity(2);
+        // response frames + graphics update.
+        let mut output = Vec::with_capacity(events.len().div_ceil(FastPathInput::MAX_EVENTS) + 1);
 
-        // Encoding fastpath response frame
-        // PERF: unnecessary copy
-        let fastpath_input = FastPathInput::new(events.to_vec()).map_err(SessionError::decode)?;
-        let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
-        output.push(ActiveStageOutput::ResponseFrame(frame));
+        for event_chunk in events.chunks(FastPathInput::MAX_EVENTS) {
+            // PERF: unnecessary copy
+            let fastpath_input = FastPathInput::new(event_chunk.to_vec()).map_err(SessionError::decode)?;
+            let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
+            output.push(ActiveStageOutput::ResponseFrame(frame));
+        }
 
         // If pointer rendering is disabled - we can skip the rest
         if !self.enable_server_pointer {
@@ -635,7 +636,9 @@ fn process_slow_path_pointer(
 
 #[cfg(test)]
 mod tests {
+    use ironrdp_core::Decode as _;
     use ironrdp_graphics::image_processing::PixelFormat;
+    use ironrdp_pdu::input::fast_path::KeyboardFlags;
     use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
 
     use super::*;
@@ -660,6 +663,51 @@ mod tests {
 
         assert_eq!(stage.request_full_redraw(1024, 768, true, false).unwrap().len(), 1);
         assert!(stage.request_full_redraw(1024, 768, false, false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fastpath_input_splits_at_event_limit() {
+        let mut stage = ActiveStageBuilder {
+            static_channels: StaticChannelSet::new(),
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let events = (0..=u8::MAX)
+            .map(|code| FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), u16::from(code)))
+            .collect::<Vec<_>>();
+
+        let output = stage.process_fastpath_input(&mut image, &events).unwrap();
+        let input_frames = output
+            .into_iter()
+            .map(|output| {
+                let ActiveStageOutput::ResponseFrame(frame) = output else {
+                    panic!("expected a fast-path input frame");
+                };
+                FastPathInput::decode(&mut ReadCursor::new(&frame)).unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            input_frames
+                .iter()
+                .map(|input| input.input_events().len())
+                .collect::<Vec<_>>(),
+            [FastPathInput::MAX_EVENTS, 1]
+        );
+        assert_eq!(
+            input_frames
+                .iter()
+                .flat_map(FastPathInput::input_events)
+                .collect::<Vec<_>>(),
+            events.iter().collect::<Vec<_>>()
+        );
     }
 
     #[test]
