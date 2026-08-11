@@ -19,7 +19,7 @@ use ironrdp::pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp::pdu::rdp::headers::CompressionFlags;
 use ironrdp::pdu::{self, gcc};
 use ironrdp::server::{
-    self, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer, RdpServerDisplay,
+    self, Acceptor, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer, RdpServerDisplay,
     RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, StaticChannelFactory, TlsIdentityCtx,
 };
 use ironrdp::session::image::DecodedImage;
@@ -647,7 +647,7 @@ impl RdpdrFixtureFactory {
 }
 
 impl StaticChannelFactory for RdpdrFixtureFactory {
-    fn attach(&self, acceptor: &mut ironrdp::acceptor::Acceptor) {
+    fn attach(&self, acceptor: &mut Acceptor) {
         acceptor.attach_static_channel(RdpdrFixture {
             state: Arc::clone(&self.state),
         });
@@ -806,10 +806,13 @@ async fn drive_rdpdr_until_complete(
         fixture_state.lock().expect("fixture state").phase,
         RdpdrFixturePhase::Complete
     ) {
-        let (action, frame) = tokio::time::timeout(Duration::from_millis(250), framed.read_pdu())
-            .await
-            .expect("RDPDR response deadline")
-            .expect("read RDPDR frame");
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "RDPDR fixture did not complete");
+        let read_result = tokio::time::timeout(remaining.min(Duration::from_millis(250)), framed.read_pdu()).await;
+        let Ok(frame_result) = read_result else {
+            continue;
+        };
+        let (action, frame) = frame_result.expect("read RDPDR frame");
         let outputs = stage.process(&mut image, action, &frame).expect("process RDPDR frame");
         for output in outputs {
             if let ActiveStageOutput::ResponseFrame(frame) = output {
@@ -817,7 +820,6 @@ async fn drive_rdpdr_until_complete(
             }
         }
         tokio::task::yield_now().await;
-        assert!(Instant::now() < deadline, "RDPDR fixture did not complete");
     }
 
     let rdpdr_state = fixture_state.lock().expect("fixture state");

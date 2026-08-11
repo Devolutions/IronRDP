@@ -32,6 +32,7 @@ pub use gfx::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle
 pub use handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
+pub use ironrdp_acceptor::Acceptor;
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 pub use server::{
     AutoReconnectCookieHandle, ConnectionHandler, CredentialDecision, CredentialValidationError, CredentialValidator,
