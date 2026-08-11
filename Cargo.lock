@@ -2881,6 +2881,8 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
+ "ironrdp-rdpemt",
+ "ironrdp-rdpeudp",
  "ironrdp-rdpsnd",
  "ironrdp-svc",
 ]
