@@ -2852,6 +2852,14 @@ name = "ironrdp-propertyset"
 version = "0.1.0"
 
 [[package]]
+name = "ironrdp-rail"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core 0.2.1",
+ "ironrdp-svc",
+]
+
+[[package]]
 name = "ironrdp-rdcleanpath"
 version = "0.2.2"
 dependencies = [
