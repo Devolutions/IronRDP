@@ -244,6 +244,16 @@ impl ActiveStage {
         self.x224_processor.set_share_id(share_id);
     }
 
+    /// Updates the negotiated maximum payload length of outgoing static virtual channel chunks.
+    pub fn set_static_channel_chunk_size(&mut self, maximum_chunk_size: usize) -> bool {
+        self.x224_processor.set_static_channel_chunk_size(maximum_chunk_size)
+    }
+
+    /// Returns the negotiated maximum payload length of outgoing static virtual channel chunks.
+    pub fn static_channel_chunk_size(&self) -> usize {
+        self.x224_processor.static_channel_chunk_size()
+    }
+
     pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
         self.enable_server_pointer = enable_server_pointer;
     }
@@ -253,6 +263,9 @@ impl ActiveStage {
     /// The shared bulk decompression history is retained. The server signals any history reset
     /// with the PACKET_FLUSHED and PACKET_AT_FRONT compression flags, which are applied per update.
     ///
+    /// Returns `false` without changing the active stage when the negotiated static virtual
+    /// channel chunk size is invalid.
+    ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
     pub fn reactivate(
         &mut self,
@@ -261,7 +274,15 @@ impl ActiveStage {
         share_id: u32,
         enable_server_pointer: bool,
         pointer_software_rendering: bool,
-    ) {
+        static_channel_chunk_size: usize,
+    ) -> bool {
+        if !self
+            .x224_processor
+            .set_static_channel_chunk_size(static_channel_chunk_size)
+        {
+            return false;
+        }
+
         self.fast_path_processor = fast_path::ProcessorBuilder {
             io_channel_id,
             user_channel_id,
@@ -273,6 +294,8 @@ impl ActiveStage {
         // The x224 processor encodes ShareDataPdu with the server's (possibly new) share_id.
         self.x224_processor.set_share_id(share_id);
         self.enable_server_pointer = enable_server_pointer;
+
+        true
     }
 
     /// Encodes client-side graceful shutdown request. Note that upon sending this request,

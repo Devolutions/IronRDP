@@ -532,16 +532,18 @@ public partial class MainWindow : Window
                         var shareId = finalized.GetShareId();
                         var enableServerPointer = finalized.GetEnableServerPointer();
                         var pointerSoftwareRendering = finalized.GetPointerSoftwareRendering();
+                        var staticChannelChunkSize = finalized.GetStaticChannelChunkSize();
 
                         _decodedImage = DecodedImage.New(PixelFormat.RgbA32, desktopSize.GetWidth(),
                             desktopSize.GetHeight());
 
-                        _activeStage!.SetFastpathProcessor(
+                        _activeStage!.Reactivate(
                             ioChannelId,
                             userChannelId,
                             shareId,
                             enableServerPointer,
-                            pointerSoftwareRendering
+                            pointerSoftwareRendering,
+                            staticChannelChunkSize
                         );
 
                         _activeStage.SetEnableServerPointer(enableServerPointer);

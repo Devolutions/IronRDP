@@ -30,6 +30,9 @@ public partial struct ConnectionActivationStateFinalized
     [return: MarshalAs(UnmanagedType.U1)]
     public static unsafe extern bool GetPointerSoftwareRendering(ConnectionActivationStateFinalized* self);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateFinalized_get_static_channel_chunk_size", ExactSpelling = true)]
+    public static unsafe extern nuint GetStaticChannelChunkSize(ConnectionActivationStateFinalized* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationStateFinalized_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ConnectionActivationStateFinalized* self);
 }

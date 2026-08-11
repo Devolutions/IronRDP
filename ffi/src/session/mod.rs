@@ -186,11 +186,6 @@ pub mod ffi {
                 .transpose()?)
         }
 
-        /// Rebuilds the fast-path processor for a Deactivation-Reactivation Sequence, keeping the
-        /// negotiated bulk compression alive.
-        ///
-        /// The name is kept for ABI compatibility; this now also applies `enable_server_pointer`,
-        /// which previously only reached the processor and not the active stage itself.
         pub fn set_fastpath_processor(
             &mut self,
             io_channel_id: u16,
@@ -199,13 +194,42 @@ pub mod ffi {
             enable_server_pointer: bool,
             pointer_software_rendering: bool,
         ) {
-            self.0.reactivate(
+            let static_channel_chunk_size = self.0.static_channel_chunk_size();
+            debug_assert!(self.0.reactivate(
                 io_channel_id,
                 user_channel_id,
                 share_id,
                 enable_server_pointer,
                 pointer_software_rendering,
-            );
+                static_channel_chunk_size,
+            ));
+        }
+
+        /// Rebuilds active-stage processors for a Deactivation-Reactivation Sequence.
+        ///
+        /// This retains negotiated bulk compression and applies the refreshed server-pointer state
+        /// and static channel chunk size.
+        pub fn reactivate(
+            &mut self,
+            io_channel_id: u16,
+            user_channel_id: u16,
+            share_id: u32,
+            enable_server_pointer: bool,
+            pointer_software_rendering: bool,
+            static_channel_chunk_size: usize,
+        ) -> Result<(), Box<IronRdpError>> {
+            if !self.0.reactivate(
+                io_channel_id,
+                user_channel_id,
+                share_id,
+                enable_server_pointer,
+                pointer_software_rendering,
+                static_channel_chunk_size,
+            ) {
+                return Err("invalid static channel chunk size".into());
+            }
+
+            Ok(())
         }
 
         pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
