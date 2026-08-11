@@ -166,16 +166,25 @@ fn validate_window_fields(flags: u32, src: &mut ReadCursor<'_>) -> DecodeResult<
     src.advance(4);
     if flags & DELETED != 0 {
         if flags != WINDOW_TYPE | DELETED {
-            return Err(invalid_field_err!("fieldsPresent", "deleted window order contains additional fields"));
+            return Err(invalid_field_err!(
+                "fieldsPresent",
+                "deleted window order contains additional fields"
+            ));
         }
         return Ok(());
     }
     if flags & (ICON | CACHED_ICON) != 0 {
         if flags & (ICON | CACHED_ICON) == ICON | CACHED_ICON {
-            return Err(invalid_field_err!("fieldsPresent", "window order contains both icon representations"));
+            return Err(invalid_field_err!(
+                "fieldsPresent",
+                "window order contains both icon representations"
+            ));
         }
         if flags & !(WINDOW_TYPE | 0x1000_0000 | ICON | CACHED_ICON | ICON_FLAGS) != 0 {
-            return Err(invalid_field_err!("fieldsPresent", "invalid flags for a window icon order"));
+            return Err(invalid_field_err!(
+                "fieldsPresent",
+                "invalid flags for a window icon order"
+            ));
         }
         return if flags & ICON != 0 {
             validate_icon(src)
@@ -226,21 +235,33 @@ fn validate_notification_icon_fields(flags: u32, src: &mut ReadCursor<'_>) -> De
     const CACHED_ICON: u32 = 0x8000_0000;
     const ALLOWED: u32 = NOTIFY_ICON_TYPE | 0x0000_000F | 0x1000_0000 | DELETED | ICON | CACHED_ICON;
     if flags & !ALLOWED != 0 {
-        return Err(invalid_field_err!("fieldsPresent", "unknown notification icon order flag"));
+        return Err(invalid_field_err!(
+            "fieldsPresent",
+            "unknown notification icon order flag"
+        ));
     }
     ensure_size!(in: src, size: 8 /* WindowId, NotifyIconId */);
     src.advance(8);
     if flags & DELETED != 0 {
         if flags != NOTIFY_ICON_TYPE | DELETED {
-            return Err(invalid_field_err!("fieldsPresent", "deleted notification icon contains additional fields"));
+            return Err(invalid_field_err!(
+                "fieldsPresent",
+                "deleted notification icon contains additional fields"
+            ));
         }
         return Ok(());
     }
     if flags & (ICON | CACHED_ICON) == ICON | CACHED_ICON {
-        return Err(invalid_field_err!("fieldsPresent", "notification icon contains both icon representations"));
+        return Err(invalid_field_err!(
+            "fieldsPresent",
+            "notification icon contains both icon representations"
+        ));
     }
     if flags & 0x1000_0000 != 0 && flags & (ICON | CACHED_ICON) == 0 {
-        return Err(invalid_field_err!("fieldsPresent", "new notification icon has no icon representation"));
+        return Err(invalid_field_err!(
+            "fieldsPresent",
+            "new notification icon has no icon representation"
+        ));
     }
     if flags & 0x0000_0008 != 0 {
         ensure_size!(in: src, size: 4 /* Version */);
@@ -254,7 +275,10 @@ fn validate_notification_icon_fields(flags: u32, src: &mut ReadCursor<'_>) -> De
         src.advance(4);
         let info_flags = src.read_u32();
         if info_flags & !0x33 != 0 || !matches!(info_flags & 0x0F, 0..=3) {
-            return Err(invalid_field_err!("InfoFlags", "invalid notification icon info tip flags"));
+            return Err(invalid_field_err!(
+                "InfoFlags",
+                "invalid notification icon info tip flags"
+            ));
         }
         skip_unicode(src, 510)?;
         skip_unicode(src, 126)?;
@@ -281,7 +305,10 @@ fn validate_desktop_fields(flags: u32, src: &mut ReadCursor<'_>) -> DecodeResult
     }
     if flags & 1 != 0 {
         if flags != DESKTOP_TYPE | 1 {
-            return Err(invalid_field_err!("fieldsPresent", "non-monitored desktop contains additional fields"));
+            return Err(invalid_field_err!(
+                "fieldsPresent",
+                "non-monitored desktop contains additional fields"
+            ));
         }
         return Ok(());
     }
@@ -289,7 +316,10 @@ fn validate_desktop_fields(flags: u32, src: &mut ReadCursor<'_>) -> DecodeResult
         return Err(invalid_field_err!("fieldsPresent", "desktop ARC began requires hooked"));
     }
     if flags & 4 != 0 && flags != DESKTOP_TYPE | 4 {
-        return Err(invalid_field_err!("fieldsPresent", "desktop ARC completed contains additional fields"));
+        return Err(invalid_field_err!(
+            "fieldsPresent",
+            "desktop ARC completed contains additional fields"
+        ));
     }
     skip_if!(src, flags, 0x20, 4 /* ActiveWindowId */);
     if flags & 0x10 != 0 {
@@ -331,7 +361,10 @@ fn skip_unicode(src: &mut ReadCursor<'_>, maximum_size: usize) -> DecodeResult<(
     }
     ensure_size!(in: src, size: size);
     let bytes = src.read_slice(size);
-    let code_units = bytes.chunks_exact(2).map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]])).collect::<Vec<_>>();
+    let code_units = bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect::<Vec<_>>();
     String::from_utf16(&code_units).map_err(|_| invalid_field_err!("String", "invalid UTF-16 string"))?;
     Ok(())
 }
@@ -350,9 +383,7 @@ pub struct WindowingOrdersUpdate<'a> {
 
 /// Parses a slow-path Orders update after its `updateType` field.
 ///
-pub fn try_decode_slow_path_windowing_orders<'a>(
-    src: &mut ReadCursor<'a>,
-) -> DecodeResult<WindowingOrdersUpdate<'a>> {
+pub fn try_decode_slow_path_windowing_orders<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<WindowingOrdersUpdate<'a>> {
     ensure_size!(in: src, size: 2 /* pad2OctetsA */ + 2 /* numberOrders */ + 2 /* pad2OctetsB */);
     src.advance(2);
     let order_count = usize::from(src.read_u16());
@@ -362,9 +393,7 @@ pub fn try_decode_slow_path_windowing_orders<'a>(
 
 /// Parses a Fast-Path Orders update after its Fast-Path framing.
 ///
-pub fn try_decode_fast_path_windowing_orders<'a>(
-    src: &mut ReadCursor<'a>,
-) -> DecodeResult<WindowingOrdersUpdate<'a>> {
+pub fn try_decode_fast_path_windowing_orders<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<WindowingOrdersUpdate<'a>> {
     ensure_size!(in: src, size: 2 /* numberOrders */);
     let order_count = usize::from(src.read_u16());
     decode_orders(src, order_count)
@@ -405,8 +434,7 @@ mod tests {
         let mut update = vec![0, 0, 1, 0, 0, 0];
         update.extend_from_slice(&order);
 
-        let orders = try_decode_slow_path_windowing_orders(&mut ReadCursor::new(&update))
-            .unwrap();
+        let orders = try_decode_slow_path_windowing_orders(&mut ReadCursor::new(&update)).unwrap();
         assert_eq!(orders.orders.len(), 1);
         assert_eq!(orders.orders[0].encoded, order.as_slice());
         assert!(!orders.orders[0].requires_extended_support());
@@ -418,8 +446,7 @@ mod tests {
         let mut update = vec![1, 0];
         update.extend_from_slice(&order);
 
-        let orders = try_decode_fast_path_windowing_orders(&mut ReadCursor::new(&update))
-            .unwrap();
+        let orders = try_decode_fast_path_windowing_orders(&mut ReadCursor::new(&update)).unwrap();
         assert_eq!(orders.orders[0].encoded, order.as_slice());
     }
 
@@ -436,7 +463,7 @@ mod tests {
     #[test]
     fn rejects_window_order_with_truncated_optional_field() {
         let mut order = deleted_window_order();
-        order[3..7].copy_from_slice(&(WINDOW_TYPE | 0x0000_0004 /* TITLE */).to_le_bytes());
+        order[3..7].copy_from_slice(&(WINDOW_TYPE | 0x0000_0004/* TITLE */).to_le_bytes());
         let mut update = vec![1, 0];
         update.extend_from_slice(&order);
 
