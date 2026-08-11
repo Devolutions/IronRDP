@@ -3077,6 +3077,8 @@ dependencies = [
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-input",
  "ironrdp-propertyset",
+ "ironrdp-rdpdr",
+ "ironrdp-rdpdr-native",
  "ironrdp-rpc",
  "ironrdp-svc",
  "ironrdp-tls",
