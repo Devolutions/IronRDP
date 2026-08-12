@@ -96,14 +96,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GWLP_USERDATA, GetAncestor, GetClassNameW, GetClientRect, GetCursorPos,
     GetDlgItem, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
     GetWindowThreadProcessId, HMENU, HWND_MESSAGE, IsIconic, IsWindow, IsWindowVisible, KillTimer, PostMessageW,
-    RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER, SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    SetWindowTextW, ShowWindow, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CANCELMODE,
-    WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_ENABLE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE,
-    WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    RegisterClassW, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SW_HIDE, SW_MAXIMIZE,
+    SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER, SendMessageW,
+    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, UnregisterClassW, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DPICHANGED,
+    WM_ENABLE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN,
+    WM_XBUTTONUP, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{s, w};
 use windows_core::{
@@ -142,8 +142,8 @@ const DISPLAY_RESIZE_TIMER_ID: usize = 0x4952_4450;
 const DISPLAY_RESIZE_DEBOUNCE_MILLISECONDS: u32 = 250;
 const NATIVE_MSTSC_LAYOUT_TIMER_ID: usize = 0x4952_4451;
 const NATIVE_MSTSC_LAYOUT_POLL_MILLISECONDS: u32 = 100;
-const PROJECTED_RAIL_CLOSE_RETRY_TIMER_ID: usize = 0x4952_4452;
-const PROJECTED_RAIL_CLOSE_RETRY_MILLISECONDS: u32 = 25;
+const PROJECTED_RAIL_INPUT_RETRY_TIMER_ID: usize = 0x4952_4452;
+const PROJECTED_RAIL_INPUT_RETRY_MILLISECONDS: u32 = 25;
 const ACTIVEX_DVC_PLUGIN_PATHS_PROPERTY: &str = "IronRdpDvcPluginPaths";
 const ACTIVEX_ENABLE_TLS_PROPERTY: &str = "IronRdpEnableTls";
 const ACTIVEX_AUTOLOGON_PROPERTY: &str = "IronRdpAutoLogon";
@@ -206,6 +206,15 @@ fn rail_window_input_event(window_id: u32, message: u32, wparam: WPARAM) -> Opti
         })),
         _ => None,
     }
+}
+
+fn is_unsupported_projected_rail_system_command(wparam: WPARAM) -> bool {
+    let command = wparam.0 & 0xfff0;
+    command == SC_MOVE as usize
+        || command == SC_SIZE as usize
+        || command == SC_MINIMIZE as usize
+        || command == SC_MAXIMIZE as usize
+        || command == SC_RESTORE as usize
 }
 
 pub(crate) const CLSID_MS_RDP_CLIENT: GUID = GUID::from_u128(0x791f_a017_2de3_492e_acc5_53c6_7a2b_94d0);
@@ -2477,6 +2486,24 @@ fn keyboard_hooks_apply_remotely(mode: i32, fullscreen: bool) -> bool {
     }
 }
 
+fn should_forward_windows_key(
+    compatibility: &CompatibilitySettings,
+    fullscreen: bool,
+    input_database: &InputDatabase,
+    message: u32,
+    scancode: Scancode,
+) -> bool {
+    let (extended, code) = scancode.as_u8();
+    let is_windows_key = extended && matches!(code, 0x5b | 0x5c);
+    if !is_windows_key {
+        return true;
+    }
+
+    // Preserve a release for a key forwarded before the host policy changed.
+    compatibility.enable_windows_key && keyboard_hooks_apply_remotely(compatibility.keyboard_hook_mode, fullscreen)
+        || matches!(message, WM_KEYUP | WM_SYSKEYUP) && input_database.is_key_pressed(scancode)
+}
+
 fn is_fullscreen_hotkey(virtual_key: VIRTUAL_KEY, control_and_alt_pressed: bool) -> bool {
     control_and_alt_pressed && matches!(virtual_key, VK_CANCEL | VK_PAUSE)
 }
@@ -3974,6 +4001,7 @@ struct ProjectedRailWindowContext {
     content: Rc<Cell<ProjectedRailContent>>,
     close_pending: Cell<bool>,
     close_queued: Cell<bool>,
+    release_pending: Cell<bool>,
 }
 
 struct ProjectedRailWindow {
@@ -4185,19 +4213,33 @@ fn apply_projected_rail_input(context: &ProjectedRailWindowContext, operations: 
     permit.send(RdpInputEvent::FastPath(fast_path));
 }
 
-fn release_projected_rail_input(context: &ProjectedRailWindowContext) {
+fn schedule_projected_rail_input_retry(hwnd: HWND) {
+    unsafe {
+        let _ = SetTimer(
+            Some(hwnd),
+            PROJECTED_RAIL_INPUT_RETRY_TIMER_ID,
+            PROJECTED_RAIL_INPUT_RETRY_MILLISECONDS,
+            None,
+        );
+    }
+}
+
+fn release_projected_rail_input(hwnd: HWND, context: &ProjectedRailWindowContext) {
     let permit = match context.input_sender.try_reserve() {
         Ok(permit) => permit,
         Err(error) => {
+            context.release_pending.set(true);
+            schedule_projected_rail_input_retry(hwnd);
             tracing::debug!(
                 ?error,
                 window_id = context.window_id,
-                "Unable to reserve projected RAIL window input release"
+                "Deferring projected RAIL window input release"
             );
             return;
         }
     };
     let fast_path = context.input_database.borrow_mut().release_all();
+    context.release_pending.set(false);
     if fast_path.is_empty() {
         return;
     }
@@ -4219,14 +4261,7 @@ fn queue_projected_rail_close(hwnd: HWND, context: &ProjectedRailWindowContext) 
         }
         Err(error) => {
             context.close_pending.set(true);
-            unsafe {
-                let _ = SetTimer(
-                    Some(hwnd),
-                    PROJECTED_RAIL_CLOSE_RETRY_TIMER_ID,
-                    PROJECTED_RAIL_CLOSE_RETRY_MILLISECONDS,
-                    None,
-                );
-            }
+            schedule_projected_rail_input_retry(hwnd);
             tracing::debug!(
                 ?error,
                 window_id = context.window_id,
@@ -4236,23 +4271,33 @@ fn queue_projected_rail_close(hwnd: HWND, context: &ProjectedRailWindowContext) 
     }
 }
 
-fn retry_projected_rail_close(hwnd: HWND, context: &ProjectedRailWindowContext) {
-    if !context.close_pending.get() {
-        unsafe {
-            let _ = KillTimer(Some(hwnd), PROJECTED_RAIL_CLOSE_RETRY_TIMER_ID);
+fn retry_projected_rail_input(hwnd: HWND, context: &ProjectedRailWindowContext) {
+    if context.release_pending.get() {
+        let Ok(permit) = context.input_sender.try_reserve() else {
+            return;
+        };
+        let fast_path = context.input_database.borrow_mut().release_all();
+        context.release_pending.set(false);
+        if !fast_path.is_empty() {
+            permit.send(RdpInputEvent::FastPath(fast_path));
         }
-        return;
     }
-    let event = RailInputEvent::SystemCommand(SystemCommandPdu {
-        window_id: context.window_id,
-        command: SystemCommand::Close,
-    });
-    if let Ok(permit) = context.input_sender.try_reserve() {
-        permit.send(RdpInputEvent::Rail(event));
-        context.close_pending.set(false);
-        context.close_queued.set(true);
+
+    if context.close_pending.get() {
+        let event = RailInputEvent::SystemCommand(SystemCommandPdu {
+            window_id: context.window_id,
+            command: SystemCommand::Close,
+        });
+        if let Ok(permit) = context.input_sender.try_reserve() {
+            permit.send(RdpInputEvent::Rail(event));
+            context.close_pending.set(false);
+            context.close_queued.set(true);
+        }
+    }
+
+    if !context.close_pending.get() && !context.release_pending.get() {
         unsafe {
-            let _ = KillTimer(Some(hwnd), PROJECTED_RAIL_CLOSE_RETRY_TIMER_ID);
+            let _ = KillTimer(Some(hwnd), PROJECTED_RAIL_INPUT_RETRY_TIMER_ID);
         }
     }
 }
@@ -4355,8 +4400,12 @@ fn handle_projected_rail_window_message(
         // The server remains authoritative for a projected window's lifetime.
         return true;
     }
-    if message == WM_TIMER && wparam.0 == PROJECTED_RAIL_CLOSE_RETRY_TIMER_ID {
-        retry_projected_rail_close(hwnd, context);
+    if message == WM_TIMER && wparam.0 == PROJECTED_RAIL_INPUT_RETRY_TIMER_ID {
+        retry_projected_rail_input(hwnd, context);
+        return true;
+    }
+    if message == WM_SYSCOMMAND && is_unsupported_projected_rail_system_command(wparam) {
+        // ActiveX does not implement the server-directed move/size lifecycle.
         return true;
     }
     if let Some(event) = rail_window_input_event(context.window_id, message, wparam) {
@@ -4371,6 +4420,13 @@ fn handle_projected_rail_window_message(
         WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
             let lparam = lparam.0 as u32;
             let scancode = Scancode::from_u8(lparam & 0x0100_0000 != 0, ((lparam >> 16) & 0xff) as u8);
+            let compatibility = context.compatibility.borrow();
+            let input_database = context.input_database.borrow();
+            if !should_forward_windows_key(&compatibility, false, &input_database, message, scancode) {
+                return true;
+            }
+            drop(input_database);
+            drop(compatibility);
             let operation = if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN) {
                 Operation::KeyPressed(scancode)
             } else {
@@ -4479,11 +4535,11 @@ fn handle_projected_rail_window_message(
             true
         }
         WM_CANCELMODE | WM_ENABLE if wparam.0 == 0 => {
-            release_projected_rail_input(context);
+            release_projected_rail_input(hwnd, context);
             false
         }
         WM_KILLFOCUS | WM_CAPTURECHANGED => {
-            release_projected_rail_input(context);
+            release_projected_rail_input(hwnd, context);
             true
         }
         _ => false,
@@ -4649,6 +4705,7 @@ impl RailWindowManager {
                 content: Rc::clone(&content_cell),
                 close_pending: Cell::new(false),
                 close_queued: Cell::new(false),
+                release_pending: Cell::new(false),
             });
             if let Err(error) = acquire_rail_window_class() {
                 tracing::warn!(
@@ -9591,24 +9648,19 @@ impl Control {
                 }
                 let lparam = lparam.0 as u32;
                 let scancode = Scancode::from_u8(lparam & 0x0100_0000 != 0, ((lparam >> 16) & 0xff) as u8);
-                let (extended, code) = scancode.as_u8();
-                let is_windows_key = extended && matches!(code, 0x5b | 0x5c);
                 let compatibility = self.compatibility.borrow();
-                let forwards_windows_key = compatibility.enable_windows_key
-                    && keyboard_hooks_apply_remotely(
-                        compatibility.keyboard_hook_mode,
-                        self.settings.borrow().fullscreen,
-                    );
-                drop(compatibility);
-                if is_windows_key && !forwards_windows_key {
-                    // A setting change may race a key-up for a key already forwarded. Preserve
-                    // that release so the remote session cannot retain a stuck Windows key.
-                    if !matches!(message, WM_KEYUP | WM_SYSKEYUP)
-                        || !self.input_database.borrow().is_key_pressed(scancode)
-                    {
-                        return true;
-                    }
+                let input_database = self.input_database.borrow();
+                if !should_forward_windows_key(
+                    &compatibility,
+                    self.settings.borrow().fullscreen,
+                    &input_database,
+                    message,
+                    scancode,
+                ) {
+                    return true;
                 }
+                drop(input_database);
+                drop(compatibility);
                 let operation = match message {
                     WM_KEYDOWN | WM_SYSKEYDOWN => Operation::KeyPressed(scancode),
                     _ => Operation::KeyReleased(scancode),
@@ -17765,7 +17817,59 @@ mod tests {
     }
 
     #[test]
-    fn projected_rail_input_and_close_preserve_state_when_the_queue_is_full() {
+    fn projected_rail_suppresses_unsupported_system_commands() {
+        for command in [SC_MOVE, SC_SIZE, SC_MINIMIZE, SC_MAXIMIZE, SC_RESTORE] {
+            assert!(is_unsupported_projected_rail_system_command(WPARAM(command as usize)));
+        }
+        assert!(!is_unsupported_projected_rail_system_command(WPARAM(0xf060)));
+    }
+
+    #[test]
+    fn windows_key_policy_preserves_a_previously_forwarded_release() {
+        let scancode = Scancode::from_u8(true, 0x5b);
+        let mut compatibility = CompatibilitySettings {
+            enable_windows_key: false,
+            ..CompatibilitySettings::default()
+        };
+        let mut input_database = InputDatabase::new();
+
+        assert!(!should_forward_windows_key(
+            &compatibility,
+            false,
+            &input_database,
+            WM_KEYDOWN,
+            scancode
+        ));
+        input_database.apply([Operation::KeyPressed(scancode)]);
+        assert!(should_forward_windows_key(
+            &compatibility,
+            false,
+            &input_database,
+            WM_KEYUP,
+            scancode
+        ));
+
+        compatibility.enable_windows_key = true;
+        compatibility.keyboard_hook_mode = 1;
+        assert!(should_forward_windows_key(
+            &compatibility,
+            false,
+            &input_database,
+            WM_KEYDOWN,
+            scancode
+        ));
+        compatibility.keyboard_hook_mode = 2;
+        assert!(!should_forward_windows_key(
+            &compatibility,
+            false,
+            &input_database,
+            WM_KEYDOWN,
+            scancode
+        ));
+    }
+
+    #[test]
+    fn projected_rail_input_retries_release_and_close_when_the_queue_is_full() {
         let (input_sender, mut input_receiver) = RdpInputSender::channel(1);
         let input_database = Rc::new(RefCell::new(InputDatabase::new()));
         let mut manager = RailWindowManager::new(
@@ -17799,6 +17903,25 @@ mod tests {
         assert!(input_database.borrow_mut().release_all().is_empty());
         assert!(matches!(input_receiver.try_recv(), Ok(RdpInputEvent::FastPath(_))));
 
+        apply_projected_rail_input(
+            &window._context,
+            [Operation::KeyPressed(Scancode::from_u8(false, 0x1e))],
+        );
+        release_projected_rail_input(window.hwnd, &window._context);
+        assert!(window._context.release_pending.get());
+        assert!(matches!(input_receiver.try_recv(), Ok(RdpInputEvent::FastPath(_))));
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd,
+                WM_TIMER,
+                Some(WPARAM(PROJECTED_RAIL_INPUT_RETRY_TIMER_ID)),
+                Some(LPARAM(0)),
+            );
+        }
+        assert!(!window._context.release_pending.get());
+        assert!(matches!(input_receiver.try_recv(), Ok(RdpInputEvent::FastPath(_))));
+        assert!(input_database.borrow_mut().release_all().is_empty());
+
         input_sender
             .try_send(RdpInputEvent::FastPath(Vec::new().into()))
             .expect("refill input queue");
@@ -17812,7 +17935,7 @@ mod tests {
             let _ = SendMessageW(
                 window.hwnd,
                 WM_TIMER,
-                Some(WPARAM(PROJECTED_RAIL_CLOSE_RETRY_TIMER_ID)),
+                Some(WPARAM(PROJECTED_RAIL_INPUT_RETRY_TIMER_ID)),
                 Some(LPARAM(0)),
             );
         }
