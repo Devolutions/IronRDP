@@ -458,10 +458,7 @@ fn map_webauthn_error(hr: HRESULT) -> RdpewaHandlerError {
 }
 
 /// Prefer a server-supplied 16-byte GUID; otherwise allocate one via the WebAuthn API.
-fn resolve_cancel_id(
-    request: &WebAuthnOperationRequest,
-    cancel_guid: &Arc<Mutex<Option<GUID>>>,
-) -> RdpewaResult<GUID> {
+fn resolve_cancel_id(request: &WebAuthnOperationRequest, cancel_guid: &Arc<Mutex<Option<GUID>>>) -> RdpewaResult<GUID> {
     let cancel_id = request
         .para
         .cancellation_id
@@ -509,4 +506,29 @@ fn guid_from_bytes(bytes: &[u8]) -> Option<GUID> {
         data3: u16::from_le_bytes(bytes[6..8].try_into().ok()?),
         data4: bytes[8..16].try_into().ok()?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guid_from_bytes_rejects_wrong_length() {
+        assert!(guid_from_bytes(&[]).is_none());
+        assert!(guid_from_bytes(&[0; 15]).is_none());
+        assert!(guid_from_bytes(&[0; 17]).is_none());
+    }
+
+    #[test]
+    fn guid_from_bytes_parses_windows_layout() {
+        // {01020304-0506-0708-090A-0B0C0D0E0F10}
+        let bytes = [
+            0x04, 0x03, 0x02, 0x01, 0x06, 0x05, 0x08, 0x07, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+        ];
+        let guid = guid_from_bytes(&bytes).expect("valid GUID bytes");
+        assert_eq!(guid.data1, 0x0102_0304);
+        assert_eq!(guid.data2, 0x0506);
+        assert_eq!(guid.data3, 0x0708);
+        assert_eq!(guid.data4, [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10]);
+    }
 }

@@ -480,6 +480,10 @@ Native MS-RDPEWA WebAuthn redirection is controlled through the extended setting
 (default enabled) and the RDP property key `redirectwebauthn`.
 When enabled, the control registers IronRDP's native `WebAuthN_Channel` client with the ActiveX HWND
 as the WebAuthn parent window.
+There is no public MSTSC `IMsRdpClientAdvancedSettings` slot for `RedirectWebAuthn`, so hosts should
+use ExtendedSettings or the RDP property rather than a raw AdvancedSettings vtable index.
+Like other redirect toggles, `RedirectWebAuthn` is not part of `IPersistStreamInit` persistence;
+hosts that need a durable value should store it themselves or in an `.rdp` file.
 When a host also lists `webauthn.dll` under `IronRdpDvcPluginPaths`, that COM plugin is skipped so the
 native channel remains the sole claimant.
 `EnableCredSspSupport` is

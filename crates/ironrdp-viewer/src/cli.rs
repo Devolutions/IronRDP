@@ -184,6 +184,17 @@ struct Args {
     #[clap(long, value_enum, default_value_t = ClipboardType::Enable)]
     clipboard_type: ClipboardType,
 
+    /// Enable native MS-RDPEWA WebAuthn redirection (Windows Hello / security keys).
+    ///
+    /// Defaults to the `.rdp` `redirectwebauthn` value when present, otherwise enabled on
+    /// Windows builds that include the client `webauthn` feature.
+    #[clap(long, action = clap::ArgAction::SetTrue, overrides_with = "no_webauthn")]
+    webauthn: bool,
+
+    /// Disable native MS-RDPEWA WebAuthn redirection.
+    #[clap(long = "no-webauthn", action = clap::ArgAction::SetTrue, overrides_with = "webauthn")]
+    no_webauthn: bool,
+
     /// The bitmap codecs to use (remotefx:on, ...)
     #[clap(long, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
@@ -298,9 +309,10 @@ impl ViewerConfig {
         // Whether the `.rdp` file requested clipboard redirection; the CLI `--clipboard-type` is
         // resolved against this when applied below.
         let redirect_clipboard = properties.redirect_clipboard().unwrap_or(true);
+        let redirect_webauthn = properties.redirect_webauthn().unwrap_or(true);
 
         // CLI arguments take precedence: apply them on top of the `.rdp`-derived builder.
-        let builder = apply_cli_to_builder(builder, args, redirect_clipboard);
+        let builder = apply_cli_to_builder(builder, args, redirect_clipboard, redirect_webauthn);
 
         Ok(Self {
             builder,
@@ -342,7 +354,12 @@ impl ViewerConfig {
 
 /// Apply CLI overrides on top of a builder that already reflects the `.rdp` file. Every flag that is
 /// present overwrites the corresponding builder (and mirrored property) value.
-fn apply_cli_to_builder(mut builder: ConfigBuilder, args: Args, redirect_clipboard: bool) -> ConfigBuilder {
+fn apply_cli_to_builder(
+    mut builder: ConfigBuilder,
+    args: Args,
+    redirect_clipboard: bool,
+    redirect_webauthn: bool,
+) -> ConfigBuilder {
     // Validate the codecs early to surface help text before connecting.
     {
         let codecs: Vec<_> = args.codecs.iter().map(String::as_str).collect();
@@ -426,6 +443,16 @@ fn apply_cli_to_builder(mut builder: ConfigBuilder, args: Args, redirect_clipboa
     }
 
     builder = builder.with_clipboard(resolve_clipboard_type(args.clipboard_type, redirect_clipboard));
+
+    // Viewer enables ironrdp-client `webauthn` through `client-all`.
+    let webauthn = if args.webauthn {
+        true
+    } else if args.no_webauthn {
+        false
+    } else {
+        redirect_webauthn
+    };
+    builder = builder.with_webauthn(webauthn);
 
     // CLI-only knobs that are not representable as `.rdp` properties.
     // TODO/FIXME: Some of these, we may want to add support for storing in .rdp files (e.g.: IME file name can be reasonably seen as a connection option)
