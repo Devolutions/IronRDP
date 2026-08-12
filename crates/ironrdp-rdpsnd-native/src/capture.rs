@@ -1,11 +1,13 @@
 use core::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use core::time::Duration;
 use std::thread::{self, JoinHandle};
 
 use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use ironrdp_rdpeai::client::{AudioPacketSink, RdpeaiCaptureHandler};
-use ironrdp_rdpeai::pdu::{OpenReplyPdu, pcm_format};
+use ironrdp_rdpeai::pdu::{MAX_DATA_PACKET_SIZE, OpenReplyPdu, pcm_format};
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
 use tracing::{debug, error, warn};
 
@@ -40,8 +42,25 @@ impl RdpeaiCaptureBackend {
         }
     }
 
+    /// Stop the worker thread without clearing an already-installed sink.
+    fn stop_worker(&mut self) {
+        if let Some(handle) = self.stream_handle.take() {
+            self.stream_ended.store(true, Ordering::Relaxed);
+            handle.thread().unpark();
+            if let Err(err) = handle.join() {
+                error!(?err, "Failed to join capture stream thread");
+            }
+        }
+    }
+
+    fn clear_sink(&mut self) {
+        if let Ok(mut guard) = self.sink_state.lock() {
+            *guard = None;
+        }
+    }
+
     fn start_stream(&mut self, format: &AudioFormat) -> Result<(), String> {
-        self.stop_stream();
+        self.stop_worker();
 
         if format.format != WaveFormat::PCM {
             return Err(format!("unsupported capture wave format: {:?}", format.format));
@@ -74,18 +93,21 @@ impl RdpeaiCaptureBackend {
         let sink_state = Arc::clone(&self.sink_state);
         self.stream_ended.store(false, Ordering::Relaxed);
 
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
+
         self.stream_handle = Some(thread::spawn(move || {
             let stream = match build_input_stream(&device, &config, sample_format, Arc::clone(&sink_state)) {
                 Ok(stream) => stream,
                 Err(error) => {
-                    error!(%error, "Failed to open CPAL input stream");
+                    let _ = ready_tx.send(Err(error));
                     return;
                 }
             };
             if let Err(error) = stream.play() {
-                error!(%error, "Failed to start CPAL input stream");
+                let _ = ready_tx.send(Err(error.to_string()));
                 return;
             }
+            let _ = ready_tx.send(Ok(()));
             debug!("AUDIO_INPUT capture stream running");
             while !stream_ended.load(Ordering::Relaxed) {
                 thread::park();
@@ -94,21 +116,16 @@ impl RdpeaiCaptureBackend {
             debug!("AUDIO_INPUT capture stream stopped");
         }));
 
-        // Give the worker a moment; open errors surface asynchronously. Treat spawn as success
-        // and let missing audio be a soft failure (Open already returned S_OK).
-        Ok(())
-    }
-
-    fn stop_stream(&mut self) {
-        if let Some(handle) = self.stream_handle.take() {
-            self.stream_ended.store(true, Ordering::Relaxed);
-            handle.thread().unpark();
-            if let Err(err) = handle.join() {
-                error!(?err, "Failed to join capture stream thread");
+        match ready_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                self.stop_worker();
+                Err(error)
             }
-        }
-        if let Ok(mut guard) = self.sink_state.lock() {
-            *guard = None;
+            Err(error) => {
+                self.stop_worker();
+                Err(format!("capture stream startup timed out: {error}"))
+            }
         }
     }
 }
@@ -125,8 +142,14 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
     }
 
     fn open(&mut self, format: &AudioFormat, packet_size: usize, sink: AudioPacketSink) -> i32 {
-        if packet_size == 0 {
-            warn!("Refusing capture open with zero packet size");
+        if packet_size == 0 || packet_size > MAX_DATA_PACKET_SIZE {
+            warn!(packet_size, "Refusing capture open with invalid packet size");
+            return OpenReplyPdu::E_FAIL;
+        }
+
+        let mut buffer = Vec::new();
+        if buffer.try_reserve_exact(packet_size.saturating_mul(2)).is_err() {
+            warn!(packet_size, "Refusing capture open: packet buffer allocation failed");
             return OpenReplyPdu::E_FAIL;
         }
 
@@ -137,7 +160,7 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
             *guard = Some(SinkState {
                 sink,
                 packet_size,
-                buffer: Vec::with_capacity(packet_size * 2),
+                buffer,
             });
         }
 
@@ -145,34 +168,41 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
             Ok(()) => OpenReplyPdu::S_OK,
             Err(error) => {
                 warn!(%error, "AUDIO_INPUT capture open failed");
-                if let Ok(mut guard) = self.sink_state.lock() {
-                    *guard = None;
-                }
+                self.clear_sink();
                 OpenReplyPdu::E_FAIL
             }
         }
     }
 
     fn set_format(&mut self, format: &AudioFormat, packet_size: usize) -> bool {
-        if packet_size == 0 {
+        if packet_size == 0 || packet_size > MAX_DATA_PACKET_SIZE {
             return false;
         }
         {
             let Ok(mut guard) = self.sink_state.lock() else {
                 return false;
             };
-            if let Some(state) = guard.as_mut() {
-                state.packet_size = packet_size;
-                state.buffer.clear();
-            } else {
+            let Some(state) = guard.as_mut() else {
+                return false;
+            };
+            state.packet_size = packet_size;
+            state.buffer.clear();
+            if state.buffer.try_reserve(packet_size.saturating_mul(2)).is_err() {
                 return false;
             }
         }
-        self.start_stream(format).is_ok()
+        match self.start_stream(format) {
+            Ok(()) => true,
+            Err(error) => {
+                warn!(%error, "AUDIO_INPUT capture format change failed");
+                false
+            }
+        }
     }
 
     fn close(&mut self) {
-        self.stop_stream();
+        self.stop_worker();
+        self.clear_sink();
     }
 }
 
@@ -203,7 +233,7 @@ fn build_input_stream(
             .build_input_stream(
                 config,
                 move |data: &[i16], _| {
-                    let mut bytes = Vec::with_capacity(data.len() * 2);
+                    let mut bytes = Vec::with_capacity(data.len().saturating_mul(2));
                     for sample in data {
                         bytes.extend_from_slice(&sample.to_le_bytes());
                     }
