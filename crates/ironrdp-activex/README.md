@@ -458,8 +458,12 @@ subtype, and functional-key count, secured `StartProgram`/`WorkDir`, both public
 `RedirectClipboard`, `PerformanceFlags`, and RD Gateway transport selection.
 `StartProgram` and `WorkDir` retain their caller-owned BSTR values and configure IronRDP's next
 Client Info PDU alternate shell and working directory. The keyboard fields configure the next GCC
-Client Core Data block. Audio mode `0` enables the Windows-native RDPSND playback backend; modes
-`1` (play on server) and `2` (disabled) suppress the local RDPSND channel. When requested,
+Client Core Data block. Audio mode `0` enables the Windows-native RDPSND playback backend (CPAL) and
+advertises the `rdpsnd` static channel for server-to-client wave data; modes
+`1` (play on server) and `2` (disabled) set `NO_AUDIO_PLAYBACK` and omit local
+playback (a no-op RDPSND channel may still attach when RDPDR is enabled, because
+Windows often requires both). Capture / microphone redirection is not implemented.
+When requested,
 `GrabFocusOnConnect` focuses the ActiveX renderer only after its first remote frame arrives.
 Invalid audio modes and keyboard types return `E_INVALIDARG`.
 `Compress`, `RDPPort`, and `RedirectClipboard` configure the next IronRDP connection. Clipboard
@@ -705,6 +709,16 @@ serializes credentials, server names, remote error text, or packet data. Run `ir
 --help-agent` for its self-contained command and output contract. `--observe <seconds>` keeps a
 connected session open for bounded renderer observation; `--show` displays that session and defaults
 the observation period to 30 seconds.
+
+### Manual RDPSND playback check
+
+Audio waveform e2e is not automated. After a successful `connect` (or under MsRdpEx with
+`MSRDPEX_AX_BACKEND=ironrdp`):
+
+1. Leave `AudioRedirectionMode` at `0` (default), play a system sound on the remote host, and
+   confirm local speakers hear it.
+2. Set mode `2` (disabled), reconnect, and confirm the same remote sound is silent locally.
+3. Mode `1` (play on server) is host-side only and must not open a local playback stream.
 
 ## Current architectural boundary
 

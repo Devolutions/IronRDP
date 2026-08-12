@@ -1,9 +1,9 @@
 //! Server-side tests for `ironrdp-rdpsnd`.
 //!
 //! Two layers:
-//! - the crate-private `negotiate_formats` / `audio_format_eq` helpers, exposed
-//!   to this testsuite via the rdpsnd crate's private `__test` feature (the lib
-//!   itself has no inline test harness — `test = false`);
+//! - the crate-private `negotiate_formats` helper, exposed to this testsuite via
+//!   the rdpsnd crate's private `__test` feature (the lib itself has no inline
+//!   test harness — `test = false`);
 //! - the `SvcProcessor` negotiation wiring, driven black-box through the public
 //!   surface (no `__test` shim needed).
 
@@ -13,9 +13,7 @@ use ironrdp_core::encode_vec;
 use ironrdp_rdpsnd::pdu::{
     AudioFormat, AudioFormatFlags, ClientAudioFormatPdu, ClientAudioOutputPdu, TrainingConfirmPdu, Version, WaveFormat,
 };
-use ironrdp_rdpsnd::server::{
-    NegotiatedFormat, RdpsndError, RdpsndServer, RdpsndServerHandler, audio_format_eq, negotiate_formats,
-};
+use ironrdp_rdpsnd::server::{NegotiatedFormat, RdpsndError, RdpsndServer, RdpsndServerHandler, negotiate_formats};
 use ironrdp_svc::SvcProcessor as _;
 
 fn fmt(format: WaveFormat, rate: u32) -> AudioFormat {
@@ -31,7 +29,7 @@ fn fmt(format: WaveFormat, rate: u32) -> AudioFormat {
 }
 
 // ============================================================================
-// `negotiate_formats` / `audio_format_eq` helpers (via the `__test` feature)
+// `negotiate_formats` / AudioFormat::matches_for_negotiation helpers
 // ============================================================================
 
 #[test]
@@ -83,17 +81,17 @@ fn equality_ignores_derived_fields_but_not_extra_data() {
     // differing there is still the same format.
     b.n_avg_bytes_per_sec = 0;
     b.n_block_align = 99;
-    assert!(audio_format_eq(&a, &b));
+    assert!(a.matches_for_negotiation(&b));
 
     // The codec extra-data blob IS significant (e.g. AAC config): a differing
     // `data` is a different format, even with identical WAVEFORMATEX fields.
     a.data = Some(vec![1, 2, 3]);
     b.data = None;
-    assert!(!audio_format_eq(&a, &b));
+        assert!(!a.matches_for_negotiation(&b));
 
     // A differing identity field (sample rate) is a different format.
     let c = fmt(WaveFormat::PCM, 48000);
-    assert!(!audio_format_eq(&a, &c));
+        assert!(!a.matches_for_negotiation(&c));
 }
 
 #[test]

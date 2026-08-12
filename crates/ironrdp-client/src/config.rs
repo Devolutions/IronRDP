@@ -1664,6 +1664,19 @@ impl ConfigBuilder {
         if let Some(depth) = ps.color_depth() {
             self.color_depth = Some(depth);
         }
+        #[cfg(feature = "sound")]
+        match ps.audio_mode() {
+            Ok(Some(AudioMode::RedirectToClient)) => {
+                self.enable_audio_playback = Some(true);
+                self.channels.sound = true;
+            }
+            Ok(Some(AudioMode::PlayOnServer | AudioMode::Disabled)) => {
+                self.enable_audio_playback = Some(false);
+                self.channels.sound = false;
+            }
+            _ => {}
+        }
+        #[cfg(not(feature = "sound"))]
         match ps.audio_mode() {
             Ok(Some(AudioMode::PlayOnServer | AudioMode::Disabled)) => self.enable_audio_playback = Some(false),
             Ok(Some(AudioMode::RedirectToClient)) => self.enable_audio_playback = Some(true),
@@ -1769,10 +1782,6 @@ impl ConfigBuilder {
                 };
             }
             let _ = redirect;
-        }
-        #[cfg(feature = "sound")]
-        if matches!(ps.audio_mode(), Ok(Some(AudioMode::Disabled))) {
-            self.channels.sound = false;
         }
         #[cfg(feature = "rdpdr")]
         if let Some(enabled) = ps.enable_rdpdr() {
@@ -1901,7 +1910,7 @@ mod tests {
         assert_eq!(config.properties().remote_application_mode(), Some(true));
     }
 
-    #[test]
+#[test]
     fn remote_application_program_queues_rail_execute_and_clears_client_info_shell() {
         let mut properties = ironrdp_propertyset::PropertySet::new();
         properties.set_remote_application_mode(true);
@@ -1920,5 +1929,53 @@ mod tests {
         let execute = config.rail_initial_execute.expect("initial Execute PDU");
         assert_eq!(execute.executable, "notepad.exe");
         assert_eq!(execute.working_directory, "C:\\Temp");
+    }
+
+    #[cfg(feature = "sound")]
+    #[test]
+    fn with_audio_mode_redirect_enables_playback_channel() {
+        use ironrdp_cfg::AudioMode;
+
+        let config = complete_builder()
+            .with_audio_mode(AudioMode::RedirectToClient)
+            .build()
+            .expect("valid configuration");
+
+        assert!(config.connector().enable_audio_playback);
+        assert!(config.channels().sound);
+        assert_eq!(
+            config.properties().audio_mode().unwrap(),
+            Some(AudioMode::RedirectToClient)
+        );
+    }
+
+    #[cfg(feature = "sound")]
+    #[test]
+    fn with_audio_mode_play_on_server_disables_local_playback() {
+        use ironrdp_cfg::AudioMode;
+
+        let config = complete_builder()
+            .with_audio_mode(AudioMode::PlayOnServer)
+            .build()
+            .expect("valid configuration");
+
+        assert!(!config.connector().enable_audio_playback);
+        assert!(!config.channels().sound);
+        assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::PlayOnServer));
+    }
+
+    #[cfg(feature = "sound")]
+    #[test]
+    fn with_audio_mode_disabled_suppresses_sound_channel() {
+        use ironrdp_cfg::AudioMode;
+
+        let config = complete_builder()
+            .with_audio_mode(AudioMode::Disabled)
+            .build()
+            .expect("valid configuration");
+
+        assert!(!config.connector().enable_audio_playback);
+        assert!(!config.channels().sound);
+        assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::Disabled));
     }
 }

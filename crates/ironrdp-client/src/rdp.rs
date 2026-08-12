@@ -2974,4 +2974,20 @@ mod tests {
 
         assert!(!delivered.expect("cancellation is not an output error"));
     }
+
+    #[cfg(all(feature = "sound", feature = "rdpdr"))]
+    #[test]
+    fn rdpsnd_backend_kind_prefers_playback_over_noop() {
+        assert_eq!(rdpsnd_backend_kind(true, true), Some(RdpsndBackendKind::Playback));
+        assert_eq!(rdpsnd_backend_kind(true, false), Some(RdpsndBackendKind::Playback));
+        assert_eq!(rdpsnd_backend_kind(false, true), Some(RdpsndBackendKind::Noop));
+        assert_eq!(rdpsnd_backend_kind(false, false), None);
+    }
+
+    #[cfg(all(feature = "sound", not(feature = "rdpdr")))]
+    #[test]
+    fn rdpsnd_backend_kind_playback_only_without_rdpdr() {
+        assert_eq!(rdpsnd_backend_kind(true, false), Some(RdpsndBackendKind::Playback));
+        assert_eq!(rdpsnd_backend_kind(false, false), None);
+    }
 }

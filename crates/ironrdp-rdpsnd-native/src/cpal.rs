@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -9,10 +9,55 @@ use cpal::traits::{DeviceTrait as _, HostTrait as _};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use ironrdp_error::bail;
 use ironrdp_rdpsnd::client::RdpsndClientHandler;
-use ironrdp_rdpsnd::pdu::{AudioFormat, PitchPdu, VolumePdu, WaveFormat};
+use ironrdp_rdpsnd::pdu::{AudioFormat, AudioFormatFlags, PitchPdu, VolumePdu, WaveFormat};
 use tracing::{debug, error, trace, warn};
 
 use crate::error::{RdpsndNativeError, RdpsndNativeErrorKind, RdpsndNativeResult};
+
+/// Pack left/right 16-bit volume levels into one atomic word.
+fn pack_volume(left: u16, right: u16) -> u32 {
+    (u32::from(left) << 16) | u32::from(right)
+}
+
+fn unpack_volume(packed: u32) -> (u16, u16) {
+    #[expect(clippy::as_conversions, reason = "mask isolates a u16 lane from the packed word")]
+    let left = ((packed >> 16) & 0xFFFF) as u16;
+    #[expect(clippy::as_conversions, reason = "mask isolates a u16 lane from the packed word")]
+    let right = (packed & 0xFFFF) as u16;
+    (left, right)
+}
+
+/// Apply MS-RDPEA linear volume (0..=0xFFFF) to interleaved PCM samples.
+fn apply_volume(data: &mut [u8], bits_per_sample: u16, channels: u16, left: u16, right: u16) {
+    if left == 0xFFFF && right == 0xFFFF {
+        return;
+    }
+
+    match bits_per_sample {
+        8 => {
+            for (i, sample) in data.iter_mut().enumerate() {
+                let vol = if channels > 1 && i % 2 == 1 { right } else { left };
+                // U8 PCM is unsigned with midpoint 128.
+                let centered = i16::from(*sample) - 128;
+                let scaled = (i32::from(centered) * i32::from(vol)) / 0xFFFF;
+                let out = (scaled + 128).clamp(0, 255);
+                *sample = u8::try_from(out).unwrap_or(0);
+            }
+        }
+        16 => {
+            for (i, chunk) in data.chunks_exact_mut(2).enumerate() {
+                let vol = if channels > 1 && i % 2 == 1 { right } else { left };
+                let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+                let scaled = (i32::from(sample) * i32::from(vol)) / 0xFFFF;
+                let out = scaled.clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+                let bytes = i16::try_from(out).unwrap_or(0).to_le_bytes();
+                chunk[0] = bytes[0];
+                chunk[1] = bytes[1];
+            }
+        }
+        _ => {}
+    }
+}
 
 #[derive(Debug)]
 pub struct RdpsndBackend {
@@ -20,7 +65,8 @@ pub struct RdpsndBackend {
     stream_handle: Option<JoinHandle<()>>,
     stream_ended: Arc<AtomicBool>,
     tx: Option<Sender<Vec<u8>>>,
-    format_no: Option<usize>,
+    active_format: Option<AudioFormat>,
+    volume: Arc<AtomicU32>,
 }
 
 impl Default for RdpsndBackend {
@@ -33,9 +79,10 @@ impl RdpsndBackend {
     pub fn new() -> Self {
         Self {
             tx: None,
-            format_no: None,
+            active_format: None,
             stream_handle: None,
             stream_ended: Arc::new(AtomicBool::new(false)),
+            volume: Arc::new(AtomicU32::new(pack_volume(0xFFFF, 0xFFFF))),
         }
     }
 }
@@ -47,11 +94,26 @@ impl Drop for RdpsndBackend {
 }
 
 impl RdpsndClientHandler for RdpsndBackend {
+    fn get_flags(&self) -> AudioFormatFlags {
+        // VOLUME is implemented via sample scaling in the playback path.
+        // PITCH is not implemented — do not advertise it.
+        AudioFormatFlags::VOLUME
+    }
+
     fn get_formats(&self) -> &[AudioFormat] {
         &[
             #[cfg(feature = "opus")]
             AudioFormat {
                 format: WaveFormat::OPUS,
+                n_channels: 2,
+                n_samples_per_sec: 48000,
+                n_avg_bytes_per_sec: 192000,
+                n_block_align: 4,
+                bits_per_sample: 16,
+                data: None,
+            },
+            AudioFormat {
+                format: WaveFormat::PCM,
                 n_channels: 2,
                 n_samples_per_sec: 48000,
                 n_avg_bytes_per_sec: 192000,
@@ -68,12 +130,77 @@ impl RdpsndClientHandler for RdpsndBackend {
                 bits_per_sample: 16,
                 data: None,
             },
+            AudioFormat {
+                format: WaveFormat::PCM,
+                n_channels: 2,
+                n_samples_per_sec: 22050,
+                n_avg_bytes_per_sec: 88200,
+                n_block_align: 4,
+                bits_per_sample: 16,
+                data: None,
+            },
+            AudioFormat {
+                format: WaveFormat::PCM,
+                n_channels: 1,
+                n_samples_per_sec: 44100,
+                n_avg_bytes_per_sec: 88200,
+                n_block_align: 2,
+                bits_per_sample: 16,
+                data: None,
+            },
+            AudioFormat {
+                format: WaveFormat::PCM,
+                n_channels: 1,
+                n_samples_per_sec: 22050,
+                n_avg_bytes_per_sec: 44100,
+                n_block_align: 2,
+                bits_per_sample: 16,
+                data: None,
+            },
+            AudioFormat {
+                format: WaveFormat::PCM,
+                n_channels: 2,
+                n_samples_per_sec: 16000,
+                n_avg_bytes_per_sec: 64000,
+                n_block_align: 4,
+                bits_per_sample: 16,
+                data: None,
+            },
+            AudioFormat {
+                format: WaveFormat::PCM,
+                n_channels: 1,
+                n_samples_per_sec: 16000,
+                n_avg_bytes_per_sec: 32000,
+                n_block_align: 2,
+                bits_per_sample: 16,
+                data: None,
+            },
+            AudioFormat {
+                format: WaveFormat::PCM,
+                n_channels: 1,
+                n_samples_per_sec: 8000,
+                n_avg_bytes_per_sec: 16000,
+                n_block_align: 2,
+                bits_per_sample: 16,
+                data: None,
+            },
         ]
     }
 
-    fn wave(&mut self, format_no: usize, _ts: u32, data: Cow<'_, [u8]>) {
-        if Some(format_no) != self.format_no {
-            debug!("New audio format");
+    fn wave(&mut self, format: &AudioFormat, _ts: u32, data: Cow<'_, [u8]>) {
+        // Soft-fail reopen: if the stream thread exited after a device/open error,
+        // reap it so this (or a later) wave block can try again.
+        if self.stream_handle.as_ref().is_some_and(|handle| handle.is_finished()) {
+            self.close();
+        }
+
+        let format_changed = self
+            .active_format
+            .as_ref()
+            .is_none_or(|active| !active.matches_for_negotiation(format));
+
+        if format_changed {
+            debug!(?format, "New audio format");
             self.close();
         }
 
@@ -81,18 +208,17 @@ impl RdpsndClientHandler for RdpsndBackend {
             let (tx, rx) = mpsc::channel();
             self.tx = Some(tx);
 
-            self.format_no = Some(format_no);
-            let Some(format) = self.get_formats().get(format_no) else {
-                warn!(?format_no, "Invalid format_no");
-                return;
-            };
+            self.active_format = Some(format.clone());
             let format = format.clone();
             self.stream_ended.store(false, Ordering::Relaxed);
             let stream_ended = Arc::clone(&self.stream_ended);
+            let volume = Arc::clone(&self.volume);
             self.stream_handle = Some(thread::spawn(move || {
-                let stream = match DecodeStream::new(&format, rx) {
+                let stream = match DecodeStream::new(&format, rx, volume) {
                     Ok(stream) => stream,
                     Err(e) => {
+                        // Soft-fail: log and exit the stream thread. Further wave
+                        // blocks will retry opening a stream.
                         error!(error = %e.report().with_locations());
                         return;
                     }
@@ -115,14 +241,18 @@ impl RdpsndClientHandler for RdpsndBackend {
 
     fn set_volume(&mut self, volume: VolumePdu) {
         debug!(?volume);
+        self.volume
+            .store(pack_volume(volume.volume_left, volume.volume_right), Ordering::Relaxed);
     }
 
     fn set_pitch(&mut self, pitch: PitchPdu) {
-        debug!(?pitch);
+        // Not advertised via get_flags; ignore if a server still sends it.
+        debug!(?pitch, "Ignoring pitch (not implemented)");
     }
 
     fn close(&mut self) {
         self.tx = None;
+        self.active_format = None;
         if let Some(stream) = self.stream_handle.take() {
             self.stream_ended.store(true, Ordering::Relaxed);
             stream.thread().unpark();
@@ -140,7 +270,7 @@ pub struct DecodeStream {
 }
 
 impl DecodeStream {
-    pub fn new(rx_format: &AudioFormat, mut rx: Receiver<Vec<u8>>) -> RdpsndNativeResult<Self> {
+    pub fn new(rx_format: &AudioFormat, mut rx: Receiver<Vec<u8>>, volume: Arc<AtomicU32>) -> RdpsndNativeResult<Self> {
         let mut dec_thread = None;
         match rx_format.format {
             #[cfg(feature = "opus")]
@@ -223,7 +353,10 @@ impl DecodeStream {
         })?;
         debug!(?default_config);
 
-        let mut rx = RxBuffer::new(rx);
+        let bits_per_sample = rx_format.bits_per_sample;
+        let channels = rx_format.n_channels;
+        let mut rx = RxBuffer::new(rx, volume, bits_per_sample, channels);
+        // cpal 0.17: SampleRate is a u32 type alias (not a newtype).
         let config = StreamConfig {
             channels: rx_format.n_channels,
             sample_rate: rx_format.n_samples_per_sec,
@@ -237,7 +370,7 @@ impl DecodeStream {
                 sample_format,
                 move |data, _info: &cpal::OutputCallbackInfo| {
                     let data = data.bytes_mut();
-                    rx.fill(data)
+                    rx.fill(data);
                 },
                 |error| error!(%error),
                 None,
@@ -261,14 +394,20 @@ struct RxBuffer {
     receiver: Receiver<Vec<u8>>,
     last: Option<Vec<u8>>,
     idx: usize,
+    volume: Arc<AtomicU32>,
+    bits_per_sample: u16,
+    channels: u16,
 }
 
 impl RxBuffer {
-    fn new(receiver: Receiver<Vec<u8>>) -> Self {
+    fn new(receiver: Receiver<Vec<u8>>, volume: Arc<AtomicU32>, bits_per_sample: u16, channels: u16) -> Self {
         Self {
             receiver,
             last: None,
             idx: 0,
+            volume,
+            bits_per_sample,
+            channels,
         }
     }
 
@@ -278,8 +417,10 @@ impl RxBuffer {
         while filled < data.len() {
             if self.last.is_none() {
                 match self.receiver.recv_timeout(Duration::from_millis(4000)) {
-                    Ok(rx) => {
+                    Ok(mut rx) => {
                         debug!(rx.len = rx.len());
+                        let (left, right) = unpack_volume(self.volume.load(Ordering::Relaxed));
+                        apply_volume(&mut rx, self.bits_per_sample, self.channels, left, right);
                         self.last = Some(rx);
                     }
                     Err(error) => {
