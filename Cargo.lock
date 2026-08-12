@@ -2438,6 +2438,7 @@ dependencies = [
  "ironrdp-input",
  "ironrdp-pdu",
  "ironrdp-propertyset",
+ "ironrdp-rail",
  "ironrdp-rdpdr-native",
  "ironrdp-rpc",
  "ironrdp-session",

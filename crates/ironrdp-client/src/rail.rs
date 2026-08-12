@@ -99,6 +99,7 @@ pub struct RailClient {
     build_number: u32,
     desktop_width: u16,
     desktop_height: u16,
+    client_status_flags: u32,
     state: RailState,
     desktop_synchronized: bool,
     queued_pdus: VecDeque<QueuedRailPdu>,
@@ -118,12 +119,22 @@ impl RailClient {
             build_number,
             desktop_width,
             desktop_height,
+            client_status_flags: ClientStatusPdu::Z_ORDER_SYNC
+                | ClientStatusPdu::POWER_DISPLAY_REQUEST
+                | ClientStatusPdu::BIDIRECTIONAL_CLOAK,
             state: RailState::WaitingForHandshake,
             desktop_synchronized: false,
             queued_pdus: VecDeque::new(),
             pending_executes: VecDeque::new(),
             events: VecDeque::new(),
         }
+    }
+
+    /// Overrides the RAIL Client Status flags advertised during initialization.
+    #[must_use]
+    pub fn with_client_status_flags(mut self, flags: u32) -> Self {
+        self.client_status_flags = flags;
+        self
     }
 
     /// Queues a RemoteApp launch until initialization and desktop synchronization complete.
@@ -208,9 +219,7 @@ impl RailClient {
                 build_number: self.build_number,
             })),
             Self::service_message(RailPdu::ClientStatus(ClientStatusPdu {
-                flags: ClientStatusPdu::Z_ORDER_SYNC
-                    | ClientStatusPdu::POWER_DISPLAY_REQUEST
-                    | ClientStatusPdu::BIDIRECTIONAL_CLOAK,
+                flags: self.client_status_flags,
             })),
         ];
         messages.extend(self.desktop_system_parameter_messages());
@@ -536,6 +545,19 @@ mod tests {
                         == ClientStatusPdu::Z_ORDER_SYNC
                             | ClientStatusPdu::POWER_DISPLAY_REQUEST
                             | ClientStatusPdu::BIDIRECTIONAL_CLOAK
+        ));
+    }
+
+    #[test]
+    fn handshake_advertises_configured_client_status_flags() {
+        let mut client = RailClient::new(1, 1, 1).with_client_status_flags(0);
+        let messages = client
+            .process(&encode_vec(&RailPdu::Handshake(HandshakePdu { build_number: 1 })).unwrap())
+            .unwrap();
+
+        assert!(matches!(
+            decode::<RailPdu>(&messages[1].encode_unframed_pdu().unwrap()).unwrap(),
+            RailPdu::ClientStatus(ClientStatusPdu { flags: 0 })
         ));
     }
 

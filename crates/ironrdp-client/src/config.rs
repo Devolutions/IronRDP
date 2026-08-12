@@ -72,6 +72,7 @@ pub struct Config {
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
+    pub(crate) rail_client_status_flags: Option<u32>,
 
     /// DVC channel ↔ named-pipe proxy configuration.
     ///
@@ -185,6 +186,7 @@ impl fmt::Debug for Config {
         s.field("kerberos_config", &self.kerberos_config);
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
+        s.field("rail_client_status_flags", &self.rail_client_status_flags);
         #[cfg(feature = "dvc-pipe-proxy")]
         s.field("dvc_pipe_proxies", &self.dvc_pipe_proxies);
         #[cfg(all(windows, feature = "dvc-com-plugin"))]
@@ -629,6 +631,7 @@ pub struct ConfigBuilder {
     work_dir: Option<String>,
     remote_application_mode: Option<bool>,
     rail_support_level: Option<ironrdp_pdu::rdp::capability_sets::RailSupportLevel>,
+    rail_client_status_flags: Option<u32>,
 
     transport: TransportKind,
     #[cfg(feature = "vmconnect")]
@@ -903,6 +906,13 @@ impl ConfigBuilder {
         support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel,
     ) -> Self {
         self.rail_support_level = Some(support_level);
+        self
+    }
+
+    /// Overrides the RAIL Client Status flags advertised during channel initialization.
+    #[must_use]
+    pub fn with_rail_client_status_flags(mut self, flags: u32) -> Self {
+        self.rail_client_status_flags = Some(flags);
         self
     }
 
@@ -1531,6 +1541,7 @@ impl ConfigBuilder {
             kerberos_config,
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,
+            rail_client_status_flags: self.rail_client_status_flags,
             #[cfg(feature = "dvc-pipe-proxy")]
             dvc_pipe_proxies: self.dvc_pipe_proxies,
             #[cfg(all(windows, feature = "dvc-com-plugin"))]

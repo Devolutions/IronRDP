@@ -87,6 +87,11 @@ pub enum RdpOutputEvent {
         y: u16,
     },
     PointerBitmap(Arc<DecodedPointer>),
+    /// RAIL Windowing Alternate Secondary Drawing Orders.
+    ///
+    /// The owned payload begins with the slow-path `Orders` update type and is delivered only
+    /// after the Window List support level negotiated for the current activation is validated.
+    WindowingOrders(Vec<u8>),
     /// The server completed the RAIL static-channel handshake.
     RailHandshake {
         handshake_ex_flags: Option<u32>,
@@ -878,11 +883,16 @@ fn build_connector(
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
     let audio_playback = connector_config.enable_audio_playback;
     let rail_client = connector_config.remote_application_mode.then(|| {
-        RailClient::new(
+        let rail_client = RailClient::new(
             connector_config.client_build,
             connector_config.desktop_size.width,
             connector_config.desktop_size.height,
-        )
+        );
+        if let Some(flags) = config.rail_client_status_flags {
+            rail_client.with_client_status_flags(flags)
+        } else {
+            rail_client
+        }
     });
 
     let mut connector =
@@ -1974,8 +1984,18 @@ async fn active_session(
                         ));
                     }
                 }
-                ActiveStageOutput::WindowingOrders(_) => {
-                    // This desktop client does not provide a consumer for windowing orders.
+                ActiveStageOutput::WindowingOrders(orders) => {
+                    if !send_active_output_event(
+                        output_event_sender,
+                        RdpOutputEvent::WindowingOrders(orders),
+                        close_receiver,
+                    )
+                    .await?
+                    {
+                        return Ok(RdpControlFlow::TerminatedGracefully(
+                            GracefulDisconnectReason::UserInitiated,
+                        ));
+                    }
                 }
                 ActiveStageOutput::SaveSessionInfo { logon_complete: true } => {
                     if !post_logon_redraw_requested {
@@ -2760,6 +2780,26 @@ mod tests {
         assert!(matches!(
             clipboard_receiver.try_recv(),
             Ok(RdpInputEvent::Clipboard(ClipboardMessage::Error(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn windowing_orders_are_delivered_to_the_output_consumer() {
+        let (output_sender, mut output_receiver) = mpsc::channel(1);
+        let (_close_sender, mut close_receiver) = watch::channel(false);
+
+        assert!(
+            send_active_output_event(
+                &output_sender,
+                RdpOutputEvent::WindowingOrders(vec![0, 0, 1, 2, 3]),
+                &mut close_receiver,
+            )
+            .await
+            .expect("deliver windowing orders")
+        );
+        assert!(matches!(
+            output_receiver.recv().await,
+            Some(RdpOutputEvent::WindowingOrders(data)) if data == [0, 0, 1, 2, 3]
         ));
     }
 

@@ -588,6 +588,7 @@ impl RpcApp {
             RdpOutputEvent::RailControl(control) => {
                 debug!(?control, "RAIL control received");
             }
+            RdpOutputEvent::WindowingOrders(_) => {}
         }
     }
 }
