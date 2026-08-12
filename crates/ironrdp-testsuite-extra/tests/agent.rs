@@ -88,7 +88,19 @@ fn request_variants_round_trip() {
         Request::UnicodeText {
             text: "Hello, \u{4e16}\u{754c}".to_owned(),
         },
-        Request::NowCapabilities,
+                Request::Touch {
+                    encode_time: 12,
+                    frames: vec![ironrdp_rpc::ipc::TouchFrameRequest {
+                        frame_offset: 0,
+                        contacts: vec![ironrdp_rpc::ipc::TouchContactRequest {
+                            contact_id: 1,
+                            x: 100,
+                            y: 200,
+                            flags: 0x0019, // DOWN | INRANGE | INCONTACT
+                        }],
+                    }],
+                },
+                Request::NowCapabilities,
         Request::NowRun {
             command: "echo secret".to_owned(),
             directory: Some("C:\\Temp".to_owned()),

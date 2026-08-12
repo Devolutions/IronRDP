@@ -2649,6 +2649,7 @@ dependencies = [
  "ironrdp-propertyset",
  "ironrdp-rail",
  "ironrdp-rdpdr-native",
+ "ironrdp-rdpei",
  "ironrdp-rpc",
  "ironrdp-tls",
  "libc",

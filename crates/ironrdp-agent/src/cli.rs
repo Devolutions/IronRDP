@@ -1,12 +1,12 @@
 //! The short-lived CLI: parse arguments, build a request (merging a `.rdp` file with overrides for
 //! `connect`), send it to the daemon, and print the response.
 //!
-//! The CLI operates purely at the [`PropertySet`] level for connection config — it never calls
+//! The CLI operates purely at the [`PropertySet`] level for connection config â€” it never calls
 //! typed `ConfigBuilder` setters.
 //!
-//! For `connect`, property precedence from low to high is: `.rdp` file → `--prop` overrides →
-//! named flags (`--server`/`--username`/…). The daemon's own overlay (`daemon-start --overlay`,
-//! itself built from a `.rdp` file with `--prop` overrides layered on top) wins over all of that —
+//! For `connect`, property precedence from low to high is: `.rdp` file â†’ `--prop` overrides â†’
+//! named flags (`--server`/`--username`/â€¦). The daemon's own overlay (`daemon-start --overlay`,
+//! itself built from a `.rdp` file with `--prop` overrides layered on top) wins over all of that â€”
 //! see `Daemon::connect` in `daemon.rs`.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
@@ -25,7 +25,7 @@ use ironrdp_propertyset::{PropertySet, Value};
 use ironrdp_rpc::ipc::{
     AgentError, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent,
     OperationEventKind, OperationInfo, OperationState, Payload, PropValue, RailEvent, RailEventKind,
-    RailExecuteRequest, Request, Response,
+    RailExecuteRequest, Request, Response, TouchContactRequest, TouchFrameRequest,
 };
 use ironrdp_rpc::transport::{self, Endpoint};
 
@@ -104,6 +104,30 @@ enum Command {
     TypeUnicode {
         #[arg(long, value_parser = parse_unicode_text)]
         text: String,
+    },
+    /// Send one MS-RDPEI touch contact sample (legal flag sets only).
+    Touch {
+        #[arg(long, default_value_t = 0)]
+        contact_id: u8,
+        #[arg(long, allow_hyphen_values = true)]
+        x: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        y: i32,
+        #[arg(long, value_enum)]
+        action: CliTouchAction,
+        #[arg(long, default_value_t = 0)]
+        encode_time: u32,
+        #[arg(long, default_value_t = 0)]
+        frame_offset: u64,
+    },
+    /// Tap once via MS-RDPEI (DOWN then UP at the same point).
+    TouchTap {
+        #[arg(long, default_value_t = 0)]
+        contact_id: u8,
+        #[arg(long, allow_hyphen_values = true)]
+        x: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        y: i32,
     },
     /// Resize the remote desktop.
     Resize {
@@ -347,7 +371,7 @@ impl core::error::Error for NowRequestError {}
 #[derive(Args, Debug)]
 struct DaemonArgs {
     /// Path to a .rdp file whose properties are preloaded as an overlay applied to every `connect`
-    /// (overlay wins). Use this to provision any setting out of band — credentials in particular
+    /// (overlay wins). Use this to provision any setting out of band â€” credentials in particular
     /// (e.g. `ClearTextPassword`), so a caller never needs to supply them; `status` then reports
     /// `credentials loaded: true`.
     #[arg(long)]
@@ -538,6 +562,59 @@ fn parse_rdpdr_drive(input: &str) -> Result<ironrdp_daemon::daemon::RdpdrDriveCo
         .map_err(|error| error.to_string())
 }
 
+/// Legal MS-RDPEI touch contact transitions for agent testing.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CliTouchAction {
+    /// DOWN | INRANGE | INCONTACT (engage)
+    Down,
+    /// UPDATE | INRANGE | INCONTACT (engaged move)
+    Move,
+    /// UP | INRANGE (leave contact while still in range / hover)
+    Up,
+    /// UP (leave range / out of range)
+    OutOfRange,
+    /// UPDATE | CANCELED
+    Cancel,
+    /// UPDATE | INRANGE (hover move)
+    Hover,
+}
+
+impl CliTouchAction {
+    fn flags(self) -> u16 {
+        // Matches `ironrdp_rdpei::pdu::TouchContactFlags` / MS-RDPEI 2.2.3.3.1.1.
+        const DOWN: u16 = 0x0001;
+        const UPDATE: u16 = 0x0002;
+        const UP: u16 = 0x0004;
+        const INRANGE: u16 = 0x0008;
+        const INCONTACT: u16 = 0x0010;
+        const CANCELED: u16 = 0x0020;
+
+        match self {
+            Self::Down => DOWN | INRANGE | INCONTACT,
+            Self::Move => UPDATE | INRANGE | INCONTACT,
+            Self::Up => UP | INRANGE,
+            Self::OutOfRange => UP,
+            Self::Cancel => UPDATE | CANCELED,
+            Self::Hover => UPDATE | INRANGE,
+        }
+    }
+}
+
+fn touch_request(encode_time: u32, frame_offset: u64, contact_id: u8, x: i32, y: i32, flags: u16) -> Request {
+    Request::Touch {
+        encode_time,
+        frames: vec![TouchFrameRequest {
+            frame_offset,
+            contacts: vec![TouchContactRequest {
+                contact_id,
+                x,
+                y,
+                flags,
+            }],
+        }],
+    }
+}
+
 /// Entry point shared by the binary: dispatches the parsed [`Cli`].
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     if cli.help_agent {
@@ -630,6 +707,26 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::KeyScancode { scancode, pressed } => Request::KeyScancode { scancode, pressed },
         Command::KeyUnicode { character, pressed } => Request::KeyUnicode { ch: character, pressed },
         Command::TypeUnicode { text } => Request::UnicodeText { text },
+        Command::Touch {
+            contact_id,
+            x,
+            y,
+            action,
+            encode_time,
+            frame_offset,
+        } => touch_request(encode_time, frame_offset, contact_id, x, y, action.flags()),
+        Command::TouchTap { contact_id, x, y } => {
+            let down = touch_request(0, 0, contact_id, x, y, CliTouchAction::Down.flags());
+            let down_response = transport::send_request(&endpoint, &down).await?;
+            if !matches!(down_response, Response::Ok(_)) {
+                return print_response(down_response);
+            }
+            print_response(down_response)?;
+
+            let up = touch_request(1, 16_000, contact_id, x, y, CliTouchAction::Up.flags());
+            let up_response = transport::send_request(&endpoint, &up).await?;
+            return print_response(up_response);
+        }
         Command::Resize { width, height } => Request::Resize { width, height },
     };
 
@@ -1635,7 +1732,7 @@ fn property_description(key: &str) -> Option<&'static str> {
     // PropertySet keys are case-sensitive and ironrdp-cfg mixes casings (e.g. `ClearTextPassword`),
     // so normalize to lowercase to match the canonical lowercase arms below.
     let description = match key.to_ascii_lowercase().as_str() {
-        // ── Standard .rdp keys ──────────────────────────────────────────────
+        // â”€â”€ Standard .rdp keys â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "full address" => "RDP server address as host[:port]",
         "alternate full address" => "fallback RDP server address (host[:port]) tried if 'full address' fails",
         "server port" => "RDP server TCP port (default 3389)",
@@ -1653,7 +1750,7 @@ fn property_description(key: &str) -> Option<&'static str> {
         "shell working directory" => "working directory for the alternate shell or RemoteApp program",
         "remoteapplicationname" => "RemoteApp display name",
         "remoteapplicationprogram" => "RemoteApp program path to launch",
-        // ── RD gateway ──────────────────────────────────────────────────────
+        // â”€â”€ RD gateway â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "gatewayhostname" => "RD gateway host name",
         "gatewayusername" => "RD gateway user name",
         "gatewaypassword" => "RD gateway password (secret)",
@@ -1663,10 +1760,10 @@ fn property_description(key: &str) -> Option<&'static str> {
         "gatewaycredentialssource" => {
             "RD gateway credential source (0 = server, 1 = user, 2 = profile, 3 = prompt, 4 = smart card, 5 = logon)"
         }
-        // ── Kerberos ────────────────────────────────────────────────────────
+        // â”€â”€ Kerberos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "kdcproxyname" => "Kerberos KDC proxy name",
         "kdcproxyurl" => "Kerberos KDC proxy URL",
-        // ── IronRDP extensions (ironrdp_ prefix) ────────────────────────────
+        // â”€â”€ IronRDP extensions (ironrdp_ prefix) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "ironrdp_autologon" => "attempt automatic logon with the supplied credentials (0/1)",
         "ironrdp_colordepth" => "color depth in bits per pixel (e.g. 16 or 32)",
         "ironrdp_compressionlevel" => "bulk compression level",

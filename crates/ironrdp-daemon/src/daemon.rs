@@ -22,6 +22,7 @@ use ironrdp_client::rdp::{
 use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
+use ironrdp_rdpei::pdu::{TouchContact, TouchContactFlags, TouchEventPdu, TouchFrame};
 use ironrdp_rail::pdu::{ExecutePdu, RailPdu};
 use ironrdp_tls::CertificateValidation;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -35,9 +36,10 @@ use std::collections::BTreeSet;
 use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
 
 use crate::ipc::{
-    ConnState, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry,
-    RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo,
-    RailStatusInfo, Request, Response, StatusInfo,
+    ConnState, KeyFilter, MAX_TOUCH_CONTACTS, MAX_TOUCH_FRAMES, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload,
+    PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason,
+    RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo, TouchContactRequest,
+    TouchFrameRequest,
 };
 use crate::logbuf::{self, LogBuffer};
 use crate::now::NowEndpoint;
@@ -568,6 +570,7 @@ impl Daemon {
                 last,
             } => DaemonResponse::Single(self.now_stdin(operation_id, data, last).await),
             Request::NowDiagnostics => DaemonResponse::Single(self.now_diagnostics().await),
+            Request::Touch { encode_time, frames } => DaemonResponse::Single(self.touch(encode_time, frames)),
             Request::RailStatus => DaemonResponse::Single(self.rail_status()),
             Request::RailEvents { after_sequence } => DaemonResponse::Single(self.rail_events(after_sequence)),
             Request::RailWait {
@@ -1063,6 +1066,35 @@ impl Daemon {
     /// Panics if the daemon state mutex is poisoned.
     pub fn input(&self, operation: Operation) -> Response {
         self.input_operations([operation])
+    }
+
+
+    /// Sends one MS-RDPEI touch event to the active RDP session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    fn touch(&self, encode_time: u32, frames: Vec<TouchFrameRequest>) -> Response {
+        let event = match build_touch_event(encode_time, frames) {
+            Ok(event) => event,
+            Err(response) => return response,
+        };
+
+        let mut guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_mut() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        let permit = match session.input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        permit.send(RdpInputEvent::Touch(event));
+        Response::ok()
     }
 
     fn unicode_text(&self, text: &str) -> Response {
@@ -1572,6 +1604,62 @@ fn validate_rdpdr_volume_root(root_path: &Path) -> anyhow::Result<String> {
         .with_context(|| format!("canonicalize rdpdr volume root {}", root_path.display()))?
         .to_string_lossy()
         .to_ascii_uppercase())
+}
+
+
+fn build_touch_event(encode_time: u32, frames: Vec<TouchFrameRequest>) -> Result<TouchEventPdu, Response> {
+    if frames.len() > MAX_TOUCH_FRAMES {
+        return Err(Response::typed_error(
+            crate::ipc::AgentErrorCategory::InvalidRequest,
+            format!("touch event exceeds the {MAX_TOUCH_FRAMES}-frame limit"),
+        ));
+    }
+    if frames.is_empty() {
+        return Err(Response::typed_error(
+            crate::ipc::AgentErrorCategory::InvalidRequest,
+            "touch event requires at least one frame",
+        ));
+    }
+
+    let mut built_frames = Vec::with_capacity(frames.len());
+    for frame in frames {
+        if frame.contacts.len() > MAX_TOUCH_CONTACTS {
+            return Err(Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                format!("touch frame exceeds the {MAX_TOUCH_CONTACTS}-contact limit"),
+            ));
+        }
+        if frame.contacts.is_empty() {
+            return Err(Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                "touch frame requires at least one contact",
+            ));
+        }
+
+        let mut contacts = Vec::with_capacity(frame.contacts.len());
+        for contact in frame.contacts {
+            contacts.push(touch_contact_from_request(contact)?);
+        }
+        built_frames.push(TouchFrame::new(frame.frame_offset, contacts));
+    }
+
+    Ok(TouchEventPdu::new(encode_time, built_frames))
+}
+
+fn touch_contact_from_request(contact: TouchContactRequest) -> Result<TouchContact, Response> {
+    let flags = TouchContactFlags::from_bits(u32::from(contact.flags)).ok_or_else(|| {
+        Response::typed_error(
+            crate::ipc::AgentErrorCategory::InvalidRequest,
+            "touch contact flags contain unknown bits",
+        )
+    })?;
+    if !flags.is_legal() {
+        return Err(Response::typed_error(
+            crate::ipc::AgentErrorCategory::InvalidRequest,
+            "touch contact flags are not a legal MS-RDPEI combination",
+        ));
+    }
+    Ok(TouchContact::new(contact.contact_id, contact.x, contact.y, flags))
 }
 
 #[cfg(test)]

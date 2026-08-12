@@ -12,8 +12,8 @@ use std::thread::JoinHandle;
 
 use anyhow::Context as _;
 use ironrdp_agent::ipc::{
-    AgentErrorCategory, ConnState, KeyFilter, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry, Request,
-    Response, StatusInfo,
+    AgentErrorCategory, ConnState, KeyFilter, MAX_TOUCH_CONTACTS, MAX_TOUCH_FRAMES, NowDiagnostics, Payload, PropValue,
+    PropertyDump, PropertyEntry, Request, Response, StatusInfo, TouchContactRequest, TouchFrameRequest,
 };
 use ironrdp_daemon::logbuf::{self, LogBuffer};
 use ironrdp_daemon::now::NowEndpoint;
@@ -77,6 +77,11 @@ pub(crate) enum Command {
     },
     Input {
         operation: Operation,
+        response: oneshot::Sender<Response>,
+    },
+    Touch {
+        encode_time: u32,
+        frames: Vec<TouchFrameRequest>,
         response: oneshot::Sender<Response>,
     },
     Resize {
@@ -394,6 +399,17 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             AgentErrorCategory::InvalidRequest,
             "bulk Unicode text input is unsupported by ActiveX",
         ),
+        Request::Touch { encode_time, frames } => {
+            if let Err(response) = validate_touch_request(&frames) {
+                return ConnectionResponse::Single(response);
+            }
+            queue_command(shared, dispatcher, |response| Command::Touch {
+                encode_time,
+                frames,
+                response,
+            })
+            .await
+        }
         Request::RailStatus | Request::RailEvents { .. } | Request::RailWait { .. } | Request::RailExecute(_) => {
             Response::typed_error(
                 AgentErrorCategory::Unavailable,
@@ -698,6 +714,7 @@ fn respond(command: Command, response: Response) {
         Command::Connect { response, .. }
         | Command::Disconnect { response }
         | Command::Input { response, .. }
+        | Command::Touch { response, .. }
         | Command::Resize { response, .. } => response,
     };
     let _ = sender.send(response);
@@ -727,6 +744,58 @@ fn encode_png(width: u16, height: u16, pixels: &[u32]) -> anyhow::Result<Vec<u8>
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+
+fn validate_touch_request(frames: &[TouchFrameRequest]) -> Result<(), Response> {
+    if frames.is_empty() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch event requires at least one frame",
+        ));
+    }
+    if frames.len() > MAX_TOUCH_FRAMES {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            format!("touch event exceeds the {MAX_TOUCH_FRAMES}-frame limit"),
+        ));
+    }
+    for frame in frames {
+        if frame.contacts.is_empty() {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                "touch frame requires at least one contact",
+            ));
+        }
+        if frame.contacts.len() > MAX_TOUCH_CONTACTS {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                format!("touch frame exceeds the {MAX_TOUCH_CONTACTS}-contact limit"),
+            ));
+        }
+        for contact in &frame.contacts {
+            validate_touch_contact(contact)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_touch_contact(contact: &TouchContactRequest) -> Result<(), Response> {
+    use ironrdp_rdpei::pdu::TouchContactFlags;
+
+    let flags = TouchContactFlags::from_bits(u32::from(contact.flags)).ok_or_else(|| {
+        Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch contact flags contain unknown bits",
+        )
+    })?;
+    if !flags.is_legal() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch contact flags are not a legal MS-RDPEI combination",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -790,6 +859,36 @@ mod tests {
         };
         assert_eq!(error.category, AgentErrorCategory::Unavailable);
         assert_eq!(error.message, "RAIL audit endpoints are unavailable through ActiveX");
+    }
+
+
+    #[tokio::test]
+    async fn touch_with_illegal_flags_is_rejected() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) = handle_request(
+            &rpc.shared,
+            0,
+            Request::Touch {
+                encode_time: 0,
+                frames: vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![TouchContactRequest {
+                        contact_id: 0,
+                        x: 1,
+                        y: 2,
+                        // INRANGE alone is illegal.
+                        flags: 0x0008,
+                    }],
+                }],
+            },
+        )
+        .await
+        else {
+            panic!("illegal touch flags must be rejected");
+        };
+        assert_eq!(error.category, AgentErrorCategory::InvalidRequest);
+        assert!(error.message.contains("legal"));
     }
 
     #[test]

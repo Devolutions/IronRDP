@@ -30,6 +30,30 @@ use crate::wire::{
 /// The agent reserves one bounded input-queue entry for each character before submitting any text.
 pub const MAX_UNICODE_TEXT_CHARS: usize = 96;
 
+/// Maximum contacts in one MS-RDPEI touch frame accepted over RPC.
+pub const MAX_TOUCH_CONTACTS: usize = 10;
+
+/// Maximum touch frames in one [`Request::Touch`] PDU accepted over RPC.
+pub const MAX_TOUCH_FRAMES: usize = 64;
+
+/// One contact sample inside a [`TouchFrameRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TouchContactRequest {
+    pub contact_id: u8,
+    pub x: i32,
+    pub y: i32,
+    /// Raw MS-RDPEI `contactFlags` bits ([MS-RDPEI] 2.2.3.3.1.1).
+    pub flags: u16,
+}
+
+/// One frame inside a [`Request::Touch`] event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TouchFrameRequest {
+    /// Microseconds since the previous frame (`0` for the first frame of a transaction).
+    pub frame_offset: u64,
+    pub contacts: Vec<TouchContactRequest>,
+}
+
 /// A request sent by the CLI to the daemon.
 ///
 /// `Connect` carries a binary-encoded [`PropertySet`] — never `argv` or CLI strings. Runtime
@@ -105,6 +129,16 @@ pub enum Request {
     },
     /// Inspect the local NOW endpoint without exposing protocol internals.
     NowDiagnostics,
+    /// Send one MS-RDPEI touch event PDU (`RDPINPUT_TOUCH_EVENT_PDU`).
+    ///
+    /// Requires the Input DVC to be ready and not suspended. Contacts must use legal flag sets from
+    /// [MS-RDPEI] 3.1.1.1. At most [`MAX_TOUCH_FRAMES`] frames and [`MAX_TOUCH_CONTACTS`] contacts
+    /// per frame are accepted.
+    Touch {
+        /// Milliseconds elapsed for the oldest frame in this PDU.
+        encode_time: u32,
+        frames: Vec<TouchFrameRequest>,
+    },
     /// Inspect the bounded, session-local RAIL observation ledger.
     RailStatus,
     /// Return RAIL observations after a sequence number.
@@ -205,6 +239,11 @@ impl fmt::Debug for Request {
                 .field("last", last)
                 .finish(),
             Self::NowDiagnostics => f.write_str("NowDiagnostics"),
+            Self::Touch { encode_time, frames } => f
+                .debug_struct("Touch")
+                .field("encode_time", encode_time)
+                .field("frames", frames)
+                .finish(),
             Self::RailStatus => f.write_str("RailStatus"),
             Self::RailEvents { after_sequence } => f
                 .debug_struct("RailEvents")
@@ -1750,6 +1789,24 @@ impl Encode for Request {
                 write_bool(dst, *last)?;
             }
             Self::NowDiagnostics => dst.write_u8(20),
+            Self::Touch { encode_time, frames } => {
+                // Tag 26: free after RAIL tags 22-25 on master.
+                dst.write_u8(26);
+                dst.write_u32(*encode_time);
+                let frame_count: u16 = cast_length!("touch frame count", frames.len())?;
+                dst.write_u16(frame_count);
+                for frame in frames {
+                    dst.write_u64(frame.frame_offset);
+                    let contact_count: u16 = cast_length!("touch contact count", frame.contacts.len())?;
+                    dst.write_u16(contact_count);
+                    for contact in &frame.contacts {
+                        dst.write_u8(contact.contact_id);
+                        dst.write_i32(contact.x);
+                        dst.write_i32(contact.y);
+                        dst.write_u16(contact.flags);
+                    }
+                }
+            }
             Self::RailStatus => dst.write_u8(22),
             Self::RailEvents { after_sequence } => {
                 dst.write_u8(23);
@@ -1797,6 +1854,14 @@ impl Encode for Request {
                 Self::Wheel { .. } => 2 /* delta */ + 1 /* horizontal */,
                 Self::KeyScancode { .. } => 2 /* scancode */ + 1 /* pressed */,
                 Self::KeyUnicode { .. } => 4 /* ch */ + 1 /* pressed */,
+                Self::Touch { frames, .. } => {
+                    4 /* encode_time */ + 2 /* frame_count */
+                        + frames.iter().map(|frame| {
+                            8 /* frame_offset */ + 2 /* contact_count */
+                                + frame.contacts.len()
+                                    * (1 /* contact_id */ + 4 /* x */ + 4 /* y */ + 2 /* flags */)
+                        }).sum::<usize>()
+                }
                 Self::UnicodeText { text } => string_size(text),
                 Self::Resize { .. } => 2 /* width */ + 2 /* height */,
                 Self::NowRun { command, directory } => string_size(command) + opt_string_size(directory.as_deref()),
@@ -1926,6 +1991,44 @@ impl Decode<'_> for Request {
                 })
             }
             20 => Ok(Self::NowDiagnostics),
+            26 => {
+                ensure_size!(in: src, size: 6);
+                let encode_time = src.read_u32();
+                let frame_count = usize::from(src.read_u16());
+                if frame_count > MAX_TOUCH_FRAMES {
+                    return Err(ironrdp_core::invalid_field_err!(
+                        "touch frames",
+                        "too many frames"
+                    ));
+                }
+                let mut frames = Vec::with_capacity(frame_count);
+                for _ in 0..frame_count {
+                    ensure_size!(in: src, size: 10);
+                    let frame_offset = src.read_u64();
+                    let contact_count = usize::from(src.read_u16());
+                    if contact_count > MAX_TOUCH_CONTACTS {
+                        return Err(ironrdp_core::invalid_field_err!(
+                            "touch contacts",
+                            "too many contacts"
+                        ));
+                    }
+                    let mut contacts = Vec::with_capacity(contact_count);
+                    for _ in 0..contact_count {
+                        ensure_size!(in: src, size: 11);
+                        contacts.push(TouchContactRequest {
+                            contact_id: src.read_u8(),
+                            x: src.read_i32(),
+                            y: src.read_i32(),
+                            flags: src.read_u16(),
+                        });
+                    }
+                    frames.push(TouchFrameRequest {
+                        frame_offset,
+                        contacts,
+                    });
+                }
+                Ok(Self::Touch { encode_time, frames })
+            }
             22 => Ok(Self::RailStatus),
             23 => Ok(Self::RailEvents {
                 after_sequence: read_opt_u64(src)?,

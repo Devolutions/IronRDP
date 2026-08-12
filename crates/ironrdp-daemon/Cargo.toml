@@ -19,6 +19,7 @@ ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
 ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.1" } # public
+ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
 anyhow = "1"
 now-client = "0.1.0"
