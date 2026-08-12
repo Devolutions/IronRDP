@@ -60,7 +60,7 @@ fn encoded_wave2_with(block_no: u8, format_no: u16) -> Vec<u8> {
 }
 
 fn encoded_volume() -> Vec<u8> {
-    encode_vec(&pdu::ServerAudioOutputPdu::Volume(pdu::VolumePdu {
+    encode_vec(&pdu::ServerAudioOutputPdu::Volume(VolumePdu {
         volume_left: 0x8000,
         volume_right: 0x8000,
     }))
@@ -68,7 +68,7 @@ fn encoded_volume() -> Vec<u8> {
 }
 
 fn encoded_pitch() -> Vec<u8> {
-    encode_vec(&pdu::ServerAudioOutputPdu::Pitch(pdu::PitchPdu { pitch: 0x00010000 })).unwrap()
+    encode_vec(&pdu::ServerAudioOutputPdu::Pitch(PitchPdu { pitch: 0x00010000 })).unwrap()
 }
 
 fn encoded_close() -> Vec<u8> {
@@ -204,10 +204,12 @@ fn transitions_to_stop_on_invalid_pdu(#[case] mut client: Rdpsnd, #[case] payloa
 // Happy-path tests: Ready state
 // ============================================================================
 
+type RecordedWaves = Arc<Mutex<Vec<(AudioFormat, u32, Vec<u8>)>>>;
+
 #[derive(Debug, Default)]
 struct RecordingBackend {
     formats: Vec<AudioFormat>,
-    waves: Arc<Mutex<Vec<(AudioFormat, u32, Vec<u8>)>>>,
+    waves: RecordedWaves,
 }
 
 impl RecordingBackend {
