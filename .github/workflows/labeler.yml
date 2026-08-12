@@ -368,7 +368,7 @@ jobs:
       (needs.resolve-pr.outputs.force == 'true' ||
       (needs.classification-gate.outputs.available == 'true' &&
       needs.classification-gate.outputs.required == 'true' &&
-      needs.deterministic-analysis.outputs.size-label != 'size/XL' &&
+      needs.deterministic-analysis.outputs.size-label != 'size/XXL' &&
       needs.fork-rate-limit.result == 'success' &&
       needs.fork-rate-limit.outputs.allowed == 'true' &&
       !contains(fromJSON(needs.resolve-pr.outputs.labels), 'ai-reviewed/2')))

@@ -61,7 +61,18 @@ A maintainer can explicitly override this exclusion with force mode.
 
 ### Oversized pull requests
 
-For a `size/XL` pull request with 800 or more changed source lines, automatic routes skip classification and review before any model runs.
+Size uses the larger bucket from additions plus deletions in Rust, C#, JavaScript, TypeScript, Svelte, YAML, and TOML files, or from the total number of touched files.
+
+| Label | Counted changed lines | Touched files |
+| --- | ---: | ---: |
+| `size/XS` | 0-49 | 1-2 |
+| `size/S` | 50-199 | 3-5 |
+| `size/M` | 200-449 | 6-10 |
+| `size/L` | 450-899 | 11-20 |
+| `size/XL` | 900-1299 | 21-49 |
+| `size/XXL` | 1300 or more | 50 or more |
+
+For a `size/XXL` pull request, automatic routes skip classification and review before any model runs.
 Classification falls back to deterministic scope, size, first-time-contributor, and `cargo-semver-checks` results, while every classified pull request retains exactly one `size/*` label.
 
 The workflow comments once to explain the exclusion and point to [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) for splitting dependent work.
@@ -148,7 +159,7 @@ It never deletes repository labels.
 On automatic routes, risk measures maintainer scrutiny, so it does not decide whether a protocol change is worth reviewing.
 A `protocol_related` classification is review-eligible at any risk level, subject to the remaining review gates.
 For every other change, `risk/low` without `breaking-change` skips the review.
-Duplicates, `size/XL`, a legitimacy stop, and the terminal review count stop every automatic route.
+Duplicates, `size/XXL`, a legitimacy stop, and the terminal review count stop every automatic route.
 
 ## Review prerequisites
 
@@ -160,7 +171,7 @@ A second automatic review requires a later push and matching successful CI.
 The `workflow_dispatch` route accepts a pull request number, a route selector, and a `force` flag.
 The workflow ignores `force` on every other event.
 
-For classification, force mode bypasses completed-classification cache, fork quota, `size/XL`, terminal review count, draft status, and bot authorship.
+For classification, force mode bypasses completed-classification cache, fork quota, `size/XXL`, terminal review count, draft status, and bot authorship.
 Its SHA-bound check retains protocol state for a later forced review but cannot open an automatic review route.
 Select the review route explicitly when one is required.
 For review, it also bypasses classification, CI, duplicate, legitimacy, risk, contributor-history, and review-count eligibility.
