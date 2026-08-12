@@ -283,11 +283,11 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | --- | --- |
 | Legacy RDP 6.1 through 11 host selection | The six published `MsRdpClient*NotSafeForScripting` class identifiers are accepted by `DllGetClassObject` and preserve their requested `IPersist` class identity. They are explicit backend aliases, not global COM registrations. |
 | WinForms `AxHost` lifecycle | Windowed OLE activation, focus, sizing, the inherited `IMsRdpClient` through `IMsRdpClient10` raw interfaces, and the RDM virtual channels `RDMJump`, `RDMLog`, and `RDMCmd` are supported. |
-| Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio, clipboard, CredSSP, client-device name, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
+| Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio, clipboard, CredSSP, client-device name, RemoteApp, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
 | Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, and writable confirm-close events are delivered on the creating apartment. Warning and auto-reconnect events remain unfired until an IronRDP worker produces their real state. |
 | Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. Non-filesystem device, camera, monitor, and preferred-redirection capabilities remain unavailable. |
 
-The audit also identified RDM settings with no IronRDP ActiveX backend: input throttling, automatic reconnect, authentication policy, printer/port/smart-card and non-filesystem device redirection, RemoteApp, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
+The audit also identified RDM settings with no IronRDP ActiveX backend: input throttling, automatic reconnect, authentication policy, printer/port/smart-card and non-filesystem device redirection, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
 Their audited AdvancedSettings vtable slots use their exact published ABI signatures, initialize out parameters, and return `E_NOTIMPL`.
 The control does not report success for settings that cannot affect the connection.
 
@@ -545,6 +545,10 @@ connection setup begins: `IronRdpEnableTls`, `IronRdpAutoLogon`, `IronRdpDesktop
 security path. These properties are not persisted and do not expose credentials or certificate
 exceptions.
 
+Set `IronRdpRemoteProgramMode=true` and a nonempty `IronRdpRemoteApplicationProgram` while disconnected to launch one RemoteApp program.
+`IronRdpRemoteApplicationArgs` supplies optional arguments.
+RemoteApp mode projects server-authoritative RAIL windows as top-level HWNDs and removes them when the server deletes them or the session ends.
+
 ## Windowed ActiveX hosting
 
 The control implements the OLE interfaces that a fresh WinForms `AxHost` uses for in-place
@@ -679,6 +683,13 @@ dotnet run --project .\crates\ironrdp-activex\tests\ironrdp-axhost --configurati
     .\target\release\ironrdpax.dll connect --timeout 60 --screenshot .\artifacts\frame.png --json
 ```
 
+To exercise the registration-free RemoteApp route, add a configured program and optional arguments:
+
+```powershell
+dotnet run --project .\crates\ironrdp-activex\tests\ironrdp-axhost --configuration Release -- `
+    .\target\release\ironrdpax.dll connect --remoteapp-program 'calc.exe' --remoteapp-args '/server:example' --observe 10 --json
+```
+
 For the MsRdpEx route, set its two explicit backend-selection variables described above and replace
 the DLL path and optional CLSID:
 
@@ -702,7 +713,6 @@ The worker translates supported Automation settings into `ironrdp-client::Config
 Connection points retain sinks through `Advise`/`Unadvise`, enumerate correctly, and query the supplied
 sink for the event interface IID before retaining its `IDispatch`.
 
-This is an Automation, lifecycle, hosting, framebuffer, basic input, persistence, static
-virtual-channel, and Unicode-text OLE clipboard-snapshot foundation.
-It does not yet implement RemoteApp, non-text or writable OLE clipboard exchange, monikers, non-filesystem RDPDR device redirection, or arbitrary persisted designer state.
+This is an Automation, lifecycle, hosting, framebuffer, basic input, RemoteApp projection, persistence, static virtual-channel, and Unicode-text OLE clipboard-snapshot foundation.
+It does not implement non-text or writable OLE clipboard exchange, monikers, non-filesystem RDPDR device redirection, or arbitrary persisted designer state.
 Those contracts must be added as exact ABI implementations before advertising their individual methods as supported.

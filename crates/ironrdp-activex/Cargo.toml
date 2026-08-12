@@ -30,6 +30,7 @@ ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
+ironrdp-rail = { path = "../ironrdp-rail", version = "0.1" }
 ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.7" }
 ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.1" }
 ironrdp-session = { path = "../ironrdp-session", version = "0.11" }

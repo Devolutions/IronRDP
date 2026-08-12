@@ -8,21 +8,27 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, mpsc as std_mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc as std_mpsc};
 use std::time::Duration;
 
 use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
 use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind};
+use ironrdp_client::rail::RailInputEvent;
 use ironrdp_client::rdp::{CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent};
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
-use ironrdp_core::{DecodeError, DecodeErrorKind};
+use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, encode_vec};
 use ironrdp_input::{Database as InputDatabase, MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::PduResult;
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions, ConnectionType, KeyboardType};
-use ironrdp_pdu::rdp::{capability_sets::MajorPlatformType, client_info::PerformanceFlags};
+use ironrdp_pdu::rdp::{
+    capability_sets::{MajorPlatformType, RailSupportLevel},
+    client_info::PerformanceFlags,
+};
+use ironrdp_pdu::window::try_decode_slow_path_windowing_orders;
 use ironrdp_propertyset::PropertySet;
+use ironrdp_rail::pdu::{ActivatePdu, ExecutePdu, RailPdu, SystemCommand, SystemCommandPdu};
 use ironrdp_session::{GracefulDisconnectReason, SessionError, SessionErrorKind};
 use ironrdp_svc::{SvcClientProcessor, SvcMessage, SvcProcessor, impl_as_any};
 use ironrdp_tls::CertificateValidation;
@@ -87,16 +93,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     BS_PUSHBUTTON, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, GA_ROOT, GA_ROOTOWNER,
-    GWLP_USERDATA, GetAncestor, GetClassNameW, GetClientRect, GetCursorPos, GetDlgItem, GetForegroundWindow, GetParent,
-    GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, HMENU, HWND_MESSAGE, IsIconic,
-    IsWindow, IsWindowVisible, KillTimer, PostMessageW, RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_MAXIMIZE,
-    SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER, SendMessageW, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_ENABLE, WM_KEYDOWN, WM_KEYUP,
-    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GWLP_USERDATA, GetAncestor, GetClassNameW, GetClientRect, GetCursorPos,
+    GetDlgItem, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
+    GetWindowThreadProcessId, HMENU, HWND_MESSAGE, IsIconic, IsWindow, IsWindowVisible, KillTimer, PostMessageW,
+    RegisterClassW, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SW_HIDE, SW_MAXIMIZE,
+    SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER, SendMessageW,
+    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, UnregisterClassW, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DPICHANGED,
+    WM_ENABLE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN,
+    WM_XBUTTONUP, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{s, w};
 use windows_core::{
@@ -135,6 +142,8 @@ const DISPLAY_RESIZE_TIMER_ID: usize = 0x4952_4450;
 const DISPLAY_RESIZE_DEBOUNCE_MILLISECONDS: u32 = 250;
 const NATIVE_MSTSC_LAYOUT_TIMER_ID: usize = 0x4952_4451;
 const NATIVE_MSTSC_LAYOUT_POLL_MILLISECONDS: u32 = 100;
+const PROJECTED_RAIL_INPUT_RETRY_TIMER_ID: usize = 0x4952_4452;
+const PROJECTED_RAIL_INPUT_RETRY_MILLISECONDS: u32 = 25;
 const ACTIVEX_DVC_PLUGIN_PATHS_PROPERTY: &str = "IronRdpDvcPluginPaths";
 const ACTIVEX_ENABLE_TLS_PROPERTY: &str = "IronRdpEnableTls";
 const ACTIVEX_AUTOLOGON_PROPERTY: &str = "IronRdpAutoLogon";
@@ -147,9 +156,66 @@ const ACTIVEX_DIGITAL_PRODUCT_ID_PROPERTY: &str = "IronRdpDigitalProductId";
 const ACTIVEX_FAKE_EVENTS_INTERVAL_PROPERTY: &str = "IronRdpFakeEventsIntervalMinutes";
 const ACTIVEX_RDCLEANPATH_URL_PROPERTY: &str = "RDCleanPathUrl";
 const ACTIVEX_RDCLEANPATH_TOKEN_PROPERTY: &str = "RDCleanPathToken";
+const ACTIVEX_REMOTE_PROGRAM_MODE_PROPERTY: &str = "IronRdpRemoteProgramMode";
+const ACTIVEX_REMOTE_APPLICATION_PROGRAM_PROPERTY: &str = "IronRdpRemoteApplicationProgram";
+const ACTIVEX_REMOTE_APPLICATION_ARGS_PROPERTY: &str = "IronRdpRemoteApplicationArgs";
 const MAX_ACTIVEX_EXTENDED_SETTING_STRING_BYTES: usize = 8 * 1024;
 const ACTIVEX_DVC_PLUGIN_OPT_IN: &str = "IRONRDP_ACTIVEX_ENABLE_DVC_PLUGINS";
 const MAX_ACTIVEX_DVC_PLUGINS: usize = 16;
+
+#[derive(Default)]
+struct RemoteApplicationConfiguration {
+    enabled: bool,
+    program: String,
+    arguments: String,
+}
+
+fn configured_remote_application_execute(configuration: &RemoteApplicationConfiguration) -> Result<Option<ExecutePdu>> {
+    if !configuration.enabled {
+        return Ok(None);
+    }
+    if configuration.program.is_empty() {
+        return Err(Error::new(
+            E_INVALIDARG,
+            "set IronRdpRemoteApplicationProgram before connecting in RemoteApp mode",
+        ));
+    }
+    Ok(Some(ExecutePdu {
+        flags: 0,
+        executable: configuration.program.clone(),
+        working_directory: String::new(),
+        arguments: configuration.arguments.clone(),
+    }))
+}
+
+fn validate_rail_execute(execute: &ExecutePdu) -> Result<()> {
+    encode_vec(&RailPdu::Execute(execute.clone()))
+        .map(|_| ())
+        .map_err(|error| Error::new(E_INVALIDARG, error.to_string()))
+}
+
+fn rail_window_input_event(window_id: u32, message: u32, wparam: WPARAM) -> Option<RailInputEvent> {
+    match message {
+        WM_ACTIVATE => Some(RailInputEvent::Activate(ActivatePdu {
+            window_id,
+            enabled: wparam.0 & 0xffff != 0,
+        })),
+        WM_CLOSE => Some(RailInputEvent::SystemCommand(SystemCommandPdu {
+            window_id,
+            command: SystemCommand::Close,
+        })),
+        _ => None,
+    }
+}
+
+fn is_unsupported_projected_rail_system_command(wparam: WPARAM) -> bool {
+    let command = wparam.0 & 0xfff0;
+    command == SC_MOVE as usize
+        || command == SC_SIZE as usize
+        || command == SC_MINIMIZE as usize
+        || command == SC_MAXIMIZE as usize
+        || command == SC_RESTORE as usize
+}
 
 pub(crate) const CLSID_MS_RDP_CLIENT: GUID = GUID::from_u128(0x791f_a017_2de3_492e_acc5_53c6_7a2b_94d0);
 pub(crate) const CLSID_MS_RDP_CLIENT_6_NOT_SAFE_FOR_SCRIPTING: GUID =
@@ -2420,6 +2486,24 @@ fn keyboard_hooks_apply_remotely(mode: i32, fullscreen: bool) -> bool {
     }
 }
 
+fn should_forward_windows_key(
+    compatibility: &CompatibilitySettings,
+    fullscreen: bool,
+    input_database: &InputDatabase,
+    message: u32,
+    scancode: Scancode,
+) -> bool {
+    let (extended, code) = scancode.as_u8();
+    let is_windows_key = extended && matches!(code, 0x5b | 0x5c);
+    if !is_windows_key {
+        return true;
+    }
+
+    // Preserve a release for a key forwarded before the host policy changed.
+    compatibility.enable_windows_key && keyboard_hooks_apply_remotely(compatibility.keyboard_hook_mode, fullscreen)
+        || matches!(message, WM_KEYUP | WM_SYSKEYUP) && input_database.is_key_pressed(scancode)
+}
+
 fn is_fullscreen_hotkey(virtual_key: VIRTUAL_KEY, control_and_alt_pressed: bool) -> bool {
     control_and_alt_pressed && matches!(virtual_key, VK_CANCEL | VK_PAUSE)
 }
@@ -3330,6 +3414,10 @@ enum WorkerEvent {
     DisplayResizeFallback {
         generation: u64,
     },
+    RailWindowingOrders {
+        generation: u64,
+        data: Vec<u8>,
+    },
     FatalError {
         generation: u64,
         disconnect: DisconnectInfo,
@@ -3356,6 +3444,7 @@ impl WorkerEvent {
             | Self::LoginComplete { generation }
             | Self::Image { generation, .. }
             | Self::DisplayResizeFallback { generation }
+            | Self::RailWindowingOrders { generation, .. }
             | Self::FatalError { generation, .. }
             | Self::Disconnected { generation, .. }
             | Self::StaticChannelData { generation, .. }
@@ -3366,6 +3455,55 @@ impl WorkerEvent {
     fn reject_certificate_warning(self) {
         if let Self::CertificateWarning { response, .. } = self {
             let _ = response.send(CertificateDecision::Reject);
+        }
+    }
+}
+
+/// Bounded worker-to-UI event queue.
+///
+/// RAIL lifecycle orders wait for UI capacity so an authoritative server
+/// transition cannot be discarded, while bitmap and static-channel payloads
+/// retain the existing lossy behavior.
+#[derive(Debug)]
+struct WorkerEventQueue {
+    events: Mutex<Vec<WorkerEvent>>,
+    space_available: Condvar,
+    closed: AtomicBool,
+}
+
+impl WorkerEventQueue {
+    fn new() -> Self {
+        Self {
+            events: Mutex::new(Vec::new()),
+            space_available: Condvar::new(),
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    fn take(&self) -> Vec<WorkerEvent> {
+        let events = {
+            let mut queue = match self.events.lock() {
+                Ok(queue) => queue,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            core::mem::take(&mut *queue)
+        };
+        self.space_available.notify_all();
+        events
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        let events = {
+            let mut queue = match self.events.lock() {
+                Ok(queue) => queue,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            core::mem::take(&mut *queue)
+        };
+        self.space_available.notify_all();
+        for event in events {
+            event.reject_certificate_warning();
         }
     }
 }
@@ -3543,7 +3681,7 @@ struct ActiveXStaticChannelSpec {
 #[derive(Debug)]
 struct ActiveXStaticChannel {
     spec: ActiveXStaticChannelSpec,
-    events: Arc<Mutex<Vec<WorkerEvent>>>,
+    events: Arc<WorkerEventQueue>,
     event_posted: Arc<AtomicBool>,
     dispatcher: isize,
     generation: u64,
@@ -3754,6 +3892,985 @@ impl Drop for PresentationSurface {
         if !unsafe { DeleteObject(HGDIOBJ(self.bitmap.0)) }.as_bool() {
             tracing::debug!("Unable to release the ActiveX presentation bitmap");
         }
+    }
+}
+
+const MAX_PROJECTED_RAIL_WINDOWS: usize = 256;
+const RAIL_WINDOW_CLASS: PCWSTR = w!("IronRDP.ActiveX.RailWindow");
+
+#[derive(Default)]
+struct RailWindowClassState {
+    registered: bool,
+    windows: usize,
+}
+
+static RAIL_WINDOW_CLASS_STATE: Mutex<RailWindowClassState> = Mutex::new(RailWindowClassState {
+    registered: false,
+    windows: 0,
+});
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProjectedRailGeometry {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+impl ProjectedRailGeometry {
+    const INITIAL: Self = Self {
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+    };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProjectedRailContent {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+impl ProjectedRailContent {
+    const fn from_outer(outer: ProjectedRailGeometry) -> Self {
+        Self {
+            x: outer.x,
+            y: outer.y,
+            width: outer.width,
+            height: outer.height,
+        }
+    }
+}
+
+fn rail_dimension(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX).max(1)
+}
+
+fn projected_rail_geometry(
+    current: ProjectedRailGeometry,
+    window_offset: Option<(i32, i32)>,
+    window_size: Option<(u32, u32)>,
+) -> ProjectedRailGeometry {
+    let (x, y) = window_offset.unwrap_or((current.x, current.y));
+    let (width, height) = window_size
+        .map(|(width, height)| (rail_dimension(width), rail_dimension(height)))
+        .unwrap_or((current.width, current.height));
+    ProjectedRailGeometry { x, y, width, height }
+}
+
+fn projected_rail_content(
+    current: ProjectedRailContent,
+    outer: ProjectedRailGeometry,
+    client_area_offset: Option<(i32, i32)>,
+    client_area_size: Option<(u32, u32)>,
+    client_delta: Option<(i32, i32)>,
+) -> ProjectedRailContent {
+    let (x, y) = client_area_offset
+        .or_else(|| {
+            client_delta.map(|(delta_x, delta_y)| (outer.x.saturating_add(delta_x), outer.y.saturating_add(delta_y)))
+        })
+        .unwrap_or((current.x, current.y));
+    let (width, height) = if let Some((width, height)) = client_area_size {
+        (rail_dimension(width), rail_dimension(height))
+    } else if let Some((delta_x, delta_y)) = client_delta {
+        (
+            outer.width.saturating_sub(delta_x.max(0)),
+            outer.height.saturating_sub(delta_y.max(0)),
+        )
+    } else {
+        (current.width, current.height)
+    };
+    let content = ProjectedRailContent { x, y, width, height };
+    if content.width > 0 && content.height > 0 {
+        content
+    } else {
+        ProjectedRailContent::from_outer(outer)
+    }
+}
+
+struct ProjectedRailWindowContext {
+    window_id: u32,
+    input_sender: RdpInputSender,
+    input_database: Rc<RefCell<InputDatabase>>,
+    compatibility: Rc<RefCell<CompatibilitySettings>>,
+    frame: Rc<RefCell<Option<Frame>>>,
+    presentation_surface: Rc<RefCell<Option<PresentationSurface>>>,
+    content: Rc<Cell<ProjectedRailContent>>,
+    close_pending: Cell<bool>,
+    close_queued: Cell<bool>,
+    release_pending: Cell<bool>,
+}
+
+struct ProjectedRailWindow {
+    hwnd: HWND,
+    owner_window_id: Option<u32>,
+    geometry: Rc<Cell<ProjectedRailGeometry>>,
+    content: Rc<Cell<ProjectedRailContent>>,
+    server_style: WINDOW_STYLE,
+    server_extended_style: WINDOW_EX_STYLE,
+    _context: Box<ProjectedRailWindowContext>,
+}
+
+struct ProjectedRailWindowOrder {
+    is_new: bool,
+    window_id: u32,
+    owner_window_id: Option<Option<u32>>,
+    style: Option<(u32, u32)>,
+    show_state: Option<u8>,
+    title: Option<String>,
+    client_area_offset: Option<(i32, i32)>,
+    client_area_size: Option<(u32, u32)>,
+    window_offset: Option<(i32, i32)>,
+    client_delta: Option<(i32, i32)>,
+    window_size: Option<(u32, u32)>,
+}
+
+struct WindowOrderReader<'a> {
+    data: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> WindowOrderReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, offset: 0 }
+    }
+
+    fn read_u8(&mut self) -> Option<u8> {
+        let value = *self.data.get(self.offset)?;
+        self.offset = self.offset.checked_add(1)?;
+        Some(value)
+    }
+
+    fn read_u16(&mut self) -> Option<u16> {
+        let bytes = self.take(2)?;
+        Some(u16::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    fn read_u32(&mut self) -> Option<u32> {
+        let bytes = self.take(4)?;
+        Some(u32::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    fn read_i32(&mut self) -> Option<i32> {
+        let bytes = self.take(4)?;
+        Some(i32::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    fn take(&mut self, length: usize) -> Option<&'a [u8]> {
+        let end = self.offset.checked_add(length)?;
+        let bytes = self.data.get(self.offset..end)?;
+        self.offset = end;
+        Some(bytes)
+    }
+
+    fn skip(&mut self, length: usize) -> Option<()> {
+        self.take(length).map(|_| ())
+    }
+
+    fn read_utf16(&mut self) -> Option<String> {
+        let length = usize::from(self.read_u16()?);
+        let bytes = self.take(length)?;
+        let code_units = bytes
+            .chunks_exact(2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect::<Vec<_>>();
+        String::from_utf16(&code_units).ok()
+    }
+}
+
+fn parse_projected_rail_window_order(encoded: &[u8], flags: u32) -> Option<ProjectedRailWindowOrder> {
+    const WINDOW_TYPE: u32 = 0x0100_0000;
+    const STATE_NEW: u32 = 0x1000_0000;
+    const DELETED: u32 = 0x2000_0000;
+    const ICON: u32 = 0x4000_0000;
+    const CACHED_ICON: u32 = 0x8000_0000;
+
+    if flags & WINDOW_TYPE == 0 || flags & (DELETED | ICON | CACHED_ICON) != 0 {
+        return None;
+    }
+
+    let mut reader = WindowOrderReader::new(encoded.get(7..)?);
+    let window_id = reader.read_u32()?;
+    let owner_window_id =
+        (flags & 0x0000_0002 != 0).then(|| reader.read_u32().map(|owner| (owner != 0).then_some(owner)))?;
+    let style = (flags & 0x0000_0008 != 0).then(|| Some((reader.read_u32()?, reader.read_u32()?)))?;
+    let show_state = (flags & 0x0000_0010 != 0).then(|| reader.read_u8())?;
+    let title = (flags & 0x0000_0004 != 0).then(|| reader.read_utf16())?;
+    let client_area_offset = (flags & 0x0000_4000 != 0).then(|| Some((reader.read_i32()?, reader.read_i32()?)))?;
+    let client_area_size = (flags & 0x0001_0000 != 0).then(|| Some((reader.read_u32()?, reader.read_u32()?)))?;
+    if flags & 0x0000_0080 != 0 {
+        reader.skip(8)?;
+    }
+    if flags & 0x0800_0000 != 0 {
+        reader.skip(8)?;
+    }
+    if flags & 0x0002_0000 != 0 {
+        reader.skip(1)?;
+    }
+    if flags & 0x0004_0000 != 0 {
+        reader.skip(4)?;
+    }
+    let window_offset = (flags & 0x0000_0800 != 0).then(|| Some((reader.read_i32()?, reader.read_i32()?)))?;
+    let client_delta = (flags & 0x0000_8000 != 0).then(|| Some((reader.read_i32()?, reader.read_i32()?)))?;
+    let window_size = (flags & 0x0000_0400 != 0).then(|| Some((reader.read_u32()?, reader.read_u32()?)))?;
+
+    Some(ProjectedRailWindowOrder {
+        is_new: flags & STATE_NEW != 0,
+        window_id,
+        owner_window_id,
+        style,
+        show_state,
+        title,
+        client_area_offset,
+        client_area_size,
+        window_offset,
+        client_delta,
+        window_size,
+    })
+}
+
+fn resets_projected_rail_windows(fields_present: u32) -> bool {
+    const DESKTOP_TYPE: u32 = 0x0400_0000;
+    const DESKTOP_NON_MONITORED: u32 = 0x0000_0001;
+    const DESKTOP_HOOKED: u32 = 0x0000_0002;
+    const DESKTOP_ARC_BEGAN: u32 = 0x0000_0008;
+
+    fields_present & DESKTOP_TYPE != 0
+        && (fields_present & DESKTOP_NON_MONITORED != 0
+            || fields_present & (DESKTOP_HOOKED | DESKTOP_ARC_BEGAN) == DESKTOP_HOOKED | DESKTOP_ARC_BEGAN)
+}
+
+fn acquire_rail_window_class() -> Result<()> {
+    let mut state = match RAIL_WINDOW_CLASS_STATE.lock() {
+        Ok(state) => state,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if !state.registered {
+        let instance = unsafe { GetModuleHandleW(None) }?;
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(projected_rail_window_proc),
+            hInstance: windows::Win32::Foundation::HINSTANCE(instance.0),
+            lpszClassName: RAIL_WINDOW_CLASS,
+            ..Default::default()
+        };
+        if unsafe { RegisterClassW(&class) } == 0 {
+            let error = unsafe { windows::Win32::Foundation::GetLastError() };
+            return Err(Error::from_hresult(HRESULT::from_win32(error.0)));
+        }
+        state.registered = true;
+    }
+    state.windows = state
+        .windows
+        .checked_add(1)
+        .ok_or_else(|| Error::from_hresult(E_OUTOFMEMORY))?;
+    Ok(())
+}
+
+fn release_rail_window_class() {
+    let mut state = match RAIL_WINDOW_CLASS_STATE.lock() {
+        Ok(state) => state,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if state.windows == 0 {
+        return;
+    }
+    state.windows -= 1;
+    if state.windows != 0 || !state.registered {
+        return;
+    }
+    let result = unsafe { GetModuleHandleW(None) }.and_then(|instance| unsafe {
+        UnregisterClassW(
+            RAIL_WINDOW_CLASS,
+            Some(windows::Win32::Foundation::HINSTANCE(instance.0)),
+        )
+    });
+    match result {
+        Ok(()) => state.registered = false,
+        Err(error) if error.code() == HRESULT::from_win32(ERROR_CLASS_DOES_NOT_EXIST.0) => state.registered = false,
+        Err(error) => tracing::debug!(?error, "Unable to unregister the RAIL window class"),
+    }
+}
+
+fn apply_projected_rail_input(context: &ProjectedRailWindowContext, operations: impl IntoIterator<Item = Operation>) {
+    let permit = match context.input_sender.try_reserve() {
+        Ok(permit) => permit,
+        Err(error) => {
+            tracing::debug!(
+                ?error,
+                window_id = context.window_id,
+                "Unable to reserve projected RAIL window input"
+            );
+            return;
+        }
+    };
+    let fast_path = context.input_database.borrow_mut().apply(operations);
+    if fast_path.is_empty() {
+        return;
+    }
+    permit.send(RdpInputEvent::FastPath(fast_path));
+}
+
+fn schedule_projected_rail_input_retry(hwnd: HWND) {
+    unsafe {
+        let _ = SetTimer(
+            Some(hwnd),
+            PROJECTED_RAIL_INPUT_RETRY_TIMER_ID,
+            PROJECTED_RAIL_INPUT_RETRY_MILLISECONDS,
+            None,
+        );
+    }
+}
+
+fn release_projected_rail_input(hwnd: HWND, context: &ProjectedRailWindowContext) {
+    let permit = match context.input_sender.try_reserve() {
+        Ok(permit) => permit,
+        Err(error) => {
+            context.release_pending.set(true);
+            schedule_projected_rail_input_retry(hwnd);
+            tracing::debug!(
+                ?error,
+                window_id = context.window_id,
+                "Deferring projected RAIL window input release"
+            );
+            return;
+        }
+    };
+    let fast_path = context.input_database.borrow_mut().release_all();
+    context.release_pending.set(false);
+    if fast_path.is_empty() {
+        return;
+    }
+    permit.send(RdpInputEvent::FastPath(fast_path));
+}
+
+fn queue_projected_rail_close(hwnd: HWND, context: &ProjectedRailWindowContext) {
+    if context.close_queued.get() || context.close_pending.get() {
+        return;
+    }
+    let event = RailInputEvent::SystemCommand(SystemCommandPdu {
+        window_id: context.window_id,
+        command: SystemCommand::Close,
+    });
+    match context.input_sender.try_reserve() {
+        Ok(permit) => {
+            permit.send(RdpInputEvent::Rail(event));
+            context.close_queued.set(true);
+        }
+        Err(error) => {
+            context.close_pending.set(true);
+            schedule_projected_rail_input_retry(hwnd);
+            tracing::debug!(
+                ?error,
+                window_id = context.window_id,
+                "Deferring projected RAIL window close request"
+            );
+        }
+    }
+}
+
+fn retry_projected_rail_input(hwnd: HWND, context: &ProjectedRailWindowContext) {
+    if context.release_pending.get() {
+        let Ok(permit) = context.input_sender.try_reserve() else {
+            return;
+        };
+        let fast_path = context.input_database.borrow_mut().release_all();
+        context.release_pending.set(false);
+        if !fast_path.is_empty() {
+            permit.send(RdpInputEvent::FastPath(fast_path));
+        }
+    }
+
+    if context.close_pending.get() {
+        let event = RailInputEvent::SystemCommand(SystemCommandPdu {
+            window_id: context.window_id,
+            command: SystemCommand::Close,
+        });
+        if let Ok(permit) = context.input_sender.try_reserve() {
+            permit.send(RdpInputEvent::Rail(event));
+            context.close_pending.set(false);
+            context.close_queued.set(true);
+        }
+    }
+
+    if !context.close_pending.get() && !context.release_pending.get() {
+        unsafe {
+            let _ = KillTimer(Some(hwnd), PROJECTED_RAIL_INPUT_RETRY_TIMER_ID);
+        }
+    }
+}
+
+fn queue_projected_rail_lifecycle_input(context: &ProjectedRailWindowContext, event: RailInputEvent) {
+    if let Err(error) = context.input_sender.try_send_rail_input(event) {
+        tracing::debug!(
+            ?error,
+            window_id = context.window_id,
+            "Unable to forward projected RAIL window lifecycle input"
+        );
+    }
+}
+
+fn projected_rail_mouse_position(
+    context: &ProjectedRailWindowContext,
+    hwnd: HWND,
+    x: i32,
+    y: i32,
+) -> Option<MousePosition> {
+    let mut client_rect = RECT::default();
+    unsafe { GetClientRect(hwnd, &mut client_rect) }.ok()?;
+    let client_width = client_rect.right - client_rect.left;
+    let client_height = client_rect.bottom - client_rect.top;
+    let content_rect = context.content.get();
+    let frame = context.frame.borrow();
+    let frame = frame.as_ref()?;
+    if content_rect.width <= 0
+        || content_rect.height <= 0
+        || client_width <= 0
+        || client_height <= 0
+        || x < 0
+        || y < 0
+        || x >= client_width
+        || y >= client_height
+    {
+        return None;
+    }
+
+    let desktop_x = i64::from(content_rect.x) + i64::from(x) * i64::from(content_rect.width) / i64::from(client_width);
+    let desktop_y =
+        i64::from(content_rect.y) + i64::from(y) * i64::from(content_rect.height) / i64::from(client_height);
+    if desktop_x < 0 || desktop_y < 0 || desktop_x >= i64::from(frame.width) || desktop_y >= i64::from(frame.height) {
+        return None;
+    }
+    Some(MousePosition {
+        x: u16::try_from(desktop_x).ok()?,
+        y: u16::try_from(desktop_y).ok()?,
+    })
+}
+
+fn paint_projected_rail_window(hwnd: HWND, context: &ProjectedRailWindowContext) {
+    let mut paint = PAINTSTRUCT::default();
+    let device_context = unsafe { BeginPaint(hwnd, &mut paint) };
+    let mut client_rect = RECT::default();
+    if unsafe { GetClientRect(hwnd, &mut client_rect) }.is_ok() {
+        let client_width = (client_rect.right - client_rect.left).max(0);
+        let client_height = (client_rect.bottom - client_rect.top).max(0);
+        let content_rect = context.content.get();
+        let surface = context.presentation_surface.borrow();
+        if let Some(surface) = surface.as_ref()
+            && content_rect.width > 0
+            && content_rect.height > 0
+            && client_width > 0
+            && client_height > 0
+            && !unsafe {
+                StretchBlt(
+                    device_context,
+                    0,
+                    0,
+                    client_width,
+                    client_height,
+                    Some(surface.device_context),
+                    content_rect.x,
+                    content_rect.y,
+                    content_rect.width,
+                    content_rect.height,
+                    SRCCOPY,
+                )
+            }
+            .as_bool()
+        {
+            tracing::debug!(window_id = context.window_id, "Unable to paint projected RAIL window");
+        }
+    }
+    unsafe {
+        let _ = EndPaint(hwnd, &paint);
+    }
+}
+
+fn handle_projected_rail_window_message(
+    hwnd: HWND,
+    context: &ProjectedRailWindowContext,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> bool {
+    if message == WM_CLOSE {
+        queue_projected_rail_close(hwnd, context);
+        // The server remains authoritative for a projected window's lifetime.
+        return true;
+    }
+    if message == WM_TIMER && wparam.0 == PROJECTED_RAIL_INPUT_RETRY_TIMER_ID {
+        retry_projected_rail_input(hwnd, context);
+        return true;
+    }
+    if message == WM_SYSCOMMAND && is_unsupported_projected_rail_system_command(wparam) {
+        // ActiveX does not implement the server-directed move/size lifecycle.
+        return true;
+    }
+    if let Some(event) = rail_window_input_event(context.window_id, message, wparam) {
+        queue_projected_rail_lifecycle_input(context, event);
+    }
+
+    match message {
+        WM_PAINT => {
+            paint_projected_rail_window(hwnd, context);
+            true
+        }
+        WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
+            let lparam = lparam.0 as u32;
+            let scancode = Scancode::from_u8(lparam & 0x0100_0000 != 0, ((lparam >> 16) & 0xff) as u8);
+            let compatibility = context.compatibility.borrow();
+            let input_database = context.input_database.borrow();
+            if !should_forward_windows_key(&compatibility, false, &input_database, message, scancode) {
+                return true;
+            }
+            drop(input_database);
+            drop(compatibility);
+            let operation = if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN) {
+                Operation::KeyPressed(scancode)
+            } else {
+                Operation::KeyReleased(scancode)
+            };
+            apply_projected_rail_input(context, [operation]);
+            true
+        }
+        WM_MOUSEMOVE => {
+            if context.compatibility.borrow().enable_mouse
+                && let Some(position) = projected_rail_mouse_position(
+                    context,
+                    hwnd,
+                    i32::from(lparam.0 as i32 as i16),
+                    i32::from((lparam.0 >> 16) as i16),
+                )
+            {
+                apply_projected_rail_input(context, [Operation::MouseMove(position)]);
+            }
+            true
+        }
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
+            if !context.compatibility.borrow().enable_mouse {
+                return true;
+            }
+            if let Err(error) = unsafe { SetFocus(Some(hwnd)) } {
+                tracing::debug!(?error, "Unable to focus projected RAIL window");
+            }
+            unsafe {
+                SetCapture(hwnd);
+            }
+            let button = match message {
+                WM_LBUTTONDOWN => MouseButton::Left,
+                WM_RBUTTONDOWN => MouseButton::Right,
+                WM_MBUTTONDOWN => MouseButton::Middle,
+                _ if (wparam.0 >> 16) & 0xffff == 1 => MouseButton::X1,
+                _ => MouseButton::X2,
+            };
+            let x = i32::from(lparam.0 as i32 as i16);
+            let y = i32::from((lparam.0 >> 16) as i16);
+            if let Some(position) = projected_rail_mouse_position(context, hwnd, x, y) {
+                apply_projected_rail_input(
+                    context,
+                    [Operation::MouseMove(position), Operation::MouseButtonPressed(button)],
+                );
+            }
+            true
+        }
+        WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP | WM_XBUTTONUP => {
+            let button = match message {
+                WM_LBUTTONUP => MouseButton::Left,
+                WM_RBUTTONUP => MouseButton::Right,
+                WM_MBUTTONUP => MouseButton::Middle,
+                _ if (wparam.0 >> 16) & 0xffff == 1 => MouseButton::X1,
+                _ => MouseButton::X2,
+            };
+            let x = i32::from(lparam.0 as i32 as i16);
+            let y = i32::from((lparam.0 >> 16) as i16);
+            if let Some(position) = projected_rail_mouse_position(context, hwnd, x, y) {
+                apply_projected_rail_input(
+                    context,
+                    [Operation::MouseMove(position), Operation::MouseButtonReleased(button)],
+                );
+            }
+            let has_pressed_buttons = {
+                let input_database = context.input_database.borrow();
+                [
+                    MouseButton::Left,
+                    MouseButton::Middle,
+                    MouseButton::Right,
+                    MouseButton::X1,
+                    MouseButton::X2,
+                ]
+                .into_iter()
+                .any(|button| input_database.is_mouse_button_pressed(button))
+            };
+            if !has_pressed_buttons && let Err(error) = unsafe { ReleaseCapture() } {
+                tracing::debug!(?error, "Unable to release projected RAIL mouse capture");
+            }
+            true
+        }
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            if !context.compatibility.borrow().enable_mouse {
+                return true;
+            }
+            let mut point = POINT {
+                x: i32::from(lparam.0 as i32 as i16),
+                y: i32::from((lparam.0 >> 16) as i16),
+            };
+            if unsafe { ScreenToClient(hwnd, &mut point) }.as_bool()
+                && let Some(position) = projected_rail_mouse_position(context, hwnd, point.x, point.y)
+            {
+                apply_projected_rail_input(context, [Operation::MouseMove(position)]);
+            }
+            let mut remaining = ((wparam.0 >> 16) as u16) as i16;
+            let mut operations = Vec::new();
+            while remaining != 0 {
+                let rotation_units = remaining.clamp(-256, 255);
+                operations.push(Operation::WheelRotations(WheelRotations {
+                    is_vertical: message == WM_MOUSEWHEEL,
+                    rotation_units,
+                }));
+                remaining -= rotation_units;
+            }
+            apply_projected_rail_input(context, operations);
+            true
+        }
+        WM_CANCELMODE | WM_ENABLE if wparam.0 == 0 => {
+            release_projected_rail_input(hwnd, context);
+            false
+        }
+        WM_KILLFOCUS | WM_CAPTURECHANGED => {
+            release_projected_rail_input(hwnd, context);
+            true
+        }
+        _ => false,
+    }
+}
+
+unsafe extern "system" fn projected_rail_window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        if message == WM_NCCREATE {
+            let create = &*(lparam.0 as *const CREATESTRUCTW);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
+        }
+        let context = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const ProjectedRailWindowContext;
+        if !context.is_null() && handle_projected_rail_window_message(hwnd, &*context, message, wparam, lparam) {
+            LRESULT(0)
+        } else {
+            DefWindowProcW(hwnd, message, wparam, lparam)
+        }
+    })) {
+        Ok(result) => result,
+        Err(_) => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+struct RailWindowManager {
+    input_database: Rc<RefCell<InputDatabase>>,
+    compatibility: Rc<RefCell<CompatibilitySettings>>,
+    frame: Rc<RefCell<Option<Frame>>>,
+    presentation_surface: Rc<RefCell<Option<PresentationSurface>>>,
+    input_sender: Option<RdpInputSender>,
+    windows: BTreeMap<u32, ProjectedRailWindow>,
+}
+
+impl RailWindowManager {
+    fn new(
+        input_database: Rc<RefCell<InputDatabase>>,
+        compatibility: Rc<RefCell<CompatibilitySettings>>,
+        frame: Rc<RefCell<Option<Frame>>>,
+        presentation_surface: Rc<RefCell<Option<PresentationSurface>>>,
+    ) -> Self {
+        Self {
+            input_database,
+            compatibility,
+            frame,
+            presentation_surface,
+            input_sender: None,
+            windows: BTreeMap::new(),
+        }
+    }
+
+    fn start(&mut self, input_sender: Option<RdpInputSender>) {
+        self.clear();
+        self.input_sender = input_sender;
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.input_sender.is_some()
+    }
+
+    fn stop(&mut self) {
+        self.clear();
+        self.input_sender = None;
+    }
+
+    fn consume(&mut self, update: &[u8]) {
+        let mut reader = ReadCursor::new(update);
+        if reader.len() < 2 {
+            tracing::debug!("Ignoring truncated RAIL windowing update");
+            return;
+        }
+        reader.advance(2);
+        let Ok(update) = try_decode_slow_path_windowing_orders(&mut reader) else {
+            tracing::debug!("Ignoring malformed RAIL windowing update");
+            return;
+        };
+        for order in update.orders {
+            const WINDOW_TYPE: u32 = 0x0100_0000;
+            const DELETED: u32 = 0x2000_0000;
+
+            if resets_projected_rail_windows(order.fields_present) {
+                self.clear();
+            } else if order.fields_present & WINDOW_TYPE != 0 && order.fields_present & DELETED != 0 {
+                if let Some(window_id) = order
+                    .encoded
+                    .get(7..11)
+                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                    .map(u32::from_le_bytes)
+                {
+                    self.destroy_window(window_id);
+                }
+            } else if let Some(order) = parse_projected_rail_window_order(order.encoded, order.fields_present) {
+                self.apply_window_order(order);
+            }
+        }
+    }
+
+    fn invalidate_presentation(&self) {
+        for window in self.windows.values() {
+            if unsafe { IsWindow(Some(window.hwnd)) }.as_bool() {
+                unsafe {
+                    let _ = InvalidateRect(Some(window.hwnd), None, false);
+                }
+            }
+        }
+    }
+
+    fn apply_window_order(&mut self, order: ProjectedRailWindowOrder) {
+        let Some(input_sender) = self.input_sender.clone() else {
+            return;
+        };
+        let current_geometry = self
+            .windows
+            .get(&order.window_id)
+            .map_or(ProjectedRailGeometry::INITIAL, |window| window.geometry.get());
+        let geometry = projected_rail_geometry(current_geometry, order.window_offset, order.window_size);
+        let current_content = self.windows.get(&order.window_id).map_or_else(
+            || ProjectedRailContent::from_outer(geometry),
+            |window| window.content.get(),
+        );
+        let content = projected_rail_content(
+            current_content,
+            geometry,
+            order.client_area_offset,
+            order.client_area_size,
+            order.client_delta,
+        );
+
+        if !self.windows.contains_key(&order.window_id) {
+            if !order.is_new {
+                return;
+            }
+            if self.windows.len() >= MAX_PROJECTED_RAIL_WINDOWS {
+                tracing::warn!(
+                    window_id = order.window_id,
+                    "Ignoring RAIL window beyond the projection capacity"
+                );
+                return;
+            }
+            let owner = order
+                .owner_window_id
+                .flatten()
+                .and_then(|owner_window_id| self.windows.get(&owner_window_id))
+                .map(|window| window.hwnd);
+            let (server_style, server_extended_style) = order.style.map_or_else(
+                || (WS_POPUP, WINDOW_EX_STYLE::default()),
+                |style| (WINDOW_STYLE(style.0 & !WS_CHILD.0), WINDOW_EX_STYLE(style.1)),
+            );
+            let title = HSTRING::from(order.title.as_deref().unwrap_or_default());
+            let geometry_cell = Rc::new(Cell::new(geometry));
+            let content_cell = Rc::new(Cell::new(content));
+            let mut window_context = Box::new(ProjectedRailWindowContext {
+                window_id: order.window_id,
+                input_sender,
+                input_database: Rc::clone(&self.input_database),
+                compatibility: Rc::clone(&self.compatibility),
+                frame: Rc::clone(&self.frame),
+                presentation_surface: Rc::clone(&self.presentation_surface),
+                content: Rc::clone(&content_cell),
+                close_pending: Cell::new(false),
+                close_queued: Cell::new(false),
+                release_pending: Cell::new(false),
+            });
+            if let Err(error) = acquire_rail_window_class() {
+                tracing::warn!(
+                    ?error,
+                    window_id = order.window_id,
+                    "Unable to register RAIL window class"
+                );
+                return;
+            }
+            let hwnd = match unsafe {
+                CreateWindowExW(
+                    server_extended_style,
+                    RAIL_WINDOW_CLASS,
+                    PCWSTR(title.as_ptr()),
+                    server_style,
+                    geometry.x,
+                    geometry.y,
+                    geometry.width,
+                    geometry.height,
+                    owner,
+                    None,
+                    None,
+                    Some((&mut *window_context as *mut ProjectedRailWindowContext).cast()),
+                )
+            } {
+                Ok(hwnd) => hwnd,
+                Err(error) => {
+                    release_rail_window_class();
+                    tracing::warn!(?error, window_id = order.window_id, "Unable to create RAIL window");
+                    return;
+                }
+            };
+            self.windows.insert(
+                order.window_id,
+                ProjectedRailWindow {
+                    hwnd,
+                    owner_window_id: order.owner_window_id.flatten(),
+                    geometry: geometry_cell,
+                    content: content_cell,
+                    server_style,
+                    server_extended_style,
+                    _context: window_context,
+                },
+            );
+            self.attach_waiting_children(order.window_id);
+        }
+
+        let owner = order
+            .owner_window_id
+            .flatten()
+            .and_then(|owner_window_id| self.windows.get(&owner_window_id))
+            .map(|window| window.hwnd);
+        let (hwnd, style_changed, server_style, server_extended_style) = {
+            let Some(window) = self.windows.get_mut(&order.window_id) else {
+                return;
+            };
+            if let Some(owner_window_id) = order.owner_window_id {
+                window.owner_window_id = owner_window_id;
+            }
+            window.geometry.set(geometry);
+            window.content.set(content);
+            let style_changed = order.style.is_some();
+            if let Some((style, extended_style)) = order.style {
+                window.server_style = WINDOW_STYLE(style & !WS_CHILD.0);
+                window.server_extended_style = WINDOW_EX_STYLE(extended_style);
+            }
+            (
+                window.hwnd,
+                style_changed,
+                window.server_style,
+                window.server_extended_style,
+            )
+        };
+
+        if let Some(title) = order.title {
+            let title = HSTRING::from(title);
+            if let Err(error) = unsafe { SetWindowTextW(hwnd, PCWSTR(title.as_ptr())) } {
+                tracing::debug!(?error, window_id = order.window_id, "Unable to set RAIL window title");
+            }
+        }
+        if order.owner_window_id.is_some() {
+            unsafe {
+                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, owner.map_or(0, |owner| owner.0 as isize));
+            }
+        }
+        if style_changed {
+            unsafe {
+                SetWindowLongPtrW(hwnd, GWL_STYLE, server_style.0 as isize);
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, server_extended_style.0 as isize);
+            }
+        }
+        if let Some(show_state) = order.show_state {
+            unsafe {
+                let _ = ShowWindow(
+                    hwnd,
+                    match show_state {
+                        0 => SW_HIDE,
+                        2 => SW_MINIMIZE,
+                        3 => SW_MAXIMIZE,
+                        _ => SW_SHOWNA,
+                    },
+                );
+            }
+        }
+        let mut flags = SWP_NOACTIVATE | SWP_NOCOPYBITS | SWP_NOZORDER;
+        if style_changed {
+            flags |= SWP_FRAMECHANGED;
+        }
+        if let Err(error) = unsafe {
+            SetWindowPos(
+                hwnd,
+                None,
+                geometry.x,
+                geometry.y,
+                geometry.width,
+                geometry.height,
+                flags,
+            )
+        } {
+            tracing::debug!(?error, window_id = order.window_id, "Unable to position RAIL window");
+        }
+    }
+
+    fn attach_waiting_children(&self, owner_window_id: u32) {
+        let Some(owner) = self.windows.get(&owner_window_id).map(|window| window.hwnd) else {
+            return;
+        };
+        for window in self
+            .windows
+            .values()
+            .filter(|window| window.owner_window_id == Some(owner_window_id))
+        {
+            unsafe {
+                SetWindowLongPtrW(window.hwnd, GWLP_HWNDPARENT, owner.0 as isize);
+            }
+        }
+    }
+
+    fn destroy_window(&mut self, window_id: u32) {
+        let Some(window) = self.windows.remove(&window_id) else {
+            return;
+        };
+        if unsafe { IsWindow(Some(window.hwnd)) }.as_bool()
+            && let Err(error) = unsafe { DestroyWindow(window.hwnd) }
+        {
+            tracing::debug!(?error, window_id, "Unable to destroy projected RAIL window");
+            // Do not leave an HWND with a pointer to context that is about to
+            // be dropped when an external component prevents destruction.
+            unsafe {
+                SetWindowLongPtrW(window.hwnd, GWLP_USERDATA, 0);
+            }
+        }
+        release_rail_window_class();
+    }
+
+    fn clear(&mut self) {
+        for window_id in self.windows.keys().copied().collect::<Vec<_>>() {
+            self.destroy_window(window_id);
+        }
+    }
+}
+
+impl Drop for RailWindowManager {
+    fn drop(&mut self) {
+        self.clear();
     }
 }
 
@@ -4552,6 +5669,7 @@ pub(crate) struct Control {
     class_id: GUID,
     settings: RefCell<Settings>,
     compatibility: Rc<RefCell<CompatibilitySettings>>,
+    remote_application: RefCell<RemoteApplicationConfiguration>,
     drive_collection: IMsRdpDriveCollection,
     state: Cell<ConnectionState>,
     last_disconnect: Cell<DisconnectInfo>,
@@ -4562,13 +5680,13 @@ pub(crate) struct Control {
     remote_size: Cell<Option<(i32, i32)>>,
     input_sender: RefCell<Option<RdpInputSender>>,
     static_channels: RefCell<BTreeMap<String, ActiveXStaticChannelSpec>>,
-    input_database: RefCell<InputDatabase>,
+    input_database: Rc<RefCell<InputDatabase>>,
     sinks: Rc<RefCell<BTreeMap<u32, EventSink>>>,
     next_cookie: Rc<Cell<u32>>,
     ole_advise_sinks: Rc<RefCell<BTreeMap<u32, IAdviseSink>>>,
     next_ole_advise_cookie: Rc<Cell<u32>>,
     view_advise: RefCell<Option<ViewAdvise>>,
-    events: Arc<Mutex<Vec<WorkerEvent>>>,
+    events: Arc<WorkerEventQueue>,
     event_posted: Arc<AtomicBool>,
     callback_owner: Cell<*const Control_Impl>,
     dispatcher: Cell<HWND>,
@@ -4591,8 +5709,9 @@ pub(crate) struct Control {
     activex_extent: Cell<SIZE>,
     pending_display_resize: Cell<Option<DisplayLayout>>,
     native_mstsc_display_layout: Cell<Option<(i32, i32)>>,
-    frame: RefCell<Option<Frame>>,
-    presentation_surface: RefCell<Option<PresentationSurface>>,
+    frame: Rc<RefCell<Option<Frame>>>,
+    presentation_surface: Rc<RefCell<Option<PresentationSurface>>>,
+    rail_windows: RefCell<RailWindowManager>,
     presentation_backbuffer: RefCell<Option<PresentationBackbuffer>>,
     next_frame_sequence: Cell<u64>,
     presentation_layout_generation: Cell<u64>,
@@ -4660,10 +5779,20 @@ impl Control {
         let drive_catalog = Rc::clone(&compatibility.borrow().drive_catalog);
         let drive_collection: IMsRdpDriveCollection =
             DriveCollection::new(drive_catalog, Rc::clone(&compatibility)).into();
+        let input_database = Rc::new(RefCell::new(InputDatabase::new()));
+        let frame = Rc::new(RefCell::new(None));
+        let presentation_surface = Rc::new(RefCell::new(None));
+        let rail_windows = RefCell::new(RailWindowManager::new(
+            Rc::clone(&input_database),
+            Rc::clone(&compatibility),
+            Rc::clone(&frame),
+            Rc::clone(&presentation_surface),
+        ));
         Self {
             class_id,
             settings: RefCell::new(Settings::default()),
             compatibility,
+            remote_application: RefCell::new(RemoteApplicationConfiguration::default()),
             drive_collection,
             state: Cell::new(ConnectionState::Disconnected),
             last_disconnect: Cell::new(DisconnectInfo::no_info()),
@@ -4677,13 +5806,13 @@ impl Control {
             remote_size: Cell::new(None),
             input_sender: RefCell::new(None),
             static_channels: RefCell::new(BTreeMap::new()),
-            input_database: RefCell::new(InputDatabase::new()),
+            input_database,
             sinks: Rc::new(RefCell::new(BTreeMap::new())),
             next_cookie: Rc::new(Cell::new(1)),
             ole_advise_sinks: Rc::new(RefCell::new(BTreeMap::new())),
             next_ole_advise_cookie: Rc::new(Cell::new(1)),
             view_advise: RefCell::new(None),
-            events: Arc::new(Mutex::new(Vec::new())),
+            events: Arc::new(WorkerEventQueue::new()),
             event_posted: Arc::new(AtomicBool::new(false)),
             callback_owner: Cell::new(ptr::null()),
             dispatcher: Cell::new(HWND(ptr::null_mut())),
@@ -4706,8 +5835,9 @@ impl Control {
             activex_extent: Cell::new(SIZE { cx: 27_093, cy: 20_320 }),
             pending_display_resize: Cell::new(None),
             native_mstsc_display_layout: Cell::new(None),
-            frame: RefCell::new(None),
-            presentation_surface: RefCell::new(None),
+            frame,
+            presentation_surface,
+            rail_windows,
             presentation_backbuffer: RefCell::new(None),
             next_frame_sequence: Cell::new(0),
             presentation_layout_generation: Cell::new(0),
@@ -6531,13 +7661,7 @@ impl Control {
 
     fn dispatch_pending_events(&self) {
         self.event_posted.store(false, Ordering::Release);
-        let events = {
-            let mut queue = match self.events.lock() {
-                Ok(queue) => queue,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            core::mem::take(&mut *queue)
-        };
+        let events = self.events.take();
 
         for event in events {
             if event.generation() != self.connection_generation.get() {
@@ -6612,6 +7736,11 @@ impl Control {
                     self.present_frame(buffer, width, height);
                 }
                 WorkerEvent::DisplayResizeFallback { .. } => self.report_display_resize_fallback(),
+                WorkerEvent::RailWindowingOrders { data, .. } => {
+                    if self.rail_windows.borrow().is_enabled() {
+                        self.rail_windows.borrow_mut().consume(&data);
+                    }
+                }
                 WorkerEvent::FatalError { disconnect, .. } => {
                     if let Some(rpc) = &self.rpc {
                         rpc.session_failed(disconnect.description.to_owned());
@@ -6628,6 +7757,7 @@ impl Control {
                     self.clipboard_state.connected.set(false);
                     self.remote_size.set(None);
                     self.clear_frame();
+                    self.rail_windows.borrow_mut().stop();
                     self.fire_event(DISPID_ON_FATAL_ERROR, &[disconnect.event_reason]);
                     self.fire_event(DISPID_ON_DISCONNECTED, &[disconnect.event_reason]);
                     self.show_connection_failure_dialog();
@@ -6645,6 +7775,7 @@ impl Control {
                     self.clipboard_state.connected.set(false);
                     self.remote_size.set(None);
                     self.clear_frame();
+                    self.rail_windows.borrow_mut().stop();
                     self.fire_event(DISPID_ON_DISCONNECTED, &[disconnect.event_reason]);
                 }
                 WorkerEvent::StaticChannelData { channel_name, data, .. } => {
@@ -6663,6 +7794,7 @@ impl Control {
                     self.input_sender.borrow_mut().take();
                     self.remote_size.set(None);
                     self.clear_frame();
+                    self.rail_windows.borrow_mut().stop();
                     self.state.set(ConnectionState::Disconnected);
                     self.native_mstsc_preflight.set(NativeMstscPreflight::Idle);
                     self.compatibility.borrow_mut().connection_settings_sealed = false;
@@ -7078,6 +8210,13 @@ impl Control {
         let public_mode = compatibility.public_mode;
         let direct_rpc_properties = active_x_property_snapshot(&settings, &compatibility);
         drop(compatibility);
+        let remote_application = self.remote_application.borrow();
+        let remote_program_mode = remote_application.enabled;
+        let remote_application_execute = configured_remote_application_execute(&remote_application)?;
+        drop(remote_application);
+        if let Some(execute) = &remote_application_execute {
+            validate_rail_execute(execute)?;
+        }
         if !self.confirm_connection_security_warnings(warn_about_credentials, warn_about_clipboard)? {
             return Ok(());
         }
@@ -7201,6 +8340,14 @@ impl Control {
                 ClipboardType::Disable
             })
             .with_rdpdr(rdpdr_enabled);
+        let builder = if remote_program_mode {
+            builder
+                .with_remote_application_mode(true)
+                .with_rail_support_level(RailSupportLevel::SUPPORTED)
+                .with_rail_client_status_flags(0)
+        } else {
+            builder
+        };
         let builder = if let Some(kerberos_config) = self.rpc_kerberos_config.borrow_mut().take() {
             builder.with_kerberos_config(kerberos_config)
         } else {
@@ -7293,6 +8440,11 @@ impl Control {
         let (output_sender, mut output_receiver) = mpsc::channel(32);
         let client = RdpClient::new(config, output_sender);
         let input_sender = client.input_sender();
+        if let Some(execute) = remote_application_execute {
+            input_sender
+                .try_send_rail_execute(execute)
+                .map_err(|error| Error::new(E_FAIL, error.to_string()))?;
+        }
         let client = if clipboard {
             let factory = self.start_clipboard_redirection(input_sender.clone())?;
             client.with_cliprdr_backend_factory(factory)
@@ -7367,6 +8519,16 @@ impl Control {
                                                         height: height.get(),
                                                     },
                                                 );
+                                            }
+                                            RdpOutputEvent::WindowingOrders(data) => {
+                                                if !queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::RailWindowingOrders { generation, data },
+                                                ) {
+                                                    break;
+                                                }
                                             }
                                             RdpOutputEvent::Connected => {
                                                 queue_worker_event(
@@ -7526,6 +8688,11 @@ impl Control {
         }
 
         *self.input_sender.borrow_mut() = Some(input_sender);
+        self.rail_windows.borrow_mut().start(
+            remote_program_mode
+                .then(|| self.input_sender.borrow().as_ref().cloned())
+                .flatten(),
+        );
         self.connection_generation.set(generation);
         self.login_complete_fired.set(false);
         self.remote_size.set(None);
@@ -8053,6 +9220,7 @@ impl Control {
                 let _ = InvalidateRect(Some(window), None, false);
             }
         }
+        self.rail_windows.borrow().invalidate_presentation();
     }
 
     fn clear_frame(&self) {
@@ -8480,24 +9648,19 @@ impl Control {
                 }
                 let lparam = lparam.0 as u32;
                 let scancode = Scancode::from_u8(lparam & 0x0100_0000 != 0, ((lparam >> 16) & 0xff) as u8);
-                let (extended, code) = scancode.as_u8();
-                let is_windows_key = extended && matches!(code, 0x5b | 0x5c);
                 let compatibility = self.compatibility.borrow();
-                let forwards_windows_key = compatibility.enable_windows_key
-                    && keyboard_hooks_apply_remotely(
-                        compatibility.keyboard_hook_mode,
-                        self.settings.borrow().fullscreen,
-                    );
-                drop(compatibility);
-                if is_windows_key && !forwards_windows_key {
-                    // A setting change may race a key-up for a key already forwarded. Preserve
-                    // that release so the remote session cannot retain a stuck Windows key.
-                    if !matches!(message, WM_KEYUP | WM_SYSKEYUP)
-                        || !self.input_database.borrow().is_key_pressed(scancode)
-                    {
-                        return true;
-                    }
+                let input_database = self.input_database.borrow();
+                if !should_forward_windows_key(
+                    &compatibility,
+                    self.settings.borrow().fullscreen,
+                    &input_database,
+                    message,
+                    scancode,
+                ) {
+                    return true;
                 }
+                drop(input_database);
+                drop(compatibility);
                 let operation = match message {
                     WM_KEYDOWN | WM_SYSKEYDOWN => Operation::KeyPressed(scancode),
                     _ => Operation::KeyReleased(scancode),
@@ -8594,6 +9757,8 @@ impl Control {
 impl Drop for Control {
     fn drop(&mut self) {
         trace_host_call("Control::Drop");
+        self.events.close();
+        self.rail_windows.get_mut().stop();
         if let Some(rpc) = &self.rpc {
             rpc.stop();
         }
@@ -9705,6 +10870,44 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
             trace_host_call("IMsRdpExtendedSettings::put_IronRdpAutoLogon");
             return Ok(());
         }
+        if name.eq_ignore_ascii_case(ACTIVEX_REMOTE_PROGRAM_MODE_PROPERTY) {
+            if value.is_null() {
+                return Err(Error::from_hresult(E_POINTER));
+            }
+            let remote_program_mode = variant_bool(unsafe { &*value }, ptr::null_mut())?;
+            let compatibility = self.compatibility.borrow();
+            active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
+            drop(compatibility);
+            self.remote_application.borrow_mut().enabled = remote_program_mode;
+            trace_host_call("IMsRdpExtendedSettings::put_IronRdpRemoteProgramMode");
+            return Ok(());
+        }
+        if name.eq_ignore_ascii_case(ACTIVEX_REMOTE_APPLICATION_PROGRAM_PROPERTY) {
+            if value.is_null() {
+                return Err(Error::from_hresult(E_POINTER));
+            }
+            let remote_application_program =
+                validate_activex_extended_string(variant_string(unsafe { &*value }, ptr::null_mut())?)?;
+            let compatibility = self.compatibility.borrow();
+            active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
+            drop(compatibility);
+            self.remote_application.borrow_mut().program = remote_application_program;
+            trace_host_call("IMsRdpExtendedSettings::put_IronRdpRemoteApplicationProgram");
+            return Ok(());
+        }
+        if name.eq_ignore_ascii_case(ACTIVEX_REMOTE_APPLICATION_ARGS_PROPERTY) {
+            if value.is_null() {
+                return Err(Error::from_hresult(E_POINTER));
+            }
+            let remote_application_args =
+                validate_activex_extended_string(variant_string(unsafe { &*value }, ptr::null_mut())?)?;
+            let compatibility = self.compatibility.borrow();
+            active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
+            drop(compatibility);
+            self.remote_application.borrow_mut().arguments = remote_application_args;
+            trace_host_call("IMsRdpExtendedSettings::put_IronRdpRemoteApplicationArgs");
+            return Ok(());
+        }
         if name.eq_ignore_ascii_case(ACTIVEX_DESKTOP_SCALE_FACTOR_PROPERTY) {
             if value.is_null() {
                 return Err(Error::from_hresult(E_POINTER));
@@ -9873,6 +11076,18 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
                 value,
                 variant_bool_value(self.compatibility.borrow().autologon.unwrap_or(false)),
             );
+        }
+        if name.eq_ignore_ascii_case(ACTIVEX_REMOTE_PROGRAM_MODE_PROPERTY) {
+            trace_host_call("IMsRdpExtendedSettings::get_IronRdpRemoteProgramMode");
+            return write_out(value, variant_bool_value(self.remote_application.borrow().enabled));
+        }
+        if name.eq_ignore_ascii_case(ACTIVEX_REMOTE_APPLICATION_PROGRAM_PROPERTY) {
+            trace_host_call("IMsRdpExtendedSettings::get_IronRdpRemoteApplicationProgram");
+            return write_out(value, variant_bstr(self.remote_application.borrow().program.clone()));
+        }
+        if name.eq_ignore_ascii_case(ACTIVEX_REMOTE_APPLICATION_ARGS_PROPERTY) {
+            trace_host_call("IMsRdpExtendedSettings::get_IronRdpRemoteApplicationArgs");
+            return write_out(value, variant_bstr(self.remote_application.borrow().arguments.clone()));
         }
         if name.eq_ignore_ascii_case(ACTIVEX_DESKTOP_SCALE_FACTOR_PROPERTY) {
             trace_host_call("IMsRdpExtendedSettings::get_IronRdpDesktopScaleFactor");
@@ -11466,15 +12681,21 @@ impl IEnumConnections_Impl for ConnectionEnumerator_Impl {
 }
 
 fn queue_worker_event(
-    events: &Arc<Mutex<Vec<WorkerEvent>>>,
+    events: &Arc<WorkerEventQueue>,
     event_posted: &Arc<AtomicBool>,
     hwnd: HWND,
     event: WorkerEvent,
 ) -> bool {
-    let mut queue = match events.lock() {
+    if events.closed.load(Ordering::Acquire) {
+        return false;
+    }
+    let mut queue = match events.events.lock() {
         Ok(queue) => queue,
         Err(poisoned) => poisoned.into_inner(),
     };
+    if events.closed.load(Ordering::Acquire) {
+        return false;
+    }
 
     let queued = match &event {
         WorkerEvent::Image { generation, .. } => {
@@ -11518,34 +12739,30 @@ fn queue_worker_event(
                 true
             } else {
                 while queue.len() >= MAX_PENDING_WORKER_EVENTS {
-                    if let Some(index) = queue.iter().position(|pending| {
-                        matches!(pending, WorkerEvent::Image { .. } | WorkerEvent::StaticChannelData { .. })
-                    }) {
-                        queue.remove(index);
-                    } else {
-                        // Duplicate lifecycle notifications are coalesced above, so a full
-                        // priority-only queue is malformed worker state. Retain the newest
-                        // transition rather than allowing an unbounded queue.
-                        queue.remove(0);
+                    queue = match events.space_available.wait(queue) {
+                        Ok(queue) => queue,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    if events.closed.load(Ordering::Acquire) {
+                        return false;
                     }
                 }
                 queue.push(event);
                 true
             }
         }
-        WorkerEvent::CertificateWarning { .. }
+        WorkerEvent::RailWindowingOrders { .. }
+        | WorkerEvent::CertificateWarning { .. }
         | WorkerEvent::FatalError { .. }
         | WorkerEvent::Disconnected { .. }
         | WorkerEvent::Stopped { .. } => {
             while queue.len() >= MAX_PENDING_WORKER_EVENTS {
-                if let Some(index) = queue.iter().position(|pending| {
-                    matches!(pending, WorkerEvent::Image { .. } | WorkerEvent::StaticChannelData { .. })
-                }) {
-                    queue.remove(index);
-                } else {
-                    // A control can have at most one active generation. If a malformed worker has
-                    // filled the queue with terminal state, retain its newest terminal transition.
-                    queue.remove(0);
+                queue = match events.space_available.wait(queue) {
+                    Ok(queue) => queue,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                if events.closed.load(Ordering::Acquire) {
+                    return false;
                 }
             }
             queue.push(event);
@@ -16443,6 +17660,455 @@ mod tests {
     }
 
     #[test]
+    fn configured_remote_application_execute_requires_a_program() {
+        assert!(
+            configured_remote_application_execute(&RemoteApplicationConfiguration::default())
+                .expect("disabled RemoteApp is valid")
+                .is_none()
+        );
+        let error = configured_remote_application_execute(&RemoteApplicationConfiguration {
+            enabled: true,
+            program: String::new(),
+            arguments: "--ignored".to_owned(),
+        })
+        .expect_err("enabled RemoteApp requires a program");
+        assert_eq!(error.code(), E_INVALIDARG);
+        assert_eq!(
+            configured_remote_application_execute(&RemoteApplicationConfiguration {
+                enabled: true,
+                program: "calc.exe".to_owned(),
+                arguments: "/server:example".to_owned(),
+            })
+            .expect("configured RemoteApp is valid"),
+            Some(ExecutePdu {
+                flags: 0,
+                executable: "calc.exe".to_owned(),
+                working_directory: String::new(),
+                arguments: "/server:example".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_remote_program_settings_do_not_enable_remoteapp() {
+        let control = Control::new();
+        {
+            let mut compatibility = control.compatibility.borrow_mut();
+            compatibility.remote_program_mode = true;
+            compatibility.remote_application_program = "calc.exe".to_owned();
+            compatibility.remote_application_args = "/server:example".to_owned();
+        }
+        assert!(
+            configured_remote_application_execute(&control.remote_application.borrow())
+                .expect("legacy settings do not configure the ActiveX RemoteApp route")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn projected_rail_window_order_retains_incremental_fields() {
+        let flags: u32 = 0x1100_0000
+            | 0x0000_0002
+            | 0x0000_0004
+            | 0x0000_0008
+            | 0x0000_0010
+            | 0x0000_0400
+            | 0x0000_0800
+            | 0x0000_4000
+            | 0x0000_8000
+            | 0x0001_0000;
+        let mut encoded = vec![0x2e, 0, 0];
+        encoded.extend_from_slice(&flags.to_le_bytes());
+        encoded.extend_from_slice(&42u32.to_le_bytes());
+        encoded.extend_from_slice(&7u32.to_le_bytes());
+        encoded.extend_from_slice(&0x00c4_0000u32.to_le_bytes());
+        encoded.extend_from_slice(&0x0000_0100u32.to_le_bytes());
+        encoded.push(5);
+        encoded.extend_from_slice(&8u16.to_le_bytes());
+        encoded.extend("Calc".encode_utf16().flat_map(u16::to_le_bytes));
+        encoded.extend_from_slice(&110i32.to_le_bytes());
+        encoded.extend_from_slice(&120i32.to_le_bytes());
+        encoded.extend_from_slice(&300u32.to_le_bytes());
+        encoded.extend_from_slice(&200u32.to_le_bytes());
+        encoded.extend_from_slice(&100i32.to_le_bytes());
+        encoded.extend_from_slice(&90i32.to_le_bytes());
+        encoded.extend_from_slice(&10i32.to_le_bytes());
+        encoded.extend_from_slice(&30i32.to_le_bytes());
+        encoded.extend_from_slice(&320u32.to_le_bytes());
+        encoded.extend_from_slice(&240u32.to_le_bytes());
+        let order_size = u16::try_from(encoded.len()).expect("test order fits");
+        encoded[1..3].copy_from_slice(&order_size.to_le_bytes());
+
+        let order = parse_projected_rail_window_order(&encoded, flags).expect("parse validated window order");
+        assert!(order.is_new);
+        assert_eq!(order.window_id, 42);
+        assert_eq!(order.owner_window_id, Some(Some(7)));
+        assert_eq!(order.style, Some((0x00c4_0000, 0x0000_0100)));
+        assert_eq!(order.show_state, Some(5));
+        assert_eq!(order.title.as_deref(), Some("Calc"));
+        assert_eq!(order.client_area_offset, Some((110, 120)));
+        assert_eq!(order.client_area_size, Some((300, 200)));
+        assert_eq!(order.window_offset, Some((100, 90)));
+        assert_eq!(order.client_delta, Some((10, 30)));
+        assert_eq!(order.window_size, Some((320, 240)));
+    }
+
+    #[test]
+    fn projected_rail_geometry_and_content_use_distinct_server_fields() {
+        let outer = projected_rail_geometry(ProjectedRailGeometry::INITIAL, Some((30, 30)), Some((420, 330)));
+        assert_eq!(
+            outer,
+            ProjectedRailGeometry {
+                x: 30,
+                y: 30,
+                width: 420,
+                height: 330,
+            }
+        );
+        assert_eq!(
+            projected_rail_content(
+                ProjectedRailContent::from_outer(outer),
+                outer,
+                Some((50, 60)),
+                Some((400, 300)),
+                Some((20, 30)),
+            ),
+            ProjectedRailContent {
+                x: 50,
+                y: 60,
+                width: 400,
+                height: 300,
+            }
+        );
+        assert_eq!(
+            projected_rail_content(
+                ProjectedRailContent::from_outer(outer),
+                outer,
+                None,
+                None,
+                Some((20, 30))
+            ),
+            ProjectedRailContent {
+                x: 50,
+                y: 60,
+                width: 400,
+                height: 300,
+            }
+        );
+    }
+
+    #[test]
+    fn projected_rail_desktop_synchronization_resets_windows() {
+        assert!(resets_projected_rail_windows(0x0400_0001));
+        assert!(resets_projected_rail_windows(0x0400_000a));
+        assert!(!resets_projected_rail_windows(0x0400_0002));
+    }
+
+    #[test]
+    fn projected_rail_close_is_server_directed() {
+        assert!(matches!(
+            rail_window_input_event(42, WM_CLOSE, WPARAM(0)),
+            Some(RailInputEvent::SystemCommand(SystemCommandPdu {
+                window_id: 42,
+                command: SystemCommand::Close,
+            }))
+        ));
+        assert!(rail_window_input_event(42, WM_COMMAND, WPARAM(0)).is_none());
+    }
+
+    #[test]
+    fn projected_rail_suppresses_unsupported_system_commands() {
+        for command in [SC_MOVE, SC_SIZE, SC_MINIMIZE, SC_MAXIMIZE, SC_RESTORE] {
+            assert!(is_unsupported_projected_rail_system_command(WPARAM(command as usize)));
+        }
+        assert!(!is_unsupported_projected_rail_system_command(WPARAM(0xf060)));
+    }
+
+    #[test]
+    fn windows_key_policy_preserves_a_previously_forwarded_release() {
+        let scancode = Scancode::from_u8(true, 0x5b);
+        let mut compatibility = CompatibilitySettings {
+            enable_windows_key: false,
+            ..CompatibilitySettings::default()
+        };
+        let mut input_database = InputDatabase::new();
+
+        assert!(!should_forward_windows_key(
+            &compatibility,
+            false,
+            &input_database,
+            WM_KEYDOWN,
+            scancode
+        ));
+        input_database.apply([Operation::KeyPressed(scancode)]);
+        assert!(should_forward_windows_key(
+            &compatibility,
+            false,
+            &input_database,
+            WM_KEYUP,
+            scancode
+        ));
+
+        compatibility.enable_windows_key = true;
+        compatibility.keyboard_hook_mode = 1;
+        assert!(should_forward_windows_key(
+            &compatibility,
+            false,
+            &input_database,
+            WM_KEYDOWN,
+            scancode
+        ));
+        compatibility.keyboard_hook_mode = 2;
+        assert!(!should_forward_windows_key(
+            &compatibility,
+            false,
+            &input_database,
+            WM_KEYDOWN,
+            scancode
+        ));
+    }
+
+    #[test]
+    fn projected_rail_input_retries_release_and_close_when_the_queue_is_full() {
+        let (input_sender, mut input_receiver) = RdpInputSender::channel(1);
+        let input_database = Rc::new(RefCell::new(InputDatabase::new()));
+        let mut manager = RailWindowManager::new(
+            Rc::clone(&input_database),
+            Rc::new(RefCell::new(CompatibilitySettings::default())),
+            Rc::new(RefCell::new(None)),
+            Rc::new(RefCell::new(None)),
+        );
+        manager.start(Some(input_sender.clone()));
+        manager.apply_window_order(ProjectedRailWindowOrder {
+            is_new: true,
+            window_id: 42,
+            owner_window_id: None,
+            style: None,
+            show_state: Some(0),
+            title: None,
+            client_area_offset: None,
+            client_area_size: None,
+            window_offset: None,
+            client_delta: None,
+            window_size: None,
+        });
+        let window = manager.windows.get(&42).expect("projected window");
+        input_sender
+            .try_send(RdpInputEvent::FastPath(Vec::new().into()))
+            .expect("fill input queue");
+        apply_projected_rail_input(
+            &window._context,
+            [Operation::KeyPressed(Scancode::from_u8(false, 0x1e))],
+        );
+        assert!(input_database.borrow_mut().release_all().is_empty());
+        assert!(matches!(input_receiver.try_recv(), Ok(RdpInputEvent::FastPath(_))));
+
+        apply_projected_rail_input(
+            &window._context,
+            [Operation::KeyPressed(Scancode::from_u8(false, 0x1e))],
+        );
+        release_projected_rail_input(window.hwnd, &window._context);
+        assert!(window._context.release_pending.get());
+        assert!(matches!(input_receiver.try_recv(), Ok(RdpInputEvent::FastPath(_))));
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd,
+                WM_TIMER,
+                Some(WPARAM(PROJECTED_RAIL_INPUT_RETRY_TIMER_ID)),
+                Some(LPARAM(0)),
+            );
+        }
+        assert!(!window._context.release_pending.get());
+        assert!(matches!(input_receiver.try_recv(), Ok(RdpInputEvent::FastPath(_))));
+        assert!(input_database.borrow_mut().release_all().is_empty());
+
+        input_sender
+            .try_send(RdpInputEvent::FastPath(Vec::new().into()))
+            .expect("refill input queue");
+        unsafe {
+            let _ = SendMessageW(window.hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+        }
+        assert!(unsafe { IsWindow(Some(window.hwnd)) }.as_bool());
+        assert!(matches!(input_receiver.try_recv(), Ok(RdpInputEvent::FastPath(_))));
+
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd,
+                WM_TIMER,
+                Some(WPARAM(PROJECTED_RAIL_INPUT_RETRY_TIMER_ID)),
+                Some(LPARAM(0)),
+            );
+        }
+        assert!(unsafe { IsWindow(Some(window.hwnd)) }.as_bool());
+        assert!(matches!(
+            input_receiver.try_recv(),
+            Ok(RdpInputEvent::Rail(RailInputEvent::SystemCommand(SystemCommandPdu {
+                window_id: 42,
+                command: SystemCommand::Close,
+            })))
+        ));
+        manager.stop();
+    }
+
+    #[test]
+    fn projected_rail_windows_follow_server_authoritative_lifecycle() {
+        let (input_sender, mut input_receiver) = RdpInputSender::channel(16);
+        let mut manager = RailWindowManager::new(
+            Rc::new(RefCell::new(InputDatabase::new())),
+            Rc::new(RefCell::new(CompatibilitySettings::default())),
+            Rc::new(RefCell::new(None)),
+            Rc::new(RefCell::new(None)),
+        );
+        manager.start(Some(input_sender));
+        manager.apply_window_order(ProjectedRailWindowOrder {
+            is_new: false,
+            window_id: 41,
+            owner_window_id: None,
+            style: None,
+            show_state: Some(0),
+            title: Some("Ignored".to_owned()),
+            client_area_offset: None,
+            client_area_size: None,
+            window_offset: Some((100, 120)),
+            client_delta: None,
+            window_size: Some((320, 240)),
+        });
+        assert!(!manager.windows.contains_key(&41));
+        manager.apply_window_order(ProjectedRailWindowOrder {
+            is_new: true,
+            window_id: 42,
+            owner_window_id: None,
+            style: None,
+            show_state: Some(0),
+            title: Some("Original".to_owned()),
+            client_area_offset: None,
+            client_area_size: None,
+            window_offset: Some((100, 120)),
+            client_delta: None,
+            window_size: Some((320, 240)),
+        });
+        let hwnd = manager.windows.get(&42).expect("projected window").hwnd;
+        assert!(unsafe { IsWindow(Some(hwnd)) }.as_bool());
+
+        manager.apply_window_order(ProjectedRailWindowOrder {
+            is_new: false,
+            window_id: 42,
+            owner_window_id: None,
+            style: None,
+            show_state: Some(0),
+            title: Some("Updated".to_owned()),
+            client_area_offset: None,
+            client_area_size: None,
+            window_offset: Some((160, 180)),
+            client_delta: None,
+            window_size: Some((400, 300)),
+        });
+        let window = manager.windows.get(&42).expect("updated projected window");
+        assert_eq!(
+            window.geometry.get(),
+            ProjectedRailGeometry {
+                x: 160,
+                y: 180,
+                width: 400,
+                height: 300,
+            }
+        );
+        let mut title = [0u16; 32];
+        let title_length = unsafe { GetWindowTextW(hwnd, &mut title) };
+        assert_eq!(
+            String::from_utf16(&title[..title_length as usize]).expect("valid projected title"),
+            "Updated"
+        );
+
+        unsafe {
+            let _ = SendMessageW(
+                hwnd,
+                WM_KEYDOWN,
+                Some(WPARAM(u16::from(b'A') as usize)),
+                Some(LPARAM(0x001e_0000)),
+            );
+        }
+        assert!(matches!(input_receiver.try_recv(), Ok(RdpInputEvent::FastPath(_))));
+
+        unsafe {
+            let _ = SendMessageW(hwnd, WM_CLOSE, Some(WPARAM(0)), Some(LPARAM(0)));
+        }
+        assert!(unsafe { IsWindow(Some(hwnd)) }.as_bool());
+        assert!(matches!(
+            input_receiver.try_recv(),
+            Ok(RdpInputEvent::Rail(RailInputEvent::SystemCommand(SystemCommandPdu {
+                window_id: 42,
+                command: SystemCommand::Close,
+            })))
+        ));
+
+        manager.destroy_window(42);
+        assert!(!unsafe { IsWindow(Some(hwnd)) }.as_bool());
+
+        manager.apply_window_order(ProjectedRailWindowOrder {
+            is_new: true,
+            window_id: 43,
+            owner_window_id: None,
+            style: None,
+            show_state: Some(0),
+            title: None,
+            client_area_offset: None,
+            client_area_size: None,
+            window_offset: None,
+            client_delta: None,
+            window_size: None,
+        });
+        let disconnected_hwnd = manager.windows.get(&43).expect("projected window").hwnd;
+        manager.stop();
+        assert!(!unsafe { IsWindow(Some(disconnected_hwnd)) }.as_bool());
+        assert!(!manager.is_enabled());
+    }
+
+    #[test]
+    fn projected_rail_windows_attach_when_their_owner_arrives() {
+        let (input_sender, _) = RdpInputSender::channel(16);
+        let mut manager = RailWindowManager::new(
+            Rc::new(RefCell::new(InputDatabase::new())),
+            Rc::new(RefCell::new(CompatibilitySettings::default())),
+            Rc::new(RefCell::new(None)),
+            Rc::new(RefCell::new(None)),
+        );
+        manager.start(Some(input_sender));
+        manager.apply_window_order(ProjectedRailWindowOrder {
+            is_new: true,
+            window_id: 8,
+            owner_window_id: Some(Some(7)),
+            style: None,
+            show_state: Some(0),
+            title: None,
+            client_area_offset: None,
+            client_area_size: None,
+            window_offset: None,
+            client_delta: None,
+            window_size: None,
+        });
+        let child = manager.windows.get(&8).expect("projected child window").hwnd;
+        assert_eq!(unsafe { GetWindowLongPtrW(child, GWLP_HWNDPARENT) }, 0);
+
+        manager.apply_window_order(ProjectedRailWindowOrder {
+            is_new: true,
+            window_id: 7,
+            owner_window_id: None,
+            style: None,
+            show_state: Some(0),
+            title: None,
+            client_area_offset: None,
+            client_area_size: None,
+            window_offset: None,
+            client_delta: None,
+            window_size: None,
+        });
+        let owner = manager.windows.get(&7).expect("projected owner window").hwnd;
+        assert_eq!(unsafe { GetWindowLongPtrW(child, GWLP_HWNDPARENT) }, owner.0 as isize);
+        manager.stop();
+    }
+
+    #[test]
     fn typed_lifecycle_events_do_not_depend_on_framebuffer_arrival() {
         let control = Control::new();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -16455,6 +18121,7 @@ mod tests {
         control.state.set(ConnectionState::Connecting);
 
         control
+            .events
             .events
             .lock()
             .expect("event queue is available")
@@ -16469,7 +18136,7 @@ mod tests {
         assert!(!control.clipboard_state.connected.get());
         assert!(seen.lock().expect("lifecycle events are available").is_empty());
 
-        control.events.lock().expect("event queue is available").extend([
+        control.events.events.lock().expect("event queue is available").extend([
             WorkerEvent::Connected { generation: 7 },
             WorkerEvent::LoginComplete { generation: 7 },
             WorkerEvent::LoginComplete { generation: 7 },
@@ -16486,7 +18153,7 @@ mod tests {
 
     #[test]
     fn static_channel_processor_queues_raw_received_data() {
-        let (events, event_posted) = (Arc::new(Mutex::new(Vec::new())), Arc::new(AtomicBool::new(false)));
+        let (events, event_posted) = (Arc::new(WorkerEventQueue::new()), Arc::new(AtomicBool::new(false)));
         let mut channel = ActiveXStaticChannel {
             spec: ActiveXStaticChannelSpec {
                 display_name: "alpha".to_owned(),
@@ -16501,6 +18168,7 @@ mod tests {
 
         channel.process(&[0, 1, 2]).expect("queue received channel data");
         let event = events
+            .events
             .lock()
             .expect("event queue is available")
             .pop()
@@ -16591,8 +18259,8 @@ mod tests {
     }
 
     #[test]
-    fn worker_event_queue_bounds_lossless_channel_delivery() {
-        let events = Arc::new(Mutex::new(Vec::new()));
+    fn worker_event_queue_coalesces_lossy_events() {
+        let events = Arc::new(WorkerEventQueue::new());
         let event_posted = Arc::new(AtomicBool::new(true));
         let dispatcher = HWND(ptr::null_mut());
 
@@ -16619,14 +18287,14 @@ mod tests {
             },
         ));
         {
-            let queue = events.lock().expect("event queue is available");
+            let queue = events.events.lock().expect("event queue is available");
             assert!(matches!(
                 queue.as_slice(),
                 [WorkerEvent::Image { generation: 7, buffer, .. }] if buffer == &[2]
             ));
         }
 
-        events.lock().expect("event queue is available").clear();
+        events.events.lock().expect("event queue is available").clear();
         assert!(queue_worker_event(
             &events,
             &event_posted,
@@ -16645,14 +18313,14 @@ mod tests {
             },
         ));
         {
-            let queue = events.lock().expect("event queue is available");
+            let queue = events.events.lock().expect("event queue is available");
             assert!(matches!(
                 queue.as_slice(),
                 [WorkerEvent::Connected { generation: 7 }, WorkerEvent::Image { buffer, .. }] if buffer == &[3]
             ));
         }
 
-        events.lock().expect("event queue is available").clear();
+        events.events.lock().expect("event queue is available").clear();
         for index in 0..MAX_PENDING_WORKER_EVENTS {
             assert!(queue_worker_event(
                 &events,
@@ -16688,68 +18356,70 @@ mod tests {
         ));
         assert!(
             events
+                .events
                 .lock()
                 .expect("event queue is available")
                 .iter()
                 .all(|event| matches!(event, WorkerEvent::StaticChannelData { .. }))
         );
+    }
 
-        assert!(queue_worker_event(
-            &events,
-            &event_posted,
-            dispatcher,
-            WorkerEvent::Connected { generation: 7 },
-        ));
-        assert!(queue_worker_event(
-            &events,
-            &event_posted,
-            dispatcher,
-            WorkerEvent::LoginComplete { generation: 7 },
-        ));
-        assert!(queue_worker_event(
-            &events,
-            &event_posted,
-            dispatcher,
-            WorkerEvent::LoginComplete { generation: 7 },
-        ));
+    #[test]
+    fn worker_event_queue_waits_for_rail_window_orders() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(true));
+        let dispatcher = HWND(ptr::null_mut());
+        {
+            let mut queue = events.events.lock().expect("event queue is available");
+            for index in 0..MAX_PENDING_WORKER_EVENTS {
+                queue.push(WorkerEvent::StaticChannelData {
+                    generation: 7,
+                    channel_name: "alpha".to_owned(),
+                    data: vec![u8::try_from(index).expect("queue capacity fits in u8")],
+                });
+            }
+        }
 
-        assert!(queue_worker_event(
-            &events,
-            &event_posted,
-            dispatcher,
-            WorkerEvent::FatalError {
-                generation: 7,
-                disconnect: DisconnectInfo::internal_error(),
-            },
+        let producer_events = Arc::clone(&events);
+        let producer_posted = Arc::clone(&event_posted);
+        let dispatcher_raw = dispatcher.0 as isize;
+        let (completed_sender, completed_receiver) = std_mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            let queued = queue_worker_event(
+                &producer_events,
+                &producer_posted,
+                HWND(dispatcher_raw as *mut c_void),
+                WorkerEvent::RailWindowingOrders {
+                    generation: 7,
+                    data: vec![1, 2, 3],
+                },
+            );
+            completed_sender.send(queued).expect("report queued order");
+        });
+
+        assert!(matches!(
+            completed_receiver.try_recv(),
+            Err(std_mpsc::TryRecvError::Empty)
         ));
-        let queue = events.lock().expect("event queue is available");
-        assert_eq!(queue.len(), MAX_PENDING_WORKER_EVENTS);
+        assert_eq!(events.take().len(), MAX_PENDING_WORKER_EVENTS);
         assert!(
-            queue
-                .iter()
-                .any(|event| matches!(event, WorkerEvent::FatalError { generation: 7, .. }))
+            completed_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("RAIL event is queued after draining")
         );
-        let connected = queue
-            .iter()
-            .position(|event| matches!(event, WorkerEvent::Connected { generation: 7 }))
-            .expect("connected transition is retained");
-        let login_complete = queue
-            .iter()
-            .position(|event| matches!(event, WorkerEvent::LoginComplete { generation: 7 }))
-            .expect("login completion transition is retained");
-        assert!(connected < login_complete);
-        assert_eq!(
-            queue
-                .iter()
-                .filter(|event| matches!(event, WorkerEvent::LoginComplete { generation: 7 }))
-                .count(),
-            1
-        );
+        producer.join().expect("RAIL event producer completes");
+        assert!(matches!(
+            events.take().as_slice(),
+            [WorkerEvent::RailWindowingOrders {
+                generation: 7,
+                data,
+            }] if data == &[1, 2, 3]
+        ));
     }
 
     #[test]
     fn static_channel_processor_fails_when_the_host_event_queue_is_full() {
-        let events = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::new(WorkerEventQueue::new());
         let event_posted = Arc::new(AtomicBool::new(true));
         let dispatcher = HWND(ptr::null_mut());
         for index in 0..MAX_PENDING_WORKER_EVENTS {
