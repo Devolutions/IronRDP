@@ -31,11 +31,3 @@ Determine the crate's name, purpose, architectural tier, API-boundary status, an
    Do not reorder or rewrite unrelated entries.
 7. Add dependencies and implementation only after the README and architecture entry establish the crate's role.
 8. Format the generated files and run the narrowest workspace checks that cover the new crate.
-
-Confirm that Cargo recognizes the package and that the final manifest retains:
-
-```toml
-[lib]
-doctest = false
-test = false
-```
