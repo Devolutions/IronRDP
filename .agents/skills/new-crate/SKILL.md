@@ -10,9 +10,9 @@ Determine the crate's name, purpose, architectural tier, API-boundary status, an
 
 1. Run `cargo new --lib --vcs none crates/<crate-name>` from the repository root.
    Do not hand-create the directory or initial `Cargo.toml`.
-   Treat the generated manifest as a starting point because `cargo new` does not add all repository metadata.
+   Preserve the workspace inheritance entries generated from `[workspace.package]`.
 2. Align `[package]` with a nearby same-tier crate.
-   Set `readme`, `description`, the repository's current `rust-version`, and workspace inheritance for `edition`, `license`, `homepage`, `repository`, `authors`, `keywords`, and `categories`.
+   Add `readme`, `description`, and the repository's current `rust-version`.
    Add `[lints] workspace = true`.
 3. Add these target settings:
 
