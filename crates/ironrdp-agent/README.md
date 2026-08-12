@@ -20,6 +20,7 @@ On Windows, an ActiveX host can expose its session through the same local RPC pr
 host with `IRONRDP_ACTIVEX_RPC=1`, then use `--backend active-x` for agent operations. The agent
 uses the per-user `ironrdp-activex` endpoint by default and never attempts to start an ActiveX host.
 Use `--endpoint` when the host selected `IRONRDP_ACTIVEX_RPC_ENDPOINT`.
+The RAIL audit commands require the daemon backend.
 
 `connect` accepts `RDP_HOSTNAME`, `RDP_USERNAME`, and `RDP_PASSWORD` as defaults for its named
 connection flags. Explicit flags override those process-local values. The native MSTSC bridge uses
@@ -38,6 +39,28 @@ The configured drives are fixed for the daemon lifetime; hot-plug and rescan are
 The daemon performs strict certificate and hostname validation by default.
 For an explicitly authorized test endpoint, start the daemon with `--skip-certificate-check`.
 This startup-only flag accepts any certificate and server name, so it is vulnerable to on-path attacks and is unavailable through `connect`.
+
+## Headless RemoteApp validation
+
+The daemon-backend `rail` commands expose client-validated RAIL handshake, launch, and window-order evidence without rendering a RemoteApp UI or accepting raw protocol PDUs.
+Connect in RemoteApp mode with `remoteapplicationmode:i:1` and a canonical `remoteapplicationprogram:s:<program>` property.
+The client queues that program as the initial RAIL Execute request after the server handshake and keeps Client Info Alternate Shell and Working Directory empty.
+An `alternate shell` value is only used as a compatibility fallback when `remoteapplicationprogram` is absent.
+Start `ironrdp-agent daemon-start` in another terminal before connecting.
+The target must publish and allow the requested RemoteApp.
+
+```powershell
+ironrdp-agent connect --server rdp.example.test --prop remoteapplicationmode:i:1 --prop remoteapplicationprogram:s:notepad.exe
+ironrdp-agent rail status
+ironrdp-agent rail --format ndjson events
+ironrdp-agent rail execute notepad.exe --arguments C:\Temp\audit.txt
+```
+
+`rail events` retains 256 observations per connection generation.
+When a caller resumes too far behind, the returned stream contains a `gap` event reporting the last sequence number no longer retained.
+Set `N` to the latest sequence observed; `rail wait --after-sequence N --timeout-ms 30000` returns retained later observations immediately or waits up to 30 seconds without polling.
+Use `rail --format json` for one deterministic document or `rail --format ndjson` for one event per line.
+The agent advertises no local RAIL shell-integration flags because it does not implement move/size, taskbar, cloak, z-order, or display-power behavior.
 
 ## Bounded Unicode input
 
@@ -205,6 +228,10 @@ The ignored live test uses `IRONRDP_AGENT_E2E_HOST`, `IRONRDP_AGENT_E2E_USERNAME
 $env:IRONRDP_AGENT_E2E = '1'
 cargo test -p ironrdp-agent --test live_e2e -- --ignored
 ```
+
+The RemoteApp variant uses `IRONRDP_AGENT_RAIL_E2E=1` plus the corresponding
+`IRONRDP_AGENT_RAIL_E2E_HOST`, `IRONRDP_AGENT_RAIL_E2E_USERNAME`, `IRONRDP_AGENT_RAIL_E2E_PASSWORD`, and optional `IRONRDP_AGENT_RAIL_E2E_DOMAIN` variables.
+It starts an isolated daemon with `--skip-certificate-check`, so run it only against an explicitly authorized test endpoint.
 
 [`ironrdp-client`]: ../ironrdp-client
 [`ironrdp-core`]: ../ironrdp-core

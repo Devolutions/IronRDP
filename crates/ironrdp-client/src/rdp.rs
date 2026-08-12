@@ -599,6 +599,7 @@ impl RdpClient {
             match active_session(
                 framed,
                 connection_result,
+                self.config.rail_initial_execute.clone(),
                 &self.output_event_sender,
                 &mut self.input_event_receiver,
                 &mut self.clipboard_event_receiver,
@@ -1555,6 +1556,7 @@ fn poll_deferred_rdpdr_output(active_stage: &mut ActiveStage) -> SessionResult<O
 async fn active_session(
     framed: UpgradedFramed,
     connection_result: ConnectionResult,
+    initial_rail_execute: Option<ExecutePdu>,
     output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::Receiver<RdpInputEvent>,
     clipboard_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
@@ -1584,6 +1586,14 @@ async fn active_session(
     }
     .build();
     active_stage.set_window_support_level(window_support_level);
+    if let Some(execute) = initial_rail_execute {
+        let rail_client = active_stage
+            .get_svc_processor_mut::<RailClient>()
+            .ok_or_else(|| ironrdp_session::general_err!("RemoteApp launch requested without a RAIL static channel"))?;
+        rail_client
+            .queue_execute(execute)
+            .map_err(|error| ironrdp_session::custom_err!("queue initial RemoteApp launch", error))?;
+    }
 
     // Timer interval for driving clipboard lock timeouts.
     let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
@@ -1768,34 +1778,60 @@ async fn active_session(
                         }
                     }
                     RdpInputEvent::RailExecute(execute) => {
-                        let messages = {
-                            let rail_client = active_stage
-                                .get_svc_processor_mut::<RailClient>()
-                                .ok_or_else(|| ironrdp_session::general_err!("RAIL is not enabled for this session"))?;
-                            rail_client
-                                .queue_execute(execute)
-                                .map_err(|error| ironrdp_session::custom_err!("RAIL", error))?
+                        let messages = match active_stage.get_svc_processor_mut::<RailClient>() {
+                            Some(rail_client) => match rail_client.queue_execute(execute) {
+                                Ok(messages) => Some(messages),
+                                Err(error) => {
+                                    warn!(%error, "Unable to queue RAIL Execute request");
+                                    None
+                                }
+                            },
+                            None => {
+                                warn!("Unable to queue RAIL Execute request because RAIL is disabled");
+                                None
+                            }
                         };
-                        let frame = active_stage.process_svc_processor_messages(messages)?;
-                        (!frame.is_empty())
-                            .then_some(ActiveStageOutput::ResponseFrame(frame))
-                            .into_iter()
-                            .collect()
+                        match messages {
+                            Some(messages) => match active_stage.process_svc_processor_messages(messages) {
+                                Ok(frame) => (!frame.is_empty())
+                                    .then_some(ActiveStageOutput::ResponseFrame(frame))
+                                    .into_iter()
+                                    .collect(),
+                                Err(error) => {
+                                    warn!(%error, "Unable to process RAIL Execute request");
+                                    Vec::new()
+                                }
+                            },
+                            None => Vec::new(),
+                        }
                     }
                     RdpInputEvent::Rail(event) => {
-                        let messages = {
-                            let rail_client = active_stage
-                                .get_svc_processor_mut::<RailClient>()
-                                .ok_or_else(|| ironrdp_session::general_err!("RAIL is not enabled for this session"))?;
-                            rail_client
-                                .queue_input(event)
-                                .map_err(|error| ironrdp_session::custom_err!("RAIL", error))?
+                        let messages = match active_stage.get_svc_processor_mut::<RailClient>() {
+                            Some(rail_client) => match rail_client.queue_input(event) {
+                                Ok(messages) => Some(messages),
+                                Err(error) => {
+                                    warn!(%error, "Unable to queue RAIL input");
+                                    None
+                                }
+                            },
+                            None => {
+                                warn!("Unable to queue RAIL input because RAIL is disabled");
+                                None
+                            }
                         };
-                        let frame = active_stage.process_svc_processor_messages(messages)?;
-                        (!frame.is_empty())
-                            .then_some(ActiveStageOutput::ResponseFrame(frame))
-                            .into_iter()
-                            .collect()
+                        match messages {
+                            Some(messages) => match active_stage.process_svc_processor_messages(messages) {
+                                Ok(frame) => (!frame.is_empty())
+                                    .then_some(ActiveStageOutput::ResponseFrame(frame))
+                                    .into_iter()
+                                    .collect(),
+                                Err(error) => {
+                                    warn!(%error, "Unable to process RAIL input");
+                                    Vec::new()
+                                }
+                            },
+                            None => Vec::new(),
+                        }
                     }
                     }
                 }
