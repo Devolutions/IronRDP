@@ -1,5 +1,6 @@
-use ironrdp_server::QoizCompressor;
-use ironrdp_session::QoizDecompressor;
+use ironrdp_server::qoiz_test::{ZripCompressor, ZstdSafeCompressor};
+use ironrdp_session::SessionResult;
+use ironrdp_session::qoiz_test::{ZripDecompressor, ZstdSafeDecompressor};
 
 // Four updates of a single zstd stream, as produced by `QoizCompressor` from `payloads()`.
 const ZSTD_SAFE_STREAM: &[&[u8]] = &[
@@ -53,6 +54,9 @@ const THIRD_PARTY_STREAM: &[&[u8]] = &[
 /// Magic bytes every zstd frame starts with.
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 
+type CompressFn = Box<dyn FnMut(&[u8]) -> Vec<u8>>;
+type DecompressFn = Box<dyn FnMut(&[u8]) -> SessionResult<Vec<u8>>>;
+
 /// Payload of the update at index `i` in the fixed streams.
 fn payload(i: u8) -> Vec<u8> {
     #[expect(
@@ -84,26 +88,84 @@ fn noise(seed: u64, len: usize) -> Vec<u8> {
     .collect()
 }
 
-#[test]
-fn produces_a_zstd_frame() {
-    let compressed = QoizCompressor::new().unwrap().compress(&payload(0)).unwrap();
+/// A fresh compressor of each backend.
+fn compressors() -> Vec<(&'static str, CompressFn)> {
+    let mut zrip = ZripCompressor::new().unwrap();
+    let mut zstd = ZstdSafeCompressor::new().unwrap();
 
-    assert_eq!(compressed.get(..4), Some(ZSTD_MAGIC.as_slice()));
+    vec![
+        ("zrip", Box::new(move |input| zrip.compress(input).unwrap())),
+        ("zstd", Box::new(move |input| zstd.compress(input).unwrap())),
+    ]
+}
+
+/// A fresh decompressor of each backend.
+fn decompressors() -> Vec<(&'static str, DecompressFn)> {
+    let mut zrip = ZripDecompressor::default();
+    let mut zstd = ZstdSafeDecompressor::default();
+
+    vec![
+        ("zrip", Box::new(move |input| zrip.decompress(input))),
+        ("zstd", Box::new(move |input| zstd.decompress(input))),
+    ]
+}
+
+fn compress_all(compress: &mut CompressFn) -> Vec<Vec<u8>> {
+    payloads().iter().map(|p| compress(p)).collect()
 }
 
 #[test]
-fn round_trip() {
-    let mut compressor = QoizCompressor::new().unwrap();
-    let mut decompressor = QoizDecompressor::default();
+fn compressor_decompressor_round_trip_matrix() {
+    for (enc, mut compress) in compressors() {
+        let stream = compress_all(&mut compress);
 
-    for (i, payload) in payloads().iter().enumerate() {
-        let update = compressor.compress(payload).unwrap();
+        for (dec, mut decompress) in decompressors() {
+            for (i, (update, expected)) in stream.iter().zip(payloads()).enumerate() {
+                assert_eq!(
+                    decompress(update).unwrap(),
+                    expected,
+                    "{enc} -> {dec}: update {i} differs"
+                );
+            }
+        }
+    }
+}
 
-        assert_eq!(
-            decompressor.decompress(&update).unwrap(),
-            *payload,
-            "update {i} differs"
+#[test]
+fn produces_a_zstd_frame() {
+    for (enc, mut compress) in compressors() {
+        let compressed = compress(&payload(0));
+
+        assert_eq!(compressed.get(..4), Some(ZSTD_MAGIC.as_slice()), "{enc}");
+    }
+}
+
+/// Locks in long-distance-matching (LDM) behavior.
+#[test]
+fn reuses_history_across_updates() {
+    for (enc, mut compress) in compressors() {
+        let first = compress(&payload(0));
+        compress(&payload(1));
+        let repeat = compress(&payload(0));
+
+        assert!(
+            repeat.len() * 4 < first.len(),
+            "{enc}: repeated update did not match against history: {} bytes vs {} bytes",
+            repeat.len(),
+            first.len()
         );
+    }
+}
+
+#[test]
+fn flushes_every_update() {
+    for (enc, mut compress) in compressors() {
+        for i in 0..8 {
+            assert!(
+                !compress(&payload(i)).is_empty(),
+                "{enc}: update {i} produced no output"
+            );
+        }
     }
 }
 
@@ -111,10 +173,10 @@ fn round_trip() {
 #[case::zstd_safe(ZSTD_SAFE_STREAM)]
 #[case::third_party(THIRD_PARTY_STREAM)]
 fn decompresses_fixed_stream(#[case] stream: &[&[u8]]) {
-    let mut decompressor = QoizDecompressor::default();
-
-    for (i, (update, expected)) in stream.iter().zip(payloads()).enumerate() {
-        assert_eq!(decompressor.decompress(update).unwrap(), expected, "update {i} differs");
+    for (dec, mut decompress) in decompressors() {
+        for (i, (update, expected)) in stream.iter().zip(payloads()).enumerate() {
+            assert_eq!(decompress(update).unwrap(), expected, "{dec}: update {i} differs");
+        }
     }
 }
 
@@ -123,56 +185,71 @@ fn decompresses_fixed_stream(#[case] stream: &[&[u8]]) {
 fn matches_against_distant_updates() {
     const UPDATE_LEN: usize = 1 << 20;
 
-    let first = noise(1, UPDATE_LEN);
+    // zrip stores blocks whose bytes look uniformly random without indexing them,
+    // so history made of flat noise could never be matched against.
+    let skewed_noise = |seed| {
+        let mut data = noise(seed, UPDATE_LEN);
+        data.iter_mut().for_each(|byte| *byte %= 64);
+        data
+    };
+
+    let first = skewed_noise(1);
     let mut updates = vec![first.clone()];
-    updates.extend((2..5).map(|seed| noise(seed, UPDATE_LEN)));
+    updates.extend((2..5).map(skewed_noise));
     updates.push(first);
 
-    let mut compressor = QoizCompressor::new().unwrap();
-    let mut decompressor = QoizDecompressor::default();
-    let mut compressed_len = 0;
+    for (enc, mut compress) in compressors() {
+        let stream: Vec<Vec<u8>> = updates.iter().map(|update| compress(update)).collect();
+        let compressed_len = stream.last().map_or(0, Vec::len);
 
-    for (i, update) in updates.iter().enumerate() {
-        let compressed = compressor.compress(update).unwrap();
-        compressed_len = compressed.len();
-
-        assert_eq!(
-            decompressor.decompress(&compressed).unwrap(),
-            *update,
-            "update {i} differs"
+        assert!(
+            compressed_len * 100 < UPDATE_LEN,
+            "{enc}: repeated update did not match against history: {compressed_len} bytes"
         );
-    }
 
-    assert!(
-        compressed_len * 100 < UPDATE_LEN,
-        "repeated update did not match against history: {compressed_len} bytes"
-    );
+        for (dec, mut decompress) in decompressors() {
+            for (i, (compressed, update)) in stream.iter().zip(&updates).enumerate() {
+                assert_eq!(
+                    decompress(compressed).unwrap(),
+                    *update,
+                    "{enc} -> {dec}: update {i} differs"
+                );
+            }
+        }
+    }
 }
 
 /// Each update spans several zstd blocks and forces the output buffers to grow.
 #[test]
 fn round_trips_large_updates() {
-    let mut compressor = QoizCompressor::new().unwrap();
-    let mut decompressor = QoizDecompressor::default();
-
     // The repetitive update expands far beyond the initial output estimate.
     // The noise compresses to more than its own size.
-    for (name, update) in [("repetitive", vec![0x42; 1 << 20]), ("noise", noise(1, 300 * 1024))] {
-        let compressed = compressor.compress(&update).unwrap();
+    let updates = [("repetitive", vec![0x42; 1 << 20]), ("noise", noise(1, 300 * 1024))];
 
-        assert_eq!(decompressor.decompress(&compressed).unwrap(), update, "{name} differs");
+    for (enc, mut compress) in compressors() {
+        let stream: Vec<Vec<u8>> = updates.iter().map(|(_, update)| compress(update)).collect();
+
+        for (dec, mut decompress) in decompressors() {
+            for ((name, update), compressed) in updates.iter().zip(&stream) {
+                assert_eq!(
+                    decompress(compressed).unwrap(),
+                    *update,
+                    "{enc} -> {dec}: {name} differs"
+                );
+            }
+        }
     }
 }
 
 #[test]
 fn decompresses_empty_update() {
-    let mut decompressor = QoizDecompressor::default();
+    for (dec, mut decompress) in decompressors() {
+        assert_eq!(decompress(&[]).unwrap(), Vec::<u8>::new(), "{dec}");
 
-    assert_eq!(decompressor.decompress(&[]).unwrap(), Vec::<u8>::new());
-
-    for (update, expected) in ZSTD_SAFE_STREAM.iter().zip(payloads()) {
-        assert_eq!(decompressor.decompress(update).unwrap(), expected);
-        assert_eq!(decompressor.decompress(&[]).unwrap(), Vec::<u8>::new());
+        for (update, expected) in ZSTD_SAFE_STREAM.iter().zip(payloads()) {
+            assert_eq!(decompress(update).unwrap(), expected, "{dec}");
+            assert_eq!(decompress(&[]).unwrap(), Vec::<u8>::new(), "{dec}");
+        }
     }
 }
 
@@ -180,7 +257,9 @@ fn decompresses_empty_update() {
 /// Starting mid-stream must fail rather than silently produce garbage.
 #[test]
 fn rejects_stream_joined_late() {
-    let result = QoizDecompressor::default().decompress(ZSTD_SAFE_STREAM[1]);
+    for (dec, mut decompress) in decompressors() {
+        let result = decompress(ZSTD_SAFE_STREAM[1]);
 
-    assert!(result.is_err(), "expected an error, got {result:?}");
+        assert!(result.is_err(), "{dec}: expected an error, got {result:?}");
+    }
 }

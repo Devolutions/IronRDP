@@ -183,4 +183,17 @@ Cancellation does not remove a queued event or immediately release its permit.
 Once transmission starts, producer cancellation does not interrupt it or release its permit early.
 Unjoined channels and events left over from a previous connection are discarded.
 
+## QOI codecs (features `qoi`, `qoiz`)
+
+`qoiz` compresses the QOI stream with zstd, using [`zrip`], a pure Rust zstd implementation.
+
+Enable `qoiz-zstd` to compress with [`zstd-safe`] (bindings to the reference C implementation)
+instead. It performs slightly better on non-WASM targets, but requires a C compiler to build.
+
+Both options emit the same wire format, so a server using either backend interoperates with a
+client using either one.
+
+[`zrip`]: https://crates.io/crates/zrip
+[`zstd-safe`]: https://crates.io/crates/zstd-safe
+
 [IronRDP]: https://github.com/Devolutions/IronRDP

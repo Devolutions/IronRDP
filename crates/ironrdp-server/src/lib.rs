@@ -33,8 +33,6 @@ pub use display::{
     RGBAPointer, RdpServerDisplay, RdpServerDisplayUpdates,
 };
 pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoServerMessage};
-#[cfg(all(feature = "__test", feature = "qoiz"))]
-pub use encoder::qoiz::Compressor as QoizCompressor;
 #[cfg(feature = "__test")]
 pub use encoder::{MAX_FASTPATH_UPDATE_SIZE, RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
 pub use error::{ServerError, ServerErrorExt, ServerErrorKind, ServerResult, ServerResultExt};
@@ -92,4 +90,11 @@ pub mod bench {
 
         pub use crate::encoder::{RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
     }
+}
+
+#[cfg(all(feature = "__test", feature = "qoiz"))]
+pub mod qoiz_test {
+    pub use crate::encoder::qoiz::zrip_backend::Compressor as ZripCompressor;
+    #[cfg(feature = "qoiz-zstd")]
+    pub use crate::encoder::qoiz::zstd_safe_backend::Compressor as ZstdSafeCompressor;
 }
