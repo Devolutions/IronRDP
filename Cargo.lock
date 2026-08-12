@@ -2555,6 +2555,7 @@ dependencies = [
  "ironrdp-rail",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr",
+ "ironrdp-rdpeai",
  "ironrdp-rdpsnd",
  "ironrdp-rdpsnd-native",
  "ironrdp-session",
@@ -2895,6 +2896,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpeai"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-rdpsnd",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-rdpeusb"
 version = "0.1.0"
 dependencies = [
@@ -2931,6 +2944,7 @@ dependencies = [
  "bytemuck",
  "cpal",
  "ironrdp-error 0.2.0",
+ "ironrdp-rdpeai",
  "ironrdp-rdpsnd",
  "opus2",
  "tracing",
@@ -3053,6 +3067,7 @@ dependencies = [
  "ironrdp-propertyset",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr",
+ "ironrdp-rdpeai",
  "ironrdp-rdpeusb",
  "ironrdp-rdpfile",
  "ironrdp-rdpsnd",
