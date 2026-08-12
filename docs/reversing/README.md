@@ -15,9 +15,10 @@ lifecycle ABI already exposed by Windows Sandbox. It does **not** modify or docu
 Windows licensing, session limits, package identity, access-control checks, or other product
 enforcement.
 
-In particular, the notes explain the retail behavior that admits multiple running Sandbox VMs but
-only one simultaneous full desktop in the tested configuration. That is an entitlement result
-reported by Windows, not an IronRDP setting or a supported tuning surface.
+In particular, the notes distinguish a historically observed
+`ERROR_REMOTE_SESSION_LIMIT_EXCEEDED` result from current post-connect outcomes:
+`CloseStackOnDriverFailure` and `ERRINFO_LOGOFF_BY_USER`. Neither result is an IronRDP setting or
+a supported tuning surface.
 
 ## Reading order
 
@@ -45,23 +46,28 @@ flowchart LR
     PRODUCTVM --> VM[Sandbox VM / vmwp.exe<br/>per-VM worker]
     CMS --> VM
 
-    VM --> RDV[vmicrdv.dll + vmrdvcore.dll<br/>RDV VDEV and generic endpoint transport]
-    RDV <--> GUEST[Sandbox guest]
-    GUEST --> TERMSRV[termsrv.dll]
+    VM --> PIPE[\\.\pipe\{VM-ID}<br/>owned by vmwp.exe]
+    VM --> SYNTH[vmuidevices.dll + rdp4vs.dll<br/>worker RDP/display bridge]
+    SYNTH --> PIPE
+    GUEST[Sandbox guest] --> TERMSRV[termsrv.dll]
     TERMSRV --> LIC[tssrvlic.dll + LSCSHostPolicy.dll]
-    LIC <--> RDV
-
-    VM --> SYNTH[vmuidevices.dll + rdp4vs.dll<br/>Enhanced Mode VDEVs]
+    LIC <--> RDV[Generic RDV/RIM transport]
 ```
 
-There are two distinct RDP-related paths in the host:
+There are two separately evidenced RDP-related paths:
 
-- The **direct Sandbox path** uses the guest Terminal Services listener over its type-2 VMBus
-  transport. Its specialized acceptor creates the same guest RDP connection object used by the
-  ordinary listener, then reaches guest licensing and the private LSCS/RDV bridge.
-- The **Enhanced Mode path** is hosted by `vmuidevices.dll` and `rdp4vs.dll`. It has its own
-  feature and ACL checks, VMBus/HVSock channels, and graphics pipeline. It is not the LSCS
-  licensing receiver.
+- The **guest VM-listener path** is statically established: `termsrv.dll` configures a type-2
+  VMBus listener that reaches guest built-in licensing and the LSCS/RDV bridge.
+- The **worker VM-ID pipe path** is dynamically established: the Sandbox `vmwp.exe` worker owns
+  `\\.\pipe\{VM-ID}` and loads `vmuidevices.dll`, `rdp4vs.dll`, and the RDP server/display stack.
+  `rdp4vs.dll` creates its RDP server-base implementation before an RDP-base fallback. The exact
+  object-level handoff from this host pipe to the guest listener remains private.
+
+Current two-VM repros identify post-connect display-driver and server-logoff outcomes, not a
+correlated LSCS status. Concurrent VMs may share the default guest username
+(`WDAGUtilityAccount`) or use distinct custom accounts; that choice is not the proven root cause.
+See [RDP and RDV transport](windows-sandbox-rdp-transport.md) and
+[guest account identity](windows-sandbox-direct-lifecycle.md#guest-account-identity).
 
 ## Repository integration
 

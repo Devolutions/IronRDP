@@ -9,10 +9,10 @@ mistaken for one another.
 | Component | Plane | Verified responsibility | Explicit non-role |
 | --- | --- | --- | --- |
 | `WindowsSandboxServer.exe` | Product orchestration | Per-user Sandbox gRPC service on `\\.\pipe\wsandbox\<MD5(user SID)>`; can make product-level VM-admission decisions | VM engine, guest RDP server, final LSCS policy receiver |
-| `ManagedWindowsVM.exe` | VM lifecycle | Out-of-process WinRT server for `WindowsUdk.Security.Isolation.ManagedWindowsVM`; drives private Container Manager operations | Standalone replacement for the privileged backend or licensing policy |
-| `CmService` / `cmproxyd.exe` | Container Manager lifecycle proxy | HCS reports direct VMs as `WindowsSandbox`-owned clones of a `CmService` template; `CmService` creates a per-VM `cmproxyd` process | LSCS receiver; the proxy has RPC/HTTP/WSHHyperV modules but no RDV or VMBus module |
-| `vmcompute.exe` | Hyper-V compute | Builds VM configuration, recognizes internal `VirtualMachine/Devices/Licensing` resource, and starts/controls workers | Statically attributable implementation of `ILSClientService` |
-| `vmwp.exe` | Per-VM worker | Reads the VDEV manifest and activates each selected VDEV through `CoCreateInstance(..., IID_IVirtualDevice)`; its conventional VDEV registry catalog has no LSCS marker | Statically attributable implementation of `ILSClientService` |
+| `ManagedWindowsVM.exe` | VM lifecycle | Out-of-process WinRT server for `WindowsUdk.Security.Isolation.ManagedWindowsVM`; drives private Container Manager operations | Standalone replacement for the privileged backend or licensing policy; its module set did not change during direct LSCS authentication |
+| `CmService` / `cmproxyd.exe` | Container Manager lifecycle proxy | HCS reports direct VMs as `WindowsSandbox`-owned clones of a `CmService` template; `CmService` creates a per-VM `cmproxyd` process | LSCS receiver; the proxy has RPC/HTTP/WSHHyperV modules but no RDV or VMBus module, and its module set did not change during authentication |
+| `vmcompute.exe` | Hyper-V compute | Builds VM configuration, starts/controls workers, maps `VirtualMachine/Devices/Licensing` to `ACTIVATION_INSTANCE_ID`, and creates configured RDP VDEV pipe handles before transferring them through the VDEV handle broker | Statically attributable implementation of `ILSClientService` |
+| `vmwp.exe` | Per-VM worker and VM-ID pipe owner | Reads the VDEV manifest, activates VDEVs, and owns `\\.\pipe\{VM-ID}` for its Sandbox | Statically attributable implementation of `ILSClientService` |
 | `sppsvc.exe` | Software Protection Platform | Processes Activation VDEV inherited-activation messages through `SLSProcessVMPipeMessage` | Active LSCS receiver in the tested direct desktop flow |
 | Guest Terminal Services | Guest RDP server | Loads the hard-coded VM listener through `termsrv.dll` and receives the accepted RDP connection | Host RDV bridge or Enhanced Mode VDEV |
 
@@ -39,9 +39,12 @@ unattributed. Absence from a static image is not proof that the process is uninv
 | `vmrdvcore.dll` | Generic RDV endpoint and VMBus transport | Its `OfferChannel` recognizes the LSCS instance and selects the LSCS type before offering; no `IID_ILSClientService` or policy sink |
 | `rdvvmtransport.dll` | RDV transport dependency | Same generic LSCS offer selector as `vmrdvcore.dll`; no static LSCS policy implementation |
 | `vmbusvdev.dll` | Core VMBus VDEV | Opens the worker's VMBus device and exposes generic `IVMBusTransport` to other VDEVs; no LSCS/RIM policy code |
+| `vmbuspipe.dll` / `vmbusproxy.sys` | User-mode pipe API and kernel proxy | Generic channel enumerate, offer, open, close, and memory-mapping operations | LSCS decision or RIM policy logic |
 | `ActivationVDev.dll` | Registered `CSppActivationVDev` VDEV | Inherited application/OS activation through CLIP and its own fixed VMBus-pipe service; strongly disfavored as the direct LSCS sink |
-| `vmuidevices.dll` | Hyper-V Synthetic RDP and RDP Encoder VDEVs | Separate Enhanced Mode stack |
-| `rdp4vs.dll` | RDP4VS engine loaded by `vmuidevices.dll` | Enhanced Mode graphics/input path, not the guest LSCS bridge |
+| `vmuidevices.dll` | Hyper-V Synthetic RDP and RDP Encoder VDEVs | COM-loaded worker RDP/display bridge with named-pipe listeners; no LSCS marker |
+| `rdp4vs.dll` | RDP4VS engine explicitly loaded by `vmuidevices.dll` | Supplies the named-pipe listener and `IRDP4VS` server instances; `RDPAPI_CreateInstance` selects the RDP server base before its RDP base fallback |
+| `RDPSERVERBASE.dll` | RDP server base loaded in the worker | Regular RDP wire licensing, Server Set Error Info PDU emission, and display stack; standard licensing is skipped on non-server Windows and is not LSCS attribution |
+| `gpupvdev.dll` / `VrdUmed.dll` | GPU-partition VDEV and Virtual Render Device user-mode emulation driver | Loaded for the worker display bridge; credible but unattributed participants in the observed display-driver startup failure |
 
 The VDEV relationship is not a licensing ownership relationship. In particular, neither
 `vmuidevices.dll` nor `rdp4vs.dll` contained the LSCS endpoint markers or
@@ -57,8 +60,9 @@ The VDEV relationship is not a licensing ownership relationship. In particular, 
 | Activation VDEV class ID | `{BC12C717-8898-4688-8EE4-2CD14894F8EA}` | `ActivationVDev.dll` | Maps `CSppActivationVDev` to the inherited-activation VDEV |
 | Activation VDEV instance ID | `{4487B255-B88C-403F-BB51-D1F69CF17F87}` | `ActivationVDev.dll` | Does not match either LSCS RDV endpoint GUID |
 | Activation VMBus-pipe service | `{3375BAF4-9E15-4B30-B765-67ACB10D607B}` | `ActivationVDev.dll` | Separate fixed VMBus-pipe service; not the LSCS endpoint type |
-| RDP Encoder VDEV class ID | `{9CB98DB1-4D09-4538-A192-2D3D8C0B6CDB}` | `vmuidevices.dll` | Enhanced Mode encoder registration |
-| Synthetic RDP VDEV class ID | `{9ED5FD4B-40C3-4DE3-8597-98ECD17035DA}` | `vmuidevices.dll` | Enhanced Mode synthetic RDP registration |
+| RDP Encoder VDEV class ID | `{9CB98DB1-4D09-4538-A192-2D3D8C0B6CDB}` | `vmuidevices.dll` | Free-threaded in-proc `RdpEncoderVdev.1` COM registration; VDEV catalog declares interface `{1F490E46-8AD0-468D-8359-BA9D57FE9CC8}` |
+| Synthetic RDP VDEV class ID | `{9ED5FD4B-40C3-4DE3-8597-98ECD17035DA}` | `vmuidevices.dll` | Free-threaded in-proc `SynthRdpVdev.1` COM registration |
+| VM-ID pipe creation | `vmcompute!CreateRdpConnectionNamedPipe` | RDP Encoder or SynthRDP configuration | Creates an ACL-protected duplex, overlapped named-pipe server handle and transfers it to the selected VDEV through its handle broker |
 | LSCS endpoint | `RdvVmEndPointLSCS` | `LSCSHostPolicy.dll`; generic RDV offer code | Private guest-to-host policy request; the generic transport maps its fixed instance to its fixed endpoint type |
 | LSCS interface | `{B3461E73-AE5B-465B-8BDB-42BC5E87F22C}` | `LSCSHostPolicy.dll` | Requested `IID_ILSClientService` interface |
 
@@ -84,13 +88,12 @@ flowchart TB
 
 The generic RDV transport has a static LSCS offer selector, but its built-in endpoint initialization
 does not create LSCS. A successful direct connection left host `TermService` and `vmicrdv` stopped,
-so neither of their ordinary service paths is the active receiver on this build. The only observed
-caller-controlled step in this map is whether the product gRPC route or direct lifecycle route asks
-Windows to create a VM. Both routes converge on the same guest listener and host-mediated
-desktop-admission decision. The VDEV manifest framework remains a possible dynamic host boundary,
-but the ordinary `VirtualDevices` class/interface catalog does not advertise LSCS. The separate
-Activation VDEV reaches `sppsvc.exe`, whose handler and observed stopped state during desktop
-admission exclude that activation path from the LSCS decision.
+so neither of their ordinary service paths is the active receiver on this build. The worker owns the
+VM-ID pipe and loads the SynthRDP/RDP4VS display bridge. That bridge has no LSCS marker and cannot
+be named as the LSCS receiver from current evidence. The ordinary `VirtualDevices` class/interface
+catalog does not advertise LSCS. The separate Activation VDEV reaches `sppsvc.exe`, whose handler
+and observed stopped state during desktop admission exclude that activation path from the LSCS
+decision.
 
 ## Version and confidence boundary
 

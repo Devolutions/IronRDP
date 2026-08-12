@@ -28,7 +28,9 @@ flowchart LR
     API[ManagedWindowsVM WinRT API] --> SERVER[ManagedWindowsVM.exe]
     SERVER --> CMS[Private Container Manager]
     CMS --> VM[Sandbox VM + vmwp.exe]
-    VM --> RDP[Guest type-2 VMBus RDP listener]
+    VM --> PIPE[Worker-owned VM-ID pipe]
+    PIPE --> RDP[Private worker RDP/display bridge]
+    VM -. static guest path .-> GUEST[Guest type-2 VMBus RDP listener]
 ```
 
 ## Runtime access constraint
@@ -72,12 +74,45 @@ this ABI.
 | Privileged create/run backend | Product-private provisioning path; its exact lower call chain is not fully attributed | `ManagedWindowsVM.exe` and private Container Manager |
 | Guest customization | Product server handles its normal provisioning policy | Caller must use only exposed VM operations |
 | Connection data | Server can return Sandbox RDP configuration | Caller needs its own known transport and credentials |
-| Desktop admission | Guest LSCS/RDV route | Same guest LSCS/RDV route |
+| Worker RDP bridge | Product private configuration | Same `vmwp`-owned VM-ID pipe and RDP/display stack |
+| Guest desktop admission | Guest LSCS/RDV route | Same statically established LSCS/RDV route |
 
-This distinction is important when interpreting concurrency. In the tested retail configuration,
-direct lifecycle creation allowed several VM instances to run concurrently. It did not grant
-several concurrent full Sandbox desktops. See
-[licensing and desktop admission](windows-sandbox-licensing.md).
+This distinction is important when interpreting concurrency. Direct lifecycle creation allowed
+several VM instances to run concurrently. Current two-VM desktop repros first connected both
+sessions, then observed either an RDP display-driver startup error or a server-reported logoff.
+Neither outcome is correlated to a guest LSCS call in the current traces. See
+[RDP and RDV transport](windows-sandbox-rdp-transport.md).
+
+## Guest account identity
+
+Each Sandbox VM has its own guest SAM database. The product server does not share one interactive
+user object across concurrent VMs; it only chooses which local account to activate or create inside
+that guest.
+
+Product `SandboxVM.SetUpUserAccount` does the following after the UDK VM is running:
+
+1. If the recipe `Username` is empty, use `ManagedWindowsVM.DefaultUserName`.
+2. If the recipe `Password` is empty, generate a fresh GUID password.
+3. If the selected name equals `DefaultUserName`, run `net user` / `net user /active:yes` and
+   `wcsetupagent.exe AddUserToUsersGroup` against that default account.
+4. Otherwise run `net user <name> <password> /add` to create a custom local account.
+5. Always finish with `wcsetupagent.exe AddUserToAdminGroup` for the selected name.
+
+On the tested image family, `DefaultUserName` is `WDAGUtilityAccount`. That string is therefore the
+common default login name across many Sandboxes, but each VM still has a distinct guest account with
+its own password and profile path.
+
+Controlled direct-lifecycle harnesses exercised both patterns:
+
+| Multi-VM setup | Guest usernames | Result relevance |
+| --- | --- | --- |
+| Default-account trio | `WDAGUtilityAccount` on every VM, distinct per-VM passwords | Multiple VMs run; concurrent desktop failures still appear |
+| Custom-account trio | `IrdpVm1`, `IrdpVm2`, `IrdpVm3` | Multiple VMs run; concurrent desktop failures still appear |
+
+So different guest users are possible and already used in testing. Same-versus-different usernames
+is not the proven root cause of the current cross-VM post-connect failures. The same-VM two-client
+control is separately explained by the worker RDP encoder's local replacement path and does not
+depend on guest-account uniqueness.
 
 ## IronRDP usage
 

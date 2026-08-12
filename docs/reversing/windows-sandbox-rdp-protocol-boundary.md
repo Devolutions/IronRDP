@@ -1,21 +1,23 @@
 # Windows Sandbox RDP protocol boundary
 
 This note distinguishes the documented RDP protocol that IronRDP implements from the
-Windows-private transport that delivers Sandbox bytes to the guest listener.
+Windows-private worker and guest paths that handle Sandbox bytes.
 
 ## Boundary map
 
 ```mermaid
 flowchart LR
-    Client[IronRDP client] --> Pipe[Host named pipe]
-    Pipe --> RDV[Private RDV and VMBus transport]
-    RDV --> Synth[Private SynthRDP control and data handoff]
-    Synth --> RDP[Documented RDP byte stream]
-    RDP --> Termsrv[Guest Terminal Services]
+    Client[IronRDP client] --> Pipe[VM-ID named pipe]
+    Pipe --> Worker[vmwp RDP/display bridge]
+    Worker --> RDP[Documented RDP byte stream]
+    Guest[Guest type-2 listener] --> GuestRdp[Guest RDP byte stream]
+    GuestRdp --> Termsrv[Guest Terminal Services]
 ```
 
-The first three edges are Windows implementation details. `CUMRDPListenerVMBus` creates
-`CUMRDPConnection` at the final edge, at which point normal RDP protocol processing begins.
+The worker-pipe and guest-listener edges are Windows implementation details. Static guest analysis
+shows that `CUMRDPListenerVMBus` creates `CUMRDPConnection`; elevated runtime capture shows that
+the VM-ID pipe is owned by the worker RDP/display bridge. The exact object-level handoff between
+those two private paths remains unresolved.
 
 ## Documented protocol sequence
 
@@ -24,7 +26,7 @@ stream. It is not a description of the VMBus control channel.
 
 | Stage | Public specification | Relevance to Sandbox |
 | --- | --- | --- |
-| RDP connection sequence | [MS-RDPBCGR] section 1.3.1.1, "Connection Sequence" | Applies after the guest listener accepts the VMBus data stream |
+| RDP connection sequence | [MS-RDPBCGR] section 1.3.1.1, "Connection Sequence" | Applies after Windows hands the RDP byte stream to its private Sandbox endpoint |
 | X.224 connection request and RDP negotiation request | [MS-RDPBCGR] section 2.2.1.1 | Sent by the client on the established Sandbox RDP stream |
 | X.224 connection confirm and negotiation response | [MS-RDPBCGR] section 2.2.1.2 | Selects the RDP security protocol; the direct test observed `PROTOCOL_RDP` |
 | MCS/GCC client and server connect PDUs | [MS-RDPBCGR] sections 2.2.1.3 and 2.2.1.4 | Carry core, security, network, monitor, and channel information |
@@ -68,9 +70,12 @@ responsibilities:
 | Guest `LSCSHostPolicy.dll` | Requests private host policy through RDV/RIM |
 | Host LSCS policy receiver | Admits or rejects the full Sandbox desktop; implementation remains dynamically unattributed |
 
-The observed `ERROR_REMOTE_SESSION_LIMIT_EXCEEDED` comes from the latter decision path. A client
-must treat it as a Windows policy outcome, not as an RDP framing issue or a retryable transport
-error.
+The historical `ERROR_REMOTE_SESSION_LIMIT_EXCEEDED` is consistent with the latter decision path.
+Current direct two-VM tests instead first connected both sessions, then reported either
+`CloseStackOnDriverFailure` (`0x11`) or `ERRINFO_LOGOFF_BY_USER` (`0x0C`). [MS-RDPBCGR] section
+2.2.5.1 defines both as server Set Error Info values sent before a server disconnect. A client must
+surface each Windows outcome without treating it as an RDP framing issue or a retryable transport
+error; the error value alone does not identify the LSCS policy caller.
 
 ## Implications for IronRDP
 
@@ -91,7 +96,7 @@ licensing provider to implement the documented RDP client side.
 
 | Protocol | Sections used |
 | --- | --- |
-| [MS-RDPBCGR]: Remote Desktop Protocol: Basic Connectivity and Graphics Remoting | 1.3.1.1 "Connection Sequence"; 2.2.1.1 "Client X.224 Connection Request PDU"; 2.2.1.3 through 2.2.1.13 "Connection Sequence"; 2.2.6 "Static Virtual Channels" |
+| [MS-RDPBCGR]: Remote Desktop Protocol: Basic Connectivity and Graphics Remoting | 1.3.1.1 "Connection Sequence"; 2.2.1.1 "Client X.224 Connection Request PDU"; 2.2.1.3 through 2.2.1.13 "Connection Sequence"; 2.2.5.1 "Server Set Error Info PDU"; 2.2.6 "Static Virtual Channels" |
 | [MS-RDPELE]: Remote Desktop Protocol: Licensing Extension | 1.3.3 "Licensing PDU Flows"; 1.4 "Relationship to Other Protocols"; 3.3.5.3 "Sending Client License Information" |
 | [MS-RDSOD]: Remote Desktop Services Protocols Overview | 1.1 "Conceptual Overview"; 2.1 "Overview"; 2.2.1 "Protocol Relationship Diagram" |
 

@@ -1,6 +1,6 @@
 # Windows Sandbox SynthRDP control handoff
 
-This note records the private VMBus handoff that occurs before the guest RDP server processes
+This note records the private VMBus handoff implemented by the guest RDP server before it processes
 normal RDP bytes. It is a static-analysis description of `rdpcorets.dll` version
 `10.0.26100.8737` and `vmbuspipe.dll` version `10.0.26100.8521`, not a public protocol
 specification.
@@ -21,8 +21,8 @@ RDP protocol begins.
 | `termsrv.dll` | Asks the RDP protocol manager to create the hard-coded type-2 listener |
 | `rdpcorets.dll` | Implements `CUMRDPListenerVMBus` and converts an accepted data channel to `CUMRDPConnection` |
 | `vmbuspipe.dll` | Generic offered-channel, handle-open, and notification library |
-| Host RDV path | Presents the guest VMBus channels from the host-side named-pipe/RDV route |
-| IronRDP client | Starts only after Windows exposes the named-pipe transport as an RDP byte stream |
+| Host RDV path | Generic endpoint transport potentially adjacent to guest VMBus channels |
+| IronRDP client | Uses the worker-owned VM-ID pipe exposed by Windows |
 
 `vmbuspipe.dll` does not parse SynthRDP messages. `rdpcorets.dll` owns the control message
 validation and session-to-data-channel association.
@@ -120,29 +120,30 @@ VMBus handle becomes the input stream for the common RDP server object.
 The similarly named `vmbuspiper.dll` has related generic client/server pipe APIs. It is not the
 library that the examined `CUMRDPListenerVMBus` dynamically loads for notification registration.
 
-## Name collision with Enhanced Mode
+## Relation to the worker RDP bridge
 
-The private `SynthRdpCreateSession` name does not establish that the direct Sandbox path uses the
-host Enhanced Mode `SynthRdpDevice` from `vmuidevices.dll`.
+The private `SynthRdpCreateSession` name does not establish that the VM-ID pipe is accepted by the
+host `SynthRdpDevice` from `vmuidevices.dll`.
 
-The two paths differ in their verified boundaries:
+The two component families have different verified boundaries:
 
-| Direct Sandbox guest path | Hyper-V Enhanced Mode path |
+| Static guest listener path | Worker RDP/display path |
 | --- | --- |
 | Guest `termsrv.dll` and `rdpcorets.dll` | Host `vmuidevices.dll` and `rdp4vs.dll` |
-| Host named pipe -> RDV -> guest type-2 listener | Host VDEV control path and local listener |
+| Type-2 VMBus control/data channels | VM-ID pipe owned by `vmwp.exe` and VDEV local listeners |
 | Guest built-in licensing -> LSCS/RDV policy | Enhanced Mode feature gate and VM token ACL |
 | `CUMRDPConnection` RDP server object | Synthetic RDP/RDP4VS graphics and input objects |
 
-See [Enhanced Mode virtual devices](windows-sandbox-enhanced-mode.md) for the host VDEV path and
-[the guest RDP server](windows-sandbox-guest-rdp-server.md) for the complete guest listener
-architecture.
+The elevated worker capture proves that the VM-ID pipe enters the worker process but does not prove
+the individual object-level handoff to this guest listener. See
+[Enhanced Mode virtual devices](windows-sandbox-enhanced-mode.md) for the worker VDEV path and
+[RDP and RDV transport](windows-sandbox-rdp-transport.md) for the runtime boundary.
 
 ## Boundary and maintenance rule
 
-This state machine documents an implementation boundary, not a replacement target. IronRDP relies
-on Windows to create the VM, expose the named-pipe transport, and accept the private VMBus
-connection. IronRDP then implements the documented RDP client protocol above that point.
+This state machine documents a guest implementation boundary, not a replacement target. IronRDP
+relies on Windows to create the VM and expose the worker-owned named-pipe transport. IronRDP then
+implements the documented RDP client protocol above that point.
 
 Any update to `rdpcorets.dll` or `vmbuspipe.dll` requires revalidation of the identifiers,
 message sizes, and state checks before these observations are used for diagnosis.

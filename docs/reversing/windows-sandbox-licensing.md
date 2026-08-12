@@ -9,15 +9,28 @@ enforcement.
 
 ## Observed result
 
-The tested Windows retail configuration supports these two facts simultaneously:
+The tested Windows retail configuration supports several direct Sandbox VMs running at once. The
+desktop-concurrency result now has three separate evidence classes:
 
-1. Several direct Sandbox VMs can be created and held running concurrently.
-2. Only one simultaneous full Sandbox desktop is admitted. A later IronRDP desktop connection
-   fails with `ERROR_REMOTE_SESSION_LIMIT_EXCEEDED`.
+1. An earlier controlled run observed a later concurrent desktop rejected with
+   `ERROR_REMOTE_SESSION_LIMIT_EXCEEDED`.
+2. A later two-VM run had both sessions first reach `Connected`; the second then disconnected with
+   RDP Set Error Info `CloseStackOnDriverFailure` (`0x00000011`) while the first stayed connected.
+   That code reports remote display-driver startup failure, not a licensing status.
+3. A timestamped same-size baseline again reached `Connected` for both sessions. Thirty-three
+   seconds later, the second reported `ERRINFO_LOGOFF_BY_USER` while the first stayed connected.
+   That is the server's logoff classification, not proof of a human action or an identified
+   admission-policy source.
+4. A same-VM control connected two independent clients to one disposable Sandbox endpoint. The
+   first was immediately disconnected with `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` (`0x5`), while
+   the second remained connected.
 
-Using distinct per-VM GCC client names ruled out an RDP client-name collision as the cause. The
-result is therefore host-mediated desktop admission, not a generic named-pipe, IronRDP, or VM
-lifecycle collision.
+The same-VM control matches the worker RDP Encoder's local replacement behavior: a new attendee
+triggers termination of the existing `RemoteConnection` in that encoder instance. This is distinct
+from the cross-VM post-connect failures, where each Sandbox has its own worker. Using distinct
+per-VM GCC client names ruled out an RDP client-name collision as the cause. The evidence confirms
+a host-mediated LSCS admission RPC, but it does not justify attributing any post-connect failure in
+these current cross-VM runs to that RPC without a correlated call trace.
 
 The product `WindowsSandboxServer.exe` can additionally reject a second active Sandbox before VM
 creation. Direct lifecycle creation skips that **product orchestration** gate, but it does not skip
@@ -33,19 +46,22 @@ flowchart TD
     C -->|Yes| D[VM starts]
     B -->|Direct ManagedWindowsVM| D
 
-    D --> E[Client reaches guest type-2 VMBus RDP listener]
-    E --> F[termsrv.dll selects LICENSE_TYPE_BUILTIN]
-    F --> G[tssrvlic.dll role 4 proxy policy]
-    G --> H[LSCSHostPolicy.dll]
+    D --> E[Client reaches vmwp.exe VM-ID pipe bridge]
+    E --> Dsp[Worker RDP/display bridge]
+    Dsp --> DspFail[Possible display-stack failure]
+    D --> F[Static guest type-2 listener]
+    F --> G[tssrvlic.dll selects LICENSE_TYPE_BUILTIN]
+    G --> H[LSCSHostPolicy.dll role 4 proxy policy]
     H --> I[Private RDV/RIM ILSClientService request]
     I --> J{Microsoft-defined host policy permits desktop?}
     J -->|Yes| K[Full desktop connects]
     J -->|No| L[Connection rejected<br/>observed: ERROR_REMOTE_SESSION_LIMIT_EXCEEDED]
 ```
 
-The first branch is product VM admission. The lower branch is desktop admission. They are
-independent enough that bypassing the first through direct lifecycle management does not establish
-permission through the second.
+The first branch is product VM admission. The lower branch is the confirmed guest LSCS admission
+route. They are independent enough that bypassing the first through direct lifecycle management
+does not establish permission through the second. The diagram is not evidence that the
+`CloseStackOnDriverFailure` display-path result is produced by LSCS.
 
 ## Guest-side route
 
@@ -105,6 +121,57 @@ channel-manager code, including an `Offer` method, but the examined `CHostPolicy
 This is direct static evidence that `LSCSHostPolicy.dll` is the **guest-side client adapter** for
 the private request. It confirms the guest-to-host direction without identifying which host
 component supplies the remote RIM object.
+
+### The authenticated-user admission call
+
+The role-4 `CProxyPolicy` selected by guest `tssrvlic.dll` activates
+`LSCSHostPolicy.dll` through `CreateInstanceOfHostPolicy`. After an RDP user authenticates, the
+call chain is:
+
+```text
+CProxyPolicy::UserAuthenticated
+  -> IHostPolicy::HostUserAuthenticated
+  -> CHostPolicy::HostUserAuthenticated
+  -> ILSClientService::LSCSUserAuthenticated
+```
+
+`CHostPolicy::HostUserAuthenticated` obtains RIM object ID `1`, invokes its
+`ILSClientService` proxy, and returns the remote HRESULT to the guest policy. The matching
+`CStubILSClientService::Invoke_LSCSUserAuthenticated` deserializes the protocol-context handle and
+the two authenticated-user strings before calling the concrete host object. This identifies the
+host RPC that makes the admission decision; it does not identify the object implementation behind
+the RIM stub.
+
+### Worker-hosted pipe and display bridge
+
+An elevated handle capture proved that `\\.\pipe\{VM-ID}` is owned by the target Sandbox
+`vmwp.exe` worker. A before/after worker-module capture then found the connection-time RDP/display
+stack:
+
+```text
+vmuidevices.dll
+  -> rdp4vs.dll
+  -> RDPBASE.dll
+  -> RDPSERVERBASE.dll
+```
+
+`vmuidevices!RdpEncoder` contains a named-pipe listener and passes connected pipes to
+`IRDP4VSNamedPipe` after loading `rdp4vs.dll`. This is a worker-hosted RDP bridge. It has no LSCS
+identifier, and the elevated worker module list contained neither `LSCSHostPolicy.dll`,
+`vmicrdv.dll`, `vmrdvcore.dll`, nor `rdvvmtransport.dll`.
+
+`rdp4vs!RDPAPI_CreateInstance` first calls `RDPSERVERBASE_CreateInstance`, falling back to
+`RDPBASE_CreateInstance` only if that fails. Its attendee-connected callback reaches
+`RdpEncoder::OnClientConnected`, which creates a policy engine and checks the caller's
+VM-view/input ACL before accepting the connection; the attendee-ready callback reaches
+`RdpEncoder::OnClientReady`. This confirms an independent worker RDP lifecycle and ACL boundary.
+
+`RDPSERVERBASE.dll` contains the regular RDP encoder licensing plugin and protected OS licensing
+client. Its `CRDPWDUMXStack::SetErrorInfo` emits the standard Server Set Error Info PDU before
+disconnecting, and `IsLicenseRequiredByOS` returns false on non-server Windows before considering
+server/RDS licensing conditions. The standard wire-licensing implementation is therefore not
+sufficient evidence for the Windows-client LSCS decision or for the exact source of a particular
+post-connect error code.
 
 ## Host-side findings
 
@@ -182,6 +249,14 @@ A bounded direct-Sandbox probe also showed that its returned VM ID is not expose
 standard WMI setting associations cannot be used to retrieve that VM's VDEV manifest; the
 VM-specific repository and protected worker remain the necessary attribution boundary.
 
+Public symbols for `vmcompute.exe` further disambiguate the similarly named HCS resource:
+`ModifyLicensingSettings` parses `Schema::VirtualMachines::Resources::Licensing`, creates a
+`VmHandleBroker` for `ACTIVATION_INSTANCE_ID`, then invokes
+`IVmVirtualDeviceAccess`. `VDevManifestVm::PopulateFromSchemaSettings` adds
+`ACTIVATION_DEVICE_ID` with that same instance when the resource is enabled. Thus
+`VirtualMachine/Devices/Licensing` configures `ActivationVDev.dll`; it is not the LSCS RIM
+receiver or a session-admission setting.
+
 `vmbusvdev.dll` is an even lower generic layer. Its `VmbusVdev::Initialize` opens the worker's
 `\\.\VMBus\vdev\{...}` device and `GetVmbusPipeTransport` returns an `IVMBusTransport` object to
 other VDEVs. It has no LSCS/RIM endpoint or licensing-provider code. It supplies transport
@@ -244,16 +319,48 @@ markers: `vmcompute.exe`, `VmComputeAgent.exe`, `vmcompute.dll`, `vmwp.exe`, `vm
 instance selector in generic offer-channel code, but neither contains `IID_ILSClientService` or
 concrete desktop-admission policy logic.
 
+Public symbols for `vmbuspipe.dll` and `vmbusproxy.sys` show only generic client/server channel
+enumeration, offer, open, close, and GPADL operations. Neither has an LSCS, RIM, RDV, or licensing
+policy routine. During successful direct connections, `ManagedWindowsVM.exe` and the per-VM
+`cmproxyd.exe` loaded no new modules; temporal pipe sampling found no private LSCS pipe; and the
+only repeatable new `svchost.exe` instance was `FrameServerMonitor`, the Windows Camera Frame Server
+Monitor. These observations rule out a separately launched or dynamically loaded user-mode helper
+on this tested path.
+
 The strongest current conclusion is that the final policy receiver is provisioned dynamically
-inside protected VM worker/Hyper-V runtime state, or otherwise uses a private runtime path without
-embedding LSCS identifiers in a separate static binary. The generic transport and separate
-Activation/Software Protection paths have now been narrowed, but an elevated post-connect
-module/image-load capture is still required to attribute the concrete sink.
+as a pre-registered object inside protected `vmwp.exe` worker/runtime state, or another
+equally privileged Hyper-V runtime boundary. This is an inference from the exclusions above, not
+an attribution to a specific binary. An elevated post-connect module/image-load capture or
+call-stack capture at `ILSClientService::LSCSUserAuthenticated` is still required to identify the
+concrete sink.
+
+## Observed display-path concurrency case
+
+One direct two-VM test held the first desktop connected, started the second, and checked both states
+after thirty seconds. The first remained connected; the second reported:
+
+```text
+CloseStackOnDriverFailure (0x00000011)
+```
+
+This is a server RDP error indicating display-driver startup failure. Compute event logs show that
+both VMs were configured with GPU assignment mode `Mirror` and vendor extensions enabled. The failed
+worker loaded `gpupvdev.dll` and `VrdUmed.dll` alongside the worker RDP bridge.
+
+This is a strong lead for practical multi-desktop reliability, but not proof that GPU assignment is
+the root cause and not proof of an LSCS entitlement outcome. It must remain separate from the
+confirmed `ILSClientService::LSCSUserAuthenticated` boundary.
+
+Later same-size sampling again observed both sessions reach `Connected`; the second instead reported
+`ERRINFO_LOGOFF_BY_USER` after 33 seconds while the first stayed connected. A lower-resolution
+second-desktop comparison observed the display-driver error on the first session and the logoff
+code on the second. The current evidence therefore does not assign either post-connect outcome to a
+fixed VM position or to LSCS.
 
 ## Controls that do not select this policy
 
 The investigation ruled out the usual client-SKU RDP controls as the source of the observed
-cross-VM limit:
+cross-VM outcomes:
 
 - `MaxSessions`;
 - `AllowMultipleSessions`;
@@ -275,7 +382,9 @@ Only the following is established on the tested retail build:
 | --- | --- |
 | Several direct Sandbox VM instances running | Allowed |
 | First direct Sandbox full desktop | Allowed |
-| Later concurrent direct Sandbox full desktop | Rejected with `ERROR_REMOTE_SESSION_LIMIT_EXCEEDED` |
+| Historical later concurrent desktop | Rejected with `ERROR_REMOTE_SESSION_LIMIT_EXCEEDED` |
+| Current two-VM concurrent desktop | Both sessions initially connect; later observations include `CloseStackOnDriverFailure` and `ERRINFO_LOGOFF_BY_USER` |
+| Two clients to one Sandbox VM | First session is replaced with `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION`; second remains connected |
 | Product-server VM creation beyond its own admission decision | May be rejected before VM creation |
 
 Different Windows editions, servicing levels, enterprise entitlements, or Microsoft-hosted
@@ -285,12 +394,14 @@ another SKU or environment requires separate, compliant testing and its own evid
 
 ## Remaining attribution work
 
-The prepared read-only capture compares protected `vmwp.exe` modules before and after an actual
-direct Sandbox desktop connection while collecting worker and RDV image-load telemetry. It is
-intended to answer one narrow question: whether post-connect execution loads a separately
-attributable host module.
+The elevated worker capture completed. It proved that the VM-ID pipe is owned by `vmwp.exe` and
+identified the worker RDP/display bridge, but found no `LSCSHostPolicy.dll`, `vmicrdv.dll`,
+`vmrdvcore.dll`, or `rdvvmtransport.dll` in that worker. The next discriminating evidence is a
+read-only call stack or object-registration capture at
+`ILSClientService::LSCSUserAuthenticated`, correlated with both the historical license-limit result
+and the current display-driver failure.
 
-Until that capture succeeds, the final policy implementation should be described as **host-mediated
+Until that capture exists, the final policy implementation should be described as **host-mediated
 and dynamically unattributed**, not assigned to a guessed executable or DLL.
 
 The evidence needed to narrow that attribution, without altering Windows policy or entitlement

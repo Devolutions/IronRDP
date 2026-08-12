@@ -1,15 +1,19 @@
 # Windows Sandbox guest RDP server
 
-Windows Sandbox does not use a wholly separate guest RDP server. It uses the normal Terminal
-Services protocol-manager architecture with a VM-specific listener transport:
+The Sandbox guest does not use a wholly separate guest RDP server. Static analysis shows normal
+Terminal Services protocol-manager architecture with a VM-specific listener transport:
 
 ```text
-host named pipe -> RDV/VMBus -> guest VMBus listener -> CUMRDPConnection -> Terminal Services
+guest VMBus listener -> CUMRDPConnection -> Terminal Services
 ```
 
-The listener's control and data channels are private Windows implementation details. After that
-listener creates the connection object, the session follows the shared RDP server pipeline rather
-than a Sandbox-only display protocol.
+The listener's control and data channels are private Windows implementation details. After it
+creates the connection object, the session follows the shared RDP server pipeline rather than a
+Sandbox-only guest display protocol.
+
+An elevated host capture separately proved that `\\.\pipe\{VM-ID}` is owned by the target
+`vmwp.exe` worker and loads a worker RDP/display bridge. The exact runtime handoff from that worker
+pipe to this statically recovered guest listener is private and not yet attributed.
 
 ## Evidence scope
 
@@ -28,7 +32,7 @@ identifiers and exact control-message layout are static facts only for the exami
 | Guest `rdpcorets.dll` | Implements `UMRDPProtocolManager`, the VM, HVSock, and ordinary TCP listeners, plus `CUMRDPConnection` |
 | Guest `rdpbase.dll` | Provides shared RDP base factories and platform infrastructure used by `rdpcorets.dll` |
 | Guest `vmbuspipe.dll` | Generic VMBus-pipe channel and notification implementation dynamically loaded by the VM listener |
-| Host `vmicrdv.dll` and `vmrdvcore.dll` | Bridge the host endpoint/RDV side of the connection; they do not implement the guest listener or LSCS policy |
+| Host `vmicrdv.dll` and `vmrdvcore.dll` | Generic RDV endpoint transport; they do not implement the guest listener or LSCS policy |
 
 The ordinary `RDP-Tcp` listener remains registry-configured and uses the same
 `UMRDPProtocolManager` COM class registered from `rdpcorets.dll`. Its transport configuration,
@@ -164,9 +168,9 @@ The direct Sandbox test selected standard RDP security with `PROTOCOL_RDP` and
 `ENCRYPTION_LEVEL_NONE`. That observed RDP setting does not turn the named-pipe/VMBus transport
 into a public or unauthenticated interface.
 
-The guest type-2 listener still selects the built-in licensing path before full desktop admission.
-Changing the acceptor from ordinary TCP to VMBus changes the transport, not the later
-`tssrvlic.dll` and `LSCSHostPolicy.dll` decision path. See
+The guest type-2 listener statically selects the built-in licensing path before full desktop
+admission. That establishes the guest `tssrvlic.dll` and `LSCSHostPolicy.dll` route, but does not
+by itself prove that every worker VM-ID pipe connection reaches this listener. See
 [licensing and desktop admission](windows-sandbox-licensing.md) and
 [the RDP protocol boundary](windows-sandbox-rdp-protocol-boundary.md).
 
