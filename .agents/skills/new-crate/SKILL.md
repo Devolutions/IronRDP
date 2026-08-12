@@ -9,8 +9,11 @@ Inspect the root `Cargo.toml`, nearby same-tier crates, and `ARCHITECTURE.md` be
 Determine the crate's name, purpose, architectural tier, API-boundary status, and platform or `no_std` constraints from the request and repository rules.
 
 1. Run `cargo new --lib --vcs none crates/<crate-name>` from the repository root.
-   Do not hand-create the directory or initial `Cargo.toml`; `cargo new` connects generated package metadata to the workspace configuration.
-2. Preserve the generated workspace metadata inheritance and align any additional package fields with nearby crates.
+   Do not hand-create the directory or initial `Cargo.toml`.
+   Treat the generated manifest as a starting point because `cargo new` does not add all repository metadata.
+2. Align `[package]` with a nearby same-tier crate.
+   Set `readme`, `description`, the repository's current `rust-version`, and workspace inheritance for `edition`, `license`, `homepage`, `repository`, `authors`, `keywords`, and `categories`.
+   Add `[lints] workspace = true`.
 3. Add these target settings:
 
    ```toml
@@ -21,9 +24,9 @@ Determine the crate's name, purpose, architectural tier, API-boundary status, an
 
 4. Remove Cargo's sample function and test before adding the crate's real implementation.
 5. Invoke `crate-readme-writer` and write a short `README.md` before implementing crate behavior.
-   Set `readme = "README.md"` and a concise `description` in `[package]` when `cargo new` did not add them.
 6. Add the crate to the appropriate tier in `ARCHITECTURE.md`.
    Follow the existing `#### [`crates/<crate-name>`](./crates/<crate-name>)` heading and concise-description pattern.
+   For a Community Tier crate, append the responsible maintainer suffix used by neighboring entries.
    State API-boundary or architectural invariants only when they materially apply.
    Do not reorder or rewrite unrelated entries.
 7. Add dependencies and implementation only after the README and architecture entry establish the crate's role.
