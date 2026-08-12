@@ -12,6 +12,8 @@ pub mod x224;
 
 mod active_stage;
 mod palette;
+#[cfg(feature = "qoiz")]
+mod qoiz;
 
 use core::fmt;
 

@@ -22,6 +22,8 @@ use crate::{ColorPointer, DisplayUpdate, Framebuffer, RGBAPointer};
 
 mod bitmap;
 mod fast_path;
+#[cfg(feature = "qoiz")]
+mod qoiz;
 pub(crate) mod rfx;
 
 pub(crate) use fast_path::*;
@@ -608,41 +610,19 @@ impl BitmapUpdateHandler for QoiHandler {
 }
 
 #[cfg(feature = "qoiz")]
+#[derive(Debug)]
 struct QoizHandler {
     codec_id: u8,
-    zctxt: zstd_safe::CCtx<'static>,
-}
-
-#[cfg(feature = "qoiz")]
-impl fmt::Debug for QoizHandler {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("QoizHandler").field("codec_id", &self.codec_id).finish()
-    }
+    compressor: qoiz::Compressor,
 }
 
 #[cfg(feature = "qoiz")]
 impl QoizHandler {
     fn new(codec_id: u8) -> Result<Self> {
-        let mut zctxt = zstd_safe::CCtx::default();
-
-        zctxt
-            .set_parameter(zstd_safe::CParameter::CompressionLevel(3))
-            .map_err(|code| {
-                anyhow!(
-                    "failed to set zstd compression level: {}",
-                    zstd_safe::get_error_name(code)
-                )
-            })?;
-        zctxt
-            .set_parameter(zstd_safe::CParameter::EnableLongDistanceMatching(true))
-            .map_err(|code| {
-                anyhow!(
-                    "failed to set zstd enable long distance matching: {}",
-                    zstd_safe::get_error_name(code)
-                )
-            })?;
-
-        Ok(Self { codec_id, zctxt })
+        Ok(Self {
+            codec_id,
+            compressor: qoiz::Compressor::new()?,
+        })
     }
 }
 
@@ -650,29 +630,9 @@ impl QoizHandler {
 impl BitmapUpdateHandler for QoizHandler {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
         let qoi = qoi_encode(bitmap)?;
-        let mut inb = zstd_safe::InBuffer::around(&qoi);
-        let mut data = vec![0; qoi.len()];
-        let mut outb;
-        let mut pos = 0;
+        let data = self.compressor.compress(&qoi)?;
 
-        loop {
-            outb = zstd_safe::OutBuffer::around_pos(data.as_mut_slice(), pos);
-            let res = self
-                .zctxt
-                .compress_stream2(
-                    &mut outb,
-                    &mut inb,
-                    zstd_safe::zstd_sys::ZSTD_EndDirective::ZSTD_e_flush,
-                )
-                .map_err(|code| anyhow!("failed to Zstd compress: {}", zstd_safe::get_error_name(code)))?;
-            if res == 0 {
-                break;
-            }
-            pos = outb.pos();
-            data.resize(data.len() + res, 0);
-        }
-
-        set_surface(bitmap, self.codec_id, outb.as_slice())
+        set_surface(bitmap, self.codec_id, &data)
     }
 }
 

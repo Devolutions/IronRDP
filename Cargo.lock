@@ -1590,6 +1590,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fearless_simd"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0f5f895dac0865bc235f1364793899569a7db538137f1024dccea56bf41c78d"
+
+[[package]]
 name = "ff"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2960,6 +2966,7 @@ dependencies = [
  "tracing",
  "visibility",
  "x509-cert",
+ "zrip",
  "zstd-safe",
 ]
 
@@ -2977,6 +2984,7 @@ dependencies = [
  "ironrdp-svc",
  "qoicoubeh",
  "tracing",
+ "zrip",
  "zstd-safe",
 ]
 
@@ -3044,6 +3052,8 @@ dependencies = [
  "rstest",
  "tokio",
  "visibility",
+ "zrip",
+ "zstd-safe",
 ]
 
 [[package]]
@@ -7465,6 +7475,42 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zrip"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d6514da35b51d81bfc515782396980ac909fe46925fd19701b36329ddec46e8"
+dependencies = [
+ "zrip-core",
+ "zrip-decode",
+ "zrip-encode",
+]
+
+[[package]]
+name = "zrip-core"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9335acd94c1f09f729178fc339f9d49790254c1e98ba076f88df3a3f534c4e7d"
+
+[[package]]
+name = "zrip-decode"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16c26a2ea54a97d013b6f2a430b659fb77e0d5feb0aa3f80cb8c141d6827beba"
+dependencies = [
+ "fearless_simd",
+ "zrip-core",
+]
+
+[[package]]
+name = "zrip-encode"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38e7e22b665b947f0240b44805713e87a15c34e86d0891cbe2856c575c5cda1d"
+dependencies = [
+ "zrip-core",
+]
 
 [[package]]
 name = "zstd-safe"

@@ -49,6 +49,7 @@ client-dvc-com-plugin = ["ironrdp-client?/dvc-com-plugin"]
 client-all = ["ironrdp-client?/all"]
 qoi = ["ironrdp-server?/qoi", "ironrdp-pdu?/qoi", "ironrdp-connector?/qoi", "ironrdp-session?/qoi", "ironrdp-client?/qoi"]
 qoiz = ["ironrdp-server?/qoiz", "ironrdp-pdu?/qoiz", "ironrdp-connector?/qoiz", "ironrdp-session?/qoiz", "ironrdp-client?/qoiz"]
+qoiz-zstd = ["ironrdp-server?/qoiz-zstd", "ironrdp-session?/qoiz-zstd", "ironrdp-client?/qoiz-zstd", "qoiz"]
 
 # Internal (PRIVATE!) features used to aid testing.
 # Don't rely on these whatsoever. They may disappear at any time.
