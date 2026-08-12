@@ -136,11 +136,7 @@ fn format_change_failure_does_not_ack() {
         }),
     );
 
-    let out = process_encoded(
-        &mut client,
-        3,
-        RdpeaiPdu::FormatChange(FormatChangePdu::new(1)),
-    );
+    let out = process_encoded(&mut client, 3, RdpeaiPdu::FormatChange(FormatChangePdu::new(1)));
     assert!(out.is_empty(), "failed FormatChange must not be confirmed");
 }
 
@@ -156,7 +152,11 @@ fn open_rejects_oversized_frames_per_packet() {
     });
     client.start(1).unwrap();
     let _ = process_encoded(&mut client, 1, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
-    let _ = process_encoded(&mut client, 1, RdpeaiPdu::Formats(FormatsPdu::server(vec![fmt.clone()])));
+    let _ = process_encoded(
+        &mut client,
+        1,
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![fmt.clone()])),
+    );
     let out = process_encoded(
         &mut client,
         1,

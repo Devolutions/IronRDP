@@ -1,7 +1,7 @@
 use ironrdp_core::{Encode as _, decode, encode_vec};
 use ironrdp_rdpeai::pdu::{
-    DataPdu, FormatChangePdu, FormatsPdu, MAX_DATA_PACKET_SIZE, OpenPdu, OpenReplyPdu, RdpeaiPdu, Version,
-    VersionPdu, pcm_format,
+    DataPdu, FormatChangePdu, FormatsPdu, MAX_DATA_PACKET_SIZE, OpenPdu, OpenReplyPdu, RdpeaiPdu, Version, VersionPdu,
+    pcm_format,
 };
 
 fn roundtrip(pdu: RdpeaiPdu) {
