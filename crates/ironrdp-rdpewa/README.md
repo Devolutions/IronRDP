@@ -10,7 +10,7 @@ MS-RDPEWA (WebAuthn Virtual Channel) protocol types and DVC processors for IronR
 ## Layout
 
 - `pdu` — CBOR request/response codec and MVP command types
-- `client` — `RdpewaClient` + `RdpewaClientHandler`
+- `client` — `RdpewaClient`, recreatable `RdpewaClientListener`, and `RdpewaClientHandler`
 - `server` — minimal `RdpewaServer` skeleton for tests
 
 Platform backends (Windows WebAuthn APIs) live in `ironrdp-rdpewa-native`.

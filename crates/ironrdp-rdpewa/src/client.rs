@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use ironrdp_core::{Encode, EncodeResult, WriteCursor, ensure_size, impl_as_any};
-use ironrdp_dvc::{DvcClientProcessor, DvcEncode, DvcMessage, DvcProcessor, encode_dvc_messages};
+use ironrdp_dvc::{
+    DvcChannelListener, DvcClientProcessor, DvcEncode, DvcMessage, DvcProcessor, DynamicChannelId, encode_dvc_messages,
+};
 use ironrdp_pdu::{PduResult, decode_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, warn};
@@ -343,6 +345,40 @@ impl DvcProcessor for RdpewaClient {
 
 impl DvcClientProcessor for RdpewaClient {}
 
+/// Builds a fresh [`RdpewaClient`] for each DVC create of [`CHANNEL_NAME`].
+///
+/// Windows opens and closes `WebAuthN_Channel` around individual WebAuthn RPCs.
+/// Register this listener with [`ironrdp_dvc::DrdynvcClient::with_listener`] instead of a
+/// one-shot [`RdpewaClient`] so later creates are not rejected with `NO_LISTENER`.
+pub struct RdpewaClientListener<F>
+where
+    F: FnMut() -> RdpewaClient + Send,
+{
+    factory: F,
+}
+
+impl<F> RdpewaClientListener<F>
+where
+    F: FnMut() -> RdpewaClient + Send,
+{
+    pub fn new(factory: F) -> Self {
+        Self { factory }
+    }
+}
+
+impl<F> DvcChannelListener for RdpewaClientListener<F>
+where
+    F: FnMut() -> RdpewaClient + Send + 'static,
+{
+    fn channel_name(&self) -> &str {
+        CHANNEL_NAME
+    }
+
+    fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcClientProcessor>> {
+        Some(Box::new((self.factory)()))
+    }
+}
+
 struct RawDataDvcMessage(Vec<u8>);
 
 impl Encode for RawDataDvcMessage {
@@ -442,5 +478,23 @@ mod tests {
         let (channel_id, message_count) = captured.lock().unwrap().take().expect("callback invoked");
         assert_eq!(channel_id, 42);
         assert!(message_count >= 1);
+    }
+
+    #[test]
+    fn listener_creates_independent_clients() {
+        let mut listener = RdpewaClientListener::new(|| {
+            RdpewaClient::new(Box::new(StubRdpewaHandler {
+                api_version: 7,
+                uvpaa: true,
+            }))
+        });
+
+        let mut first = listener.create(10).expect("first create");
+        let mut second = listener.create(11).expect("second create");
+        assert_eq!(first.channel_name(), CHANNEL_NAME);
+        assert_eq!(second.channel_name(), CHANNEL_NAME);
+
+        let _ = first.start(10).unwrap();
+        let _ = second.start(11).unwrap();
     }
 }

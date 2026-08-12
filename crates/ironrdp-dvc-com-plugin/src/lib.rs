@@ -35,4 +35,4 @@ mod channel;
 mod com;
 mod worker;
 
-pub use channel::{DvcComChannel, load_dvc_plugin};
+pub use channel::{DvcComChannel, DvcComChannelListener, load_dvc_plugin, load_dvc_plugin_listeners};

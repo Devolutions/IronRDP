@@ -13,8 +13,8 @@ pub mod pdu;
 pub mod server;
 
 pub use client::{
-    RdpewaClient, RdpewaClientHandler, RdpewaHandlerError, RdpewaResponseSender, RdpewaResult, StubRdpewaHandler,
-    WebAuthnDispatch, WebAuthnOperationRequest, WebAuthnOperationResponse,
+    RdpewaClient, RdpewaClientHandler, RdpewaClientListener, RdpewaHandlerError, RdpewaResponseSender, RdpewaResult,
+    StubRdpewaHandler, WebAuthnDispatch, WebAuthnOperationRequest, WebAuthnOperationResponse,
 };
 pub use pdu::{
     Attachment, Attestation, DeviceInfo, E_ABORT, E_FAIL, E_INVALIDARG, E_NOTIMPL, RdpewaRequest, RdpewaResponse,
