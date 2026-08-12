@@ -275,6 +275,8 @@ handler as the active LSCS receiver for the tested direct flow.
 | VMBus pipe/proxy layers own LSCS policy | Ruled out | Public `vmbuspipe` and `vmbusproxy` symbols implement generic channel operations only |
 | Standard host RDP wire licensing is the LSCS admission decision | Strongly disfavored | `RDPSERVERBASE!IsLicenseRequiredByOS` skips standard licensing on non-server Windows |
 | Current direct two-VM disconnect is an LSCS denial | Not established | Current post-connect outcomes are `CloseStackOnDriverFailure` and `ERRINFO_LOGOFF_BY_USER`; neither run includes a correlated LSCS call trace |
+| Wire `CloseStackOnDriverFailure` (`0x11`) is named as an Indirect Display Driver failure inside RDPBASE | High for naming, inference for live cause | `GetInternalDisconnectSymbolicName(17)` returns `IndirectDisplayDriverFailure`; adjacent codes cover IDD not-ready and interface-arrival failures |
+| Current `0x11` is every GFX-pipe `SetPipelineErrorState` failure | Ruled out | `CPipeManager::SetPipelineErrorState` maps subsystem-init and related pipe events to reasons such as `4460`/`4461`, not wire `0x11` |
 | Guest usernames must match across concurrent Sandboxes | Ruled out | Product and direct harnesses can use either the shared default name or distinct custom accounts; both patterns still produce multi-VM runs and current post-connect failures |
 | Concurrent VMs share one guest user object | Ruled out | Each VM has its own guest SAM; product `SetUpUserAccount` activates or creates a local account inside that guest only |
 | Worker RDP path has an independent access gate | High | `RdpEncoder::OnClientConnected` creates an ACL policy engine before accepting the RDP4VS attendee |

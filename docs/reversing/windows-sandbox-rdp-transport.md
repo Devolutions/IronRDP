@@ -178,6 +178,19 @@ make the GPU/display path a credible explanation for the `0x11` outcome. They do
 GPU mirroring is its root cause, explain the later logoff outcome, or replace the independently
 confirmed guest LSCS RPC.
 
+Static naming in `RDPBASE` strengthens the display-path reading of wire code `0x11`.
+`GetInternalDisconnectSymbolicName` maps internal disconnect subcode `17` (`0x11`) to
+`IndirectDisplayDriverFailure`, adjacent to `IndirectDisplayDriverNotReady` (`15`) and
+`IddInterfaceArrivalFailure` (`18`). That is the worker RDP stack's own name for the same numeric
+value as protocol `ERRINFO_CLOSESTACKONDRIVERFAILURE`. It is still not a live call-stack proving
+which component raised the code on a concurrent Sandbox desktop.
+
+Separately, `RDPSERVERBASE!CPipeManager::SetPipelineErrorState` maps many graphics-pipeline events
+to different disconnect reasons such as `Log_RDP_GraphicsSubsystemInitFailed` (reason `4460`) or
+client-ack timeout (`4453`). Those GFX-pipe reasons are not the observed `0x11` value, so the
+current concurrent `CloseStackOnDriverFailure` result should not be collapsed into every graphics
+pipeline failure string in the encoder.
+
 ## What transport attribution does not establish
 
 The private transport is not documented by Microsoft Open Specifications as a supported external
