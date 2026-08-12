@@ -11,7 +11,7 @@ const { validateClassifier } = require("./validate-classifier");
 const { validateReviewer } = require("./validate-reviewer");
 const {
   resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER,
-  LEGITIMACY_LABEL, LEGITIMACY_MARKER_PREFIX, XL_MARKER,
+  LEGITIMACY_LABEL, LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER,
 } = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
 const { StaleHeadError, applyLabels, escapeMarkdown, markerBody, writeState } = require("./write-state");
@@ -178,7 +178,7 @@ test("workflow force mode bypasses model policy gates without changing automatic
   for (const automaticGate of [
     "classification-gate.outputs.available == 'true'",
     "classification-gate.outputs.required == 'true'",
-    "deterministic-analysis.outputs.size-label != 'size/XL'",
+    "deterministic-analysis.outputs.size-label != 'size/XXL'",
     "fork-rate-limit.outputs.allowed == 'true'",
     "'ai-reviewed/2'",
   ]) assert.equal(classifierJob.includes(automaticGate), true, automaticGate);
@@ -285,6 +285,36 @@ test("deterministic analysis applies trusted scopes and source size", () => {
   assert.equal(analyzeFiles([{ filename: "crates/ironrdp-core/src/lib.rs", additions: 29, deletions: 0 }],
     { labelerRules: rules }).pathLabels[0], "scope/core");
   assert.equal(result.sizeLabel, "size/XS");
+});
+
+test("deterministic size uses the larger changed-line or touched-file bucket", () => {
+  const rules = {};
+  const analyze = (changedLines, touchedFiles) => analyzeFiles(Array.from({ length: touchedFiles }, (_, index) => ({
+    filename: `src/file-${index}.rs`,
+    additions: index === 0 ? changedLines : 0,
+    deletions: 0,
+  })), { labelerRules: rules });
+  for (const [changedLines, expected] of [
+    [0, "size/XS"], [49, "size/XS"], [50, "size/S"], [199, "size/S"],
+    [200, "size/M"], [449, "size/M"], [450, "size/L"], [899, "size/L"],
+    [900, "size/XL"], [1299, "size/XL"], [1300, "size/XXL"],
+  ]) {
+    assert.equal(analyze(changedLines, 1).sizeLabel, expected, `${changedLines} changed lines`);
+  }
+  for (const [touchedFiles, expected] of [
+    [1, "size/XS"], [2, "size/XS"], [3, "size/S"], [5, "size/S"],
+    [6, "size/M"], [10, "size/M"], [11, "size/L"], [20, "size/L"],
+    [21, "size/XL"], [49, "size/XL"], [50, "size/XXL"],
+  ]) {
+    const result = analyze(0, touchedFiles);
+    assert.equal(result.sizeLabel, expected, `${touchedFiles} touched files`);
+    assert.equal(result.touchedFiles, touchedFiles);
+  }
+  assert.equal(analyze(10, 6).sizeLabel, "size/M");
+  assert.equal(analyze(1300, 1).sizeLabel, "size/XXL");
+  assert.equal(analyzeFiles([
+    { filename: "README.md", additions: 1300, deletions: 0 },
+  ], { labelerRules: rules }).sizeLabel, "size/XS");
 });
 
 test("classifier rejects malformed duplicate and executable documentation claims", () => {
@@ -743,7 +773,7 @@ test("model-owned labels coexist with path scopes and are withdrawn when no long
     pathLabels: ["scope/core", "scope/web"],
     ownedPathLabels: ["scope/core", "scope/web", "scope/ffi", "scope/tooling"],
     sizeLabel: "size/S",
-    sizeLabels: ["size/XS", "size/S", "size/M", "size/L", "size/XL"],
+    sizeLabels: SIZE_LABELS,
     firstTime: false,
   };
   const classified = resolveClassificationState({
@@ -775,7 +805,7 @@ test("successful classification preserves the first-time contributor label", () 
     pathLabels: [],
     ownedPathLabels: ["scope/core"],
     sizeLabel: "size/XS",
-    sizeLabels: ["size/XS", "size/S", "size/M", "size/L", "size/XL"],
+    sizeLabels: SIZE_LABELS,
     firstTime: true,
   };
   const state = resolveClassificationState({
@@ -796,7 +826,7 @@ test("protocol relevance overrides risk suppression but no other exclusion", () 
   assert.equal(reviewPolicyEligible({ labels: ["risk/low"], protocolRelated: false }), false);
   assert.equal(reviewPolicyEligible({ labels: ["risk/low", "breaking-change"] }), true);
   assert.equal(reviewPolicyEligible({ labels: ["risk/medium"] }), true);
-  for (const blocking of ["size/XL", "duplicate", "ai-reviewed/2", LEGITIMACY_LABEL]) {
+  for (const blocking of ["size/XXL", "duplicate", "ai-reviewed/2", LEGITIMACY_LABEL]) {
     assert.equal(reviewPolicyEligible({ labels: ["risk/high", blocking], protocolRelated: true }), false);
   }
   assert.equal(reviewPolicyEligible({
@@ -820,35 +850,35 @@ test("review publication applies the same policy the workflow spent its call on"
     ...args, labels: ["risk/low"], gate: gate({ protocolRelated: false }),
   }).failed, true);
   assert.equal(resolveReviewState({
-    ...args, labels: ["risk/low", "size/XL"], gate: gate({ protocolRelated: true }),
+    ...args, labels: ["risk/low", "size/XXL"], gate: gate({ protocolRelated: true }),
   }).failed, true);
 });
 
-test("XL guidance is posted once and withdrawn when the change shrinks", () => {
+test("XXL guidance is posted once and withdrawn when the change shrinks", () => {
   const deterministic = (sizeLabel) => ({ ok: true, pathLabels: [], ownedPathLabels: [],
-    sizeLabel, sizeLabels: ["size/L", "size/XL"], firstTime: false });
+    sizeLabel, sizeLabels: ["size/XL", "size/XXL"], firstTime: false });
   const state = (sizeLabel) => resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic: deterministic(sizeLabel), classifier: classifier(),
     semver: { head_sha: SHA, status: "not-suspected" },
   });
-  const xl = state("size/XL");
-  assert.deepEqual(xl.comments.map((comment) => comment.kind), ["xl"]);
-  assert.equal(xl.removeCommentMarkers.includes(XL_MARKER), false);
-  const body = markerBody(xl.comments[0], "Devolutions", "IronRDP");
+  const oversized = state("size/XXL");
+  assert.deepEqual(oversized.comments.map((comment) => comment.kind), ["oversized"]);
+  assert.equal(oversized.removeCommentMarkers.includes(OVERSIZED_MARKER), false);
+  const body = markerBody(oversized.comments[0], "Devolutions", "IronRDP");
   assert.match(body, /stacked-prs/);
-  assert.match(body, /size\/XL/);
+  assert.match(body, /size\/XXL/);
   // A later push can drop the change below the threshold, and the guidance must not outlive it.
-  const shrunk = state("size/L");
+  const shrunk = state("size/XL");
   assert.deepEqual(shrunk.comments, []);
-  assert.equal(shrunk.removeCommentMarkers.includes(XL_MARKER), true);
+  assert.equal(shrunk.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
 });
 
 test("an oversized change retains deterministic labels without a classifier", () => {
-  // The workflow skips the classifier job for size/XL, so no model output exists to validate here.
+  // The workflow skips the classifier job for size/XXL, so no model output exists to validate here.
   // Resolution must still succeed on deterministic evidence rather than degrading to a failure.
   const deterministic = { ok: true, pathLabels: ["scope/core", "scope/web"],
     ownedPathLabels: ["scope/core", "scope/web", "scope/ffi"],
-    sizeLabel: "size/XL", sizeLabels: ["size/L", "size/XL"], firstTime: true };
+    sizeLabel: "size/XXL", sizeLabels: ["size/XL", "size/XXL"], firstTime: true };
   const state = resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic, classifier: undefined,
     semver: { head_sha: SHA, status: "suspected" },
@@ -857,9 +887,9 @@ test("an oversized change retains deterministic labels without a classifier", ()
   assert.equal(state.oversized, true);
   const desired = state.labelSets.flatMap((set) => set.desired);
   assert.deepEqual(desired.sort(), ["breaking-change", "contributor/first-time", "risk/high",
-    "scope/core", "scope/web", "size/XL"]);
+    "scope/core", "scope/web", "size/XXL"]);
   assert.deepEqual(state.addLabels, ["maintainer-required"]);
-  assert.deepEqual(state.comments.map((comment) => comment.kind), ["xl"]);
+  assert.deepEqual(state.comments.map((comment) => comment.kind), ["oversized"]);
   // The review gate only trusts a check announcing a completed classification.
   assert.notEqual(state.check.title, "Classification complete");
   // No model ran, so a duplicate or legitimacy verdict from an earlier head is neither confirmed
@@ -973,8 +1003,8 @@ test("quota decisions stop classification and review with a bounded human handof
 
 test("forced classification bypasses policy, quota, and cache but still validates output", () => {
   const deterministic = {
-    ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/XL",
-    sizeLabels: ["size/L", "size/XL"], firstTime: false,
+    ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/XXL",
+    sizeLabels: ["size/XL", "size/XXL"], firstTime: false,
   };
   const args = {
     expectedSha: SHA,
@@ -992,8 +1022,8 @@ test("forced classification bypasses policy, quota, and cache but still validate
   assert.equal(state.check.title, "Classification complete");
   assert.equal(state.dispatchReview, false);
   assert.equal(state.check.machineState.automaticReviewEligible, false);
-  assert.equal(state.comments.some((comment) => comment.kind === "xl"), false);
-  assert.equal(state.removeCommentMarkers.includes(XL_MARKER), true);
+  assert.equal(state.comments.some((comment) => comment.kind === "oversized"), false);
+  assert.equal(state.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
 
   const invalid = resolveClassificationState({ ...args, classifier: "" });
   assert.equal(invalid.failed, true);
@@ -1012,7 +1042,7 @@ test("forced review bypasses eligibility while retaining trusted publication gat
   };
   const args = {
     expectedSha: SHA,
-    labels: ["ai-reviewed/2", "duplicate", "size/XL", "risk/low"],
+    labels: ["ai-reviewed/2", "duplicate", "size/XXL", "risk/low"],
     reviewer,
     gate: { ok: true, force: true, head_sha: SHA, protocolRelated: false },
     contributor: { status: "ineligible" },

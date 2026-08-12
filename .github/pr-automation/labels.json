@@ -47,27 +47,32 @@
   {
     "name": "size/XS",
     "color": "f9d0c4",
-    "description": "Size: Under 30 lines of code"
+    "description": "Size: 0-49 lines of code or 1-2 files"
   },
   {
     "name": "size/S",
     "color": "f9d0c4",
-    "description": "Size: 30-149 lines of code"
+    "description": "Size: 50-199 lines of code or 3-5 files"
   },
   {
     "name": "size/M",
     "color": "f9d0c4",
-    "description": "Size: 150-399 lines of code"
+    "description": "Size: 200-449 lines of code or 6-10 files"
   },
   {
     "name": "size/L",
     "color": "f9d0c4",
-    "description": "Size: 400-799 lines of code"
+    "description": "Size: 450-899 lines of code or 11-20 files"
   },
   {
     "name": "size/XL",
     "color": "f9d0c4",
-    "description": "Size: 800 or more lines of code"
+    "description": "Size: 900-1299 lines of code or 21-49 files"
+  },
+  {
+    "name": "size/XXL",
+    "color": "f9d0c4",
+    "description": "Size: 1300 or more lines of code or 50 or more files"
   },
   {
     "name": "risk/low",

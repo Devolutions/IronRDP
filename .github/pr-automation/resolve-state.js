@@ -10,7 +10,7 @@ const AI_COUNTS = ["ai-reviewed/1", "ai-reviewed/2"];
 const LEGITIMACY_LABEL = "triage/legitimacy";
 const LEGITIMACY_MARKER_PREFIX = "<!-- ironrdp-pr-automation:legitimacy:v2:";
 const DUPLICATE_MARKER = "<!-- ironrdp-pr-automation:duplicate -->";
-const XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
+const OVERSIZED_MARKER = "<!-- ironrdp-pr-automation:oversized -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
 const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -->";
 const ELIGIBLE_MERGED_PRS = 3;
@@ -24,7 +24,7 @@ function labelsOf(labels) {
 // of being restated in the workflow where the two copies could drift apart.
 function reviewPolicyEligible({ labels, legitimacyStopped, protocolRelated } = {}) {
   const present = labelsOf(labels);
-  if (present.has("ai-reviewed/2") || present.has("duplicate") || present.has("size/XL") ||
+  if (present.has("ai-reviewed/2") || present.has("duplicate") || present.has("size/XXL") ||
       present.has(LEGITIMACY_LABEL) || legitimacyStopped === true) return false;
   // Risk gates the non-protocol route only. Risk measures how much human scrutiny a change needs,
   // not how much an automated review is worth, so a protocol-related change is always reviewed.
@@ -77,11 +77,11 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
   };
 }
 
-// A size/XL pull request is excluded from automated review before any model runs, so the classifier
+// A size/XXL pull request is excluded from automated review before any model runs, so the classifier
 // is never invoked and no model-derived label can be produced. The deterministic signals are still
 // published together with the split guidance, and the check title is deliberately not
 // "Classification complete" so the review gate refuses to open the review route.
-function xlClassification(expectedSha, deterministic, semverStatus) {
+function oversizedClassification(expectedSha, deterministic, semverStatus) {
   return {
     ok: true, mode: "classification", expectedSha, oversized: true,
     labelSets: [
@@ -91,7 +91,7 @@ function xlClassification(expectedSha, deterministic, semverStatus) {
       { owned: RISK, desired: [semverStatus === "suspected" ? "risk/high" : "risk/unknown"] },
     ],
     addLabels: ["maintainer-required"],
-    comments: [{ kind: "xl", marker: XL_MARKER }],
+    comments: [{ kind: "oversized", marker: OVERSIZED_MARKER }],
     // Duplicate and legitimacy verdicts are model-derived. No model ran, so a previously posted
     // verdict is neither confirmed nor refuted here and is left untouched.
     removeCommentMarkers: [],
@@ -118,8 +118,8 @@ function resolveClassificationState({
   const semverStatus = boundStatus(semver, expectedSha, ["suspected", "not-suspected"]);
   // Checked before the classifier is consulted: an oversized pull request never reaches a model, so
   // there is no classifier output to validate and no quota to charge.
-  if (!forced && deterministic?.ok && deterministic.sizeLabel === "size/XL") {
-    return xlClassification(expectedSha, deterministic, semverStatus);
+  if (!forced && deterministic?.ok && deterministic.sizeLabel === "size/XXL") {
+    return oversizedClassification(expectedSha, deterministic, semverStatus);
   }
   if (!forced && rateLimit && rateLimit.status !== "allowed") {
     return failedClassification(expectedSha, deterministic, "fork LLM quota unavailable", failureRateLimit, semverStatus);
@@ -152,7 +152,7 @@ function resolveClassificationState({
     : model.breaking_change_suspected && model.risk === "low" ? "medium"
     : model.risk;
   const duplicate = model.duplicate.detected && model.duplicate.confidence >= 0.85;
-  const isXl = deterministic.sizeLabel === "size/XL";
+  const isOversized = deterministic.sizeLabel === "size/XXL";
   const optional = [
     ["kind/technical-debt", model.technical_debt],
     ["kind/protocol", model.protocol_related],
@@ -176,7 +176,7 @@ function resolveClassificationState({
       kind: "duplicate", marker: DUPLICATE_MARKER,
       url: model.duplicate.similar_pr_url, rationale: model.duplicate.rationale,
     }] : []),
-    ...(isXl && !forced ? [{ kind: "xl", marker: XL_MARKER }] : []),
+    ...(isOversized && !forced ? [{ kind: "oversized", marker: OVERSIZED_MARKER }] : []),
   ];
   const auditComments = [
     ...(legitimacyStopped ? [{
@@ -188,10 +188,10 @@ function resolveClassificationState({
     ok: true, mode: "classification", expectedSha, labelSets, addLabels, comments, auditComments,
     dispatchReview: !forced,
     removeCommentMarkers: [
-      // A later push can make a previously reported duplicate or XL verdict wrong, and stale
+      // A later push can make a previously reported duplicate or oversized verdict wrong, and stale
       // guidance would then contradict the labels this run just wrote.
       ...(duplicate ? [] : [DUPLICATE_MARKER]),
-      ...(isXl && !forced ? [] : [XL_MARKER]),
+      ...(isOversized && !forced ? [] : [OVERSIZED_MARKER]),
     ],
     legitimacyStopped,
     check: {
@@ -339,6 +339,6 @@ function resolveReviewState({
 
 module.exports = {
   AI_COUNTS, DUPLICATE_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGITIMACY_LABEL,
-  LEGITIMACY_MARKER_PREFIX, RISK, XL_MARKER, ELIGIBLE_MERGED_PRS, contributorEligibility, isExcludedHistory,
+  LEGITIMACY_MARKER_PREFIX, RISK, OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS, contributorEligibility, isExcludedHistory,
   qualifyingMergedPrs, resolveClassificationState, resolveReviewState, reviewPolicyEligible,
 };
