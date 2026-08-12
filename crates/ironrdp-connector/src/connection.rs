@@ -1527,6 +1527,13 @@ fn create_client_info_pdu(
         CompressionType::K8 // ignored if ClientInfoFlags::COMPRESSION is not set
     };
 
+    // MS-RDPERP requires RemoteApp launch data on the RAIL channel.
+    let (alternate_shell, work_dir) = if config.remote_application_mode {
+        (String::new(), String::new())
+    } else {
+        (config.alternate_shell.clone(), config.work_dir.clone())
+    };
+
     let client_info = ClientInfo {
         credentials: Credentials {
             username: config.credentials.username().unwrap_or("").to_owned(),
@@ -1536,13 +1543,8 @@ fn create_client_info_pdu(
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
         flags,
         compression_type,
-        // MS-RDPERP requires RemoteApp launch data on the RAIL channel.
-        alternate_shell: if config.remote_application_mode {
-            String::new()
-        } else {
-            config.alternate_shell.clone()
-        },
-        work_dir: config.work_dir.clone(),
+        alternate_shell,
+        work_dir,
         extra_info: ExtendedClientInfo {
             address_family: match client_addr {
                 SocketAddr::V4(_) => AddressFamily::INET,
@@ -1572,5 +1574,67 @@ fn create_client_info_pdu(
     ClientInfoPdu {
         security_header,
         client_info,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_pdu::gcc;
+    use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
+    use ironrdp_pdu::rdp::client_info::ClientInfoFlags;
+
+    use super::create_client_info_pdu;
+    use crate::{Config, Credentials, DesktopSize};
+
+    #[test]
+    fn remote_application_client_info_uses_rail_launch_data() {
+        let config = Config {
+            desktop_size: DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            desktop_scale_factor: 0,
+            enable_tls: true,
+            enable_credssp: false,
+            enable_standard_rdp_security: false,
+            credentials: Credentials::UsernamePassword {
+                username: "test".into(),
+                password: "test".into(),
+            },
+            domain: None,
+            client_build: 0,
+            client_name: "test".into(),
+            keyboard_type: gcc::KeyboardType::IbmEnhanced,
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 12,
+            keyboard_layout: 0,
+            connection_type: gcc::ConnectionType::Lan,
+            ime_file_name: String::new(),
+            bitmap: None,
+            dig_product_id: String::new(),
+            client_dir: String::new(),
+            alternate_shell: "app.exe".into(),
+            work_dir: "C:\\apps".into(),
+            remote_application_mode: true,
+            rail_support_level: RailSupportLevel::SUPPORTED,
+            platform: MajorPlatformType::UNIX,
+            hardware_id: None,
+            request_data: None,
+            autologon: false,
+            enable_audio_playback: false,
+            performance_flags: Default::default(),
+            license_cache: None,
+            timezone_info: Default::default(),
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+            multitransport_flags: None,
+        };
+
+        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
+
+        assert!(client_info.flags.contains(ClientInfoFlags::RAIL));
+        assert!(client_info.alternate_shell.is_empty());
+        assert!(client_info.work_dir.is_empty());
     }
 }

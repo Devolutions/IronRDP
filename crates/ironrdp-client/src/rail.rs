@@ -190,6 +190,11 @@ impl RailClient {
             if self.queued_pdus.len() >= Self::MAX_QUEUED_PDUS {
                 return Err(Self::resource_limit_error("queued RAIL PDUs"));
             }
+            if matches!(&pdu, QueuedRailPdu::Execute(_))
+                && self.pending_executes.len() + self.queued_execute_count() >= Self::MAX_PENDING_EXECUTES
+            {
+                return Err(Self::resource_limit_error("RAIL execute requests"));
+            }
             self.queued_pdus.push_back(pdu);
             return Ok(Vec::new().into());
         }
@@ -244,13 +249,16 @@ impl RailClient {
         .collect()
     }
 
-    fn finish_handshake(&mut self, handshake_ex_flags: Option<u32>) -> PduResult<Vec<SvcMessage>> {
-        self.state = RailState::Established;
-        let queued_execute_count = self
-            .queued_pdus
+    fn queued_execute_count(&self) -> usize {
+        self.queued_pdus
             .iter()
             .filter(|pdu| matches!(pdu, QueuedRailPdu::Execute(_)))
-            .count();
+            .count()
+    }
+
+    fn finish_handshake(&mut self, handshake_ex_flags: Option<u32>) -> PduResult<Vec<SvcMessage>> {
+        self.state = RailState::Established;
+        let queued_execute_count = self.queued_execute_count();
         let mut messages = self.initialization_messages();
         self.push_event(RailEvent::Handshake {
             handshake_ex_flags,
@@ -561,6 +569,39 @@ mod tests {
                 }
             ]
         ));
+    }
+
+    #[test]
+    fn queued_executes_do_not_exceed_pending_limit() {
+        let mut client = RailClient::new(1, 1, 1);
+        for _ in 0..RailClient::MAX_PENDING_EXECUTES {
+            client
+                .queue_execute(ExecutePdu {
+                    flags: 0,
+                    executable: "app".to_owned(),
+                    working_directory: String::new(),
+                    arguments: String::new(),
+                })
+                .unwrap();
+        }
+
+        assert!(
+            client
+                .queue_execute(ExecutePdu {
+                    flags: 0,
+                    executable: "app".to_owned(),
+                    working_directory: String::new(),
+                    arguments: String::new(),
+                })
+                .is_err()
+        );
+
+        client
+            .process(&encode_vec(&RailPdu::Handshake(HandshakePdu { build_number: 1 })).unwrap())
+            .unwrap();
+        let messages: Vec<_> = client.complete_desktop_synchronization().unwrap().into();
+
+        assert_eq!(messages.len(), RailClient::MAX_PENDING_EXECUTES);
     }
 
     #[test]
