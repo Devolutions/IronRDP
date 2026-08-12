@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use core::time::Duration;
 use std::thread::{self, JoinHandle};
 
 use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
