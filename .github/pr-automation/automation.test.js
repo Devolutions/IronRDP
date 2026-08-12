@@ -11,7 +11,7 @@ const { validateClassifier } = require("./validate-classifier");
 const { validateReviewer } = require("./validate-reviewer");
 const {
   resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER,
-  LEGITIMACY_LABEL, LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER,
+  LEGACY_XL_MARKER, LEGITIMACY_LABEL, LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER,
 } = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
 const { StaleHeadError, applyLabels, escapeMarkdown, markerBody, writeState } = require("./write-state");
@@ -864,6 +864,7 @@ test("XXL guidance is posted once and withdrawn when the change shrinks", () => 
   const oversized = state("size/XXL");
   assert.deepEqual(oversized.comments.map((comment) => comment.kind), ["oversized"]);
   assert.equal(oversized.removeCommentMarkers.includes(OVERSIZED_MARKER), false);
+  assert.equal(oversized.removeCommentMarkers.includes(LEGACY_XL_MARKER), true);
   const body = markerBody(oversized.comments[0], "Devolutions", "IronRDP");
   assert.match(body, /stacked-prs/);
   assert.match(body, /size\/XXL/);
@@ -871,6 +872,7 @@ test("XXL guidance is posted once and withdrawn when the change shrinks", () => 
   const shrunk = state("size/XL");
   assert.deepEqual(shrunk.comments, []);
   assert.equal(shrunk.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
+  assert.equal(shrunk.removeCommentMarkers.includes(LEGACY_XL_MARKER), true);
 });
 
 test("an oversized change retains deterministic labels without a classifier", () => {
@@ -894,7 +896,7 @@ test("an oversized change retains deterministic labels without a classifier", ()
   assert.notEqual(state.check.title, "Classification complete");
   // No model ran, so a duplicate or legitimacy verdict from an earlier head is neither confirmed
   // nor refuted and must be left in place.
-  assert.deepEqual(state.removeCommentMarkers, []);
+  assert.deepEqual(state.removeCommentMarkers, [LEGACY_XL_MARKER]);
 
   const unavailable = resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic, classifier: undefined,

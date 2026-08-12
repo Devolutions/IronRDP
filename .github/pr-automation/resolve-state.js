@@ -11,6 +11,7 @@ const LEGITIMACY_LABEL = "triage/legitimacy";
 const LEGITIMACY_MARKER_PREFIX = "<!-- ironrdp-pr-automation:legitimacy:v2:";
 const DUPLICATE_MARKER = "<!-- ironrdp-pr-automation:duplicate -->";
 const OVERSIZED_MARKER = "<!-- ironrdp-pr-automation:oversized -->";
+const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
 const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -->";
 const ELIGIBLE_MERGED_PRS = 3;
@@ -94,7 +95,7 @@ function oversizedClassification(expectedSha, deterministic, semverStatus) {
     comments: [{ kind: "oversized", marker: OVERSIZED_MARKER }],
     // Duplicate and legitimacy verdicts are model-derived. No model ran, so a previously posted
     // verdict is neither confirmed nor refuted here and is left untouched.
-    removeCommentMarkers: [],
+    removeCommentMarkers: [LEGACY_XL_MARKER],
     check: {
       name: "AI classification",
       externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
@@ -191,7 +192,7 @@ function resolveClassificationState({
       // A later push can make a previously reported duplicate or oversized verdict wrong, and stale
       // guidance would then contradict the labels this run just wrote.
       ...(duplicate ? [] : [DUPLICATE_MARKER]),
-      ...(isOversized && !forced ? [] : [OVERSIZED_MARKER]),
+      ...(isOversized && !forced ? [LEGACY_XL_MARKER] : [OVERSIZED_MARKER, LEGACY_XL_MARKER]),
     ],
     legitimacyStopped,
     check: {
@@ -338,7 +339,7 @@ function resolveReviewState({
 }
 
 module.exports = {
-  AI_COUNTS, DUPLICATE_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGITIMACY_LABEL,
+  AI_COUNTS, DUPLICATE_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, RISK, OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS, contributorEligibility, isExcludedHistory,
   qualifyingMergedPrs, resolveClassificationState, resolveReviewState, reviewPolicyEligible,
 };
