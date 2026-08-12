@@ -30,6 +30,7 @@ ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.9" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", features = ["std"] } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.8" }
+ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" }
 tracing = { version = "0.1", features = ["log"] }
 qoicoubeh = { version = "0.5", optional = true }
 zstd-safe = { version = "7.2", optional = true, features = ["std"] }

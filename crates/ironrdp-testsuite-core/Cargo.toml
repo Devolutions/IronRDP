@@ -45,6 +45,7 @@ ironrdp-connector.path = "../ironrdp-connector"
 ironrdp-displaycontrol.path = "../ironrdp-displaycontrol"
 ironrdp-dvc.path = "../ironrdp-dvc"
 ironrdp-echo.path = "../ironrdp-echo"
+ironrdp-rdpei.path = "../ironrdp-rdpei"
 ironrdp-error = { path = "../ironrdp-error", features = ["std"] }
 ironrdp-fuzzing.path = "../ironrdp-fuzzing"
 ironrdp-graphics.path = "../ironrdp-graphics"

@@ -32,6 +32,10 @@ pub use ironrdp_core as core;
 #[doc(inline)]
 pub use ironrdp_displaycontrol as displaycontrol;
 
+#[cfg(feature = "rdpei")]
+#[doc(inline)]
+pub use ironrdp_rdpei as rdpei;
+
 #[cfg(feature = "echo")]
 #[doc(inline)]
 pub use ironrdp_echo as echo;
