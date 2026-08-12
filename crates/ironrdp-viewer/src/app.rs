@@ -546,6 +546,48 @@ impl RpcApp {
                     "Reconnecting because dynamic display resize could not complete"
                 );
             }
+            RdpOutputEvent::RailHandshake {
+                handshake_ex_flags,
+                initialization_message_count,
+                queued_execute_count,
+            } => {
+                debug!(
+                    ?handshake_ex_flags,
+                    initialization_message_count, queued_execute_count, "RAIL static channel initialized"
+                );
+            }
+            RdpOutputEvent::RailDesktopSynchronized { released_execute_count } => {
+                debug!(
+                    released_execute_count,
+                    "RAIL queued input released after desktop synchronization"
+                );
+            }
+            RdpOutputEvent::RailPostHandshakeQueueReleased { released_execute_count } => {
+                debug!(
+                    released_execute_count,
+                    "RAIL queued input released after handshake fallback"
+                );
+            }
+            RdpOutputEvent::RailExecuteResult(result) => {
+                debug!(?result, "RAIL execute completed");
+            }
+            RdpOutputEvent::RailApplicationId {
+                window_id,
+                application_id,
+                process_id,
+                process_image_name,
+            } => {
+                debug!(
+                    window_id,
+                    %application_id,
+                    ?process_id,
+                    ?process_image_name,
+                    "RAIL application identity received"
+                );
+            }
+            RdpOutputEvent::RailControl(control) => {
+                debug!(?control, "RAIL control received");
+            }
         }
     }
 }

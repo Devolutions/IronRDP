@@ -1514,6 +1514,10 @@ fn create_client_info_pdu(
         flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK;
     }
 
+    if config.remote_application_mode {
+        flags |= ClientInfoFlags::RAIL;
+    }
+
     // Advertise bulk compression support if configured
     let compression_type = if let Some(ct) = config.compression_type {
         flags |= ClientInfoFlags::COMPRESSION;
@@ -1532,7 +1536,12 @@ fn create_client_info_pdu(
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
         flags,
         compression_type,
-        alternate_shell: config.alternate_shell.clone(),
+        // MS-RDPERP requires RemoteApp launch data on the RAIL channel.
+        alternate_shell: if config.remote_application_mode {
+            String::new()
+        } else {
+            config.alternate_shell.clone()
+        },
         work_dir: config.work_dir.clone(),
         extra_info: ExtendedClientInfo {
             address_family: match client_addr {

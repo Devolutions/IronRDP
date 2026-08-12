@@ -299,6 +299,13 @@ pub trait PropertySetExt {
     /// Removes the `alternate shell` property.
     fn clear_alternate_shell(&mut self);
 
+    /// Whether the `.rdp` file requests RemoteApp mode (`remoteapplicationmode`).
+    fn remote_application_mode(&self) -> Option<bool>;
+    /// Sets the `remoteapplicationmode` property.
+    fn set_remote_application_mode(&mut self, value: bool);
+    /// Removes the `remoteapplicationmode` property.
+    fn clear_remote_application_mode(&mut self);
+
     /// Audio output redirection mode (`audiomode`).
     fn audio_mode(&self) -> Result<Option<AudioMode>, UnknownAudioMode>;
     /// Sets the `audiomode` property.
@@ -617,6 +624,18 @@ impl PropertySetExt for PropertySet {
 
     fn clear_alternate_shell(&mut self) {
         self.remove("alternate shell");
+    }
+
+    fn remote_application_mode(&self) -> Option<bool> {
+        self.get::<bool>("remoteapplicationmode")
+    }
+
+    fn set_remote_application_mode(&mut self, value: bool) {
+        self.insert("remoteapplicationmode", value);
+    }
+
+    fn clear_remote_application_mode(&mut self) {
+        self.remove("remoteapplicationmode");
     }
 
     fn audio_mode(&self) -> Result<Option<AudioMode>, UnknownAudioMode> {

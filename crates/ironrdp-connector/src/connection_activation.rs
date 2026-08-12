@@ -1,7 +1,9 @@
 use core::mem;
 
 use ironrdp_pdu::rdp;
-use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, InputFlags, WindowList, WindowSupportLevel};
+use ironrdp_pdu::rdp::capability_sets::{
+    CapabilitySet, InputFlags, Rail, RailSupportLevel, WindowList, WindowSupportLevel,
+};
 use tracing::{debug, warn};
 
 use crate::{
@@ -429,6 +431,42 @@ fn negotiated_window_support_level(window_list: Option<&WindowList>) -> Option<W
     })
 }
 
+fn remote_app_rail_capability(
+    remote_application_mode: bool,
+    rail_support_level: RailSupportLevel,
+    server_capability_sets: &[CapabilitySet],
+    window_list: Option<&WindowList>,
+) -> ConnectorResult<Option<Rail>> {
+    if !remote_application_mode {
+        return Ok(None);
+    }
+    if !rail_support_level.contains(RailSupportLevel::SUPPORTED) {
+        return Err(reason_err!(
+            "Capabilities Exchange",
+            "client RemoteApp configuration does not support remote programs"
+        ));
+    }
+
+    let rail_supported = server_capability_sets.iter().any(|capability_set| {
+        matches!(
+            capability_set,
+            CapabilitySet::Rail(rail) if rail.support_level.contains(RailSupportLevel::SUPPORTED)
+        )
+    });
+    let window_list_supported =
+        window_list.is_some_and(|window_list| window_list.support_level != WindowSupportLevel::NotSupported);
+    if !rail_supported || !window_list_supported {
+        return Err(reason_err!(
+            "Capabilities Exchange",
+            "server does not support required RemoteApp capabilities"
+        ));
+    }
+
+    Ok(Some(Rail {
+        support_level: rail_support_level,
+    }))
+}
+
 fn create_client_confirm_active(
     config: &Config,
     mut server_capability_sets: Vec<CapabilitySet>,
@@ -442,6 +480,13 @@ fn create_client_confirm_active(
         OffscreenBitmapCache, Order, OrderFlags, OrderSupportExFlags, Pointer, SERVER_CHANNEL_ID, Sound, SoundFlags,
         SupportLevel, SurfaceCommands, VirtualChannel, VirtualChannelFlags, client_codecs_capabilities,
     };
+
+    let remote_app_rail_capability = remote_app_rail_capability(
+        config.remote_application_mode,
+        config.rail_support_level,
+        &server_capability_sets,
+        window_list.as_ref(),
+    )?;
 
     server_capability_sets.retain(|capability_set| matches!(capability_set, CapabilitySet::MultiFragmentUpdate(_)));
 
@@ -556,6 +601,9 @@ fn create_client_confirm_active(
             max_request_size: 8 * 1024 * 1024, // 8 MB
         }));
     }
+    if let Some(rail) = remote_app_rail_capability {
+        server_capability_sets.push(CapabilitySet::Rail(rail));
+    }
     if let Some(window_list) = window_list {
         server_capability_sets.push(CapabilitySet::WindowList(window_list));
     }
@@ -591,9 +639,11 @@ fn requested_bitmap_color_depth(bitmap: Option<&crate::BitmapConfig>) -> Connect
 
 #[cfg(test)]
 mod tests {
-    use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, WindowList, WindowSupportLevel};
+    use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, Rail, RailSupportLevel, WindowList, WindowSupportLevel};
 
-    use super::{negotiated_window_support_level, requested_bitmap_color_depth, server_window_list};
+    use super::{
+        negotiated_window_support_level, remote_app_rail_capability, requested_bitmap_color_depth, server_window_list,
+    };
     use crate::BitmapConfig;
 
     #[test]
@@ -635,6 +685,56 @@ mod tests {
                 num_icon_cache_entries: 0,
             })),
             None
+        );
+    }
+
+    #[test]
+    fn remote_app_capabilities_require_server_rail_and_window_list() {
+        let rail_support_level = RailSupportLevel::SUPPORTED;
+        let window_list = WindowList {
+            support_level: WindowSupportLevel::SupportedEx,
+            num_icon_caches: 3,
+            num_icon_cache_entries: 12,
+        };
+        let rail = CapabilitySet::Rail(Rail {
+            support_level: RailSupportLevel::SUPPORTED,
+        });
+
+        assert_eq!(
+            remote_app_rail_capability(
+                true,
+                rail_support_level,
+                core::slice::from_ref(&rail),
+                Some(&window_list)
+            )
+            .unwrap(),
+            Some(Rail {
+                support_level: rail_support_level,
+            })
+        );
+        assert!(remote_app_rail_capability(true, rail_support_level, &[], Some(&window_list)).is_err());
+        assert!(remote_app_rail_capability(true, rail_support_level, core::slice::from_ref(&rail), None).is_err());
+    }
+
+    #[test]
+    fn remote_app_capabilities_require_client_rail_support() {
+        let window_list = WindowList {
+            support_level: WindowSupportLevel::Supported,
+            num_icon_caches: 0,
+            num_icon_cache_entries: 0,
+        };
+        let rail = CapabilitySet::Rail(Rail {
+            support_level: RailSupportLevel::SUPPORTED,
+        });
+
+        assert!(
+            remote_app_rail_capability(
+                true,
+                RailSupportLevel::empty(),
+                core::slice::from_ref(&rail),
+                Some(&window_list)
+            )
+            .is_err()
         );
     }
 }
