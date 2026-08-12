@@ -79,3 +79,10 @@ pub mod bench {
         pub use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
     }
 }
+
+#[cfg(all(feature = "__test", feature = "qoiz"))]
+pub mod qoiz_test {
+    pub use crate::encoder::qoiz::zrip_backend::Compressor as ZripCompressor;
+    #[cfg(feature = "qoiz-zstd")]
+    pub use crate::encoder::qoiz::zstd_safe_backend::Compressor as ZstdSafeCompressor;
+}

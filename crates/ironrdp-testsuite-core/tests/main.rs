@@ -26,6 +26,7 @@ mod input;
 mod pcb;
 mod pdu;
 mod propertyset;
+mod qoiz;
 mod rdcleanpath;
 mod rdpdr;
 mod rdpeai;

@@ -13,6 +13,8 @@ pub mod x224;
 mod active_stage;
 mod autodetect;
 mod palette;
+#[cfg(feature = "qoiz")]
+mod qoiz;
 
 use core::fmt;
 
@@ -20,6 +22,13 @@ use core::fmt;
 pub use active_stage::composite_graphics_updates;
 pub use active_stage::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
 pub use fast_path::{BulkDecompressionErrorKind, FastPathBulkDecompressionFailure};
+
+#[cfg(all(feature = "__test", feature = "qoiz"))]
+pub mod qoiz_test {
+    pub use crate::qoiz::zrip_backend::Decompressor as ZripDecompressor;
+    #[cfg(feature = "qoiz-zstd")]
+    pub use crate::qoiz::zstd_safe_backend::Decompressor as ZstdSafeDecompressor;
+}
 
 pub type SessionResult<T> = Result<T, SessionError>;
 
