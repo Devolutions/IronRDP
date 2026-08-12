@@ -2551,6 +2551,7 @@ dependencies = [
  "ironrdp-mstsgu",
  "ironrdp-pdu",
  "ironrdp-propertyset",
+ "ironrdp-rail",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr",
  "ironrdp-rdpsnd",

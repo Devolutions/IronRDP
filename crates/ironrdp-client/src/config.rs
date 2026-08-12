@@ -627,6 +627,8 @@ pub struct ConfigBuilder {
     compression_enabled: Option<bool>,
     alternate_shell: Option<String>,
     work_dir: Option<String>,
+    remote_application_mode: Option<bool>,
+    rail_support_level: Option<ironrdp_pdu::rdp::capability_sets::RailSupportLevel>,
 
     transport: TransportKind,
     #[cfg(feature = "vmconnect")]
@@ -877,6 +879,30 @@ impl ConfigBuilder {
             self.properties.set_shell_working_directory(work_dir.clone());
             self.work_dir = Some(work_dir);
         }
+        self
+    }
+
+    /// Enable or disable RemoteApp/RAIL connection mode.
+    ///
+    /// RemoteApp launch information is sent on the RAIL static virtual channel
+    /// rather than through the Client Info Alternate Shell field.
+    #[must_use]
+    pub fn with_remote_application_mode(mut self, enabled: bool) -> Self {
+        self.properties.set_remote_application_mode(enabled);
+        self.remote_application_mode = Some(enabled);
+        self
+    }
+
+    /// Declares the RAIL capabilities implemented by this client.
+    ///
+    /// RemoteApp mode requires
+    /// [`RailSupportLevel::SUPPORTED`](ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED).
+    #[must_use]
+    pub fn with_rail_support_level(
+        mut self,
+        support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel,
+    ) -> Self {
+        self.rail_support_level = Some(support_level);
         self
     }
 
@@ -1424,6 +1450,16 @@ impl ConfigBuilder {
             self.enable_credssp.unwrap_or(true)
         };
 
+        let remote_application_mode = self.remote_application_mode.unwrap_or(false);
+        let rail_support_level = self
+            .rail_support_level
+            .unwrap_or(ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED);
+        if remote_application_mode
+            && !rail_support_level.contains(ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED)
+        {
+            anyhow::bail!("RAIL support level must include remote programs support when RemoteApp mode is enabled");
+        }
+
         let connector = ironrdp_connector::Config {
             credentials: ironrdp_connector::Credentials::UsernamePassword {
                 username: self.username.unwrap_or_default(),
@@ -1467,6 +1503,8 @@ impl ConfigBuilder {
             timezone_info: TimezoneInfo::default(),
             alternate_shell: self.alternate_shell.unwrap_or_default(),
             work_dir: self.work_dir.unwrap_or_default(),
+            remote_application_mode,
+            rail_support_level,
         };
 
         // To avoid easily leaking secrets, strip any known secret property before returning the resulting Config.
@@ -1568,6 +1606,9 @@ impl ConfigBuilder {
         }
         if let Some(dir) = ps.shell_working_directory() {
             self.work_dir = Some(dir.to_owned());
+        }
+        if let Some(remote_application_mode) = ps.remote_application_mode() {
+            self.remote_application_mode = Some(remote_application_mode);
         }
         if let Some(minutes) = ps.fake_events_interval() {
             self.fake_events_interval = Some(Duration::from_secs(u64::from(minutes) * 60));
@@ -1776,4 +1817,45 @@ fn kerberos_config_from_properties(
             kdc_proxy_url: Some(url),
             hostname: client_name.to_owned(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_cfg::PropertySetExt as _;
+    use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
+
+    use super::{ConfigBuilder, Destination};
+
+    fn complete_builder() -> ConfigBuilder {
+        ConfigBuilder::new()
+            .with_destination(Destination::new("server.example:3389").unwrap())
+            .with_username("user")
+            .with_password("password")
+            .with_client_build(1)
+            .with_client_dir("C:\\")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+    }
+
+    #[test]
+    fn remote_application_mode_requires_remote_programs_support() {
+        let error = complete_builder()
+            .with_remote_application_mode(true)
+            .with_rail_support_level(RailSupportLevel::empty())
+            .build()
+            .expect_err("RemoteApp must require remote programs support");
+
+        assert!(error.to_string().contains("RAIL support level"), "{error:?}");
+    }
+
+    #[test]
+    fn remote_application_mode_is_preserved_in_properties() {
+        let config = complete_builder()
+            .with_remote_application_mode(true)
+            .build()
+            .expect("valid RemoteApp configuration");
+
+        assert!(config.connector().remote_application_mode);
+        assert_eq!(config.properties().remote_application_mode(), Some(true));
+    }
 }
