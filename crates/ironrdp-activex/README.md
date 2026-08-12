@@ -453,7 +453,8 @@ settings objects keep the server loaded until their final `Release`, even if the
 has already been released. The currently mapped members are `SmartSizing`, `EnableCredSspSupport`,
 `KeyboardHookMode`, keyboard type,
 subtype, and functional-key count, secured `StartProgram`/`WorkDir`, both public
-`AudioRedirectionMode` slots, `GrabFocusOnConnect`, `Compress`, `RDPPort`,
+`AudioRedirectionMode` slots, both public `AudioCaptureRedirectionMode` slots,
+`GrabFocusOnConnect`, `Compress`, `RDPPort`,
 `AuthenticationLevel`, and `PublicMode`,
 `RedirectClipboard`, `PerformanceFlags`, and RD Gateway transport selection.
 `StartProgram` and `WorkDir` retain their caller-owned BSTR values and configure IronRDP's next
@@ -465,7 +466,9 @@ advertises the `rdpsnd` static channel for server-to-client wave data; modes
 enabled, because Windows often requires both). Mode `1` is **not** yet distinct
 from mode `2` on the wire: IronRDP does not set `INFO_REMOTECONSOLEAUDIO`, so
 hosts that honor “play on server console” may still treat the session as
-no-audio. Capture / microphone redirection is not implemented.
+no-audio.
+Non-zero `AudioCaptureRedirectionMode` enables the `AUDIO_INPUT` DVC (MS-RDPEAI)
+with the Windows CPAL capture backend and sets `INFO_AUDIOCAPTURE` on Client Info.
 When requested,
 `GrabFocusOnConnect` focuses the ActiveX renderer only after its first remote frame arrives.
 Invalid audio modes and keyboard types return `E_INVALIDARG`.
@@ -722,6 +725,14 @@ Audio waveform e2e is not automated. After a successful `connect` (or under MsRd
    confirm local speakers hear it.
 2. Set mode `2` (disabled), reconnect, and confirm the same remote sound is silent locally.
 3. Mode `1` (play on server) is host-side only and must not open a local playback stream.
+
+### Manual AUDIO_INPUT capture check
+
+1. Set `AudioCaptureRedirectionMode` to `VARIANT_TRUE` (or non-zero), allow microphone access if
+   Windows prompts, reconnect, and speak into the default input device while a remote app records
+   or shows mic level.
+2. Set the mode back to `VARIANT_FALSE`, reconnect, and confirm the remote session no longer
+   receives client microphone data.
 
 ## Current architectural boundary
 

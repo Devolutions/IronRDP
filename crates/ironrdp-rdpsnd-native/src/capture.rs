@@ -1,0 +1,242 @@
+use core::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+
+use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
+use cpal::{SampleFormat, Stream, StreamConfig};
+use ironrdp_rdpeai::client::{AudioPacketSink, RdpeaiCaptureHandler};
+use ironrdp_rdpeai::pdu::{OpenReplyPdu, pcm_format};
+use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
+use tracing::{debug, error, warn};
+
+/// CPAL-backed MS-RDPEAI capture handler.
+pub struct RdpeaiCaptureBackend {
+    formats: Vec<AudioFormat>,
+    stream_handle: Option<JoinHandle<()>>,
+    stream_ended: Arc<AtomicBool>,
+    /// Shared sink + packet size for the capture callback thread.
+    sink_state: Arc<Mutex<Option<SinkState>>>,
+}
+
+struct SinkState {
+    sink: AudioPacketSink,
+    packet_size: usize,
+    buffer: Vec<u8>,
+}
+
+impl Default for RdpeaiCaptureBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RdpeaiCaptureBackend {
+    pub fn new() -> Self {
+        Self {
+            formats: default_capture_formats(),
+            stream_handle: None,
+            stream_ended: Arc::new(AtomicBool::new(false)),
+            sink_state: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn start_stream(&mut self, format: &AudioFormat) -> Result<(), String> {
+        self.stop_stream();
+
+        if format.format != WaveFormat::PCM {
+            return Err(format!("unsupported capture wave format: {:?}", format.format));
+        }
+        if format.bits_per_sample != 16 && format.bits_per_sample != 8 {
+            return Err(format!(
+                "unsupported capture bits_per_sample: {}",
+                format.bits_per_sample
+            ));
+        }
+
+        let host = cpal::default_host();
+        let device = host
+            .default_input_device()
+            .ok_or_else(|| "no default input device".to_owned())?;
+
+        let sample_format = if format.bits_per_sample == 8 {
+            SampleFormat::U8
+        } else {
+            SampleFormat::I16
+        };
+
+        let config = StreamConfig {
+            channels: format.n_channels,
+            sample_rate: format.n_samples_per_sec,
+            buffer_size: cpal::BufferSize::Default,
+        };
+
+        let stream_ended = Arc::clone(&self.stream_ended);
+        let sink_state = Arc::clone(&self.sink_state);
+        self.stream_ended.store(false, Ordering::Relaxed);
+
+        self.stream_handle = Some(thread::spawn(move || {
+            let stream = match build_input_stream(&device, &config, sample_format, Arc::clone(&sink_state)) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    error!(%error, "Failed to open CPAL input stream");
+                    return;
+                }
+            };
+            if let Err(error) = stream.play() {
+                error!(%error, "Failed to start CPAL input stream");
+                return;
+            }
+            debug!("AUDIO_INPUT capture stream running");
+            while !stream_ended.load(Ordering::Relaxed) {
+                thread::park();
+            }
+            drop(stream);
+            debug!("AUDIO_INPUT capture stream stopped");
+        }));
+
+        // Give the worker a moment; open errors surface asynchronously. Treat spawn as success
+        // and let missing audio be a soft failure (Open already returned S_OK).
+        Ok(())
+    }
+
+    fn stop_stream(&mut self) {
+        if let Some(handle) = self.stream_handle.take() {
+            self.stream_ended.store(true, Ordering::Relaxed);
+            handle.thread().unpark();
+            if let Err(err) = handle.join() {
+                error!(?err, "Failed to join capture stream thread");
+            }
+        }
+        if let Ok(mut guard) = self.sink_state.lock() {
+            *guard = None;
+        }
+    }
+}
+
+impl Drop for RdpeaiCaptureBackend {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
+    fn supported_formats(&self) -> &[AudioFormat] {
+        &self.formats
+    }
+
+    fn open(&mut self, format: &AudioFormat, packet_size: usize, sink: AudioPacketSink) -> i32 {
+        if packet_size == 0 {
+            warn!("Refusing capture open with zero packet size");
+            return OpenReplyPdu::E_FAIL;
+        }
+
+        {
+            let Ok(mut guard) = self.sink_state.lock() else {
+                return OpenReplyPdu::E_FAIL;
+            };
+            *guard = Some(SinkState {
+                sink,
+                packet_size,
+                buffer: Vec::with_capacity(packet_size * 2),
+            });
+        }
+
+        match self.start_stream(format) {
+            Ok(()) => OpenReplyPdu::S_OK,
+            Err(error) => {
+                warn!(%error, "AUDIO_INPUT capture open failed");
+                if let Ok(mut guard) = self.sink_state.lock() {
+                    *guard = None;
+                }
+                OpenReplyPdu::E_FAIL
+            }
+        }
+    }
+
+    fn set_format(&mut self, format: &AudioFormat, packet_size: usize) -> bool {
+        if packet_size == 0 {
+            return false;
+        }
+        {
+            let Ok(mut guard) = self.sink_state.lock() else {
+                return false;
+            };
+            if let Some(state) = guard.as_mut() {
+                state.packet_size = packet_size;
+                state.buffer.clear();
+            } else {
+                return false;
+            }
+        }
+        self.start_stream(format).is_ok()
+    }
+
+    fn close(&mut self) {
+        self.stop_stream();
+    }
+}
+
+fn default_capture_formats() -> Vec<AudioFormat> {
+    // Prefer common VoIP / Windows mic rates, mono first.
+    vec![
+        pcm_format(1, 48000, 16),
+        pcm_format(1, 44100, 16),
+        pcm_format(1, 22050, 16),
+        pcm_format(1, 16000, 16),
+        pcm_format(1, 8000, 16),
+        pcm_format(2, 48000, 16),
+        pcm_format(2, 44100, 16),
+        pcm_format(2, 16000, 16),
+    ]
+}
+
+fn build_input_stream(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    sample_format: SampleFormat,
+    sink_state: Arc<Mutex<Option<SinkState>>>,
+) -> Result<Stream, String> {
+    let err_fn = |error| error!(%error, "CPAL input stream error");
+
+    match sample_format {
+        SampleFormat::I16 => device
+            .build_input_stream(
+                config,
+                move |data: &[i16], _| {
+                    let mut bytes = Vec::with_capacity(data.len() * 2);
+                    for sample in data {
+                        bytes.extend_from_slice(&sample.to_le_bytes());
+                    }
+                    push_samples(&sink_state, &bytes);
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| e.to_string()),
+        SampleFormat::U8 => device
+            .build_input_stream(
+                config,
+                move |data: &[u8], _| {
+                    push_samples(&sink_state, data);
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| e.to_string()),
+        other => Err(format!("unsupported CPAL sample format: {other:?}")),
+    }
+}
+
+fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: &[u8]) {
+    let Ok(mut guard) = sink_state.lock() else {
+        return;
+    };
+    let Some(state) = guard.as_mut() else {
+        return;
+    };
+    state.buffer.extend_from_slice(samples);
+    while state.buffer.len() >= state.packet_size {
+        let packet: Vec<u8> = state.buffer.drain(..state.packet_size).collect();
+        (state.sink)(packet);
+    }
+}

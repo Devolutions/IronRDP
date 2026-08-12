@@ -1024,6 +1024,8 @@ struct CompatibilitySettings {
     secured_work_dir: String,
     secured_fullscreen: i32,
     audio_redirection_mode: i32,
+    /// MSTSC `AudioCaptureRedirectionMode` (VARIANT_BOOL; non-zero enables mic capture).
+    audio_capture_redirection_mode: i16,
     remote_program_mode: bool,
     remote_application_name: String,
     remote_application_program: String,
@@ -1093,6 +1095,7 @@ impl Default for CompatibilitySettings {
             secured_work_dir: String::new(),
             secured_fullscreen: 0,
             audio_redirection_mode: 0,
+            audio_capture_redirection_mode: VARIANT_FALSE.0,
             remote_program_mode: false,
             remote_application_name: String::new(),
             remote_application_program: String::new(),
@@ -1854,7 +1857,6 @@ advanced_put_not_implemented!(
     (150, advanced_put_redirect_devices, i16),
     (161, advanced_put_pcb, Bstr),
     (169, advanced_put_connect_to_administer_server, i16),
-    (171, advanced_put_audio_capture_redirection_mode, i16),
     (173, advanced_put_video_playback_mode, u32),
     (175, advanced_put_enable_super_pan, i16),
     (179, advanced_put_negotiate_security_layer, i16),
@@ -1874,7 +1876,6 @@ advanced_get_not_implemented!(
     (135, advanced_get_max_reconnect_attempts, i32),
     (151, advanced_get_redirect_devices, i16),
     (170, advanced_get_connect_to_administer_server, i16),
-    (172, advanced_get_audio_capture_redirection_mode, i16),
     (174, advanced_get_video_playback_mode, u32),
     (176, advanced_get_enable_super_pan, i16),
     (180, advanced_get_negotiate_security_layer, i16),
@@ -2663,6 +2664,27 @@ unsafe extern "system" fn advanced_get_audio_redirection(this: *mut c_void, out:
         Err(_) => return E_FAIL,
     };
     match write_out(out, value) {
+        Ok(()) => S_OK,
+        Err(error) => error.code(),
+    }
+}
+
+unsafe extern "system" fn advanced_put_audio_capture_redirection_mode(this: *mut c_void, value: i16) -> HRESULT {
+    trace_host_call("IMsRdpClientAdvancedSettings6::put_AudioCaptureRedirectionMode");
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    // MSTSC documents VARIANT_BOOL; treat any non-zero value as enable.
+    object.settings.borrow_mut().audio_capture_redirection_mode = if value == VARIANT_FALSE.0 {
+        VARIANT_FALSE.0
+    } else {
+        VARIANT_TRUE.0
+    };
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_audio_capture_redirection_mode(this: *mut c_void, out: *mut i16) -> HRESULT {
+    trace_host_call("IMsRdpClientAdvancedSettings6::get_AudioCaptureRedirectionMode");
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    match write_out(out, object.settings.borrow().audio_capture_redirection_mode) {
         Ok(()) => S_OK,
         Err(error) => error.code(),
     }
@@ -8044,6 +8066,11 @@ impl Control {
                 .fake_events_interval()
                 .map(|interval| u32::try_from(interval.as_secs() / 60).unwrap_or(u32::MAX));
             compatibility.audio_redirection_mode = if connector.enable_audio_playback { 0 } else { 2 };
+            compatibility.audio_capture_redirection_mode = if connector.enable_audio_capture {
+                VARIANT_TRUE.0
+            } else {
+                VARIANT_FALSE.0
+            };
             compatibility.secured_start_program = connector.alternate_shell.clone();
             compatibility.secured_work_dir = connector.work_dir.clone();
             compatibility.authentication_level_set =
@@ -8186,6 +8213,7 @@ impl Control {
             .map_err(|error| Error::new(E_FAIL, format!("invalid redirected-drive configuration: {error}")))?;
         let rdpdr_enabled = rdpdr_factory.is_some();
         let audio_redirection_mode = audio_mode_from_raw(compatibility.audio_redirection_mode)?;
+        let audio_capture_enabled = compatibility.audio_capture_redirection_mode != VARIANT_FALSE.0;
         let keyboard_type = compatibility.keyboard_type;
         let keyboard_subtype = compatibility.keyboard_subtype;
         let keyboard_functional_keys_count = compatibility.keyboard_functional_keys_count;
@@ -8340,6 +8368,7 @@ impl Control {
             .with_keyboard_layout(keyboard_layout)
             .with_connection_type(connection_type)
             .with_audio_mode(audio_redirection_mode)
+            .with_audio_capture(audio_capture_enabled)
             .with_certificate_validation(certificate_validation)
             // The GDI presenter has no hardware-cursor overlay, so cursor updates must be
             // composited into the decoded framebuffer before it receives image events.
@@ -14880,6 +14909,28 @@ mod tests {
         );
         assert_eq!(audio_redirection_mode, 2);
         assert_eq!(unsafe { advanced_put_audio_redirection(this, 3) }, E_INVALIDARG);
+
+        assert_eq!(
+            unsafe { advanced_put_audio_capture_redirection_mode(this, VARIANT_TRUE.0) },
+            S_OK
+        );
+        let mut audio_capture_mode = VARIANT_FALSE.0;
+        assert_eq!(
+            unsafe { advanced_get_audio_capture_redirection_mode(this, &mut audio_capture_mode) },
+            S_OK
+        );
+        assert_eq!(audio_capture_mode, VARIANT_TRUE.0);
+        // Non-zero values normalize to VARIANT_TRUE.
+        assert_eq!(unsafe { advanced_put_audio_capture_redirection_mode(this, 1) }, S_OK);
+        assert_eq!(
+            unsafe { advanced_get_audio_capture_redirection_mode(this, &mut audio_capture_mode) },
+            S_OK
+        );
+        assert_eq!(audio_capture_mode, VARIANT_TRUE.0);
+        assert_eq!(
+            unsafe { advanced_put_audio_capture_redirection_mode(this, VARIANT_FALSE.0) },
+            S_OK
+        );
 
         assert_eq!(unsafe { advanced_put_authentication_level(this, 2) }, S_OK);
         let mut authentication_level = u32::MAX;

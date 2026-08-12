@@ -102,6 +102,10 @@ RDPDR channel implementation.
 
 RDPSND static channel for audio output implemented as described in MS-RDPEA.
 
+#### [`crates/ironrdp-rdpeai`](./crates/ironrdp-rdpeai)
+
+AUDIO_INPUT dynamic channel for client microphone capture implemented as described in MS-RDPEAI.
+
 #### [`crates/ironrdp-connector`](./crates/ironrdp-connector)
 
 State machines to drive an RDP connection sequence.

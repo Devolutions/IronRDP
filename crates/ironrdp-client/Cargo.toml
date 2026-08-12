@@ -30,7 +30,7 @@ native-tls = [
     "ironrdp-mstsgu?/native-tls",
 ]
 
-sound = ["dep:ironrdp-rdpsnd", "dep:ironrdp-rdpsnd-native"]
+sound = ["dep:ironrdp-rdpsnd", "dep:ironrdp-rdpsnd-native", "dep:ironrdp-rdpeai"]
 clipboard = ["dep:ironrdp-cliprdr", "dep:ironrdp-cliprdr-native"]
 rdpdr = ["dep:ironrdp-rdpdr", "dep:ironrdp-rdpsnd"]
 smartcard = ["rdpdr"]
@@ -76,6 +76,7 @@ ironrdp-rail = { path = "../ironrdp-rail", version = "0.1" }
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7", optional = true } # public
 ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7", optional = true } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9", optional = true }
+ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.1", optional = true }
 
 # Optional backend crates (activated by features above)
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.7", optional = true }

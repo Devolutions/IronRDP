@@ -1066,6 +1066,7 @@ fn default_client_config() -> connector::Config {
         request_data: None,
         autologon: false,
         enable_audio_playback: true,
+        enable_audio_capture: false,
         license_cache: None,
         compression_type: None,
         enable_server_pointer: true,

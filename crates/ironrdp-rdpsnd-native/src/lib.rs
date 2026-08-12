@@ -6,7 +6,9 @@
 // workaround dead code, so the suppression has to apply unconditionally.
 #![allow(unused_crate_dependencies)]
 
+pub mod capture;
 pub mod cpal;
 pub mod error;
 
+pub use capture::RdpeaiCaptureBackend;
 pub use error::{RdpsndNativeError, RdpsndNativeErrorKind, RdpsndNativeResult};
