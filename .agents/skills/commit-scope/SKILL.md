@@ -11,7 +11,7 @@ Choose at most one optional scope for `<type>[optional scope][!]: <description>`
 
 ```text
 meta core error pdu str bulk graphics config input connector session driver
-svc dvc cliprdr rdpdr rdpsnd displaycontrol echo egfx rdpeudp rdpeusb rdpemt rdcleanpath
+svc dvc cliprdr rdpdr rdpsnd rdpeai displaycontrol echo egfx rdpeudp rdpeusb rdpemt rdcleanpath
 tls mstsgu vmconnect
 
 client viewer agent daemon rpc activex server web ffi replay
@@ -29,6 +29,7 @@ Use these aggregate mappings:
 - `driver`: `ironrdp-async`, `ironrdp-blocking`, `ironrdp-tokio`, and `ironrdp-futures`.
 - `dvc`: DRDYNVC infrastructure, the COM plugin, and the pipe proxy, but not specific dynamic channels.
 - `cliprdr`, `rdpdr`, and `rdpsnd`: each protocol and its format or native support crates.
+- `rdpeai`: MS-RDPEAI audio input protocol and related client capture wiring.
 - `server`: `ironrdp-acceptor` and `ironrdp-server`.
 - `web`: WASM bindings, the Rust web helper, and everything under `web-client`.
 - `ffi`: the Rust FFI and generated or manual .NET bindings, but not ActiveX.

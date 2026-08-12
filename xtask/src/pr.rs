@@ -27,6 +27,7 @@ const CANONICAL_SCOPES: &[&str] = &[
     "cliprdr",
     "rdpdr",
     "rdpsnd",
+    "rdpeai",
     "displaycontrol",
     "echo",
     "egfx",

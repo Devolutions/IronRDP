@@ -28,6 +28,7 @@ mod pdu;
 mod propertyset;
 mod rdcleanpath;
 mod rdpdr;
+mod rdpeai;
 mod rdpeusb;
 mod rdpsnd;
 mod server;
