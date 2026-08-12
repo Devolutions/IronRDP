@@ -1,5 +1,5 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ironrdp_core::{decode, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
