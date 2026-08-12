@@ -1,7 +1,6 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 
 use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
@@ -141,7 +140,17 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
         &self.formats
     }
 
-    fn open(&mut self, format: &AudioFormat, packet_size: usize, sink: AudioPacketSink) -> i32 {
+    fn open(
+        &mut self,
+        capture_format: &AudioFormat,
+        encode_format: &AudioFormat,
+        packet_size: usize,
+        sink: AudioPacketSink,
+    ) -> i32 {
+        // This backend captures PCM only. Encoding other than the capture PCM stream is
+        // not implemented yet; Open still delivers capture-sized PCM Data PDUs.
+        let _ = encode_format;
+
         if packet_size == 0 || packet_size > MAX_DATA_PACKET_SIZE {
             warn!(packet_size, "Refusing capture open with invalid packet size");
             return OpenReplyPdu::E_FAIL;
@@ -164,7 +173,7 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
             });
         }
 
-        match self.start_stream(format) {
+        match self.start_stream(capture_format) {
             Ok(()) => OpenReplyPdu::S_OK,
             Err(error) => {
                 warn!(%error, "AUDIO_INPUT capture open failed");
@@ -174,30 +183,11 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
         }
     }
 
-    fn set_format(&mut self, format: &AudioFormat, packet_size: usize) -> bool {
-        if packet_size == 0 || packet_size > MAX_DATA_PACKET_SIZE {
-            return false;
-        }
-        {
-            let Ok(mut guard) = self.sink_state.lock() else {
-                return false;
-            };
-            let Some(state) = guard.as_mut() else {
-                return false;
-            };
-            state.packet_size = packet_size;
-            state.buffer.clear();
-            if state.buffer.try_reserve(packet_size.saturating_mul(2)).is_err() {
-                return false;
-            }
-        }
-        match self.start_stream(format) {
-            Ok(()) => true,
-            Err(error) => {
-                warn!(%error, "AUDIO_INPUT capture format change failed");
-                false
-            }
-        }
+    fn set_format(&mut self, encode_format: &AudioFormat, packet_size: usize) -> bool {
+        // FormatChange switches encoding only. Capture WAVEFORMATEX and Data PDU size
+        // stay at the values established by Open; do not restart the input stream.
+        let _ = (encode_format, packet_size);
+        self.sink_state.lock().map(|guard| guard.is_some()).unwrap_or(false)
     }
 
     fn close(&mut self) {
