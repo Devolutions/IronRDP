@@ -30,4 +30,3 @@ Determine the crate's name, purpose, architectural tier, API-boundary status, an
    State API-boundary or architectural invariants only when they materially apply.
    Do not reorder or rewrite unrelated entries.
 7. Add dependencies and implementation only after the README and architecture entry establish the crate's role.
-8. Format the generated files and run the narrowest workspace checks that cover the new crate.
