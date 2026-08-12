@@ -28,6 +28,7 @@ use windows::Win32::Networking::WindowsWebServices::{
     WebAuthNFreeAssertion, WebAuthNFreeCredentialAttestation, WebAuthNGetApiVersionNumber, WebAuthNGetCancellationId,
     WebAuthNIsUserVerifyingPlatformAuthenticatorAvailable,
 };
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use windows::core::{GUID, HRESULT, PCWSTR};
 
 use crate::ctap::{
@@ -111,7 +112,14 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
         thread::Builder::new()
             .name("ironrdp-rdpewa-webauthn".into())
             .spawn(move || {
-                let hwnd = HWND(parent_hwnd as *mut core::ffi::c_void);
+                let hwnd = resolve_parent_hwnd(parent_hwnd);
+                info!(
+                    parent_hwnd,
+                    resolved_hwnd = hwnd.0 as usize,
+                    client_data_json_len = request.client_data_json.len(),
+                    ?request.subcommand,
+                    "Starting native WebAuthn operation"
+                );
                 let outcome = run_webauthn_operation(hwnd, &request, &cancel_guid);
                 *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 match outcome {
@@ -133,6 +141,16 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
 
         Ok(WebAuthnDispatch::Async)
     }
+}
+
+/// Prefer the configured parent HWND; if unset, fall back to the foreground window so agent/daemon
+/// sessions without an ActiveX HWND can still parent Windows Security UI.
+fn resolve_parent_hwnd(parent_hwnd: isize) -> HWND {
+    if parent_hwnd != 0 {
+        return HWND(parent_hwnd as *mut core::ffi::c_void);
+    }
+    // SAFETY: GetForegroundWindow is a simple system query with no pointer lifetime.
+    unsafe { GetForegroundWindow() }
 }
 
 fn run_webauthn_operation(
@@ -162,6 +180,7 @@ fn run_make_credential(
     let mut user_id = ctap.user_id.clone();
     let mut client_data_json = request.client_data_json.clone();
     if client_data_json.is_empty() {
+        warn!(%rp_id, "native MakeCredential rejected: host omitted clientDataJSON (hash-only RDPEWA)");
         return Err(RdpewaHandlerError::new(E_INVALIDARG, "missing clientDataJSON"));
     }
 
@@ -259,6 +278,7 @@ fn run_get_assertion(
 
     let mut client_data_json = request.client_data_json.clone();
     if client_data_json.is_empty() {
+        warn!(%rp_id, "native GetAssertion rejected: host omitted clientDataJSON (hash-only RDPEWA)");
         return Err(RdpewaHandlerError::new(E_INVALIDARG, "missing clientDataJSON"));
     }
 

@@ -22,6 +22,7 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Networking_WindowsWebServices",
     "Win32_System_Com",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [lints]

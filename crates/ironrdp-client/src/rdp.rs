@@ -864,41 +864,50 @@ fn build_connector(
     // Prefer System32\webauthn.dll via the DVC COM plugin host — that is the MSTSC path and the only
     // way to handle hash-only MS-RDPEWA hosts that omit clientDataJSON. Fall back to the pure-Rust
     // WebAuthN* backend when the plugin cannot be loaded.
+    // IRONRDP_WEBAUTHN_FORCE_NATIVE=1 skips COM and always uses WindowsRdpewaBackend (smoke/debug).
     #[cfg(all(windows, feature = "webauthn"))]
     let mut webauthn_com_loaded = false;
     #[cfg(all(windows, feature = "webauthn"))]
     if config.channels.webauthn {
-        let webauthn_dll = std::path::PathBuf::from(r"C:\Windows\System32\webauthn.dll");
-        let sender_clone = input_sender.clone();
-        match load_dvc_plugin_listeners(&webauthn_dll, move || {
-            let sender = sender_clone.clone();
-            Box::new(move |channel_id, messages| {
-                sender
-                    .try_send(RdpInputEvent::SendDvcMessages { channel_id, messages })
-                    .map_err(|_| pdu_other_err!("send webauthn.dll DVC messages to the event loop"))?;
-                Ok(())
-            })
-        }) {
-            Ok(listeners) => {
-                for listener in listeners {
-                    info!(
-                        channel_name = %listener.channel_name(),
-                        "Registering webauthn.dll COM DVC channel listener"
-                    );
-                    if listener.channel_name() == ironrdp_rdpewa::CHANNEL_NAME {
-                        webauthn_com_loaded = true;
+        let force_native = std::env::var_os("IRONRDP_WEBAUTHN_FORCE_NATIVE").is_some_and(|v| {
+            let v = v.to_string_lossy();
+            !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false"))
+        });
+        if force_native {
+            info!("IRONRDP_WEBAUTHN_FORCE_NATIVE set; skipping webauthn.dll COM path");
+        } else {
+            let webauthn_dll = std::path::PathBuf::from(r"C:\Windows\System32\webauthn.dll");
+            let sender_clone = input_sender.clone();
+            match load_dvc_plugin_listeners(&webauthn_dll, move || {
+                let sender = sender_clone.clone();
+                Box::new(move |channel_id, messages| {
+                    sender
+                        .try_send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                        .map_err(|_| pdu_other_err!("send webauthn.dll DVC messages to the event loop"))?;
+                    Ok(())
+                })
+            }) {
+                Ok(listeners) => {
+                    for listener in listeners {
+                        info!(
+                            channel_name = %listener.channel_name(),
+                            "Registering webauthn.dll COM DVC channel listener"
+                        );
+                        if listener.channel_name() == ironrdp_rdpewa::CHANNEL_NAME {
+                            webauthn_com_loaded = true;
+                        }
+                        drdynvc = drdynvc.with_listener(listener);
                     }
-                    drdynvc = drdynvc.with_listener(listener);
+                    if !webauthn_com_loaded {
+                        warn!("webauthn.dll loaded but did not register WebAuthN_Channel");
+                    }
                 }
-                if !webauthn_com_loaded {
-                    warn!("webauthn.dll loaded but did not register WebAuthN_Channel");
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "Failed to load webauthn.dll COM plugin; falling back to native RDPEWA backend"
+                    );
                 }
-            }
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    "Failed to load webauthn.dll COM plugin; falling back to native RDPEWA backend"
-                );
             }
         }
 
