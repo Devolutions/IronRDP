@@ -35,9 +35,10 @@ use std::collections::BTreeSet;
 use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
 
 use crate::ipc::{
-    ConnState, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry,
-    RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo,
-    RailStatusInfo, Request, Response, StatusInfo, TouchFrameRequest, touch_event_from_request,
+    ConnState, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PenFrameRequest, PropValue, PropertyDump,
+    PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason, RailExecuteRequest,
+    RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo, TouchFrameRequest, pen_event_from_request,
+    touch_event_from_request,
 };
 use crate::logbuf::{self, LogBuffer};
 use crate::now::NowEndpoint;
@@ -569,6 +570,10 @@ impl Daemon {
             } => DaemonResponse::Single(self.now_stdin(operation_id, data, last).await),
             Request::NowDiagnostics => DaemonResponse::Single(self.now_diagnostics().await),
             Request::Touch { encode_time, frames } => DaemonResponse::Single(self.touch(encode_time, frames)),
+            Request::Pen { encode_time, frames } => DaemonResponse::Single(self.pen(encode_time, frames)),
+            Request::DismissHoveringTouchContact { contact_id } => {
+                DaemonResponse::Single(self.dismiss_hovering_touch_contact(contact_id))
+            }
             Request::RailStatus => DaemonResponse::Single(self.rail_status()),
             Request::RailEvents { after_sequence } => DaemonResponse::Single(self.rail_events(after_sequence)),
             Request::RailWait {
@@ -1066,10 +1071,7 @@ impl Daemon {
         self.input_operations([operation])
     }
 
-    /// Queues one MS-RDPEI touch event on the active RDP session input path.
-    ///
-    /// Success means the validated event was accepted into the local input queue. The session loop
-    /// still drops the event when the Input DVC is absent, not ready, or suspended.
+    /// Sends one MS-RDPEI touch event to the active RDP session.
     ///
     /// # Panics
     ///
@@ -1094,6 +1096,57 @@ impl Daemon {
             }
         };
         permit.send(RdpInputEvent::Touch(event));
+        Response::ok()
+    }
+
+    /// Sends one MS-RDPEI pen event to the active RDP session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    fn pen(&self, encode_time: u32, frames: Vec<PenFrameRequest>) -> Response {
+        let event = match pen_event_from_request(encode_time, frames) {
+            Ok(event) => event,
+            Err(response) => return response,
+        };
+
+        let mut guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_mut() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        let permit = match session.input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        permit.send(RdpInputEvent::Pen(event));
+        Response::ok()
+    }
+
+    /// Dismisses a hovering MS-RDPEI touch contact on the active RDP session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    fn dismiss_hovering_touch_contact(&self, contact_id: u8) -> Response {
+        let mut guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_mut() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        let permit = match session.input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        permit.send(RdpInputEvent::DismissHoveringTouchContact { contact_id });
         Response::ok()
     }
 
@@ -1626,7 +1679,7 @@ mod tests {
         enqueue_unicode_text, notify,
     };
     use crate::ipc::{Payload, Response};
-    use ironrdp_rpc::ipc::{RailEventKind, RailExecuteRequest, RailLaunchInfo};
+    use ironrdp_rpc::ipc::{PenContactRequest, PenFrameRequest, RailEventKind, RailExecuteRequest, RailLaunchInfo};
     use ironrdp_tls::CertificateValidation;
 
     #[test]

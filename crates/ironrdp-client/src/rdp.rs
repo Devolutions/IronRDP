@@ -171,6 +171,8 @@ pub enum RdpInputEvent {
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
     /// Multitouch frames for MS-RDPEI (`Microsoft::Windows::RDS::Input`).
     Touch(TouchEventPdu),
+    /// Pen frames for MS-RDPEI (`RDPINPUT_PEN_EVENT_PDU`).
+    Pen(ironrdp_rdpei::pdu::PenEventPdu),
     /// Dismiss a hovering touch contact over MS-RDPEI.
     DismissHoveringTouchContact {
         contact_id: u8,
@@ -1928,6 +1930,22 @@ async fn active_session(
                                 // Channel missing / not ready / suspended: warn rather than
                                 // silently dropping, which desynchronizes the contact FSM.
                                 warn!("Dropping RDPEI touch event: channel unavailable, not ready, or suspended");
+                                Vec::new()
+                            }
+                        }
+                    }
+                    RdpInputEvent::Pen(event) => {
+                        trace!(frames = event.frames.len(), "RDPEI pen event");
+                        match active_stage.encode_rdpei_pen(event) {
+                            Some(Ok(frame)) => vec![ActiveStageOutput::ResponseFrame(frame)],
+                            Some(Err(error)) => {
+                                warn!(%error, "Failed to encode RDPEI pen event");
+                                Vec::new()
+                            }
+                            None => {
+                                debug!(
+                                    "Dropping RDPEI pen event: channel not ready, suspended, or pen disallowed"
+                                );
                                 Vec::new()
                             }
                         }

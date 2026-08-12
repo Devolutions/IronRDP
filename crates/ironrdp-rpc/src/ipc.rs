@@ -19,7 +19,8 @@ use ironrdp_input::MouseButton;
 use ironrdp_pdu::impl_pdu_pod;
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rdpei::pdu::{
-    EightByteUnsigned, FourByteSigned, FourByteUnsigned, TouchContact, TouchContactFlags, TouchEventPdu, TouchFrame,
+    EightByteUnsigned, FourByteSigned, FourByteUnsigned, PenContact, PenContactDataFlags, PenContactFlags, PenEventPdu,
+    PenFlags, PenFrame, TouchContact, TouchContactFlags, TouchEventPdu, TouchFrame,
 };
 
 use crate::wire::{
@@ -34,14 +35,16 @@ use crate::wire::{
 pub const MAX_UNICODE_TEXT_CHARS: usize = 96;
 
 /// Maximum contacts in one MS-RDPEI touch frame accepted over RPC.
-///
-/// Matches the default `maxTouchContacts` advertised by
-/// [`ironrdp_rdpei::RdpeiClient::default`] (`10`). Sessions that advertise a different
-/// capability must keep this RPC cap in sync or reject oversized frames at the session edge.
 pub const MAX_TOUCH_CONTACTS: usize = 10;
 
 /// Maximum touch frames in one [`Request::Touch`] PDU accepted over RPC.
 pub const MAX_TOUCH_FRAMES: usize = 64;
+
+/// Maximum contacts in one MS-RDPEI pen frame accepted over RPC.
+pub const MAX_PEN_CONTACTS: usize = 4;
+
+/// Maximum pen frames in one [`Request::Pen`] PDU accepted over RPC.
+pub const MAX_PEN_FRAMES: usize = 64;
 
 /// One contact sample inside a [`TouchFrameRequest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +62,30 @@ pub struct TouchFrameRequest {
     /// Microseconds since the previous frame (`0` for the first frame of a transaction).
     pub frame_offset: u64,
     pub contacts: Vec<TouchContactRequest>,
+}
+
+/// One pen contact sample inside a [`PenFrameRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PenContactRequest {
+    pub device_id: u8,
+    pub x: i32,
+    pub y: i32,
+    /// Raw MS-RDPEI pen `contactFlags` bits ([MS-RDPEI] 2.2.3.7.1.1).
+    pub flags: u16,
+    pub pressure: Option<u32>,
+    pub rotation: Option<u16>,
+    pub tilt_x: Option<i16>,
+    pub tilt_y: Option<i16>,
+    /// Optional MS-RDPEI `penFlags` bits ([MS-RDPEI] 2.2.3.7.1.1).
+    pub pen_flags: Option<u32>,
+}
+
+/// One frame inside a [`Request::Pen`] event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PenFrameRequest {
+    /// Microseconds since the previous frame (`0` for the first frame of a transaction).
+    pub frame_offset: u64,
+    pub contacts: Vec<PenContactRequest>,
 }
 
 /// Validates and converts an RPC touch request into an MS-RDPEI touch event PDU.
@@ -138,6 +165,117 @@ fn touch_contact_from_request(contact: TouchContactRequest) -> Result<TouchConta
     Ok(TouchContact::new(contact.contact_id, contact.x, contact.y, flags))
 }
 
+/// Validates and converts an RPC pen request into an MS-RDPEI pen event PDU.
+///
+/// Rejects empty frames/contacts, count limits, unknown or illegal flag combinations, and
+/// values outside the MS-RDPEI varint ranges used on the wire.
+pub fn pen_event_from_request(encode_time: u32, frames: Vec<PenFrameRequest>) -> Result<PenEventPdu, Response> {
+    if frames.is_empty() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen event requires at least one frame",
+        ));
+    }
+    if frames.len() > MAX_PEN_FRAMES {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            format!("pen event exceeds the {MAX_PEN_FRAMES}-frame limit"),
+        ));
+    }
+    if FourByteUnsigned::new(encode_time).is_err() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen encode_time is out of MS-RDPEI range",
+        ));
+    }
+
+    let mut built_frames = Vec::with_capacity(frames.len());
+    for frame in frames {
+        if frame.contacts.is_empty() {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                "pen frame requires at least one contact",
+            ));
+        }
+        if frame.contacts.len() > MAX_PEN_CONTACTS {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                format!("pen frame exceeds the {MAX_PEN_CONTACTS}-contact limit"),
+            ));
+        }
+        if EightByteUnsigned::new(frame.frame_offset).is_err() {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                "pen frame_offset is out of MS-RDPEI range",
+            ));
+        }
+
+        let mut contacts = Vec::with_capacity(frame.contacts.len());
+        for contact in frame.contacts {
+            contacts.push(pen_contact_from_request(contact)?);
+        }
+        built_frames.push(PenFrame::new(frame.frame_offset, contacts));
+    }
+
+    Ok(PenEventPdu::new(encode_time, built_frames))
+}
+
+fn pen_contact_from_request(contact: PenContactRequest) -> Result<PenContact, Response> {
+    if FourByteSigned::new(contact.x).is_err() || FourByteSigned::new(contact.y).is_err() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen contact coordinates are out of MS-RDPEI range",
+        ));
+    }
+    let flags = PenContactFlags::from_bits(u32::from(contact.flags)).ok_or_else(|| {
+        Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen contact flags contain unknown bits",
+        )
+    })?;
+    if !flags.is_legal() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen contact flags are not a legal MS-RDPEI combination",
+        ));
+    }
+
+    let mut pen = PenContact::new(contact.device_id, contact.x, contact.y, flags);
+    if let Some(pen_flags_bits) = contact.pen_flags {
+        let pen_flags = PenFlags::from_bits(pen_flags_bits).ok_or_else(|| {
+            Response::typed_error(AgentErrorCategory::InvalidRequest, "pen flags contain unknown bits")
+        })?;
+        pen = pen.with_pen_flags(pen_flags);
+    }
+    if let Some(pressure) = contact.pressure {
+        if FourByteUnsigned::new(pressure).is_err() {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                "pen pressure is out of MS-RDPEI range",
+            ));
+        }
+        pen = pen.with_pressure(pressure);
+    }
+    if let Some(rotation) = contact.rotation {
+        pen = pen.with_rotation(rotation);
+    }
+    match (contact.tilt_x, contact.tilt_y) {
+        (Some(tilt_x), Some(tilt_y)) => {
+            pen = pen.with_tilt(tilt_x, tilt_y);
+        }
+        (Some(tilt_x), None) => {
+            pen.fields_present.insert(PenContactDataFlags::TILTX_PRESENT);
+            pen.fields.tilt_x = Some(tilt_x);
+        }
+        (None, Some(tilt_y)) => {
+            pen.fields_present.insert(PenContactDataFlags::TILTY_PRESENT);
+            pen.fields.tilt_y = Some(tilt_y);
+        }
+        (None, None) => {}
+    }
+    Ok(pen)
+}
+
 /// A request sent by the CLI to the daemon.
 ///
 /// `Connect` carries a binary-encoded [`PropertySet`] — never `argv` or CLI strings. Runtime
@@ -213,19 +351,25 @@ pub enum Request {
     },
     /// Inspect the local NOW endpoint without exposing protocol internals.
     NowDiagnostics,
-    /// Queue one MS-RDPEI touch event PDU (`RDPINPUT_TOUCH_EVENT_PDU`) on the session input path.
+    /// Send one MS-RDPEI touch event PDU (`RDPINPUT_TOUCH_EVENT_PDU`).
     ///
-    /// Success means the event was accepted into the local input queue after request validation.
-    /// The session loop still drops the event when the Input DVC is absent, not ready, or
-    /// suspended, matching mouse and keyboard RPC requests. Contacts must use legal flag sets
-    /// from [MS-RDPEI] 3.1.1.1. At most [`MAX_TOUCH_FRAMES`] frames and [`MAX_TOUCH_CONTACTS`]
-    /// contacts per frame are accepted. Injected contact IDs share the server contact-id space
-    /// with native digitizer input; avoid concurrent native touch with the same IDs.
+    /// Requires the Input DVC to be ready and not suspended. Contacts must use legal flag sets from
+    /// [MS-RDPEI] 3.1.1.1. At most [`MAX_TOUCH_FRAMES`] frames and [`MAX_TOUCH_CONTACTS`] contacts
+    /// per frame are accepted.
     Touch {
         /// Milliseconds elapsed for the oldest frame in this PDU.
         encode_time: u32,
         frames: Vec<TouchFrameRequest>,
     },
+    /// Send one MS-RDPEI pen event PDU (`RDPINPUT_PEN_EVENT_PDU`).
+    ///
+    /// Requires RDPEI ready, not suspended, and a negotiated version that allows pen (V200+).
+    Pen {
+        encode_time: u32,
+        frames: Vec<PenFrameRequest>,
+    },
+    /// Dismiss a hovering touch contact (`RDPINPUT_DISMISS_HOVERING_TOUCH_CONTACT_PDU`).
+    DismissHoveringTouchContact { contact_id: u8 },
     /// Inspect the bounded, session-local RAIL observation ledger.
     RailStatus,
     /// Return RAIL observations after a sequence number.
@@ -330,6 +474,15 @@ impl fmt::Debug for Request {
                 .debug_struct("Touch")
                 .field("encode_time", encode_time)
                 .field("frames", frames)
+                .finish(),
+            Self::Pen { encode_time, frames } => f
+                .debug_struct("Pen")
+                .field("encode_time", encode_time)
+                .field("frames", frames)
+                .finish(),
+            Self::DismissHoveringTouchContact { contact_id } => f
+                .debug_struct("DismissHoveringTouchContact")
+                .field("contact_id", contact_id)
                 .finish(),
             Self::RailStatus => f.write_str("RailStatus"),
             Self::RailEvents { after_sequence } => f
@@ -957,6 +1110,113 @@ impl KeyFilter {
 }
 
 // ── KeyFilter codec ─────────────────────────────────────────────────────────
+
+// ── Pen contact RPC helpers ─────────────────────────────────────────────────
+
+const PEN_CONTACT_PRESSURE: u8 = 0x01;
+const PEN_CONTACT_ROTATION: u8 = 0x02;
+const PEN_CONTACT_TILT_X: u8 = 0x04;
+const PEN_CONTACT_TILT_Y: u8 = 0x08;
+const PEN_CONTACT_PEN_FLAGS: u8 = 0x10;
+
+fn pen_contact_size(contact: &PenContactRequest) -> usize {
+    1 /* device_id */ + 4 /* x */ + 4 /* y */ + 2 /* flags */ + 1 /* presence */
+        + contact.pressure.map_or(0, |_| 4)
+        + contact.rotation.map_or(0, |_| 2)
+        + contact.tilt_x.map_or(0, |_| 2)
+        + contact.tilt_y.map_or(0, |_| 2)
+        + contact.pen_flags.map_or(0, |_| 4)
+}
+
+fn write_pen_contact(dst: &mut WriteCursor<'_>, contact: &PenContactRequest) -> EncodeResult<()> {
+    dst.write_u8(contact.device_id);
+    dst.write_i32(contact.x);
+    dst.write_i32(contact.y);
+    dst.write_u16(contact.flags);
+    let mut presence = 0u8;
+    if contact.pressure.is_some() {
+        presence |= PEN_CONTACT_PRESSURE;
+    }
+    if contact.rotation.is_some() {
+        presence |= PEN_CONTACT_ROTATION;
+    }
+    if contact.tilt_x.is_some() {
+        presence |= PEN_CONTACT_TILT_X;
+    }
+    if contact.tilt_y.is_some() {
+        presence |= PEN_CONTACT_TILT_Y;
+    }
+    if contact.pen_flags.is_some() {
+        presence |= PEN_CONTACT_PEN_FLAGS;
+    }
+    dst.write_u8(presence);
+    if let Some(pressure) = contact.pressure {
+        dst.write_u32(pressure);
+    }
+    if let Some(rotation) = contact.rotation {
+        dst.write_u16(rotation);
+    }
+    if let Some(tilt_x) = contact.tilt_x {
+        dst.write_i16(tilt_x);
+    }
+    if let Some(tilt_y) = contact.tilt_y {
+        dst.write_i16(tilt_y);
+    }
+    if let Some(pen_flags) = contact.pen_flags {
+        dst.write_u32(pen_flags);
+    }
+    Ok(())
+}
+
+fn read_pen_contact(src: &mut ReadCursor<'_>) -> DecodeResult<PenContactRequest> {
+    ensure_size!(in: src, size: 12);
+    let device_id = src.read_u8();
+    let x = src.read_i32();
+    let y = src.read_i32();
+    let flags = src.read_u16();
+    let presence = src.read_u8();
+    let pressure = if presence & PEN_CONTACT_PRESSURE != 0 {
+        ensure_size!(in: src, size: 4);
+        Some(src.read_u32())
+    } else {
+        None
+    };
+    let rotation = if presence & PEN_CONTACT_ROTATION != 0 {
+        ensure_size!(in: src, size: 2);
+        Some(src.read_u16())
+    } else {
+        None
+    };
+    let tilt_x = if presence & PEN_CONTACT_TILT_X != 0 {
+        ensure_size!(in: src, size: 2);
+        Some(src.read_i16())
+    } else {
+        None
+    };
+    let tilt_y = if presence & PEN_CONTACT_TILT_Y != 0 {
+        ensure_size!(in: src, size: 2);
+        Some(src.read_i16())
+    } else {
+        None
+    };
+    let pen_flags = if presence & PEN_CONTACT_PEN_FLAGS != 0 {
+        ensure_size!(in: src, size: 4);
+        Some(src.read_u32())
+    } else {
+        None
+    };
+    Ok(PenContactRequest {
+        device_id,
+        x,
+        y,
+        flags,
+        pressure,
+        rotation,
+        tilt_x,
+        tilt_y,
+        pen_flags,
+    })
+}
 
 impl Encode for KeyFilter {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
@@ -1911,6 +2171,26 @@ impl Encode for Request {
                 write_opt_u64(dst, *after_sequence)?;
                 dst.write_u32(*timeout_ms);
             }
+            Self::Pen { encode_time, frames } => {
+                // Tag 27: after Touch (26) and RAIL (22-25).
+                dst.write_u8(27);
+                dst.write_u32(*encode_time);
+                let frame_count: u16 = cast_length!("pen frame count", frames.len())?;
+                dst.write_u16(frame_count);
+                for frame in frames {
+                    dst.write_u64(frame.frame_offset);
+                    let contact_count: u16 = cast_length!("pen contact count", frame.contacts.len())?;
+                    dst.write_u16(contact_count);
+                    for contact in &frame.contacts {
+                        write_pen_contact(dst, contact)?;
+                    }
+                }
+            }
+            Self::DismissHoveringTouchContact { contact_id } => {
+                // Tag 28: dismiss hovering touch contact.
+                dst.write_u8(28);
+                dst.write_u8(*contact_id);
+            }
         }
         Ok(())
     }
@@ -1959,6 +2239,17 @@ impl Encode for Request {
                 Self::RailEvents { after_sequence } => opt_u64_size(*after_sequence),
                 Self::RailExecute(request) => request.size(),
                 Self::RailWait { after_sequence, .. } => opt_u64_size(*after_sequence) + 4 /* timeout_ms */,
+                Self::Pen { frames, .. } => {
+                    4 /* encode_time */ + 2 /* frame_count */
+                        + frames
+                            .iter()
+                            .map(|frame| {
+                                8 /* frame_offset */ + 2 /* contact_count */
+                                    + frame.contacts.iter().map(pen_contact_size).sum::<usize>()
+                            })
+                            .sum::<usize>()
+                }
+                Self::DismissHoveringTouchContact { .. } => 1 /* contact_id */,
             }
     }
 }
@@ -2106,6 +2397,35 @@ impl Decode<'_> for Request {
                     frames.push(TouchFrameRequest { frame_offset, contacts });
                 }
                 Ok(Self::Touch { encode_time, frames })
+            }
+            27 => {
+                ensure_size!(in: src, size: 6);
+                let encode_time = src.read_u32();
+                let frame_count = usize::from(src.read_u16());
+                if frame_count > MAX_PEN_FRAMES {
+                    return Err(ironrdp_core::invalid_field_err!("pen frames", "too many frames"));
+                }
+                let mut frames = Vec::with_capacity(frame_count);
+                for _ in 0..frame_count {
+                    ensure_size!(in: src, size: 10);
+                    let frame_offset = src.read_u64();
+                    let contact_count = usize::from(src.read_u16());
+                    if contact_count > MAX_PEN_CONTACTS {
+                        return Err(ironrdp_core::invalid_field_err!("pen contacts", "too many contacts"));
+                    }
+                    let mut contacts = Vec::with_capacity(contact_count);
+                    for _ in 0..contact_count {
+                        contacts.push(read_pen_contact(src)?);
+                    }
+                    frames.push(PenFrameRequest { frame_offset, contacts });
+                }
+                Ok(Self::Pen { encode_time, frames })
+            }
+            28 => {
+                ensure_size!(in: src, size: 1);
+                Ok(Self::DismissHoveringTouchContact {
+                    contact_id: src.read_u8(),
+                })
             }
             22 => Ok(Self::RailStatus),
             23 => Ok(Self::RailEvents {
@@ -2491,11 +2811,7 @@ impl_pdu_pod!(OperationEvent);
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MAX_TOUCH_CONTACTS, MAX_TOUCH_FRAMES, RailExecuteRequest, TouchContactRequest, TouchFrameRequest,
-        touch_event_from_request,
-    };
-    use ironrdp_rdpei::pdu::{EightByteUnsigned, FourByteSigned, FourByteUnsigned, TouchContactFlags};
+    use super::RailExecuteRequest;
 
     #[test]
     fn rail_execute_debug_redacts_command_fields() {
@@ -2512,6 +2828,120 @@ mod tests {
         assert!(!debug.contains("secret-token"));
         assert!(debug.contains("executable_len"));
     }
+}
+
+impl Encode for NowCapabilities {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u16(self.version_major);
+        dst.write_u16(self.version_minor);
+        write_opt_u64(dst, self.heartbeat_ms)?;
+        for value in [
+            self.run,
+            self.process,
+            self.batch,
+            self.powershell,
+            self.pwsh,
+            self.io_redirection,
+            self.unicode_console,
+        ] {
+            write_bool(dst, value)?;
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::NowCapabilities"
+    }
+
+    fn size(&self) -> usize {
+        2 /* version major */
+            + 2 /* version minor */
+            + opt_u64_size(self.heartbeat_ms)
+            + 7 /* feature flags */
+    }
+}
+
+impl Decode<'_> for NowCapabilities {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 4);
+        let version_major = src.read_u16();
+        let version_minor = src.read_u16();
+        Ok(Self {
+            version_major,
+            version_minor,
+            heartbeat_ms: read_opt_u64(src)?,
+            run: read_bool(src)?,
+            process: read_bool(src)?,
+            batch: read_bool(src)?,
+            powershell: read_bool(src)?,
+            pwsh: read_bool(src)?,
+            io_redirection: read_bool(src)?,
+            unicode_console: read_bool(src)?,
+        })
+    }
+}
+
+impl_pdu_pod!(NowCapabilities);
+
+impl Encode for NowDiagnostics {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        write_bool(dst, self.endpoint_allocated)?;
+        write_bool(dst, self.connected)?;
+        match &self.capabilities {
+            Some(capabilities) => {
+                dst.write_u8(1);
+                capabilities.encode(dst)?;
+            }
+            None => dst.write_u8(0),
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::NowDiagnostics"
+    }
+
+    fn size(&self) -> usize {
+        1 /* endpoint_allocated */
+            + 1 /* connected */
+            + 1 /* capabilities presence */
+            + self.capabilities.as_ref().map_or(0, Encode::size)
+    }
+}
+
+impl Decode<'_> for NowDiagnostics {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        let endpoint_allocated = read_bool(src)?;
+        let connected = read_bool(src)?;
+        ensure_size!(in: src, size: 1);
+        let capabilities = match src.read_u8() {
+            0 => None,
+            1 => Some(NowCapabilities::decode(src)?),
+            _ => {
+                return Err(ironrdp_core::invalid_field_err!(
+                    "NOW capabilities",
+                    "invalid presence flag"
+                ));
+            }
+        };
+        Ok(Self {
+            endpoint_allocated,
+            connected,
+            capabilities,
+        })
+    }
+}
+
+impl_pdu_pod!(NowDiagnostics);
+
+#[cfg(test)]
+mod rdpei_request_tests {
+    use super::{
+        MAX_TOUCH_CONTACTS, MAX_TOUCH_FRAMES, TouchContactRequest, TouchFrameRequest, touch_event_from_request,
+    };
+    use ironrdp_rdpei::pdu::{EightByteUnsigned, FourByteSigned, FourByteUnsigned, TouchContactFlags};
 
     fn contact(flags: u16) -> TouchContactRequest {
         TouchContactRequest {
@@ -2665,109 +3095,3 @@ mod tests {
         );
     }
 }
-
-impl Encode for NowCapabilities {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        ensure_size!(in: dst, size: self.size());
-        dst.write_u16(self.version_major);
-        dst.write_u16(self.version_minor);
-        write_opt_u64(dst, self.heartbeat_ms)?;
-        for value in [
-            self.run,
-            self.process,
-            self.batch,
-            self.powershell,
-            self.pwsh,
-            self.io_redirection,
-            self.unicode_console,
-        ] {
-            write_bool(dst, value)?;
-        }
-        Ok(())
-    }
-
-    fn name(&self) -> &'static str {
-        "ironrdp_rpc::ipc::NowCapabilities"
-    }
-
-    fn size(&self) -> usize {
-        2 /* version major */
-            + 2 /* version minor */
-            + opt_u64_size(self.heartbeat_ms)
-            + 7 /* feature flags */
-    }
-}
-
-impl Decode<'_> for NowCapabilities {
-    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: 4);
-        let version_major = src.read_u16();
-        let version_minor = src.read_u16();
-        Ok(Self {
-            version_major,
-            version_minor,
-            heartbeat_ms: read_opt_u64(src)?,
-            run: read_bool(src)?,
-            process: read_bool(src)?,
-            batch: read_bool(src)?,
-            powershell: read_bool(src)?,
-            pwsh: read_bool(src)?,
-            io_redirection: read_bool(src)?,
-            unicode_console: read_bool(src)?,
-        })
-    }
-}
-
-impl_pdu_pod!(NowCapabilities);
-
-impl Encode for NowDiagnostics {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        ensure_size!(in: dst, size: self.size());
-        write_bool(dst, self.endpoint_allocated)?;
-        write_bool(dst, self.connected)?;
-        match &self.capabilities {
-            Some(capabilities) => {
-                dst.write_u8(1);
-                capabilities.encode(dst)?;
-            }
-            None => dst.write_u8(0),
-        }
-        Ok(())
-    }
-
-    fn name(&self) -> &'static str {
-        "ironrdp_rpc::ipc::NowDiagnostics"
-    }
-
-    fn size(&self) -> usize {
-        1 /* endpoint_allocated */
-            + 1 /* connected */
-            + 1 /* capabilities presence */
-            + self.capabilities.as_ref().map_or(0, Encode::size)
-    }
-}
-
-impl Decode<'_> for NowDiagnostics {
-    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        let endpoint_allocated = read_bool(src)?;
-        let connected = read_bool(src)?;
-        ensure_size!(in: src, size: 1);
-        let capabilities = match src.read_u8() {
-            0 => None,
-            1 => Some(NowCapabilities::decode(src)?),
-            _ => {
-                return Err(ironrdp_core::invalid_field_err!(
-                    "NOW capabilities",
-                    "invalid presence flag"
-                ));
-            }
-        };
-        Ok(Self {
-            endpoint_allocated,
-            connected,
-            capabilities,
-        })
-    }
-}
-
-impl_pdu_pod!(NowDiagnostics);

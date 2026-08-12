@@ -12,8 +12,8 @@ use std::thread::JoinHandle;
 
 use anyhow::Context as _;
 use ironrdp_agent::ipc::{
-    AgentErrorCategory, ConnState, KeyFilter, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry, Request,
-    Response, StatusInfo, TouchFrameRequest, touch_event_from_request,
+    AgentErrorCategory, ConnState, KeyFilter, NowDiagnostics, Payload, PenFrameRequest, PropValue, PropertyDump,
+    PropertyEntry, Request, Response, StatusInfo, TouchFrameRequest, pen_event_from_request, touch_event_from_request,
 };
 use ironrdp_daemon::logbuf::{self, LogBuffer};
 use ironrdp_daemon::now::NowEndpoint;
@@ -82,6 +82,15 @@ pub(crate) enum Command {
     Touch {
         encode_time: u32,
         frames: Vec<TouchFrameRequest>,
+        response: oneshot::Sender<Response>,
+    },
+    Pen {
+        encode_time: u32,
+        frames: Vec<PenFrameRequest>,
+        response: oneshot::Sender<Response>,
+    },
+    DismissHoveringTouchContact {
+        contact_id: u8,
         response: oneshot::Sender<Response>,
     },
     Resize {
@@ -410,6 +419,24 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             })
             .await
         }
+        Request::Pen { encode_time, frames } => {
+            if let Err(response) = pen_event_from_request(encode_time, frames.clone()) {
+                return ConnectionResponse::Single(response);
+            }
+            queue_command(shared, dispatcher, |response| Command::Pen {
+                encode_time,
+                frames,
+                response,
+            })
+            .await
+        }
+        Request::DismissHoveringTouchContact { contact_id } => {
+            queue_command(shared, dispatcher, |response| Command::DismissHoveringTouchContact {
+                contact_id,
+                response,
+            })
+            .await
+        }
         Request::RailStatus | Request::RailEvents { .. } | Request::RailWait { .. } | Request::RailExecute(_) => {
             Response::typed_error(
                 AgentErrorCategory::Unavailable,
@@ -715,6 +742,8 @@ fn respond(command: Command, response: Response) {
         | Command::Disconnect { response }
         | Command::Input { response, .. }
         | Command::Touch { response, .. }
+        | Command::Pen { response, .. }
+        | Command::DismissHoveringTouchContact { response, .. }
         | Command::Resize { response, .. } => response,
     };
     let _ = sender.send(response);
@@ -749,7 +778,6 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ironrdp_agent::ipc::TouchContactRequest;
 
     fn rpc() -> ActiveXRpc {
         ActiveXRpc {
