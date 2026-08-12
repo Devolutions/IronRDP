@@ -46,7 +46,7 @@ fn open_packet_size_rejects_oversized() {
         capture_format: pcm_format(2, 48000, 16),
     };
     assert!(open.data_packet_size().is_none());
-    assert!(MAX_DATA_PACKET_SIZE >= 192_000);
+    const { assert!(MAX_DATA_PACKET_SIZE >= 192_000) };
 }
 
 #[test]
