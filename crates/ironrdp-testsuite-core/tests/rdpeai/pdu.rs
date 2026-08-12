@@ -28,13 +28,22 @@ fn formats_client_sets_cb_size() {
 }
 
 #[test]
-fn open_packet_size_uses_block_align() {
+fn open_packet_size_uses_ms_rdpeai_formula() {
+    // nChannels * 2 * FramesPerPacket (mono, 480 frames) => 960
     let open = OpenPdu {
         frames_per_packet: 480,
         initial_format: 0,
         capture_format: pcm_format(1, 48000, 16),
     };
     assert_eq!(open.data_packet_size(), Some(960));
+
+    // Stereo capture: channels still drive the Data PDU size.
+    let stereo = OpenPdu {
+        frames_per_packet: 480,
+        initial_format: 0,
+        capture_format: pcm_format(2, 48000, 16),
+    };
+    assert_eq!(stereo.data_packet_size(), Some(1920));
     roundtrip(RdpeaiPdu::Open(open));
 }
 

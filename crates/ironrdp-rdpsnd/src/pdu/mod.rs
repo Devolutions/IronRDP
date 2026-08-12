@@ -240,18 +240,27 @@ impl AudioFormat {
     /// WAVEFORMATEX identity fields — wave format tag, channel count, sample rate,
     /// bit depth — must match, and so must the codec-specific extra-data blob (`data`).
     ///
-    /// The two derived fields (`n_avg_bytes_per_sec`, `n_block_align`) are deliberately
-    /// ignored: they are computable from the others and a peer may legitimately not echo
-    /// them back byte-for-byte. The `data` blob is a different category — for codecs whose
-    /// extra-format bytes carry real configuration (AAC's HEAACWAVEINFO extra data is the
-    /// clear case, [MS-RDPEA] 2.2.2.1.1's `cbSize` + extra data), ignoring it could match
-    /// two genuinely incompatible formats, so it IS compared.
+    /// For PCM, `n_avg_bytes_per_sec` and `n_block_align` are derived from the other
+    /// fields and may legitimately differ between peers, so they are ignored.
+    /// For compressed formats those fields are codec-specific (bitrate / block layout)
+    /// and must match. Extra-format bytes (`data`) always compare: ignoring them could
+    /// match incompatible codec configurations (for example AAC HEAACWAVEINFO).
     pub fn matches_for_negotiation(&self, other: &Self) -> bool {
-        self.format == other.format
+        let identity = self.format == other.format
             && self.n_channels == other.n_channels
             && self.n_samples_per_sec == other.n_samples_per_sec
             && self.bits_per_sample == other.bits_per_sample
-            && self.data == other.data
+            && self.data == other.data;
+
+        if !identity {
+            return false;
+        }
+
+        if self.format == WaveFormat::PCM {
+            true
+        } else {
+            self.n_avg_bytes_per_sec == other.n_avg_bytes_per_sec && self.n_block_align == other.n_block_align
+        }
     }
 }
 

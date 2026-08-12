@@ -21,16 +21,29 @@ pub type AudioPacketSink = Box<dyn FnMut(Vec<u8>) + Send>;
 
 /// Capture device backend driven by the AUDIO_INPUT client processor.
 pub trait RdpeaiCaptureHandler: Send {
-    /// Formats this backend can capture, in preferred order.
+    /// Formats this backend can negotiate as encoding formats, in preferred order.
     fn supported_formats(&self) -> &[AudioFormat];
 
-    /// Open the capture device and begin delivering fixed-size packets to `sink`.
+    /// Open capture for `capture_format` and begin delivering fixed-size packets to `sink`.
+    ///
+    /// `encode_format` is the negotiated encoding format selected by Open `initialFormat`.
+    /// It may differ from `capture_format` when the backend captures PCM and encodes later.
+    /// `packet_size` is the Open capture Data PDU size (`nChannels * 2 * FramesPerPacket`).
     ///
     /// Returns an HRESULT (`0` = success).
-    fn open(&mut self, format: &AudioFormat, packet_size: usize, sink: AudioPacketSink) -> i32;
+    fn open(
+        &mut self,
+        capture_format: &AudioFormat,
+        encode_format: &AudioFormat,
+        packet_size: usize,
+        sink: AudioPacketSink,
+    ) -> i32;
 
-    /// Switch encoding/capture format while the device is open.
-    fn set_format(&mut self, format: &AudioFormat, packet_size: usize) -> bool;
+    /// Switch only the negotiated encoding format while capture stays open.
+    ///
+    /// `packet_size` remains the capture packet size established by Open; it must not be
+    /// recalculated from `encode_format`.
+    fn set_format(&mut self, encode_format: &AudioFormat, packet_size: usize) -> bool;
 
     /// Stop capture and release the device.
     fn close(&mut self);
@@ -57,6 +70,8 @@ pub struct RdpeaiClient {
     /// Negotiated format list (client reply order); Open/FormatChange indices refer here.
     negotiated_formats: Vec<AudioFormat>,
     frames_per_packet: u32,
+    /// Capture Data PDU payload size from the last successful Open.
+    capture_packet_size: Option<usize>,
     /// Drop-flag for in-flight capture callbacks after close/reopen.
     capture_epoch: Arc<AtomicU32>,
 }
@@ -71,6 +86,7 @@ impl RdpeaiClient {
             channel_id: None,
             negotiated_formats: Vec::new(),
             frames_per_packet: 0,
+            capture_packet_size: None,
             capture_epoch: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -112,7 +128,9 @@ impl RdpeaiClient {
 
     fn handle_version(&mut self, pdu: VersionPdu) -> PduResult<Vec<DvcMessage>> {
         if self.state != State::WaitVersion {
-            warn!(?self.state, "Unexpected Version PDU");
+            // Out-of-sequence Version must not reset an opened/ready client.
+            warn!(?self.state, "Ignoring out-of-sequence Version PDU");
+            return Ok(Vec::new());
         }
         let client_version = pdu.version;
         self.state = State::WaitFormats;
@@ -176,13 +194,8 @@ impl RdpeaiClient {
             return Ok(vec![Box::new(RdpeaiPdu::OpenReply(OpenReplyPdu::fail()))]);
         };
 
-        // Prefer the encode format from the negotiated list; capture WAVEFORMATEX from Open is
-        // used when it is a compatible PCM description of the same stream.
-        let capture_fmt = if open.capture_format.matches_for_negotiation(&encode_fmt) {
-            open.capture_format.clone()
-        } else {
-            encode_fmt
-        };
+        // Capture WAVEFORMATEX from Open is independent of initialFormat (encoding).
+        let capture_fmt = open.capture_format.clone();
 
         let Some(packet_size) = open.data_packet_size() else {
             warn!(
@@ -200,8 +213,9 @@ impl RdpeaiClient {
         )))];
 
         let sink = self.build_packet_sink();
-        let hr = self.handler.open(&capture_fmt, packet_size, sink);
+        let hr = self.handler.open(&capture_fmt, &encode_fmt, packet_size, sink);
         if hr == OpenReplyPdu::S_OK {
+            self.capture_packet_size = Some(packet_size);
             self.state = State::Opened;
             debug!(
                 format_idx = open.initial_format,
@@ -209,6 +223,7 @@ impl RdpeaiClient {
             );
             out.push(Box::new(RdpeaiPdu::OpenReply(OpenReplyPdu::ok())));
         } else {
+            self.capture_packet_size = None;
             self.state = State::Ready;
             warn!(hr, "AUDIO_INPUT capture open failed");
             out.push(Box::new(RdpeaiPdu::OpenReply(OpenReplyPdu { result: hr })));
@@ -217,7 +232,7 @@ impl RdpeaiClient {
     }
 
     fn handle_format_change(&mut self, change: FormatChangePdu) -> PduResult<Vec<DvcMessage>> {
-        let Some(fmt) = self.resolve_format(change.new_format).cloned() else {
+        let Some(encode_fmt) = self.resolve_format(change.new_format).cloned() else {
             warn!(index = change.new_format, "FormatChange index out of range");
             return Ok(Vec::new());
         };
@@ -229,18 +244,14 @@ impl RdpeaiClient {
             )))]);
         }
 
-        let Some(packet_size) = (OpenPdu {
-            frames_per_packet: self.frames_per_packet,
-            initial_format: change.new_format,
-            capture_format: fmt.clone(),
-        })
-        .data_packet_size() else {
-            warn!(index = change.new_format, "FormatChange packet size rejected");
+        // FormatChange switches encoding only; capture packet size stays from Open.
+        let Some(packet_size) = self.capture_packet_size else {
+            warn!(index = change.new_format, "FormatChange without Open packet size");
             self.stop_capture();
             return Ok(Vec::new());
         };
 
-        if !self.handler.set_format(&fmt, packet_size) {
+        if !self.handler.set_format(&encode_fmt, packet_size) {
             warn!(index = change.new_format, "Capture backend rejected format change");
             self.stop_capture();
             return Ok(Vec::new());
@@ -254,6 +265,7 @@ impl RdpeaiClient {
     fn stop_capture(&mut self) {
         self.capture_epoch.fetch_add(1, Ordering::AcqRel);
         self.handler.close();
+        self.capture_packet_size = None;
         self.state = State::Ready;
     }
 }
@@ -269,6 +281,8 @@ impl DvcProcessor for RdpeaiClient {
         self.channel_id = Some(channel_id);
         self.state = State::WaitVersion;
         self.negotiated_formats.clear();
+        self.frames_per_packet = 0;
+        self.capture_packet_size = None;
         debug!(channel_id, "AUDIO_INPUT channel started");
         Ok(Vec::new())
     }

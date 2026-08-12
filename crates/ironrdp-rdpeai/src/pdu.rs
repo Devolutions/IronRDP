@@ -274,26 +274,19 @@ impl OpenPdu {
     const NAME: &'static str = "MSG_SNDIN_OPEN";
     const FIXED_PART_SIZE: usize = 1 /* Header */ + 4 /* FramesPerPacket */ + 4 /* initialFormat */;
 
-    /// PCM packet size for each Data PDU, if within operational bounds.
+    /// Capture Data PDU payload size, if within operational bounds.
     ///
-    /// Prefer `nBlockAlign * FramesPerPacket`; fall back to the MS-RDPEAI 16-bit formula
-    /// `nChannels * 2 * FramesPerPacket` when block align is zero.
+    /// [MS-RDPEAI] §2.2.2.3 / §2.2.3.2: each Data PDU carries
+    /// `nChannels * 2 * FramesPerPacket` bytes of 16-bit PCM from the Open capture format.
     pub fn data_packet_size(&self) -> Option<usize> {
         if self.frames_per_packet == 0 || self.frames_per_packet > MAX_FRAMES_PER_PACKET {
             return None;
         }
 
         let channels = usize::from(self.capture_format.n_channels);
-        let bits = usize::from(self.capture_format.bits_per_sample);
         let frames = usize::try_from(self.frames_per_packet).ok()?;
-        let block = usize::from(self.capture_format.n_block_align);
-
-        let size = if block > 0 {
-            frames.checked_mul(block)?
-        } else {
-            let bytes_per_sample = bits.checked_div(8)?.max(1);
-            frames.checked_mul(channels)?.checked_mul(bytes_per_sample)?
-        };
+        // Fixed 16-bit sample width per MS-RDPEAI Open/Data contract.
+        let size = frames.checked_mul(channels)?.checked_mul(2)?;
 
         (size > 0 && size <= MAX_DATA_PACKET_SIZE).then_some(size)
     }

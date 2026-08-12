@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use ironrdp_core::{decode, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_rdpeai::client::{AudioPacketSink, RdpeaiCaptureHandler, RdpeaiClient};
@@ -8,10 +11,10 @@ use ironrdp_rdpsnd::pdu::AudioFormat;
 
 struct MockCapture {
     formats: Vec<AudioFormat>,
-    open_calls: usize,
+    open_calls: Arc<AtomicUsize>,
     open_result: i32,
     set_format_ok: bool,
-    set_format_calls: usize,
+    set_format_calls: Arc<AtomicUsize>,
 }
 
 impl RdpeaiCaptureHandler for MockCapture {
@@ -19,17 +22,28 @@ impl RdpeaiCaptureHandler for MockCapture {
         &self.formats
     }
 
-    fn open(&mut self, _format: &AudioFormat, _packet_size: usize, _sink: AudioPacketSink) -> i32 {
-        self.open_calls += 1;
+    fn open(
+        &mut self,
+        _capture_format: &AudioFormat,
+        _encode_format: &AudioFormat,
+        _packet_size: usize,
+        _sink: AudioPacketSink,
+    ) -> i32 {
+        self.open_calls.fetch_add(1, Ordering::Relaxed);
         self.open_result
     }
 
-    fn set_format(&mut self, _format: &AudioFormat, _packet_size: usize) -> bool {
-        self.set_format_calls += 1;
+    fn set_format(&mut self, _encode_format: &AudioFormat, _packet_size: usize) -> bool {
+        self.set_format_calls.fetch_add(1, Ordering::Relaxed);
         self.set_format_ok
     }
 
     fn close(&mut self) {}
+}
+
+fn decode_dvc(msg: &ironrdp_dvc::DvcMessage) -> RdpeaiPdu {
+    let bytes = encode_vec(msg.as_ref()).expect("encode dvc message");
+    decode(&bytes).expect("decode dvc message")
 }
 
 fn client_with(handler: MockCapture) -> RdpeaiClient {
@@ -47,10 +61,10 @@ fn version_formats_open_happy_path() {
     let fmt = pcm_format(1, 16000, 16);
     let mut client = client_with(MockCapture {
         formats: vec![fmt.clone(), pcm_format(2, 48000, 16)],
-        open_calls: 0,
+        open_calls: Arc::new(AtomicUsize::new(0)),
         open_result: OpenReplyPdu::S_OK,
         set_format_ok: true,
-        set_format_calls: 0,
+        set_format_calls: Arc::new(AtomicUsize::new(0)),
     });
 
     client.start(7).expect("start");
@@ -76,6 +90,11 @@ fn version_formats_open_happy_path() {
     );
     // FormatChange + OpenReply
     assert_eq!(open_out.len(), 2);
+    assert!(matches!(decode_dvc(&open_out[0]), RdpeaiPdu::FormatChange(_)));
+    match decode_dvc(&open_out[1]) {
+        RdpeaiPdu::OpenReply(reply) => assert_eq!(reply.result, OpenReplyPdu::S_OK),
+        other => panic!("expected OpenReply ok, got {other:?}"),
+    }
 }
 
 #[test]
@@ -83,10 +102,10 @@ fn open_with_bad_index_returns_fail() {
     let fmt = pcm_format(1, 16000, 16);
     let mut client = client_with(MockCapture {
         formats: vec![fmt.clone()],
-        open_calls: 0,
+        open_calls: Arc::new(AtomicUsize::new(0)),
         open_result: OpenReplyPdu::S_OK,
         set_format_ok: true,
-        set_format_calls: 0,
+        set_format_calls: Arc::new(AtomicUsize::new(0)),
     });
     client.start(1).unwrap();
     let _ = process_encoded(&mut client, 1, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
@@ -101,10 +120,10 @@ fn open_with_bad_index_returns_fail() {
         }),
     );
     assert_eq!(out.len(), 1);
-    let encoded = encode_vec(&RdpeaiPdu::OpenReply(OpenReplyPdu::fail())).unwrap();
-    // Ensure the single response is OpenReply fail by decoding it.
-    let reply: RdpeaiPdu = decode(&encoded).unwrap();
-    assert!(matches!(reply, RdpeaiPdu::OpenReply(_)));
+    match decode_dvc(&out[0]) {
+        RdpeaiPdu::OpenReply(reply) => assert_eq!(reply.result, OpenReplyPdu::E_FAIL),
+        other => panic!("expected OpenReply fail, got {other:?}"),
+    }
 }
 
 #[test]
@@ -113,10 +132,10 @@ fn format_change_failure_does_not_ack() {
     let fmt_b = pcm_format(1, 48000, 16);
     let mut client = client_with(MockCapture {
         formats: vec![fmt_a.clone(), fmt_b.clone()],
-        open_calls: 0,
+        open_calls: Arc::new(AtomicUsize::new(0)),
         open_result: OpenReplyPdu::S_OK,
         set_format_ok: false,
-        set_format_calls: 0,
+        set_format_calls: Arc::new(AtomicUsize::new(0)),
     });
 
     client.start(3).unwrap();
@@ -145,10 +164,10 @@ fn open_rejects_oversized_frames_per_packet() {
     let fmt = pcm_format(1, 16000, 16);
     let mut client = client_with(MockCapture {
         formats: vec![fmt.clone()],
-        open_calls: 0,
+        open_calls: Arc::new(AtomicUsize::new(0)),
         open_result: OpenReplyPdu::S_OK,
         set_format_ok: true,
-        set_format_calls: 0,
+        set_format_calls: Arc::new(AtomicUsize::new(0)),
     });
     client.start(1).unwrap();
     let _ = process_encoded(&mut client, 1, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
@@ -167,4 +186,48 @@ fn open_rejects_oversized_frames_per_packet() {
         }),
     );
     assert_eq!(out.len(), 1);
+    match decode_dvc(&out[0]) {
+        RdpeaiPdu::OpenReply(reply) => assert_eq!(reply.result, OpenReplyPdu::E_FAIL),
+        other => panic!("expected OpenReply fail, got {other:?}"),
+    }
+}
+
+#[test]
+fn out_of_sequence_version_is_ignored() {
+    let fmt = pcm_format(1, 16000, 16);
+    let open_calls = Arc::new(AtomicUsize::new(0));
+    let set_format_calls = Arc::new(AtomicUsize::new(0));
+    let mut client = client_with(MockCapture {
+        formats: vec![fmt.clone()],
+        open_calls: Arc::clone(&open_calls),
+        open_result: OpenReplyPdu::S_OK,
+        set_format_ok: true,
+        set_format_calls: Arc::clone(&set_format_calls),
+    });
+    client.start(1).unwrap();
+    let _ = process_encoded(&mut client, 1, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    let _ = process_encoded(
+        &mut client,
+        1,
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![fmt.clone()])),
+    );
+    let _ = process_encoded(
+        &mut client,
+        1,
+        RdpeaiPdu::Open(OpenPdu {
+            frames_per_packet: 320,
+            initial_format: 0,
+            capture_format: fmt,
+        }),
+    );
+    assert_eq!(open_calls.load(Ordering::Relaxed), 1);
+
+    let out = process_encoded(&mut client, 1, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    assert!(out.is_empty(), "opened client must ignore duplicate Version");
+
+    // Still opened: FormatChange should reach the backend rather than idle-ack only.
+    let change_out = process_encoded(&mut client, 1, RdpeaiPdu::FormatChange(FormatChangePdu::new(0)));
+    assert_eq!(change_out.len(), 1);
+    assert_eq!(set_format_calls.load(Ordering::Relaxed), 1);
+    assert!(matches!(decode_dvc(&change_out[0]), RdpeaiPdu::FormatChange(_)));
 }
