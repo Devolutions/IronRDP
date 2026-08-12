@@ -5,28 +5,22 @@ description: Create and integrate a new Rust crate in the IronRDP workspace. Use
 
 # New crate
 
-Inspect the root `Cargo.toml`, nearby same-tier crates, and `ARCHITECTURE.md` before creating files.
-Determine the crate's name, purpose, architectural tier, API-boundary status, and platform or `no_std` constraints from the request and repository rules.
+Run `cargo new --lib --vcs none crates/<crate-name>` from the repository root.
+Do not hand-create the directory or initial `Cargo.toml`.
 
-1. Run `cargo new --lib --vcs none crates/<crate-name>` from the repository root.
-   Do not hand-create the directory or initial `Cargo.toml`.
-   Preserve the workspace inheritance entries generated from `[workspace.package]`.
-2. Align `[package]` with a nearby same-tier crate.
-   Add `readme`, `description`, and the repository's current `rust-version`.
-   Add `[lints] workspace = true`.
-3. Add these target settings:
+In the generated manifest:
 
-   ```toml
-   [lib]
-   doctest = false
-   test = false
-   ```
+- Preserve the workspace inheritance entries.
+- Set `version = "0.0.0"` and `publish = false`.
+- Add `readme`, `description`, the repository's current `rust-version`, and `[lints] workspace = true`.
+- Add:
 
-4. Remove Cargo's sample function and test before adding the crate's real implementation.
-5. Invoke `crate-readme-writer` and write a short `README.md` before implementing crate behavior.
-6. Add the crate to the appropriate tier in `ARCHITECTURE.md`.
-   Follow the existing `#### [`crates/<crate-name>`](./crates/<crate-name>)` heading and concise-description pattern.
-   For a Community Tier crate, append the responsible maintainer suffix used by neighboring entries.
-   State API-boundary or architectural invariants only when they materially apply.
-   Do not reorder or rewrite unrelated entries.
-7. Add dependencies and implementation only after the README and architecture entry establish the crate's role.
+  ```toml
+  [lib]
+  doctest = false
+  test = false
+  ```
+
+Invoke `crate-readme-writer` to write a short `README.md`.
+Add the crate to the appropriate `ARCHITECTURE.md` tier by following its existing entry pattern.
+Invoke `public-dependency` whenever adding a dependency.

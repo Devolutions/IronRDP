@@ -11,14 +11,14 @@ For a new crate, write the README before implementing behavior.
 Use it as a lightweight specification: changing prose and examples is cheaper than changing code, and a written proposal gives collaborators a concrete design to review.
 For an existing crate, inspect its manifest and implementation first so the README describes current behavior rather than an imagined interface.
 
-1. Identify the intended reader, the problem the crate solves, and why it belongs in the repository.
-2. Lead with the crate name and a one- or two-sentence description of its purpose.
-3. Describe the smallest useful contract: principal capability, expected integration point, and important platform or architectural constraints.
-4. Add a minimal usage example only when it clarifies the intended API better than prose.
-5. Revise the proposed interface in the README until it is coherent before committing to implementation details.
-6. Treat a long or complicated README as design feedback: narrow or split the crate instead of writing an exhaustive specification.
-7. Link to existing project or protocol documentation rather than duplicating it.
-8. After implementation, verify every claim and example against the code while preserving the README's concise introductory role.
+- Identify the intended reader, the problem the crate solves, and why it belongs in the repository.
+- Lead with the crate name and a one- or two-sentence description of its purpose.
+- Describe the smallest useful contract: principal capability, expected integration point, and important platform or architectural constraints.
+- Add a minimal usage example only when it clarifies the intended API better than prose.
+- Revise the proposed interface until it is coherent before committing to implementation details.
+- Treat a long or complicated README as design feedback: narrow or split the crate instead of writing an exhaustive specification.
+- Link to existing project or protocol documentation rather than duplicating it.
+- After implementation, verify every claim and example against the code while preserving the README's concise introductory role.
 
 Write `README.md` directly.
 Keep it short enough to expose unclear scope and unnecessary complexity.
