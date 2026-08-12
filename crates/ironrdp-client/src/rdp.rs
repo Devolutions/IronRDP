@@ -22,7 +22,8 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 #[cfg(any(
     feature = "dvc-pipe-proxy",
     all(windows, feature = "dvc-com-plugin"),
-    feature = "sound"
+    feature = "sound",
+    all(windows, feature = "webauthn")
 ))]
 use ironrdp_pdu::pdu_other_err;
 #[cfg(feature = "rdpdr")]
@@ -52,6 +53,10 @@ use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_dvc_com_plugin::load_dvc_plugin;
 #[cfg(feature = "dvc-pipe-proxy")]
 use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
+#[cfg(all(windows, feature = "webauthn"))]
+use ironrdp_rdpewa::RdpewaClient;
+#[cfg(all(windows, feature = "webauthn"))]
+use ironrdp_rdpewa_native::WindowsRdpewaBackend;
 #[cfg(feature = "sound")]
 use ironrdp_rdpsnd_native::{RdpeaiCaptureBackend, cpal};
 
@@ -820,11 +825,12 @@ fn build_connector(
     // `input_sender` is only consumed by the optional DVC wirings below, and `cliprdr_factory`
     // only by the optional CLIPRDR attachment; discard them explicitly when those are compiled out.
     #[cfg(not(any(
-        feature = "dvc-pipe-proxy",
-        all(windows, feature = "dvc-com-plugin"),
-        feature = "sound"
-    )))]
-    let _ = input_sender;
+            feature = "dvc-pipe-proxy",
+            all(windows, feature = "dvc-com-plugin"),
+            feature = "sound",
+            all(windows, feature = "webauthn")
+        )))]
+        let _ = input_sender;
     #[cfg(not(feature = "clipboard"))]
     let _ = cliprdr_factory;
     #[cfg(not(feature = "rdpdr"))]
@@ -854,6 +860,24 @@ fn build_connector(
         ));
     }
 
+    // Native MS-RDPEWA WebAuthn redirection (Windows + webauthn feature).
+    #[cfg(all(windows, feature = "webauthn"))]
+    if config.channels.webauthn {
+        let sender = input_sender.clone();
+        let parent_hwnd = config.webauthn_parent_hwnd.unwrap_or(0);
+        info!(parent_hwnd, "Registering native RDPEWA WebAuthn channel");
+        drdynvc = drdynvc.with_dynamic_channel(
+            RdpewaClient::new(Box::new(WindowsRdpewaBackend::new(parent_hwnd))).with_write_callback(
+                move |channel_id, messages| {
+                    sender
+                        .try_send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                        .map_err(|_| pdu_other_err!("send RDPEWA DVC messages to the event loop"))?;
+                    Ok(())
+                },
+            ),
+        );
+    }
+
     // Load DVC COM plugins (Windows + dvc-com-plugin feature).
     #[cfg(all(windows, feature = "dvc-com-plugin"))]
     {
@@ -871,6 +895,15 @@ fn build_connector(
             }) {
                 Ok(channels) => {
                     for channel in channels {
+                        #[cfg(all(windows, feature = "webauthn"))]
+                        if config.channels.webauthn && channel.channel_name() == ironrdp_rdpewa::CHANNEL_NAME {
+                            warn!(
+                                dll = %plugin_path.display(),
+                                channel = ironrdp_rdpewa::CHANNEL_NAME,
+                                "Skipping COM DVC channel that conflicts with native RDPEWA WebAuthn"
+                            );
+                            continue;
+                        }
                         info!(channel_name = %channel.channel_name(), "Registered COM DVC channel");
                         drdynvc = drdynvc.with_dynamic_channel(channel);
                     }

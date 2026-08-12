@@ -1001,6 +1001,7 @@ struct CompatibilitySettings {
     enable_mouse: bool,
     enable_windows_key: bool,
     redirect_clipboard: bool,
+    redirect_webauthn: bool,
     redirect_drives: bool,
     disable_rdpdr: bool,
     drive_catalog: Rc<RefCell<DriveCatalog>>,
@@ -1072,6 +1073,7 @@ impl Default for CompatibilitySettings {
             enable_mouse: true,
             enable_windows_key: true,
             redirect_clipboard: true,
+            redirect_webauthn: true,
             redirect_drives: false,
             disable_rdpdr: false,
             drive_catalog: Rc::new(RefCell::new(DriveCatalog::new())),
@@ -5792,6 +5794,7 @@ fn active_x_property_snapshot(settings: &Settings, compatibility: &Compatibility
         properties.insert("desktopscalefactor", value);
     }
     properties.insert("redirectclipboard", compatibility.redirect_clipboard);
+    properties.insert("redirectwebauthn", compatibility.redirect_webauthn);
     properties.insert("compression", compatibility.compression.unwrap_or(true));
     properties
 }
@@ -8048,6 +8051,7 @@ impl Control {
                 ironrdp_pdu::rdp::client_info::CompressionType::Rdp61 => 3,
             });
             compatibility.redirect_clipboard = matches!(config.channels().clipboard, ClipboardType::Enable);
+            compatibility.redirect_webauthn = config.channels().webauthn;
             compatibility.performance_flags = connector.performance_flags;
             compatibility.keyboard_type = connector.keyboard_type;
             compatibility.keyboard_subtype = connector.keyboard_subtype;
@@ -8200,6 +8204,7 @@ impl Control {
         let enable_credssp = compatibility.enable_credssp;
         let compression = compatibility.compression;
         let clipboard = compatibility.redirect_clipboard;
+        let redirect_webauthn = compatibility.redirect_webauthn;
         let warn_about_credentials = compatibility.warn_about_sending_credentials;
         let warn_about_clipboard = clipboard && compatibility.warn_about_clipboard_redirection;
         let redirected_drives = if compatibility.disable_rdpdr {
@@ -8233,7 +8238,26 @@ impl Control {
             .client_name
             .clone()
             .unwrap_or_else(|| "IronRDP ActiveX".to_owned());
-        let dvc_plugin_paths = compatibility.dvc_plugin_paths.clone();
+        let dvc_plugin_paths = if redirect_webauthn {
+            let mut filtered = Vec::new();
+            for path in &compatibility.dvc_plugin_paths {
+                let is_webauthn_plugin = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case("webauthn.dll"));
+                if is_webauthn_plugin {
+                    tracing::warn!(
+                        dll = %path.display(),
+                        "Skipping webauthn.dll COM DVC plugin because native RedirectWebAuthn is enabled"
+                    );
+                } else {
+                    filtered.push(path.clone());
+                }
+            }
+            filtered
+        } else {
+            compatibility.dvc_plugin_paths.clone()
+        };
         let enable_tls = compatibility.enable_tls;
         let autologon = compatibility.autologon;
         let desktop_scale_factor = compatibility.desktop_scale_factor;
@@ -8378,6 +8402,8 @@ impl Control {
             } else {
                 ClipboardType::Disable
             })
+            .with_webauthn(redirect_webauthn)
+            .with_webauthn_parent_hwnd(hwnd.0 as isize)
             .with_rdpdr(rdpdr_enabled);
         let builder = if remote_program_mode {
             builder
@@ -11232,6 +11258,18 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
             trace_host_call("IMsRdpExtendedSettings::put_IronRdpDvcPluginPaths");
             return Ok(());
         }
+        if name.eq_ignore_ascii_case("RedirectWebAuthn") {
+            if value.is_null() {
+                return Err(Error::from_hresult(E_POINTER));
+            }
+            let redirect_webauthn = variant_bool(unsafe { &*value }, ptr::null_mut())?;
+            let mut compatibility = self.compatibility.borrow_mut();
+            active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
+            compatibility.redirect_webauthn = redirect_webauthn;
+            mark_compatibility_persistence_dirty(&compatibility);
+            trace_host_call("IMsRdpExtendedSettings::put_RedirectWebAuthn");
+            return Ok(());
+        }
 
         Err(Error::from_hresult(E_NOTIMPL))
     }
@@ -11365,6 +11403,10 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
                 .join(";");
             trace_host_call("IMsRdpExtendedSettings::get_IronRdpDvcPluginPaths");
             return write_out(value, variant_bstr(paths));
+        }
+        if name.eq_ignore_ascii_case("RedirectWebAuthn") {
+            trace_host_call("IMsRdpExtendedSettings::get_RedirectWebAuthn");
+            return write_out(value, variant_bool_value(self.compatibility.borrow().redirect_webauthn));
         }
         write_out(value, VARIANT::default())?;
         Err(Error::from_hresult(E_NOTIMPL))
@@ -14132,6 +14174,53 @@ mod tests {
         };
         assert_eq!(error.code(), E_NOTIMPL);
         assert_eq!(variant_header(&returned_token).vt, VT_EMPTY);
+    }
+
+    #[test]
+    fn extended_settings_redirect_webauthn_round_trip() {
+        let control: IMsRdpClient10 = Control::new().into();
+        let extended = control
+            .cast::<IMsRdpExtendedSettings>()
+            .expect("control supports IMsRdpExtendedSettings");
+
+        let mut default_value = VARIANT::default();
+        unsafe {
+            extended
+                .get_Property(BSTR::from("RedirectWebAuthn").as_ptr(), &mut default_value)
+                .expect("get default RedirectWebAuthn");
+        }
+        assert!(
+            variant_bool(&default_value, ptr::null_mut()).expect("RedirectWebAuthn boolean"),
+            "RedirectWebAuthn defaults to true"
+        );
+
+        let mut disabled = variant_bool_value(false);
+        unsafe {
+            extended
+                .put_Property(BSTR::from("RedirectWebAuthn").as_ptr(), &mut disabled)
+                .expect("disable RedirectWebAuthn");
+        }
+        let mut returned = VARIANT::default();
+        unsafe {
+            extended
+                .get_Property(BSTR::from("RedirectWebAuthn").as_ptr(), &mut returned)
+                .expect("get RedirectWebAuthn after disable");
+        }
+        assert!(!variant_bool(&returned, ptr::null_mut()).expect("RedirectWebAuthn boolean"));
+
+        let mut enabled = variant_bool_value(true);
+        unsafe {
+            extended
+                .put_Property(BSTR::from("RedirectWebAuthn").as_ptr(), &mut enabled)
+                .expect("enable RedirectWebAuthn");
+        }
+        let mut returned = VARIANT::default();
+        unsafe {
+            extended
+                .get_Property(BSTR::from("RedirectWebAuthn").as_ptr(), &mut returned)
+                .expect("get RedirectWebAuthn after enable");
+        }
+        assert!(variant_bool(&returned, ptr::null_mut()).expect("RedirectWebAuthn boolean"));
     }
 
     #[test]

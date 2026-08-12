@@ -475,7 +475,14 @@ Invalid audio modes and keyboard types return `E_INVALIDARG`.
 `Compress`, `RDPPort`, and `RedirectClipboard` configure the next IronRDP connection. Clipboard
 redirection creates its Windows CLIPRDR listener on the ActiveX creating apartment, where its hidden
 window is serviced by the host message loop; the RDP worker receives only the thread-safe backend
-factory. Disabling it omits the channel. `EnableCredSspSupport` is
+factory. Disabling it omits the channel.
+Native MS-RDPEWA WebAuthn redirection is controlled through the extended setting `RedirectWebAuthn`
+(default enabled) and the RDP property key `redirectwebauthn`.
+When enabled, the control registers IronRDP's native `WebAuthN_Channel` client with the ActiveX HWND
+as the WebAuthn parent window.
+When a host also lists `webauthn.dll` under `IronRdpDvcPluginPaths`, that COM plugin is skipped so the
+native channel remains the sole claimant.
+`EnableCredSspSupport` is
 applied to the next connection when explicitly set; otherwise the control preserves IronRDP's
 default CredSSP-enabled security negotiation. Smart sizing fits the remote framebuffer to the
 ActiveX bounds while preserving its aspect ratio; when disabled, the renderer retains the
@@ -534,7 +541,9 @@ viewport.
 ### DVC COM plugins
 
 The IronRDP-specific `IMsRdpExtendedSettings::Property` named `IronRdpDvcPluginPaths` configures
-one or more native Windows Dynamic Virtual Channel plugin DLLs, such as a WebAuthn client plugin.
+one or more native Windows Dynamic Virtual Channel plugin DLLs as an advanced escape hatch.
+Prefer native `RedirectWebAuthn` for WebAuthn redirection; keep `webauthn.dll` only when you intentionally
+disable the native channel.
 Set `IRONRDP_ACTIVEX_ENABLE_DVC_PLUGINS=1` in the process environment before creating the control;
 without that explicit opt-in, the property returns `E_NOTIMPL`. The BSTR value is a semicolon-delimited
 list of at most 16 local absolute paths. Each path is canonicalized, must name a distinct existing
@@ -545,6 +554,8 @@ The DVC loader owns each plugin's COM objects on dedicated worker threads and br
 through IronRDP's `drdynvc` implementation. It does not grant remote code execution: the embedding
 host explicitly selects the local DLLs it is prepared to load. A selected plugin that cannot load or
 initialize makes connection setup fail rather than quietly connecting without its requested channel.
+When native WebAuthn redirection is enabled, `webauthn.dll` is filtered out of the plugin list with a
+warning so `WebAuthN_Channel` is not double-registered.
 
 The following IronRDP-specific extended settings configure the next connection and reject writes after
 connection setup begins: `IronRdpEnableTls`, `IronRdpAutoLogon`, `IronRdpDesktopScaleFactor`,

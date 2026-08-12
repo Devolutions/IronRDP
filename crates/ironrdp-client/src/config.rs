@@ -91,6 +91,10 @@ pub struct Config {
     #[cfg(all(windows, feature = "dvc-com-plugin"))]
     pub(crate) dvc_plugins: Vec<PathBuf>,
 
+    /// Parent HWND for WebAuthn UI prompts (Windows only).
+    #[cfg(all(windows, feature = "webauthn"))]
+    pub(crate) webauthn_parent_hwnd: Option<isize>,
+
     /// The merged PropertySet that produced this config, shared (read-only) with channel factories.
     ///
     /// Well-known secret properties are stripped when calling [`ConfigBuilder::build`].
@@ -164,6 +168,12 @@ impl Config {
         &self.dvc_plugins
     }
 
+    /// Parent HWND for native WebAuthn redirection prompts (Windows only).
+    #[cfg(all(windows, feature = "webauthn"))]
+    pub fn webauthn_parent_hwnd(&self) -> Option<isize> {
+        self.webauthn_parent_hwnd
+    }
+
     /// Merged `.rdp` PropertySet that produced this config.
     pub fn properties(&self) -> &PropertySet {
         &self.properties
@@ -194,6 +204,8 @@ impl fmt::Debug for Config {
         s.field("dvc_pipe_proxies", &self.dvc_pipe_proxies);
         #[cfg(all(windows, feature = "dvc-com-plugin"))]
         s.field("dvc_plugins", &self.dvc_plugins);
+        #[cfg(all(windows, feature = "webauthn"))]
+        s.field("webauthn_parent_hwnd", &self.webauthn_parent_hwnd);
         s.field("extensions", &self.extensions);
         s.finish()
     }
@@ -254,10 +266,20 @@ pub struct ChannelConfig {
     /// Enable QOIZ (QOI with zlib) bitmap codec.
     #[cfg(feature = "qoiz")]
     pub qoiz: bool,
+
+    /// Enable native MS-RDPEWA WebAuthn redirection.
+    #[cfg(feature = "webauthn")]
+    pub webauthn: bool,
 }
 
 #[cfg_attr(
-    not(any(feature = "sound", feature = "clipboard", feature = "qoi", feature = "qoiz")),
+    not(any(
+        feature = "sound",
+        feature = "clipboard",
+        feature = "qoi",
+        feature = "qoiz",
+        feature = "webauthn"
+    )),
     expect(
         clippy::derivable_impls,
         reason = "fields setting non-default values are feature-gated; the impl is only trivially derivable in some feature combinations"
@@ -278,6 +300,8 @@ impl Default for ChannelConfig {
             qoi: true,
             #[cfg(feature = "qoiz")]
             qoiz: true,
+            #[cfg(feature = "webauthn")]
+            webauthn: true,
         }
     }
 }
@@ -657,6 +681,8 @@ pub struct ConfigBuilder {
     dvc_pipe_proxies: Vec<DvcProxyInfo>,
     #[cfg(all(windows, feature = "dvc-com-plugin"))]
     dvc_plugins: Vec<PathBuf>,
+    #[cfg(all(windows, feature = "webauthn"))]
+    webauthn_parent_hwnd: Option<isize>,
     properties: PropertySet,
     extensions: ExtensionRegistry,
 }
@@ -1220,6 +1246,23 @@ impl ConfigBuilder {
         self
     }
 
+    /// Enable or disable native MS-RDPEWA WebAuthn redirection.
+    #[cfg(feature = "webauthn")]
+    #[must_use]
+    pub fn with_webauthn(mut self, enabled: bool) -> Self {
+        self.channels.webauthn = enabled;
+        self.properties.set_redirect_webauthn(enabled);
+        self
+    }
+
+    /// Parent HWND used for WebAuthn UI prompts (Windows only).
+    #[cfg(all(windows, feature = "webauthn"))]
+    #[must_use]
+    pub fn with_webauthn_parent_hwnd(mut self, hwnd: isize) -> Self {
+        self.webauthn_parent_hwnd = Some(hwnd);
+        self
+    }
+
     // TODO: It can be useful to have a method for enabling or disabling all the extra channels at once.
     // Example: in tests, disable all + enable only the required channel.
 
@@ -1600,6 +1643,8 @@ impl ConfigBuilder {
             dvc_pipe_proxies: self.dvc_pipe_proxies,
             #[cfg(all(windows, feature = "dvc-com-plugin"))]
             dvc_plugins: self.dvc_plugins,
+            #[cfg(all(windows, feature = "webauthn"))]
+            webauthn_parent_hwnd: self.webauthn_parent_hwnd,
             properties,
             extensions: self.extensions,
         })
@@ -1827,6 +1872,14 @@ impl ConfigBuilder {
             }
             let _ = redirect;
         }
+if let Some(redirect) = ps.redirect_webauthn() {
+            #[cfg(feature = "webauthn")]
+            {
+                self.channels.webauthn = redirect;
+            }
+            let _ = redirect;
+        }
+
         #[cfg(feature = "rdpdr")]
         if let Some(enabled) = ps.enable_rdpdr() {
             self.channels.rdpdr.enabled = enabled;
