@@ -17,6 +17,8 @@ doctest = false
 
 [target.'cfg(windows)'.dependencies]
 ironrdp-rdpewa = { path = "../ironrdp-rdpewa", version = "0.1" } # public
+# Hash-only MS-RDPEWA hosts need webauthn.dll's IWTS remote-RPC path (same as MSTSC).
+ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin", version = "0.1" }
 tracing = { version = "0.1", features = ["log"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",

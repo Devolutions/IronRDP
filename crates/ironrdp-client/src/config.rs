@@ -1872,7 +1872,7 @@ impl ConfigBuilder {
             }
             let _ = redirect;
         }
-if let Some(redirect) = ps.redirect_webauthn() {
+        if let Some(redirect) = ps.redirect_webauthn() {
             #[cfg(feature = "webauthn")]
             {
                 self.channels.webauthn = redirect;

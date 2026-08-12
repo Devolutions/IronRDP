@@ -263,9 +263,16 @@ where
 }
 
 /// Load the plugin DLL and call VirtualChannelGetInstance + Initialize on the COM thread.
-fn initialize_plugin_on_thread(
+pub(crate) fn initialize_plugin_on_thread(
     dll_path: &Path,
-) -> Result<(IWTSPlugin, IWTSVirtualChannelManager, HashMap<String, IWTSListenerCallback>), String> {
+) -> Result<
+    (
+        IWTSPlugin,
+        IWTSVirtualChannelManager,
+        HashMap<String, IWTSListenerCallback>,
+    ),
+    String,
+> {
     let dll_path_wide: Vec<u16> = dll_path.as_os_str().encode_wide().chain(core::iter::once(0)).collect();
     let dll_path_pcwstr = PCWSTR(dll_path_wide.as_ptr());
 

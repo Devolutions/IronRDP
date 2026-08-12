@@ -2557,11 +2557,10 @@ dependencies = [
  "ironrdp-rail",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr",
-"ironrdp-rdpeai",
+ "ironrdp-rdpeai",
  "ironrdp-rdpei",
  "ironrdp-rdpewa",
  "ironrdp-rdpewa-native",
-
  "ironrdp-rdpsnd",
  "ironrdp-rdpsnd-native",
  "ironrdp-session",
@@ -2951,6 +2950,7 @@ dependencies = [
 name = "ironrdp-rdpewa-native"
 version = "0.1.0"
 dependencies = [
+ "ironrdp-dvc-com-plugin",
  "ironrdp-rdpewa",
  "tracing",
  "windows",

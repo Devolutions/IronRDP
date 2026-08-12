@@ -1,6 +1,6 @@
 //! Windows WebAuthn API backend for MS-RDPEWA.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use ironrdp_rdpewa::{
@@ -36,6 +36,13 @@ use crate::ctap::{
     parse_make_credential,
 };
 
+/// Process-wide cancel slot so CancelCurOp on a recreated `WebAuthN_Channel` can abort an in-flight
+/// ceremony started by an earlier channel instance.
+fn shared_cancel_guid() -> Arc<Mutex<Option<GUID>>> {
+    static SLOT: OnceLock<Arc<Mutex<Option<GUID>>>> = OnceLock::new();
+    SLOT.get_or_init(|| Arc::new(Mutex::new(None))).clone()
+}
+
 /// Windows Hello / security-key backend for [`ironrdp_rdpewa::RdpewaClient`].
 pub struct WindowsRdpewaBackend {
     /// Parent window handle stored as integer so the backend is `Send`.
@@ -51,7 +58,7 @@ impl WindowsRdpewaBackend {
     pub fn new(parent_hwnd: isize) -> Self {
         Self {
             parent_hwnd,
-            cancel_guid: Arc::new(Mutex::new(None)),
+            cancel_guid: shared_cancel_guid(),
         }
     }
 
@@ -109,6 +116,11 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
         let parent_hwnd = self.parent_hwnd;
         let cancel_guid = Arc::clone(&self.cancel_guid);
 
+        // Remember host-supplied cancel id so CancelCurOp on a later channel recreate can abort.
+        if let Some(id) = request.para.cancellation_id.as_deref().and_then(guid_from_bytes) {
+            *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
+        }
+
         thread::Builder::new()
             .name("ironrdp-rdpewa-webauthn".into())
             .spawn(move || {
@@ -117,9 +129,51 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
                     parent_hwnd,
                     resolved_hwnd = hwnd.0 as usize,
                     client_data_json_len = request.client_data_json.len(),
+                    raw_request_len = request.raw_request.len(),
                     ?request.subcommand,
                     "Starting native WebAuthn operation"
                 );
+
+                // Prefer webauthn.dll oneshot (MSTSC remote-RPC path). It handles hash-only hosts
+                // that omit clientDataJSON; public WebAuthN* cannot.
+                if !request.raw_request.is_empty() {
+                    match run_via_webauthn_dll_oneshot(&request) {
+                        Ok(response_pdu) => {
+                            let hresult = response_pdu
+                                .get(..4)
+                                .and_then(|b| b.try_into().ok())
+                                .map(u32::from_le_bytes)
+                                .unwrap_or(E_FAIL);
+                            info!(
+                                hresult = format!("0x{hresult:08X}"),
+                                response_len = response_pdu.len(),
+                                "WebAuthn completed via webauthn.dll oneshot"
+                            );
+                            reply.send_raw(response_pdu);
+                            *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            return;
+                        }
+                        Err(err) => {
+                            // Fall through to public WebAuthN* only when the host supplied JSON.
+                            if request.client_data_json.is_empty() {
+                                warn!(error = %err, "webauthn.dll oneshot failed (hash-only; no public API fallback)");
+                                reply.send(RdpewaResponse::from_hresult(err.hresult));
+                                *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                                return;
+                            }
+                            warn!(
+                                error = %err,
+                                "webauthn.dll oneshot failed; falling back to public WebAuthN API"
+                            );
+                        }
+                    }
+                } else if request.client_data_json.is_empty() {
+                    warn!("missing clientDataJSON and raw RDPEWA request");
+                    reply.send(RdpewaResponse::from_hresult(E_INVALIDARG));
+                    *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    return;
+                }
+
                 let outcome = run_webauthn_operation(hwnd, &request, &cancel_guid);
                 *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 match outcome {
@@ -141,6 +195,20 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
 
         Ok(WebAuthnDispatch::Async)
     }
+}
+
+fn run_via_webauthn_dll_oneshot(request: &WebAuthnOperationRequest) -> RdpewaResult<Vec<u8>> {
+    info!(
+        request_len = request.raw_request.len(),
+        client_data_json_len = request.client_data_json.len(),
+        ?request.subcommand,
+        "Forwarding RDPEWA request through webauthn.dll oneshot"
+    );
+
+    ironrdp_dvc_com_plugin::process_webauthn_dll_request(&request.raw_request).map_err(|message| {
+        warn!(%message, "webauthn.dll oneshot failed");
+        RdpewaHandlerError::new(E_FAIL, "webauthn.dll oneshot failed")
+    })
 }
 
 /// Prefer the configured parent HWND; if unset, fall back to the foreground window so agent/daemon
@@ -179,8 +247,8 @@ fn run_make_credential(
 
     let mut user_id = ctap.user_id.clone();
     let mut client_data_json = request.client_data_json.clone();
+    // Hash-only hosts are handled before this path via webauthn.dll oneshot.
     if client_data_json.is_empty() {
-        warn!(%rp_id, "native MakeCredential rejected: host omitted clientDataJSON (hash-only RDPEWA)");
         return Err(RdpewaHandlerError::new(E_INVALIDARG, "missing clientDataJSON"));
     }
 
@@ -277,8 +345,8 @@ fn run_get_assertion(
     let rp_id_w = wide(&rp_id);
 
     let mut client_data_json = request.client_data_json.clone();
+    // Hash-only hosts are handled before this path via webauthn.dll oneshot.
     if client_data_json.is_empty() {
-        warn!(%rp_id, "native GetAssertion rejected: host omitted clientDataJSON (hash-only RDPEWA)");
         return Err(RdpewaHandlerError::new(E_INVALIDARG, "missing clientDataJSON"));
     }
 

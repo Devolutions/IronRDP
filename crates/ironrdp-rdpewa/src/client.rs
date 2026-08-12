@@ -59,6 +59,11 @@ pub struct WebAuthnOperationRequest {
     pub para: WebAuthnPara,
     /// CTAP CBOR map (without subcommand byte).
     pub ctap_cbor: Vec<u8>,
+    /// Original RDPEWA request CBOR (full map).
+    ///
+    /// Required for hash-only hosts that omit `clientDataJSON`: the Windows backend can forward
+    /// these bytes through `webauthn.dll`'s private remote-RPC path.
+    pub raw_request: Vec<u8>,
 }
 
 /// Successful WebAuthn operation result from the platform backend.
@@ -213,7 +218,8 @@ impl RdpewaClient {
             let messages = match encode_dvc_messages(
                 channel_id,
                 vec![Box::new(RawDataDvcMessage(response_pdu))],
-                ChannelFlags::SHOW_PROTOCOL,
+                // Match ironrdp-dvc-com-plugin / MSTSC Write framing.
+                ChannelFlags::empty(),
             ) {
                 Ok(messages) => messages,
                 Err(error) => {
@@ -224,11 +230,13 @@ impl RdpewaClient {
 
             if let Err(error) = callback(channel_id, messages) {
                 warn!(%error, channel_id, "Failed to submit async RDPEWA DVC response");
+            } else {
+                debug!(channel_id, "Submitted async RDPEWA DVC response");
             }
         })
     }
 
-    fn handle_request(&mut self, request: RdpewaRequest) -> PduResult<Option<RdpewaResponse>> {
+    fn handle_request(&mut self, request: RdpewaRequest, raw_payload: &[u8]) -> PduResult<Option<RdpewaResponse>> {
         match request.command {
             RpcCommand::ApiVersion => {
                 let version = self.handler.api_version().unwrap_or_else(|e| {
@@ -263,14 +271,14 @@ impl RdpewaClient {
                     }
                 }
             }
-            RpcCommand::WebAuthn => self.handle_webauthn(request),
+            RpcCommand::WebAuthn => self.handle_webauthn(request, raw_payload),
             RpcCommand::GetCredentials | RpcCommand::GetAuthenticatorList => {
                 Ok(Some(RdpewaResponse::from_hresult(E_NOTIMPL)))
             }
         }
     }
 
-    fn handle_webauthn(&mut self, request: RdpewaRequest) -> PduResult<Option<RdpewaResponse>> {
+    fn handle_webauthn(&mut self, request: RdpewaRequest, raw_payload: &[u8]) -> PduResult<Option<RdpewaResponse>> {
         let body = match request.webauthn_body() {
             Ok(b) => b,
             Err(e) => {
@@ -289,6 +297,7 @@ impl RdpewaClient {
             client_data_json,
             para,
             ctap_cbor: body.ctap_cbor,
+            raw_request: raw_payload.to_vec(),
         };
 
         let reply = self.make_reply_sender();
@@ -336,7 +345,7 @@ impl DvcProcessor for RdpewaClient {
         let request = RdpewaRequest::decode(payload).map_err(|e| decode_err!(e))?;
         debug!(?request.command, "Received RDPEWA request");
 
-        match self.handle_request(request)? {
+        match self.handle_request(request, payload)? {
             Some(response) => Ok(vec![Box::new(response)]),
             None => Ok(Vec::new()),
         }

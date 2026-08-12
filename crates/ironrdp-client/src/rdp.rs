@@ -825,12 +825,12 @@ fn build_connector(
     // `input_sender` is only consumed by the optional DVC wirings below, and `cliprdr_factory`
     // only by the optional CLIPRDR attachment; discard them explicitly when those are compiled out.
     #[cfg(not(any(
-            feature = "dvc-pipe-proxy",
-            all(windows, feature = "dvc-com-plugin"),
-            feature = "sound",
-            all(windows, feature = "webauthn")
-        )))]
-        let _ = input_sender;
+        feature = "dvc-pipe-proxy",
+        all(windows, feature = "dvc-com-plugin"),
+        feature = "sound",
+        all(windows, feature = "webauthn")
+    )))]
+    let _ = input_sender;
     #[cfg(not(feature = "clipboard"))]
     let _ = cliprdr_factory;
     #[cfg(not(feature = "rdpdr"))]
@@ -923,9 +923,8 @@ fn build_connector(
             });
             drdynvc = drdynvc.with_listener(RdpewaClientListener::new(move || {
                 let write_callback = Arc::clone(&write_callback);
-                RdpewaClient::new(Box::new(WindowsRdpewaBackend::new(parent_hwnd))).with_write_callback(
-                    move |channel_id, messages| write_callback(channel_id, messages),
-                )
+                RdpewaClient::new(Box::new(WindowsRdpewaBackend::new(parent_hwnd)))
+                    .with_write_callback(move |channel_id, messages| write_callback(channel_id, messages))
             }));
         }
     }
