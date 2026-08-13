@@ -181,29 +181,31 @@ const fn native_scard_len() -> u8 {
     8
 }
 
+/// MS-RDPESC `cbContext` / `cbHandle` maximum (`range(0,16)`).
+const SCARD_OPAQUE_MAX_LEN: u32 = 16;
+
 fn scard_wire_len(length: u32) -> DecodeResult<u8> {
-    match length {
-        0 => Ok(0),
-        4 => Ok(4),
-        8 => Ok(8),
-        _ => Err(invalid_field_err!(
+    if length > SCARD_OPAQUE_MAX_LEN {
+        return Err(invalid_field_err!(
             "decode_ptr",
-            "unsupported value length for SCARDCONTEXT/SCARDHANDLE"
-        )),
+            "cbContext/cbHandle exceeds MS-RDPESC range 0..=16"
+        ));
     }
+    // INVARIANT: length <= 16 fits in u8.
+    Ok(u8::try_from(length).expect("length <= 16 fits in u8"))
 }
 
-fn write_native_le_bytes(native: usize, len: u8, bytes: &mut [u8; 8]) {
+fn write_native_le_bytes(native: usize, len: u8, bytes: &mut [u8; 16]) {
     debug_assert!(matches!(len, 0 | 4 | 8));
-    // Zero-extend native into 8 LE bytes, then keep the first `len` of them.
-    let mut le = [0u8; 8];
+    // Zero-extend native into LE bytes, then keep the first `len` of them.
+    let mut le = [0u8; 16];
     let native_bytes = native.to_le_bytes();
     le[..native_bytes.len()].copy_from_slice(&native_bytes);
     let n = usize::from(len);
     bytes[..n].copy_from_slice(&le[..n]);
 }
 
-fn read_native_le_bytes(bytes: &[u8; 8], len: u8) -> usize {
+fn read_native_le_bytes(bytes: &[u8; 16], len: u8) -> usize {
     let mut tmp = [0u8; size_of::<usize>()];
     let n = usize::from(len).min(size_of::<usize>());
     tmp[..n].copy_from_slice(&bytes[..n]);
@@ -218,16 +220,16 @@ fn read_native_le_bytes(bytes: &[u8; 8], len: u8) -> usize {
 /// [2.2.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/060abee1-e520-4149-9ef7-ce79eb500a59
 #[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
 pub struct ScardContext {
-    /// Number of significant bytes in [`Self::bytes`] (`0`, `4`, or `8`).
+    /// Number of significant bytes in [`Self::bytes`] (`0..=16`).
     len: u8,
-    /// Little-endian opaque context; only the first `len` bytes are on the wire.
-    bytes: [u8; 8],
+    /// Opaque context; only the first `len` bytes are on the wire.
+    bytes: [u8; 16],
 }
 
 impl ScardContext {
     /// Creates a 4-byte context value (legacy synthetic-id encoding).
     pub fn new(value: u32) -> Self {
-        let mut bytes = [0u8; 8];
+        let mut bytes = [0u8; 16];
         bytes[..4].copy_from_slice(&value.to_le_bytes());
         Self { len: 4, bytes }
     }
@@ -237,8 +239,16 @@ impl ScardContext {
         Self::from_native_len(native, native_scard_len())
     }
 
+    /// Creates a context from opaque wire bytes (`0..=16`).
+    pub fn from_opaque(opaque: &[u8]) -> DecodeResult<Self> {
+        let len = scard_wire_len(u32::try_from(opaque.len()).unwrap_or(u32::MAX))?;
+        let mut bytes = [0u8; 16];
+        bytes[..opaque.len()].copy_from_slice(opaque);
+        Ok(Self { len, bytes })
+    }
+
     fn from_native_len(native: usize, len: u8) -> Self {
-        let mut bytes = [0u8; 8];
+        let mut bytes = [0u8; 16];
         write_native_le_bytes(native, len, &mut bytes);
         Self { len, bytes }
     }
@@ -268,7 +278,9 @@ impl ScardContext {
         u32::from_le_bytes(tmp)
     }
 
-    /// Native `SCARDCONTEXT`-sized integer (little-endian, zero-extended).
+    /// Convenience view of the first `size_of::<usize>()` LE bytes as a native integer.
+    ///
+    /// Useful for 4- and 8-byte Windows `SCARDCONTEXT` values; longer opaque blobs are truncated.
     pub fn native(self) -> usize {
         read_native_le_bytes(&self.bytes, self.len)
     }
@@ -331,7 +343,7 @@ impl ndr::Decode for ScardContext {
                 "ScardContext cbContext/pbContext inconsistency"
             ));
         }
-        Ok(Self { len, bytes: [0; 8] })
+        Ok(Self { len, bytes: [0; 16] })
     }
 
     fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<()> {
@@ -1078,7 +1090,7 @@ bitflags! {
 
 /// [2.2.1.4] LocateCards_ATRMask
 ///
-/// [2.2.1.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.1.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/479fe1cf-eaf0-4d51-8964-d4195a61f573
 #[derive(Debug, PartialEq, Clone)]
 pub struct LocateCardsAtrMask {
     pub atr_length: u32,
@@ -1092,6 +1104,13 @@ impl LocateCardsAtrMask {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::FIXED_PART_SIZE);
         let atr_length = src.read_u32();
+        // MS-RDPESC: cbAtr range(0,36)
+        if atr_length > 36 {
+            return Err(invalid_field_err!(
+                "decode",
+                "LocateCards_ATRMask cbAtr exceeds range 0..=36"
+            ));
+        }
         let atr = src.read_array::<36>();
         let mask = src.read_array::<36>();
         Ok(Self { atr_length, atr, mask })
@@ -1100,8 +1119,8 @@ impl LocateCardsAtrMask {
 
 /// [2.2.2.9] LocateCardsA_Call / [2.2.2.10] LocateCardsW_Call
 ///
-/// [2.2.2.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
-/// [2.2.2.10]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.2.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/c6b49a98-99e6-43c0-af63-56e4918814f3
+/// [2.2.2.10]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/c40fb671-6a50-4ae1-b75d-f44b25612eb2
 #[derive(Debug, PartialEq, Clone)]
 pub struct LocateCardsCall {
     pub context: ScardContext,
@@ -1148,7 +1167,22 @@ impl rpce::HeaderlessDecode for LocateCardsCall {
                     "mismatched cards length in NDR pointer and value"
                 ));
             }
-            let cards = read_multistring_from_cursor(src, charset)?;
+            // MS-RDPESC: cBytes range(0, 65536)
+            if cards_length > 65_536 {
+                return Err(invalid_field_err!(
+                    "decode",
+                    "LocateCards cBytes exceeds range 0..=65536"
+                ));
+            }
+            let cards_len: usize = cast_length!("LocateCardsCall", "cards_length", cards_length)?;
+            ensure_size!(in: src, size: cards_len);
+            // Limit the multistring parser to the declared byte count so it cannot
+            // consume subsequent NDR fields (for example reader states).
+            let mut cards_src = ReadCursor::new(src.read_slice(cards_len));
+            let cards = read_multistring_from_cursor(&mut cards_src, charset)?;
+            // Conformant byte arrays are followed by padding to a 4-byte boundary
+            // before the next NDR field (FreeRDP smartcard_pack / MS-RPCE).
+            ndr::skip_pad(src)?;
             (cards_length, cards)
         };
 
@@ -1157,6 +1191,19 @@ impl rpce::HeaderlessDecode for LocateCardsCall {
         } else {
             ensure_size!(in: src, size: size_of::<u32>());
             let states_length = src.read_u32();
+            // MS-RDPESC: cReaders range(0,10)
+            if states_length > 10 {
+                return Err(invalid_field_err!(
+                    "decode",
+                    "LocateCards cReaders exceeds range 0..=10"
+                ));
+            }
+            if states_length != states_ptr_length {
+                return Err(invalid_field_err!(
+                    "decode",
+                    "mismatched states length in NDR pointer and value"
+                ));
+            }
             let mut states = Vec::new();
             for _ in 0..states_length {
                 states.push(ReaderState::decode_ptr(src, &mut index)?);
@@ -1183,8 +1230,8 @@ impl rpce::HeaderlessDecode for LocateCardsCall {
 
 /// [2.2.2.23] LocateCardsByATRA_Call / [2.2.2.24] LocateCardsByATRW_Call
 ///
-/// [2.2.2.23]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
-/// [2.2.2.24]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.2.23]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/100a5cc6-cb6a-4f90-b0e4-659b872c26d5
+/// [2.2.2.24]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/c934cc70-c1c9-4193-8b1b-038d8055c000
 #[derive(Debug, PartialEq, Clone)]
 pub struct LocateCardsByAtrCall {
     pub context: ScardContext,
@@ -1230,6 +1277,13 @@ impl rpce::HeaderlessDecode for LocateCardsByAtrCall {
                     "mismatched ATR mask length in NDR pointer and value"
                 ));
             }
+            // MS-RDPESC: cAtrs range(0,1000)
+            if atr_masks_length > 1000 {
+                return Err(invalid_field_err!(
+                    "decode",
+                    "LocateCardsByATR cAtrs exceeds range 0..=1000"
+                ));
+            }
             let mut atr_masks = Vec::new();
             for _ in 0..atr_masks_length {
                 atr_masks.push(LocateCardsAtrMask::decode(src)?);
@@ -1242,6 +1296,19 @@ impl rpce::HeaderlessDecode for LocateCardsByAtrCall {
         } else {
             ensure_size!(in: src, size: size_of::<u32>());
             let states_length = src.read_u32();
+            // MS-RDPESC: cReaders range(0,10)
+            if states_length > 10 {
+                return Err(invalid_field_err!(
+                    "decode",
+                    "LocateCardsByATR cReaders exceeds range 0..=10"
+                ));
+            }
+            if states_length != states_ptr_length {
+                return Err(invalid_field_err!(
+                    "decode",
+                    "mismatched states length in NDR pointer and value"
+                ));
+            }
             let mut states = Vec::new();
             for _ in 0..states_length {
                 states.push(ReaderState::decode_ptr(src, &mut index)?);
@@ -1391,33 +1458,41 @@ bitflags! {
 
 /// [2.2.1.2] REDIR_SCARDHANDLE
 ///
-/// Reader handle associated with a [`ScardContext`]. Like the context, `cbHandle`
-/// is typically 4 or 8 bytes (native `SCARDHANDLE` width).
+/// Reader handle associated with a [`ScardContext`]. MS-RDPESC allows `cbHandle`
+/// in `0..=16`; Windows clients commonly emit 4 or 8 native `SCARDHANDLE` bytes.
 ///
 /// [2.2.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b6276356-7c5f-4d3e-be92-a6c85e58d008
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct ScardHandle {
     context: ScardContext,
-    /// Number of significant bytes in [`Self::bytes`] (`0`, `4`, or `8`).
+    /// Number of significant bytes in [`Self::bytes`] (`0..=16`).
     len: u8,
-    /// Little-endian opaque handle; only the first `len` bytes are on the wire.
-    bytes: [u8; 8],
+    /// Opaque handle; only the first `len` bytes are on the wire.
+    bytes: [u8; 16],
 }
 
 impl ScardHandle {
     /// Creates a 4-byte handle value (legacy synthetic-id encoding).
     pub fn new(context: ScardContext, value: u32) -> Self {
-        let mut bytes = [0u8; 8];
+        let mut bytes = [0u8; 16];
         bytes[..4].copy_from_slice(&value.to_le_bytes());
         Self { context, len: 4, bytes }
     }
 
     /// Creates a handle from a native WinSCard `SCARDHANDLE` (`usize` width).
     pub fn from_native(context: ScardContext, native: usize) -> Self {
-        let mut bytes = [0u8; 8];
+        let mut bytes = [0u8; 16];
         let len = native_scard_len();
         write_native_le_bytes(native, len, &mut bytes);
         Self { context, len, bytes }
+    }
+
+    /// Creates a handle from opaque wire bytes (`0..=16`).
+    pub fn from_opaque(context: ScardContext, opaque: &[u8]) -> DecodeResult<Self> {
+        let len = scard_wire_len(u32::try_from(opaque.len()).unwrap_or(u32::MAX))?;
+        let mut bytes = [0u8; 16];
+        bytes[..opaque.len()].copy_from_slice(opaque);
+        Ok(Self { context, len, bytes })
     }
 
     /// Context that owns this handle.
@@ -1450,7 +1525,9 @@ impl ScardHandle {
         u32::from_le_bytes(tmp)
     }
 
-    /// Native `SCARDHANDLE`-sized integer (little-endian, zero-extended).
+    /// Convenience view of the first `size_of::<usize>()` LE bytes as a native integer.
+    ///
+    /// Useful for 4- and 8-byte Windows `SCARDHANDLE` values; longer opaque blobs are truncated.
     pub fn native(self) -> usize {
         read_native_le_bytes(&self.bytes, self.len)
     }
@@ -1481,7 +1558,7 @@ impl ndr::Decode for ScardHandle {
         Ok(Self {
             context,
             len,
-            bytes: [0; 8],
+            bytes: [0; 16],
         })
     }
 
@@ -2342,7 +2419,7 @@ impl rpce::HeaderlessEncode for GetReaderIconReturn {
 
 /// [2.2.2.3] ListReaderGroups_Call
 ///
-/// [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/2f3f1b0f-0d0c-4f4c-8f2e-5f4f0e0f0e0f
+/// [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/dde8c811-c258-444f-8028-98311a9e0082
 #[derive(Debug, PartialEq, Clone)]
 pub struct ListReaderGroupsCall {
     pub context: ScardContext,
@@ -2375,7 +2452,7 @@ impl rpce::HeaderlessDecode for ListReaderGroupsCall {
 
 /// [2.2.2.15] Reconnect_Call
 ///
-/// [2.2.2.15]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/ad9fbc8e-0963-44ac-8d71-38021685790c
+/// [2.2.2.15]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/9c1eca52-3a99-403c-8ac8-6437f246a154
 #[derive(Debug, PartialEq, Clone)]
 pub struct ReconnectCall {
     pub handle: ScardHandle,
@@ -2411,7 +2488,7 @@ impl rpce::HeaderlessDecode for ReconnectCall {
 
 /// [2.2.3.7] Reconnect_Return
 ///
-/// [2.2.3.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.3.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/e25a583f-ab82-4ba3-bebf-af656c58e6d8
 #[derive(Debug, PartialEq, Clone)]
 pub struct ReconnectReturn {
     pub return_code: ReturnCode,
@@ -2448,7 +2525,7 @@ impl rpce::HeaderlessEncode for ReconnectReturn {
 
 /// [2.2.2.17] State_Call
 ///
-/// [2.2.2.17]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.2.17]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/ba3b9097-02fe-4f6b-951c-05439a7d9da7
 #[derive(Debug, PartialEq, Clone)]
 pub struct StateCall {
     pub handle: ScardHandle,
@@ -2481,7 +2558,7 @@ impl rpce::HeaderlessDecode for StateCall {
 
 /// [2.2.3.9] State_Return
 ///
-/// [2.2.3.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.3.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/574e5ec5-96ba-4b11-bfa9-52eb34307356
 #[derive(Debug, PartialEq, Clone)]
 pub struct StateReturn {
     pub return_code: ReturnCode,
@@ -2533,7 +2610,7 @@ impl rpce::HeaderlessEncode for StateReturn {
 
 /// [2.2.2.20] Control_Call
 ///
-/// [2.2.2.20]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.2.20]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/002fc3a3-2ca2-492e-8463-aba8f3923e48
 #[derive(Debug, PartialEq, Clone)]
 pub struct ControlCall {
     pub handle: ScardHandle,
@@ -2556,7 +2633,14 @@ impl rpce::HeaderlessDecode for ControlCall {
         let mut handle = ScardHandle::decode_ptr(src, &mut index)?;
         ensure_size!(in: src, size: size_of::<u32>() * 2);
         let control_code = src.read_u32();
-        let _in_buffer_len = src.read_u32();
+        // MS-RDPESC: cbInBufferSize range(0,66560)
+        let in_buffer_len = src.read_u32();
+        if in_buffer_len > 66_560 {
+            return Err(invalid_field_err!(
+                "decode",
+                "Control cbInBufferSize exceeds range 0..=66560"
+            ));
+        }
         let in_buffer_ptr = ndr::decode_ptr(src, &mut index)?;
         ensure_size!(in: src, size: size_of::<u32>() * 2);
         let out_buffer_is_null = src.read_u32() == 0x0000_0001;
@@ -2565,9 +2649,21 @@ impl rpce::HeaderlessDecode for ControlCall {
 
         let in_buffer = if in_buffer_ptr != 0 {
             ensure_size!(in: src, size: size_of::<u32>());
-            let in_len: usize = cast_length!("ControlCall", "in_buffer_len", src.read_u32())?;
+            let referent_len = src.read_u32();
+            if referent_len != in_buffer_len {
+                return Err(invalid_field_err!(
+                    "decode",
+                    "mismatched Control in-buffer length in NDR pointer and value"
+                ));
+            }
+            let in_len: usize = cast_length!("ControlCall", "in_buffer_len", referent_len)?;
             ensure_size!(in: src, size: in_len);
             src.read_slice(in_len).to_vec()
+        } else if in_buffer_len != 0 {
+            return Err(invalid_field_err!(
+                "decode",
+                "Control cbInBufferSize/pvInBuffer inconsistency"
+            ));
         } else {
             Vec::new()
         };
@@ -2584,7 +2680,7 @@ impl rpce::HeaderlessDecode for ControlCall {
 
 /// [2.2.3.6] Control_Return
 ///
-/// [2.2.3.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.3.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/e7e854f8-0c5a-4814-bfdd-b72cb8aefe3e
 #[derive(Debug, PartialEq, Clone)]
 pub struct ControlReturn {
     pub return_code: ReturnCode,
@@ -2619,13 +2715,16 @@ impl rpce::HeaderlessEncode for ControlReturn {
     }
 
     fn size(&self) -> usize {
-        self.return_code.size() + ndr::ptr_size(true) + 4 + self.out_buffer.len()
+        self.return_code.size()
+            + ndr::ptr_size(true)
+            + 4 /* cbOutBufferSize value */
+            + self.out_buffer.len() // pvOutBuffer
     }
 }
 
 /// [2.2.2.21] GetAttrib_Call
 ///
-/// [2.2.2.21]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.2.21]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f4e36ff1-e7b3-4046-bddb-cd192a76c7ab
 #[derive(Debug, PartialEq, Clone)]
 pub struct GetAttribCall {
     pub handle: ScardHandle,
@@ -2661,7 +2760,7 @@ impl rpce::HeaderlessDecode for GetAttribCall {
 
 /// [2.2.3.12] GetAttrib_Return
 ///
-/// [2.2.3.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.3.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/ab3ac071-3fc5-44e6-9b94-c1eee1168266
 #[derive(Debug, PartialEq, Clone)]
 pub struct GetAttribReturn {
     pub return_code: ReturnCode,
@@ -2693,13 +2792,16 @@ impl rpce::HeaderlessEncode for GetAttribReturn {
     }
 
     fn size(&self) -> usize {
-        self.return_code.size() + ndr::ptr_size(true) + 4 + self.attr.len()
+        self.return_code.size()
+            + ndr::ptr_size(true)
+            + 4 /* cbAttrLen value */
+            + self.attr.len() // pbAttr
     }
 }
 
 /// [2.2.2.22] SetAttrib_Call
 ///
-/// [2.2.2.22]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.2.22]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/28f8dd60-35b7-45fb-ab75-15bbf81f5d11
 #[derive(Debug, PartialEq, Clone)]
 pub struct SetAttribCall {
     pub handle: ScardHandle,
@@ -2720,15 +2822,31 @@ impl rpce::HeaderlessDecode for SetAttribCall {
         let mut handle = ScardHandle::decode_ptr(src, &mut index)?;
         ensure_size!(in: src, size: size_of::<u32>() * 2);
         let attr_id = src.read_u32();
-        let _attr_len = src.read_u32();
+        // MS-RDPESC: cbAttrLen range(0,65536)
+        let attr_len = src.read_u32();
+        if attr_len > 65_536 {
+            return Err(invalid_field_err!(
+                "decode",
+                "SetAttrib cbAttrLen exceeds range 0..=65536"
+            ));
+        }
         let attr_ptr = ndr::decode_ptr(src, &mut index)?;
         handle.decode_value(src, None)?;
 
         let attr = if attr_ptr != 0 {
             ensure_size!(in: src, size: size_of::<u32>());
-            let attr_len: usize = cast_length!("SetAttribCall", "attr_len", src.read_u32())?;
+            let referent_len = src.read_u32();
+            if referent_len != attr_len {
+                return Err(invalid_field_err!(
+                    "decode",
+                    "mismatched SetAttrib attr length in NDR pointer and value"
+                ));
+            }
+            let attr_len: usize = cast_length!("SetAttribCall", "attr_len", referent_len)?;
             ensure_size!(in: src, size: attr_len);
             src.read_slice(attr_len).to_vec()
+        } else if attr_len != 0 {
+            return Err(invalid_field_err!("decode", "SetAttrib cbAttrLen/pbAttr inconsistency"));
         } else {
             Vec::new()
         };
@@ -2739,7 +2857,7 @@ impl rpce::HeaderlessDecode for SetAttribCall {
 
 /// [2.2.2.29] GetTransmitCount_Call
 ///
-/// [2.2.2.29]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.2.29]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f453f1b4-1291-4c69-8e97-f781b2d8e66f
 #[derive(Debug, PartialEq, Clone)]
 pub struct GetTransmitCountCall {
     pub handle: ScardHandle,
@@ -2763,7 +2881,7 @@ impl rpce::HeaderlessDecode for GetTransmitCountCall {
 
 /// [2.2.3.13] GetTransmitCount_Return
 ///
-/// [2.2.3.13]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/
+/// [2.2.3.13]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/32aea1d7-0edb-4807-bbd1-a6ee1fbb0087
 #[derive(Debug, PartialEq, Clone)]
 pub struct GetTransmitCountReturn {
     pub return_code: ReturnCode,
@@ -2871,6 +2989,18 @@ mod tests {
     }
 
     #[test]
+    fn scard_context_roundtrip_16_byte_opaque() {
+        let opaque = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
+        ];
+        let c16 = ScardContext::from_opaque(&opaque).unwrap();
+        assert_eq!(c16.len(), 16);
+        assert_eq!(c16.as_bytes(), &opaque);
+        assert_eq!(roundtrip_context(c16), c16);
+        assert!(ScardContext::from_opaque(&[0; 17]).is_err());
+    }
+
+    #[test]
     fn scard_handle_roundtrip_4_and_8_byte() {
         let ctx = ScardContext::new(0x1111_2222);
         let h4 = ScardHandle::new(ctx, 0x3333_4444);
@@ -2886,6 +3016,19 @@ mod tests {
     }
 
     #[test]
+    fn scard_handle_roundtrip_16_byte_opaque() {
+        let ctx = ScardContext::from_opaque(&[1, 2, 3, 4, 5, 6]).unwrap();
+        let opaque = [
+            0xF0, 0xE1, 0xD2, 0xC3, 0xB4, 0xA5, 0x96, 0x87, 0x78, 0x69, 0x5A, 0x4B, 0x3C, 0x2D, 0x1E, 0x0F,
+        ];
+        let h16 = ScardHandle::from_opaque(ctx, &opaque).unwrap();
+        assert_eq!(h16.len(), 16);
+        assert_eq!(h16.as_bytes(), &opaque);
+        assert_eq!(roundtrip_handle(h16), h16);
+        assert!(ScardHandle::from_opaque(ctx, &[0; 17]).is_err());
+    }
+
+    #[test]
     fn establish_context_return_size_uses_native_width() {
         let ctx = ScardContext::from_native(0x42);
         assert_eq!(usize::from(ctx.len()), size_of::<usize>());
@@ -2895,5 +3038,63 @@ mod tests {
             context: ctx,
         };
         assert_eq!(HeaderlessEncode::size(&body), 4 + 4 + 4 + 4 + size_of::<usize>());
+    }
+
+    /// LocateCardsW with a 6-byte Unicode mszCards (not 4-aligned) before states.
+    ///
+    /// Confirms the decoder consumes the declared card bytes, skips NDR pad to a
+    /// 4-byte boundary, then decodes reader states without desynchronizing.
+    #[test]
+    fn locate_cards_w_skips_msz_cards_ndr_pad() {
+        // Unicode multi-string "A\0\0" = 6 bytes; pad 2 bytes before states count.
+        let cards: &[u8] = &[
+            0x41, 0x00, // 'A'
+            0x00, 0x00, // string NUL
+            0x00, 0x00, // multi-string terminator
+        ];
+        assert_eq!(cards.len() % 4, 2);
+
+        let mut body = Vec::new();
+        // Empty REDIR_SCARDCONTEXT pointer pair (cbContext=0, pbContext=NULL).
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
+        // cBytes / mszCards pointer (index 0)
+        body.extend_from_slice(&u32::try_from(cards.len()).unwrap().to_le_bytes());
+        body.extend_from_slice(&0x0002_0000u32.to_le_bytes());
+        // cReaders / rgReaderStates pointer (index 1)
+        body.extend_from_slice(&1u32.to_le_bytes());
+        body.extend_from_slice(&0x0002_0004u32.to_le_bytes());
+        // mszCards value: conformant length + bytes + NDR pad
+        body.extend_from_slice(&u32::try_from(cards.len()).unwrap().to_le_bytes());
+        body.extend_from_slice(cards);
+        body.extend_from_slice(&[0u8, 0u8]); // pad to 4-byte boundary
+        // states conformant count
+        body.extend_from_slice(&1u32.to_le_bytes());
+        // ReaderState pointer: szReader (index 2) + ReaderState_Common_Call
+        body.extend_from_slice(&0x0002_0008u32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes()); // dwCurrentState
+        body.extend_from_slice(&0u32.to_le_bytes()); // dwEventState
+        body.extend_from_slice(&0u32.to_le_bytes()); // cbAtr
+        body.extend_from_slice(&[0u8; 36]); // rgbAtr
+        // szReader NDR string "R"
+        body.extend_from_slice(&2u32.to_le_bytes()); // max_count
+        body.extend_from_slice(&0u32.to_le_bytes()); // offset
+        body.extend_from_slice(&2u32.to_le_bytes()); // actual_count
+        body.extend_from_slice(&[0x52, 0x00, 0x00, 0x00]); // 'R' + NUL (already 4-aligned)
+
+        // RPCE headers (16 bytes, 4-aligned) so skip_pad vs full buffer matches body.
+        let mut pdu = vec![
+            0x01, 0x10, 0x08, 0x00, 0xCC, 0xCC, 0xCC, 0xCC, // StreamHeader LE
+        ];
+        pdu.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes()); // TypeHeader length
+        pdu.extend_from_slice(&0u32.to_le_bytes()); // TypeHeader filler
+        pdu.extend_from_slice(&body);
+
+        let decoded = LocateCardsCall::decode(&mut ReadCursor::new(&pdu), Some(CharacterSet::Unicode)).unwrap();
+        assert_eq!(decoded.cards, vec!["A".to_owned()]);
+        assert_eq!(decoded.cards_length, u32::try_from(cards.len()).unwrap());
+        assert_eq!(decoded.states_length, 1);
+        assert_eq!(decoded.states.len(), 1);
+        assert_eq!(decoded.states[0].reader, "R");
     }
 }
