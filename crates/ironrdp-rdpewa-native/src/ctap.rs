@@ -61,8 +61,8 @@ pub(crate) fn parse_make_credential(ctap_cbor: &[u8]) -> Result<MakeCredentialCt
     let mut algorithms = Vec::with_capacity(arr.len());
     for item in arr {
         let param_map = item.as_map().map_err(|_| "pubKeyCredParams entry is not a map")?;
-        let alg = map_get_text_i32(param_map, "alg").ok_or("pubKeyCredParams entry missing alg")?;
-        algorithms.push(alg);
+        let algorithm = map_get_text_i32(param_map, "alg").ok_or("missing or invalid pubKeyCredParams alg")?;
+        algorithms.push(algorithm);
     }
 
     let exclude_credential_ids = map_get(map, MAKECRED_EXCLUDE_LIST)
@@ -181,4 +181,47 @@ fn map_get_text_i32(map: &BTreeMap<CborKey, CborValue>, key: &str) -> Option<i32
 
 fn map_get_text_bool(map: &BTreeMap<CborKey, CborValue>, key: &str) -> Option<bool> {
     map.get(&CborKey::Text(key.to_owned())).and_then(|v| v.as_bool().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_credential_request(params: Option<CborValue>) -> Vec<u8> {
+        let mut rp = BTreeMap::new();
+        rp.insert(
+            CborKey::Text("id".to_owned()),
+            CborValue::Text("example.com".to_owned()),
+        );
+
+        let mut user = BTreeMap::new();
+        user.insert(CborKey::Text("id".to_owned()), CborValue::Bytes(vec![1]));
+
+        let mut request = BTreeMap::new();
+        request.insert(CborKey::Int(MAKECRED_RP), CborValue::Map(rp));
+        request.insert(CborKey::Int(MAKECRED_USER), CborValue::Map(user));
+        if let Some(params) = params {
+            request.insert(CborKey::Int(MAKECRED_PUB_KEY_CRED_PARAMS), params);
+        }
+
+        encode_to_vec(&CborValue::Map(request)).expect("valid CBOR")
+    }
+
+    #[test]
+    fn make_credential_requires_valid_credential_parameters() {
+        let cases = [
+            make_credential_request(None),
+            make_credential_request(Some(CborValue::Map(BTreeMap::new()))),
+            make_credential_request(Some(CborValue::Array(Vec::new()))),
+            make_credential_request(Some(CborValue::Array(vec![CborValue::Null]))),
+            make_credential_request(Some(CborValue::Array(vec![CborValue::Map(BTreeMap::new())]))),
+        ];
+
+        for request in cases {
+            assert!(
+                parse_make_credential(&request).is_err(),
+                "invalid pubKeyCredParams must be rejected"
+            );
+        }
+    }
 }

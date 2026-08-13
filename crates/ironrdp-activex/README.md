@@ -476,20 +476,15 @@ Invalid audio modes and keyboard types return `E_INVALIDARG`.
 redirection creates its Windows CLIPRDR listener on the ActiveX creating apartment, where its hidden
 window is serviced by the host message loop; the RDP worker receives only the thread-safe backend
 factory. Disabling it omits the channel.
-Native MS-RDPEWA WebAuthn redirection is controlled through the extended setting `RedirectWebAuthn`
+MS-RDPEWA WebAuthn redirection is controlled through the extended setting `RedirectWebAuthn`
 (default enabled) and the RDP property key `redirectwebauthn`.
-When enabled, IronRDP prefers the Windows system `webauthn.dll` DVC COM plugin (MSTSC path), which
-handles hash-only hosts that omit `clientDataJSON`.
-If that plugin cannot be loaded, the control falls back to IronRDP's pure-Rust `WebAuthN_Channel`
-client and parents Windows Security UI to the ActiveX HWND (or the foreground window when no HWND is
-available).
-Set `IRONRDP_WEBAUTHN_FORCE_NATIVE=1` to skip the COM path for debugging.
+When enabled, the control first registers System32 `webauthn.dll`'s `WebAuthN_Channel` COM listener, which follows the MSTSC path and owns its own UI integration.
+If that listener cannot load, IronRDP registers its native fallback with the ActiveX HWND as the WebAuthn parent window.
 There is no public MSTSC `IMsRdpClientAdvancedSettings` slot for `RedirectWebAuthn`, so hosts should
 use ExtendedSettings or the RDP property rather than a raw AdvancedSettings vtable index.
 Like other redirect toggles, `RedirectWebAuthn` is not part of `IPersistStreamInit` persistence;
 hosts that need a durable value should store it themselves or in an `.rdp` file.
-When a host also lists `webauthn.dll` under `IronRdpDvcPluginPaths`, that explicit entry is skipped
-so the built-in WebAuthn path remains the sole `WebAuthN_Channel` claimant.
+When a host also lists a file named `webauthn.dll` under `IronRdpDvcPluginPaths`, that duplicate COM plugin is skipped because the WebAuthn setting already registered it.
 `EnableCredSspSupport` is
 applied to the next connection when explicitly set; otherwise the control preserves IronRDP's
 default CredSSP-enabled security negotiation. Smart sizing fits the remote framebuffer to the

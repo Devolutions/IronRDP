@@ -1,12 +1,11 @@
 //! Windows WebAuthn API backend for MS-RDPEWA.
 
-use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 use ironrdp_rdpewa::{
-    Attachment, Attestation, DeviceInfo, E_ABORT, E_BUSY, E_FAIL, E_INVALIDARG, RdpewaClientHandler,
-    RdpewaHandlerError, RdpewaResponse, RdpewaResponseSender, RdpewaResult, S_OK, UserVerification, WebAuthnDispatch,
+    Attachment, Attestation, DeviceInfo, E_ABORT, E_FAIL, E_INVALIDARG, RdpewaClientHandler, RdpewaHandlerError,
+    RdpewaResponse, RdpewaResponseSender, RdpewaResult, S_OK, UserVerification, WebAuthnDispatch,
     WebAuthnOperationRequest, WebAuthnOperationResponse, WebAuthnResponsePayload, WebAuthnSubcommand,
 };
 use tracing::{debug, info, warn};
@@ -37,30 +36,46 @@ use crate::ctap::{
     parse_make_credential,
 };
 
-/// Session-scoped state shared by every recreated `WebAuthN_Channel` backend for one connection.
-///
-/// Cancel IDs and the in-flight ceremony guard must not be process-wide: concurrent IronRDP sessions
-/// in the same process would otherwise overwrite each other's cancellation slots.
-#[derive(Clone, Default)]
-pub struct WindowsRdpewaSession {
-    cancel_guid: Arc<Mutex<Option<GUID>>>,
-    in_flight: Arc<AtomicBool>,
+/// Per-session state shared by all recreated `WebAuthN_Channel` backends.
+#[derive(Debug, Default)]
+pub struct WindowsRdpewaSessionState {
+    cancellation_id: Mutex<Option<GUID>>,
 }
 
-impl WindowsRdpewaSession {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+impl WindowsRdpewaSessionState {
+    fn begin(&self, cancellation_id: GUID) -> RdpewaResult<()> {
+        let mut active = self.cancellation_id.lock().unwrap_or_else(|e| e.into_inner());
+        if active.is_some() {
+            return Err(RdpewaHandlerError::new(
+                E_FAIL,
+                "a WebAuthn operation is already in progress",
+            ));
+        }
+        *active = Some(cancellation_id);
+        Ok(())
     }
 
-    /// Build a backend that shares this session's cancel slot and in-flight guard.
-    #[must_use]
-    pub fn backend(&self, parent_hwnd: isize) -> WindowsRdpewaBackend {
-        WindowsRdpewaBackend {
-            parent_hwnd,
-            cancel_guid: Arc::clone(&self.cancel_guid),
-            in_flight: Arc::clone(&self.in_flight),
+    fn finish(&self, cancellation_id: GUID) {
+        let mut active = self.cancellation_id.lock().unwrap_or_else(|e| e.into_inner());
+        if *active == Some(cancellation_id) {
+            *active = None;
         }
+    }
+
+    fn cancel(&self, cancellation_id: &[u8]) -> RdpewaResult<()> {
+        let requested = guid_from_bytes(cancellation_id)
+            .ok_or_else(|| RdpewaHandlerError::new(E_INVALIDARG, "invalid WebAuthn cancellation ID"))?;
+        let active = *self.cancellation_id.lock().unwrap_or_else(|e| e.into_inner());
+        if active != Some(requested) {
+            debug!("No matching in-flight WebAuthn operation to cancel");
+            return Ok(());
+        }
+
+        info!("Cancelling in-flight WebAuthn operation");
+        unsafe { WebAuthNCancelCurrentOperation(&requested) }
+            .map_err(|e| hresult_err(e.code(), "WebAuthNCancelCurrentOperation failed"))?;
+        self.finish(requested);
+        Ok(())
     }
 }
 
@@ -68,19 +83,25 @@ impl WindowsRdpewaSession {
 pub struct WindowsRdpewaBackend {
     /// Parent window handle stored as integer so the backend is `Send`.
     parent_hwnd: isize,
-    cancel_guid: Arc<Mutex<Option<GUID>>>,
-    in_flight: Arc<AtomicBool>,
+    session_state: Arc<WindowsRdpewaSessionState>,
 }
 
 impl WindowsRdpewaBackend {
     /// Create a backend that parents WebAuthn UI to `parent_hwnd`.
     ///
     /// Pass the ActiveX control HWND (or another top-level window handle).
-    /// Prefer [`WindowsRdpewaSession::backend`] when channel instances are recreated so cancel and
-    /// in-flight state stay scoped to one session.
     #[must_use]
     pub fn new(parent_hwnd: isize) -> Self {
-        WindowsRdpewaSession::new().backend(parent_hwnd)
+        Self::new_with_session_state(parent_hwnd, Arc::new(WindowsRdpewaSessionState::default()))
+    }
+
+    /// Create a backend sharing session state with other recreated channel instances.
+    #[must_use]
+    pub fn new_with_session_state(parent_hwnd: isize, session_state: Arc<WindowsRdpewaSessionState>) -> Self {
+        Self {
+            parent_hwnd,
+            session_state,
+        }
     }
 
     fn platform_device_info(transports: u32, resident_key: Option<bool>) -> DeviceInfo {
@@ -97,17 +118,6 @@ impl WindowsRdpewaBackend {
             uv_retries: 0,
             transports,
             resident_key,
-        }
-    }
-}
-
-impl Drop for WindowsRdpewaBackend {
-    fn drop(&mut self) {
-        // Best-effort: dismiss an open WebAuthn prompt when the last backend for this session drops
-        // while a ceremony is still marked in-flight.
-        if self.in_flight.load(Ordering::Acquire) {
-            let _ = cancel_guid_slot(&self.cancel_guid, None);
-            self.in_flight.store(false, Ordering::Release);
         }
     }
 }
@@ -130,7 +140,7 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
     }
 
     fn cancel_current_operation(&mut self, cancellation_id: &[u8]) -> RdpewaResult<()> {
-        cancel_guid_slot(&self.cancel_guid, guid_from_bytes(cancellation_id))
+        self.session_state.cancel(cancellation_id)
     }
 
     fn begin_webauthn(
@@ -138,93 +148,33 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
         request: WebAuthnOperationRequest,
         mut reply: RdpewaResponseSender,
     ) -> RdpewaResult<WebAuthnDispatch> {
-        if self
-            .in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(RdpewaHandlerError::new(
-                E_BUSY,
-                "WebAuthn operation already in progress for this session",
-            ));
-        }
-
         let parent_hwnd = self.parent_hwnd;
-        let cancel_guid = Arc::clone(&self.cancel_guid);
-        let in_flight = Arc::clone(&self.in_flight);
+        let session_state = Arc::clone(&self.session_state);
+        let cancellation_id = cancellation_id_for_request(&request)?;
+        session_state.begin(cancellation_id)?;
 
-        // Remember host-supplied cancel id so CancelCurOp on a later channel recreate can abort.
-        if let Some(id) = request.para.cancellation_id.as_deref().and_then(guid_from_bytes) {
-            *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
-        }
-
-        let spawn_result = thread::Builder::new()
+        match thread::Builder::new()
             .name("ironrdp-rdpewa-webauthn".into())
             .spawn(move || {
-                let finish =
-                    |cancel_guid: &Arc<Mutex<Option<GUID>>>, in_flight: &AtomicBool, completed: Option<GUID>| {
-                        clear_cancel_if_matches(cancel_guid, completed);
-                        in_flight.store(false, Ordering::Release);
-                    };
-
                 let hwnd = resolve_parent_hwnd(parent_hwnd);
                 info!(
                     parent_hwnd,
-                    resolved_hwnd = hwnd.0.addr(),
+                                    resolved_hwnd = hwnd.0.addr(),
                     client_data_json_len = request.client_data_json.len(),
                     raw_request_len = request.raw_request.len(),
                     ?request.subcommand,
                     "Starting native WebAuthn operation"
                 );
 
-                let host_cancel = request.para.cancellation_id.as_deref().and_then(guid_from_bytes);
-
-                // Prefer webauthn.dll oneshot (MSTSC remote-RPC path). It handles hash-only hosts
-                // that omit clientDataJSON; public WebAuthN* cannot.
-                if !request.raw_request.is_empty() {
-                    match run_via_webauthn_dll_oneshot(&request) {
-                        Ok(response_pdu) => {
-                            let hresult = response_pdu
-                                .get(..4)
-                                .and_then(|b| b.try_into().ok())
-                                .map(u32::from_le_bytes)
-                                .unwrap_or(E_FAIL);
-                            info!(
-                                hresult = format!("0x{hresult:08X}"),
-                                response_len = response_pdu.len(),
-                                "WebAuthn completed via webauthn.dll oneshot"
-                            );
-                            reply.send_raw(response_pdu);
-                            finish(&cancel_guid, &in_flight, host_cancel);
-                            return;
-                        }
-                        Err(err) => {
-                            // Never fall back after a oneshot timeout/cancel: the COM thread may
-                            // still own a modal Windows Security prompt.
-                            if err.hresult == E_ABORT
-                                || request.client_data_json.is_empty()
-                                || !err.allow_public_fallback
-                            {
-                                warn!(error = %err, "webauthn.dll oneshot failed without public API fallback");
-                                reply.send(RdpewaResponse::from_hresult(err.hresult));
-                                finish(&cancel_guid, &in_flight, host_cancel);
-                                return;
-                            }
-                            warn!(
-                                error = %err,
-                                "webauthn.dll oneshot failed; falling back to public WebAuthN API"
-                            );
-                        }
-                    }
-                } else if request.client_data_json.is_empty() {
-                    warn!("missing clientDataJSON and raw RDPEWA request");
+                if request.client_data_json.is_empty() {
+                    warn!("missing clientDataJSON for native WebAuthn operation");
                     reply.send(RdpewaResponse::from_hresult(E_INVALIDARG));
-                    finish(&cancel_guid, &in_flight, host_cancel);
+                    session_state.finish(cancellation_id);
                     return;
                 }
 
-                let outcome = run_webauthn_operation(hwnd, &request, &cancel_guid);
-                let completed = host_cancel.or_else(|| *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()));
+                let outcome = run_webauthn_operation(hwnd, &request, cancellation_id);
+                session_state.finish(cancellation_id);
                 match outcome {
                     Ok(result) => {
                         let payload = WebAuthnResponsePayload {
@@ -239,50 +189,12 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
                         reply.send(RdpewaResponse::from_hresult(err.hresult));
                     }
                 }
-                finish(&cancel_guid, &in_flight, completed);
-            });
-
-        match spawn_result {
+            }) {
             Ok(_) => Ok(WebAuthnDispatch::Async),
             Err(_) => {
-                self.in_flight.store(false, Ordering::Release);
+                self.session_state.finish(cancellation_id);
                 Err(RdpewaHandlerError::fail("failed to spawn WebAuthn worker thread"))
             }
-        }
-    }
-}
-
-/// Oneshot outcome used by the native backend to decide whether public WebAuthN* fallback is safe.
-struct OneshotError {
-    hresult: u32,
-    message: &'static str,
-    allow_public_fallback: bool,
-}
-
-impl core::fmt::Display for OneshotError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{} (HRESULT 0x{:08X})", self.message, self.hresult)
-    }
-}
-
-fn run_via_webauthn_dll_oneshot(request: &WebAuthnOperationRequest) -> Result<Vec<u8>, OneshotError> {
-    info!(
-        request_len = request.raw_request.len(),
-        client_data_json_len = request.client_data_json.len(),
-        ?request.subcommand,
-        "Forwarding RDPEWA request through webauthn.dll oneshot"
-    );
-
-    let cancellation_id = request.para.cancellation_id.as_deref().unwrap_or(&[]);
-    match ironrdp_dvc_com_plugin::process_webauthn_dll_request(&request.raw_request, cancellation_id) {
-        Ok(bytes) => Ok(bytes),
-        Err(err) => {
-            warn!(error = %err, "webauthn.dll oneshot failed");
-            Err(OneshotError {
-                hresult: err.hresult,
-                message: err.message,
-                allow_public_fallback: err.allow_public_fallback,
-            })
         }
     }
 }
@@ -301,18 +213,18 @@ fn resolve_parent_hwnd(parent_hwnd: isize) -> HWND {
 fn run_webauthn_operation(
     hwnd: HWND,
     request: &WebAuthnOperationRequest,
-    cancel_guid: &Arc<Mutex<Option<GUID>>>,
+    cancellation_id: GUID,
 ) -> RdpewaResult<WebAuthnOperationResponse> {
     match request.subcommand {
-        WebAuthnSubcommand::MakeCredential => run_make_credential(hwnd, request, cancel_guid),
-        WebAuthnSubcommand::GetAssertion => run_get_assertion(hwnd, request, cancel_guid),
+        WebAuthnSubcommand::MakeCredential => run_make_credential(hwnd, request, cancellation_id),
+        WebAuthnSubcommand::GetAssertion => run_get_assertion(hwnd, request, cancellation_id),
     }
 }
 
 fn run_make_credential(
     hwnd: HWND,
     request: &WebAuthnOperationRequest,
-    cancel_guid: &Arc<Mutex<Option<GUID>>>,
+    mut cancellation_id: GUID,
 ) -> RdpewaResult<WebAuthnOperationResponse> {
     let ctap = parse_make_credential(&request.ctap_cbor).map_err(|m| RdpewaHandlerError::new(E_INVALIDARG, m))?;
 
@@ -369,8 +281,6 @@ fn run_make_credential(
     let mut exclude_ids = ctap.exclude_credential_ids;
     let mut exclude_storage = CredentialListStorage::from_ids(&mut exclude_ids)?;
 
-    let mut cancel_id = resolve_cancel_id(request, cancel_guid)?;
-
     let mut options = WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS {
         dwVersion: WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS_CURRENT_VERSION,
         dwTimeoutMilliseconds: if request.timeout_ms == 0 {
@@ -382,7 +292,7 @@ fn run_make_credential(
         bRequireResidentKey: (ctap.resident_key || request.para.require_resident_key).into(),
         dwUserVerificationRequirement: uv_to_win(request.para.user_verification),
         dwAttestationConveyancePreference: attestation_to_win(request.para.attestation),
-        pCancellationId: &raw mut cancel_id,
+        pCancellationId: &raw mut cancellation_id,
         pExcludeCredentialList: exclude_storage.list_ptr(),
         ..Default::default()
     };
@@ -406,7 +316,7 @@ fn run_make_credential(
 
     let result = unsafe { read_make_credential_result(attestation) };
     unsafe { WebAuthNFreeCredentialAttestation(Some(attestation)) };
-    // Keep options/cancel_id alive until after the API returns.
+    // Keep options/cancellation_id alive until after the API returns.
     let _ = &mut options;
     result
 }
@@ -414,7 +324,7 @@ fn run_make_credential(
 fn run_get_assertion(
     hwnd: HWND,
     request: &WebAuthnOperationRequest,
-    cancel_guid: &Arc<Mutex<Option<GUID>>>,
+    mut cancellation_id: GUID,
 ) -> RdpewaResult<WebAuthnOperationResponse> {
     let ctap = parse_get_assertion(&request.ctap_cbor).map_err(|m| RdpewaHandlerError::new(E_INVALIDARG, m))?;
 
@@ -437,8 +347,6 @@ fn run_get_assertion(
     let mut allow_ids = ctap.allow_credential_ids;
     let mut allow_storage = CredentialListStorage::from_ids(&mut allow_ids)?;
 
-    let mut cancel_id = resolve_cancel_id(request, cancel_guid)?;
-
     let mut options = WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS {
         dwVersion: WEBAUTHN_AUTHENTICATOR_GET_ASSERTION_OPTIONS_CURRENT_VERSION,
         dwTimeoutMilliseconds: if request.timeout_ms == 0 {
@@ -448,7 +356,7 @@ fn run_get_assertion(
         },
         dwAuthenticatorAttachment: attachment_to_win(request.para.attachment),
         dwUserVerificationRequirement: uv_to_win(request.para.user_verification),
-        pCancellationId: &raw mut cancel_id,
+        pCancellationId: &raw mut cancellation_id,
         pAllowCredentialList: allow_storage.list_ptr(),
         ..Default::default()
     };
@@ -629,53 +537,12 @@ fn map_webauthn_error(hr: HRESULT) -> RdpewaHandlerError {
 }
 
 /// Prefer a server-supplied 16-byte GUID; otherwise allocate one via the WebAuthn API.
-fn resolve_cancel_id(request: &WebAuthnOperationRequest, cancel_guid: &Arc<Mutex<Option<GUID>>>) -> RdpewaResult<GUID> {
-    let cancel_id = request
-        .para
-        .cancellation_id
-        .as_deref()
-        .and_then(guid_from_bytes)
-        .map(Ok)
-        .unwrap_or_else(|| {
-            unsafe { WebAuthNGetCancellationId() }
-                .map_err(|e| hresult_err(e.code(), "WebAuthNGetCancellationId failed"))
-        })?;
-    *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel_id);
-    Ok(cancel_id)
-}
-
-fn cancel_guid_slot(slot: &Arc<Mutex<Option<GUID>>>, preferred: Option<GUID>) -> RdpewaResult<()> {
-    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
-    let guid = preferred.or(*guard);
-    if let Some(preferred) = preferred {
-        // Clear the slot only when it still tracks the cancelled operation.
-        if *guard == Some(preferred) {
-            *guard = None;
-        }
-    } else {
-        // Drop path / best-effort cancel of whatever this session owns.
-        let _ = guard.take();
-    }
-    drop(guard);
-
-    if let Some(guid) = guid {
-        info!("Cancelling in-flight WebAuthn operation");
-        unsafe { WebAuthNCancelCurrentOperation(&guid) }
-            .map_err(|e| hresult_err(e.code(), "WebAuthNCancelCurrentOperation failed"))?;
-    } else {
-        debug!("No in-flight WebAuthn operation to cancel");
-    }
-    Ok(())
-}
-
-fn clear_cancel_if_matches(slot: &Arc<Mutex<Option<GUID>>>, completed: Option<GUID>) {
-    let Some(completed) = completed else {
-        return;
-    };
-    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
-    // Clear only when the slot still tracks this completed ceremony.
-    if *guard == Some(completed) {
-        *guard = None;
+fn cancellation_id_for_request(request: &WebAuthnOperationRequest) -> RdpewaResult<GUID> {
+    match request.para.cancellation_id.as_deref() {
+        Some(cancellation_id) => guid_from_bytes(cancellation_id)
+            .ok_or_else(|| RdpewaHandlerError::new(E_INVALIDARG, "invalid WebAuthn cancellation ID")),
+        None => unsafe { WebAuthNGetCancellationId() }
+            .map_err(|e| hresult_err(e.code(), "WebAuthNGetCancellationId failed")),
     }
 }
 
@@ -713,5 +580,19 @@ mod tests {
         assert_eq!(guid.data2, 0x0506);
         assert_eq!(guid.data3, 0x0708);
         assert_eq!(guid.data4, [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10]);
+    }
+
+    #[test]
+    fn session_state_allows_only_one_operation() {
+        let state = WindowsRdpewaSessionState::default();
+        let first = GUID::from_u128(1);
+        let second = GUID::from_u128(2);
+
+        state.begin(first).expect("first operation");
+        assert!(state.begin(second).is_err());
+        state.finish(second);
+        assert!(state.begin(second).is_err());
+        state.finish(first);
+        state.begin(second).expect("operation after completion");
     }
 }

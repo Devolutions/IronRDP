@@ -51,14 +51,12 @@ use crate::config::ClipboardType;
 use ironrdp_cliprdr::backend::ClipboardMessage;
 #[cfg(all(windows, feature = "dvc-com-plugin"))]
 use ironrdp_dvc_com_plugin::load_dvc_plugin_listeners;
-#[cfg(all(windows, feature = "webauthn"))]
-use ironrdp_dvc_com_plugin::system_webauthn_dll_path;
 #[cfg(feature = "dvc-pipe-proxy")]
 use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
 #[cfg(all(windows, feature = "webauthn"))]
 use ironrdp_rdpewa::{RdpewaClient, RdpewaClientListener};
 #[cfg(all(windows, feature = "webauthn"))]
-use ironrdp_rdpewa_native::WindowsRdpewaSession;
+use ironrdp_rdpewa_native::{WindowsRdpewaBackend, WindowsRdpewaSessionState};
 #[cfg(feature = "sound")]
 use ironrdp_rdpsnd_native::{RdpeaiCaptureBackend, cpal};
 
@@ -877,42 +875,49 @@ fn build_connector(
         });
         if force_native {
             info!("IRONRDP_WEBAUTHN_FORCE_NATIVE set; skipping webauthn.dll COM path");
-        } else if let Some(webauthn_dll) = system_webauthn_dll_path() {
-            let sender_clone = input_sender.clone();
-            match load_dvc_plugin_listeners(&webauthn_dll, move || {
-                let sender = sender_clone.clone();
-                Box::new(move |channel_id, messages| {
-                    sender
-                        .try_send(RdpInputEvent::SendDvcMessages { channel_id, messages })
-                        .map_err(|_| pdu_other_err!("send webauthn.dll DVC messages to the event loop"))?;
-                    Ok(())
-                })
-            }) {
-                Ok(listeners) => {
-                    for listener in listeners {
-                        info!(
-                            channel_name = %listener.channel_name(),
-                            dll = %webauthn_dll.display(),
-                            "Registering webauthn.dll COM DVC channel listener"
-                        );
-                        if listener.channel_name() == ironrdp_rdpewa::CHANNEL_NAME {
-                            webauthn_com_loaded = true;
+        } else {
+            match ironrdp_dvc_com_plugin::webauthn_dll_path() {
+                Ok(webauthn_dll) => {
+                    let sender_clone = input_sender.clone();
+                    match load_dvc_plugin_listeners(&webauthn_dll, move || {
+                        let sender = sender_clone.clone();
+                        Box::new(move |channel_id, messages| {
+                            sender
+                                .try_send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                                .map_err(|_| pdu_other_err!("send webauthn.dll DVC messages to the event loop"))?;
+                            Ok(())
+                        })
+                    }) {
+                        Ok(listeners) => {
+                            for listener in listeners {
+                                info!(
+                                    channel_name = %listener.channel_name(),
+                                    "Registering webauthn.dll COM DVC channel listener"
+                                );
+                                if listener.channel_name() == ironrdp_rdpewa::CHANNEL_NAME {
+                                    webauthn_com_loaded = true;
+                                }
+                                drdynvc = drdynvc.with_listener(listener);
+                            }
+                            if !webauthn_com_loaded {
+                                warn!("webauthn.dll loaded but did not register WebAuthN_Channel");
+                            }
                         }
-                        drdynvc = drdynvc.with_listener(listener);
-                    }
-                    if !webauthn_com_loaded {
-                        warn!("webauthn.dll loaded but did not register WebAuthN_Channel");
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                "Failed to load webauthn.dll COM plugin; falling back to native RDPEWA backend"
+                            );
+                        }
                     }
                 }
                 Err(e) => {
                     warn!(
                         error = %e,
-                        "Failed to load webauthn.dll COM plugin; falling back to native RDPEWA backend"
+                        "Failed to resolve webauthn.dll; falling back to native RDPEWA backend"
                     );
                 }
             }
-        } else {
-            warn!("Failed to resolve System32\\webauthn.dll; falling back to native RDPEWA backend");
         }
 
         if !webauthn_com_loaded {
@@ -925,13 +930,15 @@ fn build_connector(
                     .map_err(|_| pdu_other_err!("send RDPEWA DVC messages to the event loop"))?;
                 Ok(())
             });
-            // One session object is shared across channel recreates for cancel + in-flight state.
-            let session = WindowsRdpewaSession::new();
+            let session_state = Arc::new(WindowsRdpewaSessionState::default());
             drdynvc = drdynvc.with_listener(RdpewaClientListener::new(move || {
                 let write_callback = Arc::clone(&write_callback);
-                let session = session.clone();
-                RdpewaClient::new(Box::new(session.backend(parent_hwnd)))
-                    .with_write_callback(move |channel_id, messages| write_callback(channel_id, messages))
+                let session_state = Arc::clone(&session_state);
+                RdpewaClient::new(Box::new(WindowsRdpewaBackend::new_with_session_state(
+                    parent_hwnd,
+                    session_state,
+                )))
+                .with_write_callback(move |channel_id, messages| write_callback(channel_id, messages))
             }));
         }
     }
@@ -941,15 +948,16 @@ fn build_connector(
     {
         for plugin_path in &config.dvc_plugins {
             #[cfg(all(windows, feature = "webauthn"))]
-            if config.channels.webauthn {
-                let canonical = plugin_path.to_string_lossy().to_ascii_lowercase();
-                if canonical.ends_with("webauthn.dll") {
-                    debug!(
-                        dll = %plugin_path.display(),
-                        "Skipping explicit webauthn.dll plugin; already handled by webauthn feature"
-                    );
-                    continue;
-                }
+            if config.channels.webauthn
+                && plugin_path
+                    .file_name()
+                    .is_some_and(|file_name| file_name.to_string_lossy().eq_ignore_ascii_case("webauthn.dll"))
+            {
+                debug!(
+                    dll = %plugin_path.display(),
+                    "Skipping explicit webauthn.dll plugin; already handled by webauthn feature"
+                );
+                continue;
             }
 
             info!(dll = %plugin_path.display(), "Loading DVC COM plugin");

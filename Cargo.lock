@@ -2950,7 +2950,6 @@ dependencies = [
 name = "ironrdp-rdpewa-native"
 version = "0.1.0"
 dependencies = [
- "ironrdp-dvc-com-plugin",
  "ironrdp-rdpewa",
  "tracing",
  "windows",

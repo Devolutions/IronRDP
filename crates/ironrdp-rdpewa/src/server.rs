@@ -63,3 +63,13 @@ impl DvcProcessor for RdpewaServer {
 }
 
 impl DvcServerProcessor for RdpewaServer {}
+
+#[cfg(test)]
+mod tests {
+    use super::RdpewaServer;
+
+    #[test]
+    fn default_uses_the_current_api_version() {
+        assert_eq!(RdpewaServer::default().api_version, 1);
+    }
+}

@@ -2115,39 +2115,32 @@ mod tests {
 
     #[cfg(feature = "webauthn")]
     #[test]
-    fn with_webauthn_false_clears_channel_and_property() {
-        let config = complete_builder()
-            .with_webauthn(false)
-            .build()
-            .expect("valid configuration");
+    fn with_webauthn_updates_the_channel_and_property() {
+        let builder = ConfigBuilder::new().with_webauthn(false);
 
-        assert!(!config.channels().webauthn);
-        assert_eq!(config.properties().redirect_webauthn(), Some(false));
+        assert!(!builder.channels.webauthn);
+        assert!(!builder.properties.redirect_webauthn().unwrap());
     }
 
     #[cfg(feature = "webauthn")]
     #[test]
-    fn from_property_set_honors_redirectwebauthn() {
-        let mut enabled = ironrdp_propertyset::PropertySet::new();
-        enabled.set_redirect_webauthn(true);
-        let config_on = complete_builder()
-            .with_webauthn(false)
-            .with_property_set(&enabled)
-            .expect("valid properties")
-            .build()
-            .expect("valid configuration");
-        assert!(config_on.channels().webauthn);
-        assert_eq!(config_on.properties().redirect_webauthn(), Some(true));
+    fn property_set_enables_webauthn_redirection() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_redirect_webauthn(true);
 
-        let mut disabled = ironrdp_propertyset::PropertySet::new();
-        disabled.set_redirect_webauthn(false);
-        let config_off = complete_builder()
-            .with_webauthn(true)
-            .with_property_set(&disabled)
-            .expect("valid properties")
-            .build()
-            .expect("valid configuration");
-        assert!(!config_off.channels().webauthn);
-        assert_eq!(config_off.properties().redirect_webauthn(), Some(false));
+        let builder = ConfigBuilder::from_property_set(&properties).expect("valid WebAuthn property");
+        assert!(builder.channels.webauthn);
+        assert!(builder.properties.redirect_webauthn().unwrap());
+    }
+
+    #[cfg(feature = "webauthn")]
+    #[test]
+    fn property_set_disables_webauthn_redirection() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_redirect_webauthn(false);
+
+        let builder = ConfigBuilder::from_property_set(&properties).expect("valid WebAuthn property");
+        assert!(!builder.channels.webauthn);
+        assert!(!builder.properties.redirect_webauthn().unwrap());
     }
 }

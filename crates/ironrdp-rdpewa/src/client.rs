@@ -239,8 +239,8 @@ impl RdpewaClient {
     fn handle_request(&mut self, request: RdpewaRequest, raw_payload: &[u8]) -> PduResult<Option<RdpewaResponse>> {
         match request.command {
             RpcCommand::ApiVersion => match self.handler.api_version() {
-                Ok(0) => Ok(Some(RdpewaResponse::from_hresult(E_FAIL))),
-                Ok(version) => Ok(Some(RdpewaResponse::with_u32(S_OK, version))),
+                Ok(version) if version != 0 => Ok(Some(RdpewaResponse::with_u32(S_OK, version))),
+                Ok(_) => Ok(Some(RdpewaResponse::from_hresult(E_FAIL))),
                 Err(e) => {
                     warn!(error = %e, "api_version failed");
                     Ok(Some(RdpewaResponse::from_hresult(e.hresult)))
@@ -459,6 +459,54 @@ mod tests {
         let _ = client.start(7).unwrap();
         let messages = client.process(7, &encoded).unwrap();
         assert_eq!(messages.len(), 1);
+    }
+
+    #[test]
+    fn api_version_preserves_handler_hresult() {
+        struct FailingApiHandler;
+
+        impl RdpewaClientHandler for FailingApiHandler {
+            fn api_version(&mut self) -> RdpewaResult<u32> {
+                Err(RdpewaHandlerError::new(0x8123_4567, "custom API version failure"))
+            }
+
+            fn is_uvpaa(&mut self) -> RdpewaResult<bool> {
+                Ok(false)
+            }
+
+            fn cancel_current_operation(&mut self, _cancellation_id: &[u8]) -> RdpewaResult<()> {
+                Ok(())
+            }
+
+            fn begin_webauthn(
+                &mut self,
+                _request: WebAuthnOperationRequest,
+                _reply: RdpewaResponseSender,
+            ) -> RdpewaResult<WebAuthnDispatch> {
+                Err(RdpewaHandlerError::not_impl("not used"))
+            }
+        }
+
+        let mut client = RdpewaClient::new(Box::new(FailingApiHandler));
+        let response = client
+            .handle_request(
+                RdpewaRequest {
+                    command: RpcCommand::ApiVersion,
+                    flags: 0,
+                    rp_id: None,
+                    timeout_ms: 0,
+                    transaction_id: vec![0; 16],
+                    client_data_json: None,
+                    webauthn_para: None,
+                    request_body: Vec::new(),
+                    raw: Default::default(),
+                },
+                &[],
+            )
+            .expect("valid handler dispatch")
+            .expect("synchronous response");
+
+        assert_eq!(response.hresult, 0x8123_4567);
     }
 
     #[test]

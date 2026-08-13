@@ -13,4 +13,4 @@ mod cbor_map;
 mod ctap;
 
 #[cfg(windows)]
-pub use backend::{WindowsRdpewaBackend, WindowsRdpewaSession};
+pub use backend::{WindowsRdpewaBackend, WindowsRdpewaSessionState};

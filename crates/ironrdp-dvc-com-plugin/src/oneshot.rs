@@ -4,163 +4,77 @@
 //! Public WebAuthN* APIs cannot complete those ceremonies; `webauthn.dll`'s IWTS plugin path can.
 
 use core::cell::RefCell;
-use core::time::Duration;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
 
 use tracing::{debug, info, warn};
-use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, MAX_PATH};
-use windows::Win32::Networking::WindowsWebServices::WebAuthNCancelCurrentOperation;
+use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::RemoteDesktop::{IWTSVirtualChannel, IWTSVirtualChannel_Impl, IWTSVirtualChannelCallback};
 use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
-use windows::core::{BSTR, Error, GUID, IUnknown, Ref, Result as WinResult};
+use windows::core::{BSTR, Error, IUnknown, Ref, Result as WinResult};
 use windows_core::{BOOL, implement};
 
 use crate::channel::initialize_plugin_on_thread;
 
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Structured oneshot failure so callers can avoid unsafe public-API fallback after timeout/cancel.
-#[derive(Debug, Clone)]
-pub struct PluginRequestError {
-    pub hresult: u32,
-    pub message: &'static str,
-    /// `true` only when the plugin never started a ceremony (load/init failures).
-    pub allow_public_fallback: bool,
-}
-
-impl core::fmt::Display for PluginRequestError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{} (HRESULT 0x{:08X})", self.message, self.hresult)
-    }
-}
-
-impl core::error::Error for PluginRequestError {}
-
-impl PluginRequestError {
-    fn load(message: &'static str) -> Self {
-        Self {
-            hresult: hresult_to_u32(E_FAIL),
-            message,
-            allow_public_fallback: true,
-        }
-    }
-
-    fn fail(hresult: u32, message: &'static str) -> Self {
-        Self {
-            hresult,
-            message,
-            allow_public_fallback: false,
-        }
-    }
-
-    fn from_dynamic(message: String, allow_public_fallback: bool) -> Self {
-        // Keep a static message for the wire/handler path; full detail goes to logs.
-        warn!(%message, allow_public_fallback, "DVC COM oneshot error");
-        Self {
-            hresult: hresult_to_u32(E_FAIL),
-            message: if allow_public_fallback {
-                "COM plugin request failed before ceremony"
-            } else {
-                "COM plugin request failed"
-            },
-            allow_public_fallback,
-        }
-    }
-}
-
 /// Run a single request through a DVC COM plugin channel and return the plugin's `Write` payload.
 ///
-/// This mirrors MSTSC's `webauthn.dll` path: open the named channel, deliver `request` via
-/// `OnDataReceived`, and capture the bytes the plugin writes back on `IWTSVirtualChannel::Write`.
-///
-/// On timeout, best-effort cancels the in-flight WebAuthn operation using `cancellation_id` (16-byte
-/// Windows GUID layout) before returning so callers do not start a second prompt.
+/// This mirrors MSTSC's `webauthn.dll` path: open the named channel, deliver `request` via `OnDataReceived`, and capture the bytes the plugin writes back on `IWTSVirtualChannel::Write`.
 ///
 /// # Errors
 ///
-/// Returns a structured error when the plugin cannot be loaded, rejects the channel, fails the
-/// request, or does not produce a response before `timeout`.
-pub fn process_plugin_request(
-    dll_path: &Path,
-    channel_name: &str,
-    request: &[u8],
-    cancellation_id: &[u8],
-    timeout: Duration,
-) -> Result<Vec<u8>, PluginRequestError> {
+/// Returns a human-readable error when the plugin cannot be loaded, rejects the channel, or fails the request.
+///
+/// This waits for the COM call to complete so the plugin is torn down on its owning apartment before the caller can try another WebAuthn implementation.
+pub fn process_plugin_request(dll_path: &Path, channel_name: &str, request: &[u8]) -> Result<Vec<u8>, String> {
     let dll_path = dll_path.to_path_buf();
     let channel_name = channel_name.to_owned();
     let request = request.to_vec();
-    let cancel_guid = guid_from_bytes(cancellation_id);
 
     let (tx, rx) = std_mpsc::sync_channel(1);
-    let handle = thread::Builder::new()
+    thread::Builder::new()
         .name("dvc-com-oneshot".into())
         .spawn(move || {
             let result = run_oneshot_on_com_thread(&dll_path, &channel_name, &request);
             let _ = tx.send(result);
         })
-        .map_err(|e| {
-            warn!(error = %e, "failed to spawn COM oneshot thread");
-            PluginRequestError::load("failed to spawn COM oneshot thread")
-        })?;
+        .map_err(|e| format!("failed to spawn COM oneshot thread: {e}"))?;
 
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(bytes)) => {
-            let _ = handle.join();
-            Ok(bytes)
-        }
-        Ok(Err(err)) => {
-            let _ = handle.join();
-            Err(err)
-        }
-        Err(_) => {
-            warn!(?timeout, "COM plugin request timed out; cancelling in-flight operation");
-            if let Some(guid) = cancel_guid {
-                // SAFETY: cancel GUID is a plain value; WebAuthNCancelCurrentOperation is process-wide.
-                let _ = unsafe { WebAuthNCancelCurrentOperation(&guid) };
-            }
-            // Do not join indefinitely: OnDataReceived may still be inside modal UI until cancel
-            // lands. Detach the worker and refuse public-API fallback.
-            drop(handle);
-            Err(PluginRequestError::fail(
-                0x8000_4004, /* E_ABORT */
-                "COM plugin request timed out",
-            ))
-        }
-    }
+    rx.recv()
+        .map_err(|_| "COM plugin thread terminated before producing a response".to_owned())?
 }
 
 /// Convenience wrapper for System32 `webauthn.dll` / `WebAuthN_Channel`.
-pub fn process_webauthn_dll_request(request: &[u8], cancellation_id: &[u8]) -> Result<Vec<u8>, PluginRequestError> {
-    let dll = system_webauthn_dll_path().ok_or_else(|| PluginRequestError::load("failed to resolve System32 path"))?;
-    process_plugin_request(&dll, "WebAuthN_Channel", request, cancellation_id, DEFAULT_TIMEOUT)
+pub fn process_webauthn_dll_request(request: &[u8]) -> Result<Vec<u8>, String> {
+    process_plugin_request(&webauthn_dll_path()?, "WebAuthN_Channel", request)
 }
 
-/// Resolve `%SystemRoot%\System32\webauthn.dll` via `GetSystemDirectoryW`.
-pub fn system_webauthn_dll_path() -> Option<PathBuf> {
-    let capacity = usize::try_from(MAX_PATH).ok()?;
-    let mut buf = vec![0u16; capacity];
-    // SAFETY: buffer length is in wide chars; API writes a NUL-terminated path.
-    let len = unsafe { GetSystemDirectoryW(Some(&mut buf)) };
-    let len = usize::try_from(len).ok()?;
-    if len == 0 || len >= buf.len() {
-        return None;
+/// Resolve the native `webauthn.dll` from the active Windows system directory.
+pub fn webauthn_dll_path() -> Result<PathBuf, String> {
+    let mut buffer = vec![0u16; 260];
+
+    loop {
+        // SAFETY: buffer is writable UTF-16 storage passed directly to the Windows API.
+        let len = unsafe { GetSystemDirectoryW(Some(&mut buffer)) };
+        if len == 0 {
+            return Err(format!("GetSystemDirectoryW failed: {}", Error::from_thread()));
+        }
+
+        let len = usize::try_from(len).map_err(|_| "system directory path is too long".to_owned())?;
+        if len < buffer.len() {
+            let directory = String::from_utf16(&buffer[..len])
+                .map_err(|_| "GetSystemDirectoryW returned invalid UTF-16".to_owned())?;
+            return Ok(PathBuf::from(directory).join("webauthn.dll"));
+        }
+
+        buffer.resize(len + 1, 0);
     }
-    buf.truncate(len);
-    let mut path = PathBuf::from(String::from_utf16_lossy(&buf));
-    path.push("webauthn.dll");
-    Some(path)
 }
 
-fn run_oneshot_on_com_thread(
-    dll_path: &Path,
-    channel_name: &str,
-    request: &[u8],
-) -> Result<Vec<u8>, PluginRequestError> {
+fn run_oneshot_on_com_thread(dll_path: &Path, channel_name: &str, request: &[u8]) -> Result<Vec<u8>, String> {
     // SAFETY: initialize a STA apartment for the duration of this oneshot thread.
     let should_uninit = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
 
@@ -173,18 +87,15 @@ fn run_oneshot_on_com_thread(
     result
 }
 
-fn run_oneshot_body(dll_path: &Path, channel_name: &str, request: &[u8]) -> Result<Vec<u8>, PluginRequestError> {
-    let (plugin, _manager, listeners) = initialize_plugin_on_thread(dll_path).map_err(|e| {
-        warn!(error = %e, "initialize_plugin_on_thread failed");
-        PluginRequestError::from_dynamic(e, true)
-    })?;
+fn run_oneshot_body(dll_path: &Path, channel_name: &str, request: &[u8]) -> Result<Vec<u8>, String> {
+    let (plugin, _manager, listeners) = initialize_plugin_on_thread(dll_path)?;
 
     // SAFETY: COM objects live on this thread for the duration of the oneshot.
     let _ = unsafe { plugin.Connected() };
 
     let listener = listeners
         .get(channel_name)
-        .ok_or_else(|| PluginRequestError::load("plugin did not register expected channel listener"))?
+        .ok_or_else(|| format!("plugin did not register listener for {channel_name}"))?
         .clone();
 
     let capture = Rc::new(RefCell::new(Vec::<u8>::new()));
@@ -201,18 +112,14 @@ fn run_oneshot_body(dll_path: &Path, channel_name: &str, request: &[u8]) -> Resu
     unsafe {
         listener
             .OnNewChannelConnection(&virtual_channel, &BSTR::default(), &mut accept, &mut channel_callback)
-            .map_err(|e| {
-                warn!(error = %e, "OnNewChannelConnection failed");
-                PluginRequestError::from_dynamic(format!("OnNewChannelConnection failed: {e}"), true)
-            })?;
+            .map_err(|e| format!("OnNewChannelConnection failed: {e}"))?;
     }
 
     if !accept.as_bool() {
-        return Err(PluginRequestError::load("plugin rejected oneshot channel"));
+        return Err("plugin rejected oneshot channel".to_owned());
     }
 
-    let callback =
-        channel_callback.ok_or_else(|| PluginRequestError::load("plugin accepted channel without callback"))?;
+    let callback = channel_callback.ok_or_else(|| "plugin accepted channel without callback".to_owned())?;
 
     debug!(
         channel_name,
@@ -222,60 +129,39 @@ fn run_oneshot_body(dll_path: &Path, channel_name: &str, request: &[u8]) -> Resu
 
     // SAFETY: buffer lives for the duration of OnDataReceived; webauthn.dll processes
     // WebAuthn ceremonies synchronously and calls Write before returning.
-    unsafe {
-        callback.OnDataReceived(request).map_err(|e| {
-            warn!(error = %e, "OnDataReceived failed");
-            PluginRequestError::from_dynamic(format!("OnDataReceived failed: {e}"), false)
-        })?;
+    let result = unsafe {
+        callback
+            .OnDataReceived(request)
+            .map_err(|e| format!("OnDataReceived failed: {e}"))
     }
+    .and_then(|()| {
+        let response = capture.borrow().clone();
+        if response.is_empty() {
+            warn!(channel_name, "COM plugin produced empty Write payload");
+            return Err("COM plugin produced empty response".to_owned());
+        }
 
-    let response = capture.borrow().clone();
-    if response.is_empty() {
-        warn!(channel_name, "COM plugin produced empty Write payload");
-        // SAFETY: channel teardown on owning thread.
-        let _ = unsafe { callback.OnClose() };
-        let _ = unsafe { plugin.Disconnected(0) };
-        let _ = unsafe { plugin.Terminated() };
-        return Err(PluginRequestError::fail(
-            hresult_to_u32(E_FAIL),
-            "COM plugin produced empty response",
-        ));
-    }
+        let hresult = response
+            .get(..4)
+            .and_then(|b| b.try_into().ok())
+            .map(u32::from_le_bytes)
+            .unwrap_or(0);
+        info!(
+            channel_name,
+            hresult = format!("0x{hresult:08X}"),
+            response_len = response.len(),
+            "COM oneshot Write captured"
+        );
 
-    let hresult = response
-        .get(..4)
-        .and_then(|b| b.try_into().ok())
-        .map(u32::from_le_bytes)
-        .unwrap_or(0);
-    info!(
-        channel_name,
-        hresult = format!("0x{hresult:08X}"),
-        response_len = response.len(),
-        "COM oneshot Write captured"
-    );
+        Ok(response)
+    });
 
     // SAFETY: channel teardown on owning thread.
     let _ = unsafe { callback.OnClose() };
     let _ = unsafe { plugin.Disconnected(0) };
     let _ = unsafe { plugin.Terminated() };
 
-    Ok(response)
-}
-
-fn hresult_to_u32(hr: windows::core::HRESULT) -> u32 {
-    u32::from_ne_bytes(hr.0.to_ne_bytes())
-}
-
-fn guid_from_bytes(bytes: &[u8]) -> Option<GUID> {
-    if bytes.len() != 16 {
-        return None;
-    }
-    Some(GUID {
-        data1: u32::from_le_bytes(bytes[0..4].try_into().ok()?),
-        data2: u16::from_le_bytes(bytes[4..6].try_into().ok()?),
-        data3: u16::from_le_bytes(bytes[6..8].try_into().ok()?),
-        data4: bytes[8..16].try_into().ok()?,
-    })
+    result
 }
 
 /// `IWTSVirtualChannel` that captures raw `Write` bytes instead of framing DVC PDUs.
