@@ -1914,7 +1914,7 @@ mod tests {
         assert_eq!(config.properties().remote_application_mode(), Some(true));
     }
 
-#[test]
+    #[test]
     fn remote_application_program_queues_rail_execute_and_clears_client_info_shell() {
         let mut properties = ironrdp_propertyset::PropertySet::new();
         properties.set_remote_application_mode(true);
