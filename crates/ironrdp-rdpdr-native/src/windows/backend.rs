@@ -9,18 +9,14 @@ use ironrdp_rdpdr::pdu::efs::{
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_svc::SvcMessage;
 
-use super::control;
-use super::directory;
 use super::factory::RedirectedDrive;
-use super::file;
 use super::file_table::FileTable;
 use super::handles::{FileHandle, RootDirectory};
-use super::locks;
 use super::path::RelativePath;
 use super::pending::DeferredOperations;
-use super::security;
+use super::scard::ScardSession;
 use super::status::from_open_directory;
-use super::volume;
+use super::{control, directory, file, locks, security, volume};
 
 const DEFAULT_MAX_OPEN_FILES: usize = 1_024;
 
@@ -35,20 +31,22 @@ pub struct WindowsRdpdrBackend {
     pub(super) roots: HashMap<u32, RedirectedRoot>,
     pub(super) open_files: FileTable<OpenFile>,
     deferred_operations: DeferredOperations,
+    scard: Option<ScardSession>,
 }
 
 impl WindowsRdpdrBackend {
     #[cfg(test)]
     pub(crate) fn from_drive(drive: RedirectedDrive) -> Self {
-        Self::from_drives(vec![drive])
+        Self::from_drives(vec![drive], false)
     }
 
-    pub(crate) fn from_drives(drives: Vec<RedirectedDrive>) -> Self {
+    pub(crate) fn from_drives(drives: Vec<RedirectedDrive>, smartcard: bool) -> Self {
         Self {
             drives: drives.into_iter().map(|drive| (drive.device_id(), drive)).collect(),
             roots: HashMap::new(),
             open_files: FileTable::new(DEFAULT_MAX_OPEN_FILES),
             deferred_operations: DeferredOperations::new(),
+            scard: smartcard.then(ScardSession::new),
         }
     }
 
@@ -153,6 +151,9 @@ impl RdpdrBackend for WindowsRdpdrBackend {
 
     fn reset(&mut self) -> PduResult<()> {
         self.deferred_operations.reset();
+        if let Some(scard) = self.scard.as_mut() {
+            scard.reset();
+        }
         self.open_files.clear();
         self.roots.clear();
         Ok(())
@@ -166,8 +167,15 @@ impl RdpdrBackend for WindowsRdpdrBackend {
         Ok(())
     }
 
-    fn handle_scard_call(&mut self, _req: DeviceControlRequest<ScardIoCtlCode>, _call: ScardCall) -> PduResult<()> {
-        Ok(())
+    fn handle_scard_call(
+        &mut self,
+        req: DeviceControlRequest<ScardIoCtlCode>,
+        call: ScardCall,
+    ) -> PduResult<Vec<SvcMessage>> {
+        match self.scard.as_mut() {
+            Some(scard) => scard.handle_call(req, call),
+            None => Ok(Vec::new()),
+        }
     }
 
     fn add_drive(&mut self, device_id: u32) -> PduResult<()> {
@@ -205,7 +213,11 @@ impl RdpdrBackend for WindowsRdpdrBackend {
     }
 
     fn poll_deferred_messages(&mut self) -> PduResult<Vec<SvcMessage>> {
-        Ok(self.deferred_operations.poll())
+        let mut messages = self.deferred_operations.poll();
+        if let Some(scard) = self.scard.as_mut() {
+            messages.extend(scard.poll());
+        }
+        Ok(messages)
     }
 }
 
@@ -238,10 +250,13 @@ mod tests {
     fn backend_restores_each_selected_drive() {
         let system_drive = std::env::var("SystemDrive").expect("SystemDrive is set on Windows");
         let root = format!(r"{system_drive}\");
-        let mut backend = WindowsRdpdrBackend::from_drives(vec![
-            RedirectedDrive::new(1, "System", &root, false).expect("valid system drive"),
-            RedirectedDrive::new(2, "System copy", root, false).expect("valid system drive copy"),
-        ]);
+        let mut backend = WindowsRdpdrBackend::from_drives(
+            vec![
+                RedirectedDrive::new(1, "System", &root, false).expect("valid system drive"),
+                RedirectedDrive::new(2, "System copy", root, false).expect("valid system drive copy"),
+            ],
+            false,
+        );
 
         ironrdp_rdpdr::RdpdrBackend::restore_drive(&mut backend, 1).expect("restore first selected drive");
         ironrdp_rdpdr::RdpdrBackend::restore_drive(&mut backend, 2).expect("restore second selected drive");

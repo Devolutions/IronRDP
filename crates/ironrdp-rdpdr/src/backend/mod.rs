@@ -66,7 +66,17 @@ pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
     ///
     /// A rejected filesystem device is never eligible for server I/O.
     fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()>;
-    fn handle_scard_call(&mut self, req: DeviceControlRequest<ScardIoCtlCode>, call: ScardCall) -> PduResult<()>;
+
+    /// Handles a decoded smart-card Device Control IRP.
+    ///
+    /// Return the RDPDR completions to send immediately. Long-running calls such
+    /// as status-change waits may return an empty vector and complete later via
+    /// [`Self::poll_deferred_messages`].
+    fn handle_scard_call(
+        &mut self,
+        req: DeviceControlRequest<ScardIoCtlCode>,
+        call: ScardCall,
+    ) -> PduResult<Vec<SvcMessage>>;
 
     /// Handles a decoded filesystem IRP.
     fn handle_drive_io_request(&mut self, req: ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>>;

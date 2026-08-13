@@ -4,8 +4,9 @@ use core::fmt;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use super::backend::WindowsRdpdrBackend;
 use ironrdp_rdpdr::{RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive};
+
+use super::backend::WindowsRdpdrBackend;
 
 /// Immutable logical-volume definition selected for Windows RDPDR redirection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,16 +94,23 @@ impl core::error::Error for RedirectedDriveError {}
 /// The returned initial-drive list is intentionally shaped for
 /// [`ironrdp_rdpdr::Rdpdr::with_drives`], keeping platform configuration out of
 /// the portable RDPDR crate.
+///
+/// Smartcard redirection is optional and independent of drives: an empty drive
+/// list with `smartcard` enabled is valid for smartcard-only sessions.
 #[derive(Clone, Debug)]
 pub struct WindowsRdpdrBackendFactory {
     drives: Vec<RedirectedDrive>,
+    smartcard: bool,
 }
 
 impl WindowsRdpdrBackendFactory {
     /// Configures the single logical-volume root supported by this baseline.
     #[must_use]
     pub fn new(drive: RedirectedDrive) -> Self {
-        Self { drives: vec![drive] }
+        Self {
+            drives: vec![drive],
+            smartcard: false,
+        }
     }
 
     /// Configures the logical-volume roots selected for one connection.
@@ -114,7 +122,23 @@ impl WindowsRdpdrBackendFactory {
             }
         }
 
-        Ok(Self { drives })
+        Ok(Self {
+            drives,
+            smartcard: false,
+        })
+    }
+
+    /// Enables or disables smartcard redirection on the built backend.
+    #[must_use]
+    pub fn with_smartcard(mut self, enabled: bool) -> Self {
+        self.smartcard = enabled;
+        self
+    }
+
+    /// Returns whether smartcard redirection is enabled for this factory.
+    #[must_use]
+    pub fn smartcard(&self) -> bool {
+        self.smartcard
     }
 
     /// Returns the initial `(device_id, name)` pair for `Rdpdr::with_drives`.
@@ -133,7 +157,7 @@ impl WindowsRdpdrBackendFactory {
     /// sequence.
     #[must_use]
     pub fn build(&self) -> WindowsRdpdrBackend {
-        WindowsRdpdrBackend::from_drives(self.drives.clone())
+        WindowsRdpdrBackend::from_drives(self.drives.clone(), self.smartcard)
     }
 }
 
@@ -218,5 +242,16 @@ mod tests {
         ]);
 
         assert!(matches!(result, Err(RedirectedDriveFactoryError::DuplicateDeviceId(1))));
+    }
+
+    #[test]
+    fn factory_allows_smartcard_only_product() {
+        let factory = WindowsRdpdrBackendFactory::from_drives(Vec::new())
+            .expect("empty drive list is valid")
+            .with_smartcard(true);
+
+        assert!(factory.smartcard());
+        assert!(factory.initial_drives().is_empty());
+        let _backend = factory.build();
     }
 }

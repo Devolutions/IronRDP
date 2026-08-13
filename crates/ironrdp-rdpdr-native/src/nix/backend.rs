@@ -37,8 +37,12 @@ impl RdpdrBackend for NixRdpdrBackend {
     fn handle_server_device_announce_response(&mut self, _pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
         Ok(())
     }
-    fn handle_scard_call(&mut self, _req: DeviceControlRequest<ScardIoCtlCode>, _call: ScardCall) -> PduResult<()> {
-        Ok(())
+    fn handle_scard_call(
+        &mut self,
+        _req: DeviceControlRequest<ScardIoCtlCode>,
+        _call: ScardCall,
+    ) -> PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
     }
     fn handle_drive_io_request(&mut self, req: ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {
         debug!("handle_drive_io_request:{:?}", req);

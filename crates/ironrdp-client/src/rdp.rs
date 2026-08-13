@@ -773,7 +773,13 @@ fn build_rdpdr_channel(
         .build_rdpdr_backend()
         .map_err(|error| ironrdp_connector::custom_err!("build RDPDR backend", RdpdrBackendBuildError(error)))?
         .into_parts();
-    if initial_drives.is_empty() {
+
+    #[cfg(feature = "smartcard")]
+    let smartcard = config.smartcard;
+    #[cfg(not(feature = "smartcard"))]
+    let smartcard = false;
+
+    if initial_drives.is_empty() && !smartcard {
         return Ok(None);
     }
 
@@ -784,7 +790,7 @@ fn build_rdpdr_channel(
     let rdpdr_channel = ironrdp_rdpdr::Rdpdr::new(backend, "IronRDP".to_owned()).with_drives(Some(initial_drives));
 
     #[cfg(feature = "smartcard")]
-    let rdpdr_channel = if config.smartcard {
+    let rdpdr_channel = if smartcard {
         rdpdr_channel.with_smartcard(0)
     } else {
         rdpdr_channel
@@ -2653,8 +2659,8 @@ mod tests {
             &mut self,
             _req: DeviceControlRequest<ScardIoCtlCode>,
             _call: ScardCall,
-        ) -> ironrdp_pdu::PduResult<()> {
-            Ok(())
+        ) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+            Ok(Vec::new())
         }
 
         fn handle_drive_io_request(&mut self, _req: ServerDriveIoRequest) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
