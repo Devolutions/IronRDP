@@ -156,6 +156,28 @@ and distinct custom guest usernames (`IrdpVm1` / `IrdpVm2` / `IrdpVm3`). Those a
 not change the multi-mode post-connect failure pattern. Guest accounts are local to each VM; see
 [Direct VM lifecycle](windows-sandbox-direct-lifecycle.md#guest-account-identity).
 
+### Five additional hypotheses
+
+A bounded two-VM matrix tested five more explanations on a Windows 11 `10.0.26200` host whose
+relevant RDP/worker binaries remain from the `10.0.26100` component family. Each trial used two
+separately provisioned VMs and separate client processes. No licensing, entitlement, guest listener,
+GPU assignment, registry, or host policy setting was changed.
+
+| Hypothesis | Controlled variation | Result | Assessment |
+| --- | --- | --- | --- |
+| IronRDP client defect | Two Microsoft MSTSC ActiveX controls used `RDPBASE`'s direct named-pipe connector, with VM 2 connected before VM 1 | Both reached `Connected`. The first control disconnected before its timer (`RDPClient` event 1026 reason `3`); the second remained until its intentional 55-second timer close (reason `2`) | The initial cross-VM failure is not IronRDP-specific |
+| VM boot or first-logon race | Reversed connection order, plus prior comparisons where the first desktop was stable for about three minutes before the second VM connected | Reversing order did not remove the failure. In the fresh run, the earlier session got the display-driver error as the later session connected; the later session then logged off about 32 seconds later. Long staggering also failed in prior controls | A short boot/first-logon race is strongly disfavored; survivor identity is not deterministic across runs |
+| VM-ID named-pipe/RDP4VS-only conflict | Probed both direct-VM NAT addresses for ordinary TCP RDP | TCP port 3389 was closed on both guests | The default direct Sandbox exposes no policy-preserving TCP control path, so transport-specific attribution remains unresolved rather than disproved |
+| Proportional IDD/GPU surface exhaustion | Reduced both desktops to `640x480` and 16 bpp; an earlier control used `800x600` | Both connected; one still received `CloseStackOnDriverFailure` within about four seconds and the other logged off about 20 seconds later | A simple framebuffer-size or pixel-capacity threshold is strongly disfavored; a singleton/ownership or lifecycle conflict remains plausible |
+| Redirected-channel startup conflict | Disabled CLIPRDR and RDPSND (`redirectclipboard:i:0`, `audiomode:i:2`) | Both connected; the same display-driver-then-logoff sequence remained | Clipboard and audio channel startup are ruled out as the primary cause |
+
+The matrix narrows the leading current model to a **host-global presentation/IDD ownership or
+lifecycle conflict** spanning otherwise separate VM workers. The evidence supports the component
+family, not a concrete owner: each VM still has its own `vmwp.exe`, RDP Encoder, credentials, and
+guest account, while the host GPU/IDD path is shared. The low-resolution result argues against
+ordinary capacity exhaustion; it is more consistent with a singleton, lease, or state-machine
+constraint. This remains an inference until a live call stack identifies who supplies `0x11`.
+
 `ERRINFO_LOGOFF_BY_USER` is the server's classification of a session logoff, not evidence of a
 human action or an identified policy caller. [MS-RDPBCGR] section 2.2.5.1 defines both it and
 `CloseStackOnDriverFailure` as server Set Error Info values sent before a server disconnect.

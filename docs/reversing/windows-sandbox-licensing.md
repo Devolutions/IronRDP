@@ -365,7 +365,11 @@ cross-VM outcomes:
 - `MaxSessions`;
 - `AllowMultipleSessions`;
 - normal Terminal Server registry settings; and
-- per-VM client-name selection.
+- per-VM client-name selection;
+- IronRDP versus the Microsoft MSTSC ActiveX/RDPBASE client path;
+- `1280x720`, `800x600`, and `640x480`/16-bpp display requests;
+- short versus roughly three-minute connection staggering; and
+- CLIPRDR/RDPSND channel startup.
 
 `CConnectionEx::GetLicenseType` can consume a generic
 `PROPERTY_TYPE_LICENSE_GUID`, but that is not the direct Sandbox selector: the type-2 listener
@@ -384,6 +388,8 @@ Only the following is established on the tested retail build:
 | First direct Sandbox full desktop | Allowed |
 | Historical later concurrent desktop | Rejected with `ERROR_REMOTE_SESSION_LIMIT_EXCEEDED` |
 | Current two-VM concurrent desktop | Both sessions initially connect; later observations include `CloseStackOnDriverFailure` and `ERRINFO_LOGOFF_BY_USER` |
+| Microsoft ActiveX two-VM control | Both connect; one disconnects before its timer and the other remains until intentional probe close |
+| Minimal-display or minimal-channel two-VM control | Same display-driver-then-logoff sequence as the ordinary IronRDP configuration |
 | Two clients to one Sandbox VM | First session is replaced with `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION`; second remains connected |
 | Product-server VM creation beyond its own admission decision | May be rejected before VM creation |
 
@@ -399,7 +405,9 @@ identified the worker RDP/display bridge, but found no `LSCSHostPolicy.dll`, `vm
 `vmrdvcore.dll`, or `rdvvmtransport.dll` in that worker. The next discriminating evidence is a
 read-only call stack or object-registration capture at
 `ILSClientService::LSCSUserAuthenticated`, correlated with both the historical license-limit result
-and the current display-driver failure.
+and the current display-driver failure. The current leading non-LSCS hypothesis additionally needs
+an elevated stack at `CRDPWDUMXStack::SetErrorInfo(0x11)` or the originating IDD failure, followed
+by attribution of the survivor's later logoff.
 
 Until that capture exists, the final policy implementation should be described as **host-mediated
 and dynamically unattributed**, not assigned to a guessed executable or DLL.

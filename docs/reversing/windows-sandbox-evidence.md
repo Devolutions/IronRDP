@@ -41,7 +41,9 @@ analysis" is stronger than "likely" or "suggests".
 | `windowsudk.winmd` | `10.0.26100.1` | Metadata source for the checked-in narrow UDK projection |
 
 Windows component servicing can replace individual binaries. Conclusions should be revalidated when
-these versions change materially.
+these versions change materially. The five-hypothesis runtime matrix was repeated on a host reporting
+Windows `10.0.26200`; its installed `rdpbase`, `rdp4vs`, `RDPSERVERBASE`, `vmuidevices`, `gpupvdev`,
+and `VrdUmed` files still had the `10.0.26100` versions listed above.
 
 ## Static-analysis method
 
@@ -253,6 +255,12 @@ handler as the active LSCS receiver for the tested direct flow.
 | Same-VM two-client control | The first session is immediately disconnected with `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` when the second session connects to the same Sandbox VM; the second remains connected |
 | HCS GPU configuration | Both test VMs use `VirtualMachine/ComputeTopology/Gpu` with `AssignmentMode: Mirror` and `AllowVendorExtension: true` |
 | Host analytic channels | Worker and Worker-VDev Analytic channels were enabled only for the bounded comparison, produced no matching RDP/display events, and were restored to disabled |
+| Microsoft ActiveX cross-VM control | Two MSTSC ActiveX controls using the Microsoft `RDPBASE` named-pipe connector both reached `Connected`; the first disconnected before its timer while the second remained connected until its intentional timer close |
+| Reverse-order and long-stagger controls | Reversing connection order did not eliminate the failure; a prior roughly three-minute stagger between connected desktops also failed |
+| Direct-guest TCP control availability | TCP port 3389 was closed on both direct-VM NAT addresses, so the default path offered no policy-preserving TCP comparison |
+| Minimal display control | At `640x480` and 16 bpp, both desktops connected before one received the display-driver error and the other later logged off |
+| Minimal channel control | Disabling CLIPRDR and RDPSND did not change the display-driver-then-logoff sequence |
+| Host event correlation | MSTSC ActiveX client events recorded the early disconnect separately from the later intentional timer close; no correlated host `DxgKrnl` or worker operational error identified the server-side owner |
 
 ## Confidence boundaries
 
@@ -277,6 +285,12 @@ handler as the active LSCS receiver for the tested direct flow.
 | Current direct two-VM disconnect is an LSCS denial | Not established | Current post-connect outcomes are `CloseStackOnDriverFailure` and `ERRINFO_LOGOFF_BY_USER`; neither run includes a correlated LSCS call trace |
 | Wire `CloseStackOnDriverFailure` (`0x11`) is named as an Indirect Display Driver failure inside RDPBASE | High for naming, inference for live cause | `GetInternalDisconnectSymbolicName(17)` returns `IndirectDisplayDriverFailure`; adjacent codes cover IDD not-ready and interface-arrival failures |
 | Current `0x11` is every GFX-pipe `SetPipelineErrorState` failure | Ruled out | `CPipeManager::SetPipelineErrorState` maps subsystem-init and related pipe events to reasons such as `4460`/`4461`, not wire `0x11` |
+| IronRDP causes the current cross-VM failure | Ruled out | The Microsoft MSTSC ActiveX/RDPBASE path reproduces an early cross-VM disconnect |
+| CLIPRDR or RDPSND startup causes the current cross-VM failure | Ruled out | The failure sequence remains with both channels disabled |
+| The current IDD failure is a proportional framebuffer-size limit | Strongly disfavored | `640x480` at 16 bpp and the earlier `800x600` control did not prevent it |
+| The current failure is only a short VM boot or first-logon race | Strongly disfavored | Reverse-order and roughly three-minute stagger controls still fail |
+| The default direct path can be compared over guest TCP RDP | Unavailable | Neither direct VM exposed TCP port 3389; enabling it would change guest policy and was not attempted |
+| A host-global IDD/presentation ownership or lifecycle conflict causes current failures | Leading inference | Separate workers and clients still collide; wire `0x11` is named `IndirectDisplayDriverFailure`; reducing display load does not help |
 | Guest usernames must match across concurrent Sandboxes | Ruled out | Product and direct harnesses can use either the shared default name or distinct custom accounts; both patterns still produce multi-VM runs and current post-connect failures |
 | Concurrent VMs share one guest user object | Ruled out | Each VM has its own guest SAM; product `SetUpUserAccount` activates or creates a local account inside that guest only |
 | Worker RDP path has an independent access gate | High | `RdpEncoder::OnClientConnected` creates an ACL policy engine before accepting the RDP4VS attendee |

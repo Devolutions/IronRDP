@@ -66,6 +66,10 @@ There are two separately evidenced RDP-related paths:
 Current two-VM repros identify post-connect display-driver and server-logoff outcomes, not a
 correlated LSCS status. Concurrent VMs may share the default guest username
 (`WDAGUtilityAccount`) or use distinct custom accounts; that choice is not the proven root cause.
+Microsoft ActiveX, low-resolution/16-bpp, long-stagger, and disabled clipboard/audio controls also
+reproduce the failure family. The leading current inference is therefore a host-global
+IDD/presentation ownership or lifecycle conflict, but its concrete owner still requires a live
+failure stack.
 See [RDP and RDV transport](windows-sandbox-rdp-transport.md) and
 [guest account identity](windows-sandbox-direct-lifecycle.md#guest-account-identity).
 
