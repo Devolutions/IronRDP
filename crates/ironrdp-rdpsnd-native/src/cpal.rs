@@ -35,14 +35,7 @@ fn unpack_volume(packed: u32) -> (u16, u16) {
 ///
 /// `sample_phase` is the channel index of the next sample and is advanced so
 /// L/R assignment stays correct across wave blocks and multi-channel layouts.
-fn apply_volume(
-    data: &mut [u8],
-    bits_per_sample: u16,
-    channels: u16,
-    left: u16,
-    right: u16,
-    sample_phase: &mut usize,
-) {
+fn apply_volume(data: &mut [u8], bits_per_sample: u16, channels: u16, left: u16, right: u16, sample_phase: &mut usize) {
     if left == 0xFFFF && right == 0xFFFF {
         // Still advance phase so a later non-full volume stays aligned.
         let sample_bytes = match bits_per_sample {
