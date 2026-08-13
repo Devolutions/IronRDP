@@ -460,9 +460,12 @@ subtype, and functional-key count, secured `StartProgram`/`WorkDir`, both public
 Client Info PDU alternate shell and working directory. The keyboard fields configure the next GCC
 Client Core Data block. Audio mode `0` enables the Windows-native RDPSND playback backend (CPAL) and
 advertises the `rdpsnd` static channel for server-to-client wave data; modes
-`1` (play on server) and `2` (disabled) set `NO_AUDIO_PLAYBACK` and omit local
-playback (a no-op RDPSND channel may still attach when RDPDR is enabled, because
-Windows often requires both). Capture / microphone redirection is not implemented.
+`1` (play on server) and `2` (disabled) both clear local playback and set
+`INFO_NOAUDIOPLAYBACK` (a no-op RDPSND channel may still attach when RDPDR is
+enabled, because Windows often requires both). Mode `1` is **not** yet distinct
+from mode `2` on the wire: IronRDP does not set `INFO_REMOTECONSOLEAUDIO`, so
+hosts that honor “play on server console” may still treat the session as
+no-audio. Capture / microphone redirection is not implemented.
 When requested,
 `GrabFocusOnConnect` focuses the ActiveX renderer only after its first remote frame arrives.
 Invalid audio modes and keyboard types return `E_INVALIDARG`.

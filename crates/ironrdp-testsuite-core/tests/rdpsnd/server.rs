@@ -95,6 +95,26 @@ fn equality_ignores_derived_fields_but_not_extra_data() {
 }
 
 #[test]
+fn non_pcm_requires_derived_avg_and_block_align() {
+    // For non-PCM codecs, nAvgBytesPerSec / nBlockAlign are not freely derived
+    // from channels×rate×bps — they must match for negotiation.
+    let mut a = fmt(WaveFormat::ALAW, 22050);
+    a.n_avg_bytes_per_sec = 44100;
+    a.n_block_align = 2;
+    a.bits_per_sample = 8;
+
+    let mut b = a.clone();
+    assert!(a.matches_for_negotiation(&b));
+
+    b.n_avg_bytes_per_sec = 0;
+    assert!(!a.matches_for_negotiation(&b));
+
+    b = a.clone();
+    b.n_block_align = 99;
+    assert!(!a.matches_for_negotiation(&b));
+}
+
+#[test]
 fn extra_data_must_match_for_otherwise_identical_formats() {
     // Two AAC formats identical in every WAVEFORMATEX field but carrying
     // different HEAACWAVEINFO extra data are genuinely incompatible and must

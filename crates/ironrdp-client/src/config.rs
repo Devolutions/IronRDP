@@ -1140,14 +1140,18 @@ impl ConfigBuilder {
     }
 
     /// Set the public RDP audio redirection mode.
-    #[cfg(feature = "sound")]
-    #[must_use]
-    pub fn with_audio_mode(mut self, mode: ironrdp_cfg::AudioMode) -> Self {
-        self.channels.sound = matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient);
-        self.enable_audio_playback = Some(matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient));
-        self.properties.set_audio_mode(mode);
-        self
-    }
+        ///
+        /// `PlayOnServer` and `Disabled` currently share the same client-info outcome:
+        /// both clear local RDPSND playback and set `INFO_NOAUDIOPLAYBACK`. Distinct
+        /// `INFO_REMOTECONSOLEAUDIO` (true “play on server console”) is not wired yet.
+        #[cfg(feature = "sound")]
+        #[must_use]
+        pub fn with_audio_mode(mut self, mode: ironrdp_cfg::AudioMode) -> Self {
+            self.channels.sound = matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient);
+            self.enable_audio_playback = Some(matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient));
+            self.properties.set_audio_mode(mode);
+            self
+        }
 
     /// Set the CLIPRDR (clipboard) redirection mode.
     #[cfg(feature = "clipboard")]

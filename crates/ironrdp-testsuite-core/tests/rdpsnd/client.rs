@@ -93,14 +93,28 @@ fn encoded_wave_encrypt() -> Vec<u8> {
     .unwrap()
 }
 
-fn encoded_wave() -> Vec<u8> {
+fn encoded_wave_info(audio_length: u16) -> Vec<u8> {
     encode_vec(&pdu::ServerAudioOutputPdu::Wave(pdu::WavePdu {
         timestamp: 0xADD7,
         format_no: 0,
         block_no: 1,
-        data: Cow::Borrowed(&[0x01, 0x02, 0x03, 0x04]),
+        data_prefix: [0x01, 0x02, 0x03, 0x04],
+        audio_length,
     }))
     .unwrap()
+}
+
+/// Bare Wave payload after WaveInfo: bPad[4] + remaining audio after the prefix.
+fn encoded_wave_data(remaining: &[u8]) -> Vec<u8> {
+    encode_vec(&pdu::WaveDataPdu {
+        data: remaining.to_vec(),
+    })
+    .unwrap()
+}
+
+fn encoded_wave() -> Vec<u8> {
+    // WaveInfo for a 4-byte sample (prefix only; remaining audio empty).
+    encoded_wave_info(4)
 }
 
 // ============================================================================
@@ -253,15 +267,44 @@ fn ready_silent_pdus_keep_state(#[case] payload: Vec<u8>) {
 }
 
 #[test]
-fn ready_wave_sends_confirm_and_keeps_state() {
-    let mut client = client_in_ready(pdu::Version::V5);
+fn ready_wave_two_step_sends_confirm_and_keeps_state() {
+    let waves = Arc::new(Mutex::new(Vec::new()));
+    let backend = RecordingBackend {
+        formats: vec![pcm(44100, 2)],
+        waves: Arc::clone(&waves),
+    };
+    let mut client = Rdpsnd::new(Box::new(backend));
+    client
+        .process(&encoded_server_formats(pdu::Version::V5))
+        .unwrap();
+    client.process(&encoded_training()).unwrap();
 
-    let confirm = decode_single_response(&client.process(&encoded_wave()).unwrap());
+    // WaveInfo alone does not confirm yet — waiting for bare Wave payload.
+    assert!(client.process(&encoded_wave_info(8)).unwrap().is_empty());
+
+    let confirm = decode_single_response(&client.process(&encoded_wave_data(&[0x05, 0x06, 0x07, 0x08])).unwrap());
     assert!(matches!(confirm, pdu::ClientAudioOutputPdu::WaveConfirm(ref pdu) if pdu.block_no == 1));
+
+    let recorded = waves.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].1, 0xADD7);
+    assert_eq!(recorded[0].2, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+    drop(recorded);
 
     // Channel stays Ready for a subsequent Wave2.
     let confirm = decode_single_response(&client.process(&encoded_wave2(2)).unwrap());
     assert!(matches!(confirm, pdu::ClientAudioOutputPdu::WaveConfirm(_)));
+}
+
+#[test]
+fn ready_wave_concatenated_payload_finishes_immediately() {
+    let mut client = client_in_ready(pdu::Version::V5);
+
+    let mut payload = encoded_wave_info(8);
+    payload.extend_from_slice(&encoded_wave_data(&[0x05, 0x06, 0x07, 0x08]));
+
+    let confirm = decode_single_response(&client.process(&payload).unwrap());
+    assert!(matches!(confirm, pdu::ClientAudioOutputPdu::WaveConfirm(ref pdu) if pdu.block_no == 1));
 }
 
 #[test]

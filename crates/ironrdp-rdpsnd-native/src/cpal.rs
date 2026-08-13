@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
-use cpal::traits::{DeviceTrait as _, HostTrait as _};
-use cpal::{SampleFormat, Stream, StreamConfig};
+use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
+use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfigRange};
 use ironrdp_error::bail;
 use ironrdp_rdpsnd::client::RdpsndClientHandler;
 use ironrdp_rdpsnd::pdu::{AudioFormat, AudioFormatFlags, PitchPdu, VolumePdu, WaveFormat};
@@ -15,11 +15,17 @@ use tracing::{debug, error, trace, warn};
 use crate::error::{RdpsndNativeError, RdpsndNativeErrorKind, RdpsndNativeResult};
 
 /// Pack left/right 16-bit volume levels into one atomic word.
-fn pack_volume(left: u16, right: u16) -> u32 {
+///
+/// Layout is internal only: left in the high half, right in the low half.
+/// This is **not** the MS-RDPEA `VolumePdu` wire packing (`right << 16 | left`
+/// written little-endian).
+#[doc(hidden)]
+pub fn pack_volume(left: u16, right: u16) -> u32 {
     (u32::from(left) << 16) | u32::from(right)
 }
 
-fn unpack_volume(packed: u32) -> (u16, u16) {
+#[doc(hidden)]
+pub fn unpack_volume(packed: u32) -> (u16, u16) {
     #[expect(clippy::as_conversions, reason = "mask isolates a u16 lane from the packed word")]
     let left = ((packed >> 16) & 0xFFFF) as u16;
     #[expect(clippy::as_conversions, reason = "mask isolates a u16 lane from the packed word")]
@@ -35,7 +41,15 @@ fn unpack_volume(packed: u32) -> (u16, u16) {
 ///
 /// `sample_phase` is the channel index of the next sample and is advanced so
 /// L/R assignment stays correct across wave blocks and multi-channel layouts.
-fn apply_volume(data: &mut [u8], bits_per_sample: u16, channels: u16, left: u16, right: u16, sample_phase: &mut usize) {
+#[doc(hidden)]
+pub fn apply_volume(
+    data: &mut [u8],
+    bits_per_sample: u16,
+    channels: u16,
+    left: u16,
+    right: u16,
+    sample_phase: &mut usize,
+) {
     if left == 0xFFFF && right == 0xFFFF {
         // Still advance phase so a later non-full volume stays aligned.
         let sample_bytes = match bits_per_sample {
@@ -95,6 +109,8 @@ pub struct RdpsndBackend {
     tx: Option<Sender<Vec<u8>>>,
     active_format: Option<AudioFormat>,
     volume: Arc<AtomicU32>,
+    /// Formats advertised during RDPSND negotiation (device-filtered PCM + optional Opus).
+    formats: Vec<AudioFormat>,
 }
 
 impl Default for RdpsndBackend {
@@ -111,8 +127,145 @@ impl RdpsndBackend {
             stream_handle: None,
             stream_ended: Arc::new(AtomicBool::new(false)),
             volume: Arc::new(AtomicU32::new(pack_volume(0xFFFF, 0xFFFF))),
+            formats: build_output_formats(),
         }
     }
+}
+
+fn candidate_output_formats() -> Vec<AudioFormat> {
+    vec![
+        #[cfg(feature = "opus")]
+        AudioFormat {
+            format: WaveFormat::OPUS,
+            n_channels: 2,
+            n_samples_per_sec: 48000,
+            n_avg_bytes_per_sec: 192000,
+            n_block_align: 4,
+            bits_per_sample: 16,
+            data: None,
+        },
+        AudioFormat {
+            format: WaveFormat::PCM,
+            n_channels: 2,
+            n_samples_per_sec: 48000,
+            n_avg_bytes_per_sec: 192000,
+            n_block_align: 4,
+            bits_per_sample: 16,
+            data: None,
+        },
+        AudioFormat {
+            format: WaveFormat::PCM,
+            n_channels: 2,
+            n_samples_per_sec: 44100,
+            n_avg_bytes_per_sec: 176400,
+            n_block_align: 4,
+            bits_per_sample: 16,
+            data: None,
+        },
+        AudioFormat {
+            format: WaveFormat::PCM,
+            n_channels: 2,
+            n_samples_per_sec: 22050,
+            n_avg_bytes_per_sec: 88200,
+            n_block_align: 4,
+            bits_per_sample: 16,
+            data: None,
+        },
+        AudioFormat {
+            format: WaveFormat::PCM,
+            n_channels: 1,
+            n_samples_per_sec: 44100,
+            n_avg_bytes_per_sec: 88200,
+            n_block_align: 2,
+            bits_per_sample: 16,
+            data: None,
+        },
+        AudioFormat {
+            format: WaveFormat::PCM,
+            n_channels: 1,
+            n_samples_per_sec: 22050,
+            n_avg_bytes_per_sec: 44100,
+            n_block_align: 2,
+            bits_per_sample: 16,
+            data: None,
+        },
+        AudioFormat {
+            format: WaveFormat::PCM,
+            n_channels: 2,
+            n_samples_per_sec: 16000,
+            n_avg_bytes_per_sec: 64000,
+            n_block_align: 4,
+            bits_per_sample: 16,
+            data: None,
+        },
+        AudioFormat {
+            format: WaveFormat::PCM,
+            n_channels: 1,
+            n_samples_per_sec: 16000,
+            n_avg_bytes_per_sec: 32000,
+            n_block_align: 2,
+            bits_per_sample: 16,
+            data: None,
+        },
+        AudioFormat {
+            format: WaveFormat::PCM,
+            n_channels: 1,
+            n_samples_per_sec: 8000,
+            n_avg_bytes_per_sec: 16000,
+            n_block_align: 2,
+            bits_per_sample: 16,
+            data: None,
+        },
+    ]
+}
+
+fn pcm_sample_format(bits_per_sample: u16) -> Option<SampleFormat> {
+    match bits_per_sample {
+        8 => Some(SampleFormat::U8),
+        16 => Some(SampleFormat::I16),
+        _ => None,
+    }
+}
+
+fn config_supports_pcm(range: &SupportedStreamConfigRange, format: &AudioFormat) -> bool {
+    let Some(sample_format) = pcm_sample_format(format.bits_per_sample) else {
+        return false;
+    };
+    if range.sample_format() != sample_format {
+        return false;
+    }
+    if range.channels() < format.n_channels {
+        return false;
+    }
+    let rate = format.n_samples_per_sec;
+    rate >= range.min_sample_rate() && rate <= range.max_sample_rate()
+}
+
+fn build_output_formats() -> Vec<AudioFormat> {
+    let candidates = candidate_output_formats();
+    let host = cpal::default_host();
+    let Some(device) = host.default_output_device() else {
+        warn!("No default output device; advertising unfiltered PCM candidates");
+        return candidates;
+    };
+    let configs = match device.supported_output_configs() {
+        Ok(configs) => configs.collect::<Vec<_>>(),
+        Err(error) => {
+            warn!(%error, "Failed to query output configs; advertising unfiltered PCM candidates");
+            return candidates;
+        }
+    };
+
+    candidates
+        .into_iter()
+        .filter(|format| {
+            if format.format != WaveFormat::PCM {
+                // Codec formats (e.g. Opus) are decoded to PCM before the device.
+                return true;
+            }
+            configs.iter().any(|range| config_supports_pcm(range, format))
+        })
+        .collect()
 }
 
 impl Drop for RdpsndBackend {
@@ -129,91 +282,8 @@ impl RdpsndClientHandler for RdpsndBackend {
     }
 
     fn get_formats(&self) -> &[AudioFormat] {
-        &[
-            #[cfg(feature = "opus")]
-            AudioFormat {
-                format: WaveFormat::OPUS,
-                n_channels: 2,
-                n_samples_per_sec: 48000,
-                n_avg_bytes_per_sec: 192000,
-                n_block_align: 4,
-                bits_per_sample: 16,
-                data: None,
-            },
-            AudioFormat {
-                format: WaveFormat::PCM,
-                n_channels: 2,
-                n_samples_per_sec: 48000,
-                n_avg_bytes_per_sec: 192000,
-                n_block_align: 4,
-                bits_per_sample: 16,
-                data: None,
-            },
-            AudioFormat {
-                format: WaveFormat::PCM,
-                n_channels: 2,
-                n_samples_per_sec: 44100,
-                n_avg_bytes_per_sec: 176400,
-                n_block_align: 4,
-                bits_per_sample: 16,
-                data: None,
-            },
-            AudioFormat {
-                format: WaveFormat::PCM,
-                n_channels: 2,
-                n_samples_per_sec: 22050,
-                n_avg_bytes_per_sec: 88200,
-                n_block_align: 4,
-                bits_per_sample: 16,
-                data: None,
-            },
-            AudioFormat {
-                format: WaveFormat::PCM,
-                n_channels: 1,
-                n_samples_per_sec: 44100,
-                n_avg_bytes_per_sec: 88200,
-                n_block_align: 2,
-                bits_per_sample: 16,
-                data: None,
-            },
-            AudioFormat {
-                format: WaveFormat::PCM,
-                n_channels: 1,
-                n_samples_per_sec: 22050,
-                n_avg_bytes_per_sec: 44100,
-                n_block_align: 2,
-                bits_per_sample: 16,
-                data: None,
-            },
-            AudioFormat {
-                format: WaveFormat::PCM,
-                n_channels: 2,
-                n_samples_per_sec: 16000,
-                n_avg_bytes_per_sec: 64000,
-                n_block_align: 4,
-                bits_per_sample: 16,
-                data: None,
-            },
-            AudioFormat {
-                format: WaveFormat::PCM,
-                n_channels: 1,
-                n_samples_per_sec: 16000,
-                n_avg_bytes_per_sec: 32000,
-                n_block_align: 2,
-                bits_per_sample: 16,
-                data: None,
-            },
-            AudioFormat {
-                format: WaveFormat::PCM,
-                n_channels: 1,
-                n_samples_per_sec: 8000,
-                n_avg_bytes_per_sec: 16000,
-                n_block_align: 2,
-                bits_per_sample: 16,
-                data: None,
-            },
-        ]
-    }
+            &self.formats
+        }
 
     fn wave(&mut self, format: &AudioFormat, _ts: u32, data: Cow<'_, [u8]>) {
         // Soft-fail reopen: if the stream thread exited after a device/open error,
@@ -407,11 +477,16 @@ impl DecodeStream {
                 RdpsndNativeError::new("building cpal output stream", RdpsndNativeErrorKind::StreamBuild).with_source(e)
             })?;
 
-        Ok(Self {
-            _dec_thread: dec_thread,
-            stream,
-        })
-    }
+                // cpal streams start paused; without play() the callback never runs.
+                        stream.play().map_err(|e| {
+                            RdpsndNativeError::new("starting cpal output stream", RdpsndNativeErrorKind::StreamBuild).with_source(e)
+                        })?;
+
+                        Ok(Self {
+                            _dec_thread: dec_thread,
+                            stream,
+                        })
+                    }
 
     pub fn stream(&self) -> &Stream {
         &self.stream

@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
         data: None,
     };
     let (tx, rx) = mpsc::channel();
-    // Full volume on both channels (packed MS-RDPEA VolumePdu layout).
+    // Full volume on both channels (internal pack_volume layout: left high, right low).
     let volume = Arc::new(AtomicU32::new(0xFFFF_FFFF));
     let stream = DecodeStream::new(&rx_format, rx, volume)?;
 

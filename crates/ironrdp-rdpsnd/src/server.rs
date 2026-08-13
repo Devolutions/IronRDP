@@ -198,14 +198,28 @@ impl RdpsndServer {
             };
             RdpsndSvcMessages::new(vec![pdu::ServerAudioOutputPdu::Wave2(pdu).into()])
         } else {
-            let pdu = pdu::WavePdu {
-                block_no: self.block_no,
-                format_no,
-                timestamp: 0,
-                data: data.into(),
-            };
-            RdpsndSvcMessages::new(vec![pdu::ServerAudioOutputPdu::Wave(pdu).into()])
-        };
+                    // Pre-v8: WaveInfo PDU, then a bare Wave payload (no RDPSND header).
+                    if data.len() < usize::from(pdu::WavePdu::MIN_AUDIO_LENGTH) {
+                        return Err(pdu_other_err!("wave data shorter than WaveInfo Data prefix"));
+                    }
+                    let audio_length = u16::try_from(data.len()).map_err(|_| pdu_other_err!("wave data too large"))?;
+                    let mut data_prefix = [0u8; 4];
+                    data_prefix.copy_from_slice(&data[..4]);
+                    let info = pdu::WavePdu {
+                        block_no: self.block_no,
+                        format_no,
+                        timestamp: 0,
+                        data_prefix,
+                        audio_length,
+                    };
+                    let wave_data = pdu::WaveDataPdu {
+                        data: data[4..].to_vec(),
+                    };
+                    RdpsndSvcMessages::new(vec![
+                        pdu::ServerAudioOutputPdu::Wave(info).into(),
+                        wave_data.into(),
+                    ])
+                };
 
         self.block_no = self.block_no.overflowing_add(1).0;
 

@@ -3087,6 +3087,7 @@ dependencies = [
  "ironrdp-rdpeusb",
  "ironrdp-rdpfile",
  "ironrdp-rdpsnd",
+ "ironrdp-rdpsnd-native",
  "ironrdp-server",
  "ironrdp-session",
  "ironrdp-str",
