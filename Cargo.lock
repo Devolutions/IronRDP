@@ -3120,6 +3120,7 @@ dependencies = [
  "ironrdp-propertyset",
  "ironrdp-rdpdr",
  "ironrdp-rdpdr-native",
+ "ironrdp-rdpsnd-native",
  "ironrdp-rpc",
  "ironrdp-svc",
  "ironrdp-tls",

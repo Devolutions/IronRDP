@@ -37,6 +37,7 @@ ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-input.path = "../ironrdp-input"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpdr.path = "../ironrdp-rdpdr"
+ironrdp-rdpsnd-native.path = "../ironrdp-rdpsnd-native"
 ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }
 ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-tokio.path = "../ironrdp-tokio"
