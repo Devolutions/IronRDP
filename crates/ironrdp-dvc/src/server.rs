@@ -245,7 +245,7 @@ impl DrdynvcServer {
     /// # Panics
     ///
     /// Panics if the number of registered dynamic channels reaches `u32::MAX`.
-    pub fn create_channel_with<T, E = PduError, F>(&mut self, build: F) -> Result<SvcMessage, E>
+    pub fn create_channel_with<T, E, F>(&mut self, build: F) -> Result<SvcMessage, E>
     where
         T: DvcServerProcessor + 'static,
         E: From<PduError>,
