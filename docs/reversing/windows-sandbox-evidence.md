@@ -31,6 +31,10 @@ analysis" is stronger than "likely" or "suggests".
 | Guest `termsrv.dll` | `10.0.26100.8115` | Selects built-in licensing for listener types 2 and 3 |
 | Guest `tssrvlic.dll` | `10.0.26100.8655` | Role-4 DVM proxy licensing route |
 | `rdpcorets.dll` | `10.0.26100.8737` | Implements `UMRDPProtocolManager`, the VMBus listener, and the shared RDP connection object |
+| `RdpIdd.dll` | `10.0.26100.8737` | UMDF RDP Indirect Display Driver; reports critical adapter failures to IddCx and implements native/container display updates plus GPU/WARP recovery |
+| `RdpAvenc.dll` | `10.0.26100.7019` | RDPIDD encoder processor with CPU/GPU per-monitor frame processing and shared GPU textures |
+| `IddCx.dll` | `10.0.26100.4202` | Indirect Display class extension; validates display configuration and forwards adapter configuration to the kernel display stack |
+| `IndirectKmd.sys` | `10.0.26100.1` | Indirect Display kernel-mode filter used by the RDPIDD package |
 | `rdpbase.dll` | `10.0.26100.8875` | Shared RDP base factory and platform infrastructure used by `rdpcorets.dll` |
 | `vmbuspipe.dll` | `10.0.26100.8521` | Exact VMBus listener dependency, including channel notification APIs |
 | `vmbuspiper.dll` | `10.0.26100.8521` | Related generic VMBus-pipe component, not the notification DLL selected by `rdpcorets.dll` |
@@ -284,6 +288,8 @@ handler as the active LSCS receiver for the tested direct flow.
 | Standard host RDP wire licensing is the LSCS admission decision | Strongly disfavored | `RDPSERVERBASE!IsLicenseRequiredByOS` skips standard licensing on non-server Windows |
 | Current direct two-VM disconnect is an LSCS denial | Not established | Current post-connect outcomes are `CloseStackOnDriverFailure` and `ERRINFO_LOGOFF_BY_USER`; neither run includes a correlated LSCS call trace |
 | Wire `CloseStackOnDriverFailure` (`0x11`) is named as an Indirect Display Driver failure inside RDPBASE | High for naming, inference for live cause | `GetInternalDisconnectSymbolicName(17)` returns `IndirectDisplayDriverFailure`; adjacent codes cover IDD not-ready and interface-arrival failures |
+| RDPIDD PnP critical failure directly produces disconnect reason `17` | High | `CPnPOnRemoteDisplayDeviceHasProblemWorkItem::DoExecute` calls `DisconnectSession(sessionId, 17)`; RDPIDD calls `IddCxReportCriticalError` for unrecoverable adapter failures |
+| Container/vGPU display update or render-adapter loss is the concurrent trigger | Strong static inference | RDPIDD has a dedicated container update API with fatal stopped/not-connected statuses and a GPU-device-loss/WARP recovery path; timing and worker GPU modules match, but the exact RDPIDD critical call site was not captured |
 | Current `0x11` is every GFX-pipe `SetPipelineErrorState` failure | Ruled out | `CPipeManager::SetPipelineErrorState` maps subsystem-init and related pipe events to reasons such as `4460`/`4461`, not wire `0x11` |
 | IronRDP causes the current cross-VM failure | Ruled out | The Microsoft MSTSC ActiveX/RDPBASE path reproduces an early cross-VM disconnect |
 | CLIPRDR or RDPSND startup causes the current cross-VM failure | Ruled out | The failure sequence remains with both channels disabled |

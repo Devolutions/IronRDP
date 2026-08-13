@@ -26,6 +26,9 @@ unattributed. Absence from a static image is not proof that the process is uninv
 | `termsrv.dll` | Starts VM listener type `2` for VMBus and type `3` for HVSock; selects the built-in listener license route | `CRemoteConnectionManager::StartStopHardcodedListeners` and `StartVMListener` |
 | `rdpcorets.dll` | Registered `UMRDPProtocolManager`; implements `CUMRDPListenerVMBus`, `CUMRDPListenerInet`, and `CUMRDPConnection` | Both accept paths create `CLSID_UMRDPConnection` |
 | `rdpbase.dll` | Shared RDP base factory and platform infrastructure | `rdpcorets.dll` resolves `RDPBASE_CreateInstance` |
+| `RdpIdd.dll` | UMDF RDP Indirect Display Driver; owns the remote display adapter, monitor configuration, render adapter, and swapchains | Reports unrecoverable adapter errors through `IddCxReportCriticalError`; its PnP problem event is converted by `termsrv` to disconnect reason `17` |
+| `RdpAvenc.dll` | Encoder processor loaded into RDPIDD | Creates per-monitor CPU/GPU frame processors and shared GPU textures |
+| `IddCx.dll` / `IndirectKmd.sys` | User/kernel Indirect Display framework | Applies native or container display configurations and surfaces adapter/device failures to PnP |
 | `vmbuspipe.dll` | Generic offered-channel and notification API used by the VMBus listener | Dynamically loaded by `CUMRDPListenerVMBus` |
 | `vmbuspiper.dll` | Related generic VMBus-pipe client/server component | Not the notification DLL selected by the examined listener |
 | `tssrvlic.dll` | Role-4 DVM proxy licensing provider | `CDVMProxyLicenseLibrary` and `CProxyPolicy` selection |
@@ -44,7 +47,7 @@ unattributed. Absence from a static image is not proof that the process is uninv
 | `vmuidevices.dll` | Hyper-V Synthetic RDP and RDP Encoder VDEVs | COM-loaded worker RDP/display bridge with named-pipe listeners; no LSCS marker |
 | `rdp4vs.dll` | RDP4VS engine explicitly loaded by `vmuidevices.dll` | Supplies the named-pipe listener and `IRDP4VS` server instances; `RDPAPI_CreateInstance` selects the RDP server base before its RDP base fallback |
 | `RDPSERVERBASE.dll` | RDP server base loaded in the worker | Regular RDP wire licensing, Server Set Error Info PDU emission, and display stack; standard licensing is skipped on non-server Windows and is not LSCS attribution |
-| `gpupvdev.dll` / `VrdUmed.dll` | GPU-partition VDEV and Virtual Render Device user-mode emulation driver | Loaded for the worker display bridge; credible but unattributed participants in the observed display-driver startup failure |
+| `gpupvdev.dll` / `VrdUmed.dll` | GPU-partition VDEV and Virtual Render Device user-mode emulation driver | Loaded for the worker display bridge; upstream participants in the leading virtual render-adapter/container-display collision model |
 
 The VDEV relationship is not a licensing ownership relationship. In particular, neither
 `vmuidevices.dll` nor `rdp4vs.dll` contained the LSCS endpoint markers or

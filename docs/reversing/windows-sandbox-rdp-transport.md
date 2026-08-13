@@ -176,7 +176,66 @@ lifecycle conflict** spanning otherwise separate VM workers. The evidence suppor
 family, not a concrete owner: each VM still has its own `vmwp.exe`, RDP Encoder, credentials, and
 guest account, while the host GPU/IDD path is shared. The low-resolution result argues against
 ordinary capacity exhaustion; it is more consistent with a singleton, lease, or state-machine
-constraint. This remains an inference until a live call stack identifies who supplies `0x11`.
+constraint.
+
+### Static reconstruction of `CloseStackOnDriverFailure`
+
+Static analysis now identifies the complete local path that selects disconnect reason `17`; a live
+call stack is not required to attribute that reason to RDPIDD:
+
+```text
+termsrv!CConnectionEx
+  -> query protocol connection for IWRdsWddmIddProps
+  -> CConnectionEx::EnableWddmIdd
+  -> CRemoteTerminal::DoConnect
+  -> CUMRDPConnection::GetHardwareId
+       returns "RdpIdd_IndirectDisplay"
+  -> create RdpIdd_IndirectDisplay&SessionId_%04d
+  -> CRemoteDisplayDeviceContext PnP state machine
+  -> rdpcorets!CUMRDPConnection::OnDriverLoad
+       open IDD interface and start RDP GFX
+  -> RdpIdd reports an unrecoverable adapter error through IddCx
+  -> PnP reports "device has problem"
+  -> termsrv!CPnPOnRemoteDisplayDeviceHasProblemWorkItem::DoExecute
+  -> CRemoteConnectionManager::DisconnectSession(sessionId, 17)
+  -> RDPBASE symbolic name: IndirectDisplayDriverFailure
+  -> MS-RDPBCGR ERRINFO_CLOSE_STACK_ON_DRIVER_FAILURE (0x11)
+```
+
+The examined `RdpIdd.dll` is the UMDF Indirect Display Driver paired with `IndirectKmd.sys` and
+`IddCx.dll`. Its INF disables UMDF host-process sharing, so two guests are not colliding in one
+shared `WUDFHost` instance.
+
+Two RDPIDD failure branches are the strongest upstream explanations:
+
+1. **Container/vGPU display-configuration update.** `rdpcorets!CPipeGfxProvider::SendBindDriver`
+   maps remote-desktop mode `4` to RDPIDD bind mode `3`, which RDPIDD names
+   `VailvGpuModeEnabled`. Mode `3` selects
+   `IddCxAdapterDisplayConfigUpdateForContainer2`; other modes select the native update API.
+   `CRdpIdAdapter::UpdateDisplayConfig` treats
+   `STATUS_GRAPHICS_INDIRECT_DISPLAY_DEVICE_STOPPED` and
+   `STATUS_GRAPHICS_MONITOR_NOT_CONNECTED` as permanent failures, retries other failures with
+   increasing delays, then reports critical status `(major=1, minor=1)`. `IddCx` forwards this as
+   a `SET_DISPLAY_CONFIGURATION` escape to the kernel display stack. The observed three-to-six
+   second post-connect failures fit this initialization/update stage.
+2. **Render-adapter or swapchain loss.** RDPIDD reads a preferred adapter LUID, creates a DXGI
+   adapter and D3D11 device, and gives each monitor a GPU frame processor. The GPU swapchain loop
+   detects a removed render device and records its removal HRESULT. With `HandleLostGpu` enabled
+   by default, it closes and retries the swapchain; after five failures it falls back to WARP. An
+   already-WARP adapter or failed WARP fallback reports critical `(major=3, minor=stage)` through
+   `IddCxReportCriticalError`.
+
+`rdpcorets` independently derives the adapter LUID behind shared DX resources and creates its D3D11
+device on that adapter. Together with the worker's mirrored GPU configuration and loaded
+`gpupvdev`/`VrdUmed` modules, this makes a container-display configuration or virtual render-adapter
+lifecycle collision the strongest static explanation for why activating another Sandbox desktop
+causes RDPIDD to become unusable.
+
+This is stronger than the earlier generic IDD inference: the direct producer of `0x11` is now
+attributed to the RDPIDD PnP critical-error path. What static analysis still cannot distinguish is
+whether the concurrent trigger first fails `IddCxAdapterDisplayConfigUpdateForContainer2`, removes
+the selected virtual render adapter, or reaches another RDPIDD critical-error site. The later
+`ERRINFO_LOGOFF_BY_USER` can be a secondary session teardown and does not contradict this path.
 
 `ERRINFO_LOGOFF_BY_USER` is the server's classification of a session logoff, not evidence of a
 human action or an identified policy caller. [MS-RDPBCGR] section 2.2.5.1 defines both it and
