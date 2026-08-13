@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use crate::prelude::*;
 
@@ -124,26 +124,19 @@ pub fn test_settings(sh: &Shell, base: &str, head: &str) -> anyhow::Result<()> {
 
 fn protected_setting_removals(diff: &str) -> Vec<(String, &'static str)> {
     let mut path = None;
-    let mut changes = BTreeMap::<(String, &'static str), i32>::new();
+    let mut removals = BTreeSet::new();
 
     for line in diff.lines() {
         if let Some(new_path) = line.strip_prefix("+++ b/") {
             path = Some(new_path.to_owned());
         } else if let Some(line) = line.strip_prefix('-') {
             if let (Some(path), Some(setting)) = (&path, protected_setting(line)) {
-                *changes.entry((path.clone(), setting)).or_default() -= 1;
+                removals.insert((path.clone(), setting));
             }
-        } else if let Some(line) = line.strip_prefix('+')
-            && let (Some(path), Some(setting)) = (&path, protected_setting(line))
-        {
-            *changes.entry((path.clone(), setting)).or_default() += 1;
         }
     }
 
-    changes
-        .into_iter()
-        .filter_map(|(setting, count)| (count < 0).then_some(setting))
-        .collect()
+    removals.into_iter().collect()
 }
 
 fn protected_setting(line: &str) -> Option<&'static str> {

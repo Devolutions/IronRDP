@@ -37,7 +37,7 @@ jobs:
 
       - name: Fetch pull request revisions
         if: github.event_name == 'pull_request'
-        run: git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}" "refs/pull/${{ github.event.pull_request.number }}/head"
+        run: git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
 
       - name: Check test settings
         if: github.event_name == 'pull_request'
