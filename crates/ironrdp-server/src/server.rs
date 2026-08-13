@@ -287,7 +287,10 @@ pub struct RdpServerOptions {
     /// Candidates are additionally gated through
     /// [`ConnectionHandler::on_accept`] *before* they are allowed to
     /// negotiate, so an IP allowlist or rate limiter bounds who may even
-    /// attempt a takeover.
+    /// attempt a takeover. It does NOT bound how long one admitted candidate
+    /// can occupy the (single) negotiation slot before another is even
+    /// considered — see the limitation documented on
+    /// `CANDIDATE_NEGOTIATION_TIMEOUT`.
     ///
     /// Defaults to `false` (queue-behind, the pre-existing behaviour). Set via
     /// [`RdpServerBuilder::with_preempt_existing_session`](crate::RdpServerBuilder::with_preempt_existing_session).
@@ -645,17 +648,17 @@ impl ServerEvent {
     }
 }
 
-/// What resolved first while a session was live, under
-/// [`RdpServerOptions::preempt_existing_session`]: the session itself ending, a
-/// new inbound connection, or the verdict on a candidate being negotiated. The
-/// race's `select!` yields one of these and must not otherwise mutate the probe
-/// slot, whose futures it still borrows.
 /// The in-flight [`negotiate_candidate`] call for a candidate connection, or a
 /// never-resolving placeholder while none is being negotiated. Borrows the
 /// [`NegotiationContext`] the race built.
 type PreemptProbe<'ctx> =
     core::pin::Pin<Box<dyn Future<Output = Option<(Box<NegotiatedCandidate>, SocketAddr)>> + 'ctx>>;
 
+/// What resolved first while a session was live, under
+/// [`RdpServerOptions::preempt_existing_session`]: the session itself ending, a
+/// new inbound connection, or the verdict on a [`PreemptProbe`] being
+/// negotiated. The race's `select!` yields one of these and must not
+/// otherwise mutate the probe slot, whose futures it still borrows.
 enum PreemptRace {
     Ended(Result<()>),
     Accepted(std::io::Result<(TcpStream, SocketAddr)>),
@@ -802,6 +805,22 @@ const EVICTION_GRACE: Duration = Duration::from_millis(750);
 /// and, once the live session ends, hangs the whole accept loop on the handoff
 /// await with no way left to observe [`ServerEvent::Quit`]. Generous enough for
 /// TLS + CredSSP over a slow link, which is sub-second on a healthy one.
+///
+/// # Known limitation: one candidate is negotiated at a time
+///
+/// `run()`'s race holds a SINGLE probe slot (`probe`/`probing`), so a peer
+/// that has already cleared [`ConnectionHandler::on_accept`] and then merely
+/// STALLS its handshake (a well-formed X.224 Connection Request, then
+/// silence before TLS — `on_accept` cannot see this in advance, since it
+/// already returned `true` for this peer) occupies the slot for up to this
+/// whole timeout, during which the accept arm is gated off and no OTHER
+/// candidate — including a legitimate one — can even begin negotiating. The
+/// live session itself is unaffected either way (this only withholds
+/// PREEMPTION, never breaks it), and it is not a regression against master's
+/// queue-behind default. But it means `on_accept` bounds who may ATTEMPT a
+/// takeover, not how long one attempt can hold up every other. Closing this
+/// properly needs a small pool of concurrent probe slots rather than one;
+/// not done here.
 const CANDIDATE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long the accept loop will wait, AFTER the live session has ended, for a
@@ -1164,6 +1183,46 @@ impl RdpServer {
         }
         self.auto_reconnect_sent = true;
     }
+
+    /// (vendored, divergence 23) Invalidate whatever ARC cookie belongs to
+    /// the session that is about to be EVICTED, without disabling
+    /// auto-reconnect for the server going forward.
+    ///
+    /// MS-RDPBCGR 5.5 requires a session's auto-reconnect cookie to be
+    /// invalidated once a different client's session begins. This crate
+    /// already demotes the outgoing cookie into `previous_auto_reconnect_
+    /// cookie` on every normal rotation (`commit_auto_reconnect_rotation`) --
+    /// a network-timing tolerance for the common case of a lost Save Session
+    /// Info PDU -- which means an EVICTED peer's cookie stays valid for one
+    /// more rotation. Since `verify_auto_reconnect_cookie` accepts either
+    /// slot, and a client presenting a valid ARC cookie skips
+    /// `credential_validator` (see `client_accepted`), an evicted peer could
+    /// silently resume without a real re-authorization check -- and, because
+    /// re-authenticating via ARC needs no user interaction, do so reliably
+    /// the moment `REPREEMPT_MAX_LOCKOUT` lifts.
+    ///
+    /// Rotates to a FRESH cookie under the SAME `logon_id` (so the server
+    /// keeps issuing cookies to whoever connects next -- a normal rotation
+    /// does the same) but with new random bits, which is what actually
+    /// invalidates the old one: `ClientAutoReconnect::verify` HMACs against
+    /// `random_bits`, not `logon_id` alone. `previous_auto_reconnect_cookie`
+    /// is discarded outright here rather than demoted into, since the whole
+    /// point is that the evicted party's cookie must not remain valid even
+    /// for one more attempt.
+    ///
+    /// MUST NOT set `auto_reconnect_cookie` to `None`:
+    /// `next_auto_reconnect_cookie` treats `None` as "auto-reconnect is not
+    /// configured" and stops issuing cookies to EVERY future connection, not
+    /// just this one -- silently disabling the feature server-wide for the
+    /// rest of the process (see `next_auto_reconnect_cookie`'s early
+    /// `self.auto_reconnect_cookie.as_ref()?`). No-op if auto-reconnect isn't
+    /// configured at all.
+    fn invalidate_auto_reconnect_cookie_on_eviction(&mut self) {
+        if let Some(current) = self.auto_reconnect_cookie.as_ref() {
+            self.auto_reconnect_cookie = Some(Self::generate_auto_reconnect_cookie(current.logon_id));
+        }
+        self.previous_auto_reconnect_cookie = None;
+    }
     async fn send_auto_reconnect_cookie(
         cookie: rdp::session_info::ServerAutoReconnect,
         writer: &mut impl FramedWrite,
@@ -1178,7 +1237,7 @@ impl RdpServer {
                 errors_info: None,
             }),
         });
-        let data = encode_share_data_pdu(pdu, io_channel_id, user_channel_id)?;
+        let data = encode_share_data_pdu(pdu, user_channel_id, io_channel_id, user_channel_id)?;
         writer.write_all(&data).await.context("send auto-reconnect cookie")?;
         debug!("Sent Server Auto-Reconnect Cookie (Save Session Info PDU)");
 
@@ -1376,15 +1435,29 @@ impl RdpServer {
         acceptor.attach_static_channel(dvc);
     }
 
-    /// Drop any `EvictedByOtherConnection` still queued on the server-global
-    /// event channel, putting every other event back in arrival order.
+    /// Drop every event still queued on the server-global channel that
+    /// belongs to the SESSION just replaced, keeping only the small set of
+    /// lifecycle/control events meant to survive across connections.
     ///
-    /// Called immediately before serving a preemption winner. The eviction
-    /// event is addressed to the connection being replaced, but the channel is
-    /// shared across connections and read by whoever drains it next — so an
-    /// event the outgoing session never got around to consuming would be
-    /// delivered to its replacement, which would dutifully disconnect itself.
-    async fn discard_stale_eviction_events(&mut self) {
+    /// Called immediately before serving a preemption winner. The channel is
+    /// shared across every connection the server ever serves and is read by
+    /// whichever connection drains it next -- so any event the outgoing
+    /// session produced but never got around to consuming (its OWN eviction
+    /// notice, a queued clipboard message, an RDPSND wave, an EGFX frame)
+    /// would otherwise be delivered to its replacement. That is at best stale
+    /// (an audio wave from a session that no longer exists) and at worst a
+    /// real leak (the previous peer's clipboard content, handed unprompted to
+    /// the client that just replaced it).
+    ///
+    /// An ALLOWLIST of what to KEEP, not a denylist of `EvictedByOtherConnection`
+    /// alone, and deliberately so: this mirrors what `run()`'s own top-level
+    /// select already does when NOTHING is being served (only `Quit` /
+    /// `GetLocalAddr` / `SetCredentials` / `SetAutoReconnectCookie` are
+    /// meaningful there; everything else falls into its `ev => debug!("Unexpected
+    /// event")` catch-all and is discarded). A new per-session `ServerEvent`
+    /// variant is excluded here by default, instead of silently leaking across
+    /// a takeover boundary until someone remembers to add it to a denylist.
+    async fn discard_stale_session_events(&mut self) {
         use tokio::sync::mpsc::error::TryRecvError;
 
         let ev_receiver = Arc::clone(&self.ev_receiver);
@@ -1396,8 +1469,13 @@ impl RdpServer {
         let mut discarded = 0usize;
         loop {
             match ev_receiver.try_recv() {
-                Ok(ServerEvent::EvictedByOtherConnection) => discarded += 1,
-                Ok(other) => keep.push(other),
+                Ok(
+                    event @ (ServerEvent::Quit(_)
+                    | ServerEvent::GetLocalAddr(_)
+                    | ServerEvent::SetCredentials(_)
+                    | ServerEvent::SetAutoReconnectCookie(_)),
+                ) => keep.push(event),
+                Ok(_other) => discarded += 1,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
@@ -1405,7 +1483,7 @@ impl RdpServer {
         if discarded > 0 {
             debug!(
                 discarded,
-                "dropped eviction events the replaced session never consumed -- they must not reach its replacement"
+                "dropped per-session events the replaced session never consumed -- they must not reach its replacement"
             );
         }
 
@@ -1425,10 +1503,10 @@ impl RdpServer {
     }
 
     /// Serve a candidate that already won the preemption race: negotiation and
-    /// authentication are done, so this installs the GFX handle it built
-    /// (deferred until now so only the actual winner claims it) and hands off
-    /// to the same finalization the normal path uses. From here on, a
-    /// preemption winner is indistinguishable from a normally-accepted
+    /// authentication are done, so this is where its channel backends are
+    /// finally built (see the body comment below for why only now) before
+    /// handing off to the same finalization the normal path uses. From here
+    /// on, a preemption winner is indistinguishable from a normally-accepted
     /// connection.
     async fn serve_negotiated(&mut self, candidate: Box<NegotiatedCandidate>) -> Result<()> {
         self.display_suppressed.store(false, Ordering::Relaxed);
@@ -1680,7 +1758,7 @@ impl RdpServer {
                     // that just took the session over. Discard any such
                     // leftover before serving it; every other event is put back
                     // in order.
-                    self.discard_stale_eviction_events().await;
+                    self.discard_stale_session_events().await;
                     Entry::Negotiated(candidate, peer)
                 }
                 None => {
@@ -1883,6 +1961,16 @@ impl RdpServer {
                 // session; a session that ended on its own terms leaves nobody
                 // barred from connecting.
                 self.recently_evicted = if preempted_by.is_some() { evicted } else { None };
+                if preempted_by.is_some() {
+                    // Can't do this INSIDE the race above: `conn` (built from
+                    // `self.run_connection`/`self.serve_negotiated`) borrows
+                    // `self` mutably for the whole race, so no other &mut self
+                    // call is possible there. `self` is free again here, and
+                    // the ~750ms EVICTION_GRACE this waited through is
+                    // immaterial to what this closes -- a real ARC reconnect
+                    // takes far longer than that to occur.
+                    self.invalidate_auto_reconnect_cookie_on_eviction();
+                }
                 (result, preempted_by)
             } else {
                 let result = match entry {
@@ -2045,7 +2133,9 @@ impl RdpServer {
                     // Best-effort: if the evicted peer's socket is already
                     // half-dead the write fails, which is fine — it is leaving
                     // either way, and the caller falls back to cancelling it.
-                    match encode_share_data_pdu(pdu, io_channel_id, user_channel_id) {
+                    // pduSource=0, not user_channel_id -- MS-RDPBCGR 2.2.5.1.1
+                    // requires it for TS_SET_ERROR_INFO_PDU specifically.
+                    match encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id) {
                         Ok(bytes) => {
                             if let Err(error) = writer.write_all(&bytes).await {
                                 debug!(%error, "could not send the eviction reason; disconnecting anyway");
@@ -2786,10 +2876,18 @@ fn encode_autodetect_request(
 ///
 /// A general `encode_share_data_pdu` helper previously lived here for the
 /// auto-detect path; #1348 rerouted auto-detect onto the message channel (see
-/// [`encode_autodetect_request`]), leaving this Save Session Info sender as the
-/// sole user, so the encoder now lives with it.
+/// [`encode_autodetect_request`]), leaving the Save Session Info sender as its
+/// only user until the eviction notice (`ServerEvent::EvictedByOtherConnection`)
+/// became a second one, so the encoder now lives with the former.
+///
+/// `pdu_source` is a parameter, not hardcoded, because the two callers
+/// disagree: MS-RDPBCGR 2.2.1.19 has the server echo the client's own MCS user
+/// channel ID here for a normal Share Data PDU (what Save Session Info sends),
+/// but 2.2.5.1.1 requires `pduSource` to be zero specifically for
+/// TS_SET_ERROR_INFO_PDU (what the eviction notice sends).
 fn encode_share_data_pdu(
     share_data_pdu: rdp::headers::ShareDataPdu,
+    pdu_source: u16,
     io_channel_id: u16,
     user_channel_id: u16,
 ) -> Result<Vec<u8>> {
@@ -2801,7 +2899,7 @@ fn encode_share_data_pdu(
     };
     let pdu = rdp::headers::ShareControlHeader {
         share_id: 0,
-        pdu_source: user_channel_id,
+        pdu_source,
         share_control_pdu: ShareControlPdu::Data(header),
     };
     let user_data = encode_vec(&pdu)?.into();
@@ -2995,7 +3093,10 @@ mod preempt_tests {
         let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
             ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::DisconnectedByOtherconnection),
         ));
-        let bytes = encode_share_data_pdu(pdu, 1003, 1002).expect("encode eviction notice");
+        // pdu_source=0 here: unlike the Save Session Info sender (which
+        // echoes the client's own user_channel_id), MS-RDPBCGR 2.2.5.1.1
+        // requires pduSource to be zero for TS_SET_ERROR_INFO_PDU.
+        let bytes = encode_share_data_pdu(pdu, 0, 1003, 1002).expect("encode eviction notice");
 
         let x224: X224<mcs::McsMessage<'_>> = decode(&bytes).expect("decode X.224/MCS");
         let mcs::McsMessage::SendDataIndication(data) = x224.0 else {
@@ -3003,6 +3104,10 @@ mod preempt_tests {
         };
         let control: rdp::headers::ShareControlHeader =
             decode(data.user_data.as_ref()).expect("decode Share Control header");
+        assert_eq!(
+            control.pdu_source, 0,
+            "MS-RDPBCGR 2.2.5.1.1 requires pduSource=0 for TS_SET_ERROR_INFO_PDU"
+        );
         let ShareControlPdu::Data(header) = control.share_control_pdu else {
             panic!("eviction notice must be a Share Data PDU");
         };
@@ -3281,6 +3386,203 @@ mod preempt_tests {
 
                 run_task.abort();
             })
+            .await;
+    }
+
+    /// Regression guard for the blocking review finding: invalidating an
+    /// evicted peer's ARC cookie must NOT permanently disable auto-reconnect
+    /// for the server. `next_auto_reconnect_cookie` treats
+    /// `self.auto_reconnect_cookie == None` as "unconfigured" and stops
+    /// issuing cookies to EVERY future connection -- a naive
+    /// `self.auto_reconnect_cookie = None` on eviction would have silently
+    /// killed the feature server-wide the moment the first eviction ever
+    /// happened.
+    #[test]
+    fn invalidating_the_evicted_peers_cookie_does_not_disable_auto_reconnect() {
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+
+        let seed = RdpServer::generate_auto_reconnect_cookie(4242);
+        server.set_auto_reconnect_cookie(Some(seed.clone()));
+        // A normal rotation would have run once by the time a real session
+        // reaches an eviction; simulate that so `previous_auto_reconnect_
+        // cookie` starts populated, which is the slot the fix must ALSO clear.
+        server.commit_auto_reconnect_rotation(RdpServer::generate_auto_reconnect_cookie(seed.logon_id));
+
+        server.invalidate_auto_reconnect_cookie_on_eviction();
+
+        let after = server
+            .auto_reconnect_cookie
+            .as_ref()
+            .expect("invalidation must not clear the cookie to None -- that permanently disables auto-reconnect");
+        assert_eq!(after.logon_id, seed.logon_id, "the logon_id lineage must be preserved");
+        assert_ne!(
+            after.random_bits, seed.random_bits,
+            "the random bits must actually change, or the evicted peer's OLD cookie would still verify"
+        );
+        assert!(
+            server.previous_auto_reconnect_cookie.is_none(),
+            "the outgoing cookie(s) must be discarded, not demoted into previous_ -- demoting would keep an \
+             evicted peer's cookie valid for one more attempt, which is exactly the gap this closes"
+        );
+    }
+
+    /// `discard_stale_session_events` must be an ALLOWLIST of lifecycle
+    /// events, not a denylist of `EvictedByOtherConnection` alone -- otherwise
+    /// a preemption winner is handed whatever per-session events (audio
+    /// waves, clipboard messages, EGFX frames) the session it replaced left
+    /// queued but never consumed.
+    #[tokio::test]
+    async fn stale_session_events_are_dropped_but_lifecycle_events_survive() {
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+
+        let sender = server.event_sender().clone();
+        // A representative per-session event that must NOT survive a
+        // takeover -- it belonged to the session just replaced.
+        let _ = sender.send(ServerEvent::AutoDetectRttRequest);
+        // A lifecycle event that MUST survive.
+        let _ = sender.send(ServerEvent::Quit("keep me".to_owned()));
+
+        server.discard_stale_session_events().await;
+
+        let remaining = {
+            let mut rx = server.ev_receiver.lock().await;
+            let mut events = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                events.push(event);
+            }
+            events
+        };
+
+        assert_eq!(
+            remaining.len(),
+            1,
+            "exactly the lifecycle event should have survived the drain: {remaining:?}"
+        );
+        assert!(
+            matches!(&remaining[0], ServerEvent::Quit(reason) if reason == "keep me"),
+            "the surviving event should be the Quit, not the discarded per-session event: {remaining:?}"
+        );
+    }
+
+    /// Regression guard for the "no happy-path test" review finding, and the
+    /// load-bearing claim it's actually worried about: that deferring
+    /// `attach_channels` to `serve_negotiated` does NOT silently drop a
+    /// preemption winner's channels. That claim rests entirely on
+    /// `accept_begin` stopping at `AcceptorState::SecurityUpgrade` -- before
+    /// `BasicSettingsWaitInitial` consumes `static_channels` -- for
+    /// [`RdpServerSecurity::None`]. If a future `ironrdp-acceptor` change
+    /// moved that stop point, a preemption winner would negotiate ZERO static
+    /// channels (no clipboard, no sound, no DVC) and every OTHER test in this
+    /// module would still pass, since none of them drive a candidate all the
+    /// way to `serve_negotiated`.
+    ///
+    /// Drives a REAL candidate through `negotiate_candidate` (a genuine X.224
+    /// Connection Request, matching `RdpServerSecurity::None`'s empty
+    /// protocol flags, is enough to reach `BeginResult::Continue` -- no TLS,
+    /// no MCS needed) and then `serve_negotiated`, and asserts the sound
+    /// factory's backend was actually built. `serve_negotiated` can't finish
+    /// without a full MCS/GCC handshake this test doesn't drive, so it's
+    /// bounded by a short timeout that is EXPECTED to fire -- the assertion
+    /// that matters is the side effect that happens before that point.
+    #[tokio::test]
+    async fn a_winning_candidate_actually_gets_its_channels_attached() {
+        let backend_built = Arc::new(AtomicBool::new(false));
+
+        #[derive(Debug)]
+        struct RecordingSoundHandler;
+        impl ironrdp_rdpsnd::server::RdpsndServerHandler for RecordingSoundHandler {
+            fn get_formats(&self) -> &[ironrdp_rdpsnd::pdu::AudioFormat] {
+                &[]
+            }
+            fn choose_format<'a>(
+                &mut self,
+                _common: &'a [ironrdp_rdpsnd::server::NegotiatedFormat],
+            ) -> Option<&'a ironrdp_rdpsnd::server::NegotiatedFormat> {
+                None
+            }
+            fn start(
+                &mut self,
+                _format: &ironrdp_rdpsnd::server::NegotiatedFormat,
+            ) -> Result<(), Box<dyn ironrdp_rdpsnd::server::RdpsndError>> {
+                Ok(())
+            }
+            fn stop(&mut self) {}
+        }
+
+        #[derive(Debug)]
+        struct RecordingSoundFactory(Arc<AtomicBool>);
+        impl ServerEventSender for RecordingSoundFactory {
+            fn set_sender(&mut self, _sender: mpsc::UnboundedSender<ServerEvent>) {}
+        }
+        impl SoundServerFactory for RecordingSoundFactory {
+            fn build_backend(&self) -> Box<dyn ironrdp_rdpsnd::server::RdpsndServerHandler> {
+                self.0.store(true, Ordering::SeqCst);
+                Box::new(RecordingSoundHandler)
+            }
+        }
+
+        let local = task::LocalSet::new();
+        local
+            .run_until(Box::pin(async move {
+                let mut server = RdpServer::builder()
+                    .with_addr((Ipv4Addr::LOCALHOST, 0))
+                    .with_no_security()
+                    .with_no_input()
+                    .with_no_display()
+                    .with_sound_factory(Some(Box::new(RecordingSoundFactory(Arc::clone(&backend_built)))))
+                    .build();
+
+                let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+                let addr = listener.local_addr().unwrap();
+
+                let client = tokio::spawn(async move {
+                    let mut stream = TcpStream::connect(addr).await.unwrap();
+                    let cr = nego::ConnectionRequest {
+                        nego_data: None,
+                        flags: nego::RequestFlags::empty(),
+                        // Matches `RdpServerSecurity::None`'s
+                        // `RdpServerSecurity::flag()` exactly -- this is what
+                        // makes `accept_begin` reach `BeginResult::Continue`.
+                        protocol: nego::SecurityProtocol::empty(),
+                    };
+                    let bytes = encode_vec(&X224(cr)).unwrap();
+                    stream.write_all(&bytes).await.unwrap();
+                    // Hold the connection open; `serve_negotiated` will try
+                    // to read the next (MCS) PDU, which this test never
+                    // sends, so the read simply blocks until the test ends.
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                });
+
+                let (stream, peer) = listener.accept().await.unwrap();
+                let (candidate, _peer) = negotiate_candidate(&server.negotiation_context(), stream, peer)
+                    .await
+                    .expect("a well-formed X.224 Connection Request under RdpServerSecurity::None must authenticate");
+
+                // Bounded: `serve_negotiated` cannot finish without a full
+                // MCS/GCC handshake this test doesn't drive, so timing out is
+                // the EXPECTED outcome here -- `attach_channels`'s
+                // synchronous side effect (below) already happened before
+                // `serve_negotiated` reached its first blocking read.
+                let _ = tokio::time::timeout(Duration::from_millis(300), server.serve_negotiated(candidate)).await;
+
+                assert!(
+                    backend_built.load(Ordering::SeqCst),
+                    "the winning candidate's sound backend was never built -- attach_channels was not called, \
+                     meaning this preemption winner would have gotten NO static channels at all"
+                );
+
+                client.abort();
+            }))
             .await;
     }
 }
