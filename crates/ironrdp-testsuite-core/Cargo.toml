@@ -57,7 +57,6 @@ ironrdp-rdpdr.path = "../ironrdp-rdpdr"
 ironrdp-rdpeai.path = "../ironrdp-rdpeai"
 ironrdp-rdpeusb.path = "../ironrdp-rdpeusb"
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", features = ["__test"] }
-ironrdp-rdpsnd-native.path = "../ironrdp-rdpsnd-native"
 ironrdp-server.path = "../ironrdp-server"
 ironrdp-session = { path = "../ironrdp-session", features = ["qoi"] }
 ironrdp-cfg.path = "../ironrdp-cfg"

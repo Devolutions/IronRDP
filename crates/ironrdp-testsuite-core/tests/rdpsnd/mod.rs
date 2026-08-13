@@ -1,6 +1,5 @@
 mod client;
 mod server;
-mod volume;
 
 use std::borrow::Cow;
 
@@ -161,7 +160,7 @@ encode_decode_test! {
     [
         0x06, 0x00, 0x04, 0x00, 0xda, 0x89, 0x00, 0x04,
     ];
-    // Pre-v8 WaveInfo only (MS-RDPEA §2.2.3.1). BodySize is 8 + audio_length even
+    // Pre-v8 WaveInfo only (MS-RDPEA §2.2.3.3). BodySize is 8 + audio_length even
         // though this message carries only the 12-byte WaveInfo structure.
         wave: pdu::ServerAudioOutputPdu::Wave(pdu::WavePdu {
             timestamp: 0xadd7,

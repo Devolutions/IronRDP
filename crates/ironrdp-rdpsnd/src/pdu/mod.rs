@@ -783,7 +783,7 @@ impl<'de> Decode<'de> for WaveInfoPdu {
 
 /// Pre-v8 WaveInfo PDU body (`SNDC_WAVE`).
 ///
-/// MS-RDPEA §2.2.3.1 / §2.2.3.2: servers send WaveInfo first, then a *separate*
+/// MS-RDPEA §2.2.3.3 / §2.2.3.4: servers send WaveInfo first, then a *separate*
 /// bare Wave payload ([`WaveDataPdu`]) with no RDPSND header. `BodySize` on the
 /// WaveInfo header is `8 + audio_length` even though only the 12-byte WaveInfo
 /// structure is present in that message.
@@ -804,8 +804,12 @@ impl WavePdu {
     /// Minimum audio length: the WaveInfo Data field always carries four bytes.
     pub const MIN_AUDIO_LENGTH: u16 = 4;
 
+    /// Maximum audio length so `BodySize = 8 + n` still fits in the 16-bit header field.
+    pub const MAX_AUDIO_LENGTH: u16 = u16::MAX - 8;
+
     fn body_size(&self) -> usize {
-        // MS-RDPEA: BodySize = 8 + n, where n is the full audio sample length.
+        // MS-RDPEA §2.2.3.3: BodySize = 8 + n, where n is the full audio sample length.
+        // INVARIANT: audio_length <= MAX_AUDIO_LENGTH, so this fits in u16.
         8usize
             .checked_add(usize::from(self.audio_length))
             .expect("never overflow")
@@ -838,6 +842,9 @@ impl Encode for WavePdu {
         if self.audio_length < Self::MIN_AUDIO_LENGTH {
             return Err(other_err!("WavePdu", "audio_length must be at least 4"));
         }
+        if self.audio_length > Self::MAX_AUDIO_LENGTH {
+            return Err(other_err!("WavePdu", "audio_length leaves BodySize outside u16 range"));
+        }
 
         WaveInfoPdu {
             timestamp: self.timestamp,
@@ -860,7 +867,7 @@ impl Encode for WavePdu {
 
 /// Bare Wave payload that follows a pre-v8 [`WavePdu`] / WaveInfo message.
 ///
-/// MS-RDPEA §2.2.3.2: no RDPSND header — four-byte `bPad` then the remaining
+/// MS-RDPEA §2.2.3.4: no RDPSND header — four-byte `bPad` then the remaining
 /// audio bytes after the WaveInfo Data prefix. Total wire length equals the
 /// WaveInfo `audio_length`.
 #[derive(Debug, Clone, PartialEq, Eq)]

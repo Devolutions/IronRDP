@@ -198,9 +198,13 @@ impl RdpsndServer {
             };
             RdpsndSvcMessages::new(vec![pdu::ServerAudioOutputPdu::Wave2(pdu).into()])
         } else {
-            // Pre-v8: WaveInfo PDU, then a bare Wave payload (no RDPSND header).
+            // Pre-v8: WaveInfo PDU (§2.2.3.3), then a bare Wave payload (§2.2.3.4).
             if data.len() < usize::from(pdu::WavePdu::MIN_AUDIO_LENGTH) {
                 return Err(pdu_other_err!("wave data shorter than WaveInfo Data prefix"));
+            }
+            // BodySize = 8 + audio_length must fit in the 16-bit RDPSND header field.
+            if data.len() > usize::from(pdu::WavePdu::MAX_AUDIO_LENGTH) {
+                return Err(pdu_other_err!("wave data too large for WaveInfo BodySize"));
             }
             let audio_length = u16::try_from(data.len()).map_err(|_| pdu_other_err!("wave data too large"))?;
             let mut data_prefix = [0u8; 4];

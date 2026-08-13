@@ -177,16 +177,17 @@ impl Rdpsnd {
     }
 
     fn play_wave(&mut self, format_no: u16, ts: u32, data: Cow<'_, [u8]>) {
-        match self.client_formats.get(usize::from(format_no)) {
-            Some(format) => {
-                // Clone so the handler can hold the format across mutable self use.
-                let format = format.clone();
-                self.handler.wave(&format, ts, data);
-            }
+        let Self {
+            handler,
+            client_formats,
+            ..
+        } = self;
+        match client_formats.get(usize::from(format_no)) {
+            Some(format) => handler.wave(format, ts, data),
             None => {
                 warn!(
                     format_no,
-                    n_formats = self.client_formats.len(),
+                    n_formats = client_formats.len(),
                     "Ignoring wave with out-of-range format_no"
                 );
             }
@@ -220,22 +221,23 @@ impl Rdpsnd {
         // Wave payload is bPad[4] + remaining audio after the WaveInfo Data prefix.
         // Total wire length equals WaveInfo audio_length (`n`).
         let expected_len = usize::from(pending.audio_length);
-        if wave_payload.len() < expected_len {
+        if wave_payload.len() >= expected_len {
+            let remaining = &wave_payload[4..expected_len];
+            let mut data = Vec::with_capacity(expected_len);
+            data.extend_from_slice(&pending.data_prefix);
+            data.extend_from_slice(remaining);
+
+            let ts = u32::from(pending.timestamp);
+            self.play_wave(pending.format_no, ts, data.into());
+        } else {
+            // MS-RDPEA §3.2.5.2.1.6: still confirm so servers can advance latency accounting.
             warn!(
                 got = wave_payload.len(),
                 expected = expected_len,
-                "Wave payload shorter than WaveInfo audio length"
+                "Wave payload shorter than WaveInfo audio length; confirming without playback"
             );
-            return Ok(vec![]);
         }
 
-        let remaining = &wave_payload[4..expected_len];
-        let mut data = Vec::with_capacity(expected_len);
-        data.extend_from_slice(&pending.data_prefix);
-        data.extend_from_slice(remaining);
-
-        let ts = u32::from(pending.timestamp);
-        self.play_wave(pending.format_no, ts, data.into());
         Ok(self.wave_confirm(pending.timestamp, pending.block_no)?.into())
     }
 }
@@ -252,7 +254,7 @@ impl SvcProcessor for Rdpsnd {
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        // Pre-v8 Wave data has no RDPSND header (MS-RDPEA §2.2.3.2).
+        // Pre-v8 Wave data has no RDPSND header (MS-RDPEA §2.2.3.4).
         if self.state == RdpsndState::ExpectingWave {
             debug!(len = payload.len(), "Completing pending WaveInfo with Wave payload");
             return self.finish_pending_wave(payload);
@@ -288,7 +290,7 @@ impl SvcProcessor for Rdpsnd {
             RdpsndState::Ready => {
                 match pdu {
                     pdu::ServerAudioOutputPdu::Wave(pdu) => {
-                        // MS-RDPEA §2.2.3.1: WaveInfo only; next SVC message is bare Wave.
+                        // MS-RDPEA §2.2.3.3: WaveInfo only; next SVC message is bare Wave (§2.2.3.4).
                         // Some test stacks may concatenate Wave after WaveInfo in one buffer —
                         // finish immediately when trailing bytes are present.
                         self.pending_wave = Some(PendingWave {

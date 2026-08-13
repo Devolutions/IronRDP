@@ -306,6 +306,29 @@ fn ready_wave_concatenated_payload_finishes_immediately() {
 }
 
 #[test]
+fn ready_wave_short_payload_still_confirms() {
+    // MS-RDPEA §3.2.5.2.1.6: clients still WaveConfirm when the bare Wave is short.
+    let waves = Arc::new(Mutex::new(Vec::new()));
+    let backend = RecordingBackend {
+        formats: vec![pcm(44100, 2)],
+        waves: Arc::clone(&waves),
+    };
+    let mut client = Rdpsnd::new(Box::new(backend));
+    client.process(&encoded_server_formats(pdu::Version::V5)).unwrap();
+    client.process(&encoded_training()).unwrap();
+
+    assert!(client.process(&encoded_wave_info(8)).unwrap().is_empty());
+
+    let confirm = decode_single_response(
+        &client
+            .process(&encoded_wave_data(&[0x05, 0x06])) // shorter than declared audio_length
+            .unwrap(),
+    );
+    assert!(matches!(confirm, pdu::ClientAudioOutputPdu::WaveConfirm(ref pdu) if pdu.block_no == 1));
+    assert!(waves.lock().unwrap().is_empty(), "short Wave must not play");
+}
+
+#[test]
 fn ready_unsupported_optional_pdus_do_not_stop_channel() {
     let mut client = client_in_ready(pdu::Version::V8);
 
