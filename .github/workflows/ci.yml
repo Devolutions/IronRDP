@@ -42,6 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # PR checkout uses a merge commit; depth 2 includes its base parent as HEAD^1.
           fetch-depth: 2
 
       - name: Check protected settings
