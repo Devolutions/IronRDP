@@ -169,18 +169,6 @@ impl ScardCall {
     }
 }
 
-/// Native WinSCard handle/context width on this target (`4` or `8`).
-#[cfg(target_pointer_width = "32")]
-const fn native_scard_len() -> u8 {
-    4
-}
-
-/// Native WinSCard handle/context width on this target (`4` or `8`).
-#[cfg(target_pointer_width = "64")]
-const fn native_scard_len() -> u8 {
-    8
-}
-
 /// MS-RDPESC `cbContext` / `cbHandle` maximum (`range(0,16)`).
 const SCARD_OPAQUE_MAX_LEN: u32 = 16;
 
@@ -193,23 +181,6 @@ fn scard_wire_len(length: u32) -> DecodeResult<u8> {
     }
     // INVARIANT: length <= 16 fits in u8.
     Ok(u8::try_from(length).expect("length <= 16 fits in u8"))
-}
-
-fn write_native_le_bytes(native: usize, len: u8, bytes: &mut [u8; 16]) {
-    debug_assert!(matches!(len, 0 | 4 | 8));
-    // Zero-extend native into LE bytes, then keep the first `len` of them.
-    let mut le = [0u8; 16];
-    let native_bytes = native.to_le_bytes();
-    le[..native_bytes.len()].copy_from_slice(&native_bytes);
-    let n = usize::from(len);
-    bytes[..n].copy_from_slice(&le[..n]);
-}
-
-fn read_native_le_bytes(bytes: &[u8; 16], len: u8) -> usize {
-    let mut tmp = [0u8; size_of::<usize>()];
-    let n = usize::from(len).min(size_of::<usize>());
-    tmp[..n].copy_from_slice(&bytes[..n]);
-    usize::from_le_bytes(tmp)
 }
 
 /// [2.2.1.1] REDIR_SCARDCONTEXT
@@ -234,23 +205,12 @@ impl ScardContext {
         Self { len: 4, bytes }
     }
 
-    /// Creates a context from a native WinSCard `SCARDCONTEXT` (`usize` width).
-    pub fn from_native(native: usize) -> Self {
-        Self::from_native_len(native, native_scard_len())
-    }
-
     /// Creates a context from opaque wire bytes (`0..=16`).
     pub fn from_opaque(opaque: &[u8]) -> DecodeResult<Self> {
         let len = scard_wire_len(u32::try_from(opaque.len()).unwrap_or(u32::MAX))?;
         let mut bytes = [0u8; 16];
         bytes[..opaque.len()].copy_from_slice(opaque);
         Ok(Self { len, bytes })
-    }
-
-    fn from_native_len(native: usize, len: u8) -> Self {
-        let mut bytes = [0u8; 16];
-        write_native_le_bytes(native, len, &mut bytes);
-        Self { len, bytes }
     }
 
     /// Wire length of `pbContext`.
@@ -276,13 +236,6 @@ impl ScardContext {
         let n = usize::from(self.len).min(4);
         tmp[..n].copy_from_slice(&self.bytes[..n]);
         u32::from_le_bytes(tmp)
-    }
-
-    /// Convenience view of the first `size_of::<usize>()` LE bytes as a native integer.
-    ///
-    /// Useful for 4- and 8-byte Windows `SCARDCONTEXT` values; longer opaque blobs are truncated.
-    pub fn native(self) -> usize {
-        read_native_le_bytes(&self.bytes, self.len)
     }
 }
 
@@ -1174,9 +1127,10 @@ impl rpce::HeaderlessDecode for LocateCardsCall {
             // consume subsequent NDR fields (for example reader states).
             let mut cards_src = ReadCursor::new(src.read_slice(cards_len));
             let cards = read_multistring_from_cursor(&mut cards_src, charset)?;
-            // Conformant byte arrays are followed by padding to a 4-byte boundary
-            // before the next NDR field (FreeRDP smartcard_pack / MS-RPCE).
-            ndr::skip_pad(src)?;
+            // Pad only when another NDR field follows; stub tail is RPCE packing.
+            if states_ptr != 0 {
+                ndr::skip_pad(src)?;
+            }
             (cards_length, cards)
         };
 
@@ -1464,14 +1418,6 @@ impl ScardHandle {
         Self { context, len: 4, bytes }
     }
 
-    /// Creates a handle from a native WinSCard `SCARDHANDLE` (`usize` width).
-    pub fn from_native(context: ScardContext, native: usize) -> Self {
-        let mut bytes = [0u8; 16];
-        let len = native_scard_len();
-        write_native_le_bytes(native, len, &mut bytes);
-        Self { context, len, bytes }
-    }
-
     /// Creates a handle from opaque wire bytes (`0..=16`).
     pub fn from_opaque(context: ScardContext, opaque: &[u8]) -> DecodeResult<Self> {
         let len = scard_wire_len(u32::try_from(opaque.len()).unwrap_or(u32::MAX))?;
@@ -1508,13 +1454,6 @@ impl ScardHandle {
         let n = usize::from(self.len).min(4);
         tmp[..n].copy_from_slice(&self.bytes[..n]);
         u32::from_le_bytes(tmp)
-    }
-
-    /// Convenience view of the first `size_of::<usize>()` LE bytes as a native integer.
-    ///
-    /// Useful for 4- and 8-byte Windows `SCARDHANDLE` values; longer opaque blobs are truncated.
-    pub fn native(self) -> usize {
-        read_native_le_bytes(&self.bytes, self.len)
     }
 }
 
@@ -2292,9 +2231,14 @@ impl rpce::HeaderlessDecode for ContextAndStringCall {
         let charset = expect_charset(charset)?;
         let mut index = 0;
         let mut context = ScardContext::decode_ptr(src, &mut index)?;
-        let _sz_ptr = ndr::decode_ptr(src, &mut index)?;
+        // IDL pointer_default(unique): NULL contributes no referent.
+        let sz_ptr = ndr::decode_ptr(src, &mut index)?;
         context.decode_value(src, None)?;
-        let sz = ndr::read_string_from_cursor(src, charset)?;
+        let sz = if sz_ptr == 0 {
+            String::new()
+        } else {
+            ndr::read_string_from_cursor(src, charset)?
+        };
         Ok(Self { context, sz })
     }
 }
@@ -2323,11 +2267,20 @@ impl rpce::HeaderlessDecode for ContextAndTwoStringCall {
         let charset = expect_charset(charset)?;
         let mut index = 0;
         let mut context = ScardContext::decode_ptr(src, &mut index)?;
-        let _sz1_ptr = ndr::decode_ptr(src, &mut index)?;
-        let _sz2_ptr = ndr::decode_ptr(src, &mut index)?;
+        // IDL pointer_default(unique): each [string] may be NULL independently.
+        let sz1_ptr = ndr::decode_ptr(src, &mut index)?;
+        let sz2_ptr = ndr::decode_ptr(src, &mut index)?;
         context.decode_value(src, None)?;
-        let sz1 = ndr::read_string_from_cursor(src, charset)?;
-        let sz2 = ndr::read_string_from_cursor(src, charset)?;
+        let sz1 = if sz1_ptr == 0 {
+            String::new()
+        } else {
+            ndr::read_string_from_cursor(src, charset)?
+        };
+        let sz2 = if sz2_ptr == 0 {
+            String::new()
+        } else {
+            ndr::read_string_from_cursor(src, charset)?
+        };
         Ok(Self { context, sz1, sz2 })
     }
 }
@@ -2571,6 +2524,10 @@ impl rpce::HeaderlessEncode for StateReturn {
         dst.write_u32(self.return_code.into());
         dst.write_u32(self.state.into());
         dst.write_u32(self.protocol.bits());
+        // MS-RDPESC: cbAtrLen range(0,36)
+        if self.atr.len() > 36 {
+            return Err(invalid_field_err!("encode", "StateReturn cbAtrLen out of range"));
+        }
         let atr_len: u32 = cast_length!("StateReturn", "atr_len", self.atr.len())?;
         let mut index = 0;
         ndr::encode_ptr(Some(atr_len), &mut index, dst)?;
@@ -2684,6 +2641,13 @@ impl rpce::HeaderlessEncode for ControlReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
+        // MS-RDPESC: cbOutBufferSize range(0,66560)
+        if self.out_buffer.len() > 66_560 {
+            return Err(invalid_field_err!(
+                "encode",
+                "ControlReturn cbOutBufferSize out of range"
+            ));
+        }
         let data_len: u32 = cast_length!("ControlReturn", "out_buffer_len", self.out_buffer.len())?;
         let mut index = 0;
         ndr::encode_ptr(Some(data_len), &mut index, dst)?;
@@ -2761,6 +2725,10 @@ impl rpce::HeaderlessEncode for GetAttribReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
+        // MS-RDPESC: cbAttrLen range(0,65536)
+        if self.attr.len() > 65_536 {
+            return Err(invalid_field_err!("encode", "GetAttribReturn cbAttrLen out of range"));
+        }
         let data_len: u32 = cast_length!("GetAttribReturn", "attr_len", self.attr.len())?;
         let mut index = 0;
         ndr::encode_ptr(Some(data_len), &mut index, dst)?;
@@ -2947,29 +2915,35 @@ mod tests {
     fn scard_context_and_handle_roundtrip() {
         let c4 = ScardContext::new(0xA1B2_C3D4);
         assert_eq!(roundtrip_context(c4), c4);
-        assert_eq!(c4.native(), usize::try_from(0xA1B2_C3D4u32).unwrap());
-
-        let native = 0x0123_4567_89AB_CDEFusize;
-        let c8 = ScardContext::from_native_len(native, 8);
-        assert_eq!(roundtrip_context(c8), c8);
-        assert_eq!(c8.native(), native);
-
+        assert_eq!(c4.value(), 0xA1B2_C3D4);
         let opaque = [
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
         ];
-        let c16 = ScardContext::from_opaque(&opaque).unwrap();
-        assert_eq!(roundtrip_context(c16).as_bytes(), &opaque);
+        assert_eq!(
+            roundtrip_context(ScardContext::from_opaque(&opaque).unwrap()).as_bytes(),
+            &opaque
+        );
         assert!(ScardContext::from_opaque(&[0; 17]).is_err());
-        assert_eq!(roundtrip_context(ScardContext::from_native_len(0, 0)).len(), 0);
-
+        assert_eq!(roundtrip_context(ScardContext::from_opaque(&[]).unwrap()).len(), 0);
         let ctx = ScardContext::new(0x1111_2222);
-        let h4 = ScardHandle::new(ctx, 0x3333_4444);
-        assert_eq!(roundtrip_handle(h4), h4);
-        let h8 = ScardHandle::from_native(ctx, 0xCCCC_DDDD_EEEE_FFFFusize);
-        assert_eq!(roundtrip_handle(h8).native(), 0xCCCC_DDDD_EEEE_FFFFusize);
-        let h16 = ScardHandle::from_opaque(ctx, &opaque).unwrap();
-        assert_eq!(roundtrip_handle(h16).as_bytes(), &opaque);
+        assert_eq!(
+            roundtrip_handle(ScardHandle::new(ctx, 0x3333_4444)),
+            ScardHandle::new(ctx, 0x3333_4444)
+        );
+        assert_eq!(
+            roundtrip_handle(ScardHandle::from_opaque(ctx, &opaque).unwrap()).as_bytes(),
+            &opaque
+        );
         assert!(ScardHandle::from_opaque(ctx, &[0; 17]).is_err());
+    }
+
+    #[test]
+    fn context_and_string_null_unique_ptr() {
+        // empty context + NULL sz unique pointer
+        let mut pdu = vec![0x01, 0x10, 0x08, 0x00, 0xCC, 0xCC, 0xCC, 0xCC, 12, 0, 0, 0, 0, 0, 0, 0];
+        pdu.extend_from_slice(&[0u8; 12]);
+        let d = ContextAndStringCall::decode(&mut ReadCursor::new(&pdu), Some(CharacterSet::Unicode)).unwrap();
+        assert!(d.sz.is_empty());
     }
 
     /// `::new` 4-byte EstablishContext/Connect returns stay byte-identical to master.
@@ -2981,7 +2955,10 @@ mod tests {
             buf
         }
         let est = EstablishContextReturn::new(ReturnCode::Success, ScardContext::new(0xA1B2_C3D4)).into_inner();
-        assert_eq!(enc(&est), [0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 2, 0, 4, 0, 0, 0, 0xD4, 0xC3, 0xB2, 0xA1]);
+        assert_eq!(
+            enc(&est),
+            [0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 2, 0, 4, 0, 0, 0, 0xD4, 0xC3, 0xB2, 0xA1]
+        );
         let h = ScardHandle::new(ScardContext::new(0x1111_2222), 0x3333_4444);
         let conn = ConnectReturn::new(ReturnCode::Success, h, CardProtocol::SCARD_PROTOCOL_T0).into_inner();
         assert_eq!(
