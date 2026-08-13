@@ -225,17 +225,63 @@ Two RDPIDD failure branches are the strongest upstream explanations:
    already-WARP adapter or failed WARP fallback reports critical `(major=3, minor=stage)` through
    `IddCxReportCriticalError`.
 
-`rdpcorets` independently derives the adapter LUID behind shared DX resources and creates its D3D11
-device on that adapter. Together with the worker's mirrored GPU configuration and loaded
-`gpupvdev`/`VrdUmed` modules, this makes a container-display configuration or virtual render-adapter
-lifecycle collision the strongest static explanation for why activating another Sandbox desktop
-causes RDPIDD to become unusable.
+The container update branch can now be followed through the complete guest display stack:
 
-This is stronger than the earlier generic IDD inference: the direct producer of `0x11` is now
-attributed to the RDPIDD PnP critical-error path. What static analysis still cannot distinguish is
-whether the concurrent trigger first fails `IddCxAdapterDisplayConfigUpdateForContainer2`, removes
-the selected virtual render adapter, or reaches another RDPIDD critical-error site. The later
-`ERRINFO_LOGOFF_BY_USER` can be a secondary session teardown and does not contradict this path.
+```text
+RdpIdd!IddCxAdapterDisplayConfigUpdateForContainer2
+  -> IddCx validates the paths
+  -> D3DKMTEscape(DXGK_IDD_ESCAPE_CODE::SET_DISPLAY_CONFIGURATION)
+  -> dxgkrnl!DxgkIddHandleSetDisplayConfig
+  -> per-session Display Broker ALPC message type 7
+  -> DispBroker creates DisplayState from the supplied paths
+  -> OnSetDisplayState
+  -> DispBroker.Desktop session handler
+  -> TryAcquireTargetsAndCreateSubstate
+  -> TryFunctionalize / TryApply
+```
+
+`dxgkrnl` requires two `DXGSESSIONDATA` conditions before and after the request: the session must
+remain connected and its Display Broker must remain enabled. `DxgkSessionConnected` and
+`DxgkSessionReconnected` set the first condition; `DxgkPreSessionDisconnected` clears it.
+`DxgkSetKernelDisplayPolicy(policy=1, enabled=true)` sets the broker condition, while
+`DisableDisplayBroker` clears it. If either condition is false, or the session disconnects while
+the request is in progress, `dxgkrnl` returns
+`STATUS_GRAPHICS_INDIRECT_DISPLAY_DEVICE_STOPPED`. That is one of the statuses RDPIDD treats as
+immediately permanent before reporting its critical adapter error.
+
+The type-7 request uses SetDisplayConfig flags `0x2A0`:
+`SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE`. Microsoft documents that
+combination as setting the supplied topology, source, and target modes and saving the resulting
+complete display path. `DXGSESSIONDATA` caches one type-7 request, replacing the previous pointer on
+each update, and re-sends that latest request when reconnecting its Display Broker.
+`DispBroker.Desktop.dll` confirms that both console and remote session handlers acquire the
+session's targets, create a substate from the proposed paths, and apply it; the remote handler
+explicitly calls `TryFunctionalize` followed by `TryApply`.
+
+That singleton is **not** evidence of a cross-VM Display Broker collision. The captured `WUDFHost`
+loading `RdpIdd.dll`, the active session with ID `1`, `dxgkrnl`, DWM, and Display Broker are inside
+each Sandbox guest. Every VM therefore has its own `DXGSESSIONDATA` and one-request cache. A later
+request in VM B cannot replace VM A's cached guest request. This falsifies the earlier strongest
+form of the "shared session-wide topology replacement" hypothesis.
+
+The broker path instead identifies exactly where an external teardown can become wire `0x11`.
+Clearing the guest's connected/broker-ready state during an update produces the same fatal status,
+so `CloseStackOnDriverFailure` may be a downstream classification after a host worker, GPU
+partition, or admission event rather than the original cross-VM decision.
+
+`rdpcorets` independently derives the adapter LUID behind shared DX resources and creates its D3D11
+device on that adapter. On the host, each `GpupVDev` instance allocates and brokers its own vGPU
+handle through `CLSID_VmGpupResourcePool`, stores per-device and VF LUIDs, and creates a UMED object
+for that allocation. `VrdUmed` stores that instance's LUID and handles and forwards GPU mitigation
+IOCTLs. No host-global presentation or topology singleton was found in either user-mode component;
+the only obvious `GpupVDev` process-global state is tracing metadata inside one `vmwp.exe`.
+
+This is stronger than the earlier generic IDD inference: the direct producer of `0x11` is attributed
+to the RDPIDD PnP critical-error path, and the container branch reaches exact session-state gates.
+Static analysis still cannot distinguish whether the concurrent trigger first disconnects the
+guest session, disables its broker, fails topology application, removes the selected virtual render
+adapter, or reaches another RDPIDD critical-error site. The later `ERRINFO_LOGOFF_BY_USER` can be a
+secondary session teardown and does not contradict this path.
 
 `ERRINFO_LOGOFF_BY_USER` is the server's classification of a session logoff, not evidence of a
 human action or an identified policy caller. [MS-RDPBCGR] section 2.2.5.1 defines both it and

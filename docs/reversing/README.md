@@ -68,9 +68,12 @@ correlated LSCS status. Concurrent VMs may share the default guest username
 (`WDAGUtilityAccount`) or use distinct custom accounts; that choice is not the proven root cause.
 Microsoft ActiveX, low-resolution/16-bpp, long-stagger, and disabled clipboard/audio controls also
 reproduce the failure family. Static analysis now attributes wire `0x11` to the guest
-RDPIDD/IddCx PnP critical-error path. A container display-configuration or virtual render-adapter
-lifecycle collision is the leading upstream explanation; choosing its exact RDPIDD critical branch
-still requires the driver's retained diagnostics.
+RDPIDD/IddCx PnP critical-error path and follows the container update through `dxgkrnl` and the
+Display Broker. Losing guest session-connected or broker-enabled state produces RDPIDD's fatal
+stopped status. Each VM has its own guest broker and request cache, which rules out direct
+cross-VM replacement in one shared display topology. The unresolved cause is now below or beside
+that guest boundary: host GPU resource-pool/kernel partition state, worker encoder lifecycle, or an
+independent admission teardown. Choosing among them still requires correlated retained diagnostics.
 See [RDP and RDV transport](windows-sandbox-rdp-transport.md) and
 [guest account identity](windows-sandbox-direct-lifecycle.md#guest-account-identity).
 

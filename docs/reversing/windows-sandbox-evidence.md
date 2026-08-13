@@ -33,15 +33,18 @@ analysis" is stronger than "likely" or "suggests".
 | `rdpcorets.dll` | `10.0.26100.8737` | Implements `UMRDPProtocolManager`, the VMBus listener, and the shared RDP connection object |
 | `RdpIdd.dll` | `10.0.26100.8737` | UMDF RDP Indirect Display Driver; reports critical adapter failures to IddCx and implements native/container display updates plus GPU/WARP recovery |
 | `RdpAvenc.dll` | `10.0.26100.7019` | RDPIDD encoder processor with CPU/GPU per-monitor frame processing and shared GPU textures |
-| `IddCx.dll` | `10.0.26100.4202` | Indirect Display class extension; validates display configuration and forwards adapter configuration to the kernel display stack |
+| `IddCx.dll` | `10.0.26100.8737` | Indirect Display class extension; validates display configuration and forwards adapter configuration to the kernel display stack |
 | `IndirectKmd.sys` | `10.0.26100.1` | Indirect Display kernel-mode filter used by the RDPIDD package |
+| `dxgkrnl.sys` | `10.0.26100.8875` | Handles the IDD container display escape, checks per-session connected/broker-ready state, and sends Display Broker ALPC message type `7` |
+| `DispBroker.dll` | `10.0.26100.8737` | Converts type-7 supplied paths into a `DisplayState` and dispatches `OnSetDisplayState` |
+| `DispBroker.Desktop.dll` | `10.0.26100.4768` | DWM session broker handler; acquires session targets, creates a substate, functionalizes it, and applies it |
 | `rdpbase.dll` | `10.0.26100.8875` | Shared RDP base factory and platform infrastructure used by `rdpcorets.dll` |
 | `vmbuspipe.dll` | `10.0.26100.8521` | Exact VMBus listener dependency, including channel notification APIs |
 | `vmbuspiper.dll` | `10.0.26100.8521` | Related generic VMBus-pipe component, not the notification DLL selected by `rdpcorets.dll` |
 | `vmuidevices.dll` | `10.0.26100.8457` | COM-loaded Synthetic RDP and RDP Encoder VDEVs; explicitly loads `rdp4vs.dll` for its pipe listener and RDP server instances |
 | `rdp4vs.dll` | `10.0.26100.5074` | RDP4VS worker engine; exports `RDP4VS_CreateInstance` for the named-pipe listener and main server, then selects `RDPSERVERBASE_CreateInstance` before its `RDPBASE` fallback |
 | `VrdUmed.dll` | `10.0.26100.1150` | Virtual Render Device user-mode emulation driver used by the worker GPU-partition path |
-| `GpupVDev.dll` | `10.0.26100.8875` | Hyper-V GPU-partition VDEV that creates the worker's UMED provider |
+| `GpupVDev.dll` | `10.0.26100.8457` | Hyper-V GPU-partition VDEV that allocates and brokers a per-VM vGPU handle and creates the worker's UMED provider |
 | `windowsudk.winmd` | `10.0.26100.1` | Metadata source for the checked-in narrow UDK projection |
 
 Windows component servicing can replace individual binaries. Conclusions should be revalidated when
@@ -289,7 +292,11 @@ handler as the active LSCS receiver for the tested direct flow.
 | Current direct two-VM disconnect is an LSCS denial | Not established | Current post-connect outcomes are `CloseStackOnDriverFailure` and `ERRINFO_LOGOFF_BY_USER`; neither run includes a correlated LSCS call trace |
 | Wire `CloseStackOnDriverFailure` (`0x11`) is named as an Indirect Display Driver failure inside RDPBASE | High for naming, inference for live cause | `GetInternalDisconnectSymbolicName(17)` returns `IndirectDisplayDriverFailure`; adjacent codes cover IDD not-ready and interface-arrival failures |
 | RDPIDD PnP critical failure directly produces disconnect reason `17` | High | `CPnPOnRemoteDisplayDeviceHasProblemWorkItem::DoExecute` calls `DisconnectSession(sessionId, 17)`; RDPIDD calls `IddCxReportCriticalError` for unrecoverable adapter failures |
-| Container/vGPU display update or render-adapter loss is the concurrent trigger | Strong static inference | RDPIDD has a dedicated container update API with fatal stopped/not-connected statuses and a GPU-device-loss/WARP recovery path; timing and worker GPU modules match, but the exact RDPIDD critical call site was not captured |
+| A disconnected or Display-Broker-disabled guest session makes the IDD container update fail permanently | High | `DxgkIddHandleSetDisplayConfig` returns `STATUS_GRAPHICS_INDIRECT_DISPLAY_DEVICE_STOPPED` when either per-session gate is false and overrides an in-flight result if the session disconnects |
+| IDD type-7 requests apply a complete supplied session topology | High | Flags are `SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE`; `DispBroker.Desktop` creates and applies a target substate |
+| Different Sandbox VMs replace one shared Display Broker request | Ruled out | RDPIDD, `WUDFHost`, session ID `1`, DWM, `DXGSESSIONDATA`, and Display Broker are guest-local; each VM has its own one-request cache |
+| Container/vGPU display update or render-adapter loss is where the concurrent trigger materializes | Strong static inference | RDPIDD has a dedicated container update API with exact fatal session-state gates and a GPU-device-loss/WARP recovery path; the originating host event and exact RDPIDD critical call site were not captured |
+| `GpupVDev` or `VrdUmed` contains a user-mode host-global display-topology singleton | Not found | `GpupVDev` allocates a per-VM resource-pool handle and UMED instance; `VrdUmed` stores per-instance LUID/handles and forwards mitigation IOCTLs |
 | Current `0x11` is every GFX-pipe `SetPipelineErrorState` failure | Ruled out | `CPipeManager::SetPipelineErrorState` maps subsystem-init and related pipe events to reasons such as `4460`/`4461`, not wire `0x11` |
 | IronRDP causes the current cross-VM failure | Ruled out | The Microsoft MSTSC ActiveX/RDPBASE path reproduces an early cross-VM disconnect |
 | CLIPRDR or RDPSND startup causes the current cross-VM failure | Ruled out | The failure sequence remains with both channels disabled |
