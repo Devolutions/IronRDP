@@ -172,10 +172,7 @@ pub fn test_settings(sh: &Shell, base: &str, head: &str) -> anyhow::Result<()> {
             .collect::<Vec<_>>()
             .join("\n");
 
-        anyhow::bail!(
-            "protected settings were removed or changed:\n{removals}\n\
-             preserve these settings as required by ARCHITECTURE.md"
-        );
+        anyhow::bail!("protected settings were removed or changed:\n{removals}");
     }
 
     println!("All good!");
