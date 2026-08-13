@@ -1,12 +1,12 @@
 //! The short-lived CLI: parse arguments, build a request (merging a `.rdp` file with overrides for
 //! `connect`), send it to the daemon, and print the response.
 //!
-//! The CLI operates purely at the [`PropertySet`] level for connection config â€” it never calls
+//! The CLI operates purely at the [`PropertySet`] level for connection config — it never calls
 //! typed `ConfigBuilder` setters.
 //!
-//! For `connect`, property precedence from low to high is: `.rdp` file â†’ `--prop` overrides â†’
-//! named flags (`--server`/`--username`/â€¦). The daemon's own overlay (`daemon-start --overlay`,
-//! itself built from a `.rdp` file with `--prop` overrides layered on top) wins over all of that â€”
+//! For `connect`, property precedence from low to high is: `.rdp` file → `--prop` overrides →
+//! named flags (`--server`/`--username`/…). The daemon's own overlay (`daemon-start --overlay`,
+//! itself built from a `.rdp` file with `--prop` overrides layered on top) wins over all of that —
 //! see `Daemon::connect` in `daemon.rs`.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
@@ -664,34 +664,12 @@ impl CliPenAction {
     }
 }
 
-fn pen_request(
-    encode_time: u32,
-    frame_offset: u64,
-    device_id: u8,
-    x: i32,
-    y: i32,
-    flags: u16,
-    pressure: Option<u32>,
-    rotation: Option<u16>,
-    tilt_x: Option<i16>,
-    tilt_y: Option<i16>,
-    pen_flags: Option<u32>,
-) -> Request {
+fn pen_request(encode_time: u32, frame_offset: u64, contact: PenContactRequest) -> Request {
     Request::Pen {
         encode_time,
         frames: vec![PenFrameRequest {
             frame_offset,
-            contacts: vec![PenContactRequest {
-                device_id,
-                x,
-                y,
-                flags,
-                pressure,
-                rotation,
-                tilt_x,
-                tilt_y,
-                pen_flags,
-            }],
+            contacts: vec![contact],
         }],
     }
 }
@@ -928,15 +906,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         } => pen_request(
             encode_time,
             frame_offset,
-            device_id,
-            x,
-            y,
-            action.flags(),
-            pressure,
-            rotation,
-            tilt_x,
-            tilt_y,
-            CliPenAction::pen_flags(eraser, inverted),
+            PenContactRequest {
+                device_id,
+                x,
+                y,
+                flags: action.flags(),
+                pressure,
+                rotation,
+                tilt_x,
+                tilt_y,
+                pen_flags: CliPenAction::pen_flags(eraser, inverted),
+            },
         ),
         Command::PenTap {
             device_id,

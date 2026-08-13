@@ -1679,7 +1679,7 @@ mod tests {
         enqueue_unicode_text, notify,
     };
     use crate::ipc::{Payload, Response};
-    use ironrdp_rpc::ipc::{PenContactRequest, PenFrameRequest, RailEventKind, RailExecuteRequest, RailLaunchInfo};
+    use ironrdp_rpc::ipc::{RailEventKind, RailExecuteRequest, RailLaunchInfo};
     use ironrdp_tls::CertificateValidation;
 
     #[test]

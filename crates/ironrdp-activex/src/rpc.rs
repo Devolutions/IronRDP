@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use anyhow::Context as _;
+#[cfg(test)]
+use ironrdp_agent::ipc::TouchContactRequest;
 use ironrdp_agent::ipc::{
     AgentErrorCategory, ConnState, KeyFilter, NowDiagnostics, Payload, PenFrameRequest, PropValue, PropertyDump,
     PropertyEntry, Request, Response, StatusInfo, TouchFrameRequest, pen_event_from_request, touch_event_from_request,

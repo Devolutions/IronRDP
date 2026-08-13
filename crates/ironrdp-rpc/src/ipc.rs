@@ -41,10 +41,23 @@ pub const MAX_TOUCH_CONTACTS: usize = 10;
 pub const MAX_TOUCH_FRAMES: usize = 64;
 
 /// Maximum contacts in one MS-RDPEI pen frame accepted over RPC.
-pub const MAX_PEN_CONTACTS: usize = 4;
+///
+/// Clients currently construct [`ironrdp_rdpei::RdpeiClient::default`], which advertises V200 with
+/// empty `CS_READY` feature flags. Until multi-pen negotiation is plumbed through, only a single
+/// pen contact with `deviceId == 0` is accepted ([MS-RDPEI] 3.1.1.1).
+pub const MAX_PEN_CONTACTS: usize = 1;
 
 /// Maximum pen frames in one [`Request::Pen`] PDU accepted over RPC.
 pub const MAX_PEN_FRAMES: usize = 64;
+
+/// Maximum MS-RDPEI pen pressure value ([MS-RDPEI] 2.2.3.7.1.1).
+pub const MAX_PEN_PRESSURE: u32 = 1024;
+
+/// Maximum MS-RDPEI pen rotation value in degrees ([MS-RDPEI] 2.2.3.7.1.1).
+pub const MAX_PEN_ROTATION: u16 = 359;
+
+/// Maximum absolute MS-RDPEI pen tilt angle in degrees ([MS-RDPEI] 2.2.3.7.1.1).
+pub const MAX_PEN_TILT: i16 = 90;
 
 /// One contact sample inside a [`TouchFrameRequest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,8 +180,9 @@ fn touch_contact_from_request(contact: TouchContactRequest) -> Result<TouchConta
 
 /// Validates and converts an RPC pen request into an MS-RDPEI pen event PDU.
 ///
-/// Rejects empty frames/contacts, count limits, unknown or illegal flag combinations, and
-/// values outside the MS-RDPEI varint ranges used on the wire.
+/// Rejects empty frames/contacts, count limits, nonzero device IDs, a nonzero first-frame offset,
+/// unknown or illegal flag combinations, optional-field semantic ranges, and values outside the
+/// MS-RDPEI varint ranges used on the wire.
 pub fn pen_event_from_request(encode_time: u32, frames: Vec<PenFrameRequest>) -> Result<PenEventPdu, Response> {
     if frames.is_empty() {
         return Err(Response::typed_error(
@@ -186,6 +200,12 @@ pub fn pen_event_from_request(encode_time: u32, frames: Vec<PenFrameRequest>) ->
         return Err(Response::typed_error(
             AgentErrorCategory::InvalidRequest,
             "pen encode_time is out of MS-RDPEI range",
+        ));
+    }
+    if frames[0].frame_offset != 0 {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen first frame_offset must be zero",
         ));
     }
 
@@ -221,6 +241,12 @@ pub fn pen_event_from_request(encode_time: u32, frames: Vec<PenFrameRequest>) ->
 }
 
 fn pen_contact_from_request(contact: PenContactRequest) -> Result<PenContact, Response> {
+    if contact.device_id != 0 {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen device_id must be zero until multi-pen is negotiated",
+        ));
+    }
     if FourByteSigned::new(contact.x).is_err() || FourByteSigned::new(contact.y).is_err() {
         return Err(Response::typed_error(
             AgentErrorCategory::InvalidRequest,
@@ -248,16 +274,38 @@ fn pen_contact_from_request(contact: PenContactRequest) -> Result<PenContact, Re
         pen = pen.with_pen_flags(pen_flags);
     }
     if let Some(pressure) = contact.pressure {
-        if FourByteUnsigned::new(pressure).is_err() {
+        if pressure > MAX_PEN_PRESSURE {
             return Err(Response::typed_error(
                 AgentErrorCategory::InvalidRequest,
-                "pen pressure is out of MS-RDPEI range",
+                format!("pen pressure must be in 0..={MAX_PEN_PRESSURE}"),
             ));
         }
         pen = pen.with_pressure(pressure);
     }
     if let Some(rotation) = contact.rotation {
+        if rotation > MAX_PEN_ROTATION {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                format!("pen rotation must be in 0..={MAX_PEN_ROTATION}"),
+            ));
+        }
         pen = pen.with_rotation(rotation);
+    }
+    if let Some(tilt_x) = contact.tilt_x {
+        if !(-MAX_PEN_TILT..=MAX_PEN_TILT).contains(&tilt_x) {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                format!("pen tilt_x must be in -{MAX_PEN_TILT}..={MAX_PEN_TILT}"),
+            ));
+        }
+    }
+    if let Some(tilt_y) = contact.tilt_y {
+        if !(-MAX_PEN_TILT..=MAX_PEN_TILT).contains(&tilt_y) {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                format!("pen tilt_y must be in -{MAX_PEN_TILT}..={MAX_PEN_TILT}"),
+            ));
+        }
     }
     match (contact.tilt_x, contact.tilt_y) {
         (Some(tilt_x), Some(tilt_y)) => {
@@ -351,19 +399,23 @@ pub enum Request {
     },
     /// Inspect the local NOW endpoint without exposing protocol internals.
     NowDiagnostics,
-    /// Send one MS-RDPEI touch event PDU (`RDPINPUT_TOUCH_EVENT_PDU`).
+    /// Queue one MS-RDPEI touch event PDU (`RDPINPUT_TOUCH_EVENT_PDU`) for the session input loop.
     ///
-    /// Requires the Input DVC to be ready and not suspended. Contacts must use legal flag sets from
-    /// [MS-RDPEI] 3.1.1.1. At most [`MAX_TOUCH_FRAMES`] frames and [`MAX_TOUCH_CONTACTS`] contacts
-    /// per frame are accepted.
+    /// `Ok` means the request was validated and reserved on the local input queue, not that the
+    /// Input DVC delivered it to the host. The session loop may still drop the event when RDPEI is
+    /// absent, unready, or suspended. Contacts must use legal flag sets from [MS-RDPEI] 3.1.1.1. At
+    /// most [`MAX_TOUCH_FRAMES`] frames and [`MAX_TOUCH_CONTACTS`] contacts per frame are accepted.
     Touch {
         /// Milliseconds elapsed for the oldest frame in this PDU.
         encode_time: u32,
         frames: Vec<TouchFrameRequest>,
     },
-    /// Send one MS-RDPEI pen event PDU (`RDPINPUT_PEN_EVENT_PDU`).
+    /// Queue one MS-RDPEI pen event PDU (`RDPINPUT_PEN_EVENT_PDU`) for the session input loop.
     ///
-    /// Requires RDPEI ready, not suspended, and a negotiated version that allows pen (V200+).
+    /// `Ok` means the request was validated and reserved on the local input queue, not that the
+    /// Input DVC delivered it to the host. The session loop may still drop the event when RDPEI is
+    /// absent, unready, suspended, or below the negotiated version that allows pen (V200+). Until
+    /// multi-pen is negotiated, only one contact with `deviceId == 0` is accepted.
     Pen {
         encode_time: u32,
         frames: Vec<PenFrameRequest>,
@@ -2939,9 +2991,11 @@ impl_pdu_pod!(NowDiagnostics);
 #[cfg(test)]
 mod rdpei_request_tests {
     use super::{
-        MAX_TOUCH_CONTACTS, MAX_TOUCH_FRAMES, TouchContactRequest, TouchFrameRequest, touch_event_from_request,
+        MAX_PEN_CONTACTS, MAX_PEN_FRAMES, MAX_PEN_PRESSURE, MAX_PEN_ROTATION, MAX_PEN_TILT, MAX_TOUCH_CONTACTS,
+        MAX_TOUCH_FRAMES, PenContactRequest, PenFrameRequest, TouchContactRequest, TouchFrameRequest,
+        pen_event_from_request, touch_event_from_request,
     };
-    use ironrdp_rdpei::pdu::{EightByteUnsigned, FourByteSigned, FourByteUnsigned, TouchContactFlags};
+    use ironrdp_rdpei::pdu::{EightByteUnsigned, FourByteSigned, FourByteUnsigned, PenContactFlags, TouchContactFlags};
 
     fn contact(flags: u16) -> TouchContactRequest {
         TouchContactRequest {
@@ -2954,6 +3008,24 @@ mod rdpei_request_tests {
 
     fn contact_flags(flags: TouchContactFlags) -> u16 {
         u16::try_from(flags.bits()).expect("touch contact flags fit in u16")
+    }
+
+    fn pen_contact(flags: u16) -> PenContactRequest {
+        PenContactRequest {
+            device_id: 0,
+            x: 10,
+            y: 20,
+            flags,
+            pressure: None,
+            rotation: None,
+            tilt_x: None,
+            tilt_y: None,
+            pen_flags: None,
+        }
+    }
+
+    fn pen_contact_flags(flags: PenContactFlags) -> u16 {
+        u16::try_from(flags.bits()).expect("pen contact flags fit in u16")
     }
 
     #[test]
@@ -3088,6 +3160,221 @@ mod rdpei_request_tests {
                         x: FourByteSigned::MAX + 1,
                         y: 0,
                         flags: legal,
+                    }],
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pen_event_accepts_legal_down_and_up() {
+        let down = pen_contact_flags(PenContactFlags::DOWN | PenContactFlags::INRANGE | PenContactFlags::INCONTACT);
+        let up = pen_contact_flags(PenContactFlags::UP);
+        let mut down_contact = pen_contact(down);
+        down_contact.pressure = Some(MAX_PEN_PRESSURE);
+        down_contact.rotation = Some(MAX_PEN_ROTATION);
+        down_contact.tilt_x = Some(-MAX_PEN_TILT);
+        down_contact.tilt_y = Some(MAX_PEN_TILT);
+        let event = pen_event_from_request(
+            0,
+            vec![
+                PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![down_contact],
+                },
+                PenFrameRequest {
+                    frame_offset: 16_000,
+                    contacts: vec![pen_contact(up)],
+                },
+            ],
+        )
+        .expect("legal pen tap frames");
+        assert_eq!(event.frames.len(), 2);
+        assert_eq!(event.frames[0].frame_offset, 0);
+        assert_eq!(event.frames[1].frame_offset, 16_000);
+    }
+
+    #[test]
+    fn pen_event_rejects_empty_frames_and_contacts() {
+        assert!(pen_event_from_request(0, Vec::new()).is_err());
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: Vec::new(),
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pen_event_rejects_illegal_unknown_flags_and_device_id() {
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![pen_contact(0x0008)], // INRANGE alone
+                }],
+            )
+            .is_err()
+        );
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![pen_contact(0x0040)], // unknown bit
+                }],
+            )
+            .is_err()
+        );
+        let mut nonzero_device = pen_contact(pen_contact_flags(
+            PenContactFlags::DOWN | PenContactFlags::INRANGE | PenContactFlags::INCONTACT,
+        ));
+        nonzero_device.device_id = 1;
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![nonzero_device],
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pen_event_rejects_count_offset_and_field_ranges() {
+        let legal = pen_contact_flags(PenContactFlags::DOWN | PenContactFlags::INRANGE | PenContactFlags::INCONTACT);
+        assert_eq!(MAX_PEN_CONTACTS, 1);
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![pen_contact(legal), pen_contact(legal)],
+                }],
+            )
+            .is_err()
+        );
+
+        let too_many_frames = core::iter::repeat_with(|| PenFrameRequest {
+            frame_offset: 0,
+            contacts: vec![pen_contact(legal)],
+        })
+        .take(MAX_PEN_FRAMES + 1)
+        .collect::<Vec<_>>();
+        assert!(pen_event_from_request(0, too_many_frames).is_err());
+
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 1,
+                    contacts: vec![pen_contact(legal)],
+                }],
+            )
+            .is_err()
+        );
+
+        let mut pressure = pen_contact(legal);
+        pressure.pressure = Some(MAX_PEN_PRESSURE + 1);
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![pressure],
+                }],
+            )
+            .is_err()
+        );
+
+        let mut rotation = pen_contact(legal);
+        rotation.rotation = Some(MAX_PEN_ROTATION + 1);
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![rotation],
+                }],
+            )
+            .is_err()
+        );
+
+        let mut tilt_x = pen_contact(legal);
+        tilt_x.tilt_x = Some(MAX_PEN_TILT + 1);
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![tilt_x],
+                }],
+            )
+            .is_err()
+        );
+
+        let mut tilt_y = pen_contact(legal);
+        tilt_y.tilt_y = Some(-MAX_PEN_TILT - 1);
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![tilt_y],
+                }],
+            )
+            .is_err()
+        );
+
+        assert!(
+            pen_event_from_request(
+                FourByteUnsigned::MAX + 1,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![pen_contact(legal)],
+                }],
+            )
+            .is_err()
+        );
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![
+                    PenFrameRequest {
+                        frame_offset: 0,
+                        contacts: vec![pen_contact(legal)],
+                    },
+                    PenFrameRequest {
+                        frame_offset: EightByteUnsigned::MAX + 1,
+                        contacts: vec![pen_contact(legal)],
+                    },
+                ],
+            )
+            .is_err()
+        );
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![PenContactRequest {
+                        device_id: 0,
+                        x: FourByteSigned::MAX + 1,
+                        y: 0,
+                        flags: legal,
+                        pressure: None,
+                        rotation: None,
+                        tilt_x: None,
+                        tilt_y: None,
+                        pen_flags: None,
                     }],
                 }],
             )

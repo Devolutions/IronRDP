@@ -105,7 +105,7 @@ fn request_variants_round_trip() {
             frames: vec![ironrdp_rpc::ipc::PenFrameRequest {
                 frame_offset: 0,
                 contacts: vec![ironrdp_rpc::ipc::PenContactRequest {
-                    device_id: 2,
+                    device_id: 0,
                     x: 300,
                     y: 400,
                     flags: 0x0019, // DOWN | INRANGE | INCONTACT
