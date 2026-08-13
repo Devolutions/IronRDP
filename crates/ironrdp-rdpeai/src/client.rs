@@ -39,10 +39,13 @@ pub trait RdpeaiCaptureHandler: Send {
         sink: AudioPacketSink,
     ) -> i32;
 
-    /// Switch only the negotiated encoding format while capture stays open.
+    /// Switch the negotiated encoding format while capture stays open.
     ///
     /// `packet_size` remains the capture packet size established by Open; it must not be
     /// recalculated from `encode_format`.
+    ///
+    /// PCM-only backends may restart the capture device when `encode_format` differs from
+    /// the Open capture WAVEFORMATEX so FormatChange can be confirmed honestly.
     fn set_format(&mut self, encode_format: &AudioFormat, packet_size: usize) -> bool;
 
     /// Stop capture and release the device.
@@ -245,16 +248,19 @@ impl RdpeaiClient {
         }
 
         // FormatChange switches encoding only; capture packet size stays from Open.
+        // MS-RDPEAI §3.2.5.3.1–2: the client always confirms a valid FormatChange.
         let Some(packet_size) = self.capture_packet_size else {
             warn!(index = change.new_format, "FormatChange without Open packet size");
             self.stop_capture();
-            return Ok(Vec::new());
+            return Ok(vec![Box::new(RdpeaiPdu::FormatChange(FormatChangePdu::new(
+                change.new_format,
+            )))]);
         };
 
         if !self.handler.set_format(&encode_fmt, packet_size) {
             warn!(index = change.new_format, "Capture backend rejected format change");
+            // Still confirm so the server does not hang Opened with no timeout.
             self.stop_capture();
-            return Ok(Vec::new());
         }
 
         Ok(vec![Box::new(RdpeaiPdu::FormatChange(FormatChangePdu::new(

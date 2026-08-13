@@ -19,7 +19,11 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::input::MousePdu;
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
 use ironrdp_pdu::input::mouse::PointerFlags;
-#[cfg(any(feature = "dvc-pipe-proxy", all(windows, feature = "dvc-com-plugin")))]
+#[cfg(any(
+    feature = "dvc-pipe-proxy",
+    all(windows, feature = "dvc-com-plugin"),
+    feature = "sound"
+))]
 use ironrdp_pdu::pdu_other_err;
 #[cfg(feature = "rdpdr")]
 pub use ironrdp_rdpdr::backend::{RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive};
@@ -49,7 +53,7 @@ use ironrdp_dvc_com_plugin::load_dvc_plugin;
 #[cfg(feature = "dvc-pipe-proxy")]
 use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
 #[cfg(feature = "sound")]
-use ironrdp_rdpsnd_native::cpal;
+use ironrdp_rdpsnd_native::{RdpeaiCaptureBackend, cpal};
 
 use crate::config::{Config, RDCleanPathConfig, Transport};
 use crate::rail::{RailClient, RailControlEvent, RailEvent, RailInputEvent};
@@ -815,7 +819,11 @@ fn build_connector(
 ) -> ConnectorResult<ironrdp_connector::ClientConnector> {
     // `input_sender` is only consumed by the optional DVC wirings below, and `cliprdr_factory`
     // only by the optional CLIPRDR attachment; discard them explicitly when those are compiled out.
-    #[cfg(not(any(feature = "dvc-pipe-proxy", all(windows, feature = "dvc-com-plugin"))))]
+    #[cfg(not(any(
+        feature = "dvc-pipe-proxy",
+        all(windows, feature = "dvc-com-plugin"),
+        feature = "sound"
+    )))]
     let _ = input_sender;
     #[cfg(not(feature = "clipboard"))]
     let _ = cliprdr_factory;
@@ -879,6 +887,21 @@ fn build_connector(
         attach_dvc(&mut drdynvc, &config.properties);
     }
 
+    // AUDIO_INPUT (MS-RDPEAI) microphone capture DVC.
+    #[cfg(feature = "sound")]
+    if config.channels.audio_capture {
+        let sender = input_sender.clone();
+        drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpeai::client::RdpeaiClient::new(
+            Box::new(RdpeaiCaptureBackend::new()),
+            Box::new(move |channel_id, messages| {
+                sender
+                    .try_send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                    .map_err(|_| pdu_other_err!("send AUDIO_INPUT messages to the event loop"))?;
+                Ok(())
+            }),
+        ));
+    }
+
     // Clone the connector config so we can apply runtime overrides before handing it to the
     // connector.  We want to set `enable_audio_playback` consistently with `channels.sound`.
     let mut connector_config = config.connector.clone();
@@ -888,10 +911,15 @@ fn build_connector(
     #[cfg(not(feature = "sound"))]
     {
         connector_config.enable_audio_playback = false;
+        connector_config.enable_audio_capture = false;
     }
     #[cfg(feature = "sound")]
     if !config.channels.sound {
         connector_config.enable_audio_playback = false;
+    }
+    #[cfg(feature = "sound")]
+    {
+        connector_config.enable_audio_capture = config.channels.audio_capture;
     }
 
     // Honor the runtime QOI/QOIZ codec toggles. Both codecs are compiled in and advertised by

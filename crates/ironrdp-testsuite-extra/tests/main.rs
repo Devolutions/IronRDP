@@ -2,6 +2,7 @@
 #![allow(clippy::unwrap_used, reason = "unwrap is fine in tests")]
 
 mod agent;
+mod capture_helpers;
 mod client_config;
 mod dvc_pipe_proxy;
 mod e2e;

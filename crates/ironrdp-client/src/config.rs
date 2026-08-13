@@ -232,6 +232,10 @@ pub struct ChannelConfig {
     #[cfg(feature = "sound")]
     pub sound: bool,
 
+    /// Enable the AUDIO_INPUT (microphone capture) dynamic virtual channel.
+    #[cfg(feature = "sound")]
+    pub audio_capture: bool,
+
     /// Clipboard redirection mode.
     #[cfg(feature = "clipboard")]
     pub clipboard: ClipboardType,
@@ -264,6 +268,8 @@ impl Default for ChannelConfig {
         Self {
             #[cfg(feature = "sound")]
             sound: true,
+            #[cfg(feature = "sound")]
+            audio_capture: false,
             #[cfg(feature = "clipboard")]
             clipboard: ClipboardType::Enable,
             #[cfg(feature = "rdpdr")]
@@ -628,6 +634,7 @@ pub struct ConfigBuilder {
     pointer_software_rendering: Option<bool>,
     performance_flags: Option<ironrdp_pdu::rdp::client_info::PerformanceFlags>,
     enable_audio_playback: Option<bool>,
+    enable_audio_capture: Option<bool>,
     compression_type: Option<ironrdp_pdu::rdp::client_info::CompressionType>,
     compression_enabled: Option<bool>,
     alternate_shell: Option<String>,
@@ -1153,6 +1160,20 @@ impl ConfigBuilder {
         self
     }
 
+    /// Enable or disable client microphone capture (MS-RDPEAI / AUDIO_INPUT).
+    #[cfg(feature = "sound")]
+    #[must_use]
+    pub fn with_audio_capture(mut self, enabled: bool) -> Self {
+        self.channels.audio_capture = enabled;
+        self.enable_audio_capture = Some(enabled);
+        self.properties.set_audio_capture_mode(if enabled {
+            ironrdp_cfg::AudioCaptureMode::CaptureFromClient
+        } else {
+            ironrdp_cfg::AudioCaptureMode::Disabled
+        });
+        self
+    }
+
     /// Set the CLIPRDR (clipboard) redirection mode.
     #[cfg(feature = "clipboard")]
     #[must_use]
@@ -1528,6 +1549,7 @@ impl ConfigBuilder {
             enable_server_pointer: self.enable_server_pointer.unwrap_or(true),
             autologon: self.autologon.unwrap_or(false),
             enable_audio_playback: self.enable_audio_playback.unwrap_or(true),
+            enable_audio_capture: self.enable_audio_capture.unwrap_or(false),
             request_data: None,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
@@ -1598,7 +1620,7 @@ impl ConfigBuilder {
     pub fn with_property_set(mut self, ps: &PropertySet) -> anyhow::Result<Self> {
         #[cfg(feature = "gateway")]
         use ironrdp_cfg::GatewayUsageMethod;
-        use ironrdp_cfg::{AudioMode, TargetHost};
+        use ironrdp_cfg::{AudioCaptureMode, AudioMode, TargetHost};
 
         self.properties.merge(ps);
 
@@ -1684,6 +1706,24 @@ impl ConfigBuilder {
         match ps.audio_mode() {
             Ok(Some(AudioMode::PlayOnServer | AudioMode::Disabled)) => self.enable_audio_playback = Some(false),
             Ok(Some(AudioMode::RedirectToClient)) => self.enable_audio_playback = Some(true),
+            _ => {}
+        }
+        #[cfg(feature = "sound")]
+        match ps.audio_capture_mode() {
+            Ok(Some(AudioCaptureMode::CaptureFromClient)) => {
+                self.enable_audio_capture = Some(true);
+                self.channels.audio_capture = true;
+            }
+            Ok(Some(AudioCaptureMode::Disabled)) => {
+                self.enable_audio_capture = Some(false);
+                self.channels.audio_capture = false;
+            }
+            _ => {}
+        }
+        #[cfg(not(feature = "sound"))]
+        match ps.audio_capture_mode() {
+            Ok(Some(AudioCaptureMode::CaptureFromClient)) => self.enable_audio_capture = Some(true),
+            Ok(Some(AudioCaptureMode::Disabled)) => self.enable_audio_capture = Some(false),
             _ => {}
         }
 
@@ -1981,5 +2021,42 @@ mod tests {
         assert!(!config.connector().enable_audio_playback);
         assert!(!config.channels().sound);
         assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::Disabled));
+    }
+
+    #[cfg(feature = "sound")]
+    #[test]
+    fn with_audio_capture_enables_client_info_flag_and_channel() {
+        use ironrdp_cfg::AudioCaptureMode;
+
+        let config = complete_builder()
+            .with_audio_capture(true)
+            .build()
+            .expect("valid configuration");
+
+        assert!(config.connector().enable_audio_capture);
+        assert!(config.channels().audio_capture);
+        assert_eq!(
+            config.properties().audio_capture_mode().unwrap(),
+            Some(AudioCaptureMode::CaptureFromClient)
+        );
+    }
+
+    #[cfg(feature = "sound")]
+    #[test]
+    fn with_audio_capture_disabled_clears_channel() {
+        use ironrdp_cfg::AudioCaptureMode;
+
+        let config = complete_builder()
+            .with_audio_capture(true)
+            .with_audio_capture(false)
+            .build()
+            .expect("valid configuration");
+
+        assert!(!config.connector().enable_audio_capture);
+        assert!(!config.channels().audio_capture);
+        assert_eq!(
+            config.properties().audio_capture_mode().unwrap(),
+            Some(AudioCaptureMode::Disabled)
+        );
     }
 }

@@ -251,8 +251,12 @@ pub struct Config {
     pub request_data: Option<NegoRequestData>,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub autologon: bool,
-    /// If true, the INFO_NOAUDIOPLAYBACK flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
+    /// If true, local audio playback is enabled and `INFO_NOAUDIOPLAYBACK` is left clear
+    /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
     pub enable_audio_playback: bool,
+    /// If true, client microphone capture is enabled and `INFO_AUDIOCAPTURE` is set
+    /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
+    pub enable_audio_capture: bool,
     pub performance_flags: PerformanceFlags,
 
     pub license_cache: Option<Arc<dyn LicenseCache>>,

@@ -1472,6 +1472,7 @@ fn build_config(
         enable_server_pointer: false,
         autologon: false,
         enable_audio_playback: false,
+        enable_audio_capture: false,
         request_data: None,
         pointer_software_rendering: false,
         multitransport_flags: None,

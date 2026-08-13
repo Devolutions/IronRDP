@@ -1514,6 +1514,10 @@ fn create_client_info_pdu(
         flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK;
     }
 
+    if config.enable_audio_capture {
+        flags |= ClientInfoFlags::AUDIO_CAPTURE;
+    }
+
     if config.remote_application_mode {
         flags |= ClientInfoFlags::RAIL;
     }
@@ -1622,6 +1626,7 @@ mod tests {
             request_data: None,
             autologon: false,
             enable_audio_playback: false,
+            enable_audio_capture: false,
             performance_flags: Default::default(),
             license_cache: None,
             timezone_info: Default::default(),
@@ -1636,5 +1641,61 @@ mod tests {
         assert!(client_info.flags.contains(ClientInfoFlags::RAIL));
         assert!(client_info.alternate_shell.is_empty());
         assert!(client_info.work_dir.is_empty());
+        assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
+    }
+
+    #[test]
+    fn audio_capture_flag_is_set_when_enabled() {
+        let mut config = Config {
+            desktop_size: DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            desktop_scale_factor: 0,
+            enable_tls: true,
+            enable_credssp: false,
+            enable_standard_rdp_security: false,
+            credentials: Credentials::UsernamePassword {
+                username: "test".into(),
+                password: "test".into(),
+            },
+            domain: None,
+            client_build: 0,
+            client_name: "test".into(),
+            keyboard_type: gcc::KeyboardType::IbmEnhanced,
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 12,
+            keyboard_layout: 0,
+            connection_type: gcc::ConnectionType::Lan,
+            ime_file_name: String::new(),
+            bitmap: None,
+            dig_product_id: String::new(),
+            client_dir: String::new(),
+            alternate_shell: String::new(),
+            work_dir: String::new(),
+            remote_application_mode: false,
+            rail_support_level: RailSupportLevel::empty(),
+            platform: MajorPlatformType::UNIX,
+            hardware_id: None,
+            request_data: None,
+            autologon: false,
+            enable_audio_playback: true,
+            enable_audio_capture: true,
+            performance_flags: Default::default(),
+            license_cache: None,
+            timezone_info: Default::default(),
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+            multitransport_flags: None,
+        };
+
+        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
+        assert!(client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
+        assert!(!client_info.flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK));
+
+        config.enable_audio_capture = false;
+        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
+        assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
     }
 }
