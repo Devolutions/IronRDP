@@ -30,7 +30,12 @@ native-tls = [
     "ironrdp-mstsgu?/native-tls",
 ]
 
-sound = ["dep:ironrdp-rdpsnd", "dep:ironrdp-rdpsnd-native", "dep:ironrdp-rdpeai"]
+sound = [
+    "dep:ironrdp-rdpsnd",
+    "dep:ironrdp-rdpsnd-native",
+    "ironrdp-rdpsnd-native/capture",
+    "dep:ironrdp-rdpeai",
+]
 clipboard = ["dep:ironrdp-cliprdr", "dep:ironrdp-cliprdr-native"]
 rdpdr = ["dep:ironrdp-rdpdr", "dep:ironrdp-rdpsnd"]
 smartcard = ["rdpdr"]

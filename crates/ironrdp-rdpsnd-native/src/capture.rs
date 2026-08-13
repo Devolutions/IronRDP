@@ -11,10 +11,16 @@ use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
 use tracing::{debug, error, warn};
 
 /// CPAL-backed MS-RDPEAI capture handler.
+///
+/// This backend captures PCM only and ships capture-sized PCM Data PDUs.
+/// Encode formats that differ from the Open capture WAVEFORMATEX are rejected
+/// until a real encoder is wired.
 pub struct RdpeaiCaptureBackend {
     formats: Vec<AudioFormat>,
     stream_handle: Option<JoinHandle<()>>,
     stream_ended: Arc<AtomicBool>,
+    /// Capture WAVEFORMATEX established by a successful Open.
+    open_capture_format: Option<AudioFormat>,
     /// Shared sink + packet size for the capture callback thread.
     sink_state: Arc<Mutex<Option<SinkState>>>,
 }
@@ -37,6 +43,7 @@ impl RdpeaiCaptureBackend {
             formats: default_capture_formats(),
             stream_handle: None,
             stream_ended: Arc::new(AtomicBool::new(false)),
+            open_capture_format: None,
             sink_state: Arc::new(Mutex::new(None)),
         }
     }
@@ -64,9 +71,10 @@ impl RdpeaiCaptureBackend {
         if format.format != WaveFormat::PCM {
             return Err(format!("unsupported capture wave format: {:?}", format.format));
         }
-        if format.bits_per_sample != 16 && format.bits_per_sample != 8 {
+        // MS-RDPEAI Data PDU size is fixed at 16-bit samples (nChannels * 2 * FramesPerPacket).
+        if format.bits_per_sample != 16 {
             return Err(format!(
-                "unsupported capture bits_per_sample: {}",
+                "unsupported capture bits_per_sample: {} (PCM capture requires 16-bit)",
                 format.bits_per_sample
             ));
         }
@@ -76,11 +84,7 @@ impl RdpeaiCaptureBackend {
             .default_input_device()
             .ok_or_else(|| "no default input device".to_owned())?;
 
-        let sample_format = if format.bits_per_sample == 8 {
-            SampleFormat::U8
-        } else {
-            SampleFormat::I16
-        };
+        let sample_format = SampleFormat::I16;
 
         let config = StreamConfig {
             channels: format.n_channels,
@@ -147,9 +151,15 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
         packet_size: usize,
         sink: AudioPacketSink,
     ) -> i32 {
-        // This backend captures PCM only. Encoding other than the capture PCM stream is
-        // not implemented yet; Open still delivers capture-sized PCM Data PDUs.
-        let _ = encode_format;
+        // PCM-only backend: encode must match capture so Data PDUs stay decodable.
+        if !encode_format.matches_for_negotiation(capture_format) {
+            warn!(
+                ?capture_format,
+                ?encode_format,
+                "Refusing capture open: encode format differs from capture (PCM-only backend)"
+            );
+            return OpenReplyPdu::E_FAIL;
+        }
 
         if packet_size == 0 || packet_size > MAX_DATA_PACKET_SIZE {
             warn!(packet_size, "Refusing capture open with invalid packet size");
@@ -174,10 +184,14 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
         }
 
         match self.start_stream(capture_format) {
-            Ok(()) => OpenReplyPdu::S_OK,
+            Ok(()) => {
+                self.open_capture_format = Some(capture_format.clone());
+                OpenReplyPdu::S_OK
+            }
             Err(error) => {
                 warn!(%error, "AUDIO_INPUT capture open failed");
                 self.clear_sink();
+                self.open_capture_format = None;
                 OpenReplyPdu::E_FAIL
             }
         }
@@ -186,13 +200,25 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
     fn set_format(&mut self, encode_format: &AudioFormat, packet_size: usize) -> bool {
         // FormatChange switches encoding only. Capture WAVEFORMATEX and Data PDU size
         // stay at the values established by Open; do not restart the input stream.
-        let _ = (encode_format, packet_size);
+        let _ = packet_size;
+        let Some(capture_format) = self.open_capture_format.as_ref() else {
+            return false;
+        };
+        if !encode_format.matches_for_negotiation(capture_format) {
+            warn!(
+                ?capture_format,
+                ?encode_format,
+                "Rejecting FormatChange: encode format differs from open capture (PCM-only backend)"
+            );
+            return false;
+        }
         self.sink_state.lock().map(|guard| guard.is_some()).unwrap_or(false)
     }
 
     fn close(&mut self) {
         self.stop_worker();
         self.clear_sink();
+        self.open_capture_format = None;
     }
 }
 
@@ -228,16 +254,6 @@ fn build_input_stream(
                         bytes.extend_from_slice(&sample.to_le_bytes());
                     }
                     push_samples(&sink_state, &bytes);
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| e.to_string()),
-        SampleFormat::U8 => device
-            .build_input_stream(
-                config,
-                move |data: &[u8], _| {
-                    push_samples(&sink_state, data);
                 },
                 err_fn,
                 None,

@@ -18,12 +18,14 @@ test = false
 [features]
 default = ["opus"]
 opus = ["dep:opus2", "dep:bytemuck"]
+# MS-RDPEAI microphone capture backend (CPAL input + ironrdp-rdpeai handler).
+capture = ["dep:ironrdp-rdpeai"]
 
 [dependencies]
 bytemuck = { version = "1.24", optional = true }
 cpal = "0.17"
 ironrdp-error = { path = "../ironrdp-error", version = "0.2", features = ["std"] } # public
-ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.1" }
+ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.1", optional = true } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9" } # public
 opus2 = { version = "0.4", optional = true, features = ["bundled"] }
 tracing = { version = "0.1", features = ["log"] }
