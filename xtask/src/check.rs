@@ -3,10 +3,12 @@ use std::collections::BTreeSet;
 use crate::prelude::*;
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-struct ProtectedSetting {
-    section: &'static str,
-    key: &'static str,
-    value: &'static str,
+enum ProtectedSetting {
+    Toml {
+        table: &'static str,
+        key: &'static str,
+        value: &'static str,
+    },
 }
 
 struct ProtectedSettingContext {
@@ -23,13 +25,13 @@ struct ProtectedSettingOccurrence {
 const PROTECTED_SETTING_CONTEXTS: &[ProtectedSettingContext] = &[ProtectedSettingContext {
     pathspec: ":(glob)**/Cargo.toml",
     settings: &[
-        ProtectedSetting {
-            section: "lib",
+        ProtectedSetting::Toml {
+            table: "lib",
             key: "doctest",
             value: "false",
         },
-        ProtectedSetting {
-            section: "lib",
+        ProtectedSetting::Toml {
+            table: "lib",
             key: "test",
             value: "false",
         },
@@ -164,8 +166,8 @@ pub fn test_settings(sh: &Shell, base: &str, head: &str) -> anyhow::Result<()> {
         let removals = removals
             .into_iter()
             .map(|occurrence| {
-                let ProtectedSetting { section, key, value } = occurrence.setting;
-                format!("- {}: `[{section}] {key} = {value}`", occurrence.path)
+                let ProtectedSetting::Toml { table, key, value } = occurrence.setting;
+                format!("- {}: `[{table}] {key} = {value}`", occurrence.path)
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -193,20 +195,26 @@ fn protected_settings(
     path: &str,
     protected_settings: &[ProtectedSetting],
 ) -> BTreeSet<ProtectedSettingOccurrence> {
-    let mut section = "";
+    let mut table = "";
     let mut occurrences = BTreeSet::new();
 
     for line in file.lines() {
         let line = line.split_once('#').map_or(line, |(line, _)| line).trim();
 
-        if let Some(section_name) = line.strip_prefix('[').and_then(|line| line.strip_suffix(']')) {
-            section = section_name;
+        if let Some(table_name) = line.strip_prefix('[').and_then(|line| line.strip_suffix(']')) {
+            table = table_name;
         } else if let Some((key, value)) = line.split_once('=') {
             let key = key.trim();
             let value = value.trim();
 
             for setting in protected_settings {
-                if (section, key, value) == (setting.section, setting.key, setting.value) {
+                let ProtectedSetting::Toml {
+                    table: protected_table,
+                    key: protected_key,
+                    value: protected_value,
+                } = *setting;
+
+                if (table, key, value) == (protected_table, protected_key, protected_value) {
                     occurrences.insert(ProtectedSettingOccurrence {
                         path: path.to_owned(),
                         setting: *setting,
