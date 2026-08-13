@@ -1277,10 +1277,10 @@ impl<'de> Decode<'de> for ServerAudioOutputPdu<'_> {
                 Ok(Self::Training(pdu))
             }
             SNDC_WAVE => {
-                            // WaveInfo only — the following SVC message is a bare Wave payload.
-                            let pdu = WavePdu::decode(src, body_size)?;
-                            Ok(Self::Wave(pdu))
-                        }
+                // WaveInfo only — the following SVC message is a bare Wave payload.
+                let pdu = WavePdu::decode(src, body_size)?;
+                Ok(Self::Wave(pdu))
+            }
             SNDC_WAVEENCRYPT => {
                 let pdu = WaveEncryptPdu::decode(src, Version::V5)?;
                 Ok(Self::WaveEncrypt(pdu))

@@ -274,9 +274,7 @@ fn ready_wave_two_step_sends_confirm_and_keeps_state() {
         waves: Arc::clone(&waves),
     };
     let mut client = Rdpsnd::new(Box::new(backend));
-    client
-        .process(&encoded_server_formats(pdu::Version::V5))
-        .unwrap();
+    client.process(&encoded_server_formats(pdu::Version::V5)).unwrap();
     client.process(&encoded_training()).unwrap();
 
     // WaveInfo alone does not confirm yet — waiting for bare Wave payload.

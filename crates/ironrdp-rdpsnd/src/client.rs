@@ -197,48 +197,48 @@ impl Rdpsnd {
         self.handler.close();
         self.server_format = Some(af);
         self.client_formats.clear();
-            self.pending_wave = None;
-            self.state = RdpsndState::WaitingForTraining;
-            let mut msgs: Vec<SvcMessage> = self.client_formats()?.into();
-            if self.version()? >= pdu::Version::V6 {
-                let mut m = self.quality_mode()?.into();
-                msgs.append(&mut m);
-            }
-            Ok(msgs)
+        self.pending_wave = None;
+        self.state = RdpsndState::WaitingForTraining;
+        let mut msgs: Vec<SvcMessage> = self.client_formats()?.into();
+        if self.version()? >= pdu::Version::V6 {
+            let mut m = self.quality_mode()?.into();
+            msgs.append(&mut m);
         }
-
-        /// Complete a pre-v8 Wave transfer from WaveInfo + bare Wave payload bytes.
-        fn finish_pending_wave(&mut self, wave_payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-            let Some(pending) = self.pending_wave.take() else {
-                warn!("Received Wave payload without a pending WaveInfo");
-                self.state = RdpsndState::Ready;
-                return Ok(vec![]);
-            };
-
-            self.state = RdpsndState::Ready;
-
-            // Wave payload is bPad[4] + remaining audio after the WaveInfo Data prefix.
-            // Total wire length equals WaveInfo audio_length (`n`).
-            let expected_len = usize::from(pending.audio_length);
-            if wave_payload.len() < expected_len {
-                warn!(
-                    got = wave_payload.len(),
-                    expected = expected_len,
-                    "Wave payload shorter than WaveInfo audio length"
-                );
-                return Ok(vec![]);
-            }
-
-            let remaining = &wave_payload[4..expected_len];
-            let mut data = Vec::with_capacity(expected_len);
-            data.extend_from_slice(&pending.data_prefix);
-            data.extend_from_slice(remaining);
-
-            let ts = u32::from(pending.timestamp);
-            self.play_wave(pending.format_no, ts, data.into());
-            Ok(self.wave_confirm(pending.timestamp, pending.block_no)?.into())
-        }
+        Ok(msgs)
     }
+
+    /// Complete a pre-v8 Wave transfer from WaveInfo + bare Wave payload bytes.
+    fn finish_pending_wave(&mut self, wave_payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+        let Some(pending) = self.pending_wave.take() else {
+            warn!("Received Wave payload without a pending WaveInfo");
+            self.state = RdpsndState::Ready;
+            return Ok(vec![]);
+        };
+
+        self.state = RdpsndState::Ready;
+
+        // Wave payload is bPad[4] + remaining audio after the WaveInfo Data prefix.
+        // Total wire length equals WaveInfo audio_length (`n`).
+        let expected_len = usize::from(pending.audio_length);
+        if wave_payload.len() < expected_len {
+            warn!(
+                got = wave_payload.len(),
+                expected = expected_len,
+                "Wave payload shorter than WaveInfo audio length"
+            );
+            return Ok(vec![]);
+        }
+
+        let remaining = &wave_payload[4..expected_len];
+        let mut data = Vec::with_capacity(expected_len);
+        data.extend_from_slice(&pending.data_prefix);
+        data.extend_from_slice(remaining);
+
+        let ts = u32::from(pending.timestamp);
+        self.play_wave(pending.format_no, ts, data.into());
+        Ok(self.wave_confirm(pending.timestamp, pending.block_no)?.into())
+    }
+}
 
 impl_as_any!(Rdpsnd);
 
@@ -252,96 +252,94 @@ impl SvcProcessor for Rdpsnd {
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-            // Pre-v8 Wave data has no RDPSND header (MS-RDPEA §2.2.3.2).
-            if self.state == RdpsndState::ExpectingWave {
-                debug!(len = payload.len(), "Completing pending WaveInfo with Wave payload");
-                return self.finish_pending_wave(payload);
-            }
-
-            let pdu = match pdu::ServerAudioOutputPdu::decode(&mut ReadCursor::new(payload)) {
-                Ok(pdu) => pdu,
-                Err(error) => {
-                    error!(?error, "Ignoring malformed RDPSND PDU");
-                    return Ok(vec![]);
-                }
-            };
-
-            debug!(?pdu, ?self.state);
-            let msg = match self.state {
-                RdpsndState::Start => {
-                    let pdu::ServerAudioOutputPdu::AudioFormat(af) = pdu else {
-                        error!("Invalid pdu");
-                        self.state = RdpsndState::Stop;
-                        return Ok(vec![]);
-                    };
-                    self.begin_format_negotiation(af)?
-                }
-                RdpsndState::WaitingForTraining => {
-                    let pdu::ServerAudioOutputPdu::Training(pdu) = pdu else {
-                        error!("Invalid PDU");
-                        self.state = RdpsndState::Stop;
-                        return Ok(vec![]);
-                    };
-                    self.state = RdpsndState::Ready;
-                    self.training_confirm(&pdu)?.into()
-                }
-                RdpsndState::Ready => {
-                    match pdu {
-                        pdu::ServerAudioOutputPdu::Wave(pdu) => {
-                            // MS-RDPEA §2.2.3.1: WaveInfo only; next SVC message is bare Wave.
-                            // Some test stacks may concatenate Wave after WaveInfo in one buffer —
-                            // finish immediately when trailing bytes are present.
-                            self.pending_wave = Some(PendingWave {
-                                timestamp: pdu.timestamp,
-                                format_no: pdu.format_no,
-                                block_no: pdu.block_no,
-                                data_prefix: pdu.data_prefix,
-                                audio_length: pdu.audio_length,
-                            });
-                            self.state = RdpsndState::ExpectingWave;
-
-                            // SNDPROLOG (4) + WaveInfo body; trailing bytes mean a concatenated Wave payload.
-                            let header_and_info = 4usize
-                                .checked_add(pdu.size())
-                                .expect("header_and_info never overflows");
-                            if payload.len() > header_and_info {
-                                return self.finish_pending_wave(&payload[header_and_info..]);
-                            }
-                            return Ok(vec![]);
-                        }
-                        pdu::ServerAudioOutputPdu::Wave2(pdu) => {
-                            self.play_wave(pdu.format_no, pdu.audio_timestamp, pdu.data);
-                            return Ok(self.wave_confirm(pdu.timestamp, pdu.block_no)?.into());
-                        }
-                        pdu::ServerAudioOutputPdu::Volume(pdu) => {
-                            self.handler.set_volume(pdu);
-                        }
-                        pdu::ServerAudioOutputPdu::Pitch(pdu) => {
-                            self.handler.set_pitch(pdu);
-                        }
-                        pdu::ServerAudioOutputPdu::Close => {
-                            self.handler.close();
-                        }
-                        pdu::ServerAudioOutputPdu::Training(pdu) => return Ok(self.training_confirm(&pdu)?.into()),
-                        pdu::ServerAudioOutputPdu::AudioFormat(af) => {
-                            return self.begin_format_negotiation(af);
-                        }
-                        // Unsupported optional PDUs: keep the channel alive.
-                        pdu::ServerAudioOutputPdu::CryptKey(_) | pdu::ServerAudioOutputPdu::WaveEncrypt(_) => {
-                            warn!(?pdu, "Ignoring unsupported RDPSND PDU");
-                        }
-                    }
-                    vec![]
-                }
-                state => {
-                    error!(?state, "Invalid state");
-                    vec![]
-                }
-            };
-
-            Ok(msg)
+        // Pre-v8 Wave data has no RDPSND header (MS-RDPEA §2.2.3.2).
+        if self.state == RdpsndState::ExpectingWave {
+            debug!(len = payload.len(), "Completing pending WaveInfo with Wave payload");
+            return self.finish_pending_wave(payload);
         }
+
+        let pdu = match pdu::ServerAudioOutputPdu::decode(&mut ReadCursor::new(payload)) {
+            Ok(pdu) => pdu,
+            Err(error) => {
+                error!(?error, "Ignoring malformed RDPSND PDU");
+                return Ok(vec![]);
+            }
+        };
+
+        debug!(?pdu, ?self.state);
+        let msg = match self.state {
+            RdpsndState::Start => {
+                let pdu::ServerAudioOutputPdu::AudioFormat(af) = pdu else {
+                    error!("Invalid pdu");
+                    self.state = RdpsndState::Stop;
+                    return Ok(vec![]);
+                };
+                self.begin_format_negotiation(af)?
+            }
+            RdpsndState::WaitingForTraining => {
+                let pdu::ServerAudioOutputPdu::Training(pdu) = pdu else {
+                    error!("Invalid PDU");
+                    self.state = RdpsndState::Stop;
+                    return Ok(vec![]);
+                };
+                self.state = RdpsndState::Ready;
+                self.training_confirm(&pdu)?.into()
+            }
+            RdpsndState::Ready => {
+                match pdu {
+                    pdu::ServerAudioOutputPdu::Wave(pdu) => {
+                        // MS-RDPEA §2.2.3.1: WaveInfo only; next SVC message is bare Wave.
+                        // Some test stacks may concatenate Wave after WaveInfo in one buffer —
+                        // finish immediately when trailing bytes are present.
+                        self.pending_wave = Some(PendingWave {
+                            timestamp: pdu.timestamp,
+                            format_no: pdu.format_no,
+                            block_no: pdu.block_no,
+                            data_prefix: pdu.data_prefix,
+                            audio_length: pdu.audio_length,
+                        });
+                        self.state = RdpsndState::ExpectingWave;
+
+                        // SNDPROLOG (4) + WaveInfo body; trailing bytes mean a concatenated Wave payload.
+                        let header_and_info = 4usize.checked_add(pdu.size()).expect("header_and_info never overflows");
+                        if payload.len() > header_and_info {
+                            return self.finish_pending_wave(&payload[header_and_info..]);
+                        }
+                        return Ok(vec![]);
+                    }
+                    pdu::ServerAudioOutputPdu::Wave2(pdu) => {
+                        self.play_wave(pdu.format_no, pdu.audio_timestamp, pdu.data);
+                        return Ok(self.wave_confirm(pdu.timestamp, pdu.block_no)?.into());
+                    }
+                    pdu::ServerAudioOutputPdu::Volume(pdu) => {
+                        self.handler.set_volume(pdu);
+                    }
+                    pdu::ServerAudioOutputPdu::Pitch(pdu) => {
+                        self.handler.set_pitch(pdu);
+                    }
+                    pdu::ServerAudioOutputPdu::Close => {
+                        self.handler.close();
+                    }
+                    pdu::ServerAudioOutputPdu::Training(pdu) => return Ok(self.training_confirm(&pdu)?.into()),
+                    pdu::ServerAudioOutputPdu::AudioFormat(af) => {
+                        return self.begin_format_negotiation(af);
+                    }
+                    // Unsupported optional PDUs: keep the channel alive.
+                    pdu::ServerAudioOutputPdu::CryptKey(_) | pdu::ServerAudioOutputPdu::WaveEncrypt(_) => {
+                        warn!(?pdu, "Ignoring unsupported RDPSND PDU");
+                    }
+                }
+                vec![]
+            }
+            state => {
+                error!(?state, "Invalid state");
+                vec![]
+            }
+        };
+
+        Ok(msg)
     }
+}
 
 impl Drop for Rdpsnd {
     fn drop(&mut self) {

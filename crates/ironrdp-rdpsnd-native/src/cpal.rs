@@ -282,8 +282,8 @@ impl RdpsndClientHandler for RdpsndBackend {
     }
 
     fn get_formats(&self) -> &[AudioFormat] {
-            &self.formats
-        }
+        &self.formats
+    }
 
     fn wave(&mut self, format: &AudioFormat, _ts: u32, data: Cow<'_, [u8]>) {
         // Soft-fail reopen: if the stream thread exited after a device/open error,
@@ -477,16 +477,16 @@ impl DecodeStream {
                 RdpsndNativeError::new("building cpal output stream", RdpsndNativeErrorKind::StreamBuild).with_source(e)
             })?;
 
-                // cpal streams start paused; without play() the callback never runs.
-                        stream.play().map_err(|e| {
-                            RdpsndNativeError::new("starting cpal output stream", RdpsndNativeErrorKind::StreamBuild).with_source(e)
-                        })?;
+        // cpal streams start paused; without play() the callback never runs.
+        stream.play().map_err(|e| {
+            RdpsndNativeError::new("starting cpal output stream", RdpsndNativeErrorKind::StreamBuild).with_source(e)
+        })?;
 
-                        Ok(Self {
-                            _dec_thread: dec_thread,
-                            stream,
-                        })
-                    }
+        Ok(Self {
+            _dec_thread: dec_thread,
+            stream,
+        })
+    }
 
     pub fn stream(&self) -> &Stream {
         &self.stream
