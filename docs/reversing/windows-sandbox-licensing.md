@@ -81,6 +81,26 @@ A focused vGPU-disabled run captured arbitration at `10:09:35`, LSM disconnect r
 `10:10:07`, and RdpCoreTS `PreDisconnect(12)` / `SetErrorInfo(0xC)`. This establishes why clients
 can transiently report connected before the denied session logs off.
 
+### Edition and deployment implications
+
+The only static multi-session branch found in `IncreaseTotalSessionCount` is WVD enablement.
+Microsoft's supported Windows edition for multiple concurrent interactive client sessions is
+[Windows 10 or Windows 11 Enterprise multi-session][enterprise-multi-session], provisioned through
+Azure Virtual Desktop or an approved provider. Microsoft also explicitly documents
+[publishing Windows Sandbox in an AVD desktop or RemoteApp session][sandbox-in-avd], provided the
+session-host VM supports nested virtualization.
+
+Those two facts make Enterprise multi-session under AVD the environment expected to admit multiple
+concurrent Sandbox desktops. This is not yet a dynamic result from the IronRDP harness: no AVD
+Enterprise multi-session host was available for the controlled two-VM comparison. Ordinary client
+Windows with the WVD policy disabled follows the one-total-session branch. Windows Server is not an
+equivalent fallback because Microsoft's [Windows Sandbox installation requirements][sandbox-install]
+name Windows 10 and Windows 11, not Windows Server.
+
+The multi-session edition is not licensed for production use as a generic on-premises Windows
+edition. Microsoft states that production use outside Azure Virtual Desktop or approved providers is
+not allowed. These notes do not recommend changing the WVD SL policy on another edition.
+
 ## Guest-side route
 
 The direct Windows Sandbox transport is listener type `2`. `termsrv.dll` chooses
@@ -422,3 +442,7 @@ RDPIDD diagnostic could still identify why some denied runs emit `0x11` before t
 
 The evidence needed to narrow that attribution, without altering Windows policy or entitlement
 state, is tracked in [open questions and evidence plan](windows-sandbox-open-questions.md).
+
+[enterprise-multi-session]: https://learn.microsoft.com/azure/virtual-desktop/windows-multisession-faq
+[sandbox-install]: https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-install#installation
+[sandbox-in-avd]: https://learn.microsoft.com/azure/virtual-desktop/publish-applications-stream-remoteapp#publish-windows-sandbox

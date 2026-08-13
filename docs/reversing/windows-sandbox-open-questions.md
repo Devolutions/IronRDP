@@ -22,6 +22,7 @@ read-only, no-bypass boundary.
 | Different VMs replace one shared Display Broker topology | Ruled out. Each guest owns its RDPIDD `WUDFHost`, session ID `1`, `DXGSESSIONDATA`, DWM, Display Broker, and one-request cache |
 | Mirrored vGPU assignment is the cross-VM root cause | Ruled out. A vGPU-disabled pair still logged off the second session at about 32 seconds |
 | Fixed RDP4VS identities collide across workers | Ruled out. GUIDs are VM-bus scoped and singleton/maps are worker-process local |
+| Which supported edition is expected to allow multiple Sandbox desktops? | Windows 10/11 Enterprise multi-session under AVD. Static LSM code takes a distinct WVD-enabled branch, and Microsoft documents both concurrent interactive sessions and Windows Sandbox publication in AVD. This remains untested by the IronRDP harness |
 
 ## Open attribution questions
 
@@ -35,6 +36,7 @@ read-only, no-bypass boundary.
 | Where is the final entitlement state evaluated? | Guest identifies the interface boundary but not the host receiver's internal data source | Read-only call-stack or endpoint telemetry tied to an accepted and rejected admission |
 | How do exact guest and host RDP component revisions align after servicing? | The supplied guest `termsrv.dll` and locally examined host modules are nearby but not identical revisions | Capture the guest `rdpcorets.dll`, `rdpbase.dll`, and VMBus-pipe versions from the same running Sandbox image |
 | What guarantees does the product gRPC server add beyond direct lifecycle? | Product orchestration was identified, but full provisioning parity was not reconstructed | Compare read-only lifecycle/configuration traces for one product-created and one direct VM |
+| Does Enterprise multi-session under AVD admit two direct Sandbox desktops in practice? | The code path and Microsoft deployment documentation strongly predict yes, but the controlled harness has only run on a non-WVD retail host | Run the unchanged two-VM harness on an AVD Enterprise multi-session VM size with nested virtualization and record the WVD SL policy plus both guest event timelines |
 | Which private transport fields are stable across releases? | The SynthRDP handshake is not a published ABI | Re-run static listener analysis after component-version changes; do not assume compatibility |
 
 ## Evidence that would change the model

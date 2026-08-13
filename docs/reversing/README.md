@@ -67,7 +67,8 @@ guest session arbitration, `lsm.dll` calls the parent over HVSock service
 `{F58797F6-C9F3-4D63-9BD4-E52AC020E586}`. Host
 `ContainerSessionServer::IncreaseTotalSessionCount` admits only one total container session on the
 tested client host while the WVD policy is disabled. A later request returns Win32 error `353`
-(`ERROR_REMOTE_SESSION_LIMIT_EXCEEDED`), and the denied guest session is logged off. A guest event
+(`ERROR_MAX_SESSIONS_REACHED`), which the guest maps to
+`ERROR_REMOTE_SESSION_LIMIT_EXCEEDED`; the denied guest session is then logged off. A guest event
 capture observed the corresponding reason `12` and RDP Set Error Info `0x0C` about 32 seconds after
 both clients initially reported connected.
 
@@ -75,6 +76,12 @@ The earlier wire `0x11` remains a real RDPIDD/IddCx failure path, but it can be 
 after the same admission denial. Disabling vGPU did not remove the 32-second second-session logoff,
 which rules out mirrored GPU assignment as the cross-VM root cause. Guest usernames, RDP clients,
 display size, redirected channels, and per-VM Display Brokers are also excluded.
+
+The static alternate branch is expected to work on **Windows 10 or Windows 11 Enterprise
+multi-session under Azure Virtual Desktop**, where WVD multi-session policy is legitimately enabled.
+Microsoft documents Windows Sandbox as supported in AVD desktop and RemoteApp sessions when the
+session-host VM supports nested virtualization. This environment has not yet been exercised by the
+IronRDP harness; it is a high-confidence prediction, not an observed result.
 See [RDP and RDV transport](windows-sandbox-rdp-transport.md) and
 [guest account identity](windows-sandbox-direct-lifecycle.md#guest-account-identity).
 
