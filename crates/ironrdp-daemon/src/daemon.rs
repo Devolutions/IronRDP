@@ -5,15 +5,24 @@
 //! explicitly with `daemon-start` and runs in the foreground; the caller is expected to background
 //! it. On a clean shutdown the Unix socket file is removed (see [`crate::transport`]).
 
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
+use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_client::config::{ConfigBuilder, MissingField};
-use ironrdp_client::rdp::{RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent};
+use ironrdp_client::rail::RailControlEvent;
+use ironrdp_client::rdp::{
+    RailExecuteFailureReason as ClientRailExecuteFailureReason, RdpClient, RdpInputEvent, RdpInputSender,
+    RdpOutputEvent,
+};
 use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
+use ironrdp_rail::pdu::{ExecutePdu, RailPdu};
 use ironrdp_tls::CertificateValidation;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
@@ -27,7 +36,8 @@ use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
 
 use crate::ipc::{
     ConnState, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry,
-    Request, Response, StatusInfo,
+    RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo,
+    RailStatusInfo, Request, Response, StatusInfo,
 };
 use crate::logbuf::{self, LogBuffer};
 use crate::now::NowEndpoint;
@@ -219,6 +229,9 @@ pub struct Daemon {
     /// Whether [`Self::overlay`] contributes any secret (password/token) value, i.e. whether the
     /// caller can omit credentials of its own.
     credentials_loaded: bool,
+    /// Monotonically assigns RAIL ledger generations so observations from a former session cannot be
+    /// mistaken for the active connection.
+    next_rail_generation: Arc<AtomicU64>,
     certificate_validation: CertificateValidation,
     #[cfg(windows)]
     rdpdr_backend_factory: Option<WindowsRdpdrBackendFactory>,
@@ -232,7 +245,9 @@ struct Session {
     input_tx: RdpInputSender,
     input_db: Database,
     destination: String,
+    rail_enabled: bool,
     live: Arc<Mutex<Live>>,
+    rail_notify: Arc<tokio::sync::Notify>,
     now_endpoint: Arc<NowEndpoint>,
     operations: OperationManager,
 }
@@ -273,6 +288,138 @@ struct Live {
     /// Most recent frame (with the cursor already composited in by the session). Replaced on every
     /// graphics update; `None` until the first frame arrives.
     frame: Option<Frame>,
+    rail_initial_execute: Option<(u16, String)>,
+    rail: RailLedger,
+}
+
+const MAX_RAIL_EVENTS: usize = 256;
+const MAX_PENDING_RAIL_LAUNCHES: usize = 64;
+
+#[derive(Debug)]
+enum RailLaunchQueueError {
+    LimitReached,
+    DuplicateResponse,
+}
+
+/// Session-local RAIL evidence. The daemon records only client-validated outputs; it never reparses
+/// static-channel payloads or drawing orders.
+struct RailLedger {
+    generation: u64,
+    next_sequence: u64,
+    handshake_complete: bool,
+    desktop_synchronized: bool,
+    events: VecDeque<RailEvent>,
+    pending_launches: VecDeque<PendingRailLaunch>,
+}
+
+/// A client Execute request awaiting its server result.
+enum PendingRailLaunch {
+    /// The Execute request configured before the RDP session becomes active.
+    Initial { flags: u16, executable: String },
+    /// An Execute request explicitly submitted through the agent IPC API.
+    Agent(RailLaunchInfo),
+}
+
+impl RailLedger {
+    fn new(generation: u64, next_sequence: u64, initial_execute: Option<(u16, String)>) -> Self {
+        Self {
+            generation,
+            next_sequence,
+            handshake_complete: false,
+            desktop_synchronized: false,
+            events: VecDeque::new(),
+            pending_launches: initial_execute
+                .into_iter()
+                .map(|(flags, executable)| PendingRailLaunch::Initial { flags, executable })
+                .collect(),
+        }
+    }
+
+    fn record(&mut self, kind: RailEventKind) {
+        let event = RailEvent {
+            sequence: self.next_sequence,
+            kind,
+        };
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        if self.events.len() == MAX_RAIL_EVENTS {
+            let _ = self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+
+    fn status(&self) -> RailStatusInfo {
+        RailStatusInfo {
+            generation: self.generation,
+            next_sequence: self.next_sequence,
+            handshake_complete: self.handshake_complete,
+            desktop_synchronized: self.desktop_synchronized,
+            pending_launches: self
+                .pending_launches
+                .iter()
+                .filter_map(|launch| match launch {
+                    PendingRailLaunch::Initial { .. } => None,
+                    PendingRailLaunch::Agent(launch) => Some(launch.clone()),
+                })
+                .collect(),
+        }
+    }
+
+    fn events_after(&self, after_sequence: Option<u64>) -> RailEventDump {
+        let after_sequence = after_sequence.unwrap_or(0);
+        let mut events = Vec::new();
+        if let Some(first) = self.events.front() {
+            let lost_through = first.sequence.saturating_sub(1);
+            if after_sequence < lost_through {
+                events.push(RailEvent {
+                    sequence: lost_through,
+                    kind: RailEventKind::Gap { lost_through },
+                });
+            }
+        }
+        events.extend(
+            self.events
+                .iter()
+                .filter(|event| event.sequence > after_sequence)
+                .cloned(),
+        );
+        RailEventDump {
+            generation: self.generation,
+            events,
+        }
+    }
+
+    fn queue_launch(&mut self, launch: RailLaunchInfo) -> Result<(), RailLaunchQueueError> {
+        if self.pending_launches.len() >= MAX_PENDING_RAIL_LAUNCHES {
+            return Err(RailLaunchQueueError::LimitReached);
+        }
+        if self.pending_launches.iter().any(|pending| match pending {
+            PendingRailLaunch::Initial { flags, executable } => {
+                *flags == launch.flags && executable == &launch.executable
+            }
+            PendingRailLaunch::Agent(pending) => {
+                pending.flags == launch.flags && pending.executable == launch.executable
+            }
+        }) {
+            return Err(RailLaunchQueueError::DuplicateResponse);
+        }
+        self.record(RailEventKind::ExecuteQueued(launch.clone()));
+        self.pending_launches.push_back(PendingRailLaunch::Agent(launch));
+        Ok(())
+    }
+
+    fn take_launch(&mut self, flags: u16, executable: &str) -> Option<u64> {
+        let index = self.pending_launches.iter().position(|launch| match launch {
+            PendingRailLaunch::Initial {
+                flags: initial_flags,
+                executable: initial_executable,
+            } => *initial_flags == flags && initial_executable == executable,
+            PendingRailLaunch::Agent(launch) => launch.flags == flags && launch.executable == executable,
+        })?;
+        match self.pending_launches.remove(index) {
+            Some(PendingRailLaunch::Initial { .. }) | None => None,
+            Some(PendingRailLaunch::Agent(launch)) => Some(launch.launch_id),
+        }
+    }
 }
 
 /// A decoded frame retained for screenshots. `pixels` are `0x00RRGGBB` (`to_be_bytes()` yields
@@ -308,6 +455,7 @@ impl Daemon {
             logs,
             overlay,
             credentials_loaded,
+            next_rail_generation: Arc::new(AtomicU64::new(1)),
             certificate_validation,
             #[cfg(windows)]
             rdpdr_backend_factory,
@@ -420,6 +568,13 @@ impl Daemon {
                 last,
             } => DaemonResponse::Single(self.now_stdin(operation_id, data, last).await),
             Request::NowDiagnostics => DaemonResponse::Single(self.now_diagnostics().await),
+            Request::RailStatus => DaemonResponse::Single(self.rail_status()),
+            Request::RailEvents { after_sequence } => DaemonResponse::Single(self.rail_events(after_sequence)),
+            Request::RailWait {
+                after_sequence,
+                timeout_ms,
+            } => DaemonResponse::Single(self.rail_wait(after_sequence, timeout_ms).await),
+            Request::RailExecute(request) => DaemonResponse::Single(self.rail_execute(request)),
         }
     }
 
@@ -489,6 +644,9 @@ impl Daemon {
             .with_client_name(client_name())
             .with_dvc_pipe_proxy(now_endpoint.dvc_proxy_info())
             .with_certificate_validation(certificate_validation)
+            // The headless agent observes validated RAIL state but does not implement local
+            // move/size, taskbar, cloak, z-order, or display-power behavior.
+            .with_rail_client_status_flags(0)
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true);
@@ -524,6 +682,16 @@ impl Daemon {
         // `ConfigBuilder::build` strips every secret property, so the live bag carries no secrets.
         let live_seed = config.properties().clone();
         let destination = config.destination().to_string();
+        let rail_enabled = live_seed.remote_application_mode().unwrap_or(false);
+        let initial_rail_execute = if rail_enabled {
+            live_seed
+                .remote_application_program()
+                .filter(|program| !program.is_empty())
+                .or_else(|| live_seed.alternate_shell().filter(|shell| !shell.is_empty()))
+                .map(|executable| (0, executable.to_owned()))
+        } else {
+            None
+        };
 
         let (output_tx, output_rx) = mpsc::channel(16);
         let client = RdpClient::new(config, output_tx);
@@ -534,11 +702,18 @@ impl Daemon {
         };
         let input_tx = client.input_sender();
 
+        let rail_notify = Arc::new(tokio::sync::Notify::new());
         let live = Arc::new(Mutex::new(Live {
             properties: live_seed,
             state: ConnState::Connecting,
             error: None,
             frame: None,
+            rail_initial_execute: initial_rail_execute.clone(),
+            rail: RailLedger::new(
+                self.next_rail_generation.fetch_add(1, Ordering::Relaxed),
+                1,
+                initial_rail_execute,
+            ),
         }));
 
         // Capture this session's logs into the ring buffer (queryable via `Request::QueryLogs`)
@@ -565,7 +740,13 @@ impl Daemon {
             );
         }
 
-        tokio::spawn(consume_output(output_rx, Arc::clone(&live), self.notification.clone()));
+        tokio::spawn(consume_output(
+            output_rx,
+            Arc::clone(&live),
+            self.notification.clone(),
+            Arc::clone(&rail_notify),
+            Arc::clone(&self.next_rail_generation),
+        ));
 
         info!(%destination, "Started RDP session");
 
@@ -573,7 +754,9 @@ impl Daemon {
             input_tx,
             input_db: Database::new(),
             destination,
+            rail_enabled,
             live,
+            rail_notify,
             operations: OperationManager::new(Arc::clone(&now_endpoint)),
             now_endpoint,
         });
@@ -680,6 +863,119 @@ impl Daemon {
             }
         }
         Response::Ok(Payload::Logs(lines))
+    }
+
+    fn rail_status(&self) -> Response {
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        let live = session.live.lock().expect("session live state poisoned");
+        Response::Ok(Payload::RailStatus(live.rail.status()))
+    }
+
+    fn rail_events(&self, after_sequence: Option<u64>) -> Response {
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        let live = session.live.lock().expect("session live state poisoned");
+        Response::Ok(Payload::RailEvents(live.rail.events_after(after_sequence)))
+    }
+
+    async fn rail_wait(&self, after_sequence: Option<u64>, timeout_ms: u32) -> Response {
+        const MAX_RAIL_WAIT_MS: u32 = 60_000;
+        if timeout_ms > MAX_RAIL_WAIT_MS {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                format!("RAIL wait timeout exceeds {MAX_RAIL_WAIT_MS} ms"),
+            );
+        }
+        let (live, rail_notify) = {
+            let guard = self.state.lock().expect("daemon state poisoned");
+            let Some(session) = guard.as_ref() else {
+                return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+            };
+            (Arc::clone(&session.live), Arc::clone(&session.rail_notify))
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(u64::from(timeout_ms));
+        loop {
+            let notified = rail_notify.notified();
+            tokio::pin!(notified);
+            let _ = notified.as_mut().enable();
+            let events = {
+                let live = live.lock().expect("session live state poisoned");
+                live.rail.events_after(after_sequence)
+            };
+            if !events.events.is_empty() || timeout_ms == 0 {
+                return Response::Ok(Payload::RailEvents(events));
+            }
+
+            if tokio::time::timeout_at(deadline, &mut notified).await.is_err() {
+                let live = live.lock().expect("session live state poisoned");
+                return Response::Ok(Payload::RailEvents(live.rail.events_after(after_sequence)));
+            }
+        }
+    }
+
+    fn rail_execute(&self, request: RailExecuteRequest) -> Response {
+        let execute = ExecutePdu {
+            executable: request.executable,
+            working_directory: request.working_directory,
+            arguments: request.arguments,
+            flags: request.flags,
+        };
+        if let Err(error) = RailPdu::Execute(execute.clone()).validate() {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                format!("invalid RAIL Execute request: {error}"),
+            );
+        }
+
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        if !session.rail_enabled {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::Unavailable,
+                "RAIL is not enabled for this session",
+            );
+        }
+        let permit = match session.input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        let mut live = session.live.lock().expect("session live state poisoned");
+        let launch = RailLaunchInfo {
+            launch_id: live.rail.next_sequence,
+            executable: execute.executable.clone(),
+            flags: execute.flags,
+        };
+        match live.rail.queue_launch(launch.clone()) {
+            Ok(()) => {}
+            Err(RailLaunchQueueError::LimitReached) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "too many pending RAIL launch requests",
+                );
+            }
+            Err(RailLaunchQueueError::DuplicateResponse) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Conflict,
+                    "an indistinguishable RAIL launch request is already pending",
+                );
+            }
+        }
+        drop(live);
+        permit.send(RdpInputEvent::RailExecute(execute));
+        session.rail_notify.notify_waiters();
+        Response::Ok(Payload::RailLaunch(launch))
     }
 
     fn screenshot(&self) -> Response {
@@ -959,19 +1255,121 @@ async fn consume_output(
     mut output_rx: mpsc::Receiver<RdpOutputEvent>,
     live: Arc<Mutex<Live>>,
     notification: Option<mpsc::Sender<()>>,
+    rail_notify: Arc<tokio::sync::Notify>,
+    next_rail_generation: Arc<AtomicU64>,
 ) {
     while let Some(event) = output_rx.recv().await {
         let mut guard = live.lock().expect("session live state poisoned");
         let previous = guard.state;
-        match event {
+        let rail_changed = match event {
             RdpOutputEvent::Connected => {
                 guard.state = ConnState::Connected;
                 guard.error = None;
                 if previous != ConnState::Connected {
                     info!("Session connected");
                 }
+                false
             }
-            RdpOutputEvent::LoginComplete => {}
+            RdpOutputEvent::LoginComplete => false,
+            RdpOutputEvent::WindowingOrders(orders) => {
+                guard.rail.record(RailEventKind::WindowingOrders {
+                    byte_count: u32::try_from(orders.len()).unwrap_or(u32::MAX),
+                });
+                true
+            }
+            RdpOutputEvent::RailHandshake {
+                handshake_ex_flags,
+                initialization_message_count,
+                queued_execute_count,
+            } => {
+                guard.rail.handshake_complete = true;
+                guard.rail.record(RailEventKind::Handshake {
+                    handshake_ex_flags,
+                    initialization_message_count: u16::try_from(initialization_message_count).unwrap_or(u16::MAX),
+                    queued_execute_count: u16::try_from(queued_execute_count).unwrap_or(u16::MAX),
+                });
+                true
+            }
+            RdpOutputEvent::RailDesktopSynchronized { released_execute_count } => {
+                guard.rail.desktop_synchronized = true;
+                guard.rail.record(RailEventKind::DesktopSynchronized {
+                    released_execute_count: u16::try_from(released_execute_count).unwrap_or(u16::MAX),
+                });
+                true
+            }
+            RdpOutputEvent::RailPostHandshakeQueueReleased { released_execute_count } => {
+                guard.rail.record(RailEventKind::PostHandshakeQueueReleased {
+                    released_execute_count: u16::try_from(released_execute_count).unwrap_or(u16::MAX),
+                });
+                true
+            }
+            RdpOutputEvent::RailExecuteResult(result) => {
+                let launch_id = guard.rail.take_launch(result.flags, &result.executable);
+                guard.rail.record(RailEventKind::ExecuteResult {
+                    launch_id,
+                    executable: result.executable,
+                    flags: result.flags,
+                    result: u16::from(result.result),
+                    raw_result: result.raw_result,
+                });
+                true
+            }
+            RdpOutputEvent::RailExecuteFailed {
+                executable,
+                flags,
+                reason,
+            } => {
+                let launch_id = guard.rail.take_launch(flags, &executable);
+                let reason = match reason {
+                    ClientRailExecuteFailureReason::RailUnavailable => RailExecuteFailureReason::RailUnavailable,
+                    ClientRailExecuteFailureReason::QueueRejected => RailExecuteFailureReason::QueueRejected,
+                    ClientRailExecuteFailureReason::MessageProcessingFailed => {
+                        RailExecuteFailureReason::MessageProcessingFailed
+                    }
+                };
+                guard.rail.record(RailEventKind::ExecuteFailed {
+                    launch_id,
+                    executable,
+                    flags,
+                    reason,
+                });
+                true
+            }
+            RdpOutputEvent::RailApplicationId {
+                window_id,
+                application_id,
+                process_id,
+                process_image_name,
+            } => {
+                guard.rail.record(RailEventKind::ApplicationId {
+                    window_id,
+                    application_id,
+                    process_id,
+                    process_image_name,
+                });
+                true
+            }
+            RdpOutputEvent::RailControl(control) => {
+                let kind = match control {
+                    RailControlEvent::SystemParameters(_) => "system-parameters",
+                    RailControlEvent::LanguageBar(_) => "language-bar",
+                    RailControlEvent::Compartment(_) => "compartment",
+                    RailControlEvent::ZOrderSync(_) => "z-order-sync",
+                    RailControlEvent::Cloak(_) => "cloak",
+                    RailControlEvent::PowerDisplayRequest(_) => "power-display-request",
+                };
+                guard.rail.record(RailEventKind::Control { kind: kind.to_owned() });
+                true
+            }
+            RdpOutputEvent::DisplayResizeFallback(_) => {
+                let next_sequence = guard.rail.next_sequence;
+                guard.rail = RailLedger::new(
+                    next_rail_generation.fetch_add(1, Ordering::Relaxed),
+                    next_sequence,
+                    guard.rail_initial_execute.clone(),
+                );
+                true
+            }
             RdpOutputEvent::Image { buffer, width, height } => {
                 let width = width.get();
                 let height = height.get();
@@ -987,27 +1385,34 @@ async fn consume_output(
                 if previous != ConnState::Connected {
                     info!(width, height, "Session connected");
                 }
+                false
             }
             RdpOutputEvent::ConnectionFailure(error) => {
                 guard.state = ConnState::Failed;
                 guard.error = Some(format!("{error}"));
                 error!(%error, "Session connection failed");
+                false
             }
             RdpOutputEvent::Terminated(Ok(reason)) => {
                 guard.state = ConnState::Disconnected;
                 guard.error = Some(format!("{reason:?}"));
                 info!(?reason, "Session terminated");
+                false
             }
             RdpOutputEvent::Terminated(Err(error)) => {
                 guard.state = ConnState::Failed;
                 guard.error = Some(format!("{error}"));
                 warn!(%error, "Session terminated with an error");
+                false
             }
             // With software pointer rendering the cursor is composited into the `Image` frames
             // above; the remaining pointer events (default/hidden) carry no live state we track.
-            _ => {}
-        }
+            _ => false,
+        };
         drop(guard);
+        if rail_changed {
+            rail_notify.notify_waiters();
+        }
         notify(&notification);
     }
 
@@ -1171,7 +1576,10 @@ fn validate_rdpdr_volume_root(root_path: &Path) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::AtomicU64;
+    use core::time::Duration;
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
 
     use tokio::sync::mpsc;
 
@@ -1181,9 +1589,12 @@ mod tests {
     use ironrdp_propertyset::PropertySet;
 
     use super::{
-        Daemon, DaemonOptions, MAX_UNICODE_TEXT_CHARS, RdpdrDriveConfig, ResizeError, enqueue_unicode_text, notify,
+        ConnState, Daemon, DaemonOptions, Live, MAX_PENDING_RAIL_LAUNCHES, MAX_RAIL_EVENTS, MAX_UNICODE_TEXT_CHARS,
+        NowEndpoint, OperationManager, RailLedger, RdpdrDriveConfig, ResizeError, Session, consume_output,
+        enqueue_unicode_text, notify,
     };
-    use crate::ipc::Response;
+    use crate::ipc::{Payload, Response};
+    use ironrdp_rpc::ipc::{RailEventKind, RailExecuteRequest, RailLaunchInfo};
     use ironrdp_tls::CertificateValidation;
 
     #[test]
@@ -1196,6 +1607,381 @@ mod tests {
 
         assert_eq!(receiver.try_recv(), Ok(()));
         assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn rail_ledger_reports_history_gaps_and_correlates_launches() {
+        let mut ledger = RailLedger::new(7, 1, None);
+        let launch = RailLaunchInfo {
+            launch_id: 1,
+            executable: "notepad.exe".to_owned(),
+            flags: 0,
+        };
+        ledger.queue_launch(launch).expect("room for launch");
+        assert_eq!(ledger.take_launch(0, "notepad.exe"), Some(1));
+
+        for byte_count in 0..=MAX_RAIL_EVENTS {
+            ledger.record(RailEventKind::WindowingOrders {
+                byte_count: u32::try_from(byte_count).expect("test count fits"),
+            });
+        }
+
+        let dump = ledger.events_after(Some(0));
+        assert_eq!(dump.generation, 7);
+        assert!(matches!(
+            dump.events.first(),
+            Some(event) if matches!(event.kind, RailEventKind::Gap { .. })
+        ));
+        assert_eq!(dump.events.len(), MAX_RAIL_EVENTS + 1);
+    }
+
+    #[test]
+    fn rail_ledger_reserves_capacity_for_the_initial_launch() {
+        let mut ledger = RailLedger::new(7, 1, Some((0, "notepad.exe".to_owned())));
+        let max_launches = u64::try_from(MAX_PENDING_RAIL_LAUNCHES).expect("launch limit fits");
+
+        for launch_id in 1..max_launches {
+            ledger
+                .queue_launch(RailLaunchInfo {
+                    launch_id,
+                    executable: format!("application-{launch_id}.exe"),
+                    flags: 0,
+                })
+                .expect("room for dynamic launch");
+        }
+        assert_eq!(ledger.status().pending_launches.len(), MAX_PENDING_RAIL_LAUNCHES - 1);
+        assert!(
+            ledger
+                .queue_launch(RailLaunchInfo {
+                    launch_id: max_launches,
+                    executable: "application-final.exe".to_owned(),
+                    flags: 0,
+                })
+                .is_err()
+        );
+
+        assert_eq!(ledger.take_launch(0, "notepad.exe"), None);
+        assert!(
+            ledger
+                .queue_launch(RailLaunchInfo {
+                    launch_id: max_launches,
+                    executable: "application-final.exe".to_owned(),
+                    flags: 0,
+                })
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn rail_ledger_rejects_indistinguishable_pending_launches() {
+        let mut ledger = RailLedger::new(7, 1, Some((0, "notepad.exe".to_owned())));
+
+        assert!(
+            ledger
+                .queue_launch(RailLaunchInfo {
+                    launch_id: 1,
+                    executable: "notepad.exe".to_owned(),
+                    flags: 0,
+                })
+                .is_err()
+        );
+        assert!(
+            ledger
+                .queue_launch(RailLaunchInfo {
+                    launch_id: 2,
+                    executable: "notepad.exe".to_owned(),
+                    flags: 1,
+                })
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn resize_fallback_starts_a_new_rail_generation() {
+        let live = Arc::new(Mutex::new(Live {
+            properties: PropertySet::new(),
+            state: ConnState::Connected,
+            error: None,
+            frame: None,
+            rail_initial_execute: Some((0, "notepad.exe".to_owned())),
+            rail: RailLedger::new(1, 1, Some((0, "notepad.exe".to_owned()))),
+        }));
+        {
+            let mut guard = live.lock().expect("session live state poisoned");
+            guard.rail.handshake_complete = true;
+            guard.rail.desktop_synchronized = true;
+            guard
+                .rail
+                .queue_launch(RailLaunchInfo {
+                    launch_id: 1,
+                    executable: "wordpad.exe".to_owned(),
+                    flags: 0,
+                })
+                .expect("queue a dynamic launch");
+        }
+
+        let (output_tx, output_rx) = mpsc::channel(1);
+        let rail_notify = Arc::new(tokio::sync::Notify::new());
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            Arc::clone(&live),
+            None,
+            Arc::clone(&rail_notify),
+            Arc::new(AtomicU64::new(2)),
+        ));
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::DisplayResizeFallback(
+                ironrdp_client::rdp::DisplayResizeFallbackReason::CapabilitiesTimedOut,
+            ))
+            .await
+            .expect("send resize fallback");
+        drop(output_tx);
+        consumer.await.expect("consume output");
+
+        let mut guard = live.lock().expect("session live state poisoned");
+        assert_eq!(guard.rail.generation, 2);
+        assert!(!guard.rail.handshake_complete);
+        assert!(!guard.rail.desktop_synchronized);
+        assert!(guard.rail.status().pending_launches.is_empty());
+        assert_eq!(guard.rail.status().next_sequence, 2);
+        assert_eq!(guard.rail.take_launch(0, "notepad.exe"), None);
+    }
+
+    fn active_rail_session(
+        rail_enabled: bool,
+    ) -> (
+        Daemon,
+        mpsc::Receiver<RdpInputEvent>,
+        Arc<Mutex<Live>>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let daemon = Daemon::with_overlay(PropertySet::new());
+        let (input_tx, input_rx) = RdpInputSender::channel(1);
+        let now_endpoint = Arc::new(NowEndpoint::new().expect("create NOW endpoint"));
+        let live = Arc::new(Mutex::new(Live {
+            properties: PropertySet::new(),
+            state: ConnState::Connected,
+            error: None,
+            frame: None,
+            rail_initial_execute: None,
+            rail: RailLedger::new(1, 1, None),
+        }));
+        let rail_notify = Arc::new(tokio::sync::Notify::new());
+        *daemon.state.lock().expect("daemon state poisoned") = Some(Session {
+            input_tx,
+            input_db: Database::new(),
+            destination: "server.example".to_owned(),
+            rail_enabled,
+            live: Arc::clone(&live),
+            rail_notify: Arc::clone(&rail_notify),
+            operations: OperationManager::new(Arc::clone(&now_endpoint)),
+            now_endpoint,
+        });
+        (daemon, input_rx, live, rail_notify)
+    }
+
+    #[tokio::test]
+    async fn rail_wait_ignores_non_rail_output_until_evidence_arrives() {
+        let (daemon, _, live, rail_notify) = active_rail_session(true);
+
+        let (output_tx, output_rx) = mpsc::channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::LoginComplete)
+            .await
+            .expect("send ignored output");
+
+        let mut wait = Box::pin(daemon.rail_wait(None, 1_000));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), wait.as_mut())
+                .await
+                .is_err()
+        );
+
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::RailHandshake {
+                handshake_ex_flags: None,
+                initialization_message_count: 0,
+                queued_execute_count: 0,
+            })
+            .await
+            .expect("send RAIL evidence");
+        let response = tokio::time::timeout(Duration::from_secs(1), wait.as_mut())
+            .await
+            .expect("RAIL event wakes wait");
+        assert!(matches!(
+            response,
+            Response::Ok(Payload::RailEvents(events))
+                if matches!(events.events.as_slice(), [event] if matches!(event.kind, RailEventKind::Handshake { .. }))
+        ));
+
+        drop(output_tx);
+        consumer.await.expect("consume output");
+    }
+
+    #[tokio::test]
+    async fn rail_execute_wakes_waiters_after_queueing_evidence() {
+        let (daemon, mut input_rx, _, _) = active_rail_session(true);
+        let mut wait = Box::pin(daemon.rail_wait(Some(0), 1_000));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), wait.as_mut())
+                .await
+                .is_err()
+        );
+
+        let response = daemon.rail_execute(RailExecuteRequest {
+            executable: "notepad.exe".to_owned(),
+            working_directory: String::new(),
+            arguments: String::new(),
+            flags: 0,
+        });
+        assert!(matches!(
+            response,
+            Response::Ok(Payload::RailLaunch(RailLaunchInfo { launch_id: 1, .. }))
+        ));
+        assert!(matches!(
+            input_rx.recv().await,
+            Some(RdpInputEvent::RailExecute(execute)) if execute.executable == "notepad.exe"
+        ));
+
+        let response = tokio::time::timeout(Duration::from_secs(1), wait.as_mut())
+            .await
+            .expect("queued launch wakes wait");
+        assert!(matches!(
+            response,
+            Response::Ok(Payload::RailEvents(events))
+                if matches!(
+                    events.events.as_slice(),
+                    [event] if matches!(event.kind, RailEventKind::ExecuteQueued(_))
+                )
+        ));
+    }
+
+    #[tokio::test]
+    async fn rail_cursors_resume_after_resize_generation_resets() {
+        let (daemon, _, live, _) = active_rail_session(true);
+        let after_sequence = {
+            let mut live = live.lock().expect("session live state poisoned");
+            live.rail.record(RailEventKind::WindowingOrders { byte_count: 1 });
+            let after_sequence = live.rail.next_sequence.saturating_sub(1);
+            let next_sequence = live.rail.next_sequence;
+            live.rail = RailLedger::new(2, next_sequence, None);
+            live.rail.record(RailEventKind::WindowingOrders { byte_count: 2 });
+            after_sequence
+        };
+
+        let events = daemon.rail_events(Some(after_sequence));
+        assert!(matches!(
+            events,
+            Response::Ok(Payload::RailEvents(events))
+                if events.generation == 2
+                    && matches!(
+                        events.events.as_slice(),
+                        [event] if event.sequence > after_sequence
+                            && matches!(event.kind, RailEventKind::WindowingOrders { byte_count: 2 })
+                    )
+        ));
+        let events = daemon.rail_wait(Some(after_sequence), 0).await;
+        assert!(matches!(
+            events,
+            Response::Ok(Payload::RailEvents(events))
+                if events.generation == 2
+                    && matches!(
+                        events.events.as_slice(),
+                        [event] if event.sequence > after_sequence
+                            && matches!(event.kind, RailEventKind::WindowingOrders { byte_count: 2 })
+                    )
+        ));
+    }
+
+    #[tokio::test]
+    async fn local_rail_execute_failure_resolves_pending_launch_without_terminating() {
+        let (daemon, mut input_rx, live, rail_notify) = active_rail_session(true);
+        let (output_tx, output_rx) = mpsc::channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            Arc::clone(&live),
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+
+        assert!(matches!(
+            daemon.rail_execute(RailExecuteRequest {
+                executable: "notepad.exe".to_owned(),
+                working_directory: String::new(),
+                arguments: "--token secret-token".to_owned(),
+                flags: 0,
+            }),
+            Response::Ok(Payload::RailLaunch(RailLaunchInfo { launch_id: 1, .. }))
+        ));
+        assert!(matches!(input_rx.recv().await, Some(RdpInputEvent::RailExecute(_))));
+
+        let mut wait = Box::pin(daemon.rail_wait(Some(1), 1_000));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), wait.as_mut())
+                .await
+                .is_err()
+        );
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::RailExecuteFailed {
+                executable: "notepad.exe".to_owned(),
+                flags: 0,
+                reason: ironrdp_client::rdp::RailExecuteFailureReason::RailUnavailable,
+            })
+            .await
+            .expect("send local failure");
+
+        let response = tokio::time::timeout(Duration::from_secs(1), wait.as_mut())
+            .await
+            .expect("local failure wakes wait");
+        assert!(matches!(
+            response,
+            Response::Ok(Payload::RailEvents(events))
+                if matches!(
+                    events.events.as_slice(),
+                    [event] if matches!(
+                        event.kind,
+                        RailEventKind::ExecuteFailed {
+                            launch_id: Some(1),
+                            reason: ironrdp_rpc::ipc::RailExecuteFailureReason::RailUnavailable,
+                            ..
+                        }
+                    )
+                )
+        ));
+        assert!(matches!(
+            daemon.rail_status(),
+            Response::Ok(Payload::RailStatus(status)) if status.pending_launches.is_empty()
+        ));
+        assert_eq!(
+            live.lock().expect("session live state poisoned").state,
+            ConnState::Connected
+        );
+
+        drop(output_tx);
+        consumer.await.expect("consume output");
+    }
+
+    #[test]
+    fn rail_execute_rejects_desktop_sessions_without_queueing_input() {
+        let (daemon, mut input_rx, _, _) = active_rail_session(false);
+
+        let response = daemon.rail_execute(RailExecuteRequest {
+            executable: "notepad.exe".to_owned(),
+            working_directory: String::new(),
+            arguments: String::new(),
+            flags: 0,
+        });
+
+        assert!(matches!(response, Response::Err(error) if error.message == "RAIL is not enabled for this session"));
+        assert!(matches!(input_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
     }
 
     #[test]

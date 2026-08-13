@@ -19,11 +19,13 @@ fn test_endpoint(name: &str) -> String {
     }
 }
 
-fn spawn_daemon(endpoint: &str) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_ironrdp-agent"))
-        .arg("--endpoint")
-        .arg(endpoint)
-        .arg("daemon-start")
+fn spawn_daemon(endpoint: &str, skip_certificate_check: bool) -> Child {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ironrdp-agent"));
+    command.arg("--endpoint").arg(endpoint).arg("daemon-start");
+    if skip_certificate_check {
+        command.arg("--skip-certificate-check");
+    }
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -110,7 +112,7 @@ fn connect_launch_browser_and_capture_screenshot() {
     let password = env("IRONRDP_AGENT_E2E_PASSWORD").expect("IRONRDP_AGENT_E2E_PASSWORD");
 
     let endpoint = test_endpoint("live");
-    let mut daemon = spawn_daemon(&endpoint);
+    let mut daemon = spawn_daemon(&endpoint, false);
     let screenshot = std::env::temp_dir().join(format!("ironrdp-agent-live-{}.png", std::process::id()));
 
     let result = std::panic::catch_unwind(|| {
@@ -187,6 +189,79 @@ fn connect_launch_browser_and_capture_screenshot() {
     let _ = daemon.kill();
     let _ = daemon.wait();
     let _ = std::fs::remove_file(&screenshot);
+
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}
+
+#[test]
+#[ignore = "requires an authorized RAIL endpoint and IRONRDP_AGENT_RAIL_E2E_* environment variables"]
+fn remoteapp_records_validated_rail_evidence() {
+    if env("IRONRDP_AGENT_RAIL_E2E").as_deref() != Some("1") {
+        return;
+    }
+
+    let host = env("IRONRDP_AGENT_RAIL_E2E_HOST").expect("IRONRDP_AGENT_RAIL_E2E_HOST");
+    let username = env("IRONRDP_AGENT_RAIL_E2E_USERNAME").expect("IRONRDP_AGENT_RAIL_E2E_USERNAME");
+    let domain = env("IRONRDP_AGENT_RAIL_E2E_DOMAIN");
+    let password = env("IRONRDP_AGENT_RAIL_E2E_PASSWORD").expect("IRONRDP_AGENT_RAIL_E2E_PASSWORD");
+
+    let endpoint = test_endpoint("rail-live");
+    let mut daemon = spawn_daemon(&endpoint, true);
+    let result = std::panic::catch_unwind(|| {
+        wait_for_daemon(&endpoint);
+
+        let mut connect_args = vec![
+            "connect",
+            "--server",
+            host.as_str(),
+            "--username",
+            username.as_str(),
+            "--password",
+            password.as_str(),
+            "--prop",
+            "remoteapplicationmode:i:1",
+            "--prop",
+            "remoteapplicationprogram:s:notepad.exe",
+            "--prop",
+            "ironrdp_autologon:i:1",
+        ];
+        if let Some(domain) = domain.as_deref() {
+            connect_args.push("--domain");
+            connect_args.push(domain);
+        }
+        assert_success(&agent(&endpoint, &connect_args));
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut events = String::new();
+        while Instant::now() < deadline {
+            let status = agent(&endpoint, &["rail", "status"]);
+            assert_success(&status);
+            let output = agent(&endpoint, &["rail", "events"]);
+            assert_success(&output);
+            events = String::from_utf8_lossy(&output.stdout).into_owned();
+            if String::from_utf8_lossy(&status.stdout).contains("handshake complete: true")
+                && events.contains("execute result")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+
+        assert!(
+            events.contains("handshake"),
+            "missing RAIL handshake evidence: {events}"
+        );
+        assert!(
+            events.contains("execute result"),
+            "missing RAIL Execute Result evidence: {events}"
+        );
+        assert_success(&agent(&endpoint, &["disconnect"]));
+    });
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
 
     if let Err(error) = result {
         std::panic::resume_unwind(error);

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_propertyset::PropertySet;
+use ironrdp_rail::pdu::ExecutePdu;
 use url::Url;
 
 #[cfg(feature = "vmconnect")]
@@ -73,6 +74,8 @@ pub struct Config {
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
     pub(crate) rail_client_status_flags: Option<u32>,
+    /// Initial RemoteApp launch queued after the RAIL handshake.
+    pub(crate) rail_initial_execute: Option<ExecutePdu>,
 
     /// DVC channel ↔ named-pipe proxy configuration.
     ///
@@ -630,6 +633,7 @@ pub struct ConfigBuilder {
     alternate_shell: Option<String>,
     work_dir: Option<String>,
     remote_application_mode: Option<bool>,
+    remote_application_program: Option<String>,
     rail_support_level: Option<ironrdp_pdu::rdp::capability_sets::RailSupportLevel>,
     rail_client_status_flags: Option<u32>,
 
@@ -1470,6 +1474,21 @@ impl ConfigBuilder {
             anyhow::bail!("RAIL support level must include remote programs support when RemoteApp mode is enabled");
         }
 
+        let rail_initial_execute = if remote_application_mode {
+            self.remote_application_program
+                .as_deref()
+                .filter(|program| !program.is_empty())
+                .or_else(|| self.alternate_shell.as_deref().filter(|shell| !shell.is_empty()))
+                .map(|executable| ExecutePdu {
+                    flags: 0,
+                    executable: executable.to_owned(),
+                    working_directory: self.work_dir.clone().unwrap_or_default(),
+                    arguments: String::new(),
+                })
+        } else {
+            None
+        };
+
         let connector = ironrdp_connector::Config {
             credentials: ironrdp_connector::Credentials::UsernamePassword {
                 username: self.username.unwrap_or_default(),
@@ -1511,8 +1530,16 @@ impl ConfigBuilder {
             compression_type,
             performance_flags: self.performance_flags.unwrap_or_default(),
             timezone_info: TimezoneInfo::default(),
-            alternate_shell: self.alternate_shell.unwrap_or_default(),
-            work_dir: self.work_dir.unwrap_or_default(),
+            alternate_shell: if remote_application_mode {
+                String::new()
+            } else {
+                self.alternate_shell.unwrap_or_default()
+            },
+            work_dir: if remote_application_mode {
+                String::new()
+            } else {
+                self.work_dir.unwrap_or_default()
+            },
             remote_application_mode,
             rail_support_level,
         };
@@ -1542,6 +1569,7 @@ impl ConfigBuilder {
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,
             rail_client_status_flags: self.rail_client_status_flags,
+            rail_initial_execute,
             #[cfg(feature = "dvc-pipe-proxy")]
             dvc_pipe_proxies: self.dvc_pipe_proxies,
             #[cfg(all(windows, feature = "dvc-com-plugin"))]
@@ -1620,6 +1648,9 @@ impl ConfigBuilder {
         }
         if let Some(remote_application_mode) = ps.remote_application_mode() {
             self.remote_application_mode = Some(remote_application_mode);
+        }
+        if let Some(program) = ps.remote_application_program() {
+            self.remote_application_program = Some(program.to_owned());
         }
         if let Some(minutes) = ps.fake_events_interval() {
             self.fake_events_interval = Some(Duration::from_secs(u64::from(minutes) * 60));
@@ -1868,5 +1899,26 @@ mod tests {
 
         assert!(config.connector().remote_application_mode);
         assert_eq!(config.properties().remote_application_mode(), Some(true));
+    }
+
+    #[test]
+    fn remote_application_program_queues_rail_execute_and_clears_client_info_shell() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_remote_application_mode(true);
+        properties.set_remote_application_program("notepad.exe");
+        properties.set_alternate_shell("fallback.exe");
+        properties.set_shell_working_directory("C:\\Temp");
+
+        let config = complete_builder()
+            .with_property_set(&properties)
+            .expect("valid properties")
+            .build()
+            .expect("valid RemoteApp configuration");
+
+        assert!(config.connector().alternate_shell.is_empty());
+        assert!(config.connector().work_dir.is_empty());
+        let execute = config.rail_initial_execute.expect("initial Execute PDU");
+        assert_eq!(execute.executable, "notepad.exe");
+        assert_eq!(execute.working_directory, "C:\\Temp");
     }
 }

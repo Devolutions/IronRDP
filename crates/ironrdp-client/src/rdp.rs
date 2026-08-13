@@ -66,6 +66,17 @@ pub enum DisplayResizeFallbackReason {
     ReactivationTimedOut,
 }
 
+/// Explains why a locally accepted RemoteApp launch could not be processed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RailExecuteFailureReason {
+    /// The active session has no RAIL static-channel processor.
+    RailUnavailable,
+    /// The RAIL client rejected the Execute request before it could be sent.
+    QueueRejected,
+    /// The active stage could not encode the queued RAIL messages.
+    MessageProcessingFailed,
+}
+
 #[derive(Debug)]
 pub enum RdpOutputEvent {
     /// Connection negotiation and activation have completed.
@@ -108,6 +119,15 @@ pub enum RdpOutputEvent {
     },
     /// The server completed a RemoteApp launch request.
     RailExecuteResult(ExecuteResultPdu),
+    /// A locally accepted RemoteApp launch could not be processed.
+    ///
+    /// The event carries only the launch correlation fields, never its working directory or
+    /// arguments.
+    RailExecuteFailed {
+        executable: String,
+        flags: u16,
+        reason: RailExecuteFailureReason,
+    },
     /// The server supplied an application identity for a remote window.
     RailApplicationId {
         window_id: u32,
@@ -599,6 +619,7 @@ impl RdpClient {
             match active_session(
                 framed,
                 connection_result,
+                self.config.rail_initial_execute.clone(),
                 &self.output_event_sender,
                 &mut self.input_event_receiver,
                 &mut self.clipboard_event_receiver,
@@ -1555,6 +1576,7 @@ fn poll_deferred_rdpdr_output(active_stage: &mut ActiveStage) -> SessionResult<O
 async fn active_session(
     framed: UpgradedFramed,
     connection_result: ConnectionResult,
+    initial_rail_execute: Option<ExecutePdu>,
     output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::Receiver<RdpInputEvent>,
     clipboard_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
@@ -1584,6 +1606,14 @@ async fn active_session(
     }
     .build();
     active_stage.set_window_support_level(window_support_level);
+    if let Some(execute) = initial_rail_execute {
+        let rail_client = active_stage
+            .get_svc_processor_mut::<RailClient>()
+            .ok_or_else(|| ironrdp_session::general_err!("RemoteApp launch requested without a RAIL static channel"))?;
+        rail_client
+            .queue_execute(execute)
+            .map_err(|error| ironrdp_session::custom_err!("queue initial RemoteApp launch", error))?;
+    }
 
     // Timer interval for driving clipboard lock timeouts.
     let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
@@ -1768,34 +1798,95 @@ async fn active_session(
                         }
                     }
                     RdpInputEvent::RailExecute(execute) => {
-                        let messages = {
-                            let rail_client = active_stage
-                                .get_svc_processor_mut::<RailClient>()
-                                .ok_or_else(|| ironrdp_session::general_err!("RAIL is not enabled for this session"))?;
-                            rail_client
-                                .queue_execute(execute)
-                                .map_err(|error| ironrdp_session::custom_err!("RAIL", error))?
+                        let executable = execute.executable.clone();
+                        let flags = execute.flags;
+                        let (messages, failure_reason) = match active_stage.get_svc_processor_mut::<RailClient>() {
+                            Some(rail_client) => match rail_client.queue_execute(execute) {
+                                Ok(messages) => (Some(messages), None),
+                                Err(error) => {
+                                    warn!(%error, "Unable to queue RAIL Execute request");
+                                    (None, Some(RailExecuteFailureReason::QueueRejected))
+                                }
+                            },
+                            None => {
+                                warn!("Unable to queue RAIL Execute request because RAIL is disabled");
+                                (None, Some(RailExecuteFailureReason::RailUnavailable))
+                            }
                         };
-                        let frame = active_stage.process_svc_processor_messages(messages)?;
-                        (!frame.is_empty())
-                            .then_some(ActiveStageOutput::ResponseFrame(frame))
-                            .into_iter()
-                            .collect()
+                        match messages {
+                            Some(messages) => match active_stage.process_svc_processor_messages(messages) {
+                                Ok(frame) => (!frame.is_empty())
+                                    .then_some(ActiveStageOutput::ResponseFrame(frame))
+                                    .into_iter()
+                                    .collect(),
+                                Err(error) => {
+                                    warn!(%error, "Unable to process RAIL Execute request");
+                                    if !send_active_output_event(
+                                        output_event_sender,
+                                        RdpOutputEvent::RailExecuteFailed {
+                                            executable,
+                                            flags,
+                                            reason: RailExecuteFailureReason::MessageProcessingFailed,
+                                        },
+                                        close_receiver,
+                                    )
+                                    .await?
+                                    {
+                                        return Ok(RdpControlFlow::TerminatedGracefully(
+                                            GracefulDisconnectReason::UserInitiated,
+                                        ));
+                                    }
+                                    Vec::new()
+                                }
+                            },
+                            None => {
+                                let reason = failure_reason.expect("RAIL Execute failure reason must be recorded");
+                                if !send_active_output_event(
+                                    output_event_sender,
+                                    RdpOutputEvent::RailExecuteFailed {
+                                        executable,
+                                        flags,
+                                        reason,
+                                    },
+                                    close_receiver,
+                                )
+                                .await?
+                                {
+                                    return Ok(RdpControlFlow::TerminatedGracefully(
+                                        GracefulDisconnectReason::UserInitiated,
+                                    ));
+                                }
+                                Vec::new()
+                            }
+                        }
                     }
                     RdpInputEvent::Rail(event) => {
-                        let messages = {
-                            let rail_client = active_stage
-                                .get_svc_processor_mut::<RailClient>()
-                                .ok_or_else(|| ironrdp_session::general_err!("RAIL is not enabled for this session"))?;
-                            rail_client
-                                .queue_input(event)
-                                .map_err(|error| ironrdp_session::custom_err!("RAIL", error))?
+                        let messages = match active_stage.get_svc_processor_mut::<RailClient>() {
+                            Some(rail_client) => match rail_client.queue_input(event) {
+                                Ok(messages) => Some(messages),
+                                Err(error) => {
+                                    warn!(%error, "Unable to queue RAIL input");
+                                    None
+                                }
+                            },
+                            None => {
+                                warn!("Unable to queue RAIL input because RAIL is disabled");
+                                None
+                            }
                         };
-                        let frame = active_stage.process_svc_processor_messages(messages)?;
-                        (!frame.is_empty())
-                            .then_some(ActiveStageOutput::ResponseFrame(frame))
-                            .into_iter()
-                            .collect()
+                        match messages {
+                            Some(messages) => match active_stage.process_svc_processor_messages(messages) {
+                                Ok(frame) => (!frame.is_empty())
+                                    .then_some(ActiveStageOutput::ResponseFrame(frame))
+                                    .into_iter()
+                                    .collect(),
+                                Err(error) => {
+                                    warn!(%error, "Unable to process RAIL input");
+                                    Vec::new()
+                                }
+                            },
+                            None => Vec::new(),
+                        }
                     }
                     }
                 }
@@ -2800,6 +2891,34 @@ mod tests {
         assert!(matches!(
             output_receiver.recv().await,
             Some(RdpOutputEvent::WindowingOrders(data)) if data == [0, 0, 1, 2, 3]
+        ));
+    }
+
+    #[tokio::test]
+    async fn local_rail_execute_failure_is_delivered_without_terminating_the_session() {
+        let (output_sender, mut output_receiver) = mpsc::channel(1);
+        let (_close_sender, mut close_receiver) = watch::channel(false);
+
+        assert!(
+            send_active_output_event(
+                &output_sender,
+                RdpOutputEvent::RailExecuteFailed {
+                    executable: "notepad.exe".to_owned(),
+                    flags: 0,
+                    reason: RailExecuteFailureReason::QueueRejected,
+                },
+                &mut close_receiver,
+            )
+            .await
+            .expect("deliver local RAIL Execute failure")
+        );
+        assert!(matches!(
+            output_receiver.recv().await,
+            Some(RdpOutputEvent::RailExecuteFailed {
+                executable,
+                flags: 0,
+                reason: RailExecuteFailureReason::QueueRejected,
+            }) if executable == "notepad.exe"
         ));
     }
 

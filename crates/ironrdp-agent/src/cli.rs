@@ -24,7 +24,8 @@ use ironrdp_propertyset::{PropertySet, Value};
 
 use ironrdp_rpc::ipc::{
     AgentError, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent,
-    OperationEventKind, OperationInfo, OperationState, Payload, PropValue, Request, Response,
+    OperationEventKind, OperationInfo, OperationState, Payload, PropValue, RailEvent, RailEventKind,
+    RailExecuteRequest, Request, Response,
 };
 use ironrdp_rpc::transport::{self, Endpoint};
 
@@ -113,6 +114,8 @@ enum Command {
     },
     /// Execute commands over the session's NOW DVC endpoint.
     Now(NowArgs),
+    /// Inspect and exercise the validated, headless RemoteApp/RAIL audit plane.
+    Rail(RailArgs),
     /// Windows Sandbox lifecycle helpers (list/config/stop via WindowsSandboxServer gRPC).
     #[cfg(windows)]
     Sandbox(SandboxArgs),
@@ -183,6 +186,50 @@ enum NowCommand {
     Stdin(NowStdinArgs),
     /// Display the local NOW endpoint state without making a new connection.
     Diagnostics,
+}
+
+#[derive(Args, Debug)]
+struct RailArgs {
+    /// Output format for RAIL evidence.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    format: OutputFormat,
+    #[command(subcommand)]
+    command: RailCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum RailCommand {
+    /// Display the current RAIL handshake and pending-launch state.
+    Status,
+    /// Display validated RAIL events retained by the daemon.
+    Events {
+        /// Only show events with a sequence greater than this value.
+        #[arg(long)]
+        after_sequence: Option<u64>,
+    },
+    /// Wait for the next validated RAIL event without polling.
+    Wait {
+        /// Only return events with a sequence greater than this value.
+        #[arg(long)]
+        after_sequence: Option<u64>,
+        /// Maximum wait time in milliseconds, capped at 60,000.
+        #[arg(long, default_value_t = 30_000)]
+        timeout_ms: u32,
+    },
+    /// Queue a RemoteApp launch without exposing raw protocol injection.
+    Execute {
+        /// Remote executable path or alias.
+        executable: String,
+        /// Initial remote working directory.
+        #[arg(long)]
+        working_directory: Option<String>,
+        /// Command-line arguments for the executable.
+        #[arg(long)]
+        arguments: Option<String>,
+        /// RAIL Execute flags.
+        #[arg(long, default_value_t = 0)]
+        flags: u16,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -544,6 +591,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             return Ok(());
         }
+        Command::Rail(args) => return run_rail(&endpoint, args).await,
         Command::Connect(args) => build_connect_request(args)?,
         #[cfg(windows)]
         Command::Sandbox(args) => {
@@ -705,6 +753,267 @@ fn run_sandbox_command(args: SandboxArgs) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+async fn run_rail(endpoint: &Endpoint, args: RailArgs) -> anyhow::Result<()> {
+    let RailArgs { format, command } = args;
+    let request = match command {
+        RailCommand::Status => Request::RailStatus,
+        RailCommand::Events { after_sequence } => Request::RailEvents { after_sequence },
+        RailCommand::Wait {
+            after_sequence,
+            timeout_ms,
+        } => Request::RailWait {
+            after_sequence,
+            timeout_ms,
+        },
+        RailCommand::Execute {
+            executable,
+            working_directory,
+            arguments,
+            flags,
+        } => Request::RailExecute(RailExecuteRequest {
+            executable,
+            working_directory: working_directory.unwrap_or_default(),
+            arguments: arguments.unwrap_or_default(),
+            flags,
+        }),
+    };
+    let response = transport::send_request(endpoint, &request).await?;
+    let payload = match response {
+        Response::Ok(payload) => payload,
+        Response::Err(error) => anyhow::bail!("{error}"),
+    };
+    print_rail_payload(payload, format)
+}
+
+fn print_rail_payload(payload: Payload, format: OutputFormat) -> anyhow::Result<()> {
+    use serde_json::json;
+
+    match format {
+        OutputFormat::Human => match payload {
+            Payload::RailStatus(status) => {
+                println!("generation: {}", status.generation);
+                println!("next sequence: {}", status.next_sequence);
+                println!("handshake complete: {}", status.handshake_complete);
+                println!("desktop synchronized: {}", status.desktop_synchronized);
+                for launch in status.pending_launches {
+                    println!(
+                        "pending launch {}: {} (flags 0x{:04x})",
+                        launch.launch_id, launch.executable, launch.flags
+                    );
+                }
+            }
+            Payload::RailEvents(events) => {
+                println!("generation: {}", events.generation);
+                for event in events.events {
+                    print_rail_event(&event);
+                }
+            }
+            Payload::RailLaunch(launch) => {
+                println!(
+                    "queued launch {}: {} (flags 0x{:04x})",
+                    launch.launch_id, launch.executable, launch.flags
+                );
+            }
+            _ => anyhow::bail!("unexpected response to RAIL request"),
+        },
+        OutputFormat::Json => {
+            let value = match payload {
+                Payload::RailStatus(status) => json!({
+                    "type": "rail_status",
+                    "generation": status.generation,
+                    "next_sequence": status.next_sequence,
+                    "handshake_complete": status.handshake_complete,
+                    "desktop_synchronized": status.desktop_synchronized,
+                    "pending_launches": status.pending_launches.iter().map(rail_launch_json).collect::<Vec<_>>(),
+                }),
+                Payload::RailEvents(events) => json!({
+                    "type": "rail_events",
+                    "generation": events.generation,
+                    "events": events.events.iter().map(rail_event_json).collect::<Vec<_>>(),
+                }),
+                Payload::RailLaunch(launch) => json!({
+                    "type": "rail_launch",
+                    "launch": rail_launch_json(&launch),
+                }),
+                _ => anyhow::bail!("unexpected response to RAIL request"),
+            };
+            println!("{}", serde_json::to_string(&value)?);
+        }
+        OutputFormat::Ndjson => match payload {
+            Payload::RailEvents(events) => {
+                for event in events.events {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&json!({
+                            "type": "rail_event",
+                            "generation": events.generation,
+                            "event": rail_event_json(&event),
+                        }))?
+                    );
+                }
+            }
+            Payload::RailStatus(status) => println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "type": "rail_status",
+                    "generation": status.generation,
+                    "next_sequence": status.next_sequence,
+                    "handshake_complete": status.handshake_complete,
+                    "desktop_synchronized": status.desktop_synchronized,
+                    "pending_launches": status.pending_launches.iter().map(rail_launch_json).collect::<Vec<_>>(),
+                }))?
+            ),
+            Payload::RailLaunch(launch) => println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "type": "rail_launch",
+                    "launch": rail_launch_json(&launch),
+                }))?
+            ),
+            _ => anyhow::bail!("unexpected response to RAIL request"),
+        },
+    }
+    Ok(())
+}
+
+fn print_rail_event(event: &RailEvent) {
+    match &event.kind {
+        RailEventKind::Handshake {
+            handshake_ex_flags,
+            initialization_message_count,
+            queued_execute_count,
+        } => println!(
+            "{}: handshake flags={handshake_ex_flags:?} initialization_messages={initialization_message_count} queued_executes={queued_execute_count}",
+            event.sequence
+        ),
+        RailEventKind::DesktopSynchronized { released_execute_count } => println!(
+            "{}: desktop synchronized released_executes={released_execute_count}",
+            event.sequence
+        ),
+        RailEventKind::PostHandshakeQueueReleased { released_execute_count } => println!(
+            "{}: post-handshake queue released executes={released_execute_count}",
+            event.sequence
+        ),
+        RailEventKind::ExecuteQueued(launch) => println!(
+            "{}: queued launch {} {} flags=0x{:04x}",
+            event.sequence, launch.launch_id, launch.executable, launch.flags
+        ),
+        RailEventKind::ExecuteResult {
+            launch_id,
+            executable,
+            flags,
+            result,
+            raw_result,
+        } => println!(
+            "{}: execute result launch={launch_id:?} executable={executable} flags=0x{flags:04x} result=0x{result:04x} raw=0x{raw_result:08x}",
+            event.sequence
+        ),
+        RailEventKind::ExecuteFailed {
+            launch_id,
+            executable,
+            flags,
+            reason,
+        } => println!(
+            "{}: execute failed launch={launch_id:?} executable={executable} flags=0x{flags:04x} reason={}",
+            event.sequence,
+            reason.as_str()
+        ),
+        RailEventKind::ApplicationId {
+            window_id,
+            application_id,
+            process_id,
+            process_image_name,
+        } => println!(
+            "{}: application ID window=0x{window_id:08x} application={application_id} process={process_id:?} image={process_image_name:?}",
+            event.sequence
+        ),
+        RailEventKind::Control { kind } => println!("{}: control {kind}", event.sequence),
+        RailEventKind::WindowingOrders { byte_count } => {
+            println!("{}: validated windowing orders ({byte_count} bytes)", event.sequence)
+        }
+        RailEventKind::Gap { lost_through } => {
+            println!("{}: history gap through sequence {lost_through}", event.sequence)
+        }
+    }
+}
+
+fn rail_launch_json(launch: &ironrdp_rpc::ipc::RailLaunchInfo) -> serde_json::Value {
+    serde_json::json!({
+        "launch_id": launch.launch_id,
+        "executable": launch.executable,
+        "flags": launch.flags,
+    })
+}
+
+fn rail_event_json(event: &RailEvent) -> serde_json::Value {
+    use serde_json::json;
+
+    let kind = match &event.kind {
+        RailEventKind::Handshake {
+            handshake_ex_flags,
+            initialization_message_count,
+            queued_execute_count,
+        } => json!({
+            "kind": "handshake",
+            "handshake_ex_flags": handshake_ex_flags,
+            "initialization_message_count": initialization_message_count,
+            "queued_execute_count": queued_execute_count,
+        }),
+        RailEventKind::DesktopSynchronized { released_execute_count } => {
+            json!({"kind": "desktop_synchronized", "released_execute_count": released_execute_count})
+        }
+        RailEventKind::PostHandshakeQueueReleased { released_execute_count } => {
+            json!({"kind": "post_handshake_queue_released", "released_execute_count": released_execute_count})
+        }
+        RailEventKind::ExecuteQueued(launch) => json!({"kind": "execute_queued", "launch": rail_launch_json(launch)}),
+        RailEventKind::ExecuteResult {
+            launch_id,
+            executable,
+            flags,
+            result,
+            raw_result,
+        } => json!({
+            "kind": "execute_result",
+            "launch_id": launch_id,
+            "executable": executable,
+            "flags": flags,
+            "result": result,
+            "raw_result": raw_result,
+        }),
+        RailEventKind::ExecuteFailed {
+            launch_id,
+            executable,
+            flags,
+            reason,
+        } => json!({
+            "kind": "execute_failed",
+            "launch_id": launch_id,
+            "executable": executable,
+            "flags": flags,
+            "reason": reason.as_str(),
+        }),
+        RailEventKind::ApplicationId {
+            window_id,
+            application_id,
+            process_id,
+            process_image_name,
+        } => json!({
+            "kind": "application_id",
+            "window_id": window_id,
+            "application_id": application_id,
+            "process_id": process_id,
+            "process_image_name": process_image_name,
+        }),
+        RailEventKind::Control { kind } => json!({"kind": "control", "control": kind}),
+        RailEventKind::WindowingOrders { byte_count } => json!({"kind": "windowing_orders", "byte_count": byte_count}),
+        RailEventKind::Gap { lost_through } => json!({"kind": "gap", "lost_through": lost_through}),
+    };
+    json!({
+        "sequence": event.sequence,
+        "event": kind,
+    })
 }
 
 async fn run_now(endpoint: &Endpoint, args: NowArgs) -> anyhow::Result<Option<u32>> {
@@ -1272,6 +1581,19 @@ fn print_payload(payload: Payload) {
         Payload::NowDiagnostics(diagnostics) => {
             println!("NOW endpoint allocated: {}", diagnostics.endpoint_allocated);
             println!("NOW connected: {}", diagnostics.connected);
+        }
+        Payload::RailStatus(status) => {
+            println!("RAIL generation: {}", status.generation);
+            println!("RAIL handshake complete: {}", status.handshake_complete);
+        }
+        Payload::RailEvents(events) => {
+            println!("RAIL generation: {}", events.generation);
+            for event in &events.events {
+                print_rail_event(event);
+            }
+        }
+        Payload::RailLaunch(launch) => {
+            println!("queued RAIL launch {}: {}", launch.launch_id, launch.executable);
         }
     }
 }

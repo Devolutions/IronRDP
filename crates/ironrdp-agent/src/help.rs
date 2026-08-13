@@ -25,6 +25,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
   `ironrdp-activex` endpoint. The host must set `IRONRDP_ACTIVEX_RPC=1` before creating the
   control; the agent never starts an ActiveX host. Use `--endpoint` when the host uses
   `IRONRDP_ACTIVEX_RPC_ENDPOINT`.
+  RAIL audit commands require the daemon backend.
 
 ## Lifecycle
 
@@ -76,6 +77,23 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Inspection
 
+  RAIL commands require the daemon backend.
+  Connect with `--prop remoteapplicationmode:i:1`; add
+  `--prop remoteapplicationprogram:s:<program>` to queue an initial launch.
+
+- `rail status`                     Show RAIL handshake and synchronization state plus agent-queued
+                                   launches.
+- `rail events [--after-sequence N]`
+                                   Show validated RAIL observations retained by the daemon.
+- `rail wait [--after-sequence N] [--timeout-ms MS]`
+                                   Return retained RAIL events newer than `--after-sequence`, waiting
+                                   up to the timeout only when none are available.
+- `rail execute EXECUTABLE [--working-directory DIR] [--arguments ARGS] [--flags FLAGS]`
+                                   Queue a bounded, validated RemoteApp launch.
+  All `rail` subcommands accept `--format human|json|ndjson` before the subcommand.
+  `json` prints one JSON document; `ndjson` prints one JSON object per returned event or response.
+  RAIL event history is bounded to 256 records per connection generation and returns an explicit
+  `gap` event after eviction.
 - `query-props [--filter SUBSTR] [--prefix PREFIX]`
                                  Print the live session property bag, one `key = value` per line.
                                  Secrets are stripped from the configuration before a session
