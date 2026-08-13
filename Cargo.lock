@@ -7377,7 +7377,6 @@ dependencies = [
  "anyhow",
  "pico-args",
  "tinyjson",
- "toml",
  "xshell",
 ]
 

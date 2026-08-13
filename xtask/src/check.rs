@@ -116,10 +116,8 @@ pub fn test_settings(sh: &Shell, base: &str, head: &str) -> anyhow::Result<()> {
 
         let base_manifest = git_file(sh, base, base_path)?;
         let head_manifest = git_file(sh, head, head_path)?;
-        let base_settings =
-            protected_lib_settings(&base_manifest).with_context(|| format!("parse {base_path} at {base}"))?;
-        let head_settings =
-            protected_lib_settings(&head_manifest).with_context(|| format!("parse {head_path} at {head}"))?;
+        let base_settings = protected_lib_settings(&base_manifest);
+        let head_settings = protected_lib_settings(&head_manifest);
 
         for setting in base_settings.difference(&head_settings) {
             removals.insert((head_path, *setting));
@@ -151,20 +149,32 @@ fn git_file(sh: &Shell, revision: &str, path: &str) -> anyhow::Result<String> {
         .with_context(|| format!("read {path} at {revision}"))
 }
 
-fn protected_lib_settings(manifest: &str) -> anyhow::Result<BTreeSet<&'static str>> {
-    let manifest = manifest.parse::<toml::Table>()?;
-    let Some(lib) = manifest.get("lib").and_then(toml::Value::as_table) else {
-        return Ok(BTreeSet::new());
-    };
+fn protected_lib_settings(manifest: &str) -> BTreeSet<&'static str> {
+    let mut in_lib = false;
     let mut settings = BTreeSet::new();
 
-    for setting in ["doctest", "test"] {
-        if lib.get(setting).and_then(toml::Value::as_bool) == Some(false) {
-            settings.insert(setting);
+    for line in manifest.lines() {
+        let line = line.split_once('#').map_or(line, |(line, _)| line).trim();
+
+        if line.starts_with('[') {
+            in_lib = line == "[lib]";
+        } else if in_lib
+            && let Some((key, value)) = line.split_once('=')
+            && value.trim() == "false"
+        {
+            match key.trim() {
+                "doctest" => {
+                    settings.insert("doctest");
+                }
+                "test" => {
+                    settings.insert("test");
+                }
+                _ => {}
+            }
         }
     }
 
-    Ok(settings)
+    settings
 }
 
 pub fn install(sh: &Shell) -> anyhow::Result<()> {
