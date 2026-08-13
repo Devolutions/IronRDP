@@ -315,10 +315,7 @@ impl ndr::Decode for ScardContext {
         let length = src.read_u32();
         if length != u32::from(self.len) {
             error!(?length, expected = self.len, "ScardContext length mismatch");
-            return Err(invalid_field_err!(
-                "decode_value",
-                "ScardContext length mismatch"
-            ));
+            return Err(invalid_field_err!("decode_value", "ScardContext length mismatch"));
         }
         let n = usize::from(self.len);
         ensure_size!(in: src, size: n);
@@ -1384,11 +1381,7 @@ impl ScardHandle {
     pub fn new(context: ScardContext, value: u32) -> Self {
         let mut bytes = [0u8; 8];
         bytes[..4].copy_from_slice(&value.to_le_bytes());
-        Self {
-            context,
-            len: 4,
-            bytes,
-        }
+        Self { context, len: 4, bytes }
     }
 
     /// Creates a handle from a native WinSCard `SCARDHANDLE` (`usize` width).
@@ -1478,10 +1471,7 @@ impl ndr::Decode for ScardHandle {
         let length = src.read_u32();
         if length != u32::from(self.len) {
             error!(?length, expected = self.len, "ScardHandle length mismatch");
-            return Err(invalid_field_err!(
-                "decode_value",
-                "ScardHandle length mismatch"
-            ));
+            return Err(invalid_field_err!("decode_value", "ScardHandle length mismatch"));
         }
         let n = usize::from(self.len);
         ensure_size!(in: src, size: n);
