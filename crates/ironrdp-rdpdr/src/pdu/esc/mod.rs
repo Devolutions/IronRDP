@@ -169,6 +169,47 @@ impl ScardCall {
     }
 }
 
+/// Native WinSCard handle/context width on this target (`4` or `8`).
+#[cfg(target_pointer_width = "32")]
+const fn native_scard_len() -> u8 {
+    4
+}
+
+/// Native WinSCard handle/context width on this target (`4` or `8`).
+#[cfg(target_pointer_width = "64")]
+const fn native_scard_len() -> u8 {
+    8
+}
+
+fn scard_wire_len(length: u32) -> DecodeResult<u8> {
+    match length {
+        0 => Ok(0),
+        4 => Ok(4),
+        8 => Ok(8),
+        _ => Err(invalid_field_err!(
+            "decode_ptr",
+            "unsupported value length for SCARDCONTEXT/SCARDHANDLE"
+        )),
+    }
+}
+
+fn write_native_le_bytes(native: usize, len: u8, bytes: &mut [u8; 8]) {
+    debug_assert!(matches!(len, 0 | 4 | 8));
+    // Zero-extend native into 8 LE bytes, then keep the first `len` of them.
+    let mut le = [0u8; 8];
+    let native_bytes = native.to_le_bytes();
+    le[..native_bytes.len()].copy_from_slice(&native_bytes);
+    let n = usize::from(len);
+    bytes[..n].copy_from_slice(&le[..n]);
+}
+
+fn read_native_le_bytes(bytes: &[u8; 8], len: u8) -> usize {
+    let mut tmp = [0u8; size_of::<usize>()];
+    let n = usize::from(len).min(size_of::<usize>());
+    tmp[..n].copy_from_slice(&bytes[..n]);
+    usize::from_le_bytes(tmp)
+}
+
 /// [2.2.1.1] REDIR_SCARDCONTEXT
 ///
 /// Opaque client-owned context bytes. MS-RDPESC allows `cbContext` in `0..=16`;
@@ -193,15 +234,12 @@ impl ScardContext {
 
     /// Creates a context from a native WinSCard `SCARDCONTEXT` (`usize` width).
     pub fn from_native(native: usize) -> Self {
-        Self::from_native_len(native, size_of::<usize>() as u8)
+        Self::from_native_len(native, native_scard_len())
     }
 
     fn from_native_len(native: usize, len: u8) -> Self {
-        debug_assert!(matches!(len, 0 | 4 | 8));
         let mut bytes = [0u8; 8];
-        let le = (native as u64).to_le_bytes();
-        let n = usize::from(len);
-        bytes[..n].copy_from_slice(&le[..n]);
+        write_native_le_bytes(native, len, &mut bytes);
         Self { len, bytes }
     }
 
@@ -232,14 +270,7 @@ impl ScardContext {
 
     /// Native `SCARDCONTEXT`-sized integer (little-endian, zero-extended).
     pub fn native(self) -> usize {
-        let mut tmp = [0u8; 8];
-        let n = usize::from(self.len);
-        tmp[..n].copy_from_slice(&self.bytes[..n]);
-        u64::from_le_bytes(tmp) as usize
-    }
-
-    fn supported_len(length: u32) -> bool {
-        matches!(length, 0 | 4 | 8)
+        read_native_le_bytes(&self.bytes, self.len)
     }
 }
 
@@ -285,13 +316,13 @@ impl ndr::Decode for ScardContext {
     {
         ensure_size!(in: src, size: size_of::<u32>());
         let length = src.read_u32();
-        if !Self::supported_len(length) {
-            error!(?length, "Unsupported value length in ScardContext");
-            return Err(invalid_field_err!(
-                "decode_ptr",
-                "unsupported value length in ScardContext"
-            ));
-        }
+        let len = match scard_wire_len(length) {
+            Ok(len) => len,
+            Err(err) => {
+                error!(?length, "Unsupported value length in ScardContext");
+                return Err(err);
+            }
+        };
 
         let ptr = ndr::decode_ptr(src, index)?;
         if (length == 0) != (ptr == 0) {
@@ -301,7 +332,7 @@ impl ndr::Decode for ScardContext {
             ));
         }
         Ok(Self {
-            len: length as u8,
+            len,
             bytes: [0; 8],
         })
     }
@@ -1129,7 +1160,7 @@ impl rpce::HeaderlessDecode for LocateCardsCall {
         } else {
             ensure_size!(in: src, size: size_of::<u32>());
             let states_length = src.read_u32();
-            let mut states = Vec::with_capacity(states_length as usize);
+            let mut states = Vec::new();
             for _ in 0..states_length {
                 states.push(ReaderState::decode_ptr(src, &mut index)?);
             }
@@ -1202,7 +1233,7 @@ impl rpce::HeaderlessDecode for LocateCardsByAtrCall {
                     "mismatched ATR mask length in NDR pointer and value"
                 ));
             }
-            let mut atr_masks = Vec::with_capacity(atr_masks_length as usize);
+            let mut atr_masks = Vec::new();
             for _ in 0..atr_masks_length {
                 atr_masks.push(LocateCardsAtrMask::decode(src)?);
             }
@@ -1214,7 +1245,7 @@ impl rpce::HeaderlessDecode for LocateCardsByAtrCall {
         } else {
             ensure_size!(in: src, size: size_of::<u32>());
             let states_length = src.read_u32();
-            let mut states = Vec::with_capacity(states_length as usize);
+            let mut states = Vec::new();
             for _ in 0..states_length {
                 states.push(ReaderState::decode_ptr(src, &mut index)?);
             }
@@ -1369,7 +1400,7 @@ bitflags! {
 /// [2.2.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b6276356-7c5f-4d3e-be92-a6c85e58d008
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct ScardHandle {
-    pub context: ScardContext,
+    context: ScardContext,
     /// Number of significant bytes in [`Self::bytes`] (`0`, `4`, or `8`).
     len: u8,
     /// Little-endian opaque handle; only the first `len` bytes are on the wire.
@@ -1387,11 +1418,14 @@ impl ScardHandle {
     /// Creates a handle from a native WinSCard `SCARDHANDLE` (`usize` width).
     pub fn from_native(context: ScardContext, native: usize) -> Self {
         let mut bytes = [0u8; 8];
-        let le = (native as u64).to_le_bytes();
-        let len = size_of::<usize>() as u8;
-        let n = usize::from(len);
-        bytes[..n].copy_from_slice(&le[..n]);
+        let len = native_scard_len();
+        write_native_le_bytes(native, len, &mut bytes);
         Self { context, len, bytes }
+    }
+
+    /// Context that owns this handle.
+    pub fn context(self) -> ScardContext {
+        self.context
     }
 
     /// Wire length of `pbHandle`.
@@ -1421,14 +1455,7 @@ impl ScardHandle {
 
     /// Native `SCARDHANDLE`-sized integer (little-endian, zero-extended).
     pub fn native(self) -> usize {
-        let mut tmp = [0u8; 8];
-        let n = usize::from(self.len);
-        tmp[..n].copy_from_slice(&self.bytes[..n]);
-        u64::from_le_bytes(tmp) as usize
-    }
-
-    fn supported_len(length: u32) -> bool {
-        matches!(length, 0 | 4 | 8)
+        read_native_le_bytes(&self.bytes, self.len)
     }
 }
 
@@ -1440,13 +1467,13 @@ impl ndr::Decode for ScardHandle {
         let context = ScardContext::decode_ptr(src, index)?;
         ensure_size!(ctx: "ScardHandle::decode_ptr", in: src, size: size_of::<u32>());
         let length = src.read_u32();
-        if !Self::supported_len(length) {
-            error!(?length, "Unsupported value length in ScardHandle");
-            return Err(invalid_field_err!(
-                "decode_ptr",
-                "unsupported value length in ScardHandle"
-            ));
-        }
+        let len = match scard_wire_len(length) {
+            Ok(len) => len,
+            Err(err) => {
+                error!(?length, "Unsupported value length in ScardHandle");
+                return Err(err);
+            }
+        };
         let ptr = ndr::decode_ptr(src, index)?;
         if (length == 0) != (ptr == 0) {
             return Err(invalid_field_err!(
@@ -1456,7 +1483,7 @@ impl ndr::Decode for ScardHandle {
         }
         Ok(Self {
             context,
-            len: length as u8,
+            len,
             bytes: [0; 8],
         })
     }
@@ -2790,7 +2817,6 @@ fn expect_no_charset(charset: Option<CharacterSet>) -> DecodeResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pdu::esc::ndr::{Decode as NdrDecode, Encode as NdrEncode};
     use crate::pdu::esc::rpce::HeaderlessEncode;
 
     fn roundtrip_context(ctx: ScardContext) -> ScardContext {
@@ -2833,7 +2859,7 @@ mod tests {
         assert_eq!(c4.len(), 4);
         assert_eq!(roundtrip_context(c4), c4);
         assert_eq!(c4.value(), 0xA1B2_C3D4);
-        assert_eq!(c4.native() as u32, 0xA1B2_C3D4);
+        assert_eq!(c4.native(), usize::try_from(0xA1B2_C3D4u32).unwrap());
 
         let native = 0x0123_4567_89AB_CDEFusize;
         let c8 = ScardContext::from_native_len(native, 8);
@@ -2852,11 +2878,12 @@ mod tests {
         let ctx = ScardContext::new(0x1111_2222);
         let h4 = ScardHandle::new(ctx, 0x3333_4444);
         assert_eq!(h4.len(), 4);
+        assert_eq!(h4.context(), ctx);
         assert_eq!(roundtrip_handle(h4), h4);
 
         let ctx8 = ScardContext::from_native_len(0xAAAA_BBBBusize, 8);
         let h8 = ScardHandle::from_native(ctx8, 0xCCCC_DDDD_EEEE_FFFFusize);
-        assert_eq!(h8.len(), size_of::<usize>() as u8);
+        assert_eq!(h8.len(), native_scard_len());
         assert_eq!(roundtrip_handle(h8), h8);
         assert_eq!(h8.native(), 0xCCCC_DDDD_EEEE_FFFFusize);
     }
@@ -2864,7 +2891,7 @@ mod tests {
     #[test]
     fn establish_context_return_size_uses_native_width() {
         let ctx = ScardContext::from_native(0x42);
-        assert_eq!(ctx.len() as usize, size_of::<usize>());
+        assert_eq!(usize::from(ctx.len()), size_of::<usize>());
         // Headerless body: ReturnCode(4) + cbContext(4) + ptr(4) + length(4) + bytes(native width).
         let body = EstablishContextReturn {
             return_code: ReturnCode::Success,
