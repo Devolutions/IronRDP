@@ -6,6 +6,122 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.10.0...ironrdp-acceptor-v0.11.0)] - 2026-08-13
+
+### <!-- 0 -->Security
+
+- Validate auto-reconnect cookies ([#1509](https://github.com/Devolutions/IronRDP/issues/1509)) ([44f675e244](https://github.com/Devolutions/IronRDP/commit/44f675e244ee76b5311756668ffbbe28e98c7175)) 
+
+  ## Summary
+  - parse and carry `ARC_CS_PRIVATE_PACKET` data through the acceptor
+  - validate returning Enhanced RDP Security cookies with HMAC-MD5 before
+  reconnecting
+  - rotate reconnect randoms per connection and hourly, with runtime
+  cookie updates
+  - restrict cookie authentication to TLS/Hybrid and document the behavior
+  
+  ## Testing
+  - `cargo test -p ironrdp-pdu -p ironrdp-acceptor -p ironrdp-server`
+  - `cargo clippy -p ironrdp-pdu -p ironrdp-acceptor -p ironrdp-server
+  --all-targets -- -D warnings`
+
+### <!-- 1 -->Features
+
+- Expose client multitransport flags on AcceptorResult ([#1453](https://github.com/Devolutions/IronRDP/issues/1453)) ([f0fc215555](https://github.com/Devolutions/IronRDP/commit/f0fc215555394a89510ff85c7b8a93b20e878074)) 
+
+  ## What
+  
+  The acceptor already parses the client's GCC `MultiTransportChannelData`
+  block (MS-RDPBCGR §2.2.1.3.8) into `ClientGccBlocks` during
+  `BasicSettingsWaitInitial` and then discards it, keeping only the
+  early-capability flags, core desktop size, and keyboard layout. This
+  surfaces the client's multitransport (MS-RDPEMT) capability flags on
+  `AcceptorResult`.
+  
+  ## Why
+  
+  A server implementing UDP multitransport needs to know whether the
+  client advertised support (`SOFT_SYNC_TCP_TO_UDP`,
+  `TRANSPORT_TYPE_UDP_FEC{R,L}`) before deciding whether to send a Server
+  Initiate Multitransport Request. Today that information is parsed and
+  thrown away, so there's no way for a downstream server to see it.
+  
+  ## Shape
+  
+  Purely additive, mirroring the existing `keyboard_layout` ([#1397](https://github.com/Devolutions/IronRDP/issues/1397)) and
+  desktop-size ([#1373](https://github.com/Devolutions/IronRDP/issues/1373)) surfacing of GCC client data the acceptor already
+  parses:
+  
+  - new private `multitransport_flags: gcc::MultiTransportFlags` field on
+  `Acceptor`, captured from `gcc_blocks.multi_transport_channel`;
+  - new `pub multitransport_flags: gcc::MultiTransportFlags` field on
+  `AcceptorResult`;
+  - empty when the client sends no multitransport block;
+  - carried across a deactivation-reactivation like the sibling fields.
+  
+  No behavior change — the acceptor just stops discarding a block it
+  already decodes.
+  
+  `cargo clippy -p ironrdp-acceptor --all-targets` and `cargo fmt --check`
+  are clean.
+
+- [**breaking**] Clamp honored client desktop size to an operator maximum ([#1404](https://github.com/Devolutions/IronRDP/issues/1404)) ([d3747a05b2](https://github.com/Devolutions/IronRDP/commit/d3747a05b202ba2d87ac19698354ae7e487850a2)) 
+
+  Follow-up to #1373 (the resource-hardening angle you flagged in review —
+  thanks for the go-ahead 🙂).
+  
+  ## Problem
+  
+  `#1373` gated honor-client-desktop-size behind a bare `bool`. With it
+  on, the acceptor adopts the client-requested desktop size bounded only
+  by the protocol range `[200, 8192]`. But the desktop size is a
+  client-controlled `u16`, and the server still builds its
+  framebuffer/encoder from the negotiated size — so a client could request
+  e.g. `8192x8192` and drive the server's allocation off an untrusted
+  number (~256 MiB per frame buffer). Mild, and only on an opt-in
+  default-off path, but it's a resource-exhaustion vector driven purely by
+  a number the client picks.
+  
+  Your review comment: *"[200, 8192] is a protocol ceiling, not a resource
+  guard … tracked the 'clamp/range policy rather than a bare bool' idea as
+  a future follow-up (an operator-set max size)."* This is that PR.
+  
+  ## Change
+  
+  Replace the `bool` with `Option<DesktopSize>` carrying an **operator-set
+  maximum**:
+  
+  - `None` (default) — disabled; always enforce the server-provided size
+  (unchanged behavior).
+  - `Some(max)` — honor the client's request, **clamped per dimension to
+  `max`**. The client can ask for a smaller desktop, never a larger one.
+  
+  The acceptor clamps the requested `width`/`height` to `max` *before* the
+  existing `validate_desktop_size` protocol-range check, so the negotiated
+  size can never exceed what the operator is willing to render — set `max`
+  to the host display's native resolution (or whatever ceiling the server
+  can afford).
+
+- Support runtime-defined static virtual channels ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba)) 
+
+  ## Summary
+  - add keyed runtime-defined static-channel registration, lookup, and
+  negotiated ID attachment
+  - enforce the static-channel limit and reject malformed SVC fragment
+  sequences
+  - wire generic connector, acceptor, and session name-based dispatch
+  support
+  
+  ## Testing
+  - `cargo test -p ironrdp-testsuite-core --test integration_tests_core
+  svc::`
+  - `cargo clippy -p ironrdp-testsuite-core --test integration_tests_core
+  -- -D warnings`
+  
+  ---------
+
+
+
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.9.0...ironrdp-acceptor-v0.10.0)] - 2026-07-10
 
 ### <!-- 1 -->Features
