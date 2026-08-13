@@ -35,6 +35,14 @@ jobs:
       - name: Check formatting
         run: cargo xtask check fmt -v
 
+      - name: Fetch pull request revisions
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}" "refs/pull/${{ github.event.pull_request.number }}/head"
+
+      - name: Check test settings
+        if: github.event_name == 'pull_request'
+        run: cargo xtask check test-settings --base '${{ github.event.pull_request.base.sha }}' --head '${{ github.event.pull_request.head.sha }}' -v
+
   typos:
     name: Check typos
     runs-on: ubuntu-latest

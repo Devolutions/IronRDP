@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::prelude::*;
 
 pub fn fmt(sh: &Shell) -> anyhow::Result<()> {
@@ -89,6 +91,74 @@ pub fn dependencies(sh: &Shell) -> anyhow::Result<()> {
     println!("All good!");
 
     Ok(())
+}
+
+pub fn test_settings(sh: &Shell, base: &str, head: &str) -> anyhow::Result<()> {
+    let _s = Section::new("TEST-SETTINGS");
+    let manifest_pathspec = ":(glob)**/Cargo.toml";
+    let diff = cmd!(
+        sh,
+        "git diff --unified=0 --no-ext-diff --no-textconv --diff-filter=ACMRT {base} {head} -- {manifest_pathspec}"
+    )
+    .read()
+    .context("compare Cargo manifests")?;
+    let removals = protected_setting_removals(&diff);
+
+    if !removals.is_empty() {
+        let removals = removals
+            .into_iter()
+            .map(|(path, setting)| format!("- {path}: `{setting} = false`"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        anyhow::bail!(
+            "protected Cargo test settings were removed:\n{removals}\n\
+             keep library test harnesses disabled and place tests in the testsuite crates as described in ARCHITECTURE.md"
+        );
+    }
+
+    println!("All good!");
+
+    Ok(())
+}
+
+fn protected_setting_removals(diff: &str) -> Vec<(String, &'static str)> {
+    let mut path = None;
+    let mut changes = BTreeMap::<(String, &'static str), i32>::new();
+
+    for line in diff.lines() {
+        if let Some(new_path) = line.strip_prefix("+++ b/") {
+            path = Some(new_path.to_owned());
+        } else if let Some(line) = line.strip_prefix('-') {
+            if let (Some(path), Some(setting)) = (&path, protected_setting(line)) {
+                *changes.entry((path.clone(), setting)).or_default() -= 1;
+            }
+        } else if let Some(line) = line.strip_prefix('+')
+            && let (Some(path), Some(setting)) = (&path, protected_setting(line))
+        {
+            *changes.entry((path.clone(), setting)).or_default() += 1;
+        }
+    }
+
+    changes
+        .into_iter()
+        .filter_map(|(setting, count)| (count < 0).then_some(setting))
+        .collect()
+}
+
+fn protected_setting(line: &str) -> Option<&'static str> {
+    let line = line.split_once('#').map_or(line, |(line, _)| line).trim();
+    let (key, value) = line.split_once('=')?;
+
+    if value.trim() != "false" {
+        return None;
+    }
+
+    match key.trim() {
+        "doctest" => Some("doctest"),
+        "test" => Some("test"),
+        _ => None,
+    }
 }
 
 pub fn install(sh: &Shell) -> anyhow::Result<()> {
