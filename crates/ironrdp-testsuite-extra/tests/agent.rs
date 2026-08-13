@@ -13,8 +13,8 @@ use ironrdp_propertyset::PropertySet;
 use ironrdp_rpc::ipc::{
     AgentError, AgentErrorCategory, ConnState, KeyFilter, NowCapabilities, NowDiagnostics, NowExecutionKind,
     NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload,
-    PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteRequest,
-    RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo,
+    PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason,
+    RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo,
 };
 use ironrdp_rpc::wire;
 
@@ -257,6 +257,15 @@ fn response_variants_round_trip() {
                         flags: 0,
                         result: 0,
                         raw_result: 0,
+                    },
+                },
+                RailEvent {
+                    sequence: 6,
+                    kind: RailEventKind::ExecuteFailed {
+                        launch_id: Some(3),
+                        executable: "notepad.exe".to_owned(),
+                        flags: 0,
+                        reason: RailExecuteFailureReason::QueueRejected,
                     },
                 },
             ],

@@ -910,6 +910,16 @@ fn print_rail_event(event: &RailEvent) {
             "{}: execute result launch={launch_id:?} executable={executable} flags=0x{flags:04x} result=0x{result:04x} raw=0x{raw_result:08x}",
             event.sequence
         ),
+        RailEventKind::ExecuteFailed {
+            launch_id,
+            executable,
+            flags,
+            reason,
+        } => println!(
+            "{}: execute failed launch={launch_id:?} executable={executable} flags=0x{flags:04x} reason={}",
+            event.sequence,
+            reason.as_str()
+        ),
         RailEventKind::ApplicationId {
             window_id,
             application_id,
@@ -971,6 +981,18 @@ fn rail_event_json(event: &RailEvent) -> serde_json::Value {
             "flags": flags,
             "result": result,
             "raw_result": raw_result,
+        }),
+        RailEventKind::ExecuteFailed {
+            launch_id,
+            executable,
+            flags,
+            reason,
+        } => json!({
+            "kind": "execute_failed",
+            "launch_id": launch_id,
+            "executable": executable,
+            "flags": flags,
+            "reason": reason.as_str(),
         }),
         RailEventKind::ApplicationId {
             window_id,

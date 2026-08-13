@@ -571,6 +571,9 @@ impl RpcApp {
             RdpOutputEvent::RailExecuteResult(result) => {
                 debug!(?result, "RAIL execute completed");
             }
+            RdpOutputEvent::RailExecuteFailed { flags, reason, .. } => {
+                warn!(flags, ?reason, "RAIL execute could not be processed");
+            }
             RdpOutputEvent::RailApplicationId {
                 window_id,
                 application_id,

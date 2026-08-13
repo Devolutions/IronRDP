@@ -57,8 +57,10 @@ ironrdp-agent rail execute notepad.exe --arguments C:\Temp\audit.txt
 ```
 
 `rail events` retains 256 observations per connection generation.
+Sequences remain monotonic across resize reconnects even though each new generation starts with fresh history.
 When a caller resumes too far behind, the returned stream contains a `gap` event reporting the last sequence number no longer retained.
 Set `N` to the latest sequence observed; `rail wait --after-sequence N --timeout-ms 30000` returns retained later observations immediately or waits up to 30 seconds without polling.
+If an accepted local launch fails before it is sent, the event stream reports `execute_failed` with a stable reason and no working-directory or argument data.
 Use `rail --format json` for one deterministic document or `rail --format ndjson` for one event per line.
 The agent advertises no local RAIL shell-integration flags because it does not implement move/size, taskbar, cloak, z-order, or display-power behavior.
 

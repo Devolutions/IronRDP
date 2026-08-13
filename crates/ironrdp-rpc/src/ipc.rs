@@ -399,6 +399,13 @@ pub enum RailEventKind {
         result: u16,
         raw_result: u32,
     },
+    /// A locally accepted Execute request could not be processed.
+    ExecuteFailed {
+        launch_id: Option<u64>,
+        executable: String,
+        flags: u16,
+        reason: RailExecuteFailureReason,
+    },
     ApplicationId {
         window_id: u32,
         application_id: String,
@@ -415,6 +422,48 @@ pub enum RailEventKind {
     Gap {
         lost_through: u64,
     },
+}
+
+/// Stable, command-free diagnostic for a locally failed RAIL Execute request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RailExecuteFailureReason {
+    /// The active session did not retain a RAIL static-channel processor.
+    RailUnavailable,
+    /// The RAIL client rejected the Execute request before sending it.
+    QueueRejected,
+    /// The active stage could not encode the queued RAIL messages.
+    MessageProcessingFailed,
+}
+
+impl RailExecuteFailureReason {
+    /// Stable lowercase diagnostic text for structured CLI output.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RailUnavailable => "rail_unavailable",
+            Self::QueueRejected => "queue_rejected",
+            Self::MessageProcessingFailed => "message_processing_failed",
+        }
+    }
+
+    const fn tag(self) -> u8 {
+        match self {
+            Self::RailUnavailable => 0,
+            Self::QueueRejected => 1,
+            Self::MessageProcessingFailed => 2,
+        }
+    }
+
+    fn from_tag(tag: u8) -> DecodeResult<Self> {
+        match tag {
+            0 => Ok(Self::RailUnavailable),
+            1 => Ok(Self::QueueRejected),
+            2 => Ok(Self::MessageProcessingFailed),
+            _ => Err(ironrdp_core::invalid_field_err!(
+                "RAIL Execute failure",
+                "unknown reason"
+            )),
+        }
+    }
 }
 
 /// Machine-readable error category. The message is safe for display but must not include request
@@ -1153,6 +1202,18 @@ impl Encode for RailEventKind {
                 dst.write_u16(*result);
                 dst.write_u32(*raw_result);
             }
+            Self::ExecuteFailed {
+                launch_id,
+                executable,
+                flags,
+                reason,
+            } => {
+                dst.write_u8(9);
+                write_opt_u64(dst, *launch_id)?;
+                write_string(dst, executable)?;
+                dst.write_u16(*flags);
+                dst.write_u8(reason.tag());
+            }
             Self::ApplicationId {
                 window_id,
                 application_id,
@@ -1205,6 +1266,11 @@ impl Encode for RailEventKind {
                     executable,
                     ..
                 } => opt_u64_size(*launch_id) + string_size(executable) + 2 + 2 + 4,
+                Self::ExecuteFailed {
+                    launch_id,
+                    executable,
+                    ..
+                } => opt_u64_size(*launch_id) + string_size(executable) + 2 + 1,
                 Self::ApplicationId {
                     application_id,
                     process_id,
@@ -1267,6 +1333,17 @@ impl Decode<'_> for RailEventKind {
                     flags: src.read_u16(),
                     result: src.read_u16(),
                     raw_result: src.read_u32(),
+                })
+            }
+            9 => {
+                let launch_id = read_opt_u64(src)?;
+                let executable = read_string(src)?;
+                ensure_size!(in: src, size: 3);
+                Ok(Self::ExecuteFailed {
+                    launch_id,
+                    executable,
+                    flags: src.read_u16(),
+                    reason: RailExecuteFailureReason::from_tag(src.read_u8())?,
                 })
             }
             5 => {
