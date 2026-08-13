@@ -569,6 +569,36 @@ impl ActiveStage {
         None
     }
 
+    /// Encodes a pen event for the RDPEI dynamic channel.
+    ///
+    /// Returns `None` when the channel is unavailable, not ready, suspended, or pen is not allowed.
+    pub fn encode_rdpei_pen(&mut self, event: ironrdp_rdpei::pdu::PenEventPdu) -> Option<SessionResult<Vec<u8>>> {
+        if let Some(dvc) = self.get_dvc::<RdpeiClient>() {
+            let channel_id = dvc.channel_id();
+            let rdpei = dvc.processor();
+            if !rdpei.ready() {
+                debug!("Could not encode RDPEI pen: channel is not ready");
+                return None;
+            }
+            if rdpei.is_suspended() {
+                debug!("Could not encode RDPEI pen: input is suspended");
+                return None;
+            }
+            if !rdpei.pen_allowed() {
+                debug!("Could not encode RDPEI pen: pen not allowed for negotiated version");
+                return None;
+            }
+            let svc_messages = match rdpei.encode_pen_event(channel_id, event) {
+                Ok(messages) => messages,
+                Err(e) => return Some(Err(SessionError::encode(e))),
+            };
+            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
+        } else {
+            debug!("Could not encode RDPEI pen: Input Virtual Channel is not available");
+        }
+        None
+    }
+
     pub fn encode_dvc_messages(&mut self, messages: Vec<SvcMessage>) -> SessionResult<Vec<u8>> {
         self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(messages))
     }

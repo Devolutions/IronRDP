@@ -100,6 +100,24 @@ fn request_variants_round_trip() {
                 }],
             }],
         },
+        Request::Pen {
+            encode_time: 24,
+            frames: vec![ironrdp_rpc::ipc::PenFrameRequest {
+                frame_offset: 0,
+                contacts: vec![ironrdp_rpc::ipc::PenContactRequest {
+                    device_id: 0,
+                    x: 300,
+                    y: 400,
+                    flags: 0x0019, // DOWN | INRANGE | INCONTACT
+                    pressure: Some(512),
+                    rotation: Some(45),
+                    tilt_x: Some(10),
+                    tilt_y: Some(-5),
+                    pen_flags: None,
+                }],
+            }],
+        },
+        Request::DismissHoveringTouchContact { contact_id: 3 },
         Request::NowCapabilities,
         Request::NowRun {
             command: "echo secret".to_owned(),

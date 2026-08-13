@@ -24,8 +24,8 @@ use ironrdp_propertyset::{PropertySet, Value};
 
 use ironrdp_rpc::ipc::{
     AgentError, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent,
-    OperationEventKind, OperationInfo, OperationState, Payload, PropValue, RailEvent, RailEventKind,
-    RailExecuteRequest, Request, Response, TouchContactRequest, TouchFrameRequest,
+    OperationEventKind, OperationInfo, OperationState, Payload, PenContactRequest, PenFrameRequest, PropValue,
+    RailEvent, RailEventKind, RailExecuteRequest, Request, Response, TouchContactRequest, TouchFrameRequest,
 };
 use ironrdp_rpc::transport::{self, Endpoint};
 
@@ -128,6 +128,59 @@ enum Command {
         x: i32,
         #[arg(long, allow_hyphen_values = true)]
         y: i32,
+    },
+    /// Send one multi-contact MS-RDPEI touch frame (`id:x:y:action` entries).
+    TouchFrame {
+        /// Contacts as `id:x:y:action` (action uses the same names as `touch --action`).
+        #[arg(long = "contact", required = true, num_args = 1..)]
+        contacts: Vec<String>,
+        #[arg(long, default_value_t = 0)]
+        encode_time: u32,
+        #[arg(long, default_value_t = 0)]
+        frame_offset: u64,
+    },
+    /// Send one MS-RDPEI pen contact sample (legal flag sets only).
+    Pen {
+        #[arg(long, default_value_t = 0)]
+        device_id: u8,
+        #[arg(long, allow_hyphen_values = true)]
+        x: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        y: i32,
+        #[arg(long, value_enum)]
+        action: CliPenAction,
+        #[arg(long, default_value_t = 0)]
+        encode_time: u32,
+        #[arg(long, default_value_t = 0)]
+        frame_offset: u64,
+        #[arg(long)]
+        pressure: Option<u32>,
+        #[arg(long)]
+        rotation: Option<u16>,
+        #[arg(long, allow_hyphen_values = true)]
+        tilt_x: Option<i16>,
+        #[arg(long, allow_hyphen_values = true)]
+        tilt_y: Option<i16>,
+        #[arg(long, default_value_t = false)]
+        eraser: bool,
+        #[arg(long, default_value_t = false)]
+        inverted: bool,
+    },
+    /// Tap once via MS-RDPEI pen (one pen PDU: DOWN then out-of-range UP).
+    PenTap {
+        #[arg(long, default_value_t = 0)]
+        device_id: u8,
+        #[arg(long, allow_hyphen_values = true)]
+        x: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        y: i32,
+        #[arg(long)]
+        pressure: Option<u32>,
+    },
+    /// Dismiss a hovering MS-RDPEI touch contact.
+    DismissHovering {
+        #[arg(long, default_value_t = 0)]
+        contact_id: u8,
     },
     /// Resize the remote desktop.
     Resize {
@@ -562,6 +615,78 @@ fn parse_rdpdr_drive(input: &str) -> Result<ironrdp_daemon::daemon::RdpdrDriveCo
         .map_err(|error| error.to_string())
 }
 
+/// Legal MS-RDPEI pen contact transitions for agent testing.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CliPenAction {
+    /// DOWN | INRANGE | INCONTACT
+    Down,
+    /// UPDATE | INRANGE | INCONTACT
+    Move,
+    /// UP | INRANGE
+    Up,
+    /// UP
+    OutOfRange,
+    /// UPDATE | CANCELED
+    Cancel,
+    /// UPDATE | INRANGE
+    Hover,
+}
+
+impl CliPenAction {
+    fn flags(self) -> u16 {
+        const DOWN: u16 = 0x0001;
+        const UPDATE: u16 = 0x0002;
+        const UP: u16 = 0x0004;
+        const INRANGE: u16 = 0x0008;
+        const INCONTACT: u16 = 0x0010;
+        const CANCELED: u16 = 0x0020;
+
+        match self {
+            Self::Down => DOWN | INRANGE | INCONTACT,
+            Self::Move => UPDATE | INRANGE | INCONTACT,
+            Self::Up => UP | INRANGE,
+            Self::OutOfRange => UP,
+            Self::Cancel => UPDATE | CANCELED,
+            Self::Hover => UPDATE | INRANGE,
+        }
+    }
+
+    fn pen_flags(eraser: bool, inverted: bool) -> Option<u32> {
+        // MS-RDPEI penFlags: ERASER_PRESSED=0x2, INVERTED=0x4
+        let mut flags = 0u32;
+        if eraser {
+            flags |= 0x0002;
+        }
+        if inverted {
+            flags |= 0x0004;
+        }
+        if flags == 0 { None } else { Some(flags) }
+    }
+}
+
+fn pen_request(encode_time: u32, frame_offset: u64, contact: PenContactRequest) -> Request {
+    Request::Pen {
+        encode_time,
+        frames: vec![PenFrameRequest {
+            frame_offset,
+            contacts: vec![contact],
+        }],
+    }
+}
+
+fn parse_touch_contact_spec(spec: &str) -> anyhow::Result<TouchContactRequest> {
+    let mut parts = spec.splitn(4, ':');
+    let (Some(id), Some(x), Some(y), Some(action)) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+        anyhow::bail!("malformed contact '{spec}', expected id:x:y:action");
+    };
+    Ok(TouchContactRequest {
+        contact_id: id.parse().with_context(|| format!("contact id in '{spec}'"))?,
+        x: x.parse().with_context(|| format!("contact x in '{spec}'"))?,
+        y: y.parse().with_context(|| format!("contact y in '{spec}'"))?,
+        flags: action.parse::<CliTouchAction>().map_err(anyhow::Error::msg)?.flags(),
+    })
+}
+
 /// Legal MS-RDPEI touch contact transitions for agent testing.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CliTouchAction {
@@ -597,6 +722,14 @@ impl CliTouchAction {
             Self::Cancel => UPDATE | CANCELED,
             Self::Hover => UPDATE | INRANGE,
         }
+    }
+}
+
+impl FromStr for CliTouchAction {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        ValueEnum::from_str(s, true)
     }
 }
 
@@ -740,6 +873,91 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 },
             ],
         },
+        Command::TouchFrame {
+            contacts,
+            encode_time,
+            frame_offset,
+        } => {
+            let mut parsed = Vec::with_capacity(contacts.len());
+            for spec in contacts {
+                parsed.push(parse_touch_contact_spec(&spec)?);
+            }
+            Request::Touch {
+                encode_time,
+                frames: vec![TouchFrameRequest {
+                    frame_offset,
+                    contacts: parsed,
+                }],
+            }
+        }
+        Command::Pen {
+            device_id,
+            x,
+            y,
+            action,
+            encode_time,
+            frame_offset,
+            pressure,
+            rotation,
+            tilt_x,
+            tilt_y,
+            eraser,
+            inverted,
+        } => pen_request(
+            encode_time,
+            frame_offset,
+            PenContactRequest {
+                device_id,
+                x,
+                y,
+                flags: action.flags(),
+                pressure,
+                rotation,
+                tilt_x,
+                tilt_y,
+                pen_flags: CliPenAction::pen_flags(eraser, inverted),
+            },
+        ),
+        Command::PenTap {
+            device_id,
+            x,
+            y,
+            pressure,
+        } => Request::Pen {
+            encode_time: 0,
+            frames: vec![
+                PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![PenContactRequest {
+                        device_id,
+                        x,
+                        y,
+                        flags: CliPenAction::Down.flags(),
+                        pressure,
+                        rotation: None,
+                        tilt_x: None,
+                        tilt_y: None,
+                        pen_flags: None,
+                    }],
+                },
+                PenFrameRequest {
+                    // 16 ms between engage and release, matching a short physical tap.
+                    frame_offset: 16_000,
+                    contacts: vec![PenContactRequest {
+                        device_id,
+                        x,
+                        y,
+                        flags: CliPenAction::OutOfRange.flags(),
+                        pressure,
+                        rotation: None,
+                        tilt_x: None,
+                        tilt_y: None,
+                        pen_flags: None,
+                    }],
+                },
+            ],
+        },
+        Command::DismissHovering { contact_id } => Request::DismissHoveringTouchContact { contact_id },
         Command::Resize { width, height } => Request::Resize { width, height },
     };
 

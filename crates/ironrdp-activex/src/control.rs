@@ -29,7 +29,10 @@ use ironrdp_pdu::rdp::{
 use ironrdp_pdu::window::try_decode_slow_path_windowing_orders;
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rail::pdu::{ActivatePdu, ExecutePdu, RailPdu, SystemCommand, SystemCommandPdu};
-use ironrdp_rdpei::pdu::TouchEventPdu;
+use ironrdp_rdpei::pdu::{
+    PenContact, PenContactDataFlags, PenContactFlags, PenEventPdu, PenFlags, PenFrame, TouchContact, TouchContactFlags,
+    TouchEventPdu, TouchFrame,
+};
 use ironrdp_session::{GracefulDisconnectReason, SessionError, SessionErrorKind};
 use ironrdp_svc::{SvcClientProcessor, SvcMessage, SvcProcessor, impl_as_any};
 use ironrdp_tls::CertificateValidation;
@@ -5758,6 +5761,88 @@ pub(crate) struct Control {
     rpc_log_directive: RefCell<Option<String>>,
 }
 
+fn build_rpc_touch_event(
+    encode_time: u32,
+    frames: Vec<ironrdp_agent::ipc::TouchFrameRequest>,
+) -> core::result::Result<TouchEventPdu, ironrdp_agent::ipc::Response> {
+    let mut built_frames = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let mut contacts = Vec::with_capacity(frame.contacts.len());
+        for contact in frame.contacts {
+            let Some(flags) = TouchContactFlags::from_bits(u32::from(contact.flags)) else {
+                return Err(ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    "touch contact flags contain unknown bits",
+                ));
+            };
+            if !flags.is_legal() {
+                return Err(ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    "touch contact flags are not a legal MS-RDPEI combination",
+                ));
+            }
+            contacts.push(TouchContact::new(contact.contact_id, contact.x, contact.y, flags));
+        }
+        built_frames.push(TouchFrame::new(frame.frame_offset, contacts));
+    }
+    Ok(TouchEventPdu::new(encode_time, built_frames))
+}
+
+fn build_rpc_pen_event(
+    encode_time: u32,
+    frames: Vec<ironrdp_agent::ipc::PenFrameRequest>,
+) -> core::result::Result<PenEventPdu, ironrdp_agent::ipc::Response> {
+    let mut built_frames = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let mut contacts = Vec::with_capacity(frame.contacts.len());
+        for contact in frame.contacts {
+            let Some(flags) = PenContactFlags::from_bits(u32::from(contact.flags)) else {
+                return Err(ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    "pen contact flags contain unknown bits",
+                ));
+            };
+            if !flags.is_legal() {
+                return Err(ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    "pen contact flags are not a legal MS-RDPEI combination",
+                ));
+            }
+            let mut pen = PenContact::new(contact.device_id, contact.x, contact.y, flags);
+            if let Some(pen_flags_bits) = contact.pen_flags {
+                let Some(pen_flags) = PenFlags::from_bits(pen_flags_bits) else {
+                    return Err(ironrdp_agent::ipc::Response::typed_error(
+                        ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                        "pen flags contain unknown bits",
+                    ));
+                };
+                pen = pen.with_pen_flags(pen_flags);
+            }
+            if let Some(pressure) = contact.pressure {
+                pen = pen.with_pressure(pressure);
+            }
+            if let Some(rotation) = contact.rotation {
+                pen = pen.with_rotation(rotation);
+            }
+            match (contact.tilt_x, contact.tilt_y) {
+                (Some(tilt_x), Some(tilt_y)) => pen = pen.with_tilt(tilt_x, tilt_y),
+                (Some(tilt_x), None) => {
+                    pen.fields_present.insert(PenContactDataFlags::TILTX_PRESENT);
+                    pen.fields.tilt_x = Some(tilt_x);
+                }
+                (None, Some(tilt_y)) => {
+                    pen.fields_present.insert(PenContactDataFlags::TILTY_PRESENT);
+                    pen.fields.tilt_y = Some(tilt_y);
+                }
+                (None, None) => {}
+            }
+            contacts.push(pen);
+        }
+        built_frames.push(PenFrame::new(frame.frame_offset, contacts));
+    }
+    Ok(PenEventPdu::new(encode_time, built_frames))
+}
+
 fn rpc_control_error(error: Error) -> ironrdp_agent::ipc::Response {
     let category = if error.code() == E_INVALIDARG || error.code() == E_NOTIMPL {
         ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest
@@ -7879,6 +7964,16 @@ impl Control {
             } => {
                 let _ = response.send(self.rpc_touch(encode_time, frames));
             }
+            RpcCommand::Pen {
+                encode_time,
+                frames,
+                response,
+            } => {
+                let _ = response.send(self.rpc_pen(encode_time, frames));
+            }
+            RpcCommand::DismissHoveringTouchContact { contact_id, response } => {
+                let _ = response.send(self.rpc_dismiss_hovering_touch_contact(contact_id));
+            }
             RpcCommand::Resize {
                 width,
                 height,
@@ -8157,7 +8252,7 @@ impl Control {
                 "session input channel is unavailable",
             );
         };
-        let event = match ironrdp_agent::ipc::touch_event_from_request(encode_time, frames) {
+        let event = match build_rpc_touch_event(encode_time, frames) {
             Ok(event) => event,
             Err(response) => return response,
         };
@@ -8173,6 +8268,63 @@ impl Control {
         }
     }
 
+    fn rpc_pen(
+        &self,
+        encode_time: u32,
+        frames: Vec<ironrdp_agent::ipc::PenFrameRequest>,
+    ) -> ironrdp_agent::ipc::Response {
+        if self.state.get() != ConnectionState::Connected {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "no active RDP session",
+            );
+        }
+        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            );
+        };
+        let event = match build_rpc_pen_event(encode_time, frames) {
+            Ok(event) => event,
+            Err(response) => return response,
+        };
+        match sender.try_reserve() {
+            Ok(permit) => {
+                permit.send(RdpInputEvent::Pen(event));
+                ironrdp_agent::ipc::Response::ok()
+            }
+            Err(_) => ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            ),
+        }
+    }
+
+    fn rpc_dismiss_hovering_touch_contact(&self, contact_id: u8) -> ironrdp_agent::ipc::Response {
+        if self.state.get() != ConnectionState::Connected {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "no active RDP session",
+            );
+        }
+        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            );
+        };
+        match sender.try_reserve() {
+            Ok(permit) => {
+                permit.send(RdpInputEvent::DismissHoveringTouchContact { contact_id });
+                ironrdp_agent::ipc::Response::ok()
+            }
+            Err(_) => ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            ),
+        }
+    }
     fn rpc_input(&self, operation: Operation) -> ironrdp_agent::ipc::Response {
         if self.state.get() != ConnectionState::Connected {
             return ironrdp_agent::ipc::Response::typed_error(

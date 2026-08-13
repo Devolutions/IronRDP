@@ -123,7 +123,15 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 - `touch --x X --y Y --action <down|move|up|out-of-range|cancel|hover>
     [--contact-id N] [--encode-time MS] [--frame-offset US]`
                                                  Send one MS-RDPEI touch contact sample.
-- `touch-tap --x X --y Y [--contact-id N]`       One RDPEI touch PDU: DOWN then out-of-range UP.
+- `touch-tap --x X --y Y [--contact-id N]`       DOWN then UP at the same point via RDPEI.
+- `touch-frame --contact id:x:y:action [...]`    One multi-contact MS-RDPEI touch frame.
+- `pen --x X --y Y --action <down|move|up|out-of-range|cancel|hover>
+    [--device-id N] [--pressure N] [--rotation N] [--tilt-x N] [--tilt-y N]
+    [--eraser] [--inverted] [--encode-time MS] [--frame-offset US]`
+                                                 Send one MS-RDPEI pen contact sample.
+- `pen-tap --x X --y Y [--device-id N] [--pressure N]`
+                                                 DOWN then UP pen tap via RDPEI.
+- `dismiss-hovering [--contact-id N]`            Dismiss a hovering touch contact.
 - `resize --width W --height H`                  Resize the remote desktop.
 
 ## NOW remote execution (requires an active, connected RDP session)
