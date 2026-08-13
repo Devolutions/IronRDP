@@ -52,6 +52,8 @@ async function workflowRunPullRequests(github, owner, repo, workflowRun) {
 async function resolvePr({ github, context, inputs = {} }) {
   const route = routeFor(context);
   const { owner, repo } = context.repo;
+  const force = route === "dispatch" && ["true", true].includes(
+    inputs.force ?? context.payload.inputs?.force);
   let pr;
   try {
     if (route === "classification") {
@@ -82,13 +84,13 @@ async function resolvePr({ github, context, inputs = {} }) {
     return noResult("GitHub API unavailable", route);
   }
   if (!pr) return noResult("pull request is closed or stale", route);
-  if (pr.draft) return noResult("pull request is draft", route);
+  if (pr.draft && !force) return noResult("pull request is draft", route);
   // Dependabot owns dependency and language labels, while devolutionsbot opens release-plz PRs.
   // This automation must not mutate either kind of automated pull request.
   const authorLogin = pr.user?.login || "";
   const authorIsBot = pr.user?.type === "Bot" || /\[bot\]$/i.test(authorLogin) ||
     authorLogin.toLowerCase() === "devolutionsbot";
-  if (authorIsBot) return noResult("bot-authored pull request", route);
+  if (authorIsBot && !force) return noResult("bot-authored pull request", route);
   return {
     ok: true, route, prNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha,
     labels: (pr.labels || []).map((label) => typeof label === "string" ? label : label.name).filter(Boolean),
@@ -96,8 +98,7 @@ async function resolvePr({ github, context, inputs = {} }) {
       nodeId: pr.user?.node_id || null, login: pr.user?.login || null, type: pr.user?.type || null,
       association: pr.author_association || null,
     },
-    bypassCi: route === "dispatch" && ["true", true].includes(
-      inputs.bypassCi ?? context.payload.inputs?.["bypass-ci"]),
+    force,
     reviewRequested: route === "dispatch" && ["true", true].includes(
       inputs.review ?? context.payload.inputs?.review),
     classificationRequested: route === "classification" ||

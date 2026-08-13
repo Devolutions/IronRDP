@@ -2,5 +2,12 @@ repositories:
   - repository: Devolutions/devolutions-gateway
     source_path: .agents/skills
     skills:
+      - code-compressor
       - commit-and-pr-conventions
+      - docs-compressor
+      - docs-writer
+      - llm-comment-footer
+      - markdown-writer
+      - prose-verifier
+      - prose-writer
       - tessl-skill-linting

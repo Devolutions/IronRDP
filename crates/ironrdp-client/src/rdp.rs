@@ -21,8 +21,12 @@ use ironrdp_pdu::input::fast_path::FastPathInputEvent;
 use ironrdp_pdu::input::mouse::PointerFlags;
 #[cfg(any(feature = "dvc-pipe-proxy", all(windows, feature = "dvc-com-plugin")))]
 use ironrdp_pdu::pdu_other_err;
+#[cfg(feature = "rdpdr")]
+pub use ironrdp_rdpdr::backend::{RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive};
+#[cfg(any(feature = "clipboard", feature = "rdpdr"))]
+use ironrdp_session::ActiveStage;
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
+use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
@@ -46,6 +50,8 @@ use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
 use ironrdp_rdpsnd_native::cpal;
 
 use crate::config::{Config, RDCleanPathConfig, Transport};
+use crate::rail::{RailClient, RailControlEvent, RailEvent, RailInputEvent};
+use ironrdp_rail::pdu::{ExecutePdu, ExecuteResultPdu};
 
 // ── Public event types ────────────────────────────────────────────────────────
 
@@ -58,6 +64,17 @@ pub enum DisplayResizeFallbackReason {
     CapabilitiesTimedOut,
     /// The server did not reactivate the session after a monitor-layout request in time.
     ReactivationTimedOut,
+}
+
+/// Explains why a locally accepted RemoteApp launch could not be processed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RailExecuteFailureReason {
+    /// The active session has no RAIL static-channel processor.
+    RailUnavailable,
+    /// The RAIL client rejected the Execute request before it could be sent.
+    QueueRejected,
+    /// The active stage could not encode the queued RAIL messages.
+    MessageProcessingFailed,
 }
 
 #[derive(Debug)]
@@ -81,6 +98,45 @@ pub enum RdpOutputEvent {
         y: u16,
     },
     PointerBitmap(Arc<DecodedPointer>),
+    /// RAIL Windowing Alternate Secondary Drawing Orders.
+    ///
+    /// The owned payload begins with the slow-path `Orders` update type and is delivered only
+    /// after the Window List support level negotiated for the current activation is validated.
+    WindowingOrders(Vec<u8>),
+    /// The server completed the RAIL static-channel handshake.
+    RailHandshake {
+        handshake_ex_flags: Option<u32>,
+        initialization_message_count: usize,
+        queued_execute_count: usize,
+    },
+    /// Queued RAIL input was released after server desktop synchronization.
+    RailDesktopSynchronized {
+        released_execute_count: usize,
+    },
+    /// Queued RAIL input was released after the post-handshake fallback delay.
+    RailPostHandshakeQueueReleased {
+        released_execute_count: usize,
+    },
+    /// The server completed a RemoteApp launch request.
+    RailExecuteResult(ExecuteResultPdu),
+    /// A locally accepted RemoteApp launch could not be processed.
+    ///
+    /// The event carries only the launch correlation fields, never its working directory or
+    /// arguments.
+    RailExecuteFailed {
+        executable: String,
+        flags: u16,
+        reason: RailExecuteFailureReason,
+    },
+    /// The server supplied an application identity for a remote window.
+    RailApplicationId {
+        window_id: u32,
+        application_id: String,
+        process_id: Option<u32>,
+        process_image_name: Option<String>,
+    },
+    /// A portable server-originated RAIL control for the embedding host.
+    RailControl(RailControlEvent),
     /// A full-desktop redraw was requested after the initial logon notification.
     PostLogonDisplayRedraw,
     /// A malformed bitmap update was discarded and a capability-gated full redraw was sent.
@@ -113,6 +169,10 @@ pub enum RdpInputEvent {
         channel_name: ChannelName,
         data: Vec<u8>,
     },
+    /// Requests a RemoteApp launch over the RAIL static channel.
+    RailExecute(ExecutePdu),
+    /// Queues a client-originated RAIL input event.
+    Rail(RailInputEvent),
 }
 
 /// Maximum number of ordinary input events retained while the session is unable to process them.
@@ -125,6 +185,10 @@ pub const RDP_INPUT_EVENT_QUEUE_CAPACITY: usize = 128;
 #[derive(Clone, Debug)]
 pub struct RdpInputSender {
     input_sender: mpsc::Sender<RdpInputEvent>,
+    #[cfg_attr(
+        not(feature = "clipboard"),
+        expect(dead_code, reason = "clipboard input is unavailable without the clipboard feature")
+    )]
     clipboard_sender: mpsc::UnboundedSender<RdpInputEvent>,
     close_sender: watch::Sender<bool>,
     graceful_close_sender: watch::Sender<bool>,
@@ -179,6 +243,16 @@ impl RdpInputSender {
     /// the input event is guaranteed to fit in the bounded queue.
     pub fn try_reserve(&self) -> Result<mpsc::Permit<'_, RdpInputEvent>, mpsc::error::TrySendError<()>> {
         self.input_sender.try_reserve()
+    }
+
+    /// Queues a RemoteApp launch without allowing the ordinary input queue to grow unbounded.
+    pub fn try_send_rail_execute(&self, execute: ExecutePdu) -> Result<(), mpsc::error::TrySendError<RdpInputEvent>> {
+        self.input_sender.try_send(RdpInputEvent::RailExecute(execute))
+    }
+
+    /// Queues a client-originated RAIL input event.
+    pub fn try_send_rail_input(&self, event: RailInputEvent) -> Result<(), mpsc::error::TrySendError<RdpInputEvent>> {
+        self.input_sender.try_send(RdpInputEvent::Rail(event))
     }
 
     /// Enqueues a clipboard protocol message independently of ordinary bounded input.
@@ -285,6 +359,8 @@ pub struct RdpClient {
     graceful_close_receiver: watch::Receiver<bool>,
     #[cfg(feature = "clipboard")]
     cliprdr_backend_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
+    #[cfg(feature = "rdpdr")]
+    rdpdr_backend_factory: Option<Box<dyn RdpdrBackendFactory + Send>>,
 }
 
 impl RdpClient {
@@ -306,6 +382,8 @@ impl RdpClient {
             graceful_close_receiver,
             #[cfg(feature = "clipboard")]
             cliprdr_backend_factory: None,
+            #[cfg(feature = "rdpdr")]
+            rdpdr_backend_factory: None,
         }
     }
 
@@ -315,6 +393,16 @@ impl RdpClient {
     #[must_use]
     pub fn with_cliprdr_backend_factory(mut self, factory: Box<dyn CliprdrBackendFactory + Send>) -> Self {
         self.cliprdr_backend_factory = Some(factory);
+        self
+    }
+
+    /// Supplies a factory that creates a new RDPDR backend and drive set for every connection attempt.
+    ///
+    /// RDPDR is attached only when it is enabled and the product contains at least one filesystem device.
+    #[cfg(feature = "rdpdr")]
+    #[must_use]
+    pub fn with_rdpdr_backend_factory(mut self, factory: Box<dyn RdpdrBackendFactory + Send>) -> Self {
+        self.rdpdr_backend_factory = Some(factory);
         self
     }
 
@@ -411,6 +499,12 @@ impl RdpClient {
         let cliprdr_factory: CliprdrFactoryRef<'_> = cliprdr_factory.as_deref();
         #[cfg(not(feature = "clipboard"))]
         let cliprdr_factory: CliprdrFactoryRef<'_> = core::marker::PhantomData;
+        #[cfg(feature = "rdpdr")]
+        let rdpdr_factory = self.rdpdr_backend_factory.take();
+        #[cfg(feature = "rdpdr")]
+        let rdpdr_factory: RdpdrFactoryRef<'_> = rdpdr_factory.as_deref();
+        #[cfg(not(feature = "rdpdr"))]
+        let rdpdr_factory: RdpdrFactoryRef<'_> = core::marker::PhantomData;
 
         // ── Connection + session loop ─────────────────────────────────────────
         loop {
@@ -421,7 +515,7 @@ impl RdpClient {
 
             let (connection_result, framed) = match &self.config.transport {
                 Transport::Direct => match Box::pin(cancelable_operation(
-                    connect_direct(&self.config, &self.input_event_sender, cliprdr_factory),
+                    connect_direct(&self.config, &self.input_event_sender, cliprdr_factory, rdpdr_factory),
                     &mut self.close_receiver,
                 ))
                 .await
@@ -441,7 +535,13 @@ impl RdpClient {
 
                 #[cfg(feature = "gateway")]
                 Transport::Gateway(gw) => match Box::pin(cancelable_operation(
-                    connect_gateway(&self.config, gw, &self.input_event_sender, cliprdr_factory),
+                    connect_gateway(
+                        &self.config,
+                        gw,
+                        &self.input_event_sender,
+                        cliprdr_factory,
+                        rdpdr_factory,
+                    ),
                     &mut self.close_receiver,
                 ))
                 .await
@@ -460,7 +560,13 @@ impl RdpClient {
                 },
 
                 Transport::RDCleanPath(rdcp) => match Box::pin(cancelable_operation(
-                    connect_rdcleanpath_transport(&self.config, rdcp, &self.input_event_sender, cliprdr_factory),
+                    connect_rdcleanpath_transport(
+                        &self.config,
+                        rdcp,
+                        &self.input_event_sender,
+                        cliprdr_factory,
+                        rdpdr_factory,
+                    ),
                     &mut self.close_receiver,
                 ))
                 .await
@@ -480,7 +586,13 @@ impl RdpClient {
 
                 #[cfg(windows)]
                 Transport::NamedPipe { path } => match Box::pin(cancelable_operation(
-                    connect_named_pipe(&self.config, path, &self.input_event_sender, cliprdr_factory),
+                    connect_named_pipe(
+                        &self.config,
+                        path,
+                        &self.input_event_sender,
+                        cliprdr_factory,
+                        rdpdr_factory,
+                    ),
                     &mut self.close_receiver,
                 ))
                 .await
@@ -507,6 +619,7 @@ impl RdpClient {
             match active_session(
                 framed,
                 connection_result,
+                self.config.rail_initial_execute.clone(),
                 &self.output_event_sender,
                 &mut self.input_event_receiver,
                 &mut self.clipboard_event_receiver,
@@ -602,23 +715,104 @@ async fn send_active_output_event(
 type CliprdrFactoryRef<'a> = Option<&'a (dyn CliprdrBackendFactory + Send)>;
 #[cfg(not(feature = "clipboard"))]
 type CliprdrFactoryRef<'a> = core::marker::PhantomData<&'a ()>;
+#[cfg(feature = "rdpdr")]
+type RdpdrFactoryRef<'a> = Option<&'a (dyn RdpdrBackendFactory + Send)>;
+#[cfg(not(feature = "rdpdr"))]
+type RdpdrFactoryRef<'a> = core::marker::PhantomData<&'a ()>;
+
+#[cfg(feature = "rdpdr")]
+#[derive(Debug)]
+struct RdpdrBackendBuildError(Box<dyn core::error::Error + Send + Sync>);
+
+#[cfg(feature = "rdpdr")]
+impl core::fmt::Display for RdpdrBackendBuildError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[cfg(feature = "rdpdr")]
+impl core::error::Error for RdpdrBackendBuildError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+#[cfg(feature = "rdpdr")]
+fn build_rdpdr_channel(
+    factory: RdpdrFactoryRef<'_>,
+    config: &crate::config::RdpdrConfig,
+) -> ConnectorResult<Option<ironrdp_rdpdr::Rdpdr>> {
+    if !config.enabled {
+        return Ok(None);
+    }
+    let Some(factory) = factory else {
+        return Ok(None);
+    };
+
+    let (backend, initial_drives) = factory
+        .build_rdpdr_backend()
+        .map_err(|error| ironrdp_connector::custom_err!("build RDPDR backend", RdpdrBackendBuildError(error)))?
+        .into_parts();
+    if initial_drives.is_empty() {
+        return Ok(None);
+    }
+
+    let initial_drives = initial_drives
+        .into_iter()
+        .map(RdpdrDrive::into_parts)
+        .collect::<Vec<_>>();
+    let rdpdr_channel = ironrdp_rdpdr::Rdpdr::new(backend, "IronRDP".to_owned()).with_drives(Some(initial_drives));
+
+    #[cfg(feature = "smartcard")]
+    let rdpdr_channel = if config.smartcard {
+        rdpdr_channel.with_smartcard(0)
+    } else {
+        rdpdr_channel
+    };
+
+    Ok(Some(rdpdr_channel))
+}
+
+#[cfg(any(feature = "sound", feature = "rdpdr"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RdpsndBackendKind {
+    #[cfg(feature = "sound")]
+    Playback,
+    #[cfg(feature = "rdpdr")]
+    Noop,
+}
+
+#[cfg(any(feature = "sound", feature = "rdpdr"))]
+fn rdpsnd_backend_kind(audio_playback: bool, rdpdr_attached: bool) -> Option<RdpsndBackendKind> {
+    match (audio_playback, rdpdr_attached) {
+        #[cfg(feature = "sound")]
+        (true, _) => Some(RdpsndBackendKind::Playback),
+        #[cfg(feature = "rdpdr")]
+        (_, true) => Some(RdpsndBackendKind::Noop),
+        _ => None,
+    }
+}
 
 /// Build a fully wired [`ironrdp_connector::ClientConnector`] with all feature-gated channels attached.
 ///
-/// This helper is used by all transport paths. The cliprdr backend is (re)built here, per
-/// connection, from `cliprdr_factory`.
+/// This helper is used by all transport paths.
+/// The CLIPRDR and RDPDR backends are built here for each connection attempt.
 fn build_connector(
     config: &Config,
     client_addr: SocketAddr,
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
-) -> ironrdp_connector::ClientConnector {
+    rdpdr_factory: RdpdrFactoryRef<'_>,
+) -> ConnectorResult<ironrdp_connector::ClientConnector> {
     // `input_sender` is only consumed by the optional DVC wirings below, and `cliprdr_factory`
     // only by the optional CLIPRDR attachment; discard them explicitly when those are compiled out.
     #[cfg(not(any(feature = "dvc-pipe-proxy", all(windows, feature = "dvc-com-plugin"))))]
     let _ = input_sender;
     #[cfg(not(feature = "clipboard"))]
     let _ = cliprdr_factory;
+    #[cfg(not(feature = "rdpdr"))]
+    let _ = rdpdr_factory;
 
     let mut drdynvc = ironrdp_dvc::DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
@@ -707,33 +901,59 @@ fn build_connector(
         });
     }
 
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    let audio_playback = connector_config.enable_audio_playback;
+    let rail_client = connector_config.remote_application_mode.then(|| {
+        let rail_client = RailClient::new(
+            connector_config.client_build,
+            connector_config.desktop_size.width,
+            connector_config.desktop_size.height,
+        );
+        if let Some(flags) = config.rail_client_status_flags {
+            rail_client.with_client_status_flags(flags)
+        } else {
+            rail_client
+        }
+    });
+
     let mut connector =
         ironrdp_connector::ClientConnector::new(connector_config, client_addr).with_static_channel(drdynvc);
 
-    // Attach RDPSND (audio).
-    #[cfg(feature = "sound")]
-    if config.channels.sound {
-        connector = connector.with_static_channel(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(
-            cpal::RdpsndBackend::new(),
-        )));
+    if let Some(rail_client) = rail_client {
+        connector = connector.with_static_channel(rail_client);
     }
 
-    // Attach RDPDR (device redirection).
     #[cfg(feature = "rdpdr")]
-    if config.channels.rdpdr.enabled {
-        #[cfg_attr(
-            not(feature = "smartcard"),
-            expect(
-                unused_mut,
-                reason = "rdpdr_channel is only reassigned when the smartcard feature is enabled"
-            )
-        )]
-        let mut rdpdr_channel =
-            ironrdp_rdpdr::Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), "IronRDP".to_owned());
-        #[cfg(feature = "smartcard")]
-        if config.channels.rdpdr.smartcard {
-            rdpdr_channel = rdpdr_channel.with_smartcard(0);
+    let rdpdr_channel = build_rdpdr_channel(rdpdr_factory, &config.channels.rdpdr)?;
+
+    // Windows servers only issue RDPDR traffic when RDPSND is also advertised.
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    {
+        #[cfg(feature = "rdpdr")]
+        let rdpdr_attached = rdpdr_channel.is_some();
+        #[cfg(not(feature = "rdpdr"))]
+        let rdpdr_attached = false;
+
+        if let Some(kind) = rdpsnd_backend_kind(audio_playback, rdpdr_attached) {
+            match kind {
+                #[cfg(feature = "sound")]
+                RdpsndBackendKind::Playback => {
+                    connector = connector.with_static_channel(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(
+                        cpal::RdpsndBackend::new(),
+                    )));
+                }
+                #[cfg(feature = "rdpdr")]
+                RdpsndBackendKind::Noop => {
+                    connector = connector.with_static_channel(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(
+                        ironrdp_rdpsnd::client::NoopRdpsndBackend,
+                    )));
+                }
+            }
         }
+    }
+
+    #[cfg(feature = "rdpdr")]
+    if let Some(rdpdr_channel) = rdpdr_channel {
         connector = connector.with_static_channel(rdpdr_channel);
     }
 
@@ -749,7 +969,7 @@ fn build_connector(
         attach_sc(&mut connector, &config.properties);
     }
 
-    connector
+    Ok(connector)
 }
 
 // ── Transport-specific connect helpers ────────────────────────────────────────
@@ -763,6 +983,7 @@ async fn connect_direct(
     config: &Config,
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
+    rdpdr_factory: RdpdrFactoryRef<'_>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let dest = config.destination.to_string();
     let stream = TcpStream::connect(&dest)
@@ -775,7 +996,7 @@ async fn connect_direct(
         .map_err(|e| ironrdp_connector::custom_err!("get socket local address", e))?;
     let framed = ironrdp_tokio::TokioFramed::new(stream);
 
-    let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
+    let connector = build_connector(config, client_addr, input_sender, cliprdr_factory, rdpdr_factory)?;
     #[cfg(feature = "vmconnect")]
     if config.vm_id().is_some() {
         return vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await;
@@ -793,6 +1014,7 @@ async fn connect_named_pipe(
     pipe_path: &str,
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
+    rdpdr_factory: RdpdrFactoryRef<'_>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     use tokio::net::windows::named_pipe::ClientOptions;
 
@@ -813,7 +1035,7 @@ async fn connect_named_pipe(
     // Named pipes have no socket address; use a dummy loopback address for Client Info.
     let client_addr = SocketAddr::from(([127, 0, 0, 1], 0));
     let framed = ironrdp_tokio::TokioFramed::new(stream);
-    let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
+    let connector = build_connector(config, client_addr, input_sender, cliprdr_factory, rdpdr_factory)?;
 
     security_upgrade_and_finalize(framed, connector, config).await
 }
@@ -825,6 +1047,7 @@ async fn connect_gateway(
     gw: &crate::config::GatewayConfig,
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
+    rdpdr_factory: RdpdrFactoryRef<'_>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     use ironrdp_mstsgu::GwConnectTarget;
 
@@ -851,7 +1074,7 @@ async fn connect_gateway(
 
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
-    let connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
+    let connector = build_connector(config, client_addr, input_sender, cliprdr_factory, rdpdr_factory)?;
     security_upgrade_and_finalize(framed, connector, config).await
 }
 
@@ -861,6 +1084,7 @@ async fn connect_rdcleanpath_transport(
     rdcp: &RDCleanPathConfig,
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
+    rdpdr_factory: RdpdrFactoryRef<'_>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let hostname = rdcp
         .url
@@ -884,18 +1108,35 @@ async fn connect_rdcleanpath_transport(
     let ws = crate::ws::websocket_compat(ws);
     let mut framed = ironrdp_tokio::TokioFramed::new(ws);
 
-    let mut connector = build_connector(config, client_addr, input_sender, cliprdr_factory);
+    let mut connector = build_connector(config, client_addr, input_sender, cliprdr_factory, rdpdr_factory)?;
 
     let destination = config.destination.to_string();
-    let (upgraded, server_public_key) =
-        rdcleanpath_handshake(&mut framed, &mut connector, destination, rdcp.auth_token.clone(), None).await?;
+    let mut network_client = ReqwestNetworkClient::new();
+    let server_name = ironrdp_connector::ServerName::from(&config.destination);
+    let (upgraded, server_public_key) = rdcleanpath_handshake(
+        &mut framed,
+        &mut connector,
+        &mut network_client,
+        RDCleanPathHandshakeParams {
+            server_name: server_name.clone(),
+            destination,
+            proxy_auth_token: rdcp.auth_token.clone(),
+            #[cfg(feature = "vmconnect")]
+            vmconnect: config
+                .vm_id()
+                .zip(config.vmconnect_mode())
+                .map(|(id, mode)| (id.to_owned(), mode)),
+            kerberos_config: config.kerberos_config.clone(),
+        },
+    )
+    .await?;
 
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
         connector,
         &mut framed,
-        &mut ReqwestNetworkClient::new(),
-        (&config.destination).into(),
+        &mut network_client,
+        server_name,
         server_public_key,
         config.kerberos_config.clone(),
     )
@@ -1059,15 +1300,24 @@ where
 
 // ── RDCleanPath handshake ─────────────────────────────────────────────────────
 
-async fn rdcleanpath_handshake<S>(
-    framed: &mut ironrdp_tokio::Framed<S>,
-    connector: &mut ironrdp_connector::ClientConnector,
+struct RDCleanPathHandshakeParams {
+    server_name: ironrdp_connector::ServerName,
     destination: String,
     proxy_auth_token: String,
-    pcb: Option<String>,
+    #[cfg(feature = "vmconnect")]
+    vmconnect: Option<(String, ironrdp_vmconnect::Mode)>,
+    kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
+}
+
+async fn rdcleanpath_handshake<S, N>(
+    framed: &mut ironrdp_tokio::Framed<S>,
+    connector: &mut ironrdp_connector::ClientConnector,
+    network_client: &mut N,
+    params: RDCleanPathHandshakeParams,
 ) -> ConnectorResult<(ironrdp_tokio::Upgraded, Vec<u8>)>
 where
     S: ironrdp_tokio::FramedRead + FramedWrite,
+    N: ironrdp_tokio::NetworkClient,
 {
     use ironrdp_connector::Sequence as _;
     use x509_cert::der::Decode as _;
@@ -1088,65 +1338,108 @@ where
         }
     }
 
+    let RDCleanPathHandshakeParams {
+        server_name,
+        destination,
+        proxy_auth_token,
+        #[cfg(feature = "vmconnect")]
+        vmconnect,
+        kerberos_config,
+    } = params;
+
+    #[cfg(feature = "vmconnect")]
+    let request_vmconnect = vmconnect.is_some();
+    #[cfg(not(feature = "vmconnect"))]
+    let request_vmconnect = false;
+
     let mut buf = WriteBuf::new();
     info!("Begin RDCleanPath connection procedure");
 
-    // Send X224 + RDCleanPath request.
     {
-        let ironrdp_connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
-            return Err(ironrdp_connector::general_err!(
-                "invalid connector state (send request)"
-            ));
+        let rdcleanpath_req = {
+            #[cfg(feature = "vmconnect")]
+            if let Some((vm_id, mode)) = vmconnect {
+                let pcb_payload = ironrdp_vmconnect::preconnection_blob_payload(&vm_id, mode)?;
+                ironrdp_rdcleanpath::RDCleanPathPdu::new_vmconnect_request(destination, proxy_auth_token, pcb_payload)
+                    .map_err(|e| ironrdp_connector::custom_err!("build VMConnect RDCleanPath request", e))?
+            } else {
+                build_ordinary_rdcleanpath_request(connector, &mut buf, destination, proxy_auth_token)?
+            }
+            #[cfg(not(feature = "vmconnect"))]
+            {
+                build_ordinary_rdcleanpath_request(connector, &mut buf, destination, proxy_auth_token)?
+            }
         };
-        debug_assert!(connector.next_pdu_hint().is_none());
-        let written = connector.step_no_input(&mut buf)?;
-        let x224_pdu_len = written.size().expect("written size");
-        debug_assert_eq!(x224_pdu_len, buf.filled_len());
-        let x224_pdu = buf.filled().to_vec();
-
-        let rdcleanpath_req =
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
-                .map_err(|e| ironrdp_connector::custom_err!("new RDCleanPath request", e))?;
-        debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
+        debug!(
+            destination = ?rdcleanpath_req.destination,
+            has_preconnection_blob = rdcleanpath_req.preconnection_blob.is_some(),
+            has_x224_connection_pdu = rdcleanpath_req.x224_connection_pdu.is_some(),
+            "Send RDCleanPath request"
+        );
         let rdcleanpath_req = rdcleanpath_req
             .to_der()
-            .map_err(|e| ironrdp_connector::custom_err!("RDCleanPath request encode", e))?;
+            .map_err(|e| ironrdp_connector::custom_err!("encode RDCleanPath request", e))?;
         framed
             .write_all(&rdcleanpath_req)
             .await
             .map_err(|e| ironrdp_connector::custom_err!("couldn't write RDCleanPath request", e))?;
     }
 
-    // Read RDCleanPath response.
     {
         let rdcleanpath_res = framed
             .read_by_hint(&RDCLEANPATH_HINT)
             .await
             .map_err(|e| ironrdp_connector::custom_err!("read RDCleanPath response", e))?;
         let rdcleanpath_res = ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_res)
-            .map_err(|e| ironrdp_connector::custom_err!("RDCleanPath response decode", e))?;
+            .map_err(|e| ironrdp_connector::custom_err!("decode RDCleanPath response", e))?;
         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
-        let (x224_connection_response, server_cert_chain) = match rdcleanpath_res
-            .into_enum()
-            .map_err(|e| ironrdp_connector::custom_err!("invalid RDCleanPath PDU", e))?
-        {
-            ironrdp_rdcleanpath::RDCleanPath::Request { .. } => {
+        let (x224_connection_response, server_cert_chain) = match (
+            request_vmconnect,
+            rdcleanpath_res
+                .into_message()
+                .map_err(|e| ironrdp_connector::custom_err!("invalid RDCleanPath PDU", e))?,
+        ) {
+            (_, ironrdp_rdcleanpath::RDCleanPathMessage::Request { .. })
+            | (_, ironrdp_rdcleanpath::RDCleanPathMessage::VmConnectRequest { .. }) => {
                 return Err(ironrdp_connector::general_err!(
                     "received unexpected RDCleanPath type (request)"
                 ));
             }
-            ironrdp_rdcleanpath::RDCleanPath::Response {
-                x224_connection_response,
-                server_cert_chain,
-                server_addr: _,
-            } => (x224_connection_response, server_cert_chain),
-            ironrdp_rdcleanpath::RDCleanPath::GeneralErr(error) => {
+            (
+                false,
+                ironrdp_rdcleanpath::RDCleanPathMessage::Response {
+                    x224_connection_response,
+                    server_cert_chain,
+                    server_addr: _,
+                },
+            ) => (Some(x224_connection_response), server_cert_chain),
+            (
+                true,
+                ironrdp_rdcleanpath::RDCleanPathMessage::VmConnectResponse {
+                    server_cert_chain,
+                    server_addr: _,
+                },
+            ) => (None, server_cert_chain),
+            (true, ironrdp_rdcleanpath::RDCleanPathMessage::Response { .. }) => {
+                return Err(ironrdp_connector::general_err!(
+                    "response from RDCleanPath includes X.224 for a VMConnect request"
+                ));
+            }
+            (false, ironrdp_rdcleanpath::RDCleanPathMessage::VmConnectResponse { .. }) => {
+                return Err(ironrdp_connector::general_err!(
+                    "response from RDCleanPath is missing X.224 for an ordinary request"
+                ));
+            }
+            (_, ironrdp_rdcleanpath::RDCleanPathMessage::GeneralErr(error)) => {
                 return Err(ironrdp_connector::custom_err!("received RDCleanPath error", error));
             }
-            ironrdp_rdcleanpath::RDCleanPath::NegotiationErr {
-                x224_connection_response,
-            } => {
+            (
+                _,
+                ironrdp_rdcleanpath::RDCleanPathMessage::NegotiationErr {
+                    x224_connection_response,
+                },
+            ) => {
                 if let Ok(x224_confirm) = ironrdp_core::decode::<
                     ironrdp_pdu::x224::X224<ironrdp_pdu::nego::ConnectionConfirm>,
                 >(&x224_connection_response)
@@ -1165,17 +1458,6 @@ where
             }
         };
 
-        let ironrdp_connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
-            return Err(ironrdp_connector::general_err!(
-                "invalid connector state (wait confirm)"
-            ));
-        };
-        debug_assert!(connector.next_pdu_hint().is_some());
-
-        buf.clear();
-        let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
-        debug_assert!(written.is_nothing());
-
         let server_cert = server_cert_chain
             .into_iter()
             .next()
@@ -1192,11 +1474,71 @@ where
             .ok_or_else(|| ironrdp_connector::general_err!("subject public key BIT STRING is not aligned"))?
             .to_owned();
 
-        let should_upgrade = ironrdp_tokio::skip_connect_begin(connector);
-        let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, connector);
+        let upgraded = match x224_connection_response {
+            Some(x224_connection_response) => {
+                let ironrdp_connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state
+                else {
+                    return Err(ironrdp_connector::general_err!(
+                        "invalid connector state (wait confirm)"
+                    ));
+                };
+                debug_assert!(connector.next_pdu_hint().is_some());
+
+                buf.clear();
+                let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
+                debug_assert!(written.is_nothing());
+
+                let should_upgrade = ironrdp_tokio::skip_connect_begin(connector);
+                ironrdp_tokio::mark_as_upgraded(should_upgrade, connector)
+            }
+            None => {
+                #[cfg(feature = "vmconnect")]
+                {
+                    ironrdp_vmconnect::connect_front(
+                        ironrdp_vmconnect::pcb_sent_via_proxy(),
+                        framed,
+                        connector,
+                        network_client,
+                        server_name,
+                        &server_public_key,
+                        kerberos_config,
+                    )
+                    .await?
+                }
+                #[cfg(not(feature = "vmconnect"))]
+                {
+                    let _ = (framed, network_client, server_name, kerberos_config);
+                    return Err(ironrdp_connector::general_err!(
+                        "vmconnect response from RDCleanPath requires the vmconnect feature"
+                    ));
+                }
+            }
+        };
 
         Ok((upgraded, server_public_key))
     }
+}
+
+fn build_ordinary_rdcleanpath_request(
+    connector: &mut ironrdp_connector::ClientConnector,
+    buf: &mut WriteBuf,
+    destination: String,
+    proxy_auth_token: String,
+) -> ConnectorResult<ironrdp_rdcleanpath::RDCleanPathPdu> {
+    use ironrdp_connector::Sequence as _;
+
+    let ironrdp_connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
+        return Err(ironrdp_connector::general_err!(
+            "invalid connector state (send request)"
+        ));
+    };
+    debug_assert!(connector.next_pdu_hint().is_none());
+    let written = connector.step_no_input(buf)?;
+    let x224_pdu_len = written.size().expect("written size");
+    debug_assert_eq!(x224_pdu_len, buf.filled_len());
+    let x224_pdu = buf.filled().to_vec();
+    ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, None)
+        .map_err(|e| ironrdp_connector::custom_err!("new RDCleanPath request", e))
 }
 
 // ── Active session ────────────────────────────────────────────────────────────
@@ -1210,6 +1552,23 @@ enum RdpControlFlow {
     TerminatedGracefully(GracefulDisconnectReason),
 }
 
+#[cfg(feature = "rdpdr")]
+fn poll_deferred_rdpdr_output(active_stage: &mut ActiveStage) -> SessionResult<Option<ActiveStageOutput>> {
+    let messages = match active_stage.get_svc_processor_mut::<ironrdp_rdpdr::Rdpdr>() {
+        Some(rdpdr) => rdpdr
+            .poll_deferred_messages()
+            .map_err(|error| ironrdp_session::custom_err!("poll deferred RDPDR messages", error))?,
+        None => Vec::new(),
+    };
+    if messages.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(ActiveStageOutput::ResponseFrame(
+            active_stage.process_svc_messages_by_name(&ironrdp_rdpdr::Rdpdr::NAME, messages)?,
+        )))
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the active loop owns independent transport, input, clipboard, and cancellation sources"
@@ -1217,6 +1576,7 @@ enum RdpControlFlow {
 async fn active_session(
     framed: UpgradedFramed,
     connection_result: ConnectionResult,
+    initial_rail_execute: Option<ExecutePdu>,
     output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::Receiver<RdpInputEvent>,
     clipboard_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
@@ -1228,6 +1588,7 @@ async fn active_session(
     let desktop_size = connection_result.desktop_size;
     let mut refresh_rect_support = connection_result.refresh_rect_support;
     let mut suppress_output_support = connection_result.suppress_output_support;
+    let window_support_level = connection_result.window_support_level;
     let mut image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
 
     // We retain the factory to drive the Deactivation-Reactivation Sequence locally.
@@ -1244,9 +1605,20 @@ async fn active_session(
         pointer_software_rendering: connection_result.pointer_software_rendering,
     }
     .build();
+    active_stage.set_window_support_level(window_support_level);
+    if let Some(execute) = initial_rail_execute {
+        let rail_client = active_stage
+            .get_svc_processor_mut::<RailClient>()
+            .ok_or_else(|| ironrdp_session::general_err!("RemoteApp launch requested without a RAIL static channel"))?;
+        rail_client
+            .queue_execute(execute)
+            .map_err(|error| ironrdp_session::custom_err!("queue initial RemoteApp launch", error))?;
+    }
 
     // Timer interval for driving clipboard lock timeouts.
     let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
+    #[cfg(feature = "rdpdr")]
+    let mut rdpdr_deferred_interval = tokio::time::interval(Duration::from_millis(50));
 
     // Anti-idle: track the time of the last real input and the last known mouse position so we can
     // synthesize a no-op mouse move when the session has been idle for too long. Default to the
@@ -1257,6 +1629,7 @@ async fn active_session(
     let mut fake_events_interval =
         fake_events_interval.map(|interval| tokio::time::interval(core::cmp::max(interval, Duration::from_secs(1))));
     let mut resize_queue = ResizeQueue::default();
+    let mut rail_queue_release_deadline = None;
     let mut graceful_shutdown_sent = false;
     let mut post_logon_redraw_requested = false;
     let mut initial_outputs = if *graceful_close_receiver.borrow_and_update() {
@@ -1287,6 +1660,12 @@ async fn active_session(
                 core::future::pending::<Option<RdpInputEvent>>().await
             }
         };
+        let rdpdr_deferred = async {
+            #[cfg(feature = "rdpdr")]
+            rdpdr_deferred_interval.tick().await;
+            #[cfg(not(feature = "rdpdr"))]
+            core::future::pending::<()>().await;
+        };
         let outputs = if let Some(outputs) = initial_outputs.take() {
             outputs
         } else {
@@ -1306,6 +1685,10 @@ async fn active_session(
                     let (action, payload) = frame.map_err(|e| ironrdp_session::custom_err!("read frame", e))?;
                     trace!(?action, frame_length = payload.len(), "Frame received");
                     let mut outputs = active_stage.process(&mut image, action, &payload)?;
+                    #[cfg(feature = "rdpdr")]
+                    if let Some(output) = poll_deferred_rdpdr_output(&mut active_stage)? {
+                        outputs.push(output);
+                    }
                     if active_stage.take_bitmap_recovery_request() {
                         let redraw_frames = active_stage.request_full_redraw(
                             image.width(),
@@ -1327,7 +1710,10 @@ async fn active_session(
                         process_clipboard_message(&mut active_stage, event)?
                     }
                     #[cfg(not(feature = "clipboard"))]
-                    unreachable!("clipboard receive is pending without the clipboard feature")
+                    {
+                        let _ = clipboard_event;
+                        unreachable!("clipboard receive is pending without the clipboard feature")
+                    }
                 }
                 input_event = input_event_receiver.recv() => {
                     let input_event = input_event.ok_or_else(|| ironrdp_session::general_err!("GUI is stopped"))?;
@@ -1360,7 +1746,17 @@ async fn active_session(
                             request.physical_size,
                         ) {
                             resize_queue.mark_in_flight(request);
-                            vec![ActiveStageOutput::ResponseFrame(response_frame?)]
+                            let mut outputs = vec![ActiveStageOutput::ResponseFrame(response_frame?)];
+                            if let Some(messages) = active_stage
+                                .get_svc_processor_mut::<RailClient>()
+                                .map(|rail_client| rail_client.update_desktop_size(request.width, request.height))
+                            {
+                                let frame = active_stage.process_svc_processor_messages(messages)?;
+                                if !frame.is_empty() {
+                                    outputs.push(ActiveStageOutput::ResponseFrame(frame));
+                                }
+                            }
+                            outputs
                         } else {
                             // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
                             debug!("Reconnecting with new size");
@@ -1401,6 +1797,97 @@ async fn active_session(
                             }
                         }
                     }
+                    RdpInputEvent::RailExecute(execute) => {
+                        let executable = execute.executable.clone();
+                        let flags = execute.flags;
+                        let (messages, failure_reason) = match active_stage.get_svc_processor_mut::<RailClient>() {
+                            Some(rail_client) => match rail_client.queue_execute(execute) {
+                                Ok(messages) => (Some(messages), None),
+                                Err(error) => {
+                                    warn!(%error, "Unable to queue RAIL Execute request");
+                                    (None, Some(RailExecuteFailureReason::QueueRejected))
+                                }
+                            },
+                            None => {
+                                warn!("Unable to queue RAIL Execute request because RAIL is disabled");
+                                (None, Some(RailExecuteFailureReason::RailUnavailable))
+                            }
+                        };
+                        match messages {
+                            Some(messages) => match active_stage.process_svc_processor_messages(messages) {
+                                Ok(frame) => (!frame.is_empty())
+                                    .then_some(ActiveStageOutput::ResponseFrame(frame))
+                                    .into_iter()
+                                    .collect(),
+                                Err(error) => {
+                                    warn!(%error, "Unable to process RAIL Execute request");
+                                    if !send_active_output_event(
+                                        output_event_sender,
+                                        RdpOutputEvent::RailExecuteFailed {
+                                            executable,
+                                            flags,
+                                            reason: RailExecuteFailureReason::MessageProcessingFailed,
+                                        },
+                                        close_receiver,
+                                    )
+                                    .await?
+                                    {
+                                        return Ok(RdpControlFlow::TerminatedGracefully(
+                                            GracefulDisconnectReason::UserInitiated,
+                                        ));
+                                    }
+                                    Vec::new()
+                                }
+                            },
+                            None => {
+                                let reason = failure_reason.expect("RAIL Execute failure reason must be recorded");
+                                if !send_active_output_event(
+                                    output_event_sender,
+                                    RdpOutputEvent::RailExecuteFailed {
+                                        executable,
+                                        flags,
+                                        reason,
+                                    },
+                                    close_receiver,
+                                )
+                                .await?
+                                {
+                                    return Ok(RdpControlFlow::TerminatedGracefully(
+                                        GracefulDisconnectReason::UserInitiated,
+                                    ));
+                                }
+                                Vec::new()
+                            }
+                        }
+                    }
+                    RdpInputEvent::Rail(event) => {
+                        let messages = match active_stage.get_svc_processor_mut::<RailClient>() {
+                            Some(rail_client) => match rail_client.queue_input(event) {
+                                Ok(messages) => Some(messages),
+                                Err(error) => {
+                                    warn!(%error, "Unable to queue RAIL input");
+                                    None
+                                }
+                            },
+                            None => {
+                                warn!("Unable to queue RAIL input because RAIL is disabled");
+                                None
+                            }
+                        };
+                        match messages {
+                            Some(messages) => match active_stage.process_svc_processor_messages(messages) {
+                                Ok(frame) => (!frame.is_empty())
+                                    .then_some(ActiveStageOutput::ResponseFrame(frame))
+                                    .into_iter()
+                                    .collect(),
+                                Err(error) => {
+                                    warn!(%error, "Unable to process RAIL input");
+                                    Vec::new()
+                                }
+                            },
+                            None => Vec::new(),
+                        }
+                    }
                     }
                 }
                 _ = cleanup_interval.tick() => {
@@ -1427,6 +1914,16 @@ async fn active_session(
                 #[cfg(not(feature = "clipboard"))]
                 Vec::new()
                 }
+                _ = rdpdr_deferred => {
+                    #[cfg(feature = "rdpdr")]
+                    {
+                        poll_deferred_rdpdr_output(&mut active_stage)?.into_iter().collect()
+                    }
+                    #[cfg(not(feature = "rdpdr"))]
+                    {
+                        Vec::new()
+                    }
+                }
                 _ = async {
                 match resize_deadline {
                     Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -1441,6 +1938,29 @@ async fn active_session(
                     height: request.height,
                     reason,
                 });
+                }
+                _ = async {
+                    match rail_queue_release_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => core::future::pending().await,
+                    }
+                } => {
+                    rail_queue_release_deadline = None;
+                    let messages = active_stage
+                        .get_svc_processor_mut::<RailClient>()
+                        .map(RailClient::release_queued_after_handshake)
+                        .transpose()
+                        .map_err(|error| ironrdp_session::custom_err!("RAIL", error))?;
+                    match messages {
+                        Some(messages) => {
+                            let frame = active_stage.process_svc_processor_messages(messages)?;
+                            (!frame.is_empty())
+                                .then_some(ActiveStageOutput::ResponseFrame(frame))
+                                .into_iter()
+                                .collect()
+                        }
+                        None => Vec::new(),
+                    }
                 }
                 _ = async { match fake_events_interval.as_mut() {
                 Some(interval) => interval.tick().await,
@@ -1555,6 +2075,19 @@ async fn active_session(
                         ));
                     }
                 }
+                ActiveStageOutput::WindowingOrders(orders) => {
+                    if !send_active_output_event(
+                        output_event_sender,
+                        RdpOutputEvent::WindowingOrders(orders),
+                        close_receiver,
+                    )
+                    .await?
+                    {
+                        return Ok(RdpControlFlow::TerminatedGracefully(
+                            GracefulDisconnectReason::UserInitiated,
+                        ));
+                    }
+                }
                 ActiveStageOutput::SaveSessionInfo { logon_complete: true } => {
                     if !post_logon_redraw_requested {
                         post_logon_redraw_requested = true;
@@ -1660,20 +2193,45 @@ async fn active_session(
                             input_flags: _,
                             enable_server_pointer,
                             pointer_software_rendering,
+                            static_channel_chunk_size,
                             refresh_rect_support: reactivated_refresh_rect_support,
                             suppress_output_support: reactivated_suppress_output_support,
+                            window_support_level,
                         } = connection_activation.connection_activation_state()
                         {
                             debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
                             image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                             resize_queue.completed();
-                            active_stage.reactivate(
+                            if !active_stage.reactivate(
                                 connection_activation.io_channel_id(),
                                 connection_activation.user_channel_id(),
                                 share_id,
                                 enable_server_pointer,
                                 pointer_software_rendering,
-                            );
+                                static_channel_chunk_size,
+                            ) {
+                                return Err(ironrdp_session::general_err!("invalid static channel chunk size"));
+                            }
+                            active_stage.set_window_support_level(window_support_level);
+                            if let Some(messages) =
+                                active_stage.get_svc_processor_mut::<RailClient>().map(|rail_client| {
+                                    rail_client.update_desktop_size(desktop_size.width, desktop_size.height)
+                                })
+                            {
+                                let frame = active_stage.process_svc_processor_messages(messages)?;
+                                if !frame.is_empty() {
+                                    let Some(result) =
+                                        cancelable_operation(writer.write_all(&frame), close_receiver).await
+                                    else {
+                                        return Ok(RdpControlFlow::TerminatedGracefully(
+                                            GracefulDisconnectReason::UserInitiated,
+                                        ));
+                                    };
+                                    result.map_err(|error| {
+                                        ironrdp_session::custom_err!("write RAIL desktop size update", error)
+                                    })?;
+                                }
+                            }
                             refresh_rect_support = reactivated_refresh_rect_support;
                             suppress_output_support = reactivated_suppress_output_support;
                             break 'activation_seq;
@@ -1705,6 +2263,51 @@ async fn active_session(
             return Ok(RdpControlFlow::TerminatedGracefully(
                 GracefulDisconnectReason::UserInitiated,
             ));
+        }
+
+        for event in active_stage
+            .get_svc_processor_mut::<RailClient>()
+            .map(RailClient::take_events)
+            .unwrap_or_default()
+        {
+            let output_event = match event {
+                RailEvent::Handshake {
+                    handshake_ex_flags,
+                    initialization_message_count,
+                    queued_execute_count,
+                } => {
+                    rail_queue_release_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(250));
+                    RdpOutputEvent::RailHandshake {
+                        handshake_ex_flags,
+                        initialization_message_count,
+                        queued_execute_count,
+                    }
+                }
+                RailEvent::DesktopSynchronized { released_execute_count } => {
+                    RdpOutputEvent::RailDesktopSynchronized { released_execute_count }
+                }
+                RailEvent::PostHandshakeQueueReleased { released_execute_count } => {
+                    RdpOutputEvent::RailPostHandshakeQueueReleased { released_execute_count }
+                }
+                RailEvent::ExecuteResult(result) => RdpOutputEvent::RailExecuteResult(result),
+                RailEvent::ApplicationId {
+                    window_id,
+                    application_id,
+                    process_id,
+                    process_image_name,
+                } => RdpOutputEvent::RailApplicationId {
+                    window_id,
+                    application_id,
+                    process_id,
+                    process_image_name,
+                },
+                RailEvent::Control(control) => RdpOutputEvent::RailControl(control),
+            };
+            if !send_active_output_event(output_event_sender, output_event, close_receiver).await? {
+                return Ok(RdpControlFlow::TerminatedGracefully(
+                    GracefulDisconnectReason::UserInitiated,
+                ));
+            }
         }
 
         if resize_queue.in_flight.is_none()
@@ -1805,6 +2408,133 @@ fn process_clipboard_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "rdpdr")]
+    use core::any::TypeId;
+    #[cfg(feature = "rdpdr")]
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    #[cfg(feature = "rdpdr")]
+    use ironrdp_core::encode_vec;
+    #[cfg(feature = "rdpdr")]
+    use ironrdp_rdpdr::RdpdrBackend;
+    #[cfg(feature = "rdpdr")]
+    use ironrdp_rdpdr::pdu::RdpdrPdu;
+    #[cfg(feature = "rdpdr")]
+    use ironrdp_rdpdr::pdu::efs::{
+        DeviceControlRequest, ServerDeviceAnnounceResponse, ServerDriveIoRequest, VERSION_MINOR_12, VersionAndIdPdu,
+        VersionAndIdPduKind,
+    };
+    #[cfg(feature = "rdpdr")]
+    use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
+    #[cfg(feature = "rdpdr")]
+    use ironrdp_svc::{StaticChannelSet, SvcProcessor as _};
+
+    #[cfg(feature = "rdpdr")]
+    #[derive(Debug)]
+    struct TestRdpdrBackend {
+        instance: usize,
+        deferred_messages: Vec<SvcMessage>,
+    }
+
+    #[cfg(feature = "rdpdr")]
+    impl TestRdpdrBackend {
+        fn new(instance: usize) -> Self {
+            Self {
+                instance,
+                deferred_messages: Vec::new(),
+            }
+        }
+
+        fn with_deferred_message() -> Self {
+            Self {
+                instance: 0,
+                deferred_messages: vec![SvcMessage::from(RdpdrPdu::EmptyResponse)],
+            }
+        }
+    }
+
+    #[cfg(feature = "rdpdr")]
+    ironrdp_core::impl_as_any!(TestRdpdrBackend);
+
+    #[cfg(feature = "rdpdr")]
+    impl RdpdrBackend for TestRdpdrBackend {
+        fn handle_server_device_announce_response(
+            &mut self,
+            _pdu: ServerDeviceAnnounceResponse,
+        ) -> ironrdp_pdu::PduResult<()> {
+            Ok(())
+        }
+
+        fn handle_scard_call(
+            &mut self,
+            _req: DeviceControlRequest<ScardIoCtlCode>,
+            _call: ScardCall,
+        ) -> ironrdp_pdu::PduResult<()> {
+            Ok(())
+        }
+
+        fn handle_drive_io_request(&mut self, _req: ServerDriveIoRequest) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn poll_deferred_messages(&mut self) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+            Ok(core::mem::take(&mut self.deferred_messages))
+        }
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[derive(Debug)]
+    struct CountingRdpdrFactory {
+        builds: AtomicUsize,
+        initial_drives: Vec<RdpdrDrive>,
+    }
+
+    #[cfg(feature = "rdpdr")]
+    impl CountingRdpdrFactory {
+        fn new(initial_drives: Vec<RdpdrDrive>) -> Self {
+            Self {
+                builds: AtomicUsize::new(0),
+                initial_drives,
+            }
+        }
+    }
+
+    #[cfg(feature = "rdpdr")]
+    impl RdpdrBackendFactory for CountingRdpdrFactory {
+        fn build_rdpdr_backend(&self) -> RdpdrBackendFactoryResult<RdpdrBackendProduct> {
+            let instance = self.builds.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(RdpdrBackendProduct::new(
+                Box::new(TestRdpdrBackend::new(instance)),
+                self.initial_drives.clone(),
+            ))
+        }
+    }
+
+    #[cfg(feature = "clipboard")]
+    fn no_cliprdr_factory() -> CliprdrFactoryRef<'static> {
+        None
+    }
+
+    #[cfg(not(feature = "clipboard"))]
+    fn no_cliprdr_factory() -> CliprdrFactoryRef<'static> {
+        core::marker::PhantomData
+    }
+
+    #[cfg(feature = "rdpdr")]
+    fn test_config() -> Config {
+        crate::config::ConfigBuilder::new()
+            .with_destination(crate::config::Destination::from_parts("127.0.0.1", 3389))
+            .with_username("user")
+            .with_password("password")
+            .with_client_build(1)
+            .with_client_dir(r"C:\")
+            .with_platform(ironrdp_pdu::rdp::capability_sets::MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+            .with_rdpdr(true)
+            .build()
+            .expect("test configuration should build")
+    }
 
     fn resize_request(width: u16, height: u16) -> ResizeRequest {
         ResizeRequest {
@@ -1916,10 +2646,213 @@ mod tests {
         assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::Resize { .. })));
     }
 
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn disabled_rdpdr_does_not_build_a_backend() {
+        let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "fixtures".to_owned())]);
+        let config = crate::config::RdpdrConfig {
+            enabled: false,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+        };
+
+        assert!(
+            build_rdpdr_channel(Some(&factory), &config)
+                .expect("disabled RDPDR should not fail")
+                .is_none()
+        );
+        assert_eq!(factory.builds.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn empty_rdpdr_product_omits_the_channel() {
+        let factory = CountingRdpdrFactory::new(Vec::new());
+
+        assert!(
+            build_rdpdr_channel(Some(&factory), &crate::config::RdpdrConfig::default())
+                .expect("empty RDPDR product should not fail")
+                .is_none()
+        );
+        assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn rdpdr_factory_builds_a_fresh_backend_for_each_attempt() {
+        let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "fixtures".to_owned())]);
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+        };
+
+        let first = build_rdpdr_channel(Some(&factory), &config)
+            .expect("first connection attempt should build")
+            .expect("first product contains a filesystem device");
+        let second = build_rdpdr_channel(Some(&factory), &config)
+            .expect("second connection attempt should build")
+            .expect("second product contains a filesystem device");
+
+        assert_eq!(factory.builds.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            first
+                .downcast_backend::<TestRdpdrBackend>()
+                .expect("first test backend should be retained")
+                .instance,
+            1
+        );
+        assert_eq!(
+            second
+                .downcast_backend::<TestRdpdrBackend>()
+                .expect("second test backend should be retained")
+                .instance,
+            2
+        );
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn rdpdr_announces_the_factory_device_metadata() {
+        let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "fixtures".to_owned())]);
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+        };
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config)
+            .expect("RDPDR channel should build")
+            .expect("product contains a filesystem device");
+        let client_id = 0x1234_5678;
+
+        let server_announce = RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+            version_major: 1,
+            version_minor: VERSION_MINOR_12,
+            client_id,
+            kind: VersionAndIdPduKind::ServerAnnounceRequest,
+        });
+        assert_eq!(
+            rdpdr
+                .process(&encode_vec(&server_announce).expect("encode server announce"))
+                .expect("process server announce")
+                .len(),
+            2
+        );
+
+        let client_confirm = RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+            version_major: 1,
+            version_minor: VERSION_MINOR_12,
+            client_id,
+            kind: VersionAndIdPduKind::ServerClientIdConfirm,
+        });
+        assert!(
+            rdpdr
+                .process(&encode_vec(&client_confirm).expect("encode client ID confirm"))
+                .expect("process client ID confirm")
+                .is_empty()
+        );
+        let announcements = rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on");
+        assert_eq!(announcements.len(), 1);
+
+        let wire = announcements[0]
+            .encode_unframed_pdu()
+            .expect("encode device announcement");
+        assert_eq!(
+            u16::from_le_bytes(wire[2..4].try_into().expect("device announcement packet ID")),
+            u16::from(ironrdp_rdpdr::pdu::PacketId::CoreDevicelistAnnounce)
+        );
+        assert_eq!(u32::from_le_bytes(wire[4..8].try_into().expect("device count")), 1);
+        assert_eq!(u32::from_le_bytes(wire[12..16].try_into().expect("device ID")), 42);
+
+        let expected_name = "fixtures"
+            .encode_utf16()
+            .chain(core::iter::once(0))
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            usize::try_from(u32::from_le_bytes(wire[24..28].try_into().expect("device data length")))
+                .expect("device data length fits usize"),
+            expected_name.len()
+        );
+        assert_eq!(&wire[28..], expected_name);
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn rdpdr_static_channel_is_attached_with_rdpsnd() {
+        let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "fixtures".to_owned())]);
+        let config = test_config();
+        let (input_sender, _) = RdpInputSender::channel(1);
+        let mut connector = build_connector(
+            &config,
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            &input_sender,
+            no_cliprdr_factory(),
+            Some(&factory),
+        )
+        .expect("RDPDR connector should build");
+
+        assert!(
+            connector
+                .get_static_channel_processor::<ironrdp_rdpdr::Rdpdr>()
+                .is_some()
+        );
+        assert!(
+            connector
+                .get_static_channel_processor::<ironrdp_rdpsnd::client::Rdpsnd>()
+                .is_some()
+        );
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn deferred_rdpdr_messages_use_the_static_channel() {
+        let mut static_channels = StaticChannelSet::new();
+        assert!(
+            static_channels
+                .insert(ironrdp_rdpdr::Rdpdr::new(
+                    Box::new(TestRdpdrBackend::with_deferred_message()),
+                    "test".to_owned(),
+                ))
+                .is_none()
+        );
+        assert!(
+            static_channels
+                .attach_channel_id(TypeId::of::<ironrdp_rdpdr::Rdpdr>(), 1005)
+                .is_none()
+        );
+        let mut active_stage = ActiveStageBuilder {
+            static_channels,
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 0,
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+
+        let output = poll_deferred_rdpdr_output(&mut active_stage)
+            .expect("deferred RDPDR messages should encode")
+            .expect("deferred RDPDR message should produce a static-channel frame");
+        let ActiveStageOutput::ResponseFrame(frame) = output else {
+            panic!("expected a static-channel response frame");
+        };
+        assert!(!frame.is_empty());
+        assert!(
+            poll_deferred_rdpdr_output(&mut active_stage)
+                .expect("polling an empty backend should succeed")
+                .is_none()
+        );
+    }
+
     #[cfg(feature = "clipboard")]
     #[test]
     fn clipboard_messages_bypass_the_bounded_input_queue() {
-        let (sender, _, mut clipboard_receiver, _, _) = RdpInputSender::channel_with_close_signal(1);
+        let (sender, _input_receiver, mut clipboard_receiver, _, _) = RdpInputSender::channel_with_close_signal(1);
         sender
             .try_send(RdpInputEvent::Resize {
                 width: 1024,
@@ -1938,6 +2871,54 @@ mod tests {
         assert!(matches!(
             clipboard_receiver.try_recv(),
             Ok(RdpInputEvent::Clipboard(ClipboardMessage::Error(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn windowing_orders_are_delivered_to_the_output_consumer() {
+        let (output_sender, mut output_receiver) = mpsc::channel(1);
+        let (_close_sender, mut close_receiver) = watch::channel(false);
+
+        assert!(
+            send_active_output_event(
+                &output_sender,
+                RdpOutputEvent::WindowingOrders(vec![0, 0, 1, 2, 3]),
+                &mut close_receiver,
+            )
+            .await
+            .expect("deliver windowing orders")
+        );
+        assert!(matches!(
+            output_receiver.recv().await,
+            Some(RdpOutputEvent::WindowingOrders(data)) if data == [0, 0, 1, 2, 3]
+        ));
+    }
+
+    #[tokio::test]
+    async fn local_rail_execute_failure_is_delivered_without_terminating_the_session() {
+        let (output_sender, mut output_receiver) = mpsc::channel(1);
+        let (_close_sender, mut close_receiver) = watch::channel(false);
+
+        assert!(
+            send_active_output_event(
+                &output_sender,
+                RdpOutputEvent::RailExecuteFailed {
+                    executable: "notepad.exe".to_owned(),
+                    flags: 0,
+                    reason: RailExecuteFailureReason::QueueRejected,
+                },
+                &mut close_receiver,
+            )
+            .await
+            .expect("deliver local RAIL Execute failure")
+        );
+        assert!(matches!(
+            output_receiver.recv().await,
+            Some(RdpOutputEvent::RailExecuteFailed {
+                executable,
+                flags: 0,
+                reason: RailExecuteFailureReason::QueueRejected,
+            }) if executable == "notepad.exe"
         ));
     }
 

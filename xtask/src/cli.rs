@@ -24,6 +24,8 @@ TASKS:
   check install           Install all requirements for check tasks
   ci                      Run all checks required on CI
   clean                   Clean workspace
+  pr check-message [--event-file <PATH>]
+                          Validate a pull request title and body from a GitHub event
   fuzz corpus-fetch       Fetch fuzzing corpus from Azure storage
   fuzz corpus-min [--target <NAME>]
                           Minify fuzzing corpus for a specific target (or all if unspecified)
@@ -94,6 +96,9 @@ pub enum Action {
     CheckInstall,
     Ci,
     Clean,
+    PrCheckMessage {
+        event_file: Option<std::path::PathBuf>,
+    },
     FuzzCorpusFetch,
     FuzzCorpusMin {
         target: Option<String>,
@@ -150,6 +155,13 @@ pub fn parse_args() -> anyhow::Result<Args> {
             },
             Some("ci") => Action::Ci,
             Some("clean") => Action::Clean,
+            Some("pr") => match args.subcommand()?.as_deref() {
+                Some("check-message") => Action::PrCheckMessage {
+                    event_file: args.opt_value_from_str("--event-file")?,
+                },
+                Some(unknown) => anyhow::bail!("unknown pr action: {unknown}"),
+                None => Action::ShowHelp,
+            },
             Some("fuzz") => match args.subcommand()?.as_deref() {
                 Some("corpus-fetch") => Action::FuzzCorpusFetch,
                 Some("corpus-min") => Action::FuzzCorpusMin {

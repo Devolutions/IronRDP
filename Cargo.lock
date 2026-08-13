@@ -1612,6 +1612,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-rdcleanpath",
+ "ironrdp-vmconnect",
  "sspi",
  "thiserror 2.0.19",
  "tracing",
@@ -2437,6 +2438,8 @@ dependencies = [
  "ironrdp-input",
  "ironrdp-pdu",
  "ironrdp-propertyset",
+ "ironrdp-rail",
+ "ironrdp-rdpdr-native",
  "ironrdp-rpc",
  "ironrdp-session",
  "ironrdp-svc",
@@ -2549,6 +2552,7 @@ dependencies = [
  "ironrdp-mstsgu",
  "ironrdp-pdu",
  "ironrdp-propertyset",
+ "ironrdp-rail",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr",
  "ironrdp-rdpsnd",
@@ -2639,6 +2643,8 @@ dependencies = [
  "ironrdp-input",
  "ironrdp-pdu",
  "ironrdp-propertyset",
+ "ironrdp-rail",
+ "ironrdp-rdpdr-native",
  "ironrdp-rpc",
  "ironrdp-tls",
  "libc",
@@ -2849,6 +2855,14 @@ name = "ironrdp-propertyset"
 version = "0.1.0"
 
 [[package]]
+name = "ironrdp-rail"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core 0.2.1",
+ "ironrdp-svc",
+]
+
+[[package]]
 name = "ironrdp-rdcleanpath"
 version = "0.2.2"
 dependencies = [
@@ -2877,6 +2891,19 @@ dependencies = [
  "ironrdp-rdpdr",
  "ironrdp-svc",
  "nix",
+ "tracing",
+ "windows",
+]
+
+[[package]]
+name = "ironrdp-rdpeai"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-rdpsnd",
+ "ironrdp-svc",
  "tracing",
 ]
 
@@ -3039,6 +3066,7 @@ dependencies = [
  "ironrdp-propertyset",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr",
+ "ironrdp-rdpeai",
  "ironrdp-rdpeusb",
  "ironrdp-rdpfile",
  "ironrdp-rdpsnd",
@@ -3073,6 +3101,8 @@ dependencies = [
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-input",
  "ironrdp-propertyset",
+ "ironrdp-rdpdr",
+ "ironrdp-rdpdr-native",
  "ironrdp-rpc",
  "ironrdp-svc",
  "ironrdp-tls",
@@ -3170,6 +3200,7 @@ dependencies = [
  "ironrdp-rdcleanpath",
  "ironrdp-rdpfile",
  "ironrdp-svc",
+ "ironrdp-vmconnect",
  "js-sys",
  "png",
  "resize",

@@ -12,7 +12,9 @@ use super::display::{DesktopSize, RdpServerDisplay};
 #[cfg(feature = "egfx")]
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
-use super::server::{ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity};
+use super::server::{
+    ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity, StaticChannelFactory,
+};
 use crate::{DisplayUpdate, RdpServerDisplayUpdates, SoundServerFactory};
 
 pub struct WantsAddr {}
@@ -35,6 +37,7 @@ pub struct BuilderDone {
     max_request_size: u32,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
+    static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
@@ -136,6 +139,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 security: self.state.security,
                 handler: self.state.handler,
                 display: Box::new(display),
+                static_channel_factories: Vec::new(),
                 sound_factory: None,
                 cliprdr_factory: None,
                 connection_handler: None,
@@ -160,6 +164,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 security: self.state.security,
                 handler: self.state.handler,
                 display: Box::new(NoopDisplay),
+                static_channel_factories: Vec::new(),
                 sound_factory: None,
                 cliprdr_factory: None,
                 connection_handler: None,
@@ -179,6 +184,12 @@ impl RdpServerBuilder<WantsDisplay> {
 }
 
 impl RdpServerBuilder<BuilderDone> {
+    /// Add a factory that attaches a fresh static-channel processor per connection.
+    pub fn with_static_channel_factory(mut self, factory: Box<dyn StaticChannelFactory>) -> Self {
+        self.state.static_channel_factories.push(factory);
+        self
+    }
+
     pub fn with_cliprdr_factory(mut self, cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>) -> Self {
         self.state.cliprdr_factory = cliprdr_factory;
         self
@@ -361,6 +372,7 @@ impl RdpServerBuilder<BuilderDone> {
             },
             self.state.handler,
             self.state.display,
+            self.state.static_channel_factories,
             self.state.sound_factory,
             self.state.cliprdr_factory,
             self.state.connection_handler,

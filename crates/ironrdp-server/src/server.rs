@@ -502,6 +502,7 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channels: StaticChannelSet,
+    static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     echo_handle: EchoServerHandle,
@@ -617,6 +618,15 @@ pub enum ServerEvent {
     Egfx(EgfxServerMessage),
     /// Trigger an RTT measurement probe (requires auto-detect enabled).
     AutoDetectRttRequest,
+}
+
+/// Creates a fresh static-channel processor for each accepted RDP connection.
+///
+/// Factories are invoked before the Basic Settings Exchange so their channels
+/// participate in GCC static-channel negotiation.
+pub trait StaticChannelFactory: Send {
+    /// Attaches the connection-local static-channel processor to `acceptor`.
+    fn attach(&self, acceptor: &mut Acceptor);
 }
 
 impl fmt::Debug for ServerEvent {
@@ -1024,6 +1034,7 @@ impl RdpServer {
         opts: RdpServerOptions,
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
+        static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
@@ -1047,6 +1058,7 @@ impl RdpServer {
             handler: Arc::new(Mutex::new(handler)),
             display: Arc::new(Mutex::new(display)),
             static_channels: StaticChannelSet::new(),
+            static_channel_factories,
             sound_factory,
             cliprdr_factory,
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
@@ -1433,6 +1445,10 @@ impl RdpServer {
         };
 
         acceptor.attach_static_channel(dvc);
+
+        for factory in &self.static_channel_factories {
+            factory.attach(acceptor);
+        }
     }
 
     /// Drop every event still queued on the server-global channel that
@@ -3554,6 +3570,7 @@ mod preempt_tests {
                         // `RdpServerSecurity::flag()` exactly -- this is what
                         // makes `accept_begin` reach `BeginResult::Continue`.
                         protocol: nego::SecurityProtocol::empty(),
+                        correlation_info: None,
                     };
                     let bytes = encode_vec(&X224(cr)).unwrap();
                     stream.write_all(&bytes).await.unwrap();

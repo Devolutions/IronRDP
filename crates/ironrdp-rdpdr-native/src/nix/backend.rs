@@ -47,6 +47,11 @@ impl RdpdrBackend for NixRdpdrBackend {
             ServerDriveIoRequest::ServerCreateDriveRequest(req_inner) => create_drive(self, req_inner),
             ServerDriveIoRequest::DeviceReadRequest(req_inner) => read_device(self, req_inner),
             ServerDriveIoRequest::DeviceCloseRequest(req_inner) => close_device(self, req_inner),
+            ServerDriveIoRequest::DeviceFlushBuffersRequest(req_inner) => Ok(vec![SvcMessage::from(
+                RdpdrPdu::DeviceFlushBuffersResponse(DeviceFlushBuffersResponse {
+                    device_io_response: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::NOT_SUPPORTED),
+                }),
+            )]),
             ServerDriveIoRequest::ServerDriveNotifyChangeDirectoryRequest(_) => {
                 // TODO
                 Ok(Vec::new())
@@ -66,6 +71,19 @@ impl RdpdrBackend for NixRdpdrBackend {
             ServerDriveIoRequest::ServerDriveLockControlRequest(_) => {
                 // TODO
                 Ok(Vec::new())
+            }
+            ServerDriveIoRequest::ServerDriveQuerySecurityRequest(req_inner) => Ok(vec![SvcMessage::from(
+                RdpdrPdu::ClientDriveQuerySecurityResponse(ClientDriveQuerySecurityResponse {
+                    device_io_response: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::NOT_SUPPORTED),
+                    security_descriptor: None,
+                }),
+            )]),
+            ServerDriveIoRequest::ServerDriveSetSecurityRequest(req_inner) => {
+                let response = ClientDriveSetSecurityResponse::new(&req_inner, NtStatus::NOT_SUPPORTED)
+                    .map_err(|error| encode_err!(error))?;
+                Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveSetSecurityResponse(
+                    response,
+                ))])
             }
         }
     }

@@ -228,6 +228,15 @@ pub struct Config {
     pub alternate_shell: String,
     /// Working directory for the alternate shell
     pub work_dir: String,
+    /// Whether the connection uses the RemoteApp/RAIL connection model.
+    ///
+    /// RemoteApp launch information travels over the `rail` static virtual channel.
+    pub remote_application_mode: bool,
+    /// RAIL extensions implemented by the client.
+    ///
+    /// This must include [`capability_sets::RailSupportLevel::SUPPORTED`] when
+    /// [`Self::remote_application_mode`] is enabled.
+    pub rail_support_level: capability_sets::RailSupportLevel,
     pub platform: capability_sets::MajorPlatformType,
     /// Unique identifier for the computer
     ///

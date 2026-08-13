@@ -7,7 +7,7 @@ use ironrdp_connector::{
 use ironrdp_core::{WriteBuf, decode, encode_vec};
 use ironrdp_pdu::gcc;
 use ironrdp_pdu::mcs::{McsMessage, SendDataIndication};
-use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
+use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, MajorPlatformType};
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ServerDeactivateAll, ShareControlHeader,
@@ -64,6 +64,8 @@ fn test_config() -> ironrdp_connector::Config {
         timezone_info: Default::default(),
         alternate_shell: String::new(),
         work_dir: String::new(),
+        remote_application_mode: false,
+        rail_support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED,
     }
 }
 
@@ -84,6 +86,62 @@ fn encode_server_share_control(pdu: ShareControlPdu) -> Vec<u8> {
     });
 
     encode_vec(&X224(indication)).unwrap()
+}
+
+fn demand_active_static_channel_chunk_size(chunk_size: Option<u32>) -> usize {
+    let mut demand_active = SERVER_DEMAND_ACTIVE.clone();
+    let virtual_channel = demand_active
+        .pdu
+        .capability_sets
+        .iter_mut()
+        .find_map(|capability_set| match capability_set {
+            CapabilitySet::VirtualChannel(virtual_channel) => Some(virtual_channel),
+            _ => None,
+        })
+        .expect("server demand active should include a virtual channel capability");
+    virtual_channel.chunk_size = chunk_size;
+
+    let mut sequence = ConnectionActivationSequence::new(test_config(), IO_CHANNEL_ID, USER_CHANNEL_ID);
+    let mut output = WriteBuf::new();
+    let frame = encode_server_share_control(ShareControlPdu::ServerDemandActive(demand_active));
+    sequence
+        .step(&frame, &mut output)
+        .expect("demand active should be accepted");
+
+    match sequence.connection_activation_state() {
+        ConnectionActivationState::ConnectionFinalization {
+            static_channel_chunk_size,
+            ..
+        } => static_channel_chunk_size,
+        state => panic!("expected ConnectionFinalization, got {state:?}"),
+    }
+}
+
+#[test]
+fn demand_active_uses_valid_server_static_channel_chunk_size() {
+    for chunk_size in [
+        u32::try_from(ironrdp_svc::CHANNEL_CHUNK_LENGTH).expect("chunk size should fit in u32"),
+        u32::try_from(ironrdp_svc::MAX_CHANNEL_CHUNK_LENGTH).expect("chunk size should fit in u32"),
+    ] {
+        assert_eq!(
+            demand_active_static_channel_chunk_size(Some(chunk_size)),
+            usize::try_from(chunk_size).expect("chunk size should fit in usize"),
+        );
+    }
+}
+
+#[test]
+fn demand_active_falls_back_to_default_static_channel_chunk_size() {
+    for chunk_size in [
+        None,
+        Some(u32::try_from(ironrdp_svc::CHANNEL_CHUNK_LENGTH).expect("chunk size should fit in u32") - 1),
+        Some(u32::try_from(ironrdp_svc::MAX_CHANNEL_CHUNK_LENGTH).expect("chunk size should fit in u32") + 1),
+    ] {
+        assert_eq!(
+            demand_active_static_channel_chunk_size(chunk_size),
+            ironrdp_svc::CHANNEL_CHUNK_LENGTH,
+        );
+    }
 }
 
 #[test]

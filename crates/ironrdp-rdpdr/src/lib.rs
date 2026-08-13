@@ -20,8 +20,10 @@ use tracing::{debug, trace, warn};
 pub mod backend;
 pub mod pdu;
 
-pub use self::backend::RdpdrBackend;
 pub use self::backend::noop::NoopRdpdrBackend;
+pub use self::backend::{
+    RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive,
+};
 use crate::pdu::efs::ServerDriveIoRequest;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
@@ -409,6 +411,13 @@ impl Rdpdr {
     fn enable_drive_capability(&mut self) {
         if !self.drive_capability_configured {
             self.capabilities.add_drive();
+            if self
+                .backend
+                .as_ref()
+                .is_some_and(|backend| backend.supports_drive_security())
+            {
+                self.capabilities.add_drive_security();
+            }
             self.drive_capability_configured = true;
         }
     }
@@ -684,12 +693,17 @@ impl SvcProcessor for Rdpdr {
             | RdpdrPdu::DeviceControlResponse(_)
             | RdpdrPdu::DeviceCreateResponse(_)
             | RdpdrPdu::ClientDriveQueryInformationResponse(_)
+            | RdpdrPdu::ClientDriveQuerySecurityResponse(_)
             | RdpdrPdu::DeviceCloseResponse(_)
             | RdpdrPdu::ClientDriveQueryDirectoryResponse(_)
+            | RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(_)
             | RdpdrPdu::ClientDriveQueryVolumeInformationResponse(_)
             | RdpdrPdu::DeviceReadResponse(_)
             | RdpdrPdu::DeviceWriteResponse(_)
+            | RdpdrPdu::DeviceFlushBuffersResponse(_)
             | RdpdrPdu::ClientDriveSetInformationResponse(_)
+            | RdpdrPdu::ClientDriveSetSecurityResponse(_)
+            | RdpdrPdu::ClientDriveLockControlResponse(_)
             | RdpdrPdu::EmptyResponse => Err(pdu_other_err!("Rdpdr", "received unexpected packet")),
         }
     }

@@ -390,6 +390,16 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             })
             .await
         }
+        Request::UnicodeText { .. } => Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "bulk Unicode text input is unsupported by ActiveX",
+        ),
+        Request::RailStatus | Request::RailEvents { .. } | Request::RailWait { .. } | Request::RailExecute(_) => {
+            Response::typed_error(
+                AgentErrorCategory::Unavailable,
+                "RAIL audit endpoints are unavailable through ActiveX",
+            )
+        }
         Request::Resize { width, height } => {
             queue_command(shared, dispatcher, |response| Command::Resize {
                 width,
@@ -748,6 +758,38 @@ mod tests {
     fn screenshot_without_a_frame_is_unavailable() {
         let rpc = rpc();
         assert!(!screenshot(&rpc.shared).is_ok());
+    }
+
+    #[tokio::test]
+    async fn unicode_text_is_explicitly_unsupported() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) = handle_request(
+            &rpc.shared,
+            0,
+            Request::UnicodeText {
+                text: "test".to_owned(),
+            },
+        )
+        .await
+        else {
+            panic!("bulk Unicode text input must be rejected");
+        };
+        assert_eq!(error.category, AgentErrorCategory::InvalidRequest);
+        assert_eq!(error.message, "bulk Unicode text input is unsupported by ActiveX");
+    }
+
+    #[tokio::test]
+    async fn rail_audit_is_explicitly_unavailable() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) =
+            handle_request(&rpc.shared, 0, Request::RailStatus).await
+        else {
+            panic!("RAIL audit endpoints must be unavailable through ActiveX");
+        };
+        assert_eq!(error.category, AgentErrorCategory::Unavailable);
+        assert_eq!(error.message, "RAIL audit endpoints are unavailable through ActiveX");
     }
 
     #[test]

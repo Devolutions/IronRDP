@@ -13,6 +13,7 @@ fn encode_connection_request(protocol: SecurityProtocol) -> Vec<u8> {
         nego_data: None,
         flags: nego::RequestFlags::empty(),
         protocol,
+        correlation_info: None,
     };
     let mut buf = WriteBuf::new();
     ironrdp_core::encode_buf(&X224(request), &mut buf).unwrap();

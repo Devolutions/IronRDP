@@ -25,6 +25,11 @@ use crate::wire::{
     write_char, write_mouse_button, write_opt_string, write_opt_u16, write_opt_u64, write_string,
 };
 
+/// Maximum number of Unicode scalar values accepted in one [`Request::UnicodeText`] request.
+///
+/// The agent reserves one bounded input-queue entry for each character before submitting any text.
+pub const MAX_UNICODE_TEXT_CHARS: usize = 96;
+
 /// A request sent by the CLI to the daemon.
 ///
 /// `Connect` carries a binary-encoded [`PropertySet`] — never `argv` or CLI strings. Runtime
@@ -66,6 +71,8 @@ pub enum Request {
     KeyScancode { scancode: u16, pressed: bool },
     /// Press or release a key identified by a Unicode character.
     KeyUnicode { ch: char, pressed: bool },
+    /// Type bounded Unicode text in ordered FastPath input messages.
+    UnicodeText { text: String },
     /// Resize the remote desktop.
     Resize { width: u16, height: u16 },
     /// Query and negotiate the capabilities of the session's NOW endpoint.
@@ -98,6 +105,17 @@ pub enum Request {
     },
     /// Inspect the local NOW endpoint without exposing protocol internals.
     NowDiagnostics,
+    /// Inspect the bounded, session-local RAIL observation ledger.
+    RailStatus,
+    /// Return RAIL observations after a sequence number.
+    RailEvents { after_sequence: Option<u64> },
+    /// Wait for a RAIL observation after a sequence number.
+    RailWait {
+        after_sequence: Option<u64>,
+        timeout_ms: u32,
+    },
+    /// Queue a validated RAIL Execute request.
+    RailExecute(RailExecuteRequest),
     // TODO: add clipboard support (CLIPRDR), e.g. requests to read the remote clipboard text and to
     // set it, so an LLM can copy/paste to and from the session.
 }
@@ -145,6 +163,10 @@ impl fmt::Debug for Request {
                 .field("ch", ch)
                 .field("pressed", pressed)
                 .finish(),
+            Self::UnicodeText { text } => f
+                .debug_struct("UnicodeText")
+                .field("char_count", &text.chars().count())
+                .finish(),
             Self::Resize { width, height } => f
                 .debug_struct("Resize")
                 .field("width", width)
@@ -183,6 +205,20 @@ impl fmt::Debug for Request {
                 .field("last", last)
                 .finish(),
             Self::NowDiagnostics => f.write_str("NowDiagnostics"),
+            Self::RailStatus => f.write_str("RailStatus"),
+            Self::RailEvents { after_sequence } => f
+                .debug_struct("RailEvents")
+                .field("after_sequence", after_sequence)
+                .finish(),
+            Self::RailWait {
+                after_sequence,
+                timeout_ms,
+            } => f
+                .debug_struct("RailWait")
+                .field("after_sequence", after_sequence)
+                .field("timeout_ms", timeout_ms)
+                .finish(),
+            Self::RailExecute(request) => f.debug_tuple("RailExecute").field(request).finish(),
         }
     }
 }
@@ -253,6 +289,12 @@ pub enum Payload {
     NowEvent(OperationEvent),
     /// Local NOW endpoint diagnostic state.
     NowDiagnostics(NowDiagnostics),
+    /// Session-local RAIL state.
+    RailStatus(RailStatusInfo),
+    /// Sequenced RAIL observations.
+    RailEvents(RailEventDump),
+    /// A locally assigned RAIL launch identifier.
+    RailLaunch(RailLaunchInfo),
 }
 
 impl fmt::Debug for Payload {
@@ -274,6 +316,152 @@ impl fmt::Debug for Payload {
             Self::NowOperations(operations) => f.debug_tuple("NowOperations").field(operations).finish(),
             Self::NowEvent(event) => f.debug_tuple("NowEvent").field(event).finish(),
             Self::NowDiagnostics(diagnostics) => f.debug_tuple("NowDiagnostics").field(diagnostics).finish(),
+            Self::RailStatus(status) => f.debug_tuple("RailStatus").field(status).finish(),
+            Self::RailEvents(events) => f.debug_tuple("RailEvents").field(events).finish(),
+            Self::RailLaunch(launch) => f.debug_tuple("RailLaunch").field(launch).finish(),
+        }
+    }
+}
+
+/// One locally initiated RAIL launch.
+///
+/// `launch_id` is assigned by the daemon for audit correlation. It is not a protocol identifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailLaunchInfo {
+    pub launch_id: u64,
+    pub executable: String,
+    pub flags: u16,
+}
+
+/// A validated RAIL Execute request.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RailExecuteRequest {
+    pub executable: String,
+    pub working_directory: String,
+    pub arguments: String,
+    pub flags: u16,
+}
+
+impl fmt::Debug for RailExecuteRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RailExecuteRequest")
+            .field("executable_len", &self.executable.len())
+            .field("working_directory_len", &self.working_directory.len())
+            .field("arguments_len", &self.arguments.len())
+            .field("flags", &self.flags)
+            .finish()
+    }
+}
+
+/// Summary of the current RAIL observation generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailStatusInfo {
+    pub generation: u64,
+    pub next_sequence: u64,
+    pub handshake_complete: bool,
+    pub desktop_synchronized: bool,
+    pub pending_launches: Vec<RailLaunchInfo>,
+}
+
+/// Bounded RAIL observation history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailEventDump {
+    pub generation: u64,
+    pub events: Vec<RailEvent>,
+}
+
+/// A sequence-numbered RAIL observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailEvent {
+    pub sequence: u64,
+    pub kind: RailEventKind,
+}
+
+/// One client-validated RAIL observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RailEventKind {
+    Handshake {
+        handshake_ex_flags: Option<u32>,
+        initialization_message_count: u16,
+        queued_execute_count: u16,
+    },
+    DesktopSynchronized {
+        released_execute_count: u16,
+    },
+    PostHandshakeQueueReleased {
+        released_execute_count: u16,
+    },
+    ExecuteQueued(RailLaunchInfo),
+    ExecuteResult {
+        launch_id: Option<u64>,
+        executable: String,
+        flags: u16,
+        result: u16,
+        raw_result: u32,
+    },
+    /// A locally accepted Execute request could not be processed.
+    ExecuteFailed {
+        launch_id: Option<u64>,
+        executable: String,
+        flags: u16,
+        reason: RailExecuteFailureReason,
+    },
+    ApplicationId {
+        window_id: u32,
+        application_id: String,
+        process_id: Option<u32>,
+        process_image_name: Option<String>,
+    },
+    Control {
+        kind: String,
+    },
+    WindowingOrders {
+        byte_count: u32,
+    },
+    /// History before this sequence was evicted from the bounded ledger.
+    Gap {
+        lost_through: u64,
+    },
+}
+
+/// Stable, command-free diagnostic for a locally failed RAIL Execute request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RailExecuteFailureReason {
+    /// The active session did not retain a RAIL static-channel processor.
+    RailUnavailable,
+    /// The RAIL client rejected the Execute request before sending it.
+    QueueRejected,
+    /// The active stage could not encode the queued RAIL messages.
+    MessageProcessingFailed,
+}
+
+impl RailExecuteFailureReason {
+    /// Stable lowercase diagnostic text for structured CLI output.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RailUnavailable => "rail_unavailable",
+            Self::QueueRejected => "queue_rejected",
+            Self::MessageProcessingFailed => "message_processing_failed",
+        }
+    }
+
+    const fn tag(self) -> u8 {
+        match self {
+            Self::RailUnavailable => 0,
+            Self::QueueRejected => 1,
+            Self::MessageProcessingFailed => 2,
+        }
+    }
+
+    fn from_tag(tag: u8) -> DecodeResult<Self> {
+        match tag {
+            0 => Ok(Self::RailUnavailable),
+            1 => Ok(Self::QueueRejected),
+            2 => Ok(Self::MessageProcessingFailed),
+            _ => Err(ironrdp_core::invalid_field_err!(
+                "RAIL Execute failure",
+                "unknown reason"
+            )),
         }
     }
 }
@@ -840,6 +1028,436 @@ impl Decode<'_> for StatusInfo {
 
 impl_pdu_pod!(StatusInfo);
 
+// ── RAIL audit codec ─────────────────────────────────────────────────────────
+
+impl Encode for RailLaunchInfo {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u64(self.launch_id);
+        write_string(dst, &self.executable)?;
+        dst.write_u16(self.flags);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::RailLaunchInfo"
+    }
+
+    fn size(&self) -> usize {
+        8 /* launch_id */ + string_size(&self.executable) + 2 /* flags */
+    }
+}
+
+impl Decode<'_> for RailLaunchInfo {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 8);
+        let launch_id = src.read_u64();
+        let executable = read_string(src)?;
+        ensure_size!(in: src, size: 2);
+        let flags = src.read_u16();
+        Ok(Self {
+            launch_id,
+            executable,
+            flags,
+        })
+    }
+}
+
+impl_pdu_pod!(RailLaunchInfo);
+
+impl Encode for RailExecuteRequest {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        write_string(dst, &self.executable)?;
+        write_string(dst, &self.working_directory)?;
+        write_string(dst, &self.arguments)?;
+        dst.write_u16(self.flags);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::RailExecuteRequest"
+    }
+
+    fn size(&self) -> usize {
+        string_size(&self.executable) + string_size(&self.working_directory) + string_size(&self.arguments) + 2 /* flags */
+    }
+}
+
+impl Decode<'_> for RailExecuteRequest {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        let executable = read_string(src)?;
+        let working_directory = read_string(src)?;
+        let arguments = read_string(src)?;
+        ensure_size!(in: src, size: 2);
+        let flags = src.read_u16();
+        Ok(Self {
+            executable,
+            working_directory,
+            arguments,
+            flags,
+        })
+    }
+}
+
+impl_pdu_pod!(RailExecuteRequest);
+
+impl Encode for RailStatusInfo {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u64(self.generation);
+        dst.write_u64(self.next_sequence);
+        write_bool(dst, self.handshake_complete)?;
+        write_bool(dst, self.desktop_synchronized)?;
+        let count: u32 = cast_length!("pending RAIL launch count", self.pending_launches.len())?;
+        dst.write_u32(count);
+        for launch in &self.pending_launches {
+            launch.encode(dst)?;
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::RailStatusInfo"
+    }
+
+    fn size(&self) -> usize {
+        8 /* generation */
+            + 8 /* next_sequence */
+            + 1 /* handshake_complete */
+            + 1 /* desktop_synchronized */
+            + 4 /* pending launch count */
+            + self.pending_launches.iter().map(Encode::size).sum::<usize>()
+    }
+}
+
+impl Decode<'_> for RailStatusInfo {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 16);
+        let generation = src.read_u64();
+        let next_sequence = src.read_u64();
+        let handshake_complete = read_bool(src)?;
+        let desktop_synchronized = read_bool(src)?;
+        ensure_size!(in: src, size: 4);
+        let count = src.read_u32();
+        let mut pending_launches = Vec::new();
+        for _ in 0..count {
+            pending_launches.push(RailLaunchInfo::decode(src)?);
+        }
+        Ok(Self {
+            generation,
+            next_sequence,
+            handshake_complete,
+            desktop_synchronized,
+            pending_launches,
+        })
+    }
+}
+
+impl_pdu_pod!(RailStatusInfo);
+
+impl Encode for RailEventKind {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        match self {
+            Self::Handshake {
+                handshake_ex_flags,
+                initialization_message_count,
+                queued_execute_count,
+            } => {
+                dst.write_u8(0);
+                match handshake_ex_flags {
+                    Some(flags) => {
+                        dst.write_u8(1);
+                        dst.write_u32(*flags);
+                    }
+                    None => dst.write_u8(0),
+                }
+                dst.write_u16(*initialization_message_count);
+                dst.write_u16(*queued_execute_count);
+            }
+            Self::DesktopSynchronized { released_execute_count } => {
+                dst.write_u8(1);
+                dst.write_u16(*released_execute_count);
+            }
+            Self::PostHandshakeQueueReleased { released_execute_count } => {
+                dst.write_u8(2);
+                dst.write_u16(*released_execute_count);
+            }
+            Self::ExecuteQueued(launch) => {
+                dst.write_u8(3);
+                launch.encode(dst)?;
+            }
+            Self::ExecuteResult {
+                launch_id,
+                executable,
+                flags,
+                result,
+                raw_result,
+            } => {
+                dst.write_u8(4);
+                write_opt_u64(dst, *launch_id)?;
+                write_string(dst, executable)?;
+                dst.write_u16(*flags);
+                dst.write_u16(*result);
+                dst.write_u32(*raw_result);
+            }
+            Self::ExecuteFailed {
+                launch_id,
+                executable,
+                flags,
+                reason,
+            } => {
+                dst.write_u8(9);
+                write_opt_u64(dst, *launch_id)?;
+                write_string(dst, executable)?;
+                dst.write_u16(*flags);
+                dst.write_u8(reason.tag());
+            }
+            Self::ApplicationId {
+                window_id,
+                application_id,
+                process_id,
+                process_image_name,
+            } => {
+                dst.write_u8(5);
+                dst.write_u32(*window_id);
+                write_string(dst, application_id)?;
+                match process_id {
+                    Some(process_id) => {
+                        dst.write_u8(1);
+                        dst.write_u32(*process_id);
+                    }
+                    None => dst.write_u8(0),
+                }
+                write_opt_string(dst, process_image_name.as_deref())?;
+            }
+            Self::Control { kind } => {
+                dst.write_u8(6);
+                write_string(dst, kind)?;
+            }
+            Self::WindowingOrders { byte_count } => {
+                dst.write_u8(7);
+                dst.write_u32(*byte_count);
+            }
+            Self::Gap { lost_through } => {
+                dst.write_u8(8);
+                dst.write_u64(*lost_through);
+            }
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::RailEventKind"
+    }
+
+    fn size(&self) -> usize {
+        1 /* tag */
+            + match self {
+                Self::Handshake {
+                    handshake_ex_flags,
+                    ..
+                } => 1 /* flags presence */ + handshake_ex_flags.map_or(0, |_| 4) + 2 + 2,
+                Self::DesktopSynchronized { .. } | Self::PostHandshakeQueueReleased { .. } => 2,
+                Self::ExecuteQueued(launch) => launch.size(),
+                Self::ExecuteResult {
+                    launch_id,
+                    executable,
+                    ..
+                } => opt_u64_size(*launch_id) + string_size(executable) + 2 + 2 + 4,
+                Self::ExecuteFailed {
+                    launch_id,
+                    executable,
+                    ..
+                } => opt_u64_size(*launch_id) + string_size(executable) + 2 + 1,
+                Self::ApplicationId {
+                    application_id,
+                    process_id,
+                    process_image_name,
+                    ..
+                } => 4 + string_size(application_id) + 1 + process_id.map_or(0, |_| 4) + opt_string_size(process_image_name.as_deref()),
+                Self::Control { kind } => string_size(kind),
+                Self::WindowingOrders { .. } => 4,
+                Self::Gap { .. } => 8,
+            }
+    }
+}
+
+impl Decode<'_> for RailEventKind {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 1);
+        match src.read_u8() {
+            0 => {
+                ensure_size!(in: src, size: 1);
+                let handshake_ex_flags = match src.read_u8() {
+                    0 => None,
+                    1 => {
+                        ensure_size!(in: src, size: 4);
+                        Some(src.read_u32())
+                    }
+                    _ => {
+                        return Err(ironrdp_core::invalid_field_err!(
+                            "RAIL handshake",
+                            "invalid flags presence"
+                        ));
+                    }
+                };
+                ensure_size!(in: src, size: 4);
+                Ok(Self::Handshake {
+                    handshake_ex_flags,
+                    initialization_message_count: src.read_u16(),
+                    queued_execute_count: src.read_u16(),
+                })
+            }
+            1 => {
+                ensure_size!(in: src, size: 2);
+                Ok(Self::DesktopSynchronized {
+                    released_execute_count: src.read_u16(),
+                })
+            }
+            2 => {
+                ensure_size!(in: src, size: 2);
+                Ok(Self::PostHandshakeQueueReleased {
+                    released_execute_count: src.read_u16(),
+                })
+            }
+            3 => Ok(Self::ExecuteQueued(RailLaunchInfo::decode(src)?)),
+            4 => {
+                let launch_id = read_opt_u64(src)?;
+                let executable = read_string(src)?;
+                ensure_size!(in: src, size: 8);
+                Ok(Self::ExecuteResult {
+                    launch_id,
+                    executable,
+                    flags: src.read_u16(),
+                    result: src.read_u16(),
+                    raw_result: src.read_u32(),
+                })
+            }
+            9 => {
+                let launch_id = read_opt_u64(src)?;
+                let executable = read_string(src)?;
+                ensure_size!(in: src, size: 3);
+                Ok(Self::ExecuteFailed {
+                    launch_id,
+                    executable,
+                    flags: src.read_u16(),
+                    reason: RailExecuteFailureReason::from_tag(src.read_u8())?,
+                })
+            }
+            5 => {
+                ensure_size!(in: src, size: 4);
+                let window_id = src.read_u32();
+                let application_id = read_string(src)?;
+                ensure_size!(in: src, size: 1);
+                let process_id = match src.read_u8() {
+                    0 => None,
+                    1 => {
+                        ensure_size!(in: src, size: 4);
+                        Some(src.read_u32())
+                    }
+                    _ => {
+                        return Err(ironrdp_core::invalid_field_err!(
+                            "RAIL application ID",
+                            "invalid process ID presence"
+                        ));
+                    }
+                };
+                let process_image_name = read_opt_string(src)?;
+                Ok(Self::ApplicationId {
+                    window_id,
+                    application_id,
+                    process_id,
+                    process_image_name,
+                })
+            }
+            6 => Ok(Self::Control {
+                kind: read_string(src)?,
+            }),
+            7 => {
+                ensure_size!(in: src, size: 4);
+                Ok(Self::WindowingOrders {
+                    byte_count: src.read_u32(),
+                })
+            }
+            8 => {
+                ensure_size!(in: src, size: 8);
+                Ok(Self::Gap {
+                    lost_through: src.read_u64(),
+                })
+            }
+            _ => Err(ironrdp_core::invalid_field_err!("RAIL event", "unknown tag")),
+        }
+    }
+}
+
+impl_pdu_pod!(RailEventKind);
+
+impl Encode for RailEvent {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u64(self.sequence);
+        self.kind.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::RailEvent"
+    }
+
+    fn size(&self) -> usize {
+        8 /* sequence */ + self.kind.size()
+    }
+}
+
+impl Decode<'_> for RailEvent {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 8);
+        Ok(Self {
+            sequence: src.read_u64(),
+            kind: RailEventKind::decode(src)?,
+        })
+    }
+}
+
+impl_pdu_pod!(RailEvent);
+
+impl Encode for RailEventDump {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u64(self.generation);
+        let count: u32 = cast_length!("RAIL event count", self.events.len())?;
+        dst.write_u32(count);
+        for event in &self.events {
+            event.encode(dst)?;
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::RailEventDump"
+    }
+
+    fn size(&self) -> usize {
+        8 /* generation */ + 4 /* event count */ + self.events.iter().map(Encode::size).sum::<usize>()
+    }
+}
+
+impl Decode<'_> for RailEventDump {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 12);
+        let generation = src.read_u64();
+        let count = src.read_u32();
+        let mut events = Vec::new();
+        for _ in 0..count {
+            events.push(RailEvent::decode(src)?);
+        }
+        Ok(Self { generation, events })
+    }
+}
+
+impl_pdu_pod!(RailEventDump);
+
 // ── Payload codec ───────────────────────────────────────────────────────────
 
 impl Encode for Payload {
@@ -893,6 +1511,18 @@ impl Encode for Payload {
                 dst.write_u8(9);
                 diagnostics.encode(dst)?;
             }
+            Self::RailStatus(status) => {
+                dst.write_u8(10);
+                status.encode(dst)?;
+            }
+            Self::RailEvents(events) => {
+                dst.write_u8(11);
+                events.encode(dst)?;
+            }
+            Self::RailLaunch(launch) => {
+                dst.write_u8(12);
+                launch.encode(dst)?;
+            }
         }
         Ok(())
     }
@@ -914,6 +1544,9 @@ impl Encode for Payload {
                 Self::NowOperations(operations) => 4 + operations.iter().map(Encode::size).sum::<usize>(),
                 Self::NowEvent(event) => event.size(),
                 Self::NowDiagnostics(diagnostics) => diagnostics.size(),
+                Self::RailStatus(status) => status.size(),
+                Self::RailEvents(events) => events.size(),
+                Self::RailLaunch(launch) => launch.size(),
             }
     }
 }
@@ -954,6 +1587,9 @@ impl Decode<'_> for Payload {
             }
             8 => Ok(Self::NowEvent(OperationEvent::decode(src)?)),
             9 => Ok(Self::NowDiagnostics(NowDiagnostics::decode(src)?)),
+            10 => Ok(Self::RailStatus(RailStatusInfo::decode(src)?)),
+            11 => Ok(Self::RailEvents(RailEventDump::decode(src)?)),
+            12 => Ok(Self::RailLaunch(RailLaunchInfo::decode(src)?)),
             _ => Err(ironrdp_core::invalid_field_err!("payload", "unknown tag")),
         }
     }
@@ -1067,6 +1703,10 @@ impl Encode for Request {
                 write_char(dst, *ch)?;
                 write_bool(dst, *pressed)?;
             }
+            Self::UnicodeText { text } => {
+                dst.write_u8(21);
+                write_string(dst, text)?;
+            }
             Self::Resize { width, height } => {
                 dst.write_u8(11);
                 dst.write_u16(*width);
@@ -1110,6 +1750,23 @@ impl Encode for Request {
                 write_bool(dst, *last)?;
             }
             Self::NowDiagnostics => dst.write_u8(20),
+            Self::RailStatus => dst.write_u8(22),
+            Self::RailEvents { after_sequence } => {
+                dst.write_u8(23);
+                write_opt_u64(dst, *after_sequence)?;
+            }
+            Self::RailExecute(request) => {
+                dst.write_u8(24);
+                request.encode(dst)?;
+            }
+            Self::RailWait {
+                after_sequence,
+                timeout_ms,
+            } => {
+                dst.write_u8(25);
+                write_opt_u64(dst, *after_sequence)?;
+                dst.write_u32(*timeout_ms);
+            }
         }
         Ok(())
     }
@@ -1129,7 +1786,8 @@ impl Encode for Request {
                 | Self::Screenshot
                 | Self::NowCapabilities
                 | Self::NowList
-                | Self::NowDiagnostics => 0,
+                | Self::NowDiagnostics
+                | Self::RailStatus => 0,
                 Self::QueryProps { filter } => 1 /* presence */ + filter.as_ref().map_or(0, Encode::size),
                 Self::QueryLogs { substring, last } => {
                     opt_string_size(substring.as_deref()) + 1 /* presence */ + last.map_or(0, |_| 4)
@@ -1139,12 +1797,16 @@ impl Encode for Request {
                 Self::Wheel { .. } => 2 /* delta */ + 1 /* horizontal */,
                 Self::KeyScancode { .. } => 2 /* scancode */ + 1 /* pressed */,
                 Self::KeyUnicode { .. } => 4 /* ch */ + 1 /* pressed */,
+                Self::UnicodeText { text } => string_size(text),
                 Self::Resize { .. } => 2 /* width */ + 2 /* height */,
                 Self::NowRun { command, directory } => string_size(command) + opt_string_size(directory.as_deref()),
                 Self::NowExecute(request) => request.size(),
                 Self::NowCancel { .. } | Self::NowStatus { .. } => 8,
                 Self::NowAttach { after_sequence, .. } => 8 /* operation_id */ + opt_u64_size(*after_sequence),
                 Self::NowStdin { data, .. } => 8 /* operation_id */ + bytes_size(data) + 1 /* last */,
+                Self::RailEvents { after_sequence } => opt_u64_size(*after_sequence),
+                Self::RailExecute(request) => request.size(),
+                Self::RailWait { after_sequence, .. } => opt_u64_size(*after_sequence) + 4 /* timeout_ms */,
             }
     }
 }
@@ -1215,6 +1877,9 @@ impl Decode<'_> for Request {
                 let pressed = read_bool(src)?;
                 Ok(Self::KeyUnicode { ch, pressed })
             }
+            21 => Ok(Self::UnicodeText {
+                text: read_string(src)?,
+            }),
             11 => {
                 ensure_size!(in: src, size: 4);
                 let width = src.read_u16();
@@ -1261,6 +1926,19 @@ impl Decode<'_> for Request {
                 })
             }
             20 => Ok(Self::NowDiagnostics),
+            22 => Ok(Self::RailStatus),
+            23 => Ok(Self::RailEvents {
+                after_sequence: read_opt_u64(src)?,
+            }),
+            24 => Ok(Self::RailExecute(RailExecuteRequest::decode(src)?)),
+            25 => {
+                let after_sequence = read_opt_u64(src)?;
+                ensure_size!(in: src, size: 4);
+                Ok(Self::RailWait {
+                    after_sequence,
+                    timeout_ms: src.read_u32(),
+                })
+            }
             _ => Err(ironrdp_core::invalid_field_err!("request", "unknown tag")),
         }
     }
@@ -1629,6 +2307,27 @@ impl Decode<'_> for OperationEvent {
 }
 
 impl_pdu_pod!(OperationEvent);
+
+#[cfg(test)]
+mod tests {
+    use super::RailExecuteRequest;
+
+    #[test]
+    fn rail_execute_debug_redacts_command_fields() {
+        let request = RailExecuteRequest {
+            executable: "secret-program.exe".to_owned(),
+            working_directory: "C:\\secret-directory".to_owned(),
+            arguments: "--token secret-token".to_owned(),
+            flags: 0,
+        };
+
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("secret-program.exe"));
+        assert!(!debug.contains("C:\\secret-directory"));
+        assert!(!debug.contains("secret-token"));
+        assert!(debug.contains("executable_len"));
+    }
+}
 
 impl Encode for NowCapabilities {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {

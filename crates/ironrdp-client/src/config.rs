@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_propertyset::PropertySet;
+use ironrdp_rail::pdu::ExecutePdu;
 use url::Url;
 
 #[cfg(feature = "vmconnect")]
@@ -72,6 +73,9 @@ pub struct Config {
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
+    pub(crate) rail_client_status_flags: Option<u32>,
+    /// Initial RemoteApp launch queued after the RAIL handshake.
+    pub(crate) rail_initial_execute: Option<ExecutePdu>,
 
     /// DVC channel ↔ named-pipe proxy configuration.
     ///
@@ -185,6 +189,7 @@ impl fmt::Debug for Config {
         s.field("kerberos_config", &self.kerberos_config);
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
+        s.field("rail_client_status_flags", &self.rail_client_status_flags);
         #[cfg(feature = "dvc-pipe-proxy")]
         s.field("dvc_pipe_proxies", &self.dvc_pipe_proxies);
         #[cfg(all(windows, feature = "dvc-com-plugin"))]
@@ -627,6 +632,10 @@ pub struct ConfigBuilder {
     compression_enabled: Option<bool>,
     alternate_shell: Option<String>,
     work_dir: Option<String>,
+    remote_application_mode: Option<bool>,
+    remote_application_program: Option<String>,
+    rail_support_level: Option<ironrdp_pdu::rdp::capability_sets::RailSupportLevel>,
+    rail_client_status_flags: Option<u32>,
 
     transport: TransportKind,
     #[cfg(feature = "vmconnect")]
@@ -880,6 +889,37 @@ impl ConfigBuilder {
         self
     }
 
+    /// Enable or disable RemoteApp/RAIL connection mode.
+    ///
+    /// RemoteApp launch information is sent on the RAIL static virtual channel
+    /// rather than through the Client Info Alternate Shell field.
+    #[must_use]
+    pub fn with_remote_application_mode(mut self, enabled: bool) -> Self {
+        self.properties.set_remote_application_mode(enabled);
+        self.remote_application_mode = Some(enabled);
+        self
+    }
+
+    /// Declares the RAIL capabilities implemented by this client.
+    ///
+    /// RemoteApp mode requires
+    /// [`RailSupportLevel::SUPPORTED`](ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED).
+    #[must_use]
+    pub fn with_rail_support_level(
+        mut self,
+        support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel,
+    ) -> Self {
+        self.rail_support_level = Some(support_level);
+        self
+    }
+
+    /// Overrides the RAIL Client Status flags advertised during channel initialization.
+    #[must_use]
+    pub fn with_rail_client_status_flags(mut self, flags: u32) -> Self {
+        self.rail_client_status_flags = Some(flags);
+        self
+    }
+
     /// Enable or disable TLS + Graphical login (legacy security protocol; also called SSL). Upserts
     /// the `ironrdp_tls` property.
     ///
@@ -1037,8 +1077,8 @@ impl ConfigBuilder {
     /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
     ///
     /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
-    /// embedder (error if disabled). This builder only rejects transports that cannot target port
-    /// 2179 yet (RDCleanPath / RDS Gateway in [`build`](Self::build)).
+    /// embedder (error if disabled). Works over Direct and RDCleanPath. RDS Gateway is rejected
+    /// until it can propagate the VMConnect target port.
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
@@ -1312,6 +1352,11 @@ impl ConfigBuilder {
         }
 
         #[cfg(feature = "vmconnect")]
+        if let Some(vm_id) = &self.vm_id {
+            anyhow::ensure!(!vm_id.trim().is_empty(), "vmconnect VM ID is empty");
+        }
+
+        #[cfg(feature = "vmconnect")]
         if self.vm_id.is_some()
             && let Some(destination) = self.destination.as_mut()
             && destination.port.is_none()
@@ -1376,9 +1421,6 @@ impl ConfigBuilder {
             if !self.enable_credssp.unwrap_or(true) {
                 anyhow::bail!("vmconnect requires CredSSP");
             }
-            if matches!(transport, Transport::RDCleanPath(_)) {
-                anyhow::bail!("vmconnect cannot be used over an RDCleanPath proxy");
-            }
             #[cfg(feature = "gateway")]
             if matches!(transport, Transport::Gateway(_)) {
                 anyhow::bail!("vmconnect cannot be used over an RDS gateway until the target port is propagated");
@@ -1422,6 +1464,31 @@ impl ConfigBuilder {
             self.enable_credssp.unwrap_or(true)
         };
 
+        let remote_application_mode = self.remote_application_mode.unwrap_or(false);
+        let rail_support_level = self
+            .rail_support_level
+            .unwrap_or(ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED);
+        if remote_application_mode
+            && !rail_support_level.contains(ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED)
+        {
+            anyhow::bail!("RAIL support level must include remote programs support when RemoteApp mode is enabled");
+        }
+
+        let rail_initial_execute = if remote_application_mode {
+            self.remote_application_program
+                .as_deref()
+                .filter(|program| !program.is_empty())
+                .or_else(|| self.alternate_shell.as_deref().filter(|shell| !shell.is_empty()))
+                .map(|executable| ExecutePdu {
+                    flags: 0,
+                    executable: executable.to_owned(),
+                    working_directory: self.work_dir.clone().unwrap_or_default(),
+                    arguments: String::new(),
+                })
+        } else {
+            None
+        };
+
         let connector = ironrdp_connector::Config {
             credentials: ironrdp_connector::Credentials::UsernamePassword {
                 username: self.username.unwrap_or_default(),
@@ -1463,8 +1530,18 @@ impl ConfigBuilder {
             compression_type,
             performance_flags: self.performance_flags.unwrap_or_default(),
             timezone_info: TimezoneInfo::default(),
-            alternate_shell: self.alternate_shell.unwrap_or_default(),
-            work_dir: self.work_dir.unwrap_or_default(),
+            alternate_shell: if remote_application_mode {
+                String::new()
+            } else {
+                self.alternate_shell.unwrap_or_default()
+            },
+            work_dir: if remote_application_mode {
+                String::new()
+            } else {
+                self.work_dir.unwrap_or_default()
+            },
+            remote_application_mode,
+            rail_support_level,
         };
 
         // To avoid easily leaking secrets, strip any known secret property before returning the resulting Config.
@@ -1491,6 +1568,8 @@ impl ConfigBuilder {
             kerberos_config,
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,
+            rail_client_status_flags: self.rail_client_status_flags,
+            rail_initial_execute,
             #[cfg(feature = "dvc-pipe-proxy")]
             dvc_pipe_proxies: self.dvc_pipe_proxies,
             #[cfg(all(windows, feature = "dvc-com-plugin"))]
@@ -1566,6 +1645,12 @@ impl ConfigBuilder {
         }
         if let Some(dir) = ps.shell_working_directory() {
             self.work_dir = Some(dir.to_owned());
+        }
+        if let Some(remote_application_mode) = ps.remote_application_mode() {
+            self.remote_application_mode = Some(remote_application_mode);
+        }
+        if let Some(program) = ps.remote_application_program() {
+            self.remote_application_program = Some(program.to_owned());
         }
         if let Some(minutes) = ps.fake_events_interval() {
             self.fake_events_interval = Some(Duration::from_secs(u64::from(minutes) * 60));
@@ -1774,4 +1859,66 @@ fn kerberos_config_from_properties(
             kdc_proxy_url: Some(url),
             hostname: client_name.to_owned(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_cfg::PropertySetExt as _;
+    use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
+
+    use super::{ConfigBuilder, Destination};
+
+    fn complete_builder() -> ConfigBuilder {
+        ConfigBuilder::new()
+            .with_destination(Destination::new("server.example:3389").unwrap())
+            .with_username("user")
+            .with_password("password")
+            .with_client_build(1)
+            .with_client_dir("C:\\")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+    }
+
+    #[test]
+    fn remote_application_mode_requires_remote_programs_support() {
+        let error = complete_builder()
+            .with_remote_application_mode(true)
+            .with_rail_support_level(RailSupportLevel::empty())
+            .build()
+            .expect_err("RemoteApp must require remote programs support");
+
+        assert!(error.to_string().contains("RAIL support level"), "{error:?}");
+    }
+
+    #[test]
+    fn remote_application_mode_is_preserved_in_properties() {
+        let config = complete_builder()
+            .with_remote_application_mode(true)
+            .build()
+            .expect("valid RemoteApp configuration");
+
+        assert!(config.connector().remote_application_mode);
+        assert_eq!(config.properties().remote_application_mode(), Some(true));
+    }
+
+    #[test]
+    fn remote_application_program_queues_rail_execute_and_clears_client_info_shell() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_remote_application_mode(true);
+        properties.set_remote_application_program("notepad.exe");
+        properties.set_alternate_shell("fallback.exe");
+        properties.set_shell_working_directory("C:\\Temp");
+
+        let config = complete_builder()
+            .with_property_set(&properties)
+            .expect("valid properties")
+            .build()
+            .expect("valid RemoteApp configuration");
+
+        assert!(config.connector().alternate_shell.is_empty());
+        assert!(config.connector().work_dir.is_empty());
+        let execute = config.rail_initial_execute.expect("initial Execute PDU");
+        assert_eq!(execute.executable, "notepad.exe");
+        assert_eq!(execute.working_directory, "C:\\Temp");
+    }
 }

@@ -17,7 +17,9 @@ param(
 
     [string] $StatePath = (Join-Path $ArtifactsDir 'agent-daemon.json'),
 
-    [string] $LogLevel = 'debug'
+    [string] $LogLevel = 'debug',
+
+    [switch] $SkipCertificateCheck
 )
 
 Set-StrictMode -Version Latest
@@ -40,9 +42,13 @@ $stderrPath = Join-Path $ArtifactsDir 'ironrdp-agent.stderr.log'
 $previousLogFilter = $env:IRONRDP_LOG
 $env:IRONRDP_LOG = $LogLevel
 try {
+    $daemonArguments = @('--endpoint', $Endpoint, 'daemon-start')
+    if ($SkipCertificateCheck) {
+        $daemonArguments += '--skip-certificate-check'
+    }
     $process = Start-Process `
         -FilePath $AgentPath `
-        -ArgumentList @('--endpoint', $Endpoint, 'daemon-start') `
+        -ArgumentList $daemonArguments `
         -RedirectStandardOutput $stdoutPath `
         -RedirectStandardError $stderrPath `
         -PassThru
@@ -58,6 +64,7 @@ $state = [pscustomobject]@{
     LogPath = $stderrPath
     StandardOutputPath = $stdoutPath
     StandardErrorPath = $stderrPath
+    CertificateCheckSkipped = $SkipCertificateCheck.IsPresent
 }
 $state | ConvertTo-Json -Depth 4 | Set-Content -Path $StatePath -Encoding utf8NoBOM
 

@@ -1,0 +1,39 @@
+name: Pull request conventions
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-conventions-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  message:
+    name: Check message
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - run: cargo xtask pr check-message --event-file "$GITHUB_EVENT_PATH"
+
+  success:
+    name: PR conventions success
+    if: ${{ always() }}
+    needs: [message]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check success
+        run: |
+          $results = '${{ toJSON(needs.*.result) }}' | ConvertFrom-Json
+          $succeeded = $($results | Where { $_ -Ne "success" }).Count -Eq 0
+          exit $(if ($succeeded) { 0 } else { 1 })
+        shell: pwsh

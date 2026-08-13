@@ -2,7 +2,14 @@
     import { currentSession, setCurrentSessionActive, userInteractionService } from '../../services/session.service';
     import type { IronError, UserInteraction } from '../../../static/iron-remote-desktop';
     import type { Session } from '../../models/session';
-    import { preConnectionBlob, displayControl, kdcProxyUrl, init } from '../../../static/iron-remote-desktop-rdp';
+    import {
+        preConnectionBlob,
+        displayControl,
+        kdcProxyUrl,
+        vmConnect,
+        init,
+        type VmConnectMode,
+    } from '../../../static/iron-remote-desktop-rdp';
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
     import { onMount } from 'svelte';
@@ -16,6 +23,8 @@
     let kdc_proxy_url = '';
     let desktopSize = { width: 1280, height: 720 };
     let pcb = '';
+    let vmconnectId = '';
+    let vmconnectMode: VmConnectMode = 'enhanced';
     let pop_up = false;
     let enable_clipboard = true;
 
@@ -90,6 +99,8 @@
                 authtoken,
                 desktopSize,
                 pcb,
+                vmconnectId,
+                vmconnectMode,
                 kdc_proxy_url,
                 enable_clipboard,
             });
@@ -117,6 +128,10 @@
 
         if (pcb !== '') {
             configBuilder.withExtension(preConnectionBlob(pcb));
+        }
+
+        if (vmconnectId !== '') {
+            configBuilder.withExtension(vmConnect(vmconnectId, vmconnectMode));
         }
 
         if (kdc_proxy_url !== '') {
@@ -210,7 +225,18 @@
                         </div>
                         <div class="field label border">
                             <input id="pcb" type="text" bind:value={pcb} />
-                            <label for="pcb">Pre Connection Blob</label>
+                            <label for="pcb">Legacy Pre Connection Blob</label>
+                        </div>
+                        <div class="field label border">
+                            <input id="vmconnect_id" type="text" bind:value={vmconnectId} />
+                            <label for="vmconnect_id">VMConnect VM ID</label>
+                        </div>
+                        <div class="field label border">
+                            <select id="vmconnect_mode" bind:value={vmconnectMode}>
+                                <option value="enhanced">Enhanced</option>
+                                <option value="basic">Basic</option>
+                            </select>
+                            <label for="vmconnect_mode">VMConnect Mode</label>
                         </div>
                         <div class="field label border">
                             <input id="desktopSizeW" type="text" bind:value={desktopSize.width} />

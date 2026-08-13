@@ -5,22 +5,39 @@
 //! explicitly with `daemon-start` and runs in the foreground; the caller is expected to background
 //! it. On a clean shutdown the Unix socket file is removed (see [`crate::transport`]).
 
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
+use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_client::config::{ConfigBuilder, MissingField};
-use ironrdp_client::rdp::{RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent};
+use ironrdp_client::rail::RailControlEvent;
+use ironrdp_client::rdp::{
+    RailExecuteFailureReason as ClientRailExecuteFailureReason, RdpClient, RdpInputEvent, RdpInputSender,
+    RdpOutputEvent,
+};
 use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
+use ironrdp_rail::pdu::{ExecutePdu, RailPdu};
 use ironrdp_tls::CertificateValidation;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
+#[cfg(windows)]
+use std::collections::BTreeSet;
+
+#[cfg(windows)]
+use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
+
 use crate::ipc::{
-    ConnState, KeyFilter, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry, Request, Response,
-    StatusInfo,
+    ConnState, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry,
+    RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo,
+    RailStatusInfo, Request, Response, StatusInfo,
 };
 use crate::logbuf::{self, LogBuffer};
 use crate::now::NowEndpoint;
@@ -31,10 +48,10 @@ use crate::transport::{Endpoint, Listener, read_message, write_message};
 ///
 /// `overlay` is an operator-provided [`PropertySet`] layered on top of every `Connect` request
 /// (overlay wins), so any setting — credentials in particular — can be preconfigured without the
-/// caller ever supplying it. Pass an empty set when no overlay is desired.
-pub async fn run(endpoint: Endpoint, overlay: PropertySet) -> anyhow::Result<()> {
+/// caller ever supplying it.
+pub async fn run(endpoint: Endpoint, overlay: PropertySet, options: DaemonOptions) -> anyhow::Result<()> {
     init_daemon_logging();
-    let daemon = Arc::new(Daemon::with_overlay(overlay));
+    let daemon = Arc::new(Daemon::with_options(overlay, options)?);
     serve(endpoint, daemon).await
 }
 
@@ -122,6 +139,83 @@ pub enum ResizeError {
     Closed,
 }
 
+/// Windows volume definition exposed as one static RDPDR filesystem drive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RdpdrDriveConfig {
+    root_path: PathBuf,
+    display_name: String,
+}
+
+impl RdpdrDriveConfig {
+    /// Creates a filesystem-drive definition.
+    pub fn new(root_path: PathBuf, display_name: String) -> anyhow::Result<Self> {
+        if root_path.as_os_str().is_empty() {
+            anyhow::bail!("rdpdr volume root must not be empty");
+        }
+        if display_name.is_empty() {
+            anyhow::bail!("rdpdr drive name must not be empty");
+        }
+        if display_name.len() > 7 || !display_name.is_ascii() {
+            anyhow::bail!("rdpdr drive name must contain at most seven ASCII characters");
+        }
+        if !display_name.chars().enumerate().all(|(index, character)| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, ' ' | '_' | '-' | '.')
+                || (character == ':' && index + 1 == display_name.len())
+        }) {
+            anyhow::bail!("rdpdr drive name contains an invalid DOS device-name character");
+        }
+
+        Ok(Self {
+            root_path,
+            display_name,
+        })
+    }
+
+    /// Returns the volume root selected for redirection.
+    #[must_use]
+    pub fn root_path(&self) -> &Path {
+        &self.root_path
+    }
+
+    /// Returns the protocol-visible drive name.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+}
+
+/// Startup-only settings that are deliberately unavailable through session IPC.
+#[derive(Clone, Debug, Default)]
+pub struct DaemonOptions {
+    skip_certificate_check: bool,
+    rdpdr_drives: Vec<RdpdrDriveConfig>,
+}
+
+impl DaemonOptions {
+    /// Skips TLS certificate and hostname validation for this daemon.
+    #[must_use]
+    pub fn with_certificate_check_skipped(mut self, skip: bool) -> Self {
+        self.skip_certificate_check = skip;
+        self
+    }
+
+    fn certificate_validation(&self) -> CertificateValidation {
+        if self.skip_certificate_check {
+            CertificateValidation::DangerouslyAcceptInvalidCertificate
+        } else {
+            CertificateValidation::Strict
+        }
+    }
+
+    /// Configures fixed local volumes for filesystem redirection.
+    #[must_use]
+    pub fn with_rdpdr_drives(mut self, rdpdr_drives: Vec<RdpdrDriveConfig>) -> Self {
+        self.rdpdr_drives = rdpdr_drives;
+        self
+    }
+}
+
 /// The daemon's mutable state: the (single) current session, plus the shared log buffer.
 pub struct Daemon {
     state: Mutex<Option<Session>>,
@@ -135,6 +229,12 @@ pub struct Daemon {
     /// Whether [`Self::overlay`] contributes any secret (password/token) value, i.e. whether the
     /// caller can omit credentials of its own.
     credentials_loaded: bool,
+    /// Monotonically assigns RAIL ledger generations so observations from a former session cannot be
+    /// mistaken for the active connection.
+    next_rail_generation: Arc<AtomicU64>,
+    certificate_validation: CertificateValidation,
+    #[cfg(windows)]
+    rdpdr_backend_factory: Option<WindowsRdpdrBackendFactory>,
     /// Notifies an optional GUI frontend whenever retained live state changes.
     notification: Option<mpsc::Sender<()>>,
     shutdown: tokio::sync::watch::Sender<()>,
@@ -145,9 +245,38 @@ struct Session {
     input_tx: RdpInputSender,
     input_db: Database,
     destination: String,
+    rail_enabled: bool,
     live: Arc<Mutex<Live>>,
+    rail_notify: Arc<tokio::sync::Notify>,
     now_endpoint: Arc<NowEndpoint>,
     operations: OperationManager,
+}
+
+fn enqueue_unicode_text(input_tx: &RdpInputSender, input_db: &mut Database, text: &str) -> Response {
+    // Reserve every queue slot before changing keyboard state. A full queue therefore sends no
+    // prefix of the requested text.
+    let mut permits = Vec::with_capacity(text.chars().count());
+    for _ in text.chars() {
+        let permit = match input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        permits.push(permit);
+    }
+
+    for (permit, ch) in permits.into_iter().zip(text.chars()) {
+        let events = input_db.apply([Operation::UnicodeKeyPressed(ch), Operation::UnicodeKeyReleased(ch)]);
+        if !events.is_empty() {
+            permit.send(RdpInputEvent::FastPath(events));
+        }
+    }
+
+    Response::ok()
 }
 
 /// Per-session state shared with the output-consumer task.
@@ -159,6 +288,138 @@ struct Live {
     /// Most recent frame (with the cursor already composited in by the session). Replaced on every
     /// graphics update; `None` until the first frame arrives.
     frame: Option<Frame>,
+    rail_initial_execute: Option<(u16, String)>,
+    rail: RailLedger,
+}
+
+const MAX_RAIL_EVENTS: usize = 256;
+const MAX_PENDING_RAIL_LAUNCHES: usize = 64;
+
+#[derive(Debug)]
+enum RailLaunchQueueError {
+    LimitReached,
+    DuplicateResponse,
+}
+
+/// Session-local RAIL evidence. The daemon records only client-validated outputs; it never reparses
+/// static-channel payloads or drawing orders.
+struct RailLedger {
+    generation: u64,
+    next_sequence: u64,
+    handshake_complete: bool,
+    desktop_synchronized: bool,
+    events: VecDeque<RailEvent>,
+    pending_launches: VecDeque<PendingRailLaunch>,
+}
+
+/// A client Execute request awaiting its server result.
+enum PendingRailLaunch {
+    /// The Execute request configured before the RDP session becomes active.
+    Initial { flags: u16, executable: String },
+    /// An Execute request explicitly submitted through the agent IPC API.
+    Agent(RailLaunchInfo),
+}
+
+impl RailLedger {
+    fn new(generation: u64, next_sequence: u64, initial_execute: Option<(u16, String)>) -> Self {
+        Self {
+            generation,
+            next_sequence,
+            handshake_complete: false,
+            desktop_synchronized: false,
+            events: VecDeque::new(),
+            pending_launches: initial_execute
+                .into_iter()
+                .map(|(flags, executable)| PendingRailLaunch::Initial { flags, executable })
+                .collect(),
+        }
+    }
+
+    fn record(&mut self, kind: RailEventKind) {
+        let event = RailEvent {
+            sequence: self.next_sequence,
+            kind,
+        };
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        if self.events.len() == MAX_RAIL_EVENTS {
+            let _ = self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+
+    fn status(&self) -> RailStatusInfo {
+        RailStatusInfo {
+            generation: self.generation,
+            next_sequence: self.next_sequence,
+            handshake_complete: self.handshake_complete,
+            desktop_synchronized: self.desktop_synchronized,
+            pending_launches: self
+                .pending_launches
+                .iter()
+                .filter_map(|launch| match launch {
+                    PendingRailLaunch::Initial { .. } => None,
+                    PendingRailLaunch::Agent(launch) => Some(launch.clone()),
+                })
+                .collect(),
+        }
+    }
+
+    fn events_after(&self, after_sequence: Option<u64>) -> RailEventDump {
+        let after_sequence = after_sequence.unwrap_or(0);
+        let mut events = Vec::new();
+        if let Some(first) = self.events.front() {
+            let lost_through = first.sequence.saturating_sub(1);
+            if after_sequence < lost_through {
+                events.push(RailEvent {
+                    sequence: lost_through,
+                    kind: RailEventKind::Gap { lost_through },
+                });
+            }
+        }
+        events.extend(
+            self.events
+                .iter()
+                .filter(|event| event.sequence > after_sequence)
+                .cloned(),
+        );
+        RailEventDump {
+            generation: self.generation,
+            events,
+        }
+    }
+
+    fn queue_launch(&mut self, launch: RailLaunchInfo) -> Result<(), RailLaunchQueueError> {
+        if self.pending_launches.len() >= MAX_PENDING_RAIL_LAUNCHES {
+            return Err(RailLaunchQueueError::LimitReached);
+        }
+        if self.pending_launches.iter().any(|pending| match pending {
+            PendingRailLaunch::Initial { flags, executable } => {
+                *flags == launch.flags && executable == &launch.executable
+            }
+            PendingRailLaunch::Agent(pending) => {
+                pending.flags == launch.flags && pending.executable == launch.executable
+            }
+        }) {
+            return Err(RailLaunchQueueError::DuplicateResponse);
+        }
+        self.record(RailEventKind::ExecuteQueued(launch.clone()));
+        self.pending_launches.push_back(PendingRailLaunch::Agent(launch));
+        Ok(())
+    }
+
+    fn take_launch(&mut self, flags: u16, executable: &str) -> Option<u64> {
+        let index = self.pending_launches.iter().position(|launch| match launch {
+            PendingRailLaunch::Initial {
+                flags: initial_flags,
+                executable: initial_executable,
+            } => *initial_flags == flags && initial_executable == executable,
+            PendingRailLaunch::Agent(launch) => launch.flags == flags && launch.executable == executable,
+        })?;
+        match self.pending_launches.remove(index) {
+            Some(PendingRailLaunch::Initial { .. }) | None => None,
+            Some(PendingRailLaunch::Agent(launch)) => Some(launch.launch_id),
+        }
+    }
 }
 
 /// A decoded frame retained for screenshots. `pixels` are `0x00RRGGBB` (`to_be_bytes()` yields
@@ -171,25 +432,55 @@ pub struct Frame {
 }
 
 impl Daemon {
-    fn new(logs: Arc<LogBuffer>, overlay: PropertySet) -> Self {
+    fn new(logs: Arc<LogBuffer>, overlay: PropertySet, options: DaemonOptions) -> anyhow::Result<Self> {
         // Credentials are considered "loaded" when the overlay provides at least one secret value,
         // which is what frees the caller from supplying a password.
         let credentials_loaded = overlay.iter().any(|(key, _)| ironrdp_cfg::is_secret_key(key));
         let (shutdown, _) = tokio::sync::watch::channel(());
-        Self {
+        let certificate_validation = options.certificate_validation();
+        if certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate {
+            warn!("TLS certificate and hostname validation are disabled by explicit daemon configuration");
+        }
+        let DaemonOptions { rdpdr_drives, .. } = options;
+        #[cfg(windows)]
+        let rdpdr_backend_factory = rdpdr_backend_factory(rdpdr_drives)?;
+        #[cfg(not(windows))]
+        if !rdpdr_drives.is_empty() {
+            anyhow::bail!("rdpdr filesystem redirection is only available on Windows");
+        }
+
+        Ok(Self {
             state: Mutex::new(None),
             connect_lock: Mutex::new(()),
             logs,
             overlay,
             credentials_loaded,
+            next_rail_generation: Arc::new(AtomicU64::new(1)),
+            certificate_validation,
+            #[cfg(windows)]
+            rdpdr_backend_factory,
             notification: None,
             shutdown,
-        }
+        })
     }
 
     /// Creates a daemon with no preconfigured connection properties.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the default daemon configuration becomes invalid.
     pub fn with_overlay(overlay: PropertySet) -> Self {
-        Self::new(LogBuffer::new(), overlay)
+        Self::with_options(overlay, DaemonOptions::default()).expect("default daemon configuration is valid")
+    }
+
+    /// Creates a daemon with startup-only settings that are not available to IPC callers.
+    pub fn with_options(overlay: PropertySet, options: DaemonOptions) -> anyhow::Result<Self> {
+        Self::new(LogBuffer::new(), overlay, options)
+    }
+
+    /// Creates a daemon with fixed Windows filesystem drives for every connection.
+    pub fn with_rdpdr_drives(overlay: PropertySet, rdpdr_drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<Self> {
+        Self::with_options(overlay, DaemonOptions::default().with_rdpdr_drives(rdpdr_drives))
     }
 
     /// Adds a capacity-one notification channel for frontends that render retained live state.
@@ -259,6 +550,7 @@ impl Daemon {
             } else {
                 Operation::UnicodeKeyReleased(ch)
             })),
+            Request::UnicodeText { text } => DaemonResponse::Single(self.unicode_text(&text)),
             Request::Resize { width, height } => DaemonResponse::Single(self.resize(width, height)),
             Request::NowCapabilities => DaemonResponse::Single(self.now_capabilities().await),
             Request::NowRun { command, directory } => DaemonResponse::Single(self.now_run(command, directory).await),
@@ -276,6 +568,13 @@ impl Daemon {
                 last,
             } => DaemonResponse::Single(self.now_stdin(operation_id, data, last).await),
             Request::NowDiagnostics => DaemonResponse::Single(self.now_diagnostics().await),
+            Request::RailStatus => DaemonResponse::Single(self.rail_status()),
+            Request::RailEvents { after_sequence } => DaemonResponse::Single(self.rail_events(after_sequence)),
+            Request::RailWait {
+                after_sequence,
+                timeout_ms,
+            } => DaemonResponse::Single(self.rail_wait(after_sequence, timeout_ms).await),
+            Request::RailExecute(request) => DaemonResponse::Single(self.rail_execute(request)),
         }
     }
 
@@ -317,16 +616,11 @@ impl Daemon {
             }
         };
         let certificate_validation = match properties.get::<&str>("ironrdp_certificate_validation") {
-            None | Some("dangerously_accept_invalid_certificate") => {
-                CertificateValidation::DangerouslyAcceptInvalidCertificate
-            }
-            Some("strict") => CertificateValidation::Strict,
+            None | Some("strict") => self.certificate_validation,
             Some(value) => {
                 return Response::typed_error(
                     crate::ipc::AgentErrorCategory::InvalidRequest,
-                    format!(
-                        "invalid certificate validation policy '{value}'; expected 'strict' or 'dangerously_accept_invalid_certificate'"
-                    ),
+                    format!("invalid certificate validation policy '{value}'; configure it when starting the daemon"),
                 );
             }
         };
@@ -350,9 +644,18 @@ impl Daemon {
             .with_client_name(client_name())
             .with_dvc_pipe_proxy(now_endpoint.dvc_proxy_info())
             .with_certificate_validation(certificate_validation)
+            // The headless agent observes validated RAIL state but does not implement local
+            // move/size, taskbar, cloak, z-order, or display-power behavior.
+            .with_rail_client_status_flags(0)
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true);
+        #[cfg(windows)]
+        let builder = if self.rdpdr_backend_factory.is_some() {
+            builder.with_rdpdr(true)
+        } else {
+            builder
+        };
 
         let missing = builder.missing();
         if !missing.is_empty() {
@@ -379,16 +682,38 @@ impl Daemon {
         // `ConfigBuilder::build` strips every secret property, so the live bag carries no secrets.
         let live_seed = config.properties().clone();
         let destination = config.destination().to_string();
+        let rail_enabled = live_seed.remote_application_mode().unwrap_or(false);
+        let initial_rail_execute = if rail_enabled {
+            live_seed
+                .remote_application_program()
+                .filter(|program| !program.is_empty())
+                .or_else(|| live_seed.alternate_shell().filter(|shell| !shell.is_empty()))
+                .map(|executable| (0, executable.to_owned()))
+        } else {
+            None
+        };
 
         let (output_tx, output_rx) = mpsc::channel(16);
         let client = RdpClient::new(config, output_tx);
+        #[cfg(windows)]
+        let client = match &self.rdpdr_backend_factory {
+            Some(factory) => client.with_rdpdr_backend_factory(Box::new(factory.clone())),
+            None => client,
+        };
         let input_tx = client.input_sender();
 
+        let rail_notify = Arc::new(tokio::sync::Notify::new());
         let live = Arc::new(Mutex::new(Live {
             properties: live_seed,
             state: ConnState::Connecting,
             error: None,
             frame: None,
+            rail_initial_execute: initial_rail_execute.clone(),
+            rail: RailLedger::new(
+                self.next_rail_generation.fetch_add(1, Ordering::Relaxed),
+                1,
+                initial_rail_execute,
+            ),
         }));
 
         // Capture this session's logs into the ring buffer (queryable via `Request::QueryLogs`)
@@ -415,7 +740,13 @@ impl Daemon {
             );
         }
 
-        tokio::spawn(consume_output(output_rx, Arc::clone(&live), self.notification.clone()));
+        tokio::spawn(consume_output(
+            output_rx,
+            Arc::clone(&live),
+            self.notification.clone(),
+            Arc::clone(&rail_notify),
+            Arc::clone(&self.next_rail_generation),
+        ));
 
         info!(%destination, "Started RDP session");
 
@@ -423,7 +754,9 @@ impl Daemon {
             input_tx,
             input_db: Database::new(),
             destination,
+            rail_enabled,
             live,
+            rail_notify,
             operations: OperationManager::new(Arc::clone(&now_endpoint)),
             now_endpoint,
         });
@@ -532,6 +865,119 @@ impl Daemon {
         Response::Ok(Payload::Logs(lines))
     }
 
+    fn rail_status(&self) -> Response {
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        let live = session.live.lock().expect("session live state poisoned");
+        Response::Ok(Payload::RailStatus(live.rail.status()))
+    }
+
+    fn rail_events(&self, after_sequence: Option<u64>) -> Response {
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        let live = session.live.lock().expect("session live state poisoned");
+        Response::Ok(Payload::RailEvents(live.rail.events_after(after_sequence)))
+    }
+
+    async fn rail_wait(&self, after_sequence: Option<u64>, timeout_ms: u32) -> Response {
+        const MAX_RAIL_WAIT_MS: u32 = 60_000;
+        if timeout_ms > MAX_RAIL_WAIT_MS {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                format!("RAIL wait timeout exceeds {MAX_RAIL_WAIT_MS} ms"),
+            );
+        }
+        let (live, rail_notify) = {
+            let guard = self.state.lock().expect("daemon state poisoned");
+            let Some(session) = guard.as_ref() else {
+                return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+            };
+            (Arc::clone(&session.live), Arc::clone(&session.rail_notify))
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(u64::from(timeout_ms));
+        loop {
+            let notified = rail_notify.notified();
+            tokio::pin!(notified);
+            let _ = notified.as_mut().enable();
+            let events = {
+                let live = live.lock().expect("session live state poisoned");
+                live.rail.events_after(after_sequence)
+            };
+            if !events.events.is_empty() || timeout_ms == 0 {
+                return Response::Ok(Payload::RailEvents(events));
+            }
+
+            if tokio::time::timeout_at(deadline, &mut notified).await.is_err() {
+                let live = live.lock().expect("session live state poisoned");
+                return Response::Ok(Payload::RailEvents(live.rail.events_after(after_sequence)));
+            }
+        }
+    }
+
+    fn rail_execute(&self, request: RailExecuteRequest) -> Response {
+        let execute = ExecutePdu {
+            executable: request.executable,
+            working_directory: request.working_directory,
+            arguments: request.arguments,
+            flags: request.flags,
+        };
+        if let Err(error) = RailPdu::Execute(execute.clone()).validate() {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                format!("invalid RAIL Execute request: {error}"),
+            );
+        }
+
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        if !session.rail_enabled {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::Unavailable,
+                "RAIL is not enabled for this session",
+            );
+        }
+        let permit = match session.input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        let mut live = session.live.lock().expect("session live state poisoned");
+        let launch = RailLaunchInfo {
+            launch_id: live.rail.next_sequence,
+            executable: execute.executable.clone(),
+            flags: execute.flags,
+        };
+        match live.rail.queue_launch(launch.clone()) {
+            Ok(()) => {}
+            Err(RailLaunchQueueError::LimitReached) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "too many pending RAIL launch requests",
+                );
+            }
+            Err(RailLaunchQueueError::DuplicateResponse) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Conflict,
+                    "an indistinguishable RAIL launch request is already pending",
+                );
+            }
+        }
+        drop(live);
+        permit.send(RdpInputEvent::RailExecute(execute));
+        session.rail_notify.notify_waiters();
+        Response::Ok(Payload::RailLaunch(launch))
+    }
+
     fn screenshot(&self) -> Response {
         let guard = self.state.lock().expect("daemon state poisoned");
         let Some(session) = guard.as_ref() else {
@@ -617,6 +1063,23 @@ impl Daemon {
     /// Panics if the daemon state mutex is poisoned.
     pub fn input(&self, operation: Operation) -> Response {
         self.input_operations([operation])
+    }
+
+    fn unicode_text(&self, text: &str) -> Response {
+        let char_count = text.chars().count();
+        if char_count > MAX_UNICODE_TEXT_CHARS {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                format!("text exceeds the {MAX_UNICODE_TEXT_CHARS}-character limit"),
+            );
+        }
+
+        let mut guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_mut() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+
+        enqueue_unicode_text(&session.input_tx, &mut session.input_db, text)
     }
 
     /// Sends input operations to the active RDP session in one FastPath message.
@@ -792,19 +1255,121 @@ async fn consume_output(
     mut output_rx: mpsc::Receiver<RdpOutputEvent>,
     live: Arc<Mutex<Live>>,
     notification: Option<mpsc::Sender<()>>,
+    rail_notify: Arc<tokio::sync::Notify>,
+    next_rail_generation: Arc<AtomicU64>,
 ) {
     while let Some(event) = output_rx.recv().await {
         let mut guard = live.lock().expect("session live state poisoned");
         let previous = guard.state;
-        match event {
+        let rail_changed = match event {
             RdpOutputEvent::Connected => {
                 guard.state = ConnState::Connected;
                 guard.error = None;
                 if previous != ConnState::Connected {
                     info!("Session connected");
                 }
+                false
             }
-            RdpOutputEvent::LoginComplete => {}
+            RdpOutputEvent::LoginComplete => false,
+            RdpOutputEvent::WindowingOrders(orders) => {
+                guard.rail.record(RailEventKind::WindowingOrders {
+                    byte_count: u32::try_from(orders.len()).unwrap_or(u32::MAX),
+                });
+                true
+            }
+            RdpOutputEvent::RailHandshake {
+                handshake_ex_flags,
+                initialization_message_count,
+                queued_execute_count,
+            } => {
+                guard.rail.handshake_complete = true;
+                guard.rail.record(RailEventKind::Handshake {
+                    handshake_ex_flags,
+                    initialization_message_count: u16::try_from(initialization_message_count).unwrap_or(u16::MAX),
+                    queued_execute_count: u16::try_from(queued_execute_count).unwrap_or(u16::MAX),
+                });
+                true
+            }
+            RdpOutputEvent::RailDesktopSynchronized { released_execute_count } => {
+                guard.rail.desktop_synchronized = true;
+                guard.rail.record(RailEventKind::DesktopSynchronized {
+                    released_execute_count: u16::try_from(released_execute_count).unwrap_or(u16::MAX),
+                });
+                true
+            }
+            RdpOutputEvent::RailPostHandshakeQueueReleased { released_execute_count } => {
+                guard.rail.record(RailEventKind::PostHandshakeQueueReleased {
+                    released_execute_count: u16::try_from(released_execute_count).unwrap_or(u16::MAX),
+                });
+                true
+            }
+            RdpOutputEvent::RailExecuteResult(result) => {
+                let launch_id = guard.rail.take_launch(result.flags, &result.executable);
+                guard.rail.record(RailEventKind::ExecuteResult {
+                    launch_id,
+                    executable: result.executable,
+                    flags: result.flags,
+                    result: u16::from(result.result),
+                    raw_result: result.raw_result,
+                });
+                true
+            }
+            RdpOutputEvent::RailExecuteFailed {
+                executable,
+                flags,
+                reason,
+            } => {
+                let launch_id = guard.rail.take_launch(flags, &executable);
+                let reason = match reason {
+                    ClientRailExecuteFailureReason::RailUnavailable => RailExecuteFailureReason::RailUnavailable,
+                    ClientRailExecuteFailureReason::QueueRejected => RailExecuteFailureReason::QueueRejected,
+                    ClientRailExecuteFailureReason::MessageProcessingFailed => {
+                        RailExecuteFailureReason::MessageProcessingFailed
+                    }
+                };
+                guard.rail.record(RailEventKind::ExecuteFailed {
+                    launch_id,
+                    executable,
+                    flags,
+                    reason,
+                });
+                true
+            }
+            RdpOutputEvent::RailApplicationId {
+                window_id,
+                application_id,
+                process_id,
+                process_image_name,
+            } => {
+                guard.rail.record(RailEventKind::ApplicationId {
+                    window_id,
+                    application_id,
+                    process_id,
+                    process_image_name,
+                });
+                true
+            }
+            RdpOutputEvent::RailControl(control) => {
+                let kind = match control {
+                    RailControlEvent::SystemParameters(_) => "system-parameters",
+                    RailControlEvent::LanguageBar(_) => "language-bar",
+                    RailControlEvent::Compartment(_) => "compartment",
+                    RailControlEvent::ZOrderSync(_) => "z-order-sync",
+                    RailControlEvent::Cloak(_) => "cloak",
+                    RailControlEvent::PowerDisplayRequest(_) => "power-display-request",
+                };
+                guard.rail.record(RailEventKind::Control { kind: kind.to_owned() });
+                true
+            }
+            RdpOutputEvent::DisplayResizeFallback(_) => {
+                let next_sequence = guard.rail.next_sequence;
+                guard.rail = RailLedger::new(
+                    next_rail_generation.fetch_add(1, Ordering::Relaxed),
+                    next_sequence,
+                    guard.rail_initial_execute.clone(),
+                );
+                true
+            }
             RdpOutputEvent::Image { buffer, width, height } => {
                 let width = width.get();
                 let height = height.get();
@@ -820,27 +1385,34 @@ async fn consume_output(
                 if previous != ConnState::Connected {
                     info!(width, height, "Session connected");
                 }
+                false
             }
             RdpOutputEvent::ConnectionFailure(error) => {
                 guard.state = ConnState::Failed;
                 guard.error = Some(format!("{error}"));
                 error!(%error, "Session connection failed");
+                false
             }
             RdpOutputEvent::Terminated(Ok(reason)) => {
                 guard.state = ConnState::Disconnected;
                 guard.error = Some(format!("{reason:?}"));
                 info!(?reason, "Session terminated");
+                false
             }
             RdpOutputEvent::Terminated(Err(error)) => {
                 guard.state = ConnState::Failed;
                 guard.error = Some(format!("{error}"));
                 warn!(%error, "Session terminated with an error");
+                false
             }
             // With software pointer rendering the cursor is composited into the `Image` frames
             // above; the remaining pointer events (default/hidden) carry no live state we track.
-            _ => {}
-        }
+            _ => false,
+        };
         drop(guard);
+        if rail_changed {
+            rail_notify.notify_waiters();
+        }
         notify(&notification);
     }
 
@@ -939,14 +1511,91 @@ fn current_platform() -> MajorPlatformType {
     }
 }
 
+#[cfg(windows)]
+fn rdpdr_backend_factory(drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<Option<WindowsRdpdrBackendFactory>> {
+    if drives.is_empty() {
+        return Ok(None);
+    }
+
+    let mut names = BTreeSet::new();
+    let mut roots = BTreeSet::new();
+    let drives = drives
+        .iter()
+        .enumerate()
+        .map(|(index, drive)| {
+            if !names.insert(drive.display_name.to_ascii_uppercase()) {
+                anyhow::bail!("rdpdr drive names must be unique");
+            }
+            if !roots.insert(validate_rdpdr_volume_root(&drive.root_path)?) {
+                anyhow::bail!("rdpdr volume roots must be unique");
+            }
+
+            let device_id =
+                u32::try_from(index + 1).map_err(|_| anyhow::anyhow!("too many rdpdr drive configurations"))?;
+            RedirectedDrive::new(device_id, &drive.display_name, &drive.root_path, false)
+                .map_err(|error| anyhow::anyhow!("invalid rdpdr drive configuration: {error}"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    WindowsRdpdrBackendFactory::from_drives(drives)
+        .map(Some)
+        .map_err(|error| anyhow::anyhow!("invalid rdpdr drive configuration: {error}"))
+}
+
+#[cfg(windows)]
+fn validate_rdpdr_volume_root(root_path: &Path) -> anyhow::Result<String> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let mut path = root_path.as_os_str().encode_wide();
+    let is_disk_root = matches!(
+        (path.next(), path.next(), path.next(), path.next()),
+        (
+            Some(drive_letter),
+            Some(colon),
+            Some(separator),
+            None
+        ) if matches!(drive_letter, 65..=90 | 97..=122)
+            && colon == u16::from(b':')
+            && separator == u16::from(b'\\')
+    );
+    if !is_disk_root {
+        anyhow::bail!("rdpdr volume root must use the X:\\ form");
+    }
+
+    let metadata =
+        std::fs::metadata(root_path).with_context(|| format!("inspect rdpdr volume root {}", root_path.display()))?;
+    if !metadata.is_dir() {
+        anyhow::bail!("rdpdr volume root must be a directory");
+    }
+
+    Ok(std::fs::canonicalize(root_path)
+        .with_context(|| format!("canonicalize rdpdr volume root {}", root_path.display()))?
+        .to_string_lossy()
+        .to_ascii_uppercase())
+}
+
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::AtomicU64;
+    use core::time::Duration;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
     use tokio::sync::mpsc;
 
+    use ironrdp_client::rdp::{RdpInputEvent, RdpInputSender};
+    use ironrdp_input::{Database, Operation};
+    use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
     use ironrdp_propertyset::PropertySet;
 
-    use super::{Daemon, ResizeError, notify};
-    use crate::ipc::Response;
+    use super::{
+        ConnState, Daemon, DaemonOptions, Live, MAX_PENDING_RAIL_LAUNCHES, MAX_RAIL_EVENTS, MAX_UNICODE_TEXT_CHARS,
+        NowEndpoint, OperationManager, RailLedger, RdpdrDriveConfig, ResizeError, Session, consume_output,
+        enqueue_unicode_text, notify,
+    };
+    use crate::ipc::{Payload, Response};
+    use ironrdp_rpc::ipc::{RailEventKind, RailExecuteRequest, RailLaunchInfo};
+    use ironrdp_tls::CertificateValidation;
 
     #[test]
     fn framebuffer_notifications_are_coalesced() {
@@ -961,11 +1610,469 @@ mod tests {
     }
 
     #[test]
+    fn rail_ledger_reports_history_gaps_and_correlates_launches() {
+        let mut ledger = RailLedger::new(7, 1, None);
+        let launch = RailLaunchInfo {
+            launch_id: 1,
+            executable: "notepad.exe".to_owned(),
+            flags: 0,
+        };
+        ledger.queue_launch(launch).expect("room for launch");
+        assert_eq!(ledger.take_launch(0, "notepad.exe"), Some(1));
+
+        for byte_count in 0..=MAX_RAIL_EVENTS {
+            ledger.record(RailEventKind::WindowingOrders {
+                byte_count: u32::try_from(byte_count).expect("test count fits"),
+            });
+        }
+
+        let dump = ledger.events_after(Some(0));
+        assert_eq!(dump.generation, 7);
+        assert!(matches!(
+            dump.events.first(),
+            Some(event) if matches!(event.kind, RailEventKind::Gap { .. })
+        ));
+        assert_eq!(dump.events.len(), MAX_RAIL_EVENTS + 1);
+    }
+
+    #[test]
+    fn rail_ledger_reserves_capacity_for_the_initial_launch() {
+        let mut ledger = RailLedger::new(7, 1, Some((0, "notepad.exe".to_owned())));
+        let max_launches = u64::try_from(MAX_PENDING_RAIL_LAUNCHES).expect("launch limit fits");
+
+        for launch_id in 1..max_launches {
+            ledger
+                .queue_launch(RailLaunchInfo {
+                    launch_id,
+                    executable: format!("application-{launch_id}.exe"),
+                    flags: 0,
+                })
+                .expect("room for dynamic launch");
+        }
+        assert_eq!(ledger.status().pending_launches.len(), MAX_PENDING_RAIL_LAUNCHES - 1);
+        assert!(
+            ledger
+                .queue_launch(RailLaunchInfo {
+                    launch_id: max_launches,
+                    executable: "application-final.exe".to_owned(),
+                    flags: 0,
+                })
+                .is_err()
+        );
+
+        assert_eq!(ledger.take_launch(0, "notepad.exe"), None);
+        assert!(
+            ledger
+                .queue_launch(RailLaunchInfo {
+                    launch_id: max_launches,
+                    executable: "application-final.exe".to_owned(),
+                    flags: 0,
+                })
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn rail_ledger_rejects_indistinguishable_pending_launches() {
+        let mut ledger = RailLedger::new(7, 1, Some((0, "notepad.exe".to_owned())));
+
+        assert!(
+            ledger
+                .queue_launch(RailLaunchInfo {
+                    launch_id: 1,
+                    executable: "notepad.exe".to_owned(),
+                    flags: 0,
+                })
+                .is_err()
+        );
+        assert!(
+            ledger
+                .queue_launch(RailLaunchInfo {
+                    launch_id: 2,
+                    executable: "notepad.exe".to_owned(),
+                    flags: 1,
+                })
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn resize_fallback_starts_a_new_rail_generation() {
+        let live = Arc::new(Mutex::new(Live {
+            properties: PropertySet::new(),
+            state: ConnState::Connected,
+            error: None,
+            frame: None,
+            rail_initial_execute: Some((0, "notepad.exe".to_owned())),
+            rail: RailLedger::new(1, 1, Some((0, "notepad.exe".to_owned()))),
+        }));
+        {
+            let mut guard = live.lock().expect("session live state poisoned");
+            guard.rail.handshake_complete = true;
+            guard.rail.desktop_synchronized = true;
+            guard
+                .rail
+                .queue_launch(RailLaunchInfo {
+                    launch_id: 1,
+                    executable: "wordpad.exe".to_owned(),
+                    flags: 0,
+                })
+                .expect("queue a dynamic launch");
+        }
+
+        let (output_tx, output_rx) = mpsc::channel(1);
+        let rail_notify = Arc::new(tokio::sync::Notify::new());
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            Arc::clone(&live),
+            None,
+            Arc::clone(&rail_notify),
+            Arc::new(AtomicU64::new(2)),
+        ));
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::DisplayResizeFallback(
+                ironrdp_client::rdp::DisplayResizeFallbackReason::CapabilitiesTimedOut,
+            ))
+            .await
+            .expect("send resize fallback");
+        drop(output_tx);
+        consumer.await.expect("consume output");
+
+        let mut guard = live.lock().expect("session live state poisoned");
+        assert_eq!(guard.rail.generation, 2);
+        assert!(!guard.rail.handshake_complete);
+        assert!(!guard.rail.desktop_synchronized);
+        assert!(guard.rail.status().pending_launches.is_empty());
+        assert_eq!(guard.rail.status().next_sequence, 2);
+        assert_eq!(guard.rail.take_launch(0, "notepad.exe"), None);
+    }
+
+    fn active_rail_session(
+        rail_enabled: bool,
+    ) -> (
+        Daemon,
+        mpsc::Receiver<RdpInputEvent>,
+        Arc<Mutex<Live>>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        let daemon = Daemon::with_overlay(PropertySet::new());
+        let (input_tx, input_rx) = RdpInputSender::channel(1);
+        let now_endpoint = Arc::new(NowEndpoint::new().expect("create NOW endpoint"));
+        let live = Arc::new(Mutex::new(Live {
+            properties: PropertySet::new(),
+            state: ConnState::Connected,
+            error: None,
+            frame: None,
+            rail_initial_execute: None,
+            rail: RailLedger::new(1, 1, None),
+        }));
+        let rail_notify = Arc::new(tokio::sync::Notify::new());
+        *daemon.state.lock().expect("daemon state poisoned") = Some(Session {
+            input_tx,
+            input_db: Database::new(),
+            destination: "server.example".to_owned(),
+            rail_enabled,
+            live: Arc::clone(&live),
+            rail_notify: Arc::clone(&rail_notify),
+            operations: OperationManager::new(Arc::clone(&now_endpoint)),
+            now_endpoint,
+        });
+        (daemon, input_rx, live, rail_notify)
+    }
+
+    #[tokio::test]
+    async fn rail_wait_ignores_non_rail_output_until_evidence_arrives() {
+        let (daemon, _, live, rail_notify) = active_rail_session(true);
+
+        let (output_tx, output_rx) = mpsc::channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::LoginComplete)
+            .await
+            .expect("send ignored output");
+
+        let mut wait = Box::pin(daemon.rail_wait(None, 1_000));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), wait.as_mut())
+                .await
+                .is_err()
+        );
+
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::RailHandshake {
+                handshake_ex_flags: None,
+                initialization_message_count: 0,
+                queued_execute_count: 0,
+            })
+            .await
+            .expect("send RAIL evidence");
+        let response = tokio::time::timeout(Duration::from_secs(1), wait.as_mut())
+            .await
+            .expect("RAIL event wakes wait");
+        assert!(matches!(
+            response,
+            Response::Ok(Payload::RailEvents(events))
+                if matches!(events.events.as_slice(), [event] if matches!(event.kind, RailEventKind::Handshake { .. }))
+        ));
+
+        drop(output_tx);
+        consumer.await.expect("consume output");
+    }
+
+    #[tokio::test]
+    async fn rail_execute_wakes_waiters_after_queueing_evidence() {
+        let (daemon, mut input_rx, _, _) = active_rail_session(true);
+        let mut wait = Box::pin(daemon.rail_wait(Some(0), 1_000));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), wait.as_mut())
+                .await
+                .is_err()
+        );
+
+        let response = daemon.rail_execute(RailExecuteRequest {
+            executable: "notepad.exe".to_owned(),
+            working_directory: String::new(),
+            arguments: String::new(),
+            flags: 0,
+        });
+        assert!(matches!(
+            response,
+            Response::Ok(Payload::RailLaunch(RailLaunchInfo { launch_id: 1, .. }))
+        ));
+        assert!(matches!(
+            input_rx.recv().await,
+            Some(RdpInputEvent::RailExecute(execute)) if execute.executable == "notepad.exe"
+        ));
+
+        let response = tokio::time::timeout(Duration::from_secs(1), wait.as_mut())
+            .await
+            .expect("queued launch wakes wait");
+        assert!(matches!(
+            response,
+            Response::Ok(Payload::RailEvents(events))
+                if matches!(
+                    events.events.as_slice(),
+                    [event] if matches!(event.kind, RailEventKind::ExecuteQueued(_))
+                )
+        ));
+    }
+
+    #[tokio::test]
+    async fn rail_cursors_resume_after_resize_generation_resets() {
+        let (daemon, _, live, _) = active_rail_session(true);
+        let after_sequence = {
+            let mut live = live.lock().expect("session live state poisoned");
+            live.rail.record(RailEventKind::WindowingOrders { byte_count: 1 });
+            let after_sequence = live.rail.next_sequence.saturating_sub(1);
+            let next_sequence = live.rail.next_sequence;
+            live.rail = RailLedger::new(2, next_sequence, None);
+            live.rail.record(RailEventKind::WindowingOrders { byte_count: 2 });
+            after_sequence
+        };
+
+        let events = daemon.rail_events(Some(after_sequence));
+        assert!(matches!(
+            events,
+            Response::Ok(Payload::RailEvents(events))
+                if events.generation == 2
+                    && matches!(
+                        events.events.as_slice(),
+                        [event] if event.sequence > after_sequence
+                            && matches!(event.kind, RailEventKind::WindowingOrders { byte_count: 2 })
+                    )
+        ));
+        let events = daemon.rail_wait(Some(after_sequence), 0).await;
+        assert!(matches!(
+            events,
+            Response::Ok(Payload::RailEvents(events))
+                if events.generation == 2
+                    && matches!(
+                        events.events.as_slice(),
+                        [event] if event.sequence > after_sequence
+                            && matches!(event.kind, RailEventKind::WindowingOrders { byte_count: 2 })
+                    )
+        ));
+    }
+
+    #[tokio::test]
+    async fn local_rail_execute_failure_resolves_pending_launch_without_terminating() {
+        let (daemon, mut input_rx, live, rail_notify) = active_rail_session(true);
+        let (output_tx, output_rx) = mpsc::channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            Arc::clone(&live),
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+
+        assert!(matches!(
+            daemon.rail_execute(RailExecuteRequest {
+                executable: "notepad.exe".to_owned(),
+                working_directory: String::new(),
+                arguments: "--token secret-token".to_owned(),
+                flags: 0,
+            }),
+            Response::Ok(Payload::RailLaunch(RailLaunchInfo { launch_id: 1, .. }))
+        ));
+        assert!(matches!(input_rx.recv().await, Some(RdpInputEvent::RailExecute(_))));
+
+        let mut wait = Box::pin(daemon.rail_wait(Some(1), 1_000));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), wait.as_mut())
+                .await
+                .is_err()
+        );
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::RailExecuteFailed {
+                executable: "notepad.exe".to_owned(),
+                flags: 0,
+                reason: ironrdp_client::rdp::RailExecuteFailureReason::RailUnavailable,
+            })
+            .await
+            .expect("send local failure");
+
+        let response = tokio::time::timeout(Duration::from_secs(1), wait.as_mut())
+            .await
+            .expect("local failure wakes wait");
+        assert!(matches!(
+            response,
+            Response::Ok(Payload::RailEvents(events))
+                if matches!(
+                    events.events.as_slice(),
+                    [event] if matches!(
+                        event.kind,
+                        RailEventKind::ExecuteFailed {
+                            launch_id: Some(1),
+                            reason: ironrdp_rpc::ipc::RailExecuteFailureReason::RailUnavailable,
+                            ..
+                        }
+                    )
+                )
+        ));
+        assert!(matches!(
+            daemon.rail_status(),
+            Response::Ok(Payload::RailStatus(status)) if status.pending_launches.is_empty()
+        ));
+        assert_eq!(
+            live.lock().expect("session live state poisoned").state,
+            ConnState::Connected
+        );
+
+        drop(output_tx);
+        consumer.await.expect("consume output");
+    }
+
+    #[test]
+    fn rail_execute_rejects_desktop_sessions_without_queueing_input() {
+        let (daemon, mut input_rx, _, _) = active_rail_session(false);
+
+        let response = daemon.rail_execute(RailExecuteRequest {
+            executable: "notepad.exe".to_owned(),
+            working_directory: String::new(),
+            arguments: String::new(),
+            flags: 0,
+        });
+
+        assert!(matches!(response, Response::Err(error) if error.message == "RAIL is not enabled for this session"));
+        assert!(matches!(input_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[test]
     fn resize_without_session_reports_no_active_session() {
         let daemon = Daemon::with_overlay(PropertySet::new());
 
         assert_eq!(daemon.try_resize(1024, 768), Err(ResizeError::NoSession));
         assert!(matches!(daemon.resize(1024, 768), Response::Err(error) if error.message == "no active session"));
+    }
+
+    #[test]
+    fn daemon_options_default_to_strict_certificate_validation() {
+        let strict = DaemonOptions::default();
+        let insecure = DaemonOptions::default().with_certificate_check_skipped(true);
+
+        assert_eq!(strict.certificate_validation(), CertificateValidation::Strict);
+        assert_eq!(
+            insecure.certificate_validation(),
+            CertificateValidation::DangerouslyAcceptInvalidCertificate
+        );
+    }
+
+    #[test]
+    fn unicode_text_rejects_requests_that_exceed_the_bounded_queue_capacity() {
+        let daemon = Daemon::with_overlay(PropertySet::new());
+        let text = "x".repeat(MAX_UNICODE_TEXT_CHARS + 1);
+
+        assert!(
+            matches!(daemon.unicode_text(&text), Response::Err(error) if error.message == "text exceeds the 96-character limit")
+        );
+    }
+
+    #[test]
+    fn unicode_text_enqueues_ordered_utf16_events() {
+        let (sender, mut receiver) = RdpInputSender::channel(2);
+        let mut database = Database::new();
+
+        assert_eq!(
+            enqueue_unicode_text(&sender, &mut database, "A\u{1f600}"),
+            Response::ok()
+        );
+        let first = match receiver.try_recv().expect("first character is enqueued") {
+            RdpInputEvent::FastPath(events) => events,
+            event => panic!("expected FastPath input, got {event:?}"),
+        };
+        assert_eq!(
+            first.as_slice(),
+            [
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0x0041),
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, 0x0041),
+            ]
+        );
+        let second = match receiver.try_recv().expect("second character is enqueued") {
+            RdpInputEvent::FastPath(events) => events,
+            event => panic!("expected FastPath input, got {event:?}"),
+        };
+        assert_eq!(
+            second.as_slice(),
+            [
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0xD83D),
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0xDE00),
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, 0xD83D),
+                FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, 0xDE00),
+            ]
+        );
+        assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn unicode_text_backpressure_enqueues_no_prefix_or_input_state() {
+        let (sender, mut receiver) = RdpInputSender::channel(2);
+        let mut database = Database::new();
+        sender
+            .try_send(RdpInputEvent::Resize {
+                width: 1024,
+                height: 768,
+                scale_factor: 100,
+                physical_size: None,
+            })
+            .expect("the first queue slot is available");
+
+        assert!(matches!(
+            enqueue_unicode_text(&sender, &mut database, "A\u{1f600}"),
+            Response::Err(error) if error.message == "session input channel is unavailable"
+        ));
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::Resize { .. })));
+        assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+        assert_eq!(
+            database.apply([Operation::UnicodeKeyPressed('A')]).as_slice(),
+            [FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), 0x0041)]
+        );
     }
 
     #[test]
@@ -976,5 +2083,78 @@ mod tests {
         daemon.shutdown();
 
         assert!(shutdown.has_changed().expect("shutdown sender is live"));
+    }
+
+    #[test]
+    fn rdpdr_drive_configuration_rejects_invalid_names_and_roots() {
+        assert!(RdpdrDriveConfig::new(PathBuf::new(), "Data".to_owned()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), String::new()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "too-long".to_owned()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "data/".to_owned()).is_err());
+        assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "Data".to_owned()).is_ok());
+    }
+
+    #[cfg(windows)]
+    fn system_volume_root() -> PathBuf {
+        let system_drive = std::env::var("SystemDrive").expect("SystemDrive is set on Windows");
+        PathBuf::from(format!(r"{system_drive}\"))
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rdpdr_daemon_constructs_a_factory_for_a_volume_root() {
+        let drive = RdpdrDriveConfig::new(system_volume_root(), "System".to_owned()).expect("valid drive");
+        let daemon = Daemon::with_rdpdr_drives(PropertySet::new(), vec![drive]).expect("valid daemon options");
+
+        assert!(daemon.rdpdr_backend_factory.is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rdpdr_daemon_rejects_duplicate_names_and_roots() {
+        let root = system_volume_root();
+        let duplicate_name = Daemon::with_rdpdr_drives(
+            PropertySet::new(),
+            vec![
+                RdpdrDriveConfig::new(root.clone(), "System".to_owned()).expect("valid drive"),
+                RdpdrDriveConfig::new(root.clone(), "system".to_owned()).expect("valid drive"),
+            ],
+        );
+        assert!(matches!(duplicate_name, Err(error) if error.to_string() == "rdpdr drive names must be unique"));
+
+        let duplicate_root = Daemon::with_rdpdr_drives(
+            PropertySet::new(),
+            vec![
+                RdpdrDriveConfig::new(root.clone(), "System".to_owned()).expect("valid drive"),
+                RdpdrDriveConfig::new(root, "Data".to_owned()).expect("valid drive"),
+            ],
+        );
+        assert!(matches!(duplicate_root, Err(error) if error.to_string() == "rdpdr volume roots must be unique"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rdpdr_daemon_rejects_non_root_directories() {
+        let drive = RdpdrDriveConfig::new(std::env::current_dir().expect("current directory"), "Data".to_owned())
+            .expect("non-empty drive config");
+
+        let result = Daemon::with_rdpdr_drives(PropertySet::new(), vec![drive]);
+
+        assert!(matches!(result, Err(error) if error.to_string() == "rdpdr volume root must use the X:\\ form"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rdpdr_daemon_rejects_noncanonical_volume_root_spellings() {
+        for root in ["C:/", r"C:\.", r"\\?\C:\"] {
+            let drive = RdpdrDriveConfig::new(PathBuf::from(root), "Data".to_owned()).expect("non-empty drive config");
+
+            let result = Daemon::with_rdpdr_drives(PropertySet::new(), vec![drive]);
+
+            assert!(matches!(
+                result,
+                Err(error) if error.to_string() == "rdpdr volume root must use the X:\\ form"
+            ));
+        }
     }
 }

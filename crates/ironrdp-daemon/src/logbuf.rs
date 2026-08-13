@@ -20,7 +20,7 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 
 /// Default ring-buffer capacity, in lines.
-const DEFAULT_CAPACITY: usize = 100;
+const DEFAULT_CAPACITY: usize = 4_096;
 
 /// A bounded ring buffer of formatted log lines.
 pub struct LogBuffer {

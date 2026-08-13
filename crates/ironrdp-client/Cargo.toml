@@ -32,7 +32,7 @@ native-tls = [
 
 sound = ["dep:ironrdp-rdpsnd", "dep:ironrdp-rdpsnd-native"]
 clipboard = ["dep:ironrdp-cliprdr", "dep:ironrdp-cliprdr-native"]
-rdpdr = ["dep:ironrdp-rdpdr"]
+rdpdr = ["dep:ironrdp-rdpdr", "dep:ironrdp-rdpsnd"]
 smartcard = ["rdpdr"]
 gateway = ["dep:ironrdp-mstsgu"]
 qoi = ["ironrdp-connector/qoi", "ironrdp-session/qoi"]
@@ -69,10 +69,11 @@ ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath", version = "0.2" }
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.1", optional = true }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
+ironrdp-rail = { path = "../ironrdp-rail", version = "0.1" }
 
 # Optional protocol crates (activated by features above)
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7", optional = true } # public
-ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7", optional = true }
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7", optional = true } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9", optional = true }
 
 # Optional backend crates (activated by features above)

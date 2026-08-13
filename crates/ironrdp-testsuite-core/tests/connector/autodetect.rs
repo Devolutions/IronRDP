@@ -66,6 +66,8 @@ fn test_config() -> ironrdp_connector::Config {
         timezone_info: Default::default(),
         alternate_shell: String::new(),
         work_dir: String::new(),
+        remote_application_mode: false,
+        rail_support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED,
     }
 }
 

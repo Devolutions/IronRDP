@@ -16,6 +16,14 @@ use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
 
 /// Device redirection backend interface.
 pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
+    /// Indicates whether the backend implements the RDPDR security IRPs.
+    ///
+    /// The channel advertises the corresponding optional capability bits only
+    /// when this returns `true`.
+    fn supports_drive_security(&self) -> bool {
+        false
+    }
+
     /// Releases state associated with the current RDPDR initialization sequence.
     ///
     /// A Server Announce Request starts a new sequence. Stateful
@@ -107,4 +115,73 @@ pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
             },
         ))])
     }
+}
+
+/// Immutable filesystem-device metadata announced for one RDPDR channel lifetime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RdpdrDrive {
+    device_id: u32,
+    name: String,
+}
+
+impl RdpdrDrive {
+    /// Creates filesystem-device metadata for an RDPDR announcement.
+    pub fn new(device_id: u32, name: String) -> Self {
+        Self { device_id, name }
+    }
+
+    /// Returns the device identifier used in RDPDR requests.
+    pub fn device_id(&self) -> u32 {
+        self.device_id
+    }
+
+    /// Returns the user-visible name sent in the filesystem-device announcement.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Splits the metadata into the RDPDR announcement fields.
+    pub fn into_parts(self) -> (u32, String) {
+        (self.device_id, self.name)
+    }
+}
+
+/// Per-connection product created by an [`RdpdrBackendFactory`].
+///
+/// The backend and drive list describe the same immutable device set.
+pub struct RdpdrBackendProduct {
+    backend: Box<dyn RdpdrBackend>,
+    initial_drives: Vec<RdpdrDrive>,
+}
+
+impl RdpdrBackendProduct {
+    /// Creates a product for one RDPDR channel lifetime.
+    pub fn new(backend: Box<dyn RdpdrBackend>, initial_drives: Vec<RdpdrDrive>) -> Self {
+        Self {
+            backend,
+            initial_drives,
+        }
+    }
+
+    /// Returns the filesystem devices announced when the server accepts RDPDR.
+    pub fn initial_drives(&self) -> &[RdpdrDrive] {
+        &self.initial_drives
+    }
+
+    /// Consumes the product into its backend and matching announcement metadata.
+    pub fn into_parts(self) -> (Box<dyn RdpdrBackend>, Vec<RdpdrDrive>) {
+        (self.backend, self.initial_drives)
+    }
+}
+
+/// Result returned when creating an RDPDR backend for one connection attempt.
+pub type RdpdrBackendFactoryResult<T> = Result<T, Box<dyn core::error::Error + Send + Sync>>;
+
+/// Builds a fresh RDPDR backend and device set for each connection attempt.
+///
+/// Backends own per-session device and file-handle state, so factories must not
+/// reuse a product across reconnects.
+pub trait RdpdrBackendFactory {
+    /// Creates the backend and matching filesystem-device announcements for one RDPDR channel lifetime.
+    fn build_rdpdr_backend(&self) -> RdpdrBackendFactoryResult<RdpdrBackendProduct>;
 }

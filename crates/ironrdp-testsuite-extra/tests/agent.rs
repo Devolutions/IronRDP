@@ -13,7 +13,8 @@ use ironrdp_propertyset::PropertySet;
 use ironrdp_rpc::ipc::{
     AgentError, AgentErrorCategory, ConnState, KeyFilter, NowCapabilities, NowDiagnostics, NowExecutionKind,
     NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload,
-    PropValue, PropertyDump, PropertyEntry, Request, Response, StatusInfo,
+    PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason,
+    RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo,
 };
 use ironrdp_rpc::wire;
 
@@ -84,6 +85,9 @@ fn request_variants_round_trip() {
             ch: '\u{00e9}',
             pressed: true,
         },
+        Request::UnicodeText {
+            text: "Hello, \u{4e16}\u{754c}".to_owned(),
+        },
         Request::NowCapabilities,
         Request::NowRun {
             command: "echo secret".to_owned(),
@@ -113,6 +117,20 @@ fn request_variants_round_trip() {
             last: true,
         },
         Request::NowDiagnostics,
+        Request::RailStatus,
+        Request::RailEvents {
+            after_sequence: Some(7),
+        },
+        Request::RailWait {
+            after_sequence: Some(7),
+            timeout_ms: 1_000,
+        },
+        Request::RailExecute(RailExecuteRequest {
+            executable: "notepad.exe".to_owned(),
+            working_directory: "C:\\Temp".to_owned(),
+            arguments: "audit.txt".to_owned(),
+            flags: 0,
+        }),
     ];
 
     for request in &requests {
@@ -212,6 +230,50 @@ fn response_variants_round_trip() {
             endpoint_allocated: true,
             connected: false,
             capabilities: None,
+        })),
+        Response::Ok(Payload::RailStatus(RailStatusInfo {
+            generation: 9,
+            next_sequence: 4,
+            handshake_complete: true,
+            desktop_synchronized: false,
+            pending_launches: vec![RailLaunchInfo {
+                launch_id: 3,
+                executable: "notepad.exe".to_owned(),
+                flags: 0,
+            }],
+        })),
+        Response::Ok(Payload::RailEvents(RailEventDump {
+            generation: 9,
+            events: vec![
+                RailEvent {
+                    sequence: 1,
+                    kind: RailEventKind::Gap { lost_through: 4 },
+                },
+                RailEvent {
+                    sequence: 5,
+                    kind: RailEventKind::ExecuteResult {
+                        launch_id: Some(3),
+                        executable: "notepad.exe".to_owned(),
+                        flags: 0,
+                        result: 0,
+                        raw_result: 0,
+                    },
+                },
+                RailEvent {
+                    sequence: 6,
+                    kind: RailEventKind::ExecuteFailed {
+                        launch_id: Some(3),
+                        executable: "notepad.exe".to_owned(),
+                        flags: 0,
+                        reason: RailExecuteFailureReason::QueueRejected,
+                    },
+                },
+            ],
+        })),
+        Response::Ok(Payload::RailLaunch(RailLaunchInfo {
+            launch_id: 3,
+            executable: "notepad.exe".to_owned(),
+            flags: 0,
         })),
     ];
 

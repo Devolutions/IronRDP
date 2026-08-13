@@ -23,8 +23,9 @@ use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
 use ironrdp_rpc::ipc::{
-    AgentError, KeyFilter, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind,
-    OperationInfo, OperationState, Payload, PropValue, Request, Response,
+    AgentError, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent,
+    OperationEventKind, OperationInfo, OperationState, Payload, PropValue, RailEvent, RailEventKind,
+    RailExecuteRequest, Request, Response,
 };
 use ironrdp_rpc::transport::{self, Endpoint};
 
@@ -99,6 +100,11 @@ enum Command {
         #[arg(long, action = clap::ArgAction::Set)]
         pressed: bool,
     },
+    /// Type bounded Unicode text without exposing a bulk-input operation to ActiveX.
+    TypeUnicode {
+        #[arg(long, value_parser = parse_unicode_text)]
+        text: String,
+    },
     /// Resize the remote desktop.
     Resize {
         #[arg(long)]
@@ -108,6 +114,8 @@ enum Command {
     },
     /// Execute commands over the session's NOW DVC endpoint.
     Now(NowArgs),
+    /// Inspect and exercise the validated, headless RemoteApp/RAIL audit plane.
+    Rail(RailArgs),
     /// Windows Sandbox lifecycle helpers (list/config/stop via WindowsSandboxServer gRPC).
     #[cfg(windows)]
     Sandbox(SandboxArgs),
@@ -178,6 +186,50 @@ enum NowCommand {
     Stdin(NowStdinArgs),
     /// Display the local NOW endpoint state without making a new connection.
     Diagnostics,
+}
+
+#[derive(Args, Debug)]
+struct RailArgs {
+    /// Output format for RAIL evidence.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    format: OutputFormat,
+    #[command(subcommand)]
+    command: RailCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum RailCommand {
+    /// Display the current RAIL handshake and pending-launch state.
+    Status,
+    /// Display validated RAIL events retained by the daemon.
+    Events {
+        /// Only show events with a sequence greater than this value.
+        #[arg(long)]
+        after_sequence: Option<u64>,
+    },
+    /// Wait for the next validated RAIL event without polling.
+    Wait {
+        /// Only return events with a sequence greater than this value.
+        #[arg(long)]
+        after_sequence: Option<u64>,
+        /// Maximum wait time in milliseconds, capped at 60,000.
+        #[arg(long, default_value_t = 30_000)]
+        timeout_ms: u32,
+    },
+    /// Queue a RemoteApp launch without exposing raw protocol injection.
+    Execute {
+        /// Remote executable path or alias.
+        executable: String,
+        /// Initial remote working directory.
+        #[arg(long)]
+        working_directory: Option<String>,
+        /// Command-line arguments for the executable.
+        #[arg(long)]
+        arguments: Option<String>,
+        /// RAIL Execute flags.
+        #[arg(long, default_value_t = 0)]
+        flags: u16,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -306,6 +358,19 @@ struct DaemonArgs {
     /// property without a dedicated flag existing for it.
     #[arg(long = "prop", value_name = "KEY:TYPE:VALUE")]
     prop: Vec<PropOverride>,
+    /// Skip TLS certificate and hostname validation for this daemon.
+    ///
+    /// Use only for an explicitly authorized test endpoint. This startup-only flag accepts any
+    /// certificate and is vulnerable to on-path attacks.
+    #[arg(long)]
+    skip_certificate_check: bool,
+    /// Named local Windows volume exposed as an RDPDR filesystem drive.
+    ///
+    /// Repeat this flag to redirect multiple volumes. `NAME` is protocol-visible
+    /// and must be unique.
+    #[cfg(windows)]
+    #[arg(long = "rdpdr-drive", value_name = "NAME=VOLUME_ROOT", value_parser = parse_rdpdr_drive)]
+    rdpdr_drives: Vec<ironrdp_daemon::daemon::RdpdrDriveConfig>,
 }
 
 #[derive(Args, Debug)]
@@ -451,6 +516,28 @@ fn parse_scancode(input: &str) -> Result<u16, core::num::ParseIntError> {
     }
 }
 
+fn parse_unicode_text(input: &str) -> Result<String, String> {
+    let char_count = input.chars().count();
+    if char_count == 0 {
+        return Err("text must not be empty".to_owned());
+    }
+    if char_count > MAX_UNICODE_TEXT_CHARS {
+        return Err(format!(
+            "text must contain at most {MAX_UNICODE_TEXT_CHARS} Unicode characters"
+        ));
+    }
+    Ok(input.to_owned())
+}
+
+#[cfg(windows)]
+fn parse_rdpdr_drive(input: &str) -> Result<ironrdp_daemon::daemon::RdpdrDriveConfig, String> {
+    let (display_name, root_path) = input
+        .split_once('=')
+        .ok_or_else(|| "rdpdr drive must use NAME=VOLUME_ROOT syntax".to_owned())?;
+    ironrdp_daemon::daemon::RdpdrDriveConfig::new(PathBuf::from(root_path), display_name.to_owned())
+        .map_err(|error| error.to_string())
+}
+
 /// Entry point shared by the binary: dispatches the parsed [`Cli`].
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     if cli.help_agent {
@@ -476,7 +563,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 anyhow::bail!("daemon-start requires --backend daemon");
             }
             let overlay = load_overlay(args.overlay.as_deref(), args.prop)?;
-            return ironrdp_daemon::daemon::run(endpoint, overlay).await;
+            #[cfg(windows)]
+            let rdpdr_drives = args.rdpdr_drives;
+            #[cfg(not(windows))]
+            let rdpdr_drives = Vec::new();
+            let options = ironrdp_daemon::daemon::DaemonOptions::default()
+                .with_certificate_check_skipped(args.skip_certificate_check)
+                .with_rdpdr_drives(rdpdr_drives);
+            return ironrdp_daemon::daemon::run(endpoint, overlay, options).await;
         }
         Command::Now(args) => {
             let format = args.format;
@@ -497,6 +591,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             return Ok(());
         }
+        Command::Rail(args) => return run_rail(&endpoint, args).await,
         Command::Connect(args) => build_connect_request(args)?,
         #[cfg(windows)]
         Command::Sandbox(args) => {
@@ -534,6 +629,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Wheel { delta, horizontal } => Request::Wheel { delta, horizontal },
         Command::KeyScancode { scancode, pressed } => Request::KeyScancode { scancode, pressed },
         Command::KeyUnicode { character, pressed } => Request::KeyUnicode { ch: character, pressed },
+        Command::TypeUnicode { text } => Request::UnicodeText { text },
         Command::Resize { width, height } => Request::Resize { width, height },
     };
 
@@ -657,6 +753,267 @@ fn run_sandbox_command(args: SandboxArgs) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+async fn run_rail(endpoint: &Endpoint, args: RailArgs) -> anyhow::Result<()> {
+    let RailArgs { format, command } = args;
+    let request = match command {
+        RailCommand::Status => Request::RailStatus,
+        RailCommand::Events { after_sequence } => Request::RailEvents { after_sequence },
+        RailCommand::Wait {
+            after_sequence,
+            timeout_ms,
+        } => Request::RailWait {
+            after_sequence,
+            timeout_ms,
+        },
+        RailCommand::Execute {
+            executable,
+            working_directory,
+            arguments,
+            flags,
+        } => Request::RailExecute(RailExecuteRequest {
+            executable,
+            working_directory: working_directory.unwrap_or_default(),
+            arguments: arguments.unwrap_or_default(),
+            flags,
+        }),
+    };
+    let response = transport::send_request(endpoint, &request).await?;
+    let payload = match response {
+        Response::Ok(payload) => payload,
+        Response::Err(error) => anyhow::bail!("{error}"),
+    };
+    print_rail_payload(payload, format)
+}
+
+fn print_rail_payload(payload: Payload, format: OutputFormat) -> anyhow::Result<()> {
+    use serde_json::json;
+
+    match format {
+        OutputFormat::Human => match payload {
+            Payload::RailStatus(status) => {
+                println!("generation: {}", status.generation);
+                println!("next sequence: {}", status.next_sequence);
+                println!("handshake complete: {}", status.handshake_complete);
+                println!("desktop synchronized: {}", status.desktop_synchronized);
+                for launch in status.pending_launches {
+                    println!(
+                        "pending launch {}: {} (flags 0x{:04x})",
+                        launch.launch_id, launch.executable, launch.flags
+                    );
+                }
+            }
+            Payload::RailEvents(events) => {
+                println!("generation: {}", events.generation);
+                for event in events.events {
+                    print_rail_event(&event);
+                }
+            }
+            Payload::RailLaunch(launch) => {
+                println!(
+                    "queued launch {}: {} (flags 0x{:04x})",
+                    launch.launch_id, launch.executable, launch.flags
+                );
+            }
+            _ => anyhow::bail!("unexpected response to RAIL request"),
+        },
+        OutputFormat::Json => {
+            let value = match payload {
+                Payload::RailStatus(status) => json!({
+                    "type": "rail_status",
+                    "generation": status.generation,
+                    "next_sequence": status.next_sequence,
+                    "handshake_complete": status.handshake_complete,
+                    "desktop_synchronized": status.desktop_synchronized,
+                    "pending_launches": status.pending_launches.iter().map(rail_launch_json).collect::<Vec<_>>(),
+                }),
+                Payload::RailEvents(events) => json!({
+                    "type": "rail_events",
+                    "generation": events.generation,
+                    "events": events.events.iter().map(rail_event_json).collect::<Vec<_>>(),
+                }),
+                Payload::RailLaunch(launch) => json!({
+                    "type": "rail_launch",
+                    "launch": rail_launch_json(&launch),
+                }),
+                _ => anyhow::bail!("unexpected response to RAIL request"),
+            };
+            println!("{}", serde_json::to_string(&value)?);
+        }
+        OutputFormat::Ndjson => match payload {
+            Payload::RailEvents(events) => {
+                for event in events.events {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&json!({
+                            "type": "rail_event",
+                            "generation": events.generation,
+                            "event": rail_event_json(&event),
+                        }))?
+                    );
+                }
+            }
+            Payload::RailStatus(status) => println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "type": "rail_status",
+                    "generation": status.generation,
+                    "next_sequence": status.next_sequence,
+                    "handshake_complete": status.handshake_complete,
+                    "desktop_synchronized": status.desktop_synchronized,
+                    "pending_launches": status.pending_launches.iter().map(rail_launch_json).collect::<Vec<_>>(),
+                }))?
+            ),
+            Payload::RailLaunch(launch) => println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "type": "rail_launch",
+                    "launch": rail_launch_json(&launch),
+                }))?
+            ),
+            _ => anyhow::bail!("unexpected response to RAIL request"),
+        },
+    }
+    Ok(())
+}
+
+fn print_rail_event(event: &RailEvent) {
+    match &event.kind {
+        RailEventKind::Handshake {
+            handshake_ex_flags,
+            initialization_message_count,
+            queued_execute_count,
+        } => println!(
+            "{}: handshake flags={handshake_ex_flags:?} initialization_messages={initialization_message_count} queued_executes={queued_execute_count}",
+            event.sequence
+        ),
+        RailEventKind::DesktopSynchronized { released_execute_count } => println!(
+            "{}: desktop synchronized released_executes={released_execute_count}",
+            event.sequence
+        ),
+        RailEventKind::PostHandshakeQueueReleased { released_execute_count } => println!(
+            "{}: post-handshake queue released executes={released_execute_count}",
+            event.sequence
+        ),
+        RailEventKind::ExecuteQueued(launch) => println!(
+            "{}: queued launch {} {} flags=0x{:04x}",
+            event.sequence, launch.launch_id, launch.executable, launch.flags
+        ),
+        RailEventKind::ExecuteResult {
+            launch_id,
+            executable,
+            flags,
+            result,
+            raw_result,
+        } => println!(
+            "{}: execute result launch={launch_id:?} executable={executable} flags=0x{flags:04x} result=0x{result:04x} raw=0x{raw_result:08x}",
+            event.sequence
+        ),
+        RailEventKind::ExecuteFailed {
+            launch_id,
+            executable,
+            flags,
+            reason,
+        } => println!(
+            "{}: execute failed launch={launch_id:?} executable={executable} flags=0x{flags:04x} reason={}",
+            event.sequence,
+            reason.as_str()
+        ),
+        RailEventKind::ApplicationId {
+            window_id,
+            application_id,
+            process_id,
+            process_image_name,
+        } => println!(
+            "{}: application ID window=0x{window_id:08x} application={application_id} process={process_id:?} image={process_image_name:?}",
+            event.sequence
+        ),
+        RailEventKind::Control { kind } => println!("{}: control {kind}", event.sequence),
+        RailEventKind::WindowingOrders { byte_count } => {
+            println!("{}: validated windowing orders ({byte_count} bytes)", event.sequence)
+        }
+        RailEventKind::Gap { lost_through } => {
+            println!("{}: history gap through sequence {lost_through}", event.sequence)
+        }
+    }
+}
+
+fn rail_launch_json(launch: &ironrdp_rpc::ipc::RailLaunchInfo) -> serde_json::Value {
+    serde_json::json!({
+        "launch_id": launch.launch_id,
+        "executable": launch.executable,
+        "flags": launch.flags,
+    })
+}
+
+fn rail_event_json(event: &RailEvent) -> serde_json::Value {
+    use serde_json::json;
+
+    let kind = match &event.kind {
+        RailEventKind::Handshake {
+            handshake_ex_flags,
+            initialization_message_count,
+            queued_execute_count,
+        } => json!({
+            "kind": "handshake",
+            "handshake_ex_flags": handshake_ex_flags,
+            "initialization_message_count": initialization_message_count,
+            "queued_execute_count": queued_execute_count,
+        }),
+        RailEventKind::DesktopSynchronized { released_execute_count } => {
+            json!({"kind": "desktop_synchronized", "released_execute_count": released_execute_count})
+        }
+        RailEventKind::PostHandshakeQueueReleased { released_execute_count } => {
+            json!({"kind": "post_handshake_queue_released", "released_execute_count": released_execute_count})
+        }
+        RailEventKind::ExecuteQueued(launch) => json!({"kind": "execute_queued", "launch": rail_launch_json(launch)}),
+        RailEventKind::ExecuteResult {
+            launch_id,
+            executable,
+            flags,
+            result,
+            raw_result,
+        } => json!({
+            "kind": "execute_result",
+            "launch_id": launch_id,
+            "executable": executable,
+            "flags": flags,
+            "result": result,
+            "raw_result": raw_result,
+        }),
+        RailEventKind::ExecuteFailed {
+            launch_id,
+            executable,
+            flags,
+            reason,
+        } => json!({
+            "kind": "execute_failed",
+            "launch_id": launch_id,
+            "executable": executable,
+            "flags": flags,
+            "reason": reason.as_str(),
+        }),
+        RailEventKind::ApplicationId {
+            window_id,
+            application_id,
+            process_id,
+            process_image_name,
+        } => json!({
+            "kind": "application_id",
+            "window_id": window_id,
+            "application_id": application_id,
+            "process_id": process_id,
+            "process_image_name": process_image_name,
+        }),
+        RailEventKind::Control { kind } => json!({"kind": "control", "control": kind}),
+        RailEventKind::WindowingOrders { byte_count } => json!({"kind": "windowing_orders", "byte_count": byte_count}),
+        RailEventKind::Gap { lost_through } => json!({"kind": "gap", "lost_through": lost_through}),
+    };
+    json!({
+        "sequence": event.sequence,
+        "event": kind,
+    })
 }
 
 async fn run_now(endpoint: &Endpoint, args: NowArgs) -> anyhow::Result<Option<u32>> {
@@ -1225,6 +1582,19 @@ fn print_payload(payload: Payload) {
             println!("NOW endpoint allocated: {}", diagnostics.endpoint_allocated);
             println!("NOW connected: {}", diagnostics.connected);
         }
+        Payload::RailStatus(status) => {
+            println!("RAIL generation: {}", status.generation);
+            println!("RAIL handshake complete: {}", status.handshake_complete);
+        }
+        Payload::RailEvents(events) => {
+            println!("RAIL generation: {}", events.generation);
+            for event in &events.events {
+                print_rail_event(event);
+            }
+        }
+        Payload::RailLaunch(launch) => {
+            println!("queued RAIL launch {}: {}", launch.launch_id, launch.executable);
+        }
     }
 }
 
@@ -1307,9 +1677,7 @@ fn property_description(key: &str) -> Option<&'static str> {
         "ironrdp_rdpdr" => "enable the RDPDR device-redirection channel (0/1)",
         "ironrdp_smartcard" => "enable smart-card device redirection (0/1)",
         "ironrdp_tls" => "use plain TLS security instead of CredSSP/Hybrid (0/1)",
-        "ironrdp_certificate_validation" => {
-            "TLS certificate validation policy: strict or dangerously_accept_invalid_certificate (disables certificate and hostname validation; testing only)"
-        }
+        "ironrdp_certificate_validation" => "agent daemon TLS certificate validation policy set at daemon startup",
         "ironrdp_fakeeventsinterval" => "interval in minutes between synthetic keep-alive input events",
         "ironrdp_rdcleanpathtoken" => "RDCleanPath authentication token (secret)",
         "ironrdp_rdcleanpathurl" => "RDCleanPath proxy URL",
@@ -1321,9 +1689,16 @@ fn property_description(key: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use std::path::PathBuf;
+
     use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Backend, Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution, endpoint_from_arg};
+    use super::Command;
+    use super::{
+        Backend, Cli, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, build_now_execution,
+        endpoint_from_arg,
+    };
 
     #[test]
     fn backend_endpoint_selection_is_distinct_and_overridable() {
@@ -1343,6 +1718,53 @@ mod tests {
             endpoint_from_arg(Some("custom-rpc-endpoint".to_owned()), Backend::ActiveX).to_string(),
             "custom-rpc-endpoint"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn daemon_rdpdr_drive_flags_parse_multiple_static_volumes() {
+        let cli = Cli::try_parse_from([
+            "ironrdp-agent",
+            "daemon-start",
+            "--rdpdr-drive",
+            r"System=C:\",
+            "--rdpdr-drive",
+            r"Data=D:\",
+        ])
+        .expect("valid multiple-drive configuration");
+
+        let Some(Command::DaemonStart(args)) = cli.command else {
+            panic!("expected daemon-start command");
+        };
+        assert_eq!(args.rdpdr_drives.len(), 2);
+        assert_eq!(args.rdpdr_drives[0].display_name(), "System");
+        assert_eq!(args.rdpdr_drives[0].root_path(), PathBuf::from(r"C:\"));
+        assert_eq!(args.rdpdr_drives[1].display_name(), "Data");
+        assert_eq!(args.rdpdr_drives[1].root_path(), PathBuf::from(r"D:\"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn daemon_rdpdr_drive_flags_reject_invalid_definitions() {
+        for drive in ["C:\\", "=C:\\", "Data=", "too-long=C:\\", "Data/C:\\"] {
+            assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--rdpdr-drive", drive]).is_err());
+        }
+    }
+
+    #[test]
+    fn daemon_start_can_skip_certificate_check() {
+        let cli = Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--skip-certificate-check"])
+            .expect("valid explicit certificate-validation override");
+
+        let Some(Command::DaemonStart(args)) = cli.command else {
+            panic!("expected daemon-start command");
+        };
+        assert!(args.skip_certificate_check);
+    }
+
+    #[test]
+    fn daemon_start_rejects_superseded_certificate_flag() {
+        assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--ignore-certificates"]).is_err());
     }
 
     #[test]
@@ -1369,6 +1791,21 @@ mod tests {
     #[test]
     fn shell_is_not_an_agent_command() {
         assert!(Cli::try_parse_from(["ironrdp-agent", "now", "shell"]).is_err());
+    }
+
+    #[test]
+    fn unicode_text_rejects_empty_and_oversized_requests() {
+        assert!(Cli::try_parse_from(["ironrdp-agent", "type-unicode", "--text", ""]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "ironrdp-agent",
+                "type-unicode",
+                "--text",
+                &"x".repeat(MAX_UNICODE_TEXT_CHARS + 1),
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["ironrdp-agent", "type-unicode", "--text", "test"]).is_ok());
     }
 
     #[test]

@@ -3,6 +3,12 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace Devolutions.IronRdp;
 
+public enum VmConnectMode
+{
+    Enhanced,
+    Basic,
+}
+
 /// <summary>
 /// Provides methods for connecting to RDP servers through an RDCleanPath-compatible gateway
 /// (such as Devolutions Gateway or Cloudflare) using WebSocket.
@@ -16,16 +22,52 @@ public static class RDCleanPathConnection
     /// <param name="gatewayUrl">The WebSocket URL to the RDCleanPath gateway (e.g., "ws://localhost:7171/jet/rdp")</param>
     /// <param name="authToken">The JWT authentication token for the RDCleanPath gateway</param>
     /// <param name="destination">The destination RDP server address (e.g., "10.10.0.3:3389")</param>
-    /// <param name="pcb">Optional preconnection blob for Hyper-V VM connections</param>
+    /// <param name="pcb">Optional legacy complete preconnection blob represented as a string</param>
     /// <param name="factory">Optional clipboard backend factory</param>
     /// <returns>A tuple containing the connection result and framed WebSocket stream</returns>
-    public static async Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectRDCleanPath(
+    public static Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectRDCleanPath(
         Config config,
         string gatewayUrl,
         string authToken,
         string destination,
         string? pcb = null,
         CliprdrBackendFactory? factory = null)
+    {
+        return ConnectRDCleanPathCore(config, gatewayUrl, authToken, destination, pcb, null, factory);
+    }
+
+    /// <summary>
+    /// Connects to a Hyper-V VM through an RDCleanPath-compatible gateway.
+    /// </summary>
+    /// <remarks>
+    /// The supplied configuration must enable TLS and CredSSP.
+    /// </remarks>
+    public static Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectVmConnectRDCleanPath(
+        Config config,
+        string gatewayUrl,
+        string authToken,
+        string destination,
+        string vmId,
+        VmConnectMode mode = VmConnectMode.Enhanced,
+        CliprdrBackendFactory? factory = null)
+    {
+        if (string.IsNullOrWhiteSpace(vmId))
+        {
+            throw new ArgumentException("vmconnect requires a VM ID", nameof(vmId));
+        }
+
+        var pcbPayload = mode == VmConnectMode.Enhanced ? $"{vmId};EnhancedMode=1" : vmId;
+        return ConnectRDCleanPathCore(config, gatewayUrl, authToken, destination, null, pcbPayload, factory);
+    }
+
+    private static async Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectRDCleanPathCore(
+        Config config,
+        string gatewayUrl,
+        string authToken,
+        string destination,
+        string? pcb,
+        string? vmconnectPayload,
+        CliprdrBackendFactory? factory)
     {
         // Step 1: Connect WebSocket to gateway
         System.Diagnostics.Debug.WriteLine($"Connecting to gateway at {gatewayUrl}...");
@@ -43,11 +85,49 @@ public static class RDCleanPathConnection
 
         // Step 4: Perform RDCleanPath handshake
         System.Diagnostics.Debug.WriteLine("Performing RDCleanPath handshake...");
-        var (serverPublicKey, framedAfterHandshake) = await ConnectRdCleanPath(
-            framed, connector, destination, authToken, pcb ?? "");
+        var (serverPublicKey, framedAfterHandshake, hasX224) = await ConnectRdCleanPath(
+            framed, connector, destination, authToken, pcb ?? "", vmconnectPayload);
 
-        // Step 5: Mark security upgrade as done (WebSocket already has TLS)
-        connector.MarkSecurityUpgradeAsDone();
+        if (hasX224)
+        {
+            // Ordinary front: proxy already performed X.224 and TLS.
+            connector.MarkSecurityUpgradeAsDone();
+        }
+        else
+        {
+            // PCB front: proxy did PCB + TLS. Client runs CredSSP then HYBRID-only X.224.
+            const uint HybridProtocol = 0x00000002;
+            var writeBuf = WriteBuf.New();
+
+            await ConnectionHelpers.PerformCredsspSteps(
+                connector,
+                destination,
+                writeBuf,
+                framedAfterHandshake,
+                serverPublicKey,
+                HybridProtocol);
+
+            connector.ClearCredentialsAfterHostAuth();
+
+            writeBuf.Clear();
+            var written = connector.InitiateWithSecurityProtocol(HybridProtocol, writeBuf);
+            if (written.GetWrittenType() != WrittenType.Nothing)
+            {
+                var size = (int)written.GetSize().Get();
+                var x224Request = new byte[size];
+                writeBuf.ReadIntoBuf(x224Request);
+                await framedAfterHandshake.Write(x224Request);
+            }
+
+            while (!connector.ShouldPerformSecurityUpgrade())
+            {
+                await Connection.SingleSequenceStep(connector, writeBuf, framedAfterHandshake);
+            }
+
+            connector.EnsureSelectedHybrid();
+            connector.MarkSecurityUpgradeAsDone();
+            connector.MarkCredsspAsDone();
+        }
 
         // Step 6: Finalize connection
         System.Diagnostics.Debug.WriteLine("Finalizing RDP connection...");
@@ -60,52 +140,66 @@ public static class RDCleanPathConnection
     /// <summary>
     /// Performs the RDCleanPath handshake with the RDCleanPath-compatible gateway.
     /// </summary>
-    private static async Task<(byte[], Framed<WebSocketStream>)> ConnectRdCleanPath(
+    private static async Task<(byte[], Framed<WebSocketStream>, bool)> ConnectRdCleanPath(
         Framed<WebSocketStream> framed,
         ClientConnector connector,
         string destination,
         string authToken,
-        string pcb)
+        string pcb,
+        string? vmconnectPayload)
     {
         var writeBuf = WriteBuf.New();
+        var vmconnect = vmconnectPayload != null;
 
-        // Step 1: Generate X.224 Connection Request
-        System.Diagnostics.Debug.WriteLine("Generating X.224 Connection Request...");
-        var written = connector.StepNoInput(writeBuf);
-        var x224PduSize = (int)written.GetSize().Get();
-        var x224Pdu = new byte[x224PduSize];
-        writeBuf.ReadIntoBuf(x224Pdu);
-
-        // Step 2: Create and send RDCleanPath Request
         System.Diagnostics.Debug.WriteLine($"Sending RDCleanPath request to {destination}...");
-        var rdCleanPathReq = RDCleanPathPdu.NewRequest(x224Pdu, destination, authToken, pcb);
+        RDCleanPathPdu rdCleanPathReq;
+        if (vmconnect)
+        {
+            rdCleanPathReq = RDCleanPathPdu.NewVmconnectRequest(destination, authToken, vmconnectPayload!);
+        }
+        else
+        {
+            var written = connector.StepNoInput(writeBuf);
+            var firstPduSize = (int)written.GetSize().Get();
+            var firstPdu = new byte[firstPduSize];
+            writeBuf.ReadIntoBuf(firstPdu);
+            rdCleanPathReq = RDCleanPathPdu.NewRequest(firstPdu, destination, authToken, pcb);
+        }
         var reqBytes = rdCleanPathReq.ToDer();
         var reqBytesArray = new byte[reqBytes.GetSize()];
         reqBytes.Fill(reqBytesArray);
         await framed.Write(reqBytesArray);
 
-        // Step 3: Read RDCleanPath Response
         System.Diagnostics.Debug.WriteLine("Waiting for RDCleanPath response...");
         var respBytes = await framed.ReadByHint(new RDCleanPathHint());
         var rdCleanPathResp = RDCleanPathPdu.FromDer(respBytes);
 
-        // Step 4: Determine response type and handle accordingly
         var resultType = rdCleanPathResp.GetType();
 
         if (resultType == RDCleanPathResultType.Response)
         {
             System.Diagnostics.Debug.WriteLine("RDCleanPath handshake successful!");
 
-            // Extract X.224 response
-            var x224Response = rdCleanPathResp.GetX224Response();
-            var x224ResponseBytes = new byte[x224Response.GetSize()];
-            x224Response.Fill(x224ResponseBytes);
+            var hasX224 = rdCleanPathResp.HasX224();
+            if (vmconnect == hasX224)
+            {
+                throw new IronRdpLibException(
+                    IronRdpLibExceptionType.ConnectionFailed,
+                    vmconnect
+                        ? "response from RDCleanPath includes X.224 for a VMConnect request"
+                        : "response from RDCleanPath is missing X.224 for an ordinary request");
+            }
 
-            // Process X.224 response with connector
-            writeBuf.Clear();
-            connector.Step(x224ResponseBytes, writeBuf);
+            if (hasX224)
+            {
+                var x224Response = rdCleanPathResp.GetX224Response();
+                var x224ResponseBytes = new byte[x224Response.GetSize()];
+                x224Response.Fill(x224ResponseBytes);
 
-            // Extract server public key from certificate chain
+                writeBuf.Clear();
+                connector.Step(x224ResponseBytes, writeBuf);
+            }
+
             var certChain = rdCleanPathResp.GetServerCertChain();
             if (certChain.IsEmpty())
             {
@@ -129,7 +223,7 @@ public static class RDCleanPathConnection
 
             System.Diagnostics.Debug.WriteLine($"Extracted server public key (length: {serverPublicKey.Length})");
 
-            return (serverPublicKey, framed);
+            return (serverPublicKey, framed, hasX224);
         }
         else if (resultType == RDCleanPathResultType.GeneralError)
         {
@@ -137,13 +231,13 @@ public static class RDCleanPathConnection
             var errorMessage = rdCleanPathResp.GetErrorMessage();
             throw new IronRdpLibException(
                 IronRdpLibExceptionType.ConnectionFailed,
-                $"RDCleanPath error (code {errorCode}): {errorMessage}");
+                $"error from RDCleanPath (code {errorCode}): {errorMessage}");
         }
         else if (resultType == RDCleanPathResultType.NegotiationError)
         {
             throw new IronRdpLibException(
                 IronRdpLibExceptionType.ConnectionFailed,
-                "RDCleanPath negotiation error: Server rejected connection parameters");
+                "negotiation error from RDCleanPath: server rejected connection parameters");
         }
         else
         {
