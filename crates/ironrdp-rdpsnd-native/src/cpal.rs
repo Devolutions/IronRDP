@@ -27,32 +27,67 @@ fn unpack_volume(packed: u32) -> (u16, u16) {
     (left, right)
 }
 
-/// Apply MS-RDPEA linear volume (0..=0xFFFF) to interleaved PCM samples.
-fn apply_volume(data: &mut [u8], bits_per_sample: u16, channels: u16, left: u16, right: u16) {
+/// Scale interleaved PCM samples by left/right volume (0..=0xFFFF).
+///
+/// Uses a simple amplitude scale per sample. MS-RDPEA §2.2.2.2 describes
+/// `dwVolume` as logarithmic for perceived loudness; this path is a fidelity
+/// approximation that preserves the endpoints (silence / full scale).
+///
+/// `sample_phase` is the channel index of the next sample and is advanced so
+/// L/R assignment stays correct across wave blocks and multi-channel layouts.
+fn apply_volume(
+    data: &mut [u8],
+    bits_per_sample: u16,
+    channels: u16,
+    left: u16,
+    right: u16,
+    sample_phase: &mut usize,
+) {
     if left == 0xFFFF && right == 0xFFFF {
+        // Still advance phase so a later non-full volume stays aligned.
+        let sample_bytes = match bits_per_sample {
+            8 => 1usize,
+            16 => 2usize,
+            _ => return,
+        };
+        *sample_phase = sample_phase.wrapping_add(data.len() / sample_bytes);
         return;
     }
 
+    let channels = usize::from(channels.max(1));
+    let lane_volume = |phase: usize| -> u16 {
+        if channels == 1 {
+            left
+        } else {
+            match phase % channels {
+                1 => right,
+                _ => left,
+            }
+        }
+    };
+
     match bits_per_sample {
         8 => {
-            for (i, sample) in data.iter_mut().enumerate() {
-                let vol = if channels > 1 && i % 2 == 1 { right } else { left };
+            for sample in data.iter_mut() {
+                let vol = lane_volume(*sample_phase);
                 // U8 PCM is unsigned with midpoint 128.
                 let centered = i16::from(*sample) - 128;
                 let scaled = (i32::from(centered) * i32::from(vol)) / 0xFFFF;
                 let out = (scaled + 128).clamp(0, 255);
                 *sample = u8::try_from(out).unwrap_or(0);
+                *sample_phase = sample_phase.wrapping_add(1);
             }
         }
         16 => {
-            for (i, chunk) in data.chunks_exact_mut(2).enumerate() {
-                let vol = if channels > 1 && i % 2 == 1 { right } else { left };
+            for chunk in data.chunks_exact_mut(2) {
+                let vol = lane_volume(*sample_phase);
                 let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
                 let scaled = (i32::from(sample) * i32::from(vol)) / 0xFFFF;
                 let out = scaled.clamp(i32::from(i16::MIN), i32::from(i16::MAX));
                 let bytes = i16::try_from(out).unwrap_or(0).to_le_bytes();
                 chunk[0] = bytes[0];
                 chunk[1] = bytes[1];
+                *sample_phase = sample_phase.wrapping_add(1);
             }
         }
         _ => {}
@@ -397,6 +432,8 @@ struct RxBuffer {
     volume: Arc<AtomicU32>,
     bits_per_sample: u16,
     channels: u16,
+    /// Next interleaved sample's channel index for volume L/R assignment.
+    volume_sample_phase: usize,
 }
 
 impl RxBuffer {
@@ -408,6 +445,7 @@ impl RxBuffer {
             volume,
             bits_per_sample,
             channels,
+            volume_sample_phase: 0,
         }
     }
 
@@ -420,7 +458,14 @@ impl RxBuffer {
                     Ok(mut rx) => {
                         debug!(rx.len = rx.len());
                         let (left, right) = unpack_volume(self.volume.load(Ordering::Relaxed));
-                        apply_volume(&mut rx, self.bits_per_sample, self.channels, left, right);
+                        apply_volume(
+                            &mut rx,
+                            self.bits_per_sample,
+                            self.channels,
+                            left,
+                            right,
+                            &mut self.volume_sample_phase,
+                        );
                         self.last = Some(rx);
                     }
                     Err(error) => {
