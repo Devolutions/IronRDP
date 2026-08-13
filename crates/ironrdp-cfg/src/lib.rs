@@ -485,6 +485,13 @@ pub trait PropertySetExt {
     /// Removes the `redirectclipboard` property.
     fn clear_redirect_clipboard(&mut self);
 
+    /// Whether WebAuthn redirection is requested (`redirectwebauthn`).
+    fn redirect_webauthn(&self) -> Option<bool>;
+    /// Sets the `redirectwebauthn` property.
+    fn set_redirect_webauthn(&mut self, value: bool);
+    /// Removes the `redirectwebauthn` property.
+    fn clear_redirect_webauthn(&mut self);
+
     /// RemoteApp application name (`remoteapplicationname`).
     fn remote_application_name(&self) -> Option<&str>;
     /// Sets the `remoteapplicationname` property.
@@ -924,6 +931,18 @@ impl PropertySetExt for PropertySet {
 
     fn clear_redirect_clipboard(&mut self) {
         self.remove("redirectclipboard");
+    }
+
+    fn redirect_webauthn(&self) -> Option<bool> {
+        self.get::<bool>("redirectwebauthn")
+    }
+
+    fn set_redirect_webauthn(&mut self, value: bool) {
+        self.insert("redirectwebauthn", value);
+    }
+
+    fn clear_redirect_webauthn(&mut self) {
+        self.remove("redirectwebauthn");
     }
 
     fn remote_application_name(&self) -> Option<&str> {

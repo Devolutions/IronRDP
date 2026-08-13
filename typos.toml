@@ -29,12 +29,20 @@ Imagesetter = "Imagesetter"
 Pn = "Pn"
 # "writeable" is an accepted alternate spelling of "writable".
 writeable = "writeable"
+# CBOR Object Signing and Encryption (WebAuthn COSE algorithms / Windows APIs).
+COSE = "COSE"
+cose = "cose"
 
 [default.extend-identifiers]
 # COM FORMATETC target-device field.
 ptd = "ptd"
 # Windows TRACKMOUSEEVENT flag.
 TME_LEAVE = "TME_LEAVE"
+# WebAuthn COSE algorithm parameter identifiers / locals.
+cose_params = "cose_params"
+WEBAUTHN_COSE_CREDENTIAL_PARAMETER = "WEBAUTHN_COSE_CREDENTIAL_PARAMETER"
+WEBAUTHN_COSE_CREDENTIAL_PARAMETER_CURRENT_VERSION = "WEBAUTHN_COSE_CREDENTIAL_PARAMETER_CURRENT_VERSION"
+WEBAUTHN_COSE_CREDENTIAL_PARAMETERS = "WEBAUTHN_COSE_CREDENTIAL_PARAMETERS"
 
 [default]
 extend-ignore-re = [

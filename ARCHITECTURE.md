@@ -106,6 +106,11 @@ RDPSND static channel for audio output implemented as described in MS-RDPEA.
 
 AUDIO_INPUT dynamic channel for client microphone capture implemented as described in MS-RDPEAI.
 
+#### [`crates/ironrdp-rdpewa`](./crates/ironrdp-rdpewa)
+
+RDPEWA dynamic virtual channel for WebAuthn redirection as described in MS-RDPEWA.
+The Windows backend lives in [`crates/ironrdp-rdpewa-native`](./crates/ironrdp-rdpewa-native).
+
 #### [`crates/ironrdp-connector`](./crates/ironrdp-connector)
 
 State machines to drive an RDP connection sequence.

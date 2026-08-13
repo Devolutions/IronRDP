@@ -44,6 +44,9 @@ qoi = ["ironrdp-connector/qoi", "ironrdp-session/qoi"]
 qoiz = ["ironrdp-connector/qoiz", "ironrdp-session/qoiz"]
 dvc-pipe-proxy = ["dep:ironrdp-dvc-pipe-proxy"]
 dvc-com-plugin = ["dep:ironrdp-dvc-com-plugin"]
+# Prefer System32\webauthn.dll via the DVC COM plugin host (MSTSC parity / hash-only hosts).
+# Keep the pure-Rust RDPEWA path as a fallback when the COM plugin is unavailable.
+webauthn = ["dep:ironrdp-rdpewa", "dep:ironrdp-rdpewa-native", "dvc-com-plugin"]
 vmconnect = ["dep:ironrdp-vmconnect"]
 
 all = [
@@ -54,6 +57,7 @@ all = [
     "gateway",
     "dvc-pipe-proxy",
     "dvc-com-plugin",
+    "webauthn",
     "vmconnect",
 ]
 
@@ -105,6 +109,8 @@ x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
 ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin", version = "0.1", optional = true }
+ironrdp-rdpewa = { path = "../ironrdp-rdpewa", version = "0.1", optional = true }
+ironrdp-rdpewa-native = { path = "../ironrdp-rdpewa-native", version = "0.1", optional = true }
 
 [lints]
 workspace = true
