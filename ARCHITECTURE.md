@@ -382,8 +382,6 @@ MSRV bumps must be documented in the release notes and must not occur in patch r
 We should focus on testing the public API of libraries (keyword: **API boundary**).
 That’s why most (if not all) tests should go into the `ironrdp-testsuite-core` and `ironrdp-testsuite-extra` crates.
 
-**Architecture Invariant**: do not enable a library test or doctest harness when its manifest disables it with `test = false` or `doctest = false`.
-
 #### Do not depend on external resources
 
 **Architecture Invariant**: tests do not depend on any kind of external resources, they are perfectly reproducible.
