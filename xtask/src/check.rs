@@ -2,6 +2,40 @@ use std::collections::BTreeSet;
 
 use crate::prelude::*;
 
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct ProtectedSetting {
+    section: &'static str,
+    key: &'static str,
+    value: &'static str,
+}
+
+struct ProtectedSettingContext {
+    pathspec: &'static str,
+    settings: &'static [ProtectedSetting],
+}
+
+#[derive(Eq, Ord, PartialEq, PartialOrd)]
+struct ProtectedSettingOccurrence {
+    path: String,
+    setting: ProtectedSetting,
+}
+
+const PROTECTED_SETTING_CONTEXTS: &[ProtectedSettingContext] = &[ProtectedSettingContext {
+    pathspec: ":(glob)**/Cargo.toml",
+    settings: &[
+        ProtectedSetting {
+            section: "lib",
+            key: "doctest",
+            value: "false",
+        },
+        ProtectedSetting {
+            section: "lib",
+            key: "test",
+            value: "false",
+        },
+    ],
+}];
+
 pub fn fmt(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("FORMATTING");
 
@@ -95,44 +129,49 @@ pub fn dependencies(sh: &Shell) -> anyhow::Result<()> {
 
 pub fn test_settings(sh: &Shell, base: &str, head: &str) -> anyhow::Result<()> {
     let _s = Section::new("TEST-SETTINGS");
-    let manifest_pathspec = ":(glob)**/Cargo.toml";
-    let changes = cmd!(
-        sh,
-        "git diff --name-status --find-renames --diff-filter=MRT {base} {head} -- {manifest_pathspec}"
-    )
-    .read()
-    .context("compare Cargo manifests")?;
-    let mut removals = BTreeSet::new();
+    let mut base_settings = BTreeSet::new();
+    let mut head_settings = BTreeSet::new();
 
-    for change in changes.lines() {
-        let mut fields = change.split('\t');
-        let status = fields.next().context("missing Cargo manifest change status")?;
-        let base_path = fields.next().context("missing Cargo manifest path")?;
-        let head_path = if status.starts_with('R') {
-            fields.next().context("missing renamed Cargo manifest path")?
-        } else {
-            base_path
-        };
+    for context in PROTECTED_SETTING_CONTEXTS {
+        let pathspec = context.pathspec;
+        let changes = cmd!(
+            sh,
+            "git diff --name-status --find-renames --diff-filter=MRT {base} {head} -- {pathspec}"
+        )
+        .read()
+        .with_context(|| format!("compare files matching {pathspec}"))?;
 
-        let base_manifest = git_file(sh, base, base_path)?;
-        let head_manifest = git_file(sh, head, head_path)?;
-        let base_settings = protected_lib_settings(&base_manifest);
-        let head_settings = protected_lib_settings(&head_manifest);
+        for change in changes.lines() {
+            let mut fields = change.split('\t');
+            let status = fields.next().context("missing protected-setting change status")?;
+            let base_path = fields.next().context("missing protected-setting path")?;
+            let head_path = if status.starts_with('R') {
+                fields.next().context("missing renamed protected-setting path")?
+            } else {
+                base_path
+            };
 
-        for setting in base_settings.difference(&head_settings) {
-            removals.insert((head_path, *setting));
+            let base_file = git_file(sh, base, base_path)?;
+            let head_file = git_file(sh, head, head_path)?;
+            base_settings.extend(protected_settings(&base_file, head_path, context.settings));
+            head_settings.extend(protected_settings(&head_file, head_path, context.settings));
         }
     }
+
+    let removals = base_settings.difference(&head_settings).collect::<Vec<_>>();
 
     if !removals.is_empty() {
         let removals = removals
             .into_iter()
-            .map(|(path, setting)| format!("- {path}: `[lib] {setting} = false`"))
+            .map(|occurrence| {
+                let ProtectedSetting { section, key, value } = occurrence.setting;
+                format!("- {}: `[{section}] {key} = {value}`", occurrence.path)
+            })
             .collect::<Vec<_>>()
             .join("\n");
 
         anyhow::bail!(
-            "protected Cargo library test settings were removed or enabled:\n{removals}\n\
+            "protected settings were removed or changed:\n{removals}\n\
              preserve these settings as required by ARCHITECTURE.md"
         );
     }
@@ -149,32 +188,35 @@ fn git_file(sh: &Shell, revision: &str, path: &str) -> anyhow::Result<String> {
         .with_context(|| format!("read {path} at {revision}"))
 }
 
-fn protected_lib_settings(manifest: &str) -> BTreeSet<&'static str> {
-    let mut in_lib = false;
-    let mut settings = BTreeSet::new();
+fn protected_settings(
+    file: &str,
+    path: &str,
+    protected_settings: &[ProtectedSetting],
+) -> BTreeSet<ProtectedSettingOccurrence> {
+    let mut section = "";
+    let mut occurrences = BTreeSet::new();
 
-    for line in manifest.lines() {
+    for line in file.lines() {
         let line = line.split_once('#').map_or(line, |(line, _)| line).trim();
 
-        if line.starts_with('[') {
-            in_lib = line == "[lib]";
-        } else if in_lib
-            && let Some((key, value)) = line.split_once('=')
-            && value.trim() == "false"
-        {
-            match key.trim() {
-                "doctest" => {
-                    settings.insert("doctest");
+        if let Some(section_name) = line.strip_prefix('[').and_then(|line| line.strip_suffix(']')) {
+            section = section_name;
+        } else if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            let value = value.trim();
+
+            for setting in protected_settings {
+                if (section, key, value) == (setting.section, setting.key, setting.value) {
+                    occurrences.insert(ProtectedSettingOccurrence {
+                        path: path.to_owned(),
+                        setting: *setting,
+                    });
                 }
-                "test" => {
-                    settings.insert("test");
-                }
-                _ => {}
             }
         }
     }
 
-    settings
+    occurrences
 }
 
 pub fn install(sh: &Shell) -> anyhow::Result<()> {
