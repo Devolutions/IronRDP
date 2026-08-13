@@ -2522,20 +2522,24 @@ mod tests {
         }
     }
 
+    fn contact_flags(flags: TouchContactFlags) -> u16 {
+        u16::try_from(flags.bits()).expect("touch contact flags fit in u16")
+    }
+
     #[test]
     fn touch_event_accepts_legal_down_and_up() {
-        let down = TouchContactFlags::DOWN | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT;
-        let up = TouchContactFlags::UP;
+        let down = contact_flags(TouchContactFlags::DOWN | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT);
+        let up = contact_flags(TouchContactFlags::UP);
         let event = touch_event_from_request(
             0,
             vec![
                 TouchFrameRequest {
                     frame_offset: 0,
-                    contacts: vec![contact(down.bits() as u16)],
+                    contacts: vec![contact(down)],
                 },
                 TouchFrameRequest {
                     frame_offset: 16_000,
-                    contacts: vec![contact(up.bits() as u16)],
+                    contacts: vec![contact(up)],
                 },
             ],
         )
@@ -2595,10 +2599,11 @@ mod tests {
 
     #[test]
     fn touch_event_rejects_count_and_range_limits() {
-        let legal = (TouchContactFlags::DOWN | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT).bits() as u16;
-        let too_many_contacts = (0..=MAX_TOUCH_CONTACTS)
+        let legal = contact_flags(TouchContactFlags::DOWN | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT);
+        let max_contacts = u8::try_from(MAX_TOUCH_CONTACTS).expect("MAX_TOUCH_CONTACTS fits u8");
+        let too_many_contacts = (0..=max_contacts)
             .map(|contact_id| TouchContactRequest {
-                contact_id: contact_id as u8,
+                contact_id,
                 x: 0,
                 y: 0,
                 flags: legal,
@@ -2615,12 +2620,12 @@ mod tests {
             .is_err()
         );
 
-        let too_many_frames = (0..=MAX_TOUCH_FRAMES)
-            .map(|_| TouchFrameRequest {
-                frame_offset: 0,
-                contacts: vec![contact(legal)],
-            })
-            .collect::<Vec<_>>();
+        let too_many_frames = core::iter::repeat_with(|| TouchFrameRequest {
+            frame_offset: 0,
+            contacts: vec![contact(legal)],
+        })
+        .take(MAX_TOUCH_FRAMES + 1)
+        .collect::<Vec<_>>();
         assert!(touch_event_from_request(0, too_many_frames).is_err());
 
         assert!(
