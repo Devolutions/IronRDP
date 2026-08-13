@@ -137,24 +137,24 @@ pub fn encode_value(dst: &mut WriteCursor<'_>, value: &CborValue) -> EncodeResul
             write_type_uint(dst, 1, stored)
         }
         CborValue::Bytes(b) => {
-            write_type_uint(dst, 2, b.len() as u64)?;
+            write_type_uint(dst, 2, u64_from_usize(b.len())?)?;
             dst.write_slice(b);
             Ok(())
         }
         CborValue::Text(s) => {
-            write_type_uint(dst, 3, s.len() as u64)?;
+            write_type_uint(dst, 3, u64_from_usize(s.len())?)?;
             dst.write_slice(s.as_bytes());
             Ok(())
         }
         CborValue::Array(items) => {
-            write_type_uint(dst, 4, items.len() as u64)?;
+            write_type_uint(dst, 4, u64_from_usize(items.len())?)?;
             for item in items {
                 encode_value(dst, item)?;
             }
             Ok(())
         }
         CborValue::Map(map) => {
-            write_type_uint(dst, 5, map.len() as u64)?;
+            write_type_uint(dst, 5, u64_from_usize(map.len())?)?;
             for (key, val) in map {
                 encode_key(dst, key)?;
                 encode_value(dst, val)?;
@@ -197,7 +197,10 @@ pub fn encode_value(dst: &mut WriteCursor<'_>, value: &CborValue) -> EncodeResul
 fn encode_key(dst: &mut WriteCursor<'_>, key: &CborKey) -> EncodeResult<()> {
     match key {
         CborKey::Text(s) => encode_value(dst, &CborValue::Text(s.clone())),
-        CborKey::Int(n) if *n >= 0 => encode_value(dst, &CborValue::Unsigned(*n as u64)),
+        CborKey::Int(n) if *n >= 0 => {
+            let unsigned = u64::try_from(*n).map_err(|_| other_err!("cbor", "key int out of range"))?;
+            encode_value(dst, &CborValue::Unsigned(unsigned))
+        }
         CborKey::Int(n) => encode_value(dst, &CborValue::Negative(*n)),
     }
 }
@@ -206,16 +209,17 @@ pub fn encoded_size(value: &CborValue) -> usize {
     match value {
         CborValue::Unsigned(n) => 1 + uint_extra_len(*n),
         CborValue::Negative(v) => {
-            let n = (-1i64 - v) as u64;
+            let n = negative_to_stored_uint(*v).unwrap_or(u64::MAX);
             1 + uint_extra_len(n)
         }
-        CborValue::Bytes(b) => 1 + uint_extra_len(b.len() as u64) + b.len(),
-        CborValue::Text(s) => 1 + uint_extra_len(s.len() as u64) + s.len(),
+        CborValue::Bytes(b) => 1 + uint_extra_len(u64_from_usize_lossy(b.len())) + b.len(),
+        CborValue::Text(s) => 1 + uint_extra_len(u64_from_usize_lossy(s.len())) + s.len(),
         CborValue::Array(items) => {
-            1 + uint_extra_len(items.len() as u64) + items.iter().map(encoded_size).sum::<usize>()
+            1 + uint_extra_len(u64_from_usize_lossy(items.len())) + items.iter().map(encoded_size).sum::<usize>()
         }
         CborValue::Map(map) => {
-            1 + uint_extra_len(map.len() as u64) + map.iter().map(|(k, v)| key_size(k) + encoded_size(v)).sum::<usize>()
+            1 + uint_extra_len(u64_from_usize_lossy(map.len()))
+                + map.iter().map(|(k, v)| key_size(k) + encoded_size(v)).sum::<usize>()
         }
         CborValue::Bool(_) | CborValue::Null => 1,
         CborValue::Simple(n) if *n < 24 => 1,
@@ -228,7 +232,10 @@ pub fn encoded_size(value: &CborValue) -> usize {
 fn key_size(key: &CborKey) -> usize {
     match key {
         CborKey::Text(s) => encoded_size(&CborValue::Text(s.clone())),
-        CborKey::Int(n) if *n >= 0 => encoded_size(&CborValue::Unsigned(*n as u64)),
+        CborKey::Int(n) if *n >= 0 => {
+            let unsigned = u64::try_from(*n).unwrap_or(u64::MAX);
+            encoded_size(&CborValue::Unsigned(unsigned))
+        }
         CborKey::Int(n) => encoded_size(&CborValue::Negative(*n)),
     }
 }
@@ -236,11 +243,11 @@ fn key_size(key: &CborKey) -> usize {
 fn uint_extra_len(n: u64) -> usize {
     if n < 24 {
         0
-    } else if n <= u64::from(u8::MAX) {
+    } else if u8::try_from(n).is_ok() {
         1
-    } else if n <= u64::from(u16::MAX) {
+    } else if u16::try_from(n).is_ok() {
         2
-    } else if n <= u64::from(u32::MAX) {
+    } else if u32::try_from(n).is_ok() {
         4
     } else {
         8
@@ -250,21 +257,37 @@ fn uint_extra_len(n: u64) -> usize {
 fn write_type_uint(dst: &mut WriteCursor<'_>, major: u8, n: u64) -> EncodeResult<()> {
     let major_shift = major << 5;
     if n < 24 {
-        dst.write_u8(major_shift | (n as u8));
-    } else if n <= u64::from(u8::MAX) {
+        let n_u8 = u8::try_from(n).map_err(|_| other_err!("cbor", "uint additional info out of range"))?;
+        dst.write_u8(major_shift | n_u8);
+    } else if let Ok(n_u8) = u8::try_from(n) {
         dst.write_u8(major_shift | 24);
-        dst.write_u8(n as u8);
-    } else if n <= u64::from(u16::MAX) {
+        dst.write_u8(n_u8);
+    } else if let Ok(n_u16) = u16::try_from(n) {
         dst.write_u8(major_shift | 25);
-        dst.write_u16_be(n as u16);
-    } else if n <= u64::from(u32::MAX) {
+        dst.write_u16_be(n_u16);
+    } else if let Ok(n_u32) = u32::try_from(n) {
         dst.write_u8(major_shift | 26);
-        dst.write_u32_be(n as u32);
+        dst.write_u32_be(n_u32);
     } else {
         dst.write_u8(major_shift | 27);
         dst.write_u64_be(n);
     }
     Ok(())
+}
+
+fn u64_from_usize(n: usize) -> EncodeResult<u64> {
+    u64::try_from(n).map_err(|_| other_err!("cbor", "length does not fit in u64"))
+}
+
+fn u64_from_usize_lossy(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
+fn negative_to_stored_uint(v: i64) -> EncodeResult<u64> {
+    let stored = (-1i64)
+        .checked_sub(v)
+        .ok_or_else(|| other_err!("cbor", "negative encode overflow"))?;
+    u64::try_from(stored).map_err(|_| other_err!("cbor", "negative encode range"))
 }
 
 fn read_uint(src: &mut ReadCursor<'_>, additional: u8) -> DecodeResult<u64> {

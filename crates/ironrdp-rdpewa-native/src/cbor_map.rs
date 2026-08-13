@@ -2,7 +2,7 @@
 
 use ironrdp_rdpewa::pdu::{CborKey, CborValue};
 
-pub(crate) fn map_get<'a>(map: &'a std::collections::BTreeMap<CborKey, CborValue>, key: i64) -> Option<&'a CborValue> {
+pub(crate) fn map_get(map: &std::collections::BTreeMap<CborKey, CborValue>, key: i64) -> Option<&CborValue> {
     map.get(&CborKey::Int(key))
 }
 

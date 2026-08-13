@@ -293,7 +293,7 @@ impl RdpewaClient {
             subcommand: body.subcommand,
             rp_id: request.rp_id.clone(),
             timeout_ms: request.timeout_ms,
-            transaction_id: request.transaction_id.clone(),
+            transaction_id: request.transaction_id,
             client_data_json,
             para,
             ctap_cbor: body.ctap_cbor,

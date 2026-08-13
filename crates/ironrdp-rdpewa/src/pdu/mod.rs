@@ -47,7 +47,14 @@ impl RpcCommand {
     }
 
     pub fn as_u32(self) -> u32 {
-        self as u32
+        match self {
+            Self::WebAuthn => 5,
+            Self::Iuvpaa => 6,
+            Self::CancelCurOp => 7,
+            Self::ApiVersion => 8,
+            Self::GetCredentials => 9,
+            Self::GetAuthenticatorList => 12,
+        }
     }
 }
 
@@ -65,6 +72,13 @@ impl WebAuthnSubcommand {
             0x01 => Some(Self::MakeCredential),
             0x02 => Some(Self::GetAssertion),
             _ => None,
+        }
+    }
+
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::MakeCredential => 0x01,
+            Self::GetAssertion => 0x02,
         }
     }
 }
@@ -85,6 +99,14 @@ impl Attachment {
             1 => Self::Platform,
             2 => Self::CrossPlatform,
             _ => Self::Any,
+        }
+    }
+
+    pub fn as_u32(self) -> u32 {
+        match self {
+            Self::Any => 0,
+            Self::Platform => 1,
+            Self::CrossPlatform => 2,
         }
     }
 }
@@ -109,6 +131,15 @@ impl UserVerification {
             _ => Self::Any,
         }
     }
+
+    pub fn as_u32(self) -> u32 {
+        match self {
+            Self::Any => 0,
+            Self::Required => 1,
+            Self::Preferred => 2,
+            Self::Discouraged => 3,
+        }
+    }
 }
 
 /// Attestation conveyance preference.
@@ -129,6 +160,15 @@ impl Attestation {
             2 => Self::Indirect,
             3 => Self::Direct,
             _ => Self::Any,
+        }
+    }
+
+    pub fn as_u32(self) -> u32 {
+        match self {
+            Self::Any => 0,
+            Self::None => 1,
+            Self::Indirect => 2,
+            Self::Direct => 3,
         }
     }
 }
@@ -173,18 +213,21 @@ impl WebAuthnPara {
 
     pub fn encode(&self) -> CborValue {
         let mut map = BTreeMap::new();
-        map.insert(CborKey::text("attachment"), CborValue::Unsigned(self.attachment as u64));
+        map.insert(
+            CborKey::text("attachment"),
+            CborValue::Unsigned(u64::from(self.attachment.as_u32())),
+        );
         map.insert(
             CborKey::text("requireResidentKey"),
             CborValue::Bool(self.require_resident_key),
         );
         map.insert(
             CborKey::text("userVerification"),
-            CborValue::Unsigned(self.user_verification as u64),
+            CborValue::Unsigned(u64::from(self.user_verification.as_u32())),
         );
         map.insert(
             CborKey::text("attestation"),
-            CborValue::Unsigned(self.attestation as u64),
+            CborValue::Unsigned(u64::from(self.attestation.as_u32())),
         );
         if let Some(id) = &self.cancellation_id {
             map.insert(CborKey::text("cancellationId"), CborValue::Bytes(id.clone()));
@@ -222,7 +265,7 @@ impl WebAuthnRequestBody {
 
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(1 + self.ctap_cbor.len());
-        out.push(self.subcommand as u8);
+        out.push(self.subcommand.as_u8());
         out.extend_from_slice(&self.ctap_cbor);
         out
     }
@@ -388,14 +431,14 @@ impl RdpewaResponse {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(4 + self.payload.len());
+        let mut out = Vec::with_capacity(self.wire_len());
         out.extend_from_slice(&self.hresult.to_le_bytes());
         out.extend_from_slice(&self.payload);
         out
     }
 
     pub fn encode_into(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if dst.len() < 4 + self.payload.len() {
+        if dst.len() < self.wire_len() {
             return Err(other_err!("response", "not enough space"));
         }
         dst.write_u32(self.hresult);
@@ -403,15 +446,17 @@ impl RdpewaResponse {
         Ok(())
     }
 
-    pub fn size(&self) -> usize {
+    pub fn wire_len(&self) -> usize {
         4 + self.payload.len()
     }
 
     pub fn payload_u32(&self) -> DecodeResult<u32> {
-        if self.payload.len() < 4 {
-            return Err(invalid_field_err!("response", "payload", "expected u32"));
-        }
-        Ok(u32::from_le_bytes(self.payload[..4].try_into().unwrap()))
+        let bytes: [u8; 4] = self
+            .payload
+            .get(..4)
+            .and_then(|slice| slice.try_into().ok())
+            .ok_or_else(|| invalid_field_err!("response", "payload", "expected u32"))?;
+        Ok(u32::from_le_bytes(bytes))
     }
 }
 
@@ -599,7 +644,7 @@ pub fn encode_ctap_response(status: u8, body: &CborValue) -> EncodeResult<Vec<u8
 
 impl Encode for RdpewaResponse {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        ensure_size!(in: dst, size: self.size());
+        ensure_size!(in: dst, size: self.wire_len());
         self.encode_into(dst)
     }
 
@@ -608,7 +653,7 @@ impl Encode for RdpewaResponse {
     }
 
     fn size(&self) -> usize {
-        RdpewaResponse::size(self)
+        self.wire_len()
     }
 }
 

@@ -40,7 +40,7 @@ use crate::ctap::{
 /// ceremony started by an earlier channel instance.
 fn shared_cancel_guid() -> Arc<Mutex<Option<GUID>>> {
     static SLOT: OnceLock<Arc<Mutex<Option<GUID>>>> = OnceLock::new();
-    SLOT.get_or_init(|| Arc::new(Mutex::new(None))).clone()
+    Arc::clone(SLOT.get_or_init(|| Arc::new(Mutex::new(None))))
 }
 
 /// Windows Hello / security-key backend for [`ironrdp_rdpewa::RdpewaClient`].
@@ -127,7 +127,7 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
                 let hwnd = resolve_parent_hwnd(parent_hwnd);
                 info!(
                     parent_hwnd,
-                    resolved_hwnd = hwnd.0 as usize,
+                                    resolved_hwnd = hwnd.0.addr(),
                     client_data_json_len = request.client_data_json.len(),
                     raw_request_len = request.raw_request.len(),
                     ?request.subcommand,
@@ -215,7 +215,8 @@ fn run_via_webauthn_dll_oneshot(request: &WebAuthnOperationRequest) -> RdpewaRes
 /// sessions without an ActiveX HWND can still parent Windows Security UI.
 fn resolve_parent_hwnd(parent_hwnd: isize) -> HWND {
     if parent_hwnd != 0 {
-        return HWND(parent_hwnd as *mut core::ffi::c_void);
+        // Reconstitute an opaque HWND value provided by the host UI layer.
+        return HWND(core::ptr::with_exposed_provenance_mut(parent_hwnd.cast_unsigned()));
     }
     // SAFETY: GetForegroundWindow is a simple system query with no pointer lifetime.
     unsafe { GetForegroundWindow() }
@@ -289,7 +290,7 @@ fn run_make_credential(
         pwszHashAlgId: WEBAUTHN_HASH_ALGORITHM_SHA_256,
     };
 
-    let mut exclude_ids = ctap.exclude_credential_ids.clone();
+    let mut exclude_ids = ctap.exclude_credential_ids;
     let mut exclude_storage = CredentialListStorage::from_ids(&mut exclude_ids)?;
 
     let mut cancel_id = resolve_cancel_id(request, cancel_guid)?;
@@ -357,7 +358,7 @@ fn run_get_assertion(
         pwszHashAlgId: WEBAUTHN_HASH_ALGORITHM_SHA_256,
     };
 
-    let mut allow_ids = ctap.allow_credential_ids.clone();
+    let mut allow_ids = ctap.allow_credential_ids;
     let mut allow_storage = CredentialListStorage::from_ids(&mut allow_ids)?;
 
     let mut cancel_id = resolve_cancel_id(request, cancel_guid)?;
@@ -454,7 +455,7 @@ impl CredentialListStorage {
                 dwTransports: 0,
             })
             .collect();
-        let mut ptrs: Vec<*mut WEBAUTHN_CREDENTIAL_EX> = creds.iter_mut().map(|c| c as *mut _).collect();
+        let mut ptrs: Vec<*mut WEBAUTHN_CREDENTIAL_EX> = creds.iter_mut().map(core::ptr::from_mut).collect();
         let list = WEBAUTHN_CREDENTIAL_LIST {
             cCredentials: u32_len_items(ptrs.len())?,
             ppCredentials: ptrs.as_mut_ptr(),
@@ -517,7 +518,8 @@ unsafe fn slice_from_parts<'a>(ptr: *mut u8, len: u32) -> &'a [u8] {
     if ptr.is_null() || len == 0 {
         &[]
     } else {
-        unsafe { core::slice::from_raw_parts(ptr, len as usize) }
+        // SAFETY: caller guarantees `ptr` points to at least `len` readable bytes for `'a`.
+        unsafe { core::slice::from_raw_parts(ptr, usize::try_from(len).unwrap_or(0)) }
     }
 }
 
@@ -525,16 +527,21 @@ unsafe fn pcwstr_to_string(p: PCWSTR) -> Option<String> {
     if p.is_null() {
         None
     } else {
+        // SAFETY: caller guarantees `p` is a valid NUL-terminated wide string or null.
         unsafe { p.to_string().ok() }
     }
 }
 
+fn hresult_to_u32(hr: HRESULT) -> u32 {
+    u32::from_ne_bytes(hr.0.to_ne_bytes())
+}
+
 fn hresult_err(hr: HRESULT, message: &'static str) -> RdpewaHandlerError {
-    RdpewaHandlerError::new(hr.0 as u32, message)
+    RdpewaHandlerError::new(hresult_to_u32(hr), message)
 }
 
 fn map_webauthn_error(hr: HRESULT) -> RdpewaHandlerError {
-    let code = hr.0 as u32;
+    let code = hresult_to_u32(hr);
     // ERROR_CANCELLED / NTE_USER_CANCELLED-ish paths map to E_ABORT.
     if code == 0x8007_04C7 || code == 0x8009_0036 || code == E_ABORT {
         RdpewaHandlerError::new(E_ABORT, "WebAuthn operation cancelled")

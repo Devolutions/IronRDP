@@ -4,11 +4,11 @@
 //! Public WebAuthN* APIs cannot complete those ceremonies; `webauthn.dll`'s IWTS plugin path can.
 
 use core::cell::RefCell;
+use core::time::Duration;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
-use std::time::Duration;
 
 use tracing::{debug, info, warn};
 use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG};

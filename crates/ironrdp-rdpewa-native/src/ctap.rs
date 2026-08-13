@@ -69,19 +69,15 @@ pub(crate) fn parse_make_credential(ctap_cbor: &[u8]) -> Result<MakeCredentialCt
         algorithms.push(-7);
     }
 
-    let mut exclude_credential_ids = Vec::new();
-    if let Some(list) = map_get(map, MAKECRED_EXCLUDE_LIST) {
-        exclude_credential_ids = credential_ids_from_list(list)?;
-    }
+    let exclude_credential_ids = map_get(map, MAKECRED_EXCLUDE_LIST)
+        .map(credential_ids_from_list)
+        .transpose()?
+        .unwrap_or_default();
 
-    let mut resident_key = false;
-    if let Some(options) = map_get(map, MAKECRED_OPTIONS) {
-        if let Ok(opt_map) = options.as_map() {
-            if let Some(rk) = map_get_text_bool(opt_map, "rk") {
-                resident_key = rk;
-            }
-        }
-    }
+    let resident_key = map_get(map, MAKECRED_OPTIONS)
+        .and_then(|options| options.as_map().ok())
+        .and_then(|opt_map| map_get_text_bool(opt_map, "rk"))
+        .unwrap_or(false);
 
     Ok(MakeCredentialCtap {
         rp_id,
@@ -105,10 +101,10 @@ pub(crate) fn parse_get_assertion(ctap_cbor: &[u8]) -> Result<GetAssertionCtap, 
         .map_err(|_| "rpId is not text")?
         .to_owned();
 
-    let mut allow_credential_ids = Vec::new();
-    if let Some(list) = map_get(map, GETASSERT_ALLOW_LIST) {
-        allow_credential_ids = credential_ids_from_list(list)?;
-    }
+    let allow_credential_ids = map_get(map, GETASSERT_ALLOW_LIST)
+        .map(credential_ids_from_list)
+        .transpose()?
+        .unwrap_or_default();
 
     let _ = map_get(map, GETASSERT_OPTIONS);
 
