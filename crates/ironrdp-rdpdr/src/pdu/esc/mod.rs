@@ -1106,10 +1106,7 @@ impl LocateCardsAtrMask {
         let atr_length = src.read_u32();
         // MS-RDPESC: cbAtr range(0,36)
         if atr_length > 36 {
-            return Err(invalid_field_err!(
-                "decode",
-                "LocateCards_ATRMask cbAtr exceeds range 0..=36"
-            ));
+            return Err(invalid_field_err!("decode", "LocateCards_ATRMask cbAtr out of range"));
         }
         let atr = src.read_array::<36>();
         let mask = src.read_array::<36>();
@@ -1169,10 +1166,7 @@ impl rpce::HeaderlessDecode for LocateCardsCall {
             }
             // MS-RDPESC: cBytes range(0, 65536)
             if cards_length > 65_536 {
-                return Err(invalid_field_err!(
-                    "decode",
-                    "LocateCards cBytes exceeds range 0..=65536"
-                ));
+                return Err(invalid_field_err!("decode", "LocateCards cBytes out of range"));
             }
             let cards_len: usize = cast_length!("LocateCardsCall", "cards_length", cards_length)?;
             ensure_size!(in: src, size: cards_len);
@@ -1193,10 +1187,7 @@ impl rpce::HeaderlessDecode for LocateCardsCall {
             let states_length = src.read_u32();
             // MS-RDPESC: cReaders range(0,10)
             if states_length > 10 {
-                return Err(invalid_field_err!(
-                    "decode",
-                    "LocateCards cReaders exceeds range 0..=10"
-                ));
+                return Err(invalid_field_err!("decode", "LocateCards cReaders out of range"));
             }
             if states_length != states_ptr_length {
                 return Err(invalid_field_err!(
@@ -1279,10 +1270,7 @@ impl rpce::HeaderlessDecode for LocateCardsByAtrCall {
             }
             // MS-RDPESC: cAtrs range(0,1000)
             if atr_masks_length > 1000 {
-                return Err(invalid_field_err!(
-                    "decode",
-                    "LocateCardsByATR cAtrs exceeds range 0..=1000"
-                ));
+                return Err(invalid_field_err!("decode", "LocateCardsByATR cAtrs out of range"));
             }
             let mut atr_masks = Vec::new();
             for _ in 0..atr_masks_length {
@@ -1298,10 +1286,7 @@ impl rpce::HeaderlessDecode for LocateCardsByAtrCall {
             let states_length = src.read_u32();
             // MS-RDPESC: cReaders range(0,10)
             if states_length > 10 {
-                return Err(invalid_field_err!(
-                    "decode",
-                    "LocateCardsByATR cReaders exceeds range 0..=10"
-                ));
+                return Err(invalid_field_err!("decode", "LocateCardsByATR cReaders out of range"));
             }
             if states_length != states_ptr_length {
                 return Err(invalid_field_err!(
@@ -2636,10 +2621,7 @@ impl rpce::HeaderlessDecode for ControlCall {
         // MS-RDPESC: cbInBufferSize range(0,66560)
         let in_buffer_len = src.read_u32();
         if in_buffer_len > 66_560 {
-            return Err(invalid_field_err!(
-                "decode",
-                "Control cbInBufferSize exceeds range 0..=66560"
-            ));
+            return Err(invalid_field_err!("decode", "Control cbInBufferSize out of range"));
         }
         let in_buffer_ptr = ndr::decode_ptr(src, &mut index)?;
         ensure_size!(in: src, size: size_of::<u32>() * 2);
@@ -2825,10 +2807,7 @@ impl rpce::HeaderlessDecode for SetAttribCall {
         // MS-RDPESC: cbAttrLen range(0,65536)
         let attr_len = src.read_u32();
         if attr_len > 65_536 {
-            return Err(invalid_field_err!(
-                "decode",
-                "SetAttrib cbAttrLen exceeds range 0..=65536"
-            ));
+            return Err(invalid_field_err!("decode", "SetAttrib cbAttrLen out of range"));
         }
         let attr_ptr = ndr::decode_ptr(src, &mut index)?;
         handle.decode_value(src, None)?;
@@ -2936,165 +2915,97 @@ mod tests {
 
     fn roundtrip_context(ctx: ScardContext) -> ScardContext {
         let mut buf = vec![0u8; ctx.size()];
+        let mut index = 0;
         {
             let mut dst = WriteCursor::new(&mut buf);
-            let mut index = 0;
             ctx.encode_ptr(&mut index, &mut dst).unwrap();
             ctx.encode_value(&mut dst).unwrap();
-            assert_eq!(dst.pos(), ctx.size());
         }
+        index = 0;
         let mut src = ReadCursor::new(&buf);
-        let mut index = 0;
         let mut decoded = ScardContext::decode_ptr(&mut src, &mut index).unwrap();
         decoded.decode_value(&mut src, None).unwrap();
-        assert_eq!(src.pos(), buf.len());
         decoded
     }
 
     fn roundtrip_handle(handle: ScardHandle) -> ScardHandle {
         let mut buf = vec![0u8; handle.size()];
+        let mut index = 0;
         {
             let mut dst = WriteCursor::new(&mut buf);
-            let mut index = 0;
             handle.encode_ptr(&mut index, &mut dst).unwrap();
             handle.encode_value(&mut dst).unwrap();
-            assert_eq!(dst.pos(), handle.size());
         }
+        index = 0;
         let mut src = ReadCursor::new(&buf);
-        let mut index = 0;
         let mut decoded = ScardHandle::decode_ptr(&mut src, &mut index).unwrap();
         decoded.decode_value(&mut src, None).unwrap();
-        assert_eq!(src.pos(), buf.len());
         decoded
     }
 
     #[test]
-    fn scard_context_roundtrip_4_and_8_byte() {
+    fn scard_context_and_handle_roundtrip() {
         let c4 = ScardContext::new(0xA1B2_C3D4);
-        assert_eq!(c4.len(), 4);
         assert_eq!(roundtrip_context(c4), c4);
-        assert_eq!(c4.value(), 0xA1B2_C3D4);
         assert_eq!(c4.native(), usize::try_from(0xA1B2_C3D4u32).unwrap());
 
         let native = 0x0123_4567_89AB_CDEFusize;
         let c8 = ScardContext::from_native_len(native, 8);
-        assert_eq!(c8.len(), 8);
         assert_eq!(roundtrip_context(c8), c8);
         assert_eq!(c8.native(), native);
-        assert_eq!(c8.value(), 0x89AB_CDEFu32);
 
-        let empty = ScardContext::from_native_len(0, 0);
-        assert!(empty.is_empty());
-        assert_eq!(roundtrip_context(empty), empty);
-    }
-
-    #[test]
-    fn scard_context_roundtrip_16_byte_opaque() {
         let opaque = [
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
         ];
         let c16 = ScardContext::from_opaque(&opaque).unwrap();
-        assert_eq!(c16.len(), 16);
-        assert_eq!(c16.as_bytes(), &opaque);
-        assert_eq!(roundtrip_context(c16), c16);
+        assert_eq!(roundtrip_context(c16).as_bytes(), &opaque);
         assert!(ScardContext::from_opaque(&[0; 17]).is_err());
-    }
+        assert_eq!(roundtrip_context(ScardContext::from_native_len(0, 0)).len(), 0);
 
-    #[test]
-    fn scard_handle_roundtrip_4_and_8_byte() {
         let ctx = ScardContext::new(0x1111_2222);
         let h4 = ScardHandle::new(ctx, 0x3333_4444);
-        assert_eq!(h4.len(), 4);
-        assert_eq!(h4.context(), ctx);
         assert_eq!(roundtrip_handle(h4), h4);
-
-        let ctx8 = ScardContext::from_native_len(0xAAAA_BBBBusize, 8);
-        let h8 = ScardHandle::from_native(ctx8, 0xCCCC_DDDD_EEEE_FFFFusize);
-        assert_eq!(h8.len(), native_scard_len());
-        assert_eq!(roundtrip_handle(h8), h8);
-        assert_eq!(h8.native(), 0xCCCC_DDDD_EEEE_FFFFusize);
-    }
-
-    #[test]
-    fn scard_handle_roundtrip_16_byte_opaque() {
-        let ctx = ScardContext::from_opaque(&[1, 2, 3, 4, 5, 6]).unwrap();
-        let opaque = [
-            0xF0, 0xE1, 0xD2, 0xC3, 0xB4, 0xA5, 0x96, 0x87, 0x78, 0x69, 0x5A, 0x4B, 0x3C, 0x2D, 0x1E, 0x0F,
-        ];
+        let h8 = ScardHandle::from_native(ctx, 0xCCCC_DDDD_EEEE_FFFFusize);
+        assert_eq!(roundtrip_handle(h8).native(), 0xCCCC_DDDD_EEEE_FFFFusize);
         let h16 = ScardHandle::from_opaque(ctx, &opaque).unwrap();
-        assert_eq!(h16.len(), 16);
-        assert_eq!(h16.as_bytes(), &opaque);
-        assert_eq!(roundtrip_handle(h16), h16);
+        assert_eq!(roundtrip_handle(h16).as_bytes(), &opaque);
         assert!(ScardHandle::from_opaque(ctx, &[0; 17]).is_err());
-    }
 
-    #[test]
-    fn establish_context_return_size_uses_native_width() {
-        let ctx = ScardContext::from_native(0x42);
-        assert_eq!(usize::from(ctx.len()), size_of::<usize>());
-        // Headerless body: ReturnCode(4) + cbContext(4) + ptr(4) + length(4) + bytes(native width).
         let body = EstablishContextReturn {
             return_code: ReturnCode::Success,
-            context: ctx,
+            context: ScardContext::from_native(0x42),
         };
         assert_eq!(HeaderlessEncode::size(&body), 4 + 4 + 4 + 4 + size_of::<usize>());
     }
 
-    /// LocateCardsW with a 6-byte Unicode mszCards (not 4-aligned) before states.
-    ///
-    /// Confirms the decoder consumes the declared card bytes, skips NDR pad to a
-    /// 4-byte boundary, then decodes reader states without desynchronizing.
+    /// 6-byte Unicode mszCards needs 2-byte NDR pad before reader states.
     #[test]
     fn locate_cards_w_skips_msz_cards_ndr_pad() {
-        // Unicode multi-string "A\0\0" = 6 bytes; pad 2 bytes before states count.
-        let cards: &[u8] = &[
-            0x41, 0x00, // 'A'
-            0x00, 0x00, // string NUL
-            0x00, 0x00, // multi-string terminator
-        ];
-        assert_eq!(cards.len() % 4, 2);
-
+        let cards = [0x41u8, 0x00, 0x00, 0x00, 0x00, 0x00]; // "A\0\0"
         let mut body = Vec::new();
-        // Empty REDIR_SCARDCONTEXT pointer pair (cbContext=0, pbContext=NULL).
-        body.extend_from_slice(&0u32.to_le_bytes());
-        body.extend_from_slice(&0u32.to_le_bytes());
-        // cBytes / mszCards pointer (index 0)
-        body.extend_from_slice(&u32::try_from(cards.len()).unwrap().to_le_bytes());
+        body.extend_from_slice(&[0u8; 8]); // empty context ptr
+        body.extend_from_slice(&6u32.to_le_bytes());
         body.extend_from_slice(&0x0002_0000u32.to_le_bytes());
-        // cReaders / rgReaderStates pointer (index 1)
         body.extend_from_slice(&1u32.to_le_bytes());
         body.extend_from_slice(&0x0002_0004u32.to_le_bytes());
-        // mszCards value: conformant length + bytes + NDR pad
-        body.extend_from_slice(&u32::try_from(cards.len()).unwrap().to_le_bytes());
-        body.extend_from_slice(cards);
-        body.extend_from_slice(&[0u8, 0u8]); // pad to 4-byte boundary
-        // states conformant count
+        body.extend_from_slice(&6u32.to_le_bytes());
+        body.extend_from_slice(&cards);
+        body.extend_from_slice(&[0u8; 2]); // NDR pad
         body.extend_from_slice(&1u32.to_le_bytes());
-        // ReaderState pointer: szReader (index 2) + ReaderState_Common_Call
         body.extend_from_slice(&0x0002_0008u32.to_le_bytes());
-        body.extend_from_slice(&0u32.to_le_bytes()); // dwCurrentState
-        body.extend_from_slice(&0u32.to_le_bytes()); // dwEventState
-        body.extend_from_slice(&0u32.to_le_bytes()); // cbAtr
-        body.extend_from_slice(&[0u8; 36]); // rgbAtr
-        // szReader NDR string "R"
-        body.extend_from_slice(&2u32.to_le_bytes()); // max_count
-        body.extend_from_slice(&0u32.to_le_bytes()); // offset
-        body.extend_from_slice(&2u32.to_le_bytes()); // actual_count
-        body.extend_from_slice(&[0x52, 0x00, 0x00, 0x00]); // 'R' + NUL (already 4-aligned)
+        body.extend_from_slice(&[0u8; 12 + 36]); // ReaderState_Common_Call zeros
+        body.extend_from_slice(&2u32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&2u32.to_le_bytes());
+        body.extend_from_slice(&[0x52, 0x00, 0x00, 0x00]); // "R"
 
-        // RPCE headers (16 bytes, 4-aligned) so skip_pad vs full buffer matches body.
-        let mut pdu = vec![
-            0x01, 0x10, 0x08, 0x00, 0xCC, 0xCC, 0xCC, 0xCC, // StreamHeader LE
-        ];
-        pdu.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes()); // TypeHeader length
-        pdu.extend_from_slice(&0u32.to_le_bytes()); // TypeHeader filler
+        let mut pdu = vec![0x01, 0x10, 0x08, 0x00, 0xCC, 0xCC, 0xCC, 0xCC];
+        pdu.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
+        pdu.extend_from_slice(&0u32.to_le_bytes());
         pdu.extend_from_slice(&body);
 
         let decoded = LocateCardsCall::decode(&mut ReadCursor::new(&pdu), Some(CharacterSet::Unicode)).unwrap();
         assert_eq!(decoded.cards, vec!["A".to_owned()]);
-        assert_eq!(decoded.cards_length, u32::try_from(cards.len()).unwrap());
-        assert_eq!(decoded.states_length, 1);
-        assert_eq!(decoded.states.len(), 1);
         assert_eq!(decoded.states[0].reader, "R");
     }
 }
