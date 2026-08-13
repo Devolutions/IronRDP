@@ -29,6 +29,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
+ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
 ironrdp-rail = { path = "../ironrdp-rail", version = "0.1" }
 ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.7" }
@@ -53,6 +54,7 @@ windows = { version = "0.62", features = [
     "Win32_Storage_FileSystem",
     "Win32_Security_Credentials",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_Pointer",
     "Win32_UI_Controls",
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",

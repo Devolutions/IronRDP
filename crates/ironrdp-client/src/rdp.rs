@@ -23,6 +23,8 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::pdu_other_err;
 #[cfg(feature = "rdpdr")]
 pub use ironrdp_rdpdr::backend::{RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive};
+use ironrdp_rdpei::RdpeiClient;
+use ironrdp_rdpei::pdu::TouchEventPdu;
 #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
 use ironrdp_session::ActiveStage;
 use ironrdp_session::image::DecodedImage;
@@ -158,6 +160,12 @@ pub enum RdpInputEvent {
         physical_size: Option<(u32, u32)>,
     },
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
+    /// Multitouch frames for MS-RDPEI (`Microsoft::Windows::RDS::Input`).
+    Touch(TouchEventPdu),
+    /// Dismiss a hovering touch contact over MS-RDPEI.
+    DismissHoveringTouchContact {
+        contact_id: u8,
+    },
     Close,
     #[cfg(feature = "clipboard")]
     Clipboard(ClipboardMessage),
@@ -816,7 +824,8 @@ fn build_connector(
 
     let mut drdynvc = ironrdp_dvc::DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
-        .with_dynamic_channel(EchoClient::new());
+        .with_dynamic_channel(EchoClient::new())
+        .with_dynamic_channel(RdpeiClient::default());
 
     // Attach DVC pipe proxies.
     #[cfg(feature = "dvc-pipe-proxy")]
@@ -1776,9 +1785,35 @@ async fn active_session(
                         }
                         active_stage.process_fastpath_input(&mut image, &events)?
                     }
-                    RdpInputEvent::Close => {
-                        active_stage.graceful_shutdown()?
+                    RdpInputEvent::Touch(event) => {
+                        trace!(frames = event.frames.len(), "RDPEI touch event");
+                        match active_stage.encode_rdpei_touch(event) {
+                            Some(Ok(frame)) => vec![ActiveStageOutput::ResponseFrame(frame)],
+                            Some(Err(error)) => {
+                                // Surface encode failures so producers can resync contact state.
+                                warn!(%error, "Failed to encode RDPEI touch event");
+                                Vec::new()
+                            }
+                            None => {
+                                // Channel missing / not ready / suspended: warn rather than
+                                // silently dropping, which desynchronizes the contact FSM.
+                                warn!("Dropping RDPEI touch event: channel unavailable, not ready, or suspended");
+                                Vec::new()
+                            }
+                        }
                     }
+                    RdpInputEvent::DismissHoveringTouchContact { contact_id } => {
+                        trace!(contact_id, "RDPEI dismiss hovering touch contact");
+                        match active_stage.encode_rdpei_dismiss_hovering(contact_id) {
+                            Some(Ok(frame)) => vec![ActiveStageOutput::ResponseFrame(frame)],
+                            Some(Err(error)) => {
+                                warn!(%error, "Failed to encode RDPEI dismiss hovering");
+                                Vec::new()
+                            }
+                            None => Vec::new(),
+                        }
+                    }
+                    RdpInputEvent::Close => active_stage.graceful_shutdown()?,
                     #[cfg(feature = "clipboard")]
                     RdpInputEvent::Clipboard(event) => {
                         process_clipboard_message(&mut active_stage, event)?

@@ -21,6 +21,7 @@ use ironrdp_pdu::window::{
     WindowingOrdersUpdate, try_decode_fast_path_windowing_orders, try_decode_slow_path_windowing_orders,
 };
 use ironrdp_pdu::{Action, mcs};
+use ironrdp_rdpei::RdpeiClient;
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
 use tracing::debug;
 
@@ -503,6 +504,68 @@ impl ActiveStage {
             debug!("Could not encode a resize: Display Control Virtual Channel is not available");
         }
 
+        None
+    }
+
+    /// Returns whether the RDPEI channel is available and ready (SC_READY / CS_READY exchanged).
+    ///
+    /// `None` means no RDPEI client is configured. `Some(false)` means it is registered but not
+    /// yet ready (or currently suspended for touch/pen send purposes when checking readiness for
+    /// injection — use [`Self::rdpei_can_send_touch`] for the send gate).
+    pub fn rdpei_ready(&mut self) -> Option<bool> {
+        let Some(dvc) = self.get_dvc::<RdpeiClient>() else {
+            return self
+                .get_svc_processor::<DrdynvcClient>()
+                .and_then(|drdynvc| drdynvc.has_registered_dvc::<RdpeiClient>().then_some(false));
+        };
+        Some(dvc.processor().ready())
+    }
+
+    /// True when RDPEI is ready and the server has not suspended input.
+    pub fn rdpei_can_send_touch(&mut self) -> bool {
+        self.get_dvc::<RdpeiClient>()
+            .is_some_and(|dvc| dvc.processor().ready() && !dvc.processor().is_suspended())
+    }
+
+    /// Encodes a touch event for the RDPEI dynamic channel.
+    ///
+    /// Returns `None` when the channel is unavailable, not ready, or suspended.
+    pub fn encode_rdpei_touch(&mut self, event: ironrdp_rdpei::pdu::TouchEventPdu) -> Option<SessionResult<Vec<u8>>> {
+        if let Some(dvc) = self.get_dvc::<RdpeiClient>() {
+            let channel_id = dvc.channel_id();
+            let rdpei = dvc.processor();
+            if !rdpei.ready() {
+                return Some(Err(SessionError::general("RDPEI channel is not ready")));
+            }
+            if rdpei.is_suspended() {
+                return Some(Err(SessionError::general("RDPEI input is suspended")));
+            }
+            let svc_messages = match rdpei.encode_touch_event(channel_id, event) {
+                Ok(messages) => messages,
+                Err(e) => return Some(Err(SessionError::encode(e))),
+            };
+            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
+        } else {
+            debug!("Could not encode RDPEI touch: Input Virtual Channel is not available");
+        }
+        None
+    }
+
+    /// Encodes a dismiss-hovering-touch-contact PDU on the RDPEI channel.
+    pub fn encode_rdpei_dismiss_hovering(&mut self, contact_id: u8) -> Option<SessionResult<Vec<u8>>> {
+        if let Some(dvc) = self.get_dvc::<RdpeiClient>() {
+            let channel_id = dvc.channel_id();
+            let rdpei = dvc.processor();
+            if !rdpei.ready() {
+                debug!("Could not encode RDPEI dismiss hovering: channel is not ready");
+                return None;
+            }
+            let svc_messages = match rdpei.encode_dismiss_hovering(channel_id, contact_id) {
+                Ok(messages) => messages,
+                Err(e) => return Some(Err(SessionError::encode(e))),
+            };
+            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
+        }
         None
     }
 

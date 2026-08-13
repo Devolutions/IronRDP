@@ -29,6 +29,7 @@ mod propertyset;
 mod rdcleanpath;
 mod rdpdr;
 mod rdpeai;
+mod rdpei;
 mod rdpeusb;
 mod rdpsnd;
 mod server;

@@ -29,6 +29,7 @@ use ironrdp_pdu::rdp::{
 use ironrdp_pdu::window::try_decode_slow_path_windowing_orders;
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rail::pdu::{ActivatePdu, ExecutePdu, RailPdu, SystemCommand, SystemCommandPdu};
+use ironrdp_rdpei::pdu::TouchEventPdu;
 use ironrdp_session::{GracefulDisconnectReason, SessionError, SessionErrorKind};
 use ironrdp_svc::{SvcClientProcessor, SvcMessage, SvcProcessor, impl_as_any};
 use ironrdp_tls::CertificateValidation;
@@ -90,20 +91,26 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetKeyState, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT,
     TrackMouseEvent, VIRTUAL_KEY, VK_CANCEL, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_PAUSE, VK_SHIFT, VK_TAB,
 };
+use windows::Win32::UI::Input::Pointer::{
+    GetPointerFrameTouchInfo, GetPointerInfo, POINTER_FLAG_CANCELED, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE,
+    POINTER_FLAG_UP, POINTER_INFO, POINTER_TOUCH_INFO, SkipPointerFrameMessages,
+};
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     BS_PUSHBUTTON, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, GA_ROOT, GA_ROOTOWNER,
     GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GWLP_USERDATA, GetAncestor, GetClassNameW, GetClientRect, GetCursorPos,
     GetDlgItem, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, HMENU, HWND_MESSAGE, IsIconic, IsWindow, IsWindowVisible, KillTimer, PostMessageW,
-    RegisterClassW, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SW_HIDE, SW_MAXIMIZE,
-    SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER, SendMessageW,
-    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, UnregisterClassW, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DPICHANGED,
-    WM_ENABLE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN,
-    WM_XBUTTONUP, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    GetWindowThreadProcessId, HMENU, HWND_MESSAGE, IsIconic, IsWindow, IsWindowVisible, KillTimer, PT_TOUCH,
+    PostMessageW, RegisterClassW, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SW_HIDE,
+    SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER,
+    SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TOUCH_MASK_CONTACTAREA,
+    TOUCH_MASK_ORIENTATION, TOUCH_MASK_PRESSURE, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP,
+    WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_ENABLE, WM_KEYDOWN, WM_KEYUP,
+    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN,
+    WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE,
+    WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_CHILD,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{s, w};
 use windows_core::{
@@ -129,6 +136,7 @@ use crate::mstsc::{
     IMsTscNonScriptable_Impl, InterfaceOut,
 };
 use crate::rpc::{self, ActiveXRpc, Command as RpcCommand};
+use crate::touch::{TouchContactTracker, TouchSample};
 use ironrdp_rpc as ironrdp_agent;
 
 /// The IronRDP-owned class identifier registered by this DLL.
@@ -5681,6 +5689,7 @@ pub(crate) struct Control {
     input_sender: RefCell<Option<RdpInputSender>>,
     static_channels: RefCell<BTreeMap<String, ActiveXStaticChannelSpec>>,
     input_database: Rc<RefCell<InputDatabase>>,
+    touch_tracker: RefCell<TouchContactTracker>,
     sinks: Rc<RefCell<BTreeMap<u32, EventSink>>>,
     next_cookie: Rc<Cell<u32>>,
     ole_advise_sinks: Rc<RefCell<BTreeMap<u32, IAdviseSink>>>,
@@ -5807,6 +5816,7 @@ impl Control {
             input_sender: RefCell::new(None),
             static_channels: RefCell::new(BTreeMap::new()),
             input_database,
+            touch_tracker: RefCell::new(TouchContactTracker::new()),
             sinks: Rc::new(RefCell::new(BTreeMap::new())),
             next_cookie: Rc::new(Cell::new(1)),
             ole_advise_sinks: Rc::new(RefCell::new(BTreeMap::new())),
@@ -8698,6 +8708,7 @@ impl Control {
         self.remote_size.set(None);
         self.clear_frame();
         self.input_database.borrow_mut().release_all();
+        *self.touch_tracker.borrow_mut() = TouchContactTracker::new();
         self.state.set(ConnectionState::Connecting);
         self.fire_event(DISPID_ON_CONNECTING, &[]);
         if self.state.get() == ConnectionState::Connecting {
@@ -9421,6 +9432,165 @@ impl Control {
         }
     }
 
+    /// Reserves input-queue capacity, then commits tracker transitions and sends.
+    ///
+    /// Capacity is reserved before mutating the tracker so a full queue cannot
+    /// desynchronize local contact state from the server.
+    fn send_touch_event_with<F>(&self, build: F)
+    where
+        F: FnOnce(&mut TouchContactTracker) -> Option<TouchEventPdu>,
+    {
+        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Ok(permit) = sender.try_reserve() else {
+            tracing::warn!("Unable to enqueue ActiveX RDPEI touch event for the RDP session");
+            return;
+        };
+        if let Some(event) = build(&mut self.touch_tracker.borrow_mut()) {
+            permit.send(RdpInputEvent::Touch(event));
+        }
+    }
+
+    fn release_touch_contacts(&self) {
+        self.send_touch_event_with(|tracker| tracker.release_all());
+    }
+
+    /// Maps client-area coordinates onto the remote desktop (signed RDPEI space).
+    fn desktop_position(&self, window: HWND, x: i32, y: i32) -> Option<(i32, i32)> {
+        let position = self.mouse_position(window, x, y)?;
+        Some((i32::from(position.x), i32::from(position.y)))
+    }
+
+    fn suppress_mouse_for_touch(&self) -> bool {
+        self.touch_tracker.borrow().has_active_contacts()
+    }
+
+    fn handle_pointer_message(&self, window: HWND, message: u32, wparam: WPARAM, _lparam: LPARAM) -> bool {
+        let pointer_id = (wparam.0 & 0xffff) as u32;
+
+        let mut info = POINTER_INFO::default();
+        if unsafe { GetPointerInfo(pointer_id, &mut info) }.is_err() {
+            return false;
+        }
+        if info.pointerType != PT_TOUCH {
+            // Pen and other pointer types are not remoted in this cut.
+            return false;
+        }
+
+        let mut pointer_count = 0u32;
+        if unsafe { GetPointerFrameTouchInfo(pointer_id, &mut pointer_count, None) }.is_err() || pointer_count == 0 {
+            return true;
+        }
+
+        let mut touch_infos = vec![POINTER_TOUCH_INFO::default(); pointer_count as usize];
+        if unsafe { GetPointerFrameTouchInfo(pointer_id, &mut pointer_count, Some(touch_infos.as_mut_ptr())) }.is_err()
+        {
+            return true;
+        }
+        touch_infos.truncate(pointer_count as usize);
+
+        let mut samples = Vec::with_capacity(touch_infos.len());
+        for touch in &touch_infos {
+            let ptr = touch.pointerInfo;
+            if ptr.pointerType != PT_TOUCH {
+                continue;
+            }
+
+            let mut client_point = ptr.ptPixelLocation;
+            if !unsafe { ScreenToClient(window, &mut client_point) }.as_bool() {
+                continue;
+            }
+            let mapped = self.desktop_position(window, client_point.x, client_point.y);
+            let canceled = (ptr.pointerFlags & POINTER_FLAG_CANCELED).0 != 0
+                || message == WM_POINTERCAPTURECHANGED
+                || (message == WM_POINTERLEAVE && (ptr.pointerFlags & POINTER_FLAG_INCONTACT).0 == 0);
+            let leaving = (ptr.pointerFlags & POINTER_FLAG_UP).0 != 0 || canceled;
+
+            let Some((x, y)) = mapped else {
+                // Outside the rendered desktop: still emit terminal transitions, keeping
+                // the last tracked coordinates rather than inventing (0, 0).
+                if leaving {
+                    samples.push(TouchSample {
+                        pointer_id: ptr.pointerId,
+                        x: 0,
+                        y: 0,
+                        preserve_position: true,
+                        in_range: false,
+                        in_contact: false,
+                        canceled,
+                        orientation: None,
+                        pressure: None,
+                        contact_rect: None,
+                    });
+                }
+                continue;
+            };
+
+            let contact_rect = if touch.touchMask & TOUCH_MASK_CONTACTAREA != 0 {
+                let mut tl = POINT {
+                    x: touch.rcContact.left,
+                    y: touch.rcContact.top,
+                };
+                let mut br = POINT {
+                    x: touch.rcContact.right,
+                    y: touch.rcContact.bottom,
+                };
+                if unsafe { ScreenToClient(window, &mut tl) }.as_bool()
+                    && unsafe { ScreenToClient(window, &mut br) }.as_bool()
+                {
+                    // Contact rect is exclusive bounds relative to the contact point.
+                    match (
+                        self.desktop_position(window, tl.x, tl.y),
+                        self.desktop_position(window, br.x, br.y),
+                    ) {
+                        (Some((l, t)), Some((r, b))) => {
+                            let left = i16::try_from(l.saturating_sub(x)).unwrap_or(i16::MIN);
+                            let top = i16::try_from(t.saturating_sub(y)).unwrap_or(i16::MIN);
+                            let right = i16::try_from(r.saturating_sub(x)).unwrap_or(i16::MAX);
+                            let bottom = i16::try_from(b.saturating_sub(y)).unwrap_or(i16::MAX);
+                            Some((left, top, right, bottom))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let orientation = if touch.touchMask & TOUCH_MASK_ORIENTATION != 0 {
+                Some(TouchContactTracker::win32_orientation_to_rdpei(touch.orientation))
+            } else {
+                None
+            };
+            let pressure = if touch.touchMask & TOUCH_MASK_PRESSURE != 0 {
+                Some(touch.pressure)
+            } else {
+                None
+            };
+
+            samples.push(TouchSample {
+                pointer_id: ptr.pointerId,
+                x,
+                y,
+                preserve_position: false,
+                in_range: (ptr.pointerFlags & POINTER_FLAG_INRANGE).0 != 0,
+                in_contact: (ptr.pointerFlags & POINTER_FLAG_INCONTACT).0 != 0,
+                canceled,
+                orientation,
+                pressure,
+                contact_rect,
+            });
+        }
+
+        self.send_touch_event_with(|tracker| tracker.process_samples(&samples));
+
+        let _ = unsafe { SkipPointerFrameMessages(pointer_id) };
+        true
+    }
+
     fn send_keys(&self, key_count: i32, key_up: *const i16, key_data: *const i32) -> Result<()> {
         let key_count = usize::try_from(key_count)
             .ok()
@@ -9505,6 +9675,7 @@ impl Control {
     }
 
     fn release_input(&self) {
+        self.release_touch_contacts();
         let fast_path = self.input_database.borrow_mut().release_all();
         if fast_path.is_empty() {
             return;
@@ -9668,11 +9839,14 @@ impl Control {
                 self.apply_input([operation]);
                 true
             }
+            WM_POINTERUPDATE | WM_POINTERDOWN | WM_POINTERUP | WM_POINTERLEAVE | WM_POINTERCAPTURECHANGED => {
+                self.handle_pointer_message(window, message, wparam, lparam)
+            }
             WM_MOUSEMOVE => {
                 if i32::from((lparam.0 >> 16) as i16) <= 4 {
                     self.expose_connection_bar();
                 }
-                if !self.compatibility.borrow().enable_mouse {
+                if !self.compatibility.borrow().enable_mouse || self.suppress_mouse_for_touch() {
                     return true;
                 }
                 let x = i32::from(lparam.0 as i32 as i16);
@@ -9683,7 +9857,7 @@ impl Control {
                 true
             }
             WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
-                if !self.compatibility.borrow().enable_mouse {
+                if !self.compatibility.borrow().enable_mouse || self.suppress_mouse_for_touch() {
                     return true;
                 }
                 if let Err(error) = unsafe { SetFocus(Some(window)) } {
@@ -9703,6 +9877,9 @@ impl Control {
                 true
             }
             WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP | WM_XBUTTONUP => {
+                if self.suppress_mouse_for_touch() {
+                    return true;
+                }
                 let button = match message {
                     WM_LBUTTONUP => MouseButton::Left,
                     WM_RBUTTONUP => MouseButton::Right,
@@ -9715,7 +9892,7 @@ impl Control {
                 true
             }
             WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
-                if !self.compatibility.borrow().enable_mouse {
+                if !self.compatibility.borrow().enable_mouse || self.suppress_mouse_for_touch() {
                     return true;
                 }
                 let mut point = POINT {
