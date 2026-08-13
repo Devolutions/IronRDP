@@ -96,24 +96,46 @@ pub fn dependencies(sh: &Shell) -> anyhow::Result<()> {
 pub fn test_settings(sh: &Shell, base: &str, head: &str) -> anyhow::Result<()> {
     let _s = Section::new("TEST-SETTINGS");
     let manifest_pathspec = ":(glob)**/Cargo.toml";
-    let diff = cmd!(
+    let changes = cmd!(
         sh,
-        "git diff --unified=0 --no-ext-diff --no-textconv --diff-filter=ACMRT {base} {head} -- {manifest_pathspec}"
+        "git diff --name-status --find-renames --diff-filter=MRT {base} {head} -- {manifest_pathspec}"
     )
     .read()
     .context("compare Cargo manifests")?;
-    let removals = protected_setting_removals(&diff);
+    let mut removals = BTreeSet::new();
+
+    for change in changes.lines() {
+        let mut fields = change.split('\t');
+        let status = fields.next().context("missing Cargo manifest change status")?;
+        let base_path = fields.next().context("missing Cargo manifest path")?;
+        let head_path = if status.starts_with('R') {
+            fields.next().context("missing renamed Cargo manifest path")?
+        } else {
+            base_path
+        };
+
+        let base_manifest = git_file(sh, base, base_path)?;
+        let head_manifest = git_file(sh, head, head_path)?;
+        let base_settings =
+            protected_lib_settings(&base_manifest).with_context(|| format!("parse {base_path} at {base}"))?;
+        let head_settings =
+            protected_lib_settings(&head_manifest).with_context(|| format!("parse {head_path} at {head}"))?;
+
+        for setting in base_settings.difference(&head_settings) {
+            removals.insert((head_path, *setting));
+        }
+    }
 
     if !removals.is_empty() {
         let removals = removals
             .into_iter()
-            .map(|(path, setting)| format!("- {path}: `{setting} = false`"))
+            .map(|(path, setting)| format!("- {path}: `[lib] {setting} = false`"))
             .collect::<Vec<_>>()
             .join("\n");
 
         anyhow::bail!(
-            "protected Cargo test settings were removed:\n{removals}\n\
-             keep library test harnesses disabled and place tests in the testsuite crates as described in ARCHITECTURE.md"
+            "protected Cargo library test settings were removed or enabled:\n{removals}\n\
+             preserve these settings as required by ARCHITECTURE.md"
         );
     }
 
@@ -122,36 +144,27 @@ pub fn test_settings(sh: &Shell, base: &str, head: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn protected_setting_removals(diff: &str) -> Vec<(String, &'static str)> {
-    let mut path = None;
-    let mut removals = BTreeSet::new();
+fn git_file(sh: &Shell, revision: &str, path: &str) -> anyhow::Result<String> {
+    let object = format!("{revision}:{path}");
+    cmd!(sh, "git show {object}")
+        .read()
+        .with_context(|| format!("read {path} at {revision}"))
+}
 
-    for line in diff.lines() {
-        if let Some(new_path) = line.strip_prefix("+++ b/") {
-            path = Some(new_path.to_owned());
-        } else if let Some(line) = line.strip_prefix('-') {
-            if let (Some(path), Some(setting)) = (&path, protected_setting(line)) {
-                removals.insert((path.clone(), setting));
-            }
+fn protected_lib_settings(manifest: &str) -> anyhow::Result<BTreeSet<&'static str>> {
+    let manifest = manifest.parse::<toml::Table>()?;
+    let Some(lib) = manifest.get("lib").and_then(toml::Value::as_table) else {
+        return Ok(BTreeSet::new());
+    };
+    let mut settings = BTreeSet::new();
+
+    for setting in ["doctest", "test"] {
+        if lib.get(setting).and_then(toml::Value::as_bool) == Some(false) {
+            settings.insert(setting);
         }
     }
 
-    removals.into_iter().collect()
-}
-
-fn protected_setting(line: &str) -> Option<&'static str> {
-    let line = line.split_once('#').map_or(line, |(line, _)| line).trim();
-    let (key, value) = line.split_once('=')?;
-
-    if value.trim() != "false" {
-        return None;
-    }
-
-    match key.trim() {
-        "doctest" => Some("doctest"),
-        "test" => Some("test"),
-        _ => None,
-    }
+    Ok(settings)
 }
 
 pub fn install(sh: &Shell) -> anyhow::Result<()> {
