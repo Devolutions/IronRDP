@@ -120,6 +120,10 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 - `key-scancode --scancode <0x1D|29> --pressed <true|false>`
 - `key-unicode --char C --pressed <true|false>`  Type by Unicode character.
 - `type-unicode --text TEXT`                     Type at most 96 Unicode characters all-or-nothing.
+- `touch --x X --y Y --action <down|move|up|out-of-range|cancel|hover>
+    [--contact-id N] [--encode-time MS] [--frame-offset US]`
+                                                 Send one MS-RDPEI touch contact sample.
+- `touch-tap --x X --y Y [--contact-id N]`       One RDPEI touch PDU: DOWN then out-of-range UP.
 - `resize --width W --height H`                  Resize the remote desktop.
 
 ## NOW remote execution (requires an active, connected RDP session)

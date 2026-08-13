@@ -13,7 +13,7 @@ use std::thread::JoinHandle;
 use anyhow::Context as _;
 use ironrdp_agent::ipc::{
     AgentErrorCategory, ConnState, KeyFilter, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry, Request,
-    Response, StatusInfo,
+    Response, StatusInfo, TouchFrameRequest, touch_event_from_request,
 };
 use ironrdp_daemon::logbuf::{self, LogBuffer};
 use ironrdp_daemon::now::NowEndpoint;
@@ -77,6 +77,11 @@ pub(crate) enum Command {
     },
     Input {
         operation: Operation,
+        response: oneshot::Sender<Response>,
+    },
+    Touch {
+        encode_time: u32,
+        frames: Vec<TouchFrameRequest>,
         response: oneshot::Sender<Response>,
     },
     Resize {
@@ -394,6 +399,17 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             AgentErrorCategory::InvalidRequest,
             "bulk Unicode text input is unsupported by ActiveX",
         ),
+        Request::Touch { encode_time, frames } => {
+            if let Err(response) = touch_event_from_request(encode_time, frames.clone()) {
+                return ConnectionResponse::Single(response);
+            }
+            queue_command(shared, dispatcher, |response| Command::Touch {
+                encode_time,
+                frames,
+                response,
+            })
+            .await
+        }
         Request::RailStatus | Request::RailEvents { .. } | Request::RailWait { .. } | Request::RailExecute(_) => {
             Response::typed_error(
                 AgentErrorCategory::Unavailable,
@@ -698,6 +714,7 @@ fn respond(command: Command, response: Response) {
         Command::Connect { response, .. }
         | Command::Disconnect { response }
         | Command::Input { response, .. }
+        | Command::Touch { response, .. }
         | Command::Resize { response, .. } => response,
     };
     let _ = sender.send(response);
@@ -732,6 +749,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ironrdp_agent::ipc::TouchContactRequest;
 
     fn rpc() -> ActiveXRpc {
         ActiveXRpc {
@@ -790,6 +808,35 @@ mod tests {
         };
         assert_eq!(error.category, AgentErrorCategory::Unavailable);
         assert_eq!(error.message, "RAIL audit endpoints are unavailable through ActiveX");
+    }
+
+    #[tokio::test]
+    async fn touch_with_illegal_flags_is_rejected() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) = handle_request(
+            &rpc.shared,
+            0,
+            Request::Touch {
+                encode_time: 0,
+                frames: vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![TouchContactRequest {
+                        contact_id: 0,
+                        x: 1,
+                        y: 2,
+                        // INRANGE alone is illegal.
+                        flags: 0x0008,
+                    }],
+                }],
+            },
+        )
+        .await
+        else {
+            panic!("illegal touch flags must be rejected");
+        };
+        assert_eq!(error.category, AgentErrorCategory::InvalidRequest);
+        assert!(error.message.contains("legal"));
     }
 
     #[test]

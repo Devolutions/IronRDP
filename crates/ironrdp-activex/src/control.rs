@@ -7869,6 +7869,13 @@ impl Control {
             RpcCommand::Input { operation, response } => {
                 let _ = response.send(self.rpc_input(operation));
             }
+            RpcCommand::Touch {
+                encode_time,
+                frames,
+                response,
+            } => {
+                let _ = response.send(self.rpc_touch(encode_time, frames));
+            }
             RpcCommand::Resize {
                 width,
                 height,
@@ -8126,6 +8133,39 @@ impl Control {
                 let _ = self.rpc_log_directive.borrow_mut().take();
                 rpc_control_error(error)
             }
+        }
+    }
+
+    fn rpc_touch(
+        &self,
+        encode_time: u32,
+        frames: Vec<ironrdp_agent::ipc::TouchFrameRequest>,
+    ) -> ironrdp_agent::ipc::Response {
+        if self.state.get() != ConnectionState::Connected {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "no active RDP session",
+            );
+        }
+        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            );
+        };
+        let event = match ironrdp_agent::ipc::touch_event_from_request(encode_time, frames) {
+            Ok(event) => event,
+            Err(response) => return response,
+        };
+        match sender.try_reserve() {
+            Ok(permit) => {
+                permit.send(RdpInputEvent::Touch(event));
+                ironrdp_agent::ipc::Response::ok()
+            }
+            Err(_) => ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            ),
         }
     }
 

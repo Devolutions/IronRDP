@@ -37,7 +37,7 @@ use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
 use crate::ipc::{
     ConnState, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry,
     RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo,
-    RailStatusInfo, Request, Response, StatusInfo,
+    RailStatusInfo, Request, Response, StatusInfo, TouchFrameRequest, touch_event_from_request,
 };
 use crate::logbuf::{self, LogBuffer};
 use crate::now::NowEndpoint;
@@ -568,6 +568,7 @@ impl Daemon {
                 last,
             } => DaemonResponse::Single(self.now_stdin(operation_id, data, last).await),
             Request::NowDiagnostics => DaemonResponse::Single(self.now_diagnostics().await),
+            Request::Touch { encode_time, frames } => DaemonResponse::Single(self.touch(encode_time, frames)),
             Request::RailStatus => DaemonResponse::Single(self.rail_status()),
             Request::RailEvents { after_sequence } => DaemonResponse::Single(self.rail_events(after_sequence)),
             Request::RailWait {
@@ -1063,6 +1064,37 @@ impl Daemon {
     /// Panics if the daemon state mutex is poisoned.
     pub fn input(&self, operation: Operation) -> Response {
         self.input_operations([operation])
+    }
+
+    /// Queues one MS-RDPEI touch event on the active RDP session input path.
+    ///
+    /// Success means the validated event was accepted into the local input queue. The session loop
+    /// still drops the event when the Input DVC is absent, not ready, or suspended.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    fn touch(&self, encode_time: u32, frames: Vec<TouchFrameRequest>) -> Response {
+        let event = match touch_event_from_request(encode_time, frames) {
+            Ok(event) => event,
+            Err(response) => return response,
+        };
+
+        let mut guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_mut() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        let permit = match session.input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        permit.send(RdpInputEvent::Touch(event));
+        Response::ok()
     }
 
     fn unicode_text(&self, text: &str) -> Response {
