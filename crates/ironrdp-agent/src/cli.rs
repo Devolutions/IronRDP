@@ -1,12 +1,12 @@
 //! The short-lived CLI: parse arguments, build a request (merging a `.rdp` file with overrides for
 //! `connect`), send it to the daemon, and print the response.
 //!
-//! The CLI operates purely at the [`PropertySet`] level for connection config â€” it never calls
+//! The CLI operates purely at the [`PropertySet`] level for connection config — it never calls
 //! typed `ConfigBuilder` setters.
 //!
-//! For `connect`, property precedence from low to high is: `.rdp` file â†’ `--prop` overrides â†’
-//! named flags (`--server`/`--username`/â€¦). The daemon's own overlay (`daemon-start --overlay`,
-//! itself built from a `.rdp` file with `--prop` overrides layered on top) wins over all of that â€”
+//! For `connect`, property precedence from low to high is: `.rdp` file → `--prop` overrides →
+//! named flags (`--server`/`--username`/…). The daemon's own overlay (`daemon-start --overlay`,
+//! itself built from a `.rdp` file with `--prop` overrides layered on top) wins over all of that —
 //! see `Daemon::connect` in `daemon.rs`.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
@@ -120,7 +120,7 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         frame_offset: u64,
     },
-    /// Tap once via MS-RDPEI (DOWN then UP at the same point).
+    /// Tap once via MS-RDPEI (one touch PDU: DOWN then out-of-range UP).
     TouchTap {
         #[arg(long, default_value_t = 0)]
         contact_id: u8,
@@ -715,18 +715,31 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             encode_time,
             frame_offset,
         } => touch_request(encode_time, frame_offset, contact_id, x, y, action.flags()),
-        Command::TouchTap { contact_id, x, y } => {
-            let down = touch_request(0, 0, contact_id, x, y, CliTouchAction::Down.flags());
-            let down_response = transport::send_request(&endpoint, &down).await?;
-            if !matches!(down_response, Response::Ok(_)) {
-                return print_response(down_response);
-            }
-            print_response(down_response)?;
-
-            let up = touch_request(1, 16_000, contact_id, x, y, CliTouchAction::Up.flags());
-            let up_response = transport::send_request(&endpoint, &up).await?;
-            return print_response(up_response);
-        }
+        Command::TouchTap { contact_id, x, y } => Request::Touch {
+            encode_time: 0,
+            frames: vec![
+                TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![TouchContactRequest {
+                        contact_id,
+                        x,
+                        y,
+                        flags: CliTouchAction::Down.flags(),
+                    }],
+                },
+                TouchFrameRequest {
+                    // 16 ms between engage and release, matching a short physical tap.
+                    frame_offset: 16_000,
+                    contacts: vec![TouchContactRequest {
+                        contact_id,
+                        x,
+                        y,
+                        // Bare UP ends the contact lifecycle (out of range), not hover-up.
+                        flags: CliTouchAction::OutOfRange.flags(),
+                    }],
+                },
+            ],
+        },
         Command::Resize { width, height } => Request::Resize { width, height },
     };
 

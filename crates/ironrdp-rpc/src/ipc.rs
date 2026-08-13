@@ -18,6 +18,9 @@ use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, Write
 use ironrdp_input::MouseButton;
 use ironrdp_pdu::impl_pdu_pod;
 use ironrdp_propertyset::PropertySet;
+use ironrdp_rdpei::pdu::{
+    EightByteUnsigned, FourByteSigned, FourByteUnsigned, TouchContact, TouchContactFlags, TouchEventPdu, TouchFrame,
+};
 
 use crate::wire::{
     bytes_size, opt_string_size, opt_u16_size, opt_u64_size, propertyset, read_bool, read_bytes, read_char,
@@ -31,6 +34,10 @@ use crate::wire::{
 pub const MAX_UNICODE_TEXT_CHARS: usize = 96;
 
 /// Maximum contacts in one MS-RDPEI touch frame accepted over RPC.
+///
+/// Matches the default `maxTouchContacts` advertised by
+/// [`ironrdp_rdpei::RdpeiClient::default`] (`10`). Sessions that advertise a different
+/// capability must keep this RPC cap in sync or reject oversized frames at the session edge.
 pub const MAX_TOUCH_CONTACTS: usize = 10;
 
 /// Maximum touch frames in one [`Request::Touch`] PDU accepted over RPC.
@@ -52,6 +59,83 @@ pub struct TouchFrameRequest {
     /// Microseconds since the previous frame (`0` for the first frame of a transaction).
     pub frame_offset: u64,
     pub contacts: Vec<TouchContactRequest>,
+}
+
+/// Validates and converts an RPC touch request into an MS-RDPEI touch event PDU.
+///
+/// Rejects empty frames/contacts, count limits, unknown or illegal flag combinations, and
+/// values outside the MS-RDPEI varint ranges used on the wire.
+pub fn touch_event_from_request(encode_time: u32, frames: Vec<TouchFrameRequest>) -> Result<TouchEventPdu, Response> {
+    if frames.is_empty() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch event requires at least one frame",
+        ));
+    }
+    if frames.len() > MAX_TOUCH_FRAMES {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            format!("touch event exceeds the {MAX_TOUCH_FRAMES}-frame limit"),
+        ));
+    }
+    if FourByteUnsigned::new(encode_time).is_err() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch encode_time is out of MS-RDPEI range",
+        ));
+    }
+
+    let mut built_frames = Vec::with_capacity(frames.len());
+    for frame in frames {
+        if frame.contacts.is_empty() {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                "touch frame requires at least one contact",
+            ));
+        }
+        if frame.contacts.len() > MAX_TOUCH_CONTACTS {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                format!("touch frame exceeds the {MAX_TOUCH_CONTACTS}-contact limit"),
+            ));
+        }
+        if EightByteUnsigned::new(frame.frame_offset).is_err() {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                "touch frame_offset is out of MS-RDPEI range",
+            ));
+        }
+
+        let mut contacts = Vec::with_capacity(frame.contacts.len());
+        for contact in frame.contacts {
+            contacts.push(touch_contact_from_request(contact)?);
+        }
+        built_frames.push(TouchFrame::new(frame.frame_offset, contacts));
+    }
+
+    Ok(TouchEventPdu::new(encode_time, built_frames))
+}
+
+fn touch_contact_from_request(contact: TouchContactRequest) -> Result<TouchContact, Response> {
+    if FourByteSigned::new(contact.x).is_err() || FourByteSigned::new(contact.y).is_err() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch contact coordinates are out of MS-RDPEI range",
+        ));
+    }
+    let flags = TouchContactFlags::from_bits(u32::from(contact.flags)).ok_or_else(|| {
+        Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch contact flags contain unknown bits",
+        )
+    })?;
+    if !flags.is_legal() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch contact flags are not a legal MS-RDPEI combination",
+        ));
+    }
+    Ok(TouchContact::new(contact.contact_id, contact.x, contact.y, flags))
 }
 
 /// A request sent by the CLI to the daemon.
@@ -129,11 +213,14 @@ pub enum Request {
     },
     /// Inspect the local NOW endpoint without exposing protocol internals.
     NowDiagnostics,
-    /// Send one MS-RDPEI touch event PDU (`RDPINPUT_TOUCH_EVENT_PDU`).
+    /// Queue one MS-RDPEI touch event PDU (`RDPINPUT_TOUCH_EVENT_PDU`) on the session input path.
     ///
-    /// Requires the Input DVC to be ready and not suspended. Contacts must use legal flag sets from
-    /// [MS-RDPEI] 3.1.1.1. At most [`MAX_TOUCH_FRAMES`] frames and [`MAX_TOUCH_CONTACTS`] contacts
-    /// per frame are accepted.
+    /// Success means the event was accepted into the local input queue after request validation.
+    /// The session loop still drops the event when the Input DVC is absent, not ready, or
+    /// suspended, matching mouse and keyboard RPC requests. Contacts must use legal flag sets
+    /// from [MS-RDPEI] 3.1.1.1. At most [`MAX_TOUCH_FRAMES`] frames and [`MAX_TOUCH_CONTACTS`]
+    /// contacts per frame are accepted. Injected contact IDs share the server contact-id space
+    /// with native digitizer input; avoid concurrent native touch with the same IDs.
     Touch {
         /// Milliseconds elapsed for the oldest frame in this PDU.
         encode_time: u32,
@@ -2404,7 +2491,11 @@ impl_pdu_pod!(OperationEvent);
 
 #[cfg(test)]
 mod tests {
-    use super::RailExecuteRequest;
+    use super::{
+        MAX_TOUCH_CONTACTS, MAX_TOUCH_FRAMES, RailExecuteRequest, TouchContactRequest, TouchFrameRequest,
+        touch_event_from_request,
+    };
+    use ironrdp_rdpei::pdu::{EightByteUnsigned, FourByteSigned, FourByteUnsigned, TouchContactFlags};
 
     #[test]
     fn rail_execute_debug_redacts_command_fields() {
@@ -2420,6 +2511,153 @@ mod tests {
         assert!(!debug.contains("C:\\secret-directory"));
         assert!(!debug.contains("secret-token"));
         assert!(debug.contains("executable_len"));
+    }
+
+    fn contact(flags: u16) -> TouchContactRequest {
+        TouchContactRequest {
+            contact_id: 1,
+            x: 10,
+            y: 20,
+            flags,
+        }
+    }
+
+    #[test]
+    fn touch_event_accepts_legal_down_and_up() {
+        let down = TouchContactFlags::DOWN | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT;
+        let up = TouchContactFlags::UP;
+        let event = touch_event_from_request(
+            0,
+            vec![
+                TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![contact(down.bits() as u16)],
+                },
+                TouchFrameRequest {
+                    frame_offset: 16_000,
+                    contacts: vec![contact(up.bits() as u16)],
+                },
+            ],
+        )
+        .expect("legal touch tap frames");
+        assert_eq!(event.frames.len(), 2);
+        assert_eq!(event.frames[1].frame_offset, 16_000);
+    }
+
+    #[test]
+    fn touch_event_rejects_empty_frames_and_contacts() {
+        assert!(touch_event_from_request(0, Vec::new()).is_err());
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: Vec::new(),
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn touch_event_rejects_illegal_and_unknown_flags() {
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![contact(0x0008)], // INRANGE alone
+                }],
+            )
+            .is_err()
+        );
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![contact(0x0040)], // unknown bit
+                }],
+            )
+            .is_err()
+        );
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![contact(0x0001)], // DOWN alone
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn touch_event_rejects_count_and_range_limits() {
+        let legal = (TouchContactFlags::DOWN | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT).bits() as u16;
+        let too_many_contacts = (0..=MAX_TOUCH_CONTACTS)
+            .map(|contact_id| TouchContactRequest {
+                contact_id: contact_id as u8,
+                x: 0,
+                y: 0,
+                flags: legal,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: too_many_contacts,
+                }],
+            )
+            .is_err()
+        );
+
+        let too_many_frames = (0..=MAX_TOUCH_FRAMES)
+            .map(|_| TouchFrameRequest {
+                frame_offset: 0,
+                contacts: vec![contact(legal)],
+            })
+            .collect::<Vec<_>>();
+        assert!(touch_event_from_request(0, too_many_frames).is_err());
+
+        assert!(
+            touch_event_from_request(
+                FourByteUnsigned::MAX + 1,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![contact(legal)],
+                }],
+            )
+            .is_err()
+        );
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: EightByteUnsigned::MAX + 1,
+                    contacts: vec![contact(legal)],
+                }],
+            )
+            .is_err()
+        );
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![TouchContactRequest {
+                        contact_id: 0,
+                        x: FourByteSigned::MAX + 1,
+                        y: 0,
+                        flags: legal,
+                    }],
+                }],
+            )
+            .is_err()
+        );
     }
 }
 
