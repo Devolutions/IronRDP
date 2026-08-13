@@ -746,7 +746,6 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-
 fn validate_touch_request(frames: &[TouchFrameRequest]) -> Result<(), Response> {
     if frames.is_empty() {
         return Err(Response::typed_error(
@@ -860,7 +859,6 @@ mod tests {
         assert_eq!(error.category, AgentErrorCategory::Unavailable);
         assert_eq!(error.message, "RAIL audit endpoints are unavailable through ActiveX");
     }
-
 
     #[tokio::test]
     async fn touch_with_illegal_flags_is_rejected() {

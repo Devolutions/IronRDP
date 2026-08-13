@@ -1996,10 +1996,7 @@ impl Decode<'_> for Request {
                 let encode_time = src.read_u32();
                 let frame_count = usize::from(src.read_u16());
                 if frame_count > MAX_TOUCH_FRAMES {
-                    return Err(ironrdp_core::invalid_field_err!(
-                        "touch frames",
-                        "too many frames"
-                    ));
+                    return Err(ironrdp_core::invalid_field_err!("touch frames", "too many frames"));
                 }
                 let mut frames = Vec::with_capacity(frame_count);
                 for _ in 0..frame_count {
@@ -2007,10 +2004,7 @@ impl Decode<'_> for Request {
                     let frame_offset = src.read_u64();
                     let contact_count = usize::from(src.read_u16());
                     if contact_count > MAX_TOUCH_CONTACTS {
-                        return Err(ironrdp_core::invalid_field_err!(
-                            "touch contacts",
-                            "too many contacts"
-                        ));
+                        return Err(ironrdp_core::invalid_field_err!("touch contacts", "too many contacts"));
                     }
                     let mut contacts = Vec::with_capacity(contact_count);
                     for _ in 0..contact_count {
@@ -2022,10 +2016,7 @@ impl Decode<'_> for Request {
                             flags: src.read_u16(),
                         });
                     }
-                    frames.push(TouchFrameRequest {
-                        frame_offset,
-                        contacts,
-                    });
+                    frames.push(TouchFrameRequest { frame_offset, contacts });
                 }
                 Ok(Self::Touch { encode_time, frames })
             }

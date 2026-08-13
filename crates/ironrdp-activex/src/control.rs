@@ -5756,7 +5756,6 @@ pub(crate) struct Control {
     rpc_log_directive: RefCell<Option<String>>,
 }
 
-
 fn build_rpc_touch_event(
     encode_time: u32,
     frames: Vec<ironrdp_agent::ipc::TouchFrameRequest>,
@@ -8164,39 +8163,38 @@ impl Control {
         }
     }
 
-
     fn rpc_touch(
         &self,
         encode_time: u32,
         frames: Vec<ironrdp_agent::ipc::TouchFrameRequest>,
     ) -> ironrdp_agent::ipc::Response {
-            if self.state.get() != ConnectionState::Connected {
+        if self.state.get() != ConnectionState::Connected {
             return ironrdp_agent::ipc::Response::typed_error(
                 ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
-                    "no active RDP session",
+                "no active RDP session",
             );
-            }
-            let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
-                return ironrdp_agent::ipc::Response::typed_error(
-                    ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
-                    "session input channel is unavailable",
-                );
-            };
-            let event = match build_rpc_touch_event(encode_time, frames) {
-                Ok(event) => event,
-                Err(response) => return response,
-            };
-            match sender.try_reserve() {
-                Ok(permit) => {
-                    permit.send(RdpInputEvent::Touch(event));
-                    ironrdp_agent::ipc::Response::ok()
-                }
-                Err(_) => ironrdp_agent::ipc::Response::typed_error(
-                    ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
-                    "session input channel is unavailable",
-                ),
-            }
         }
+        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            );
+        };
+        let event = match build_rpc_touch_event(encode_time, frames) {
+            Ok(event) => event,
+            Err(response) => return response,
+        };
+        match sender.try_reserve() {
+            Ok(permit) => {
+                permit.send(RdpInputEvent::Touch(event));
+                ironrdp_agent::ipc::Response::ok()
+            }
+            Err(_) => ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            ),
+        }
+    }
 
     fn rpc_input(&self, operation: Operation) -> ironrdp_agent::ipc::Response {
         if self.state.get() != ConnectionState::Connected {

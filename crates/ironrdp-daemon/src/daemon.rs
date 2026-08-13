@@ -22,8 +22,8 @@ use ironrdp_client::rdp::{
 use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
-use ironrdp_rdpei::pdu::{TouchContact, TouchContactFlags, TouchEventPdu, TouchFrame};
 use ironrdp_rail::pdu::{ExecutePdu, RailPdu};
+use ironrdp_rdpei::pdu::{TouchContact, TouchContactFlags, TouchEventPdu, TouchFrame};
 use ironrdp_tls::CertificateValidation;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
@@ -1068,7 +1068,6 @@ impl Daemon {
         self.input_operations([operation])
     }
 
-
     /// Sends one MS-RDPEI touch event to the active RDP session.
     ///
     /// # Panics
@@ -1605,7 +1604,6 @@ fn validate_rdpdr_volume_root(root_path: &Path) -> anyhow::Result<String> {
         .to_string_lossy()
         .to_ascii_uppercase())
 }
-
 
 fn build_touch_event(encode_time: u32, frames: Vec<TouchFrameRequest>) -> Result<TouchEventPdu, Response> {
     if frames.len() > MAX_TOUCH_FRAMES {
