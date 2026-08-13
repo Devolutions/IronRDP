@@ -2970,12 +2970,27 @@ mod tests {
         let h16 = ScardHandle::from_opaque(ctx, &opaque).unwrap();
         assert_eq!(roundtrip_handle(h16).as_bytes(), &opaque);
         assert!(ScardHandle::from_opaque(ctx, &[0; 17]).is_err());
+    }
 
-        let body = EstablishContextReturn {
-            return_code: ReturnCode::Success,
-            context: ScardContext::from_native(0x42),
-        };
-        assert_eq!(HeaderlessEncode::size(&body), 4 + 4 + 4 + 4 + size_of::<usize>());
+    /// `::new` 4-byte EstablishContext/Connect returns stay byte-identical to master.
+    #[test]
+    fn legacy_four_byte_return_encode_matches_master() {
+        fn enc(body: &impl HeaderlessEncode) -> Vec<u8> {
+            let mut buf = vec![0u8; HeaderlessEncode::size(body)];
+            HeaderlessEncode::encode(body, &mut WriteCursor::new(&mut buf)).unwrap();
+            buf
+        }
+        let est = EstablishContextReturn::new(ReturnCode::Success, ScardContext::new(0xA1B2_C3D4)).into_inner();
+        assert_eq!(enc(&est), [0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 2, 0, 4, 0, 0, 0, 0xD4, 0xC3, 0xB2, 0xA1]);
+        let h = ScardHandle::new(ScardContext::new(0x1111_2222), 0x3333_4444);
+        let conn = ConnectReturn::new(ReturnCode::Success, h, CardProtocol::SCARD_PROTOCOL_T0).into_inner();
+        assert_eq!(
+            enc(&conn),
+            [
+                0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 2, 0, 4, 0, 0, 0, 4, 0, 2, 0, 1, 0, 0, 0, 4, 0, 0, 0, 0x22, 0x22, 0x11,
+                0x11, 4, 0, 0, 0, 0x44, 0x44, 0x33, 0x33,
+            ]
+        );
     }
 
     /// 6-byte Unicode mszCards needs 2-byte NDR pad before reader states.
