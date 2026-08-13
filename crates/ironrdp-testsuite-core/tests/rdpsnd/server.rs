@@ -87,11 +87,11 @@ fn equality_ignores_derived_fields_but_not_extra_data() {
     // `data` is a different format, even with identical WAVEFORMATEX fields.
     a.data = Some(vec![1, 2, 3]);
     b.data = None;
-        assert!(!a.matches_for_negotiation(&b));
+    assert!(!a.matches_for_negotiation(&b));
 
     // A differing identity field (sample rate) is a different format.
     let c = fmt(WaveFormat::PCM, 48000);
-        assert!(!a.matches_for_negotiation(&c));
+    assert!(!a.matches_for_negotiation(&c));
 }
 
 #[test]

@@ -227,10 +227,7 @@ impl RdpsndClientHandler for RecordingBackend {
     }
 
     fn wave(&mut self, format: &AudioFormat, ts: u32, data: Cow<'_, [u8]>) {
-        self.waves
-            .lock()
-            .unwrap()
-            .push((format.clone(), ts, data.into_owned()));
+        self.waves.lock().unwrap().push((format.clone(), ts, data.into_owned()));
     }
 
     fn set_volume(&mut self, _volume: VolumePdu) {}
