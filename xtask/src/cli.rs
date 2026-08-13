@@ -14,6 +14,8 @@ TASKS:
   check lints             Check lints
   check locks             Check for dirty or staged lock files not yet committed
   check dependencies      Check dependency-graph invariants between crates
+  check test-settings --base <REV> --head <REV>
+                          Prevent removal of protected Cargo test settings
   check tests [--no-run]  Compile tests and, unless specified otherwise, run them
   check typos             Check for typos in the codebase
   check features          Run every feature-matrix case sequentially
@@ -84,6 +86,10 @@ pub enum Action {
     CheckLints,
     CheckLocks,
     CheckDependencies,
+    CheckTestSettings {
+        base: String,
+        head: String,
+    },
     CheckTests {
         no_run: bool,
     },
@@ -140,6 +146,10 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 Some("lints") => Action::CheckLints,
                 Some("locks") => Action::CheckLocks,
                 Some("dependencies") => Action::CheckDependencies,
+                Some("test-settings") => Action::CheckTestSettings {
+                    base: args.value_from_str("--base")?,
+                    head: args.value_from_str("--head")?,
+                },
                 Some("tests") => Action::CheckTests {
                     no_run: args.contains("--no-run"),
                 },
