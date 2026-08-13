@@ -127,7 +127,46 @@ fn open_with_bad_index_returns_fail() {
 }
 
 #[test]
-fn format_change_failure_does_not_ack() {
+fn format_change_to_other_index_is_confirmed() {
+    let fmt_a = pcm_format(1, 16000, 16);
+    let fmt_b = pcm_format(1, 48000, 16);
+    let set_format_calls = Arc::new(AtomicUsize::new(0));
+    let mut client = client_with(MockCapture {
+        formats: vec![fmt_a.clone(), fmt_b.clone()],
+        open_calls: Arc::new(AtomicUsize::new(0)),
+        open_result: OpenReplyPdu::S_OK,
+        set_format_ok: true,
+        set_format_calls: Arc::clone(&set_format_calls),
+    });
+
+    client.start(3).unwrap();
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![fmt_a.clone(), fmt_b])),
+    );
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Open(OpenPdu {
+            frames_per_packet: 320,
+            initial_format: 0,
+            capture_format: fmt_a,
+        }),
+    );
+
+    let out = process_encoded(&mut client, 3, RdpeaiPdu::FormatChange(FormatChangePdu::new(1)));
+    assert_eq!(out.len(), 1);
+    assert_eq!(set_format_calls.load(Ordering::Relaxed), 1);
+    match decode_dvc(&out[0]) {
+        RdpeaiPdu::FormatChange(change) => assert_eq!(change.new_format, 1),
+        other => panic!("expected FormatChange confirm, got {other:?}"),
+    }
+}
+
+#[test]
+fn format_change_failure_still_acks() {
     let fmt_a = pcm_format(1, 16000, 16);
     let fmt_b = pcm_format(1, 48000, 16);
     let mut client = client_with(MockCapture {
@@ -155,8 +194,13 @@ fn format_change_failure_does_not_ack() {
         }),
     );
 
+    // MS-RDPEAI always confirms a valid FormatChange so the server never hangs.
     let out = process_encoded(&mut client, 3, RdpeaiPdu::FormatChange(FormatChangePdu::new(1)));
-    assert!(out.is_empty(), "failed FormatChange must not be confirmed");
+    assert_eq!(out.len(), 1);
+    match decode_dvc(&out[0]) {
+        RdpeaiPdu::FormatChange(change) => assert_eq!(change.new_format, 1),
+        other => panic!("expected FormatChange confirm, got {other:?}"),
+    }
 }
 
 #[test]

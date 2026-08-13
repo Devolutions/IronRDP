@@ -12,5 +12,5 @@ pub mod cpal;
 pub mod error;
 
 #[cfg(feature = "capture")]
-pub use capture::RdpeaiCaptureBackend;
+pub use capture::{RdpeaiCaptureBackend, is_pcm_capture_format, take_capture_packets};
 pub use error::{RdpsndNativeError, RdpsndNativeErrorKind, RdpsndNativeResult};
