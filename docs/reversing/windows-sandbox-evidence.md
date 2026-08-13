@@ -45,6 +45,7 @@ analysis" is stronger than "likely" or "suggests".
 | `rdp4vs.dll` | `10.0.26100.5074` | RDP4VS worker engine; exports `RDP4VS_CreateInstance` for the named-pipe listener and main server, then selects `RDPSERVERBASE_CreateInstance` before its `RDPBASE` fallback |
 | `VrdUmed.dll` | `10.0.26100.1150` | Virtual Render Device user-mode emulation driver used by the worker GPU-partition path |
 | `GpupVDev.dll` | `10.0.26100.8457` | Hyper-V GPU-partition VDEV that allocates and brokers a per-VM vGPU handle and creates the worker's UMED provider |
+| `lsm.dll` | `10.0.26100.6725` | Guest/host container-session RPC; host `ContainerSessionServer` enforces the total interactive-container-session count |
 | `windowsudk.winmd` | `10.0.26100.1` | Metadata source for the checked-in narrow UDK projection |
 
 Windows component servicing can replace individual binaries. Conclusions should be revalidated when
@@ -268,6 +269,8 @@ handler as the active LSCS receiver for the tested direct flow.
 | Minimal display control | At `640x480` and 16 bpp, both desktops connected before one received the display-driver error and the other later logged off |
 | Minimal channel control | Disabling CLIPRDR and RDPSND did not change the display-driver-then-logoff sequence |
 | Host event correlation | MSTSC ActiveX client events recorded the early disconnect separately from the later intentional timer close; no correlated host `DxgKrnl` or worker operational error identified the server-side owner |
+| vGPU-disabled two-VM control | Both sessions reached `Connected`; the second was still logged off after about 32 seconds while the first remained connected |
+| Guest LSM/RdpCoreTS event capture | Arbitration completed, then session 1 disconnected with reason `12`; RdpCoreTS called `PreDisconnect(12)` and `SetErrorInfo(0xC)` |
 
 ## Confidence boundaries
 
@@ -278,7 +281,7 @@ handler as the active LSCS receiver for the tested direct flow.
 | The direct guest listener is type 2 and uses built-in licensing | High | Guest `termsrv.dll` control flow |
 | The role-4 guest licensing path reaches `LSCSHostPolicy.dll` | High | Guest `tssrvlic.dll` control flow |
 | `LSCSHostPolicy.dll` is a guest-to-parent RIM client adapter | High | `CHostPolicy` and `CChannelMgr::ConnectToParentPartition` control flow |
-| Desktop admission is host mediated | High | Guest `ILSClientService` request plus repeated cross-VM result |
+| Cross-VM container-session admission is host mediated | High | Guest LSM HVSock request, host-wide `ContainerSessionServer` counter, and matched runtime denial |
 | Normal RDP session-count configuration controls the result | Ruled out | Configuration and control-flow analysis |
 | `vmuidevices.dll` owns the LSCS decision | Ruled out | Dedicated Enhanced Mode control flow and absent LSCS markers |
 | `ActivationVDev.dll` is the direct LSCS sink | Strongly disfavored | Separate fixed VMBus-pipe identifiers, inherited-activation CLIP behavior, and no LSCS/RDV markers |
@@ -289,13 +292,15 @@ handler as the active LSCS receiver for the tested direct flow.
 | HCS `VirtualMachine/Devices/Licensing` controls LSCS admission | Ruled out | Public `vmcompute` symbols route it exclusively to `ACTIVATION_INSTANCE_ID` through `IVmVirtualDeviceAccess` |
 | VMBus pipe/proxy layers own LSCS policy | Ruled out | Public `vmbuspipe` and `vmbusproxy` symbols implement generic channel operations only |
 | Standard host RDP wire licensing is the LSCS admission decision | Strongly disfavored | `RDPSERVERBASE!IsLicenseRequiredByOS` skips standard licensing on non-server Windows |
-| Current direct two-VM disconnect is an LSCS denial | Not established | Current post-connect outcomes are `CloseStackOnDriverFailure` and `ERRINFO_LOGOFF_BY_USER`; neither run includes a correlated LSCS call trace |
+| Host `lsm!ContainerSessionServer` enforces the cross-VM desktop limit | High | Guest arbitration calls host `AskForSession` over the fixed LSM HVSock; non-WVD host logic admits only while total count is below one and otherwise returns error `353` |
+| The tested host has the multi-session WVD branch enabled | Ruled out | Read-only `SLGetWindowsInformationDWORD` returned `0` for `TerminalServices-RemoteConnectionManager-WVD-Enabled` |
+| Current direct two-VM disconnect is caused by `ILSClientService::LSCSUserAuthenticated` | Ruled out as the identified root | The separate LSM container-session path has the exact host-global count and denial mapping; guest `CTSLicense::NotifyUserAuthenticated` ignores the LSCS return value |
 | Wire `CloseStackOnDriverFailure` (`0x11`) is named as an Indirect Display Driver failure inside RDPBASE | High for naming, inference for live cause | `GetInternalDisconnectSymbolicName(17)` returns `IndirectDisplayDriverFailure`; adjacent codes cover IDD not-ready and interface-arrival failures |
 | RDPIDD PnP critical failure directly produces disconnect reason `17` | High | `CPnPOnRemoteDisplayDeviceHasProblemWorkItem::DoExecute` calls `DisconnectSession(sessionId, 17)`; RDPIDD calls `IddCxReportCriticalError` for unrecoverable adapter failures |
 | A disconnected or Display-Broker-disabled guest session makes the IDD container update fail permanently | High | `DxgkIddHandleSetDisplayConfig` returns `STATUS_GRAPHICS_INDIRECT_DISPLAY_DEVICE_STOPPED` when either per-session gate is false and overrides an in-flight result if the session disconnects |
 | IDD type-7 requests apply a complete supplied session topology | High | Flags are `SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE`; `DispBroker.Desktop` creates and applies a target substate |
 | Different Sandbox VMs replace one shared Display Broker request | Ruled out | RDPIDD, `WUDFHost`, session ID `1`, DWM, `DXGSESSIONDATA`, and Display Broker are guest-local; each VM has its own one-request cache |
-| Container/vGPU display update or render-adapter loss is where the concurrent trigger materializes | Strong static inference | RDPIDD has a dedicated container update API with exact fatal session-state gates and a GPU-device-loss/WARP recovery path; the originating host event and exact RDPIDD critical call site were not captured |
+| Container/vGPU display update or render-adapter loss is where some teardown runs materialize | High for mechanism, not root cause | RDPIDD has exact fatal session-state gates, but disabling vGPU does not remove the second-session logoff |
 | `GpupVDev` or `VrdUmed` contains a user-mode host-global display-topology singleton | Not found | `GpupVDev` allocates a per-VM resource-pool handle and UMED instance; `VrdUmed` stores per-instance LUID/handles and forwards mitigation IOCTLs |
 | Current `0x11` is every GFX-pipe `SetPipelineErrorState` failure | Ruled out | `CPipeManager::SetPipelineErrorState` maps subsystem-init and related pipe events to reasons such as `4460`/`4461`, not wire `0x11` |
 | IronRDP causes the current cross-VM failure | Ruled out | The Microsoft MSTSC ActiveX/RDPBASE path reproduces an early cross-VM disconnect |
@@ -303,7 +308,7 @@ handler as the active LSCS receiver for the tested direct flow.
 | The current IDD failure is a proportional framebuffer-size limit | Strongly disfavored | `640x480` at 16 bpp and the earlier `800x600` control did not prevent it |
 | The current failure is only a short VM boot or first-logon race | Strongly disfavored | Reverse-order and roughly three-minute stagger controls still fail |
 | The default direct path can be compared over guest TCP RDP | Unavailable | Neither direct VM exposed TCP port 3389; enabling it would change guest policy and was not attempted |
-| A host-global IDD/presentation ownership or lifecycle conflict causes current failures | Leading inference | Separate workers and clients still collide; wire `0x11` is named `IndirectDisplayDriverFailure`; reducing display load does not help |
+| A host-global IDD/presentation ownership or lifecycle conflict causes current failures | Ruled out as root cause | The vGPU-disabled pair still logs off the second session, while host LSM contains and exercises the exact one-total-session gate |
 | Guest usernames must match across concurrent Sandboxes | Ruled out | Product and direct harnesses can use either the shared default name or distinct custom accounts; both patterns still produce multi-VM runs and current post-connect failures |
 | Concurrent VMs share one guest user object | Ruled out | Each VM has its own guest SAM; product `SetUpUserAccount` activates or creates a local account inside that guest only |
 | Worker RDP path has an independent access gate | High | `RdpEncoder::OnClientConnected` creates an ACL policy engine before accepting the RDP4VS attendee |

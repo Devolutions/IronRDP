@@ -14,6 +14,7 @@ mistaken for one another.
 | `vmcompute.exe` | Hyper-V compute | Builds VM configuration, starts/controls workers, maps `VirtualMachine/Devices/Licensing` to `ACTIVATION_INSTANCE_ID`, and creates configured RDP VDEV pipe handles before transferring them through the VDEV handle broker | Statically attributable implementation of `ILSClientService` |
 | `vmwp.exe` | Per-VM worker and VM-ID pipe owner | Reads the VDEV manifest, activates VDEVs, and owns `\\.\pipe\{VM-ID}` for its Sandbox | Statically attributable implementation of `ILSClientService` |
 | `sppsvc.exe` | Software Protection Platform | Processes Activation VDEV inherited-activation messages through `SLSProcessVMPipeMessage` | Active LSCS receiver in the tested direct desktop flow |
+| Host `lsm.dll` | Container desktop admission | Hosts `ContainerSessionServer` over HVSock, counts sessions across container IDs, and rejects a second total session on the tested non-WVD client host | RDP wire server or LSCS/RIM receiver |
 | Guest Terminal Services | Guest RDP server | Loads the hard-coded VM listener through `termsrv.dll` and receives the accepted RDP connection | Host RDV bridge or Enhanced Mode VDEV |
 
 The final host implementation requested through `IID_ILSClientService` remains dynamically
@@ -35,6 +36,7 @@ unattributed. Absence from a static image is not proof that the process is uninv
 | `vmbuspiper.dll` | Related generic VMBus-pipe client/server component | Not the notification DLL selected by the examined listener |
 | `tssrvlic.dll` | Role-4 DVM proxy licensing provider | `CDVMProxyLicenseLibrary` and `CProxyPolicy` selection |
 | `LSCSHostPolicy.dll` | Guest-side client adapter for the private host policy request | `CHostPolicy::HostProcessData` obtains a RIM proxy after `ConnectToParentPartition`, then forwards to `IID_ILSClientService` |
+| Guest `lsm.dll` | Session arbitration and container-session client | `RpcGetRequestForWinlogon` calls `DoAskForSession`; denial becomes `0x800704C4` and a Winlogon denial action |
 
 ## Host VDEV modules
 
@@ -59,6 +61,7 @@ The VDEV relationship is not a licensing ownership relationship. In particular, 
 
 | Item | Value | Consumer | Significance |
 | --- | --- | --- | --- |
+| Container-session HVSock service | `{F58797F6-C9F3-4D63-9BD4-E52AC020E586}` | Guest/host `lsm.dll` | Carries `AskForSession` and `SessionLoggedOff` RPCs independently of LSCS/RIM |
 | RDP protocol-manager CLSID | `{5828227C-20CF-4408-B73F-73AB70B8849F}` | `Wds\rdpwd` `LoadableProtocol_Object` | Registered as `UMRDPProtocolManager` from `rdpcorets.dll` |
 | Ordinary listener key | `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp` | `CUMRDPListenerInet` | Configures TCP-specific listener behavior |
 | RDV VDEV class ID | `{6C5ADDB9-A11A-4E8E-84CB-E6208201DB63}` | `vmicrdv.dll` | Maps `Msvm_RdvComponent` to the RDV VDEV |

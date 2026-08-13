@@ -15,10 +15,9 @@ lifecycle ABI already exposed by Windows Sandbox. It does **not** modify or docu
 Windows licensing, session limits, package identity, access-control checks, or other product
 enforcement.
 
-In particular, the notes distinguish a historically observed
-`ERROR_REMOTE_SESSION_LIMIT_EXCEEDED` result from current post-connect outcomes:
-`CloseStackOnDriverFailure` and `ERRINFO_LOGOFF_BY_USER`. Neither result is an IronRDP setting or
-a supported tuning surface.
+The notes distinguish the host LSM admission result from its wire manifestations:
+`ERROR_REMOTE_SESSION_LIMIT_EXCEEDED`, `ERRINFO_LOGOFF_BY_USER`, and an occasional
+`CloseStackOnDriverFailure` teardown race. None is an IronRDP setting or supported tuning surface.
 
 ## Reading order
 
@@ -63,17 +62,19 @@ There are two separately evidenced RDP-related paths:
   `rdp4vs.dll` creates its RDP server-base implementation before an RDP-base fallback. The exact
   object-level handoff from this host pipe to the guest listener remains private.
 
-Current two-VM repros identify post-connect display-driver and server-logoff outcomes, not a
-correlated LSCS status. Concurrent VMs may share the default guest username
-(`WDAGUtilityAccount`) or use distinct custom accounts; that choice is not the proven root cause.
-Microsoft ActiveX, low-resolution/16-bpp, long-stagger, and disabled clipboard/audio controls also
-reproduce the failure family. Static analysis now attributes wire `0x11` to the guest
-RDPIDD/IddCx PnP critical-error path and follows the container update through `dxgkrnl` and the
-Display Broker. Losing guest session-connected or broker-enabled state produces RDPIDD's fatal
-stopped status. Each VM has its own guest broker and request cache, which rules out direct
-cross-VM replacement in one shared display topology. The unresolved cause is now below or beside
-that guest boundary: host GPU resource-pool/kernel partition state, worker encoder lifecycle, or an
-independent admission teardown. Choosing among them still requires correlated retained diagnostics.
+The cross-VM desktop limit is now attributed to a separate host LSM container-session gate. During
+guest session arbitration, `lsm.dll` calls the parent over HVSock service
+`{F58797F6-C9F3-4D63-9BD4-E52AC020E586}`. Host
+`ContainerSessionServer::IncreaseTotalSessionCount` admits only one total container session on the
+tested client host while the WVD policy is disabled. A later request returns Win32 error `353`
+(`ERROR_REMOTE_SESSION_LIMIT_EXCEEDED`), and the denied guest session is logged off. A guest event
+capture observed the corresponding reason `12` and RDP Set Error Info `0x0C` about 32 seconds after
+both clients initially reported connected.
+
+The earlier wire `0x11` remains a real RDPIDD/IddCx failure path, but it can be a teardown symptom
+after the same admission denial. Disabling vGPU did not remove the 32-second second-session logoff,
+which rules out mirrored GPU assignment as the cross-VM root cause. Guest usernames, RDP clients,
+display size, redirected channels, and per-VM Display Brokers are also excluded.
 See [RDP and RDV transport](windows-sandbox-rdp-transport.md) and
 [guest account identity](windows-sandbox-direct-lifecycle.md#guest-account-identity).
 

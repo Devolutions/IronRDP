@@ -75,12 +75,13 @@ this ABI.
 | Guest customization | Product server handles its normal provisioning policy | Caller must use only exposed VM operations |
 | Connection data | Server can return Sandbox RDP configuration | Caller needs its own known transport and credentials |
 | Worker RDP bridge | Product private configuration | Same `vmwp`-owned VM-ID pipe and RDP/display stack |
-| Guest desktop admission | Guest LSCS/RDV route | Same statically established LSCS/RDV route |
+| Guest desktop admission | Host LSM container-session count plus guest LSCS/RDV route | Same host LSM count and statically established LSCS/RDV route |
 
-This distinction is important when interpreting concurrency. Direct lifecycle creation allowed
-several VM instances to run concurrently. Current two-VM desktop repros first connected both
-sessions, then observed either an RDP display-driver startup error or a server-reported logoff.
-Neither outcome is correlated to a guest LSCS call in the current traces. See
+This distinction explains the concurrency result. Direct lifecycle creation allows several VM
+instances to run, but during Winlogon arbitration each guest asks the parent LSM container-session
+service for an interactive session. On the tested client host, that service admits one total
+container session and denies the next with Win32 error `353`. The denied guest logs off even though
+its RDP client briefly reached `Connected`. See
 [RDP and RDV transport](windows-sandbox-rdp-transport.md).
 
 ## Guest account identity
@@ -109,10 +110,9 @@ Controlled direct-lifecycle harnesses exercised both patterns:
 | Default-account trio | `WDAGUtilityAccount` on every VM, distinct per-VM passwords | Multiple VMs run; concurrent desktop failures still appear |
 | Custom-account trio | `IrdpVm1`, `IrdpVm2`, `IrdpVm3` | Multiple VMs run; concurrent desktop failures still appear |
 
-So different guest users are possible and already used in testing. Same-versus-different usernames
-is not the proven root cause of the current cross-VM post-connect failures. The same-VM two-client
-control is separately explained by the worker RDP encoder's local replacement path and does not
-depend on guest-account uniqueness.
+So different guest users are possible and already used in testing. User identity is not the
+cross-VM root cause; the host LSM counter is global across container IDs. The same-VM two-client
+control is separately explained by the worker RDP encoder's local replacement path.
 
 ## IronRDP usage
 

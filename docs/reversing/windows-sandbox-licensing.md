@@ -9,8 +9,9 @@ enforcement.
 
 ## Observed result
 
-The tested Windows retail configuration supports several direct Sandbox VMs running at once. The
-desktop-concurrency result now has three separate evidence classes:
+The tested Windows retail configuration supports several direct Sandbox VMs running at once, but
+host `lsm.dll` permits one total interactive container session while WVD policy is disabled.
+The earlier observations are different manifestations of that limit:
 
 1. An earlier controlled run observed a later concurrent desktop rejected with
    `ERROR_REMOTE_SESSION_LIMIT_EXCEEDED`.
@@ -19,18 +20,15 @@ desktop-concurrency result now has three separate evidence classes:
    That code reports remote display-driver startup failure, not a licensing status.
 3. A timestamped same-size baseline again reached `Connected` for both sessions. Thirty-three
    seconds later, the second reported `ERRINFO_LOGOFF_BY_USER` while the first stayed connected.
-   That is the server's logoff classification, not proof of a human action or an identified
-   admission-policy source.
+   Guest LSM/RdpCoreTS events now attribute it to denied container-session arbitration.
 4. A same-VM control connected two independent clients to one disposable Sandbox endpoint. The
    first was immediately disconnected with `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` (`0x5`), while
    the second remained connected.
 
 The same-VM control matches the worker RDP Encoder's local replacement behavior: a new attendee
 triggers termination of the existing `RemoteConnection` in that encoder instance. This is distinct
-from the cross-VM post-connect failures, where each Sandbox has its own worker. Using distinct
-per-VM GCC client names ruled out an RDP client-name collision as the cause. The evidence confirms
-a host-mediated LSCS admission RPC, but it does not justify attributing any post-connect failure in
-these current cross-VM runs to that RPC without a correlated call trace.
+from the cross-VM limit, where each Sandbox has its own worker. Using distinct per-VM GCC client
+names ruled out an RDP client-name collision.
 
 The product `WindowsSandboxServer.exe` can additionally reject a second active Sandbox before VM
 creation. Direct lifecycle creation skips that **product orchestration** gate, but it does not skip
@@ -50,18 +48,38 @@ flowchart TD
     E --> Dsp[Worker RDP/display bridge]
     Dsp --> DspFail[Possible display-stack failure]
     D --> F[Static guest type-2 listener]
+    F --> CLC[Guest LSM asks parent for container session]
+    CLC --> HLSM{Host LSM total count below 1<br/>or WVD enabled?}
+    HLSM -->|No| L[Winlogon request denied<br/>error 353 / later wire 0x0C]
+    HLSM -->|Yes| G
     F --> G[tssrvlic.dll selects LICENSE_TYPE_BUILTIN]
     G --> H[LSCSHostPolicy.dll role 4 proxy policy]
     H --> I[Private RDV/RIM ILSClientService request]
-    I --> J{Microsoft-defined host policy permits desktop?}
-    J -->|Yes| K[Full desktop connects]
-    J -->|No| L[Connection rejected<br/>observed: ERROR_REMOTE_SESSION_LIMIT_EXCEEDED]
+    I --> J[LSCS host policy request]
+    J --> K[Full desktop remains connected]
 ```
 
-The first branch is product VM admission. The lower branch is the confirmed guest LSCS admission
-route. They are independent enough that bypassing the first through direct lifecycle management
-does not establish permission through the second. The diagram is not evidence that the
-`CloseStackOnDriverFailure` display-path result is produced by LSCS.
+The first branch is product VM admission. The container-session branch is the proven cross-VM
+limit. LSCS remains a separate licensing path whose final RIM receiver is still unattributed.
+
+## Host LSM container-session gate
+
+During `RpcGetRequestForWinlogon`, a non-RAIL container session calls
+`ContainerSessionClient::DoAskForSession`. The client uses parent HVSock RPC service
+`{F58797F6-C9F3-4D63-9BD4-E52AC020E586}`. Host `ContainerCom_AskForSession` retrieves the caller's
+container ID and calls `ContainerSessionServer::AskForSession`.
+
+The server keeps both a per-container map and a host-wide total. It allows up to two sessions in one
+container, but `IncreaseTotalSessionCount` normally admits only while the total is below one. The
+only static alternate branch is when the SL policy
+`TerminalServices-RemoteConnectionManager-WVD-Enabled` reports enabled; it reports `0` on the
+tested host. A second total session therefore returns Win32 `353`
+(`ERROR_MAX_SESSIONS_REACHED`). Guest arbitration maps the denial to `0x800704C4`
+(`ERROR_REMOTE_SESSION_LIMIT_EXCEEDED`) and a Winlogon denial action.
+
+A focused vGPU-disabled run captured arbitration at `10:09:35`, LSM disconnect reason `12` at
+`10:10:07`, and RdpCoreTS `PreDisconnect(12)` / `SetErrorInfo(0xC)`. This establishes why clients
+can transiently report connected before the denied session logs off.
 
 ## Guest-side route
 
@@ -347,9 +365,8 @@ This is a server RDP error indicating display-driver startup failure. Compute ev
 both VMs were configured with GPU assignment mode `Mirror` and vendor extensions enabled. The failed
 worker loaded `gpupvdev.dll` and `VrdUmed.dll` alongside the worker RDP bridge.
 
-This is a strong lead for practical multi-desktop reliability, but not proof that GPU assignment is
-the root cause and not proof of an LSCS entitlement outcome. It must remain separate from the
-confirmed `ILSClientService::LSCSUserAuthenticated` boundary.
+The vGPU-disabled control still produced the same second-session logoff, ruling out GPU assignment
+as the root cause. Display failure remains a possible teardown race after LSM denial.
 
 Later same-size sampling again observed both sessions reach `Connected`; the second instead reported
 `ERRINFO_LOGOFF_BY_USER` after 33 seconds while the first stayed connected. A lower-resolution
@@ -387,30 +404,21 @@ Only the following is established on the tested retail build:
 | Several direct Sandbox VM instances running | Allowed |
 | First direct Sandbox full desktop | Allowed |
 | Historical later concurrent desktop | Rejected with `ERROR_REMOTE_SESSION_LIMIT_EXCEEDED` |
-| Current two-VM concurrent desktop | Both sessions initially connect; later observations include `CloseStackOnDriverFailure` and `ERRINFO_LOGOFF_BY_USER` |
+| Current two-VM concurrent desktop | Both sessions can initially connect; host LSM denies the second container session and it later reports `ERRINFO_LOGOFF_BY_USER` or an IDD teardown error |
 | Microsoft ActiveX two-VM control | Both connect; one disconnects before its timer and the other remains until intentional probe close |
 | Minimal-display or minimal-channel two-VM control | Same display-driver-then-logoff sequence as the ordinary IronRDP configuration |
 | Two clients to one Sandbox VM | First session is replaced with `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION`; second remains connected |
 | Product-server VM creation beyond its own admission decision | May be rejected before VM creation |
 
-Different Windows editions, servicing levels, enterprise entitlements, or Microsoft-hosted
-environments can carry different Microsoft-defined policy. This investigation found no evidence of
-a supported, customer-configurable setting that changes the Sandbox LSCS decision. Any claim about
-another SKU or environment requires separate, compliant testing and its own evidence.
+Different Windows editions, servicing levels, and Microsoft-hosted environments can carry different
+Microsoft-defined policy. The static alternate branch is WVD enablement; this note does not propose
+altering that entitlement policy. Any claim about another environment requires separate testing.
 
 ## Remaining attribution work
 
-The elevated worker capture completed. It proved that the VM-ID pipe is owned by `vmwp.exe` and
-identified the worker RDP/display bridge, but found no `LSCSHostPolicy.dll`, `vmicrdv.dll`,
-`vmrdvcore.dll`, or `rdvvmtransport.dll` in that worker. The next discriminating evidence is a
-read-only call stack or object-registration capture at
-`ILSClientService::LSCSUserAuthenticated`, correlated with both the historical license-limit result
-and the current display-driver failure. The current leading non-LSCS hypothesis additionally needs
-an elevated stack at `CRDPWDUMXStack::SetErrorInfo(0x11)` or the originating IDD failure, followed
-by attribution of the survivor's later logoff.
-
-Until that capture exists, the final policy implementation should be described as **host-mediated
-and dynamically unattributed**, not assigned to a guessed executable or DLL.
+The cross-VM limit no longer needs LSCS receiver attribution: it is implemented by host `lsm.dll`.
+The final `ILSClientService` RIM implementation remains an independent open question. A retained
+RDPIDD diagnostic could still identify why some denied runs emit `0x11` before the normal logoff.
 
 The evidence needed to narrow that attribution, without altering Windows policy or entitlement
 state, is tracked in [open questions and evidence plan](windows-sandbox-open-questions.md).

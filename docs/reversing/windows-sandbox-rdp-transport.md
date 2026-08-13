@@ -152,9 +152,45 @@ cross-VM repros above instead failed after both sessions had connected. Their
 worker-local replacement path.
 
 Cross-VM runs have used both the shared default guest username (`WDAGUtilityAccount` on every VM)
-and distinct custom guest usernames (`IrdpVm1` / `IrdpVm2` / `IrdpVm3`). Those account choices did
-not change the multi-mode post-connect failure pattern. Guest accounts are local to each VM; see
-[Direct VM lifecycle](windows-sandbox-direct-lifecycle.md#guest-account-identity).
+and distinct custom guest usernames (`IrdpVm1` / `IrdpVm2` / `IrdpVm3`). Guest accounts are local
+to each VM and do not affect the host-wide container-session count.
+
+### Exact cross-VM desktop limit
+
+The initiating cross-VM limit is separate from the worker RDP Encoder and LSCS/RIM:
+
+```text
+guest lsm!RpcGetRequestForWinlogon
+  -> lsm!DoAskForSession
+  -> ContainerSessionClient::DoAskForSession
+  -> ncacn_hvsocket parent RPC
+       service {F58797F6-C9F3-4D63-9BD4-E52AC020E586}
+  -> host lsm!ContainerCom_AskForSession
+  -> ContainerSessionServer::AskForSession(containerId)
+  -> ContainerSessionServer::IncreaseTotalSessionCount
+```
+
+`AskForSession` validates the caller's container ID with HCS, tracks a per-container count, and also
+maintains one host-wide total. The per-container cap is two, but the host-wide check is decisive:
+when the `TerminalServices-RemoteConnectionManager-WVD-Enabled` SL policy is false, a request is
+admitted only while the current total is less than one. The tested host reports this policy as `0`.
+The second request returns Win32 error `353`, whose message is "The maximum number of sessions has
+been reached."
+
+The guest maps the denied request to `0x800704C4`, records "Session was denied", and returns a denial
+action to Winlogon. A focused guest event capture observed:
+
+```text
+10:09:35  Begin/End session arbitration for session 1
+10:10:07  LSM disconnect reason 12
+10:10:07  RdpCoreTS PreDisconnect(12), SetErrorInfo(0xC)
+```
+
+The client first reports `Connected` because RDP activation completes before the denied Winlogon
+request tears down the session. This explains both the historical
+`ERROR_REMOTE_SESSION_LIMIT_EXCEEDED` and the repeatable 32-second
+`ERRINFO_LOGOFF_BY_USER`. It also explains why distinct users, separate workers, reversed order,
+long boot staggering, different clients, and reduced channels or resolution do not help.
 
 ### Five additional hypotheses
 
@@ -171,12 +207,10 @@ GPU assignment, registry, or host policy setting was changed.
 | Proportional IDD/GPU surface exhaustion | Reduced both desktops to `640x480` and 16 bpp; an earlier control used `800x600` | Both connected; one still received `CloseStackOnDriverFailure` within about four seconds and the other logged off about 20 seconds later | A simple framebuffer-size or pixel-capacity threshold is strongly disfavored; a singleton/ownership or lifecycle conflict remains plausible |
 | Redirected-channel startup conflict | Disabled CLIPRDR and RDPSND (`redirectclipboard:i:0`, `audiomode:i:2`) | Both connected; the same display-driver-then-logoff sequence remained | Clipboard and audio channel startup are ruled out as the primary cause |
 
-The matrix narrows the leading current model to a **host-global presentation/IDD ownership or
-lifecycle conflict** spanning otherwise separate VM workers. The evidence supports the component
-family, not a concrete owner: each VM still has its own `vmwp.exe`, RDP Encoder, credentials, and
-guest account, while the host GPU/IDD path is shared. The low-resolution result argues against
-ordinary capacity exhaustion; it is more consistent with a singleton, lease, or state-machine
-constraint.
+The matrix originally suggested a host-global presentation constraint. A later supported
+vGPU-disabled control falsified that model: both sessions connected, but the second was still logged
+off at 32 seconds. Static `lsm.dll` analysis and the guest event capture instead identify the
+host-global `ContainerSessionServer` count as the root cause.
 
 ### Static reconstruction of `CloseStackOnDriverFailure`
 
@@ -264,10 +298,9 @@ each Sandbox guest. Every VM therefore has its own `DXGSESSIONDATA` and one-requ
 request in VM B cannot replace VM A's cached guest request. This falsifies the earlier strongest
 form of the "shared session-wide topology replacement" hypothesis.
 
-The broker path instead identifies exactly where an external teardown can become wire `0x11`.
-Clearing the guest's connected/broker-ready state during an update produces the same fatal status,
-so `CloseStackOnDriverFailure` may be a downstream classification after a host worker, GPU
-partition, or admission event rather than the original cross-VM decision.
+The broker path identifies how the proven host LSM denial can become wire `0x11`: if Winlogon
+teardown clears the guest's connected or broker-ready state while an IDD update is in flight,
+RDPIDD reports the fatal stopped status instead of the later logoff classification.
 
 `rdpcorets` independently derives the adapter LUID behind shared DX resources and creates its D3D11
 device on that adapter. On the host, each `GpupVDev` instance allocates and brokers its own vGPU
@@ -278,14 +311,14 @@ the only obvious `GpupVDev` process-global state is tracing metadata inside one 
 
 This is stronger than the earlier generic IDD inference: the direct producer of `0x11` is attributed
 to the RDPIDD PnP critical-error path, and the container branch reaches exact session-state gates.
-Static analysis still cannot distinguish whether the concurrent trigger first disconnects the
-guest session, disables its broker, fails topology application, removes the selected virtual render
-adapter, or reaches another RDPIDD critical-error site. The later `ERRINFO_LOGOFF_BY_USER` can be a
-secondary session teardown and does not contradict this path.
+Static analysis still cannot distinguish which exact RDPIDD site wins the teardown race in a run
+that emits `0x11`. That no longer blocks root-cause attribution: the independent LSM admission path
+explains why the second guest session is being torn down.
 
 `ERRINFO_LOGOFF_BY_USER` is the server's classification of a session logoff, not evidence of a
-human action or an identified policy caller. [MS-RDPBCGR] section 2.2.5.1 defines both it and
-`CloseStackOnDriverFailure` as server Set Error Info values sent before a server disconnect.
+human action. Here the guest event timeline and LSM control flow identify the admission denial that
+causes it. [MS-RDPBCGR] section 2.2.5.1 defines both it and `CloseStackOnDriverFailure` as server
+Set Error Info values sent before a server disconnect.
 
 Both VM configurations set:
 
@@ -301,9 +334,8 @@ Both VM configurations set:
 
 The failed worker also loaded `gpupvdev.dll` and `VrdUmed.dll`. `VrdUmed` is the Virtual Render
 Device user-mode emulation driver, while `gpupvdev` is the Hyper-V GPU-partition VDEV. Those facts
-make the GPU/display path a credible explanation for the `0x11` outcome. They do not prove that
-GPU mirroring is its root cause, explain the later logoff outcome, or replace the independently
-confirmed guest LSCS RPC.
+make the GPU/display path a credible explanation for the `0x11` teardown outcome. The vGPU-disabled
+control rules out GPU mirroring as the admission root cause.
 
 Static naming in `RDPBASE` strengthens the display-path reading of wire code `0x11`.
 `GetInternalDisconnectSymbolicName` maps internal disconnect subcode `17` (`0x11`) to

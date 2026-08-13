@@ -68,14 +68,14 @@ responsibilities:
 | [MS-RDPELE] licensing PDUs | Client/server protocol messages and client licensing state |
 | Guest `tssrvlic.dll` role 4 | Selects the Sandbox built-in/DVM proxy route |
 | Guest `LSCSHostPolicy.dll` | Requests private host policy through RDV/RIM |
-| Host LSCS policy receiver | Admits or rejects the full Sandbox desktop; implementation remains dynamically unattributed |
+| Guest/host `lsm.dll` container RPC | Counts interactive container sessions over a private HVSock service |
+| Host LSCS policy receiver | Separate private licensing decision; implementation remains dynamically unattributed |
 
-The historical `ERROR_REMOTE_SESSION_LIMIT_EXCEEDED` is consistent with the latter decision path.
-Current direct two-VM tests instead first connected both sessions, then reported either
-`CloseStackOnDriverFailure` (`0x11`) or `ERRINFO_LOGOFF_BY_USER` (`0x0C`). [MS-RDPBCGR] section
-2.2.5.1 defines both as server Set Error Info values sent before a server disconnect. A client must
-surface each Windows outcome without treating it as an RDP framing issue or a retryable transport
-error; the error value alone does not identify the LSCS policy caller.
+The host LSM path explains the historical `ERROR_REMOTE_SESSION_LIMIT_EXCEEDED` and the repeatable
+post-connect `ERRINFO_LOGOFF_BY_USER` (`0x0C`). `CloseStackOnDriverFailure` (`0x11`) can occur when
+the denied session tears down during IDD startup. [MS-RDPBCGR] section 2.2.5.1 defines both wire
+values as server Set Error Info values sent before a server disconnect. A client must surface each
+Windows outcome without treating it as an RDP framing issue or retryable transport error.
 
 ## Implications for IronRDP
 

@@ -19,7 +19,7 @@ separation is useful when attributing an observed failure.
 | VM lifecycle | Instantiate, hold, inspect, and terminate a private Sandbox VM | `ManagedWindowsVM.exe`, `WindowsUdk.Security.Isolation.ManagedWindowsVM`, private Container Manager APIs |
 | Hyper-V worker | Host a particular VM and load its configured virtual devices | `vmcompute.exe`, `vmwp.exe`, registered VDEVs |
 | Desktop transport | Carry RDP-related control/data traffic and render/input state | worker-owned VM-ID pipe, `vmuidevices.dll`, `rdp4vs.dll`, guest `termsrv.dll`, `rdpcorets.dll`, RDV VDEV |
-| Desktop admission | Select a guest license library and request host policy | guest `tssrvlic.dll`, `LSCSHostPolicy.dll`, private RDV/RIM endpoint |
+| Desktop admission | Count container sessions and select a guest license library | guest/host `lsm.dll`, container-session HVSock RPC, guest `tssrvlic.dll`, `LSCSHostPolicy.dll`, private RDV/RIM endpoint |
 
 ## Component relationship map
 
@@ -45,6 +45,7 @@ flowchart TB
         SYNTH[vmuidevices.dll / rdp4vs.dll / RDPSERVERBASE.dll]
         RDV[vmicrdv.dll]
         RDVCORE[vmrdvcore.dll / rdvvmtransport.dll]
+        HOSTLSM[lsm.dll<br/>ContainerSessionServer]
     end
 
     subgraph guest["Sandbox guest"]
@@ -53,6 +54,7 @@ flowchart TB
         VMBUSPIPE[vmbuspipe.dll]
         TSSRVLIC[tssrvlic.dll]
         LSCS[LSCSHostPolicy.dll]
+        GUESTLSM[lsm.dll<br/>ContainerSessionClient]
     end
 
     USER --> WSS --> PRODUCTVM
@@ -63,6 +65,7 @@ flowchart TB
     WORKER --> SYNTH
     SYNTH --> PIPE
     RDV --> RDVCORE
+    GUESTLSM -->|HVSock AskForSession| HOSTLSM
     TERMSRV --> RDPCORETS
     TERMSRV --> TSSRVLIC --> LSCS
     LSCS <--> RDVCORE
@@ -87,6 +90,7 @@ For an exhaustive process, module, registration, and interface table, see
 | `vmuidevices.dll` | Hyper-V Synthetic RDP and RDP Encoder VDEV implementation | Worker RDP/display bridge with named-pipe listeners; no LSCS marker |
 | `rdp4vs.dll` | RDP4VS encoder engine loaded by `vmuidevices.dll` | Receives worker RDP pipes; no LSCS/RDV licensing markers |
 | `RDPSERVERBASE.dll` | RDP server base loaded by the worker RDP4VS stack | Implements standard RDP wire licensing and display startup, but not the LSCS endpoint |
+| Host `lsm.dll` | `ContainerSessionServer` on HVSock service `{F58797F6-C9F3-4D63-9BD4-E52AC020E586}` | Maintains the host-wide container-session count and is the proven cross-VM desktop limit |
 
 ### RDV VDEV registration
 
@@ -104,6 +108,7 @@ VM but does not reveal the application-level LSCS policy receiver.
 | `vmbuspipe.dll` | Generic VMBus-pipe control/data channel dependency dynamically loaded by the guest VMBus listener |
 | `tssrvlic.dll` | Activates the role-4 DVM proxy license library and its proxy policy |
 | `LSCSHostPolicy.dll` | Guest bridge that invokes a private RDV/RIM endpoint and requests `IID_ILSClientService` from the host |
+| `lsm.dll` | During Winlogon arbitration, calls `ContainerSessionClient::DoAskForSession`; maps host denial to a failed session request |
 
 The guest components establish that desktop admission is not merely a host-side RDP listener count.
 The detailed flow and its unresolved final host receiver are documented in
@@ -124,11 +129,10 @@ licensing architecture after the VM is running.
 | Privileged backend | Product-private provisioning path; the exact lower call chain is not fully attributed | `ManagedWindowsVM.exe` and private Container Manager |
 | Guest desktop listener | Windows Sandbox transport configuration | Same type-2 guest VMBus listener is statically present |
 | Worker pipe bridge | Private product configuration | `vmwp.exe` owns the VM-ID pipe and loads the worker RDP/display bridge |
-| Guest desktop admission | LSCS/RDV policy route | Same statically established LSCS/RDV policy route |
+| Guest desktop admission | Container-session HVSock count plus LSCS/RDV policy route | Same host LSM count and statically established LSCS/RDV route |
 
-Direct lifecycle management therefore does not establish a new licensing identity or bypass desktop
-admission. It changes who asks Windows to create the VM, not who implements the VM, the worker RDP
-bridge, or the guest LSCS policy path.
+Direct lifecycle management therefore does not bypass desktop admission. It changes who asks Windows
+to create the VM, not the host LSM container-session count, worker RDP bridge, or guest LSCS path.
 
 ## What was ruled out
 

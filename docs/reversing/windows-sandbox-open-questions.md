@@ -11,24 +11,24 @@ read-only, no-bypass boundary.
 | Direct `ManagedWindowsVM` lifecycle can create multiple running Sandbox VMs | Observed repeatedly |
 | The product server can reject another Sandbox before VM creation | Observed and statically attributed to product orchestration |
 | Multiple VMs may share the default guest username or use distinct custom users | Observed and statically attributed to product `SetUpUserAccount` / direct harness provisioning |
-| Same-versus-different guest usernames is not the proven cross-VM concurrency root cause | Observed under both account patterns |
+| Same-versus-different guest usernames is not the cross-VM concurrency root cause | Observed under both account patterns; host LSM counts sessions across container IDs |
 | The direct guest endpoint is a type-2 VMBus listener | Static guest `termsrv.dll` control flow |
 | VMBus and TCP accepts converge on `CUMRDPConnection` | Static `rdpcorets.dll` control flow |
 | The guest uses built-in, role-4 DVM proxy licensing before requesting host policy | Static guest `termsrv.dll`, `tssrvlic.dll`, and `LSCSHostPolicy.dll` control flow |
 | Guest LSCS admission boundary | `CProxyPolicy` calls `ILSClientService::LSCSUserAuthenticated` over RIM |
-| Earlier concurrent desktop rejection | Observed as `ERROR_REMOTE_SESSION_LIMIT_EXCEEDED` |
-| Current concurrent desktop outcomes | All current cross-VM pairs reach `Connected`; later outcomes include `CloseStackOnDriverFailure` and server-reported `ERRINFO_LOGOFF_BY_USER`. Two clients to one VM are separately replaced by the worker-local RDP encoder path |
+| Cross-VM desktop limit | Host `lsm!ContainerSessionServer` admits one total container session while WVD is disabled; later requests return error `353` |
+| Current concurrent desktop outcomes | Clients can briefly reach `Connected` before denied Winlogon arbitration produces reason `12` / wire `0x0C`; wire `0x11` can win an IDD teardown race |
 | Current failure is client-specific, channel-specific, or a simple display-size threshold | Ruled out by Microsoft ActiveX, disabled CLIPRDR/RDPSND, and `640x480`/16-bpp controls |
 | Different VMs replace one shared Display Broker topology | Ruled out. Each guest owns its RDPIDD `WUDFHost`, session ID `1`, `DXGSESSIONDATA`, DWM, Display Broker, and one-request cache |
+| Mirrored vGPU assignment is the cross-VM root cause | Ruled out. A vGPU-disabled pair still logged off the second session at about 32 seconds |
+| Fixed RDP4VS identities collide across workers | Ruled out. GUIDs are VM-bus scoped and singleton/maps are worker-process local |
 
 ## Open attribution questions
 
 | Question | Why it remains open | Narrow evidence needed |
 | --- | --- | --- |
 | Which runtime host component is the final RIM peer for `ILSClientService`? | The decision RPC is now identified as `ILSClientService::LSCSUserAuthenticated`. A target-worker capture found the VM-ID pipe and RDP/display bridge but no LSCS/RDV provider; a broader worker inventory found generic `vmicrdv`/`vmrdvcore` co-residence without an LSCS marker. Generic RDV and VMBus layers remain transport only. The standalone `TermService`/`vmicrdv` service path, HCS Licensing, lifecycle processes, and SPP activation are excluded | Read-only call-stack or RIM-object-registration capture at `LSCSUserAuthenticated`, correlated with the historical session-limit response, display-driver failure, and post-connect logoff |
-| Is a current multi-desktop outcome an LSCS decision? | Not established. Both current cross-VM sessions reach `Connected` before either `CloseStackOnDriverFailure` or `ERRINFO_LOGOFF_BY_USER`; the worker has independent VM-view/input ACL and RDP-server lifecycle gates. The same-VM `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` result is separately proven to be the encoder's local replacement path | Correlate a call-stack or RIM-object-registration capture with the exact cross-VM error PDU; separately compare a Microsoft-supported alternate graphics setup without changing licensing or entitlement state |
 | Which RDPIDD critical branch fires under concurrent Sandbox desktops? | Static analysis proves that a RDPIDD/IddCx PnP problem becomes `DisconnectSession(sessionId, 17)` and wire `0x11`. The container branch is now exact: loss of guest session-connected or broker-enabled state yields fatal `STATUS_GRAPHICS_INDIRECT_DISPLAY_DEVICE_STOPPED`; topology apply and GPU/WARP branches remain possible. Because the broker is guest-local, that status can be downstream of an external teardown rather than the cross-VM decision | Capture the RDPIDD autologger/in-flight record containing `AdapterBugCheck` major/minor/status and the guest `DxgkPreSessionDisconnected` / `DisableDisplayBroker` transition; separately capture the origin of the survivor's later logoff |
-| Which host event invalidates one guest's display state when another VM desktop activates? | The shared-guest-broker theory is falsified. Host `GpupVDev` statically allocates a per-VM resource-pool handle and UMED instance, and `VrdUmed` has per-instance LUID/handle state; neither exposes a user-mode global topology owner. The unresolved boundary is now below or beside the guest broker: host GPU resource-pool/kernel partition state, worker encoder lifecycle, or an independent admission teardown | Correlate the first guest `DxgkPreSessionDisconnected`, broker disable, or render-device removal with host `GpupVDev` resource-pool ETW, GPU partition events, and worker RDP encoder state for both VM IDs |
 | Which VDEV listener accepts the direct VM-ID pipe? | Both `RdpEncoder` and `SynthRdpDevice` can receive independently created pipe handles from `vmcompute` through the VDEV handle broker. RDP4VS exposes distinct pipe operations: the encoder's accept path creates an RDP connection, while SynthRDP asks the encoder for an `IRDPENCNetStream` for its VMBus/HVSock data channel. This makes the encoder the leading static candidate for the external endpoint, but HCS properties and ordinary Container/Hyper-V stores do not expose the selected connection-options record | Read-only accepted-pipe call stack or kernel file-I/O stack in the target `vmwp.exe` worker |
 | Does the known SPP VM-pipe handler own desktop admission? | No. `sppsvc` processes the distinct Activation VDEV inherited-activation request/response and remained stopped throughout the tested direct desktop connection | No further SPP activation analysis is needed unless a future build shows it active during the LSCS flow |
 | Is the receiver a conventionally registered VDEV? | The `vmwp.exe` manifest loader reads the `VirtualDevices` class/interface catalog, but the full catalog contains none of the LSCS interface, endpoint-instance, or endpoint-type identifiers. A direct Sandbox VM is not visible through the ordinary Hyper-V WMI system/settings associations | Inspect a live VM-specific repository and protected-worker registrations; do not infer a VDEV provider from the generic manifest mechanism |
@@ -41,14 +41,14 @@ read-only, no-bypass boundary.
 
 The following findings would materially revise the current documentation:
 
-1. A concrete runtime host module that receives the RIM request and owns the admission decision,
-   rather than merely offering or transporting its VMBus channel.
+1. A concrete runtime host module that receives the separate RIM request; it would refine LSCS
+   attribution but no longer change the proven LSM container-session root cause.
 2. A complete same-build guest capture showing a different `rdpcorets.dll` listener implementation.
 3. A repeatable Windows-supported entitlement environment with a different admission outcome.
 4. Evidence that the direct named-pipe route reaches a different guest licensing selector.
 
-Absent that evidence, the final LSCS receiver must remain described as **host-mediated and
-dynamically unattributed**.
+Absent that evidence, the final LSCS receiver remains dynamically unattributed, while cross-VM
+container-session admission is attributed to host `lsm.dll`.
 
 ## Safe investigation boundaries
 
