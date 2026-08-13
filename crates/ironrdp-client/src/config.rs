@@ -2112,4 +2112,42 @@ mod tests {
             Some(AudioCaptureMode::Disabled)
         );
     }
+
+    #[cfg(feature = "webauthn")]
+    #[test]
+    fn with_webauthn_false_clears_channel_and_property() {
+        let config = complete_builder()
+            .with_webauthn(false)
+            .build()
+            .expect("valid configuration");
+
+        assert!(!config.channels().webauthn);
+        assert_eq!(config.properties().redirect_webauthn(), Some(false));
+    }
+
+    #[cfg(feature = "webauthn")]
+    #[test]
+    fn from_property_set_honors_redirectwebauthn() {
+        let mut enabled = ironrdp_propertyset::PropertySet::new();
+        enabled.set_redirect_webauthn(true);
+        let config_on = complete_builder()
+            .with_webauthn(false)
+            .with_property_set(&enabled)
+            .expect("valid properties")
+            .build()
+            .expect("valid configuration");
+        assert!(config_on.channels().webauthn);
+        assert_eq!(config_on.properties().redirect_webauthn(), Some(true));
+
+        let mut disabled = ironrdp_propertyset::PropertySet::new();
+        disabled.set_redirect_webauthn(false);
+        let config_off = complete_builder()
+            .with_webauthn(true)
+            .with_property_set(&disabled)
+            .expect("valid properties")
+            .build()
+            .expect("valid configuration");
+        assert!(!config_off.channels().webauthn);
+        assert_eq!(config_off.properties().redirect_webauthn(), Some(false));
+    }
 }

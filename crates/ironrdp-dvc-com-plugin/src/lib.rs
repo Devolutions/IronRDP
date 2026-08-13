@@ -37,4 +37,4 @@ mod oneshot;
 mod worker;
 
 pub use channel::{DvcComChannel, DvcComChannelListener, load_dvc_plugin, load_dvc_plugin_listeners};
-pub use oneshot::{process_plugin_request, process_webauthn_dll_request};
+pub use oneshot::{PluginRequestError, process_plugin_request, process_webauthn_dll_request, system_webauthn_dll_path};

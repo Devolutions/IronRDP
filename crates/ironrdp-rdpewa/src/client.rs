@@ -238,18 +238,14 @@ impl RdpewaClient {
 
     fn handle_request(&mut self, request: RdpewaRequest, raw_payload: &[u8]) -> PduResult<Option<RdpewaResponse>> {
         match request.command {
-            RpcCommand::ApiVersion => {
-                let version = self.handler.api_version().unwrap_or_else(|e| {
+            RpcCommand::ApiVersion => match self.handler.api_version() {
+                Ok(0) => Ok(Some(RdpewaResponse::from_hresult(E_FAIL))),
+                Ok(version) => Ok(Some(RdpewaResponse::with_u32(S_OK, version))),
+                Err(e) => {
                     warn!(error = %e, "api_version failed");
-                    0
-                });
-                let hresult = if version == 0 { E_FAIL } else { S_OK };
-                if hresult == S_OK {
-                    Ok(Some(RdpewaResponse::with_u32(S_OK, version)))
-                } else {
-                    Ok(Some(RdpewaResponse::from_hresult(hresult)))
+                    Ok(Some(RdpewaResponse::from_hresult(e.hresult)))
                 }
-            }
+            },
             RpcCommand::Iuvpaa => match self.handler.is_uvpaa() {
                 Ok(available) => Ok(Some(RdpewaResponse::with_u32(S_OK, u32::from(available)))),
                 Err(e) => {

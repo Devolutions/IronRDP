@@ -17,7 +17,8 @@ pub use client::{
     StubRdpewaHandler, WebAuthnDispatch, WebAuthnOperationRequest, WebAuthnOperationResponse,
 };
 pub use pdu::{
-    Attachment, Attestation, DeviceInfo, E_ABORT, E_FAIL, E_INVALIDARG, E_NOTIMPL, RdpewaRequest, RdpewaResponse,
-    RpcCommand, S_OK, UserVerification, WebAuthnPara, WebAuthnRequestBody, WebAuthnResponsePayload, WebAuthnSubcommand,
+    Attachment, Attestation, DeviceInfo, E_ABORT, E_BUSY, E_FAIL, E_INVALIDARG, E_NOTIMPL, RdpewaRequest,
+    RdpewaResponse, RpcCommand, S_OK, UserVerification, WebAuthnPara, WebAuthnRequestBody, WebAuthnResponsePayload,
+    WebAuthnSubcommand,
 };
 pub use server::RdpewaServer;

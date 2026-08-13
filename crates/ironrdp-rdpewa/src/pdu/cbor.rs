@@ -35,7 +35,19 @@ impl CborKey {
     }
 }
 
+/// Maximum nesting depth for recursive CBOR arrays/maps.
+///
+/// Hostile DVC payloads can otherwise force deep recursion and exhaust the stack.
+const MAX_CBOR_DEPTH: u32 = 32;
+
 pub fn decode_value(src: &mut ReadCursor<'_>) -> DecodeResult<CborValue> {
+    decode_value_at_depth(src, 0)
+}
+
+fn decode_value_at_depth(src: &mut ReadCursor<'_>, depth: u32) -> DecodeResult<CborValue> {
+    if depth > MAX_CBOR_DEPTH {
+        return Err(invalid_field_err!("cbor", "depth", "maximum nesting depth exceeded"));
+    }
     if src.is_empty() {
         return Err(invalid_field_err!("cbor", "input", "unexpected end of input"));
     }
@@ -70,7 +82,7 @@ pub fn decode_value(src: &mut ReadCursor<'_>) -> DecodeResult<CborValue> {
             let len = usize_from_u64(read_uint(src, additional)?)?;
             let mut items = Vec::with_capacity(len.min(64));
             for _ in 0..len {
-                items.push(decode_value(src)?);
+                items.push(decode_value_at_depth(src, depth + 1)?);
             }
             Ok(CborValue::Array(items))
         }
@@ -78,8 +90,8 @@ pub fn decode_value(src: &mut ReadCursor<'_>) -> DecodeResult<CborValue> {
             let len = usize_from_u64(read_uint(src, additional)?)?;
             let mut map = BTreeMap::new();
             for _ in 0..len {
-                let key = decode_key(src)?;
-                let value = decode_value(src)?;
+                let key = decode_key(src, depth + 1)?;
+                let value = decode_value_at_depth(src, depth + 1)?;
                 map.insert(key, value);
             }
             Ok(CborValue::Map(map))
@@ -114,8 +126,8 @@ pub fn decode_value(src: &mut ReadCursor<'_>) -> DecodeResult<CborValue> {
     }
 }
 
-fn decode_key(src: &mut ReadCursor<'_>) -> DecodeResult<CborKey> {
-    match decode_value(src)? {
+fn decode_key(src: &mut ReadCursor<'_>, depth: u32) -> DecodeResult<CborKey> {
+    match decode_value_at_depth(src, depth)? {
         CborValue::Text(s) => Ok(CborKey::Text(s)),
         CborValue::Unsigned(n) => {
             let v = i64::try_from(n).map_err(|_| invalid_field_err!("cbor", "key", "int out of range"))?;
@@ -461,5 +473,14 @@ mod tests {
         let decoded = decode_all(&encoded).unwrap();
         let m = decoded.as_map().unwrap();
         assert_eq!(m.get(&CborKey::text("command")).unwrap().as_u32().unwrap(), 8);
+    }
+
+    #[test]
+    fn decode_rejects_excessive_nesting() {
+        // Nested arrays: 0x81 repeats = one-element array wrappers.
+        let depth = usize::try_from(MAX_CBOR_DEPTH + 2).expect("depth fits usize");
+        let mut payload = vec![0x81u8; depth];
+        payload.push(0x00); // unsigned 0 leaf
+        assert!(decode_all(&payload).is_err());
     }
 }

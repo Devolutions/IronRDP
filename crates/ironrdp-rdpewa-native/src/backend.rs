@@ -1,11 +1,12 @@
 //! Windows WebAuthn API backend for MS-RDPEWA.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use core::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use ironrdp_rdpewa::{
-    Attachment, Attestation, DeviceInfo, E_ABORT, E_FAIL, E_INVALIDARG, RdpewaClientHandler, RdpewaHandlerError,
-    RdpewaResponse, RdpewaResponseSender, RdpewaResult, S_OK, UserVerification, WebAuthnDispatch,
+    Attachment, Attestation, DeviceInfo, E_ABORT, E_BUSY, E_FAIL, E_INVALIDARG, RdpewaClientHandler,
+    RdpewaHandlerError, RdpewaResponse, RdpewaResponseSender, RdpewaResult, S_OK, UserVerification, WebAuthnDispatch,
     WebAuthnOperationRequest, WebAuthnOperationResponse, WebAuthnResponsePayload, WebAuthnSubcommand,
 };
 use tracing::{debug, info, warn};
@@ -36,11 +37,31 @@ use crate::ctap::{
     parse_make_credential,
 };
 
-/// Process-wide cancel slot so CancelCurOp on a recreated `WebAuthN_Channel` can abort an in-flight
-/// ceremony started by an earlier channel instance.
-fn shared_cancel_guid() -> Arc<Mutex<Option<GUID>>> {
-    static SLOT: OnceLock<Arc<Mutex<Option<GUID>>>> = OnceLock::new();
-    Arc::clone(SLOT.get_or_init(|| Arc::new(Mutex::new(None))))
+/// Session-scoped state shared by every recreated `WebAuthN_Channel` backend for one connection.
+///
+/// Cancel IDs and the in-flight ceremony guard must not be process-wide: concurrent IronRDP sessions
+/// in the same process would otherwise overwrite each other's cancellation slots.
+#[derive(Clone, Default)]
+pub struct WindowsRdpewaSession {
+    cancel_guid: Arc<Mutex<Option<GUID>>>,
+    in_flight: Arc<AtomicBool>,
+}
+
+impl WindowsRdpewaSession {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build a backend that shares this session's cancel slot and in-flight guard.
+    #[must_use]
+    pub fn backend(&self, parent_hwnd: isize) -> WindowsRdpewaBackend {
+        WindowsRdpewaBackend {
+            parent_hwnd,
+            cancel_guid: Arc::clone(&self.cancel_guid),
+            in_flight: Arc::clone(&self.in_flight),
+        }
+    }
 }
 
 /// Windows Hello / security-key backend for [`ironrdp_rdpewa::RdpewaClient`].
@@ -48,18 +69,18 @@ pub struct WindowsRdpewaBackend {
     /// Parent window handle stored as integer so the backend is `Send`.
     parent_hwnd: isize,
     cancel_guid: Arc<Mutex<Option<GUID>>>,
+    in_flight: Arc<AtomicBool>,
 }
 
 impl WindowsRdpewaBackend {
     /// Create a backend that parents WebAuthn UI to `parent_hwnd`.
     ///
     /// Pass the ActiveX control HWND (or another top-level window handle).
+    /// Prefer [`WindowsRdpewaSession::backend`] when channel instances are recreated so cancel and
+    /// in-flight state stay scoped to one session.
     #[must_use]
     pub fn new(parent_hwnd: isize) -> Self {
-        Self {
-            parent_hwnd,
-            cancel_guid: shared_cancel_guid(),
-        }
+        WindowsRdpewaSession::new().backend(parent_hwnd)
     }
 
     fn platform_device_info(transports: u32, resident_key: Option<bool>) -> DeviceInfo {
@@ -82,8 +103,12 @@ impl WindowsRdpewaBackend {
 
 impl Drop for WindowsRdpewaBackend {
     fn drop(&mut self) {
-        // Best-effort: dismiss an open WebAuthn prompt when the session tears down.
-        let _ = cancel_guid_slot(&self.cancel_guid, None);
+        // Best-effort: dismiss an open WebAuthn prompt when the last backend for this session drops
+        // while a ceremony is still marked in-flight.
+        if self.in_flight.load(Ordering::Acquire) {
+            let _ = cancel_guid_slot(&self.cancel_guid, None);
+            self.in_flight.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -113,26 +138,46 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
         request: WebAuthnOperationRequest,
         mut reply: RdpewaResponseSender,
     ) -> RdpewaResult<WebAuthnDispatch> {
+        if self
+            .in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(RdpewaHandlerError::new(
+                E_BUSY,
+                "WebAuthn operation already in progress for this session",
+            ));
+        }
+
         let parent_hwnd = self.parent_hwnd;
         let cancel_guid = Arc::clone(&self.cancel_guid);
+        let in_flight = Arc::clone(&self.in_flight);
 
         // Remember host-supplied cancel id so CancelCurOp on a later channel recreate can abort.
         if let Some(id) = request.para.cancellation_id.as_deref().and_then(guid_from_bytes) {
             *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
         }
 
-        thread::Builder::new()
+        let spawn_result = thread::Builder::new()
             .name("ironrdp-rdpewa-webauthn".into())
             .spawn(move || {
+                let finish =
+                    |cancel_guid: &Arc<Mutex<Option<GUID>>>, in_flight: &AtomicBool, completed: Option<GUID>| {
+                        clear_cancel_if_matches(cancel_guid, completed);
+                        in_flight.store(false, Ordering::Release);
+                    };
+
                 let hwnd = resolve_parent_hwnd(parent_hwnd);
                 info!(
                     parent_hwnd,
-                                    resolved_hwnd = hwnd.0.addr(),
+                    resolved_hwnd = hwnd.0.addr(),
                     client_data_json_len = request.client_data_json.len(),
                     raw_request_len = request.raw_request.len(),
                     ?request.subcommand,
                     "Starting native WebAuthn operation"
                 );
+
+                let host_cancel = request.para.cancellation_id.as_deref().and_then(guid_from_bytes);
 
                 // Prefer webauthn.dll oneshot (MSTSC remote-RPC path). It handles hash-only hosts
                 // that omit clientDataJSON; public WebAuthN* cannot.
@@ -150,15 +195,19 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
                                 "WebAuthn completed via webauthn.dll oneshot"
                             );
                             reply.send_raw(response_pdu);
-                            *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            finish(&cancel_guid, &in_flight, host_cancel);
                             return;
                         }
                         Err(err) => {
-                            // Fall through to public WebAuthN* only when the host supplied JSON.
-                            if request.client_data_json.is_empty() {
-                                warn!(error = %err, "webauthn.dll oneshot failed (hash-only; no public API fallback)");
+                            // Never fall back after a oneshot timeout/cancel: the COM thread may
+                            // still own a modal Windows Security prompt.
+                            if err.hresult == E_ABORT
+                                || request.client_data_json.is_empty()
+                                || !err.allow_public_fallback
+                            {
+                                warn!(error = %err, "webauthn.dll oneshot failed without public API fallback");
                                 reply.send(RdpewaResponse::from_hresult(err.hresult));
-                                *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                                finish(&cancel_guid, &in_flight, host_cancel);
                                 return;
                             }
                             warn!(
@@ -170,12 +219,12 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
                 } else if request.client_data_json.is_empty() {
                     warn!("missing clientDataJSON and raw RDPEWA request");
                     reply.send(RdpewaResponse::from_hresult(E_INVALIDARG));
-                    *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    finish(&cancel_guid, &in_flight, host_cancel);
                     return;
                 }
 
                 let outcome = run_webauthn_operation(hwnd, &request, &cancel_guid);
-                *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                let completed = host_cancel.or_else(|| *cancel_guid.lock().unwrap_or_else(|e| e.into_inner()));
                 match outcome {
                     Ok(result) => {
                         let payload = WebAuthnResponsePayload {
@@ -190,14 +239,33 @@ impl RdpewaClientHandler for WindowsRdpewaBackend {
                         reply.send(RdpewaResponse::from_hresult(err.hresult));
                     }
                 }
-            })
-            .map_err(|_| RdpewaHandlerError::fail("failed to spawn WebAuthn worker thread"))?;
+                finish(&cancel_guid, &in_flight, completed);
+            });
 
-        Ok(WebAuthnDispatch::Async)
+        match spawn_result {
+            Ok(_) => Ok(WebAuthnDispatch::Async),
+            Err(_) => {
+                self.in_flight.store(false, Ordering::Release);
+                Err(RdpewaHandlerError::fail("failed to spawn WebAuthn worker thread"))
+            }
+        }
     }
 }
 
-fn run_via_webauthn_dll_oneshot(request: &WebAuthnOperationRequest) -> RdpewaResult<Vec<u8>> {
+/// Oneshot outcome used by the native backend to decide whether public WebAuthN* fallback is safe.
+struct OneshotError {
+    hresult: u32,
+    message: &'static str,
+    allow_public_fallback: bool,
+}
+
+impl core::fmt::Display for OneshotError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} (HRESULT 0x{:08X})", self.message, self.hresult)
+    }
+}
+
+fn run_via_webauthn_dll_oneshot(request: &WebAuthnOperationRequest) -> Result<Vec<u8>, OneshotError> {
     info!(
         request_len = request.raw_request.len(),
         client_data_json_len = request.client_data_json.len(),
@@ -205,10 +273,18 @@ fn run_via_webauthn_dll_oneshot(request: &WebAuthnOperationRequest) -> RdpewaRes
         "Forwarding RDPEWA request through webauthn.dll oneshot"
     );
 
-    ironrdp_dvc_com_plugin::process_webauthn_dll_request(&request.raw_request).map_err(|message| {
-        warn!(%message, "webauthn.dll oneshot failed");
-        RdpewaHandlerError::new(E_FAIL, "webauthn.dll oneshot failed")
-    })
+    let cancellation_id = request.para.cancellation_id.as_deref().unwrap_or(&[]);
+    match ironrdp_dvc_com_plugin::process_webauthn_dll_request(&request.raw_request, cancellation_id) {
+        Ok(bytes) => Ok(bytes),
+        Err(err) => {
+            warn!(error = %err, "webauthn.dll oneshot failed");
+            Err(OneshotError {
+                hresult: err.hresult,
+                message: err.message,
+                allow_public_fallback: err.allow_public_fallback,
+            })
+        }
+    }
 }
 
 /// Prefer the configured parent HWND; if unset, fall back to the foreground window so agent/daemon
@@ -570,14 +646,15 @@ fn resolve_cancel_id(request: &WebAuthnOperationRequest, cancel_guid: &Arc<Mutex
 
 fn cancel_guid_slot(slot: &Arc<Mutex<Option<GUID>>>, preferred: Option<GUID>) -> RdpewaResult<()> {
     let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
-    let guid = preferred.or_else(|| guard.take());
-    if preferred.is_some() {
-        // Clear the slot when it matches the cancelled operation.
-        if let (Some(preferred), Some(current)) = (preferred, *guard)
-            && preferred == current
-        {
+    let guid = preferred.or(*guard);
+    if let Some(preferred) = preferred {
+        // Clear the slot only when it still tracks the cancelled operation.
+        if *guard == Some(preferred) {
             *guard = None;
         }
+    } else {
+        // Drop path / best-effort cancel of whatever this session owns.
+        let _ = guard.take();
     }
     drop(guard);
 
@@ -589,6 +666,17 @@ fn cancel_guid_slot(slot: &Arc<Mutex<Option<GUID>>>, preferred: Option<GUID>) ->
         debug!("No in-flight WebAuthn operation to cancel");
     }
     Ok(())
+}
+
+fn clear_cancel_if_matches(slot: &Arc<Mutex<Option<GUID>>>, completed: Option<GUID>) {
+    let Some(completed) = completed else {
+        return;
+    };
+    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+    // Clear only when the slot still tracks this completed ceremony.
+    if *guard == Some(completed) {
+        *guard = None;
+    }
 }
 
 fn guid_from_bytes(bytes: &[u8]) -> Option<GUID> {

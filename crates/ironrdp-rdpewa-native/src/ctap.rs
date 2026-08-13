@@ -53,20 +53,16 @@ pub(crate) fn parse_make_credential(ctap_cbor: &[u8]) -> Result<MakeCredentialCt
     let user_name = text_field(user_map, "name");
     let user_display_name = text_field(user_map, "displayName");
 
-    let mut algorithms = Vec::new();
-    if let Some(params) = map_get(map, MAKECRED_PUB_KEY_CRED_PARAMS) {
-        let arr = params.as_array().map_err(|_| "pubKeyCredParams is not an array")?;
-        for item in arr {
-            if let Ok(param_map) = item.as_map() {
-                if let Some(alg) = map_get_text_i32(param_map, "alg") {
-                    algorithms.push(alg);
-                }
-            }
-        }
+    let params = map_get(map, MAKECRED_PUB_KEY_CRED_PARAMS).ok_or("missing pubKeyCredParams")?;
+    let arr = params.as_array().map_err(|_| "pubKeyCredParams is not an array")?;
+    if arr.is_empty() {
+        return Err("pubKeyCredParams is empty");
     }
-    if algorithms.is_empty() {
-        // ES256 is the common default for Windows Hello / security keys.
-        algorithms.push(-7);
+    let mut algorithms = Vec::with_capacity(arr.len());
+    for item in arr {
+        let param_map = item.as_map().map_err(|_| "pubKeyCredParams entry is not a map")?;
+        let alg = map_get_text_i32(param_map, "alg").ok_or("pubKeyCredParams entry missing alg")?;
+        algorithms.push(alg);
     }
 
     let exclude_credential_ids = map_get(map, MAKECRED_EXCLUDE_LIST)

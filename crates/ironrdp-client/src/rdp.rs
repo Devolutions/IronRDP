@@ -51,12 +51,14 @@ use crate::config::ClipboardType;
 use ironrdp_cliprdr::backend::ClipboardMessage;
 #[cfg(all(windows, feature = "dvc-com-plugin"))]
 use ironrdp_dvc_com_plugin::load_dvc_plugin_listeners;
+#[cfg(all(windows, feature = "webauthn"))]
+use ironrdp_dvc_com_plugin::system_webauthn_dll_path;
 #[cfg(feature = "dvc-pipe-proxy")]
 use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
 #[cfg(all(windows, feature = "webauthn"))]
 use ironrdp_rdpewa::{RdpewaClient, RdpewaClientListener};
 #[cfg(all(windows, feature = "webauthn"))]
-use ironrdp_rdpewa_native::WindowsRdpewaBackend;
+use ironrdp_rdpewa_native::WindowsRdpewaSession;
 #[cfg(feature = "sound")]
 use ironrdp_rdpsnd_native::{RdpeaiCaptureBackend, cpal};
 
@@ -875,8 +877,7 @@ fn build_connector(
         });
         if force_native {
             info!("IRONRDP_WEBAUTHN_FORCE_NATIVE set; skipping webauthn.dll COM path");
-        } else {
-            let webauthn_dll = std::path::PathBuf::from(r"C:\Windows\System32\webauthn.dll");
+        } else if let Some(webauthn_dll) = system_webauthn_dll_path() {
             let sender_clone = input_sender.clone();
             match load_dvc_plugin_listeners(&webauthn_dll, move || {
                 let sender = sender_clone.clone();
@@ -891,6 +892,7 @@ fn build_connector(
                     for listener in listeners {
                         info!(
                             channel_name = %listener.channel_name(),
+                            dll = %webauthn_dll.display(),
                             "Registering webauthn.dll COM DVC channel listener"
                         );
                         if listener.channel_name() == ironrdp_rdpewa::CHANNEL_NAME {
@@ -909,6 +911,8 @@ fn build_connector(
                     );
                 }
             }
+        } else {
+            warn!("Failed to resolve System32\\webauthn.dll; falling back to native RDPEWA backend");
         }
 
         if !webauthn_com_loaded {
@@ -921,9 +925,12 @@ fn build_connector(
                     .map_err(|_| pdu_other_err!("send RDPEWA DVC messages to the event loop"))?;
                 Ok(())
             });
+            // One session object is shared across channel recreates for cancel + in-flight state.
+            let session = WindowsRdpewaSession::new();
             drdynvc = drdynvc.with_listener(RdpewaClientListener::new(move || {
                 let write_callback = Arc::clone(&write_callback);
-                RdpewaClient::new(Box::new(WindowsRdpewaBackend::new(parent_hwnd)))
+                let session = session.clone();
+                RdpewaClient::new(Box::new(session.backend(parent_hwnd)))
                     .with_write_callback(move |channel_id, messages| write_callback(channel_id, messages))
             }));
         }

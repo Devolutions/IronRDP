@@ -20,6 +20,8 @@ pub const E_FAIL: u32 = 0x8000_4005;
 pub const E_INVALIDARG: u32 = 0x8007_0057;
 /// HRESULT `E_ABORT` (operation cancelled).
 pub const E_ABORT: u32 = 0x8000_4004;
+/// HRESULT `HRESULT_FROM_WIN32(ERROR_BUSY)` — ceremony already in progress.
+pub const E_BUSY: u32 = 0x8007_00AA;
 
 /// MS-RDPEWA RPC command identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

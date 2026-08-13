@@ -11,9 +11,15 @@ use crate::pdu::{E_NOTIMPL, RdpewaRequest, RdpewaResponse, RpcCommand, S_OK};
 /// Server-side skeleton that accepts the channel and answers simple RPCs.
 ///
 /// This is not a full host authenticator service. WEB_AUTHN returns `E_NOTIMPL`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RdpewaServer {
     api_version: u32,
+}
+
+impl Default for RdpewaServer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RdpewaServer {
