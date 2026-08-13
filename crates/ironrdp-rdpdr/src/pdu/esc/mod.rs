@@ -331,10 +331,7 @@ impl ndr::Decode for ScardContext {
                 "ScardContext cbContext/pbContext inconsistency"
             ));
         }
-        Ok(Self {
-            len,
-            bytes: [0; 8],
-        })
+        Ok(Self { len, bytes: [0; 8] })
     }
 
     fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<()> {
