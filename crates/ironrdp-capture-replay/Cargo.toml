@@ -13,7 +13,10 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+aes-gcm = "0.10"
+hmac = "0.12"
 pcap-parser = "0.17"
+sha2 = "0.10"
 thiserror = "2"
 zeroize = "1.8"
 
