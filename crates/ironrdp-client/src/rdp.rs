@@ -789,6 +789,9 @@ fn build_rdpdr_channel(
         .collect::<Vec<_>>();
 
     // Do not advertise drive capability for smartcard-only products.
+    // Skipping `with_drives` omits CAP_DRIVE_REDIRECT, so later
+    // `Rdpdr::add_dynamic_drive` hot-plug is unavailable on that session.
+    // Prefer attaching an empty drive list only when drive hot-plug is required.
     let mut rdpdr_channel = ironrdp_rdpdr::Rdpdr::new(backend, "IronRDP".to_owned());
     if !initial_drives.is_empty() {
         rdpdr_channel = rdpdr_channel.with_drives(Some(initial_drives));

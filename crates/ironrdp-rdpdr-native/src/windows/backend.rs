@@ -172,10 +172,11 @@ impl RdpdrBackend for WindowsRdpdrBackend {
         req: DeviceControlRequest<ScardIoCtlCode>,
         call: ScardCall,
     ) -> PduResult<Vec<SvcMessage>> {
-        match self.scard.as_mut() {
-            Some(scard) => scard.handle_call(req, call),
-            None => Ok(Vec::new()),
-        }
+        // Always complete MS-RDPESC IRPs. The channel may announce device ID 0
+        // even when the factory left `with_smartcard(false)`, and dropping the
+        // IRP hangs the server. Lazy-create the stub session on first use so
+        // announce and backend cannot diverge.
+        self.scard.get_or_insert_with(ScardSession::new).handle_call(req, call)
     }
 
     fn add_drive(&mut self, device_id: u32) -> PduResult<()> {
@@ -244,6 +245,9 @@ pub(super) struct OpenFile {
 
 #[cfg(test)]
 mod tests {
+    use ironrdp_rdpdr::pdu::efs::{DeviceIoRequest, MajorFunction, MinorFunction};
+    use ironrdp_rdpdr::pdu::esc::{EstablishContextCall, ScardIoCtlCode, Scope};
+
     use super::*;
 
     #[test]
@@ -263,5 +267,35 @@ mod tests {
 
         assert!(backend.roots.contains_key(&1));
         assert!(backend.roots.contains_key(&2));
+    }
+
+    #[test]
+    fn scard_irp_completes_when_factory_smartcard_flag_is_off() {
+        // Channel announce can enable device 0 without factory.with_smartcard(true).
+        let mut backend = WindowsRdpdrBackend::from_drives(Vec::new(), false);
+        assert!(backend.scard.is_none());
+
+        let req = DeviceControlRequest {
+            header: DeviceIoRequest {
+                device_id: 0,
+                file_id: 0,
+                completion_id: 11,
+                major_function: MajorFunction::DeviceControl,
+                minor_function: MinorFunction::from(0),
+            },
+            output_buffer_length: 2048,
+            input_buffer_length: 0,
+            io_control_code: ScardIoCtlCode::EstablishContext,
+        };
+
+        let messages = ironrdp_rdpdr::RdpdrBackend::handle_scard_call(
+            &mut backend,
+            req,
+            ScardCall::EstablishContextCall(EstablishContextCall { scope: Scope::User }),
+        )
+        .expect("lazy stub must complete the IRP");
+
+        assert_eq!(messages.len(), 1);
+        assert!(backend.scard.is_some());
     }
 }
