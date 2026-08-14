@@ -945,9 +945,14 @@ impl rpce::HeaderlessEncode for ListReadersReturn {
         dst.write_u32(self.return_code.into());
         match &self.readers {
             Some(readers) => {
+                let c_bytes: u32 = cast_length!(
+                    "ListReadersReturn",
+                    "readers",
+                    encoded_multistring_len(readers, self.encoding)
+                )?;
                 let mut index = 0;
-                ndr::encode_ptr(Some(self.c_bytes), &mut index, dst)?;
-                dst.write_u32(self.c_bytes);
+                ndr::encode_ptr(Some(c_bytes), &mut index, dst)?;
+                dst.write_u32(c_bytes);
                 write_multistring_to_cursor(dst, readers, self.encoding)?;
             }
             None => {
@@ -1987,13 +1992,18 @@ impl rpce::HeaderlessEncode for StatusReturn {
         dst.write_u32(self.return_code.into());
         match &self.reader_names {
             Some(names) => {
+                let c_bytes: u32 = cast_length!(
+                    "StatusReturn",
+                    "reader_names",
+                    encoded_multistring_len(names, self.encoding)
+                )?;
                 let mut index = 0;
-                ndr::encode_ptr(Some(self.reader_c_bytes), &mut index, dst)?;
+                ndr::encode_ptr(Some(c_bytes), &mut index, dst)?;
                 dst.write_u32(self.state.into());
                 dst.write_u32(self.protocol.bits());
                 dst.write_slice(&self.atr);
                 dst.write_u32(self.atr_length);
-                dst.write_u32(self.reader_c_bytes);
+                dst.write_u32(c_bytes);
                 write_multistring_to_cursor(dst, names, self.encoding)?;
             }
             None => {
@@ -3137,6 +3147,17 @@ mod tests {
         let list_probe = ListReadersReturn::probe(ReturnCode::InsufficientBuffer, 12, CharacterSet::Ansi).into_inner();
         assert_eq!(enc_headerless(&list_full).len(), HeaderlessEncode::size(&list_full));
         assert_eq!(enc_headerless(&list_probe).len(), HeaderlessEncode::size(&list_probe));
+        let list_with_stale_length = ListReadersReturn {
+            return_code: ReturnCode::Success,
+            encoding: CharacterSet::Unicode,
+            c_bytes: 0,
+            readers: Some(vec!["RDR".into()]),
+        };
+        assert_eq!(
+            enc_headerless(&list_with_stale_length),
+            enc_headerless(&list_full),
+            "full replies derive cBytes from their live multistring"
+        );
 
         let xmit_full = TransmitReturn::new(ReturnCode::Success, None, vec![0x90, 0x00]).into_inner();
         let xmit_probe = TransmitReturn::recv_probe(ReturnCode::Success, None, 256).into_inner();
@@ -3171,6 +3192,21 @@ mod tests {
         assert_eq!(
             enc_headerless(&status_probe).len(),
             HeaderlessEncode::size(&status_probe)
+        );
+        let status_with_stale_length = StatusReturn {
+            return_code: ReturnCode::Success,
+            reader_names: Some(vec!["RDR".into()]),
+            reader_c_bytes: 0,
+            state: CardState::Present,
+            protocol: CardProtocol::SCARD_PROTOCOL_T0,
+            atr,
+            atr_length: 5,
+            encoding: CharacterSet::Unicode,
+        };
+        assert_eq!(
+            enc_headerless(&status_with_stale_length),
+            enc_headerless(&status_full),
+            "full replies derive cBytes from their live multistring"
         );
 
         let state_full = StateReturn::new(
