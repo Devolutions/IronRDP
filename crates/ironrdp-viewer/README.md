@@ -24,6 +24,9 @@ You can provide the hostname and credentials through environment variables inste
 RDP_HOSTNAME=<HOSTNAME> RDP_USERNAME=<USERNAME> RDP_PASSWORD=<PASSWORD> ironrdp-viewer
 ```
 
+On Windows, pass `--smartcard` (or set `ironrdp_smartcard:i:1` in a `.rdp` file) to redirect local smart cards through WinSCard.
+RPC mode (`--rpc`) enables smartcard the same way via agent connect properties (`ironrdp_smartcard` / sandbox `SmartCardRedirection`).
+
 ## Agent RPC host
 
 The viewer can host the same local RPC protocol used by `ironrdp-agent`, while keeping its visible
@@ -62,6 +65,7 @@ Currently supported properties:
 - `alternate shell:s:<value>`
 - `shell working directory:s:<value>`
 - `redirectclipboard:i:<0|1>`
+- `ironrdp_smartcard:i:<0|1>` (Windows WinSCard smartcard redirection)
 - `audiomode:i:<0|1|2>`
 - `desktopwidth:i:<value>`
 - `desktopheight:i:<value>`

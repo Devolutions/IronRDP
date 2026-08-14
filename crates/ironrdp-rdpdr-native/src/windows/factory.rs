@@ -100,13 +100,17 @@ impl core::error::Error for RedirectedDriveError {}
 #[derive(Clone, Debug)]
 pub struct WindowsRdpdrBackendFactory {
     drives: Vec<RedirectedDrive>,
+    smartcard: bool,
 }
 
 impl WindowsRdpdrBackendFactory {
     /// Configures the single logical-volume root supported by this baseline.
     #[must_use]
     pub fn new(drive: RedirectedDrive) -> Self {
-        Self { drives: vec![drive] }
+        Self {
+            drives: vec![drive],
+            smartcard: false,
+        }
     }
 
     /// Configures the logical-volume roots selected for one connection.
@@ -118,7 +122,30 @@ impl WindowsRdpdrBackendFactory {
             }
         }
 
-        Ok(Self { drives })
+        Ok(Self {
+            drives,
+            smartcard: false,
+        })
+    }
+
+    /// Records whether products intend WinSCard smartcard redirection with this factory.
+    ///
+    /// This is product configuration state used when cloning or resolving factories (for example
+    /// smartcard-only sessions with an empty drive list). The Windows backend always includes a
+    /// `ScardSession`; MS-RDPESC IRPs only arrive after the portable channel announces the device
+    /// via [`ironrdp_rdpdr::Rdpdr::with_smartcard`] / the client builder. Products must keep that
+    /// announcement aligned with this flag and must not attach an empty-drive factory when the flag
+    /// is `false`.
+    #[must_use]
+    pub fn with_smartcard(mut self, enabled: bool) -> Self {
+        self.smartcard = enabled;
+        self
+    }
+
+    /// Returns whether products requested WinSCard smartcard redirection on this factory.
+    #[must_use]
+    pub fn smartcard(&self) -> bool {
+        self.smartcard
     }
 
     /// Returns the initial `(device_id, name)` pair for `Rdpdr::with_drives`.
@@ -212,6 +239,16 @@ mod tests {
             factory.initial_drives(),
             vec![(1, "System".to_owned()), (2, "Data".to_owned())]
         );
+    }
+
+    #[test]
+    fn factory_tracks_smartcard_enablement() {
+        let factory = WindowsRdpdrBackendFactory::from_drives(Vec::new())
+            .expect("empty drive list is valid")
+            .with_smartcard(true);
+        assert!(factory.smartcard());
+        assert!(factory.initial_drives().is_empty());
+        assert!(!factory.with_smartcard(false).smartcard());
     }
 
     #[test]

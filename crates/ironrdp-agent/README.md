@@ -34,6 +34,12 @@ For example, `ironrdp-agent daemon-start --rdpdr-drive System=C:\ --rdpdr-drive 
 Each root must be a unique existing local volume root in the exact `C:\` form, and each protocol-visible name must be unique case-insensitively and contain at most seven ASCII letters, numbers, spaces, underscores, hyphens, periods, or a trailing colon.
 The configured drives are fixed for the daemon lifetime; hot-plug and rescan are not supported.
 
+## Windows smartcard redirection
+
+On Windows, enable WinSCard smartcard redirection with `daemon-start --smartcard`, overlay/connect property `ironrdp_smartcard:i:1`, or a sandbox config with `SmartCardRedirection` enabled.
+Smartcard can be enabled without redirected drives (smartcard-only RDPDR).
+Connect-time `ironrdp_smartcard:i:0` disables it for that session even when the daemon was started with `--smartcard`.
+
 ## TLS certificate validation
 
 The daemon performs strict certificate and hostname validation by default.

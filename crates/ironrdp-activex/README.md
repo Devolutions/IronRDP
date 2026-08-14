@@ -283,8 +283,9 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio, clipboard, CredSSP, client-device name, RemoteApp, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
 | Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, writable confirm-close, and worker-backed warning and auto-reconnect events are delivered on the creating apartment. |
 | Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. Non-filesystem device, camera, monitor, and preferred-redirection capabilities remain unavailable. |
+| Smartcard redirection | `IMsRdpClientAdvancedSettings::RedirectSmartCards` enables WinSCard RDPDR smartcard redirection (smartcard-only sessions are valid without redirected drives). |
 
-The audit also identified RDM settings that have no IronRDP ActiveX backend: input throttling, authentication policy, device/printer/port/smart-card redirection, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
+The audit also identified RDM settings that have no IronRDP ActiveX backend: input throttling, authentication policy, device/printer/port redirection, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
 Their audited AdvancedSettings vtable slots use their exact published ABI signatures, initialize out parameters, and return `E_NOTIMPL`; the control does not report success for settings that cannot affect the connection.
 
 The control exposes a standard `IConnectionPointContainer` and an event connection point for the
