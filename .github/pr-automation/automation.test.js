@@ -16,6 +16,9 @@ const {
 const { resolvePr } = require("./resolve-pr");
 const { StaleHeadError, applyLabels, escapeMarkdown, markerBody, writeState } = require("./write-state");
 const { forkRateLimit } = require("./fork-rate-limit");
+const {
+  MAX_BODY_LENGTH, MAX_COMMENT_LENGTH, MAX_COMMENTS, fetchReviewContext,
+} = require("./fetch-review-context");
 const { encodeCheckState, parseCheckState } = require("./validate-classifier");
 const {
   corpusFromDirectory, notApplicableHandoff, validateProtocolReview,
@@ -237,6 +240,100 @@ test("review skills own methodology while stage prompts own pipeline contracts",
     assert.match(stagePrompt, /pr-evidence\/changed-files\.txt/);
     assert.match(stagePrompt, /Return only the required .*JSON/);
   }
+  assert.match(skepticalPrompt, /pr-evidence\/pull-request-context\.json/);
+  const skepticalJob = workflowJob(workflow, "skeptical-reviewer");
+  assert.match(skepticalJob, /issues: read/);
+  assert.match(skepticalJob, /pull-requests: read/);
+  assert.match(skepticalJob, /fetchReviewContext/);
+});
+
+test("review context is bounded and tied to the reviewed head", async () => {
+  const comments = Array.from({ length: MAX_COMMENTS + 2 }, (_, index) => ({
+    body: index === MAX_COMMENTS + 1 ? "x".repeat(MAX_COMMENT_LENGTH + 1) : `comment ${index}`,
+    created_at: new Date(index * 1_000).toISOString(),
+    user: { login: `user-${index}`, type: "User" },
+    author_association: "CONTRIBUTOR",
+  }));
+  comments.push({
+    body: "ignored bot comment",
+    created_at: new Date(comments.length * 1_000).toISOString(),
+    user: { login: "bot", type: "Bot" },
+  });
+  const submittedReview = {
+    body: "review rationale",
+    submitted_at: new Date((MAX_COMMENTS + 0.5) * 1_000).toISOString(),
+    user: { login: "reviewer", type: "User" },
+    author_association: "MEMBER",
+  };
+  let pullRequestReads = 0;
+  const github = {
+    rest: {
+      issues: { listComments: Symbol("issue-comments") },
+      pulls: {
+        get: async () => {
+          pullRequestReads += 1;
+          return { data: {
+            number: 7, title: "Refactor", body: "b".repeat(MAX_BODY_LENGTH + 1),
+            user: { login: "author" }, head: { sha: SHA },
+          } };
+        },
+        listReviewComments: Symbol("review-comments"),
+        listReviews: Symbol("reviews"),
+      },
+    },
+    paginate: async (endpoint) => {
+      if (endpoint === github.rest.issues.listComments) return comments;
+      if (endpoint === github.rest.pulls.listReviews) {
+        return [{ ...submittedReview, created_at: submittedReview.submitted_at }];
+      }
+      return [];
+    },
+  };
+
+  const context = await fetchReviewContext({
+    github, owner: "Devolutions", repo: "IronRDP", pullNumber: 7, expectedHeadSha: SHA,
+  });
+  assert.equal(context.pull_request.body.length, MAX_BODY_LENGTH);
+  assert.equal(context.pull_request.body_truncated, true);
+  assert.equal(context.comments.length, MAX_COMMENTS);
+  assert.equal(context.comments.at(-1).body.length, MAX_COMMENT_LENGTH);
+  assert.equal(context.comments.at(-1).body_truncated, true);
+  assert.equal(context.comments.some((comment) =>
+    comment.kind === "review-body" && comment.body === "review rationale"), true);
+  assert.equal(context.comments_omitted, 3);
+  assert.equal(pullRequestReads, 2);
+
+  await assert.rejects(
+    fetchReviewContext({
+      github, owner: "Devolutions", repo: "IronRDP", pullNumber: 7, expectedHeadSha: OTHER_SHA,
+    }),
+    /head changed/,
+  );
+
+  let racingReads = 0;
+  const racingGithub = {
+    ...github,
+    rest: {
+      ...github.rest,
+      pulls: {
+        ...github.rest.pulls,
+        get: async () => {
+          racingReads += 1;
+          return { data: { head: { sha: racingReads === 1 ? SHA : OTHER_SHA } } };
+        },
+      },
+    },
+  };
+  await assert.rejects(
+    fetchReviewContext({
+      github: racingGithub,
+      owner: "Devolutions",
+      repo: "IronRDP",
+      pullNumber: 7,
+      expectedHeadSha: SHA,
+    }),
+    /head changed/,
+  );
 });
 
 test("LLM evidence is bound to the resolved pull request base", () => {

@@ -92,7 +92,7 @@ A high-confidence non-legitimate classifier result adds `triage/legitimacy`, rec
 
 ### Inputs
 
-Every LLM stage receives the same evidence from `.github/pr-automation/fetch-pr-evidence.sh`, which runs from the trusted base checkout.
+Every LLM stage receives diff evidence from `.github/pr-automation/fetch-pr-evidence.sh`, which runs from the trusted base checkout.
 Each Claude action uses only an explicit file or skill invocation, which injects no pull request context of its own.
 `Bash` is denied, so a model cannot derive a diff by itself.
 Trusted workflow code writes the target head SHA and handoff-receipt status to `pr-automation-context.json` instead of interpolating them into instructions.
@@ -100,6 +100,9 @@ Trusted workflow code writes the target head SHA and handoff-receipt status to `
 The evidence script writes `pr-evidence/changed-files.txt` and `pr-evidence/pull-request.diff`.
 Both files are computed from the merge base of the resolved base and head SHAs so they match GitHub's pull request file list without racing changes to `master`.
 The head tree remains available in `pr-head` for surrounding context.
+The skeptical reviewer additionally receives `pr-evidence/pull-request-context.json`, collected with read-only issue and pull-request permissions.
+It contains a bounded PR description and non-bot conversation, inline-review, and submitted-review comments.
+The collector verifies the head before and after collection, and the model treats all supplied prose as untrusted evidence.
 
 Before exposing that tree to filesystem-reading tools, the script removes every symlink so a pull request cannot redirect a read outside the checkout.
 It also recursively removes contributor-controlled agent instruction files: `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `.claude`, `.cursor`, and `.cursorrules`.
