@@ -237,6 +237,30 @@ impl ScardContext {
         tmp[..n].copy_from_slice(&self.bytes[..n]);
         u32::from_le_bytes(tmp)
     }
+
+    /// Creates a context from a native WinSCard `SCARDCONTEXT` (4 bytes on x86, 8 on x64).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `size_of::<usize>()` does not fit in `u8` (never on supported targets).
+    pub fn from_native(native: usize) -> Self {
+        let le = native.to_le_bytes();
+        let mut bytes = [0u8; 16];
+        bytes[..le.len()].copy_from_slice(&le);
+        Self {
+            // INVARIANT: `size_of::<usize>()` is 4 or 8, both fit in `u8`.
+            len: u8::try_from(le.len()).expect("usize byte length fits in u8"),
+            bytes,
+        }
+    }
+
+    /// Native WinSCard `SCARDCONTEXT` value (0 when empty).
+    pub fn native(self) -> usize {
+        let mut tmp = [0u8; size_of::<usize>()];
+        let n = usize::from(self.len).min(size_of::<usize>());
+        tmp[..n].copy_from_slice(&self.bytes[..n]);
+        usize::from_le_bytes(tmp)
+    }
 }
 
 impl ndr::Encode for ScardContext {
@@ -1454,6 +1478,31 @@ impl ScardHandle {
         let n = usize::from(self.len).min(4);
         tmp[..n].copy_from_slice(&self.bytes[..n]);
         u32::from_le_bytes(tmp)
+    }
+
+    /// Creates a handle from a native WinSCard `SCARDHANDLE` (4 bytes on x86, 8 on x64).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `size_of::<usize>()` does not fit in `u8` (never on supported targets).
+    pub fn from_native(context: ScardContext, native: usize) -> Self {
+        let le = native.to_le_bytes();
+        let mut bytes = [0u8; 16];
+        bytes[..le.len()].copy_from_slice(&le);
+        Self {
+            context,
+            // INVARIANT: `size_of::<usize>()` is 4 or 8, both fit in `u8`.
+            len: u8::try_from(le.len()).expect("usize byte length fits in u8"),
+            bytes,
+        }
+    }
+
+    /// Native WinSCard `SCARDHANDLE` value (0 when empty).
+    pub fn native(self) -> usize {
+        let mut tmp = [0u8; size_of::<usize>()];
+        let n = usize::from(self.len).min(size_of::<usize>());
+        tmp[..n].copy_from_slice(&self.bytes[..n]);
+        usize::from_le_bytes(tmp)
     }
 }
 
