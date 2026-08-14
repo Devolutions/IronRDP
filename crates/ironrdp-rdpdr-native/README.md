@@ -22,10 +22,13 @@ Native backend building blocks for the IronRDP RDPDR static channel.
   `FSCTL_GET_INTEGRITY_INFORMATION`, and `FSCTL_QUERY_ALLOCATED_RANGES`, all
   with validated, bounded buffers.
   - Smartcard-only products are valid when the channel is configured with `ironrdp_rdpdr::Rdpdr::with_smartcard(0)`.
-      The Windows backend implements a WinSCard core path for logon-critical MS-RDPESC IOCTLs
-      (context, readers, status-change, connect/transmit/status/state, and related card ops).
-      ANSI IOCTLs are upgraded to UTF-16 and executed through WinSCard `*W` APIs; StatusA replies keep ANSI charset on the wire.
-      Extended calls (LocateCards, Control, attrib/cache/icon, reader-group admin) still return typed `SCARD_E_UNSUPPORTED_FEATURE`.
+        The Windows backend implements a WinSCard path for MS-RDPESC IOCTLs: core logon ops
+        (context, readers, status-change, connect/transmit/status/state) plus extended calls
+        (LocateCards/LocateCardsByATR, Control, Get/SetAttrib, GetTransmitCount, Read/WriteCache,
+        GetReaderIcon, GetDeviceTypeId, and ContextAndString/TwoString reader-group admin).
+        ANSI IOCTLs are upgraded to UTF-16 and executed through WinSCard `*W` APIs; StatusA/List*A
+        replies keep ANSI charset on the wire. Buffer probes follow the same NULL/INSUFFICIENT_BUFFER
+        discipline as the core path. Product wiring (daemon/agent/viewer/ActiveX) remains separate.
 
 The Windows implementation is intentionally layered so protocol code remains
 platform independent in `ironrdp-rdpdr`.

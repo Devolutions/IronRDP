@@ -1,5 +1,5 @@
-//! Windows WinSCard core backend for MS-RDPESC (A IOCTLs call *W; A replies stay ANSI).
-//! Extended IOCTLs: typed `SCARD_E_UNSUPPORTED_FEATURE` (follow-up PR).
+//! Windows WinSCard backend for MS-RDPESC (A IOCTLs call *W; A replies stay ANSI).
+//! Covers core + extended IOCTLs (LocateCards, Control, attrib/cache/icon, reader admin).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
@@ -11,28 +11,38 @@ use ironrdp_pdu::utils::{CharacterSet, encoded_multistring_len};
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::{DeviceControlRequest, DeviceControlResponse, NtStatus};
 use ironrdp_rdpdr::pdu::esc::{
-    CardProtocol, CardState, CardStateFlags, ConnectCall, ConnectReturn, ContextCall, ControlReturn,
-    EstablishContextCall, EstablishContextReturn, GetAttribReturn, GetDeviceTypeIdReturn, GetReaderIconReturn,
-    GetStatusChangeCall, GetStatusChangeReturn, GetTransmitCountReturn, HCardAndDispositionCall, ListReaderGroupsCall,
-    ListReadersCall, ListReadersReturn, LongReturn, ReadCacheReturn, ReaderState, ReaderStateCommonCall, ReconnectCall,
+    CardProtocol, CardState, CardStateFlags, ConnectCall, ConnectReturn, ContextAndStringCall, ContextAndTwoStringCall,
+    ContextCall, ControlCall, ControlReturn, EstablishContextCall, EstablishContextReturn, GetAttribCall,
+    GetAttribReturn, GetDeviceTypeIdCall, GetDeviceTypeIdReturn, GetReaderIconCall, GetReaderIconReturn,
+    GetStatusChangeCall, GetStatusChangeReturn, GetTransmitCountCall, GetTransmitCountReturn, HCardAndDispositionCall,
+    ListReaderGroupsCall, ListReadersCall, ListReadersReturn, LocateCardsAtrMask, LocateCardsByAtrCall,
+    LocateCardsCall, LongReturn, ReadCacheCall, ReadCacheReturn, ReaderState, ReaderStateCommonCall, ReconnectCall,
     ReconnectReturn, ReturnCode, SCardIORequest, ScardCall, ScardContext, ScardHandle, ScardIoCtlCode, Scope,
-    StateCall, StateReturn, StatusCall, StatusReturn, TransmitCall, TransmitReturn, rpce,
+    SetAttribCall, StateCall, StateReturn, StatusCall, StatusReturn, TransmitCall, TransmitReturn, WriteCacheCall,
+    rpce,
 };
 use ironrdp_svc::SvcMessage;
 use tracing::warn;
 use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Security::Credentials::{
-    SCARD_IO_REQUEST, SCARD_READERSTATEW, SCARD_SCOPE, SCARD_SCOPE_SYSTEM, SCARD_SCOPE_USER, SCARD_STATE,
-    SCardAccessStartedEvent, SCardBeginTransaction, SCardCancel, SCardConnectW, SCardDisconnect, SCardEndTransaction,
-    SCardEstablishContext, SCardGetStatusChangeW, SCardIsValidContext, SCardListReaderGroupsW, SCardListReadersW,
-    SCardReconnect, SCardReleaseContext, SCardReleaseStartedEvent, SCardStatusW, SCardTransmit,
+    SCARD_ATRMASK, SCARD_IO_REQUEST, SCARD_READERSTATEW, SCARD_SCOPE, SCARD_SCOPE_SYSTEM, SCARD_SCOPE_USER,
+    SCARD_STATE, SCardAccessStartedEvent, SCardAddReaderToGroupW, SCardBeginTransaction, SCardCancel, SCardConnectW,
+    SCardControl, SCardDisconnect, SCardEndTransaction, SCardEstablishContext, SCardForgetReaderGroupW,
+    SCardForgetReaderW, SCardGetAttrib, SCardGetDeviceTypeIdW, SCardGetReaderIconW, SCardGetStatusChangeW,
+    SCardGetTransmitCount, SCardIntroduceReaderGroupW, SCardIntroduceReaderW, SCardIsValidContext,
+    SCardListReaderGroupsW, SCardListReadersW, SCardLocateCardsByATRW, SCardLocateCardsW, SCardReadCacheW,
+    SCardReconnect, SCardReleaseContext, SCardReleaseStartedEvent, SCardRemoveReaderFromGroupW, SCardSetAttrib,
+    SCardStatusW, SCardTransmit, SCardWriteCacheW,
 };
 use windows::Win32::System::Threading::WaitForSingleObject;
-use windows::core::{PCWSTR, PWSTR};
+use windows::core::{GUID, PCWSTR, PWSTR};
 
 const MAX_DEFERRED: usize = 32;
 const MAX_ATR: usize = 32;
-const MAX_RECV: u32 = 66_560; // MS-RDPESC Transmit_Return cbRecvLength max
+const MAX_RECV: u32 = 66_560; // MS-RDPESC Transmit/Control out max
+const MAX_ATTR: u32 = 65_536; // MS-RDPESC GetAttrib_Return cbAttrLen max
+const MAX_CACHE: u32 = 65_536; // MS-RDPESC ReadCache_Return cbDataLen max
+const MAX_ICON: u32 = 4_194_304; // MS-RDPESC GetReaderIcon_Return cbDataLen max
 const SCARD_AUTOALLOCATE: u32 = 0xFFFF_FFFF;
 const SCARD_SCOPE_TERMINAL: SCARD_SCOPE = SCARD_SCOPE(1);
 
@@ -215,6 +225,8 @@ impl ScardSession {
             ScardCall::EstablishContextCall(c) => Ok(vec![self.establish_context(req, c)]),
             ScardCall::ListReaderGroupsCall(c) => Ok(vec![self.list_groups(req, ioctl, c)]),
             ScardCall::ListReadersCall(c) => Ok(vec![self.list_readers(req, ioctl, c)]),
+            ScardCall::LocateCardsCall(c) => Ok(vec![self.locate_cards(req, c)]),
+            ScardCall::LocateCardsByAtrCall(c) => Ok(vec![self.locate_cards_by_atr(req, c)]),
             ScardCall::GetStatusChangeCall(c) => self.get_status_change(req, c),
             ScardCall::ConnectCall(c) => self.connect(req, c),
             ScardCall::ReconnectCall(c) => self.reconnect(req, c),
@@ -223,6 +235,16 @@ impl ScardSession {
             ScardCall::StatusCall(c) => self.status(req, ioctl, c),
             ScardCall::StateCall(c) => self.state(req, c),
             ScardCall::ContextCall(c) => Ok(vec![self.context_call(req, ioctl, c)]),
+            ScardCall::ControlCall(c) => self.control(req, c),
+            ScardCall::GetAttribCall(c) => self.get_attrib(req, c),
+            ScardCall::SetAttribCall(c) => self.set_attrib(req, c),
+            ScardCall::GetTransmitCountCall(c) => self.get_transmit_count(req, c),
+            ScardCall::GetDeviceTypeIdCall(c) => Ok(vec![self.get_device_type_id(req, c)]),
+            ScardCall::ReadCacheCall(c) => Ok(vec![self.read_cache(req, c)]),
+            ScardCall::WriteCacheCall(c) => Ok(vec![self.write_cache(req, c)]),
+            ScardCall::GetReaderIconCall(c) => Ok(vec![self.get_reader_icon(req, c)]),
+            ScardCall::ContextAndStringCall(c) => Ok(vec![self.context_and_string(req, ioctl, c)]),
+            ScardCall::ContextAndTwoStringCall(c) => Ok(vec![self.context_and_two_string(req, ioctl, c)]),
             other => Ok(vec![complete_rpce(req, unsupported(ioctl, other))]),
         }
     }
@@ -684,6 +706,431 @@ impl ScardSession {
         }
         complete_long(req, code)
     }
+
+    fn locate_cards(&self, req: DeviceControlRequest<ScardIoCtlCode>, call: LocateCardsCall) -> SvcMessage {
+        let native = match self.ctx(call.context) {
+            Ok(n) => n,
+            Err(c) => return complete_gsc(req, c, Vec::new()),
+        };
+        let cards = multi_wide(&call.cards);
+        let bufs: Vec<Vec<u16>> = call.states.iter().map(|s| wide(&s.reader)).collect();
+        let mut states: Vec<SCARD_READERSTATEW> = call
+            .states
+            .iter()
+            .zip(bufs.iter())
+            .map(|(s, r)| reader_state_w(s, r))
+            .collect();
+        // SAFETY: session context; card multi-string and reader-state buffers are local.
+        let status = unsafe {
+            SCardLocateCardsW(
+                native,
+                PCWSTR(cards.as_ptr()),
+                states.as_mut_ptr(),
+                u32::try_from(states.len()).unwrap_or(u32::MAX),
+            )
+        };
+        let code = map_status(status);
+        let out = if code == ReturnCode::Success {
+            reader_states_from_native(states)
+        } else {
+            Vec::new()
+        };
+        complete_gsc(req, code, out)
+    }
+
+    fn locate_cards_by_atr(&self, req: DeviceControlRequest<ScardIoCtlCode>, call: LocateCardsByAtrCall) -> SvcMessage {
+        let native = match self.ctx(call.context) {
+            Ok(n) => n,
+            Err(c) => return complete_gsc(req, c, Vec::new()),
+        };
+        let masks: Vec<SCARD_ATRMASK> = call.atr_masks.iter().map(atr_mask_from_call).collect();
+        let bufs: Vec<Vec<u16>> = call.states.iter().map(|s| wide(&s.reader)).collect();
+        let mut states: Vec<SCARD_READERSTATEW> = call
+            .states
+            .iter()
+            .zip(bufs.iter())
+            .map(|(s, r)| reader_state_w(s, r))
+            .collect();
+        // SAFETY: session context; ATR masks and reader-state buffers are local.
+        let status = unsafe {
+            SCardLocateCardsByATRW(
+                native,
+                masks.as_ptr(),
+                u32::try_from(masks.len()).unwrap_or(u32::MAX),
+                states.as_mut_ptr(),
+                u32::try_from(states.len()).unwrap_or(u32::MAX),
+            )
+        };
+        let code = map_status(status);
+        let out = if code == ReturnCode::Success {
+            reader_states_from_native(states)
+        } else {
+            Vec::new()
+        };
+        complete_gsc(req, code, out)
+    }
+
+    fn control(&mut self, req: DeviceControlRequest<ScardIoCtlCode>, call: ControlCall) -> PduResult<Vec<SvcMessage>> {
+        let (ctx_id, handle) = match self.card(&call.handle) {
+            Ok(v) => v,
+            Err(c) => return Ok(vec![control_ret(req, c, None, 0)]),
+        };
+        self.defer(
+            ctx_id,
+            "ironrdp-scard-control",
+            req,
+            move |req, _| {
+                let out_cap = if call.out_buffer_is_null {
+                    0
+                } else {
+                    call.out_buffer_size.min(MAX_RECV) as usize
+                };
+                let mut out = vec![0u8; out_cap];
+                let mut returned = 0u32;
+                // SAFETY: session card; in/out buffers owned for this call.
+                let status = unsafe {
+                    SCardControl(
+                        handle,
+                        call.control_code,
+                        call.in_buffer.as_ptr().cast(),
+                        u32::try_from(call.in_buffer.len()).unwrap_or(u32::MAX),
+                        if out_cap == 0 {
+                            core::ptr::null_mut()
+                        } else {
+                            out.as_mut_ptr().cast()
+                        },
+                        u32::try_from(out_cap).unwrap_or(u32::MAX),
+                        &mut returned,
+                    )
+                };
+                let code = map_status(status);
+                let need = returned.min(MAX_RECV);
+                if code != ReturnCode::Success {
+                    // NULL / insufficient-buffer probes carry the native required length.
+                    let len = if matches!(code, ReturnCode::InsufficientBuffer) || call.out_buffer_is_null {
+                        need
+                    } else {
+                        0
+                    };
+                    return Outcome::Message(control_ret(req, code, None, len));
+                }
+                if call.out_buffer_is_null {
+                    Outcome::Message(control_ret(req, ReturnCode::Success, None, need))
+                } else {
+                    out.truncate((returned as usize).min(out.len()));
+                    Outcome::Message(control_ret(req, ReturnCode::Success, Some(out), need))
+                }
+            },
+            |req, c| control_ret(req, c, None, 0),
+        )
+    }
+
+    fn get_attrib(
+        &mut self,
+        req: DeviceControlRequest<ScardIoCtlCode>,
+        call: GetAttribCall,
+    ) -> PduResult<Vec<SvcMessage>> {
+        let (ctx_id, handle) = match self.card(&call.handle) {
+            Ok(v) => v,
+            Err(c) => return Ok(vec![attrib_ret(req, c, None, 0)]),
+        };
+        self.defer(
+            ctx_id,
+            "ironrdp-scard-getattr",
+            req,
+            move |req, _| {
+                let mut len = if call.attr_is_null || call.attr_length == SCARD_AUTOALLOCATE {
+                    0
+                } else {
+                    call.attr_length
+                };
+                if call.attr_is_null || len == 0 || call.attr_length == SCARD_AUTOALLOCATE {
+                    // SAFETY: session card; NULL pbAttr probes required length.
+                    let probe = unsafe { SCardGetAttrib(handle, call.attr_id, None, &mut len) };
+                    let probe_code = map_status(probe);
+                    let need = len.min(MAX_ATTR);
+                    if call.attr_is_null {
+                        return if matches!(probe_code, ReturnCode::Success | ReturnCode::InsufficientBuffer) {
+                            Outcome::Message(attrib_ret(req, ReturnCode::Success, None, need))
+                        } else {
+                            Outcome::Message(attrib_ret(req, probe_code, None, 0))
+                        };
+                    }
+                    if !matches!(probe_code, ReturnCode::Success | ReturnCode::InsufficientBuffer) {
+                        return Outcome::Message(attrib_ret(req, probe_code, None, 0));
+                    }
+                    if len > MAX_ATTR {
+                        return Outcome::Message(attrib_ret(req, ReturnCode::NoMemory, None, 0));
+                    }
+                    len = need;
+                }
+                let alloc = (len.min(MAX_ATTR)) as usize;
+                let mut attr = vec![0u8; alloc];
+                let mut actual = u32::try_from(alloc).unwrap_or(MAX_ATTR);
+                // SAFETY: session card; attr buffer owned above.
+                let status = unsafe { SCardGetAttrib(handle, call.attr_id, Some(attr.as_mut_ptr()), &mut actual) };
+                let code = map_status(status);
+                let need = actual.min(MAX_ATTR);
+                if code != ReturnCode::Success {
+                    if code == ReturnCode::InsufficientBuffer {
+                        return Outcome::Message(attrib_ret(req, code, None, need));
+                    }
+                    return Outcome::Message(attrib_ret(req, code, None, 0));
+                }
+                attr.truncate((actual as usize).min(attr.len()));
+                Outcome::Message(attrib_ret(req, ReturnCode::Success, Some(attr), need))
+            },
+            |req, c| attrib_ret(req, c, None, 0),
+        )
+    }
+
+    fn set_attrib(
+        &mut self,
+        req: DeviceControlRequest<ScardIoCtlCode>,
+        call: SetAttribCall,
+    ) -> PduResult<Vec<SvcMessage>> {
+        let (ctx_id, handle) = match self.card(&call.handle) {
+            Ok(v) => v,
+            Err(c) => return Ok(vec![complete_long(req, c)]),
+        };
+        self.defer(
+            ctx_id,
+            "ironrdp-scard-setattr",
+            req,
+            move |req, _| {
+                // SAFETY: session card; attr bytes owned by call.
+                Outcome::Message(complete_long(
+                    req,
+                    map_status(unsafe { SCardSetAttrib(handle, call.attr_id, &call.attr) }),
+                ))
+            },
+            complete_long,
+        )
+    }
+
+    fn get_transmit_count(
+        &mut self,
+        req: DeviceControlRequest<ScardIoCtlCode>,
+        call: GetTransmitCountCall,
+    ) -> PduResult<Vec<SvcMessage>> {
+        let (ctx_id, handle) = match self.card(&call.handle) {
+            Ok(v) => v,
+            Err(c) => return Ok(vec![complete_tx_count(req, c, 0)]),
+        };
+        self.defer(
+            ctx_id,
+            "ironrdp-scard-txcount",
+            req,
+            move |req, _| {
+                let mut count = 0u32;
+                // SAFETY: session card.
+                let code = map_status(unsafe { SCardGetTransmitCount(handle, &mut count) });
+                Outcome::Message(complete_tx_count(req, code, count))
+            },
+            |req, c| complete_tx_count(req, c, 0),
+        )
+    }
+
+    fn get_device_type_id(&self, req: DeviceControlRequest<ScardIoCtlCode>, call: GetDeviceTypeIdCall) -> SvcMessage {
+        let native = match self.ctx(call.context) {
+            Ok(n) => n,
+            Err(c) => return complete_device_type(req, c, 0),
+        };
+        let reader = wide(&call.reader_name);
+        let mut device_type_id = 0u32;
+        // SAFETY: session context; reader name buffer local.
+        let status = unsafe { SCardGetDeviceTypeIdW(native, PCWSTR(reader.as_ptr()), &mut device_type_id) };
+        complete_device_type(req, map_status(status), device_type_id)
+    }
+
+    fn read_cache(&self, req: DeviceControlRequest<ScardIoCtlCode>, call: ReadCacheCall) -> SvcMessage {
+        let native = match self.ctx(call.common.context) {
+            Ok(n) => n,
+            Err(c) => return cache_ret(req, c, None, 0),
+        };
+        let guid = match guid_from_bytes(&call.common.card_uuid) {
+            Ok(g) => g,
+            Err(c) => return cache_ret(req, c, None, 0),
+        };
+        let name = wide(&call.lookup_name);
+        let mut data_len = if call.common.data_is_null || call.common.data_len == SCARD_AUTOALLOCATE {
+            0
+        } else {
+            call.common.data_len
+        };
+        if call.common.data_is_null || data_len == 0 || call.common.data_len == SCARD_AUTOALLOCATE {
+            // SAFETY: session context; NULL data probes required length.
+            let probe = unsafe {
+                SCardReadCacheW(
+                    native,
+                    &guid,
+                    call.common.freshness_counter,
+                    PCWSTR(name.as_ptr()),
+                    core::ptr::null_mut(),
+                    &mut data_len,
+                )
+            };
+            let probe_code = map_status(probe);
+            let need = data_len.min(MAX_CACHE);
+            if call.common.data_is_null {
+                return if matches!(probe_code, ReturnCode::Success | ReturnCode::InsufficientBuffer) {
+                    cache_ret(req, ReturnCode::Success, None, need)
+                } else {
+                    cache_ret(req, probe_code, None, 0)
+                };
+            }
+            if !matches!(probe_code, ReturnCode::Success | ReturnCode::InsufficientBuffer) {
+                return cache_ret(req, probe_code, None, 0);
+            }
+            if data_len > MAX_CACHE {
+                return cache_ret(req, ReturnCode::NoMemory, None, 0);
+            }
+            data_len = need;
+        }
+        let alloc = (data_len.min(MAX_CACHE)) as usize;
+        let mut data = vec![0u8; alloc];
+        let mut actual = u32::try_from(alloc).unwrap_or(MAX_CACHE);
+        // SAFETY: session context; data buffer owned above.
+        let status = unsafe {
+            SCardReadCacheW(
+                native,
+                &guid,
+                call.common.freshness_counter,
+                PCWSTR(name.as_ptr()),
+                data.as_mut_ptr(),
+                &mut actual,
+            )
+        };
+        let code = map_status(status);
+        let need = actual.min(MAX_CACHE);
+        if code != ReturnCode::Success {
+            if code == ReturnCode::InsufficientBuffer {
+                return cache_ret(req, code, None, need);
+            }
+            return cache_ret(req, code, None, 0);
+        }
+        data.truncate((actual as usize).min(data.len()));
+        cache_ret(req, ReturnCode::Success, Some(data), need)
+    }
+
+    fn write_cache(&self, req: DeviceControlRequest<ScardIoCtlCode>, call: WriteCacheCall) -> SvcMessage {
+        let native = match self.ctx(call.common.context) {
+            Ok(n) => n,
+            Err(c) => return complete_long(req, c),
+        };
+        let guid = match guid_from_bytes(&call.common.card_uuid) {
+            Ok(g) => g,
+            Err(c) => return complete_long(req, c),
+        };
+        let name = wide(&call.lookup_name);
+        // SAFETY: session context; name + data buffers local/owned by call.
+        let status = unsafe {
+            SCardWriteCacheW(
+                native,
+                &guid,
+                call.common.freshness_counter,
+                PCWSTR(name.as_ptr()),
+                &call.common.data,
+            )
+        };
+        complete_long(req, map_status(status))
+    }
+
+    fn get_reader_icon(&self, req: DeviceControlRequest<ScardIoCtlCode>, call: GetReaderIconCall) -> SvcMessage {
+        let native = match self.ctx(call.context) {
+            Ok(n) => n,
+            Err(c) => return complete_reader_icon(req, c, Vec::new()),
+        };
+        let reader = wide(&call.reader_name);
+        let mut needed = 0u32;
+        // SAFETY: session context; NULL icon probes required length.
+        let probe = unsafe { SCardGetReaderIconW(native, PCWSTR(reader.as_ptr()), core::ptr::null_mut(), &mut needed) };
+        let probe_code = map_status(probe);
+        if !matches!(probe_code, ReturnCode::Success | ReturnCode::InsufficientBuffer) {
+            return complete_reader_icon(req, probe_code, Vec::new());
+        }
+        if needed == 0 {
+            return complete_reader_icon(req, ReturnCode::Success, Vec::new());
+        }
+        // MS-RDPESC GetReaderIcon_Return cbDataLen max; reject oversized native sizes before alloc.
+        if needed > MAX_ICON {
+            return complete_reader_icon(req, ReturnCode::NoMemory, Vec::new());
+        }
+        let mut icon = vec![0u8; needed as usize];
+        let mut actual = needed;
+        // SAFETY: session context; icon buffer owned above.
+        let status = unsafe { SCardGetReaderIconW(native, PCWSTR(reader.as_ptr()), icon.as_mut_ptr(), &mut actual) };
+        let code = map_status(status);
+        if code != ReturnCode::Success {
+            return complete_reader_icon(req, code, Vec::new());
+        }
+        if actual > MAX_ICON {
+            return complete_reader_icon(req, ReturnCode::NoMemory, Vec::new());
+        }
+        icon.truncate((actual as usize).min(icon.len()));
+        complete_reader_icon(req, ReturnCode::Success, icon)
+    }
+
+    fn context_and_string(
+        &self,
+        req: DeviceControlRequest<ScardIoCtlCode>,
+        ioctl: ScardIoCtlCode,
+        call: ContextAndStringCall,
+    ) -> SvcMessage {
+        let native = match self.ctx(call.context) {
+            Ok(n) => n,
+            Err(c) => return complete_long(req, c),
+        };
+        let sz = wide(&call.sz);
+        // A IOCTLs intentionally call *W.
+        let status = match ioctl {
+            ScardIoCtlCode::IntroduceReaderGroupA | ScardIoCtlCode::IntroduceReaderGroupW => {
+                // SAFETY: session context; group name buffer local.
+                unsafe { SCardIntroduceReaderGroupW(native, PCWSTR(sz.as_ptr())) }
+            }
+            ScardIoCtlCode::ForgetReaderGroupA | ScardIoCtlCode::ForgetReaderGroupW => {
+                // SAFETY: session context; group name buffer local.
+                unsafe { SCardForgetReaderGroupW(native, PCWSTR(sz.as_ptr())) }
+            }
+            ScardIoCtlCode::ForgetReaderA | ScardIoCtlCode::ForgetReaderW => {
+                // SAFETY: session context; reader name buffer local.
+                unsafe { SCardForgetReaderW(native, PCWSTR(sz.as_ptr())) }
+            }
+            _ => return complete_long(req, ReturnCode::UnsupportedFeature),
+        };
+        complete_long(req, map_status(status))
+    }
+
+    fn context_and_two_string(
+        &self,
+        req: DeviceControlRequest<ScardIoCtlCode>,
+        ioctl: ScardIoCtlCode,
+        call: ContextAndTwoStringCall,
+    ) -> SvcMessage {
+        let native = match self.ctx(call.context) {
+            Ok(n) => n,
+            Err(c) => return complete_long(req, c),
+        };
+        let sz1 = wide(&call.sz1);
+        let sz2 = wide(&call.sz2);
+        // A IOCTLs intentionally call *W.
+        let status = match ioctl {
+            ScardIoCtlCode::IntroduceReaderA | ScardIoCtlCode::IntroduceReaderW => {
+                // SAFETY: session context; reader/device name buffers local.
+                unsafe { SCardIntroduceReaderW(native, PCWSTR(sz1.as_ptr()), PCWSTR(sz2.as_ptr())) }
+            }
+            ScardIoCtlCode::AddReaderToGroupA | ScardIoCtlCode::AddReaderToGroupW => {
+                // SAFETY: session context; reader/group name buffers local.
+                unsafe { SCardAddReaderToGroupW(native, PCWSTR(sz1.as_ptr()), PCWSTR(sz2.as_ptr())) }
+            }
+            ScardIoCtlCode::RemoveReaderFromGroupA | ScardIoCtlCode::RemoveReaderFromGroupW => {
+                // SAFETY: session context; reader/group name buffers local.
+                unsafe { SCardRemoveReaderFromGroupW(native, PCWSTR(sz1.as_ptr()), PCWSTR(sz2.as_ptr())) }
+            }
+            _ => return complete_long(req, ReturnCode::UnsupportedFeature),
+        };
+        complete_long(req, map_status(status))
+    }
 }
 
 impl Drop for ScardSession {
@@ -898,6 +1345,79 @@ fn complete_connect(
 }
 fn complete_reconnect(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode, proto: CardProtocol) -> SvcMessage {
     complete_rpce(req, Box::new(ReconnectReturn::new(code, proto)))
+}
+
+fn control_ret(
+    req: DeviceControlRequest<ScardIoCtlCode>,
+    code: ReturnCode,
+    out: Option<Vec<u8>>,
+    out_len: u32,
+) -> SvcMessage {
+    let pdu = match out {
+        Some(buf) => ControlReturn::new(code, buf),
+        None => ControlReturn::out_probe(code, out_len),
+    };
+    complete_rpce(req, Box::new(pdu))
+}
+
+fn attrib_ret(
+    req: DeviceControlRequest<ScardIoCtlCode>,
+    code: ReturnCode,
+    attr: Option<Vec<u8>>,
+    attr_len: u32,
+) -> SvcMessage {
+    let pdu = match attr {
+        Some(buf) => GetAttribReturn::new(code, buf),
+        None => GetAttribReturn::attr_probe(code, attr_len),
+    };
+    complete_rpce(req, Box::new(pdu))
+}
+
+fn complete_tx_count(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode, count: u32) -> SvcMessage {
+    complete_rpce(req, Box::new(GetTransmitCountReturn::new(code, count)))
+}
+
+fn complete_device_type(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode, id: u32) -> SvcMessage {
+    complete_rpce(req, Box::new(GetDeviceTypeIdReturn::new(code, id)))
+}
+
+fn cache_ret(
+    req: DeviceControlRequest<ScardIoCtlCode>,
+    code: ReturnCode,
+    data: Option<Vec<u8>>,
+    data_len: u32,
+) -> SvcMessage {
+    let pdu = match data {
+        Some(buf) => ReadCacheReturn::new(code, buf),
+        None => ReadCacheReturn::data_probe(code, data_len),
+    };
+    complete_rpce(req, Box::new(pdu))
+}
+
+fn complete_reader_icon(req: DeviceControlRequest<ScardIoCtlCode>, code: ReturnCode, data: Vec<u8>) -> SvcMessage {
+    complete_rpce(req, Box::new(GetReaderIconReturn::new(code, data)))
+}
+
+fn guid_from_bytes(bytes: &[u8]) -> Result<GUID, ReturnCode> {
+    if bytes.len() != 16 {
+        return Err(ReturnCode::InvalidParameter);
+    }
+    Ok(GUID {
+        data1: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        data2: u16::from_le_bytes([bytes[4], bytes[5]]),
+        data3: u16::from_le_bytes([bytes[6], bytes[7]]),
+        data4: [
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        ],
+    })
+}
+
+fn atr_mask_from_call(mask: &LocateCardsAtrMask) -> SCARD_ATRMASK {
+    SCARD_ATRMASK {
+        cbAtr: mask.atr_length.min(36),
+        rgbAtr: mask.atr,
+        rgbMask: mask.mask,
+    }
 }
 
 fn xmit_ret(
