@@ -4,4 +4,4 @@ mod error;
 mod transport;
 
 pub use error::ReplayError;
-pub use transport::{Capture, Endpoint, Flow, PacketStream, read_capture};
+pub use transport::{Capture, Endpoint, Flow, PacketStream, TlsKeyLog, read_capture};

@@ -2539,6 +2539,7 @@ version = "0.0.0"
 dependencies = [
  "pcap-parser",
  "thiserror 2.0.19",
+ "zeroize",
 ]
 
 [[package]]

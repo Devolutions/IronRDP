@@ -5,6 +5,7 @@ use core::net::IpAddr;
 use pcap_parser::pcapng::{Block, SecretsType};
 use pcap_parser::traits::{PcapNGPacketBlock as _, PcapReaderIterator as _};
 use pcap_parser::{PcapBlockOwned, PcapError, PcapNGReader};
+use zeroize::Zeroize as _;
 
 use crate::ReplayError;
 
@@ -41,9 +42,7 @@ pub struct Capture {
     /// Direct TCP RDP flow selected from the pcapng input.
     pub flow: Flow,
     /// NSS-compatible TLS key-log entries embedded in the capture.
-    ///
-    /// The entries are retained only in memory and must not be logged or persisted.
-    pub tls_key_log: String,
+    pub tls_key_log: TlsKeyLog,
 }
 
 impl core::fmt::Debug for Capture {
@@ -52,6 +51,29 @@ impl core::fmt::Debug for Capture {
             .field("flow", &self.flow)
             .field("tls_key_log", &"<redacted>")
             .finish()
+    }
+}
+
+/// TLS key-log material retained for decrypting a capture.
+#[derive(Clone)]
+pub struct TlsKeyLog(String);
+
+impl TlsKeyLog {
+    /// Get the key log required to decrypt the recorded TLS stream.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::fmt::Debug for TlsKeyLog {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl Drop for TlsKeyLog {
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }
 
@@ -117,9 +139,7 @@ pub fn read_capture(path: &Path) -> Result<Capture, ReplayError> {
                 reader.consume(offset);
             }
             Err(PcapError::Eof) => break,
-            Err(PcapError::Incomplete(_)) => reader
-                .refill()
-                .map_err(|_| ReplayError::Pcap("truncated pcapng block".to_owned()))?,
+            Err(PcapError::Incomplete(_)) => reader.refill().map_err(|error| ReplayError::Pcap(error.to_string()))?,
             Err(error) => return Err(ReplayError::Pcap(error.to_string())),
         }
     }
@@ -130,7 +150,7 @@ pub fn read_capture(path: &Path) -> Result<Capture, ReplayError> {
 
     Ok(Capture {
         flow: assemble_flow(segments)?,
-        tls_key_log,
+        tls_key_log: TlsKeyLog(tls_key_log),
     })
 }
 
@@ -161,15 +181,23 @@ fn parse_tcp_packet(packet: usize, bytes: &[u8]) -> Option<Segment> {
         }
         0x86dd => {
             let header = bytes.get(network_offset..network_offset + 40)?;
-            if header[6] != 6 {
-                return None;
-            }
             let payload_len = usize::from(u16::from_be_bytes(header.get(4..6)?.try_into().ok()?));
             let network_end = network_offset.checked_add(40 + payload_len)?;
             bytes.get(network_offset..network_end)?;
             let source = IpAddr::from(<[u8; 16]>::try_from(&header[8..24]).ok()?);
             let destination = IpAddr::from(<[u8; 16]>::try_from(&header[24..40]).ok()?);
-            (source, destination, network_offset + 40, network_end)
+            let mut next_header = header[6];
+            let mut tcp_offset = network_offset + 40;
+            while matches!(next_header, 0 | 43 | 60) {
+                let extension = bytes.get(tcp_offset..network_end)?;
+                let length = (usize::from(*extension.get(1)?) + 1) * 8;
+                next_header = *extension.first()?;
+                tcp_offset = tcp_offset.checked_add(length)?;
+            }
+            if next_header != 6 {
+                return None;
+            }
+            (source, destination, tcp_offset, network_end)
         }
         _ => return None,
     };
@@ -202,6 +230,7 @@ fn parse_tcp_packet(packet: usize, bytes: &[u8]) -> Option<Segment> {
 
 fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
     segments.retain(|segment| !segment.data.is_empty() || segment.syn || segment.fin || segment.rst);
+    let mut missing_tcp_flow = false;
     for (start, syn) in segments
         .iter()
         .enumerate()
@@ -254,12 +283,14 @@ fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
             })
             .unwrap_or(0);
         let Ok(client_stream) = reassemble(client_segments, client_origin) else {
+            missing_tcp_flow = true;
             continue;
         };
         let Ok(server_stream) = reassemble(server_segments, server_origin) else {
+            missing_tcp_flow = true;
             continue;
         };
-        if !client_stream.is_empty() && !server_stream.is_empty() && has_x224_connection_request(&client_stream) {
+        if has_x224_connection_initiation(&client_stream, &server_stream) {
             return Ok(Flow {
                 client,
                 server,
@@ -269,12 +300,30 @@ fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
         }
     }
 
-    Err(ReplayError::UnsupportedTransport)
+    Err(if missing_tcp_flow {
+        ReplayError::MissingTcpFlow
+    } else {
+        ReplayError::UnsupportedTransport
+    })
 }
 
-fn has_x224_connection_request(stream: &PacketStream) -> bool {
-    let bytes = flatten(stream);
-    tpkt_frames(&bytes).any(|frame| frame.get(5) == Some(&0xe0))
+fn has_x224_connection_initiation(client_stream: &PacketStream, server_stream: &PacketStream) -> bool {
+    has_x224_connection_tpdu(&flatten(client_stream), 0xe0) && has_x224_connection_tpdu(&flatten(server_stream), 0xd0)
+}
+
+fn has_x224_connection_tpdu(bytes: &[u8], code: u8) -> bool {
+    let Some(header) = bytes.get(..4) else {
+        return false;
+    };
+    if header[0] != 3 || header[1] != 0 {
+        return false;
+    }
+    let length = usize::from(u16::from_be_bytes([header[2], header[3]]));
+    let Some(frame) = bytes.get(..length) else {
+        return false;
+    };
+
+    frame.len() >= 11 && frame[4] == 6 && frame[5] == code && frame[6..11] == [0; 5]
 }
 
 fn reassemble(segments: Vec<Segment>, origin: u32) -> Result<PacketStream, ReplayError> {
@@ -337,25 +386,6 @@ fn flatten(stream: &PacketStream) -> Vec<u8> {
     stream.iter().flat_map(|(_, bytes)| bytes).copied().collect()
 }
 
-fn tpkt_frames(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
-    let mut offset = 0;
-    core::iter::from_fn(move || {
-        while offset + 4 <= bytes.len() {
-            if bytes[offset] == 3 && bytes[offset + 1] == 0 {
-                let length = usize::from(u16::from_be_bytes([bytes[offset + 2], bytes[offset + 3]]));
-                let end = offset.checked_add(length)?;
-                if length >= 7 && end <= bytes.len() {
-                    let frame = &bytes[offset..end];
-                    offset = end;
-                    return Some(frame);
-                }
-            }
-            offset += 1;
-        }
-        None
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use core::net::Ipv4Addr;
@@ -395,6 +425,14 @@ mod tests {
         }
     }
 
+    fn connection_request() -> [u8; 19] {
+        [3, 0, 0, 19, 6, 0xe0, 0, 0, 0, 0, 0, 1, 0, 8, 0, 1, 0, 0, 0]
+    }
+
+    fn connection_confirm() -> [u8; 19] {
+        [3, 0, 0, 19, 6, 0xd0, 0, 0, 0, 0, 0, 2, 0, 8, 0, 1, 0, 0, 0]
+    }
+
     #[test]
     fn reassembly_deduplicates_retransmissions() {
         let stream = reassemble(
@@ -430,6 +468,28 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_x224_connection_initiation() {
+        let client = vec![3, 0, 0, 7, 2, 0xe0, 0];
+        let server = connection_confirm();
+
+        assert!(!has_x224_connection_initiation(
+            &vec![(1, client)],
+            &vec![(2, server.to_vec())]
+        ));
+    }
+
+    #[test]
+    fn rejects_x224_connection_request_after_leading_data() {
+        let client = [b"not-rdp".as_slice(), connection_request().as_slice()].concat();
+        let server = connection_confirm();
+
+        assert!(!has_x224_connection_initiation(
+            &vec![(1, client)],
+            &vec![(2, server.to_vec())]
+        ));
+    }
+
+    #[test]
     fn skips_incomplete_flows_before_a_valid_rdp_connection() {
         let first_client = endpoint(1);
         let first_server = endpoint(2);
@@ -447,14 +507,37 @@ mod tests {
                 5,
                 false,
                 true,
-                &[3, 0, 0, 7, 2, 0xe0, 0],
+                &connection_request(),
             ),
-            segment_between(second_server, second_client, 300, 6, false, true, &[0]),
+            segment_between(second_server, second_client, 300, 6, false, true, &connection_confirm()),
         ])
         .unwrap();
 
         assert_eq!(flow.client.port, 3);
         assert_eq!(flow.server.port, 4);
+    }
+
+    #[test]
+    fn reports_missing_tcp_flow_when_no_candidate_reassembles() {
+        let client = endpoint(1);
+        let server = endpoint(2);
+        let request = connection_request();
+        let error = assemble_flow(vec![
+            segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
+            segment_between(client.clone(), server.clone(), 101, 2, false, true, &request[..8]),
+            segment_between(
+                client,
+                server,
+                101 + u32::try_from(request.len()).unwrap(),
+                3,
+                false,
+                true,
+                &request[8..],
+            ),
+        ])
+        .unwrap_err();
+
+        assert!(matches!(error, ReplayError::MissingTcpFlow));
     }
 
     #[test]
@@ -473,9 +556,9 @@ mod tests {
                 5,
                 false,
                 true,
-                &[3, 0, 0, 7, 2, 0xe0, 0],
+                &connection_request(),
             ),
-            segment_between(server, client, 700, 6, false, true, &[0]),
+            segment_between(server, client, 700, 6, false, true, &connection_confirm()),
         ])
         .unwrap();
 
@@ -487,29 +570,50 @@ mod tests {
     fn preserves_peer_data_after_a_half_close() {
         let client = endpoint(1);
         let server = endpoint(2);
-        let mut client_fin = segment_between(client.clone(), server.clone(), 108, 3, false, true, &[]);
+        let request = connection_request();
+        let confirm = connection_confirm();
+        let mut client_fin = segment_between(
+            client.clone(),
+            server.clone(),
+            101 + u32::try_from(request.len()).unwrap(),
+            3,
+            false,
+            true,
+            &[],
+        );
         client_fin.fin = true;
-        let mut server_fin = segment_between(server.clone(), client.clone(), 311, 6, false, true, &[]);
+        let mut server_fin = segment_between(
+            server.clone(),
+            client.clone(),
+            300 + u32::try_from(confirm.len() + 11).unwrap(),
+            6,
+            false,
+            true,
+            &[],
+        );
         server_fin.fin = true;
         let flow = assemble_flow(vec![
             segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
+            segment_between(client.clone(), server.clone(), 101, 2, false, true, &request),
+            client_fin,
+            segment_between(server.clone(), client.clone(), 300, 4, false, true, &confirm),
             segment_between(
-                client.clone(),
-                server.clone(),
-                101,
-                2,
+                server,
+                client,
+                300 + u32::try_from(confirm.len()).unwrap(),
+                5,
                 false,
                 true,
-                &[3, 0, 0, 7, 2, 0xe0, 0],
+                b"firstsecond",
             ),
-            client_fin,
-            segment_between(server.clone(), client.clone(), 300, 4, false, true, b"first"),
-            segment_between(server, client, 305, 5, false, true, b"second"),
             server_fin,
         ])
         .unwrap();
 
-        assert_eq!(flatten(&flow.server_stream), b"firstsecond");
+        assert_eq!(
+            flatten(&flow.server_stream),
+            [confirm.as_slice(), b"firstsecond"].concat()
+        );
     }
 
     #[test]
@@ -520,8 +624,8 @@ mod tests {
             &path,
             pcapng([
                 ethernet_tcp(1, 2, 100, 0x02, &[]),
-                ethernet_tcp(1, 2, 101, 0x10, &[3, 0, 0, 7, 2, 0xe0, 0]),
-                ethernet_tcp(2, 1, 200, 0x10, &[0]),
+                ethernet_tcp(1, 2, 101, 0x10, &connection_request()),
+                ethernet_tcp(2, 1, 200, 0x10, &connection_confirm()),
             ]),
         )
         .unwrap();
@@ -532,8 +636,8 @@ mod tests {
         assert_eq!(capture.flow.server.port, 2);
         assert_eq!(capture.flow.client_stream[0].0, 2);
         assert_eq!(capture.flow.server_stream[0].0, 3);
-        assert_eq!(flatten(&capture.flow.client_stream), [3, 0, 0, 7, 2, 0xe0, 0]);
-        assert_eq!(flatten(&capture.flow.server_stream), [0]);
+        assert_eq!(flatten(&capture.flow.client_stream), connection_request());
+        assert_eq!(flatten(&capture.flow.server_stream), connection_confirm());
         std::fs::remove_file(path).unwrap();
     }
 
@@ -546,8 +650,8 @@ mod tests {
             pcapng_with_key_log(
                 [
                     ethernet_tcp(1, 2, 100, 0x02, &[]),
-                    ethernet_tcp(1, 2, 101, 0x10, &[3, 0, 0, 7, 2, 0xe0, 0]),
-                    ethernet_tcp(2, 1, 200, 0x10, &[0]),
+                    ethernet_tcp(1, 2, 101, 0x10, &connection_request()),
+                    ethernet_tcp(2, 1, 200, 0x10, &connection_confirm()),
                 ],
                 "CLIENT_RANDOM synthetic secret\n",
             ),
@@ -556,7 +660,7 @@ mod tests {
 
         let capture = read_capture(&path).unwrap();
 
-        assert_eq!(capture.tls_key_log, "CLIENT_RANDOM synthetic secret\n");
+        assert_eq!(capture.tls_key_log.as_str(), "CLIENT_RANDOM synthetic secret\n");
         assert!(!format!("{capture:?}").contains("synthetic secret"));
         std::fs::remove_file(path).unwrap();
     }
@@ -567,6 +671,13 @@ mod tests {
         packet.extend([0; 16]);
 
         let segment = parse_tcp_packet(1, &packet).unwrap();
+
+        assert_eq!(segment.data, b"payload");
+    }
+
+    #[test]
+    fn parses_tcp_after_an_ipv6_hop_by_hop_header() {
+        let segment = parse_tcp_packet(1, &ethernet_ipv6_tcp_with_hop_by_hop(1, 2, 100, b"payload")).unwrap();
 
         assert_eq!(segment.data, b"payload");
     }
@@ -642,6 +753,32 @@ mod tests {
         tcp[4..8].copy_from_slice(&sequence.to_be_bytes());
         tcp[12] = 0x50;
         tcp[13] = flags;
+        packet.extend(data);
+        packet
+    }
+
+    fn ethernet_ipv6_tcp_with_hop_by_hop(
+        source_port: u16,
+        destination_port: u16,
+        sequence: u32,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let mut packet = vec![0; 14 + 40 + 8 + 20];
+        packet[12..14].copy_from_slice(&0x86ddu16.to_be_bytes());
+        packet[14] = 0x60;
+        let payload_length = u16::try_from(8 + 20 + data.len()).unwrap();
+        packet[18..20].copy_from_slice(&payload_length.to_be_bytes());
+        packet[20] = 0;
+        packet[21] = 64;
+        packet[29] = if source_port == 1 { 1 } else { 2 };
+        packet[45] = if destination_port == 1 { 1 } else { 2 };
+        packet[54] = 6;
+        let tcp = &mut packet[62..];
+        tcp[0..2].copy_from_slice(&source_port.to_be_bytes());
+        tcp[2..4].copy_from_slice(&destination_port.to_be_bytes());
+        tcp[4..8].copy_from_slice(&sequence.to_be_bytes());
+        tcp[12] = 0x50;
+        tcp[13] = 0x10;
         packet.extend(data);
         packet
     }
