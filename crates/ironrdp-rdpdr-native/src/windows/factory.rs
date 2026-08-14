@@ -128,11 +128,14 @@ impl WindowsRdpdrBackendFactory {
         })
     }
 
-    /// Enables or disables WinSCard smartcard redirection for products using this factory.
+    /// Records whether products intend WinSCard smartcard redirection with this factory.
     ///
-    /// The portable channel still announces the smartcard device through
-    /// [`ironrdp_rdpdr::Rdpdr::with_smartcard`] / the client builder. Keep both sides aligned:
-    /// never announce a smartcard device without attaching a factory built with `true`.
+    /// This is product configuration state used when cloning or resolving factories (for example
+    /// smartcard-only sessions with an empty drive list). The Windows backend always includes a
+    /// `ScardSession`; MS-RDPESC IRPs only arrive after the portable channel announces the device
+    /// via [`ironrdp_rdpdr::Rdpdr::with_smartcard`] / the client builder. Products must keep that
+    /// announcement aligned with this flag and must not attach an empty-drive factory when the flag
+    /// is `false`.
     #[must_use]
     pub fn with_smartcard(mut self, enabled: bool) -> Self {
         self.smartcard = enabled;

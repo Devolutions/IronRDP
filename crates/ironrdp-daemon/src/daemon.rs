@@ -1715,13 +1715,22 @@ fn rdpdr_backend_factory(
 
 /// Resolves the RDPDR factory for one connect: clone the startup factory (if any) and apply the
 /// effective smartcard flag. Smartcard-only sessions may create an empty-drive factory on demand.
+/// An empty-drive factory is dropped when smartcard is disabled so RDPDR is not attached without a
+/// device to announce.
 #[cfg(windows)]
 fn resolve_rdpdr_factory(
     base: Option<&WindowsRdpdrBackendFactory>,
     smartcard: bool,
 ) -> anyhow::Result<Option<WindowsRdpdrBackendFactory>> {
     match base {
-        Some(factory) => Ok(Some(factory.clone().with_smartcard(smartcard))),
+        Some(factory) => {
+            let factory = factory.clone().with_smartcard(smartcard);
+            if factory.initial_drives().is_empty() && !smartcard {
+                Ok(None)
+            } else {
+                Ok(Some(factory))
+            }
+        }
         None if smartcard => WindowsRdpdrBackendFactory::from_drives(Vec::new())
             .map(|factory| factory.with_smartcard(true))
             .map(Some)
@@ -2439,6 +2448,11 @@ mod tests {
         assert!(factory.smartcard());
         assert!(factory.initial_drives().is_empty());
         assert!(super::resolve_rdpdr_factory(None, false).expect("no factory").is_none());
+        assert!(
+            super::resolve_rdpdr_factory(Some(&factory), false)
+                .expect("disable smartcard-only")
+                .is_none()
+        );
     }
 
     #[cfg(windows)]

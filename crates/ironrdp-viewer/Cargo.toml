@@ -35,9 +35,6 @@ ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
 ironrdp-rdpfile = { path = "../ironrdp-rdpfile", version = "0.1" }
 
-[target.'cfg(windows)'.dependencies]
-ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.7" }
-
 # Windowing and rendering
 winit = { version = "0.30", features = ["rwh_06"] }
 softbuffer = "0.4"
@@ -62,6 +59,9 @@ tap = "1"
 semver = "1"
 raw-window-handle = "0.6"
 url = "2"
+
+[target.'cfg(windows)'.dependencies]
+ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.7" }
 
 [lints]
 workspace = true
