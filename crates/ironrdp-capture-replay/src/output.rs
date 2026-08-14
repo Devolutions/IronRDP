@@ -102,6 +102,7 @@ fn finalize_staged_output(
 struct StagedOutput {
     directory: PathBuf,
     frame_count: usize,
+    frame_metadata: String,
 }
 
 impl StagedOutput {
@@ -109,22 +110,23 @@ impl StagedOutput {
         Self {
             directory,
             frame_count: 0,
+            frame_metadata: String::from("FrameIndex|FramePacket|FrameSize|FrameFile|UpdatePos|UpdateSize\n"),
         }
     }
 
     fn write_frame(&mut self, frame: ReplayFrame) -> Result<(), ExportError> {
-        let name = format!("frame-{:012}-packet-{:012}.png", self.frame_count, frame.packet);
+        let name = format!("frame_{:012}.png", self.frame_count);
         encode_png(&self.directory.join(name), &frame)?;
+        self.frame_metadata.push_str(&format!(
+            "{}|{}|{}x{}|frame_{:012}.png|0x0|{}x{}\n",
+            self.frame_count, frame.packet, frame.width, frame.height, self.frame_count, frame.width, frame.height,
+        ));
         self.frame_count += 1;
         Ok(())
     }
 
     fn write_diagnostics(&self, report: &ReplayReport) -> Result<(), ExportError> {
-        fs::write(
-            self.directory.join("metadata.tsv"),
-            metadata_tsv(report, self.frame_count),
-        )
-        .map_err(ExportError::WriteOutput)?;
+        fs::write(self.directory.join("frame_meta.psv"), &self.frame_metadata).map_err(ExportError::WriteOutput)?;
         fs::write(self.directory.join("events.tsv"), events_tsv(&report.events)).map_err(ExportError::WriteOutput)?;
         fs::write(self.directory.join("gaps.tsv"), gaps_tsv(&report.gaps)).map_err(ExportError::WriteOutput)?;
         fs::write(
@@ -210,15 +212,6 @@ fn encode_png(path: &Path, frame: &ReplayFrame) -> Result<(), ExportError> {
     writer.write_image_data(&frame.pixels).map_err(ExportError::EncodePng)?;
     writer.finish().map_err(ExportError::EncodePng)?;
     Ok(())
-}
-
-fn metadata_tsv(report: &ReplayReport, frame_count: usize) -> String {
-    format!(
-        "field\tvalue\nformat-version\t1\nframes\t{frame_count}\nevents\t{}\ngaps\t{}\ndynamic-channels\t{}\n",
-        report.events.len(),
-        report.gaps.len(),
-        report.dynamic_channels.len(),
-    )
 }
 
 fn events_tsv(events: &[ReplayEvent]) -> String {
@@ -311,19 +304,18 @@ mod tests {
         output.write_diagnostics(&report).unwrap();
         replace_output_directory(&staging, &directory, false).unwrap();
 
-        assert_png_rgba(
-            &directory.join("frame-000000000000-packet-000000000012.png"),
-            [0x11, 0x22, 0x33, 0xff],
-        );
-        assert_png_rgba(
-            &directory.join("frame-000000000001-packet-000000000047.png"),
-            [0x44, 0x55, 0x66, 0xff],
-        );
+        assert_png_rgba(&directory.join("frame_000000000000.png"), [0x11, 0x22, 0x33, 0xff]);
+        assert_png_rgba(&directory.join("frame_000000000001.png"), [0x44, 0x55, 0x66, 0xff]);
         let diagnostics = fs::read_to_string(directory.join("events.tsv")).unwrap();
-        let metadata = fs::read_to_string(directory.join("metadata.tsv")).unwrap();
+        let metadata = fs::read_to_string(directory.join("frame_meta.psv")).unwrap();
         let channels = fs::read_to_string(directory.join("dynamic-channels.tsv")).unwrap();
         assert!(diagnostics.contains("1\t12\tserver\tFastPath\tfast-path"));
-        assert!(metadata.contains("frames\t2"));
+        assert_eq!(
+            metadata,
+            "FrameIndex|FramePacket|FrameSize|FrameFile|UpdatePos|UpdateSize\n\
+             0|12|1x1|frame_000000000000.png|0x0|1x1\n\
+             1|47|1x1|frame_000000000001.png|0x0|1x1\n"
+        );
         assert_eq!(channels, "id\n7\n");
         for text in [diagnostics, metadata, channels] {
             assert!(!text.contains("CLIENT_RANDOM"));
@@ -389,7 +381,7 @@ mod tests {
 
         assert_eq!(summary.frame_count, 1);
         assert!(!directory.join("keep").exists());
-        assert!(directory.join("frame-000000000000-packet-000000000012.png").exists());
+        assert!(directory.join("frame_000000000000.png").exists());
         fs::remove_dir_all(directory).unwrap();
     }
 
