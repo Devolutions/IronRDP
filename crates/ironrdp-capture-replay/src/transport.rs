@@ -174,10 +174,21 @@ fn parse_tcp_packet(packet: usize, bytes: &[u8]) -> Option<Segment> {
                 return None;
             }
             let total_len = usize::from(u16::from_be_bytes(header.get(2..4)?.try_into().ok()?));
-            if total_len < header_len {
+            if total_len != 0 && total_len < header_len {
                 return None;
             }
-            let network_end = network_offset.checked_add(total_len)?;
+            // Some NIC offload captures leave the IPv4 total length unset.
+            // In that case, bound parsing to the captured frame extent.
+            let network_end = if total_len == 0 {
+                // A minimum Ethernet payload can be link-layer padding, not TCP data.
+                let minimum_frame_len = network_offset.checked_add(46)?;
+                if bytes.len() == minimum_frame_len || bytes.len() == minimum_frame_len.checked_add(4)? {
+                    return None;
+                }
+                bytes.len()
+            } else {
+                network_offset.checked_add(total_len)?
+            };
             bytes.get(network_offset..network_end)?;
             let source = IpAddr::from(<[u8; 4]>::try_from(header.get(12..16)?).ok()?);
             let destination = IpAddr::from(<[u8; 4]>::try_from(header.get(16..20)?).ok()?);
@@ -324,7 +335,14 @@ pub(crate) fn x224_connection_tpdu_end(bytes: &[u8], code: u8) -> Option<usize> 
     let length = usize::from(u16::from_be_bytes([header[2], header[3]]));
     let frame = bytes.get(..length)?;
 
-    (frame.len() >= 11 && frame[4] == 6 && frame[5] == code && frame[6..11] == [0; 5]).then_some(length)
+    // MS-RDPBCGR 2.2.1.1 and 2.2.1.2 include optional connection fields in LI.
+    let li = usize::from(*frame.get(4)?);
+    (li >= 6
+        && li < usize::from(u8::MAX)
+        && li.checked_add(5)? == frame.len()
+        && frame.get(5) == Some(&code)
+        && frame.get(10) == Some(&0))
+    .then_some(length)
 }
 
 fn reassemble(segments: Vec<Segment>, origin: u32) -> Result<PacketStream, ReplayError> {
@@ -427,11 +445,11 @@ mod tests {
     }
 
     fn connection_request() -> [u8; 19] {
-        [3, 0, 0, 19, 6, 0xe0, 0, 0, 0, 0, 0, 1, 0, 8, 0, 1, 0, 0, 0]
+        [3, 0, 0, 19, 14, 0xe0, 0, 0, 0, 0, 0, 1, 0, 8, 0, 1, 0, 0, 0]
     }
 
     fn connection_confirm() -> [u8; 19] {
-        [3, 0, 0, 19, 6, 0xd0, 0, 0, 0, 0, 0, 2, 0, 8, 0, 1, 0, 0, 0]
+        [3, 0, 0, 19, 14, 0xd0, 0, 0, 0x12, 0x34, 0, 2, 0, 8, 0, 1, 0, 0, 0]
     }
 
     #[test]
@@ -488,6 +506,17 @@ mod tests {
             &vec![(1, client)],
             &vec![(2, server.to_vec())]
         ));
+    }
+
+    #[test]
+    fn accepts_variable_length_x224_connection_request() {
+        let mut request = Vec::from([
+            3, 0, 0, 47, 42, 0xe0, 0, 0, 0, 0, 0, b'C', b'o', b'o', b'k', b'i', b'e', b':', b' ', b'm', b's', b't',
+            b's', b'h', b'a', b's', b'h', b'=', b's', b'y', b'n', b't', b'h', b'e', b't', b'i', b'c', b'\r', b'\n',
+        ]);
+        request.extend([1, 0, 8, 0, 3, 0, 0, 0]);
+
+        assert_eq!(x224_connection_tpdu_end(&request, 0xe0), Some(47));
     }
 
     #[test]
@@ -674,6 +703,34 @@ mod tests {
         let segment = parse_tcp_packet(1, &packet).unwrap();
 
         assert_eq!(segment.data, b"payload");
+    }
+
+    #[test]
+    fn parses_zero_length_ipv4_using_captured_extent() {
+        let mut packet = ethernet_tcp(1, 2, 100, 0x10, b"payload");
+        packet[16..18].copy_from_slice(&[0; 2]);
+
+        let segment = parse_tcp_packet(1, &packet).unwrap();
+
+        assert_eq!(segment.data, b"payload");
+    }
+
+    #[test]
+    fn rejects_ambiguous_zero_length_ipv4_ethernet_padding() {
+        let mut packet = ethernet_tcp(1, 2, 100, 0x10, &[]);
+        packet[16..18].copy_from_slice(&[0; 2]);
+        packet.extend([0; 6]);
+
+        assert!(parse_tcp_packet(1, &packet).is_none());
+    }
+
+    #[test]
+    fn rejects_zero_length_ipv4_without_a_complete_tcp_header() {
+        let mut packet = ethernet_tcp(1, 2, 100, 0x10, b"payload");
+        packet[16..18].copy_from_slice(&[0; 2]);
+        packet.truncate(14 + 20 + 19);
+
+        assert!(parse_tcp_packet(1, &packet).is_none());
     }
 
     #[test]
