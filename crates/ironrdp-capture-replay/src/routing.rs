@@ -11,7 +11,7 @@ use ironrdp_pdu::rdp::client_info::{ClientInfoFlags, CompressionType};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, decode_err, find_size, mcs};
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStage, ActiveStageBuilder};
+use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcessor};
 
 use crate::{Capture, NegotiatedState, PacketStream, Plaintext, ReplayError, decrypt_tls, recover_negotiated_state};
@@ -90,6 +90,8 @@ pub enum ReplayGapKind {
     DynamicChannel,
     /// The active session processor rejected a captured server message.
     Session,
+    /// The capture ended before activation or reactivation completed.
+    IncompleteActivation,
     /// A protocol path is outside direct TCP replay support.
     Unsupported,
 }
@@ -103,6 +105,8 @@ pub struct ReplayGap {
     pub direction: ReplayDirection,
     /// Layer that could not be replayed.
     pub kind: ReplayGapKind,
+    /// Bytes skipped while resynchronizing after a framing error.
+    pub skipped_bytes: usize,
 }
 
 /// A dynamic channel recovered from a recorded DVC create request.
@@ -139,7 +143,7 @@ impl ReplayRouter {
     /// Build a router from captured activation state without live negotiation.
     pub fn new(activation: CapturedActivation) -> Result<Self, ReplayError> {
         let state = &activation.state;
-        if state.width == 0 || state.height == 0 || state.width > MAX_DESKTOP_DIM || state.height > MAX_DESKTOP_DIM {
+        if !valid_desktop_dimensions(state.width, state.height) {
             return Err(ReplayError::ContradictoryRoutingState);
         }
 
@@ -224,7 +228,9 @@ impl ReplayRouter {
         Ok(())
     }
 
-    /// Route recorded plaintext streams in packet order.
+    /// Route one recorded plaintext capture in packet order.
+    ///
+    /// Construct a new router for each capture so session and channel state cannot cross capture boundaries.
     pub fn route_plaintext(&mut self, plaintext: &Plaintext) -> ReplayReport {
         let mut report = ReplayReport::default();
         let mut messages = framed_stream(&plaintext.client, ReplayDirection::Client, &mut report.gaps);
@@ -237,6 +243,8 @@ impl ReplayRouter {
 
         let mut awaiting_finalization = false;
         let mut activated = false;
+        let mut ever_activated = false;
+        let mut activation_viable = true;
         let mut activation_packet = None;
         let mut first_server_packet = None;
         for message in messages {
@@ -244,15 +252,23 @@ impl ReplayRouter {
                 ReplayRoute::ClientObservation
             } else if !activated {
                 first_server_packet.get_or_insert(message.packet);
-                if is_demand_active(&message, self.activation.state.io_channel_id) {
+                if let Some(demand_active) = captured_demand_active(&message, self.activation.state.io_channel_id) {
                     awaiting_finalization = true;
                     activation_packet = Some(message.packet);
+                    activation_viable = !ever_activated || self.reactivate(demand_active);
                 } else if awaiting_finalization && is_server_font_map(&message, self.activation.state.io_channel_id) {
-                    activated = true;
+                    activated = activation_viable;
+                    ever_activated |= activated;
                 }
                 ReplayRoute::Connection
             } else {
-                self.route_server_message(&message, &mut report)
+                let (route, deactivated) = self.route_server_message(&message, &mut report);
+                if deactivated {
+                    activated = false;
+                    awaiting_finalization = false;
+                    activation_packet = None;
+                }
+                route
             };
             report.events.push(ReplayEvent {
                 packet: message.packet,
@@ -261,18 +277,21 @@ impl ReplayRouter {
                 route,
             });
         }
-        if !activated {
-            report.gaps.push(ReplayGap {
-                packet: activation_packet.or(first_server_packet).unwrap_or_default(),
-                direction: ReplayDirection::Server,
-                kind: ReplayGapKind::Unsupported,
-            });
+        if !activated && (activation_packet.is_some() || !ever_activated) {
+            if let Some(packet) = activation_packet.or(first_server_packet) {
+                report.gaps.push(ReplayGap {
+                    packet,
+                    direction: ReplayDirection::Server,
+                    kind: ReplayGapKind::IncompleteActivation,
+                    skipped_bytes: 0,
+                });
+            }
         }
         report.gaps.sort_by_key(|gap| gap.packet);
         report
     }
 
-    fn route_server_message(&mut self, message: &CapturedPdu, report: &mut ReplayReport) -> ReplayRoute {
+    fn route_server_message(&mut self, message: &CapturedPdu, report: &mut ReplayReport) -> (ReplayRoute, bool) {
         let route = match message.action {
             Action::FastPath => ReplayRoute::FastPath,
             Action::X224 => match mcs::decode_send_data_indication(&message.bytes) {
@@ -297,22 +316,56 @@ impl ReplayRouter {
         if route == ReplayRoute::StaticChannel {
             self.observe_dvc_lifecycle(message, report);
         }
-        if self
-            .stage
-            .process(&mut self.image, message.action, &message.bytes)
-            .is_err()
-        {
-            report.gaps.push(ReplayGap {
-                packet: message.packet,
-                direction: ReplayDirection::Server,
-                kind: if route == ReplayRoute::StaticChannel {
-                    ReplayGapKind::StaticChannel
-                } else {
-                    ReplayGapKind::Session
-                },
-            });
+        if route == ReplayRoute::OtherServerMessage {
+            return (route, false);
         }
-        route
+        match self.stage.process(&mut self.image, message.action, &message.bytes) {
+            Ok(outputs) => (
+                route,
+                outputs
+                    .iter()
+                    .any(|output| matches!(output, ActiveStageOutput::DeactivateAll)),
+            ),
+            Err(_) => {
+                report.gaps.push(ReplayGap {
+                    packet: message.packet,
+                    direction: ReplayDirection::Server,
+                    kind: if route == ReplayRoute::StaticChannel {
+                        ReplayGapKind::StaticChannel
+                    } else {
+                        ReplayGapKind::Session
+                    },
+                    skipped_bytes: 0,
+                });
+                (route, false)
+            }
+        }
+    }
+
+    fn reactivate(&mut self, demand_active: CapturedDemandActive) -> bool {
+        if let Some((width, height)) = demand_active.desktop_size {
+            if !valid_desktop_dimensions(width, height) {
+                return false;
+            }
+            if self.image.width() != width || self.image.height() != height {
+                self.image = DecodedImage::new(PixelFormat::RgbA32, width, height);
+            }
+            self.activation.state.width = width;
+            self.activation.state.height = height;
+        }
+        let static_channel_chunk_size = self.stage.static_channel_chunk_size();
+        if !self.stage.reactivate(
+            self.activation.state.io_channel_id,
+            self.activation.state.user_channel_id,
+            demand_active.share_id,
+            false,
+            false,
+            static_channel_chunk_size,
+        ) {
+            return false;
+        }
+        self.activation.state.share_id = demand_active.share_id;
+        true
     }
 
     fn observe_dvc_lifecycle(&mut self, message: &CapturedPdu, report: &mut ReplayReport) {
@@ -331,6 +384,7 @@ impl ReplayRouter {
                 packet: message.packet,
                 direction: message.direction,
                 kind: ReplayGapKind::DynamicChannel,
+                skipped_bytes: 0,
             });
             return;
         }
@@ -356,6 +410,7 @@ impl ReplayRouter {
                     packet: channel.packet,
                     direction: ReplayDirection::Server,
                     kind: ReplayGapKind::DynamicChannel,
+                    skipped_bytes: 0,
                 });
             }
         }
@@ -396,6 +451,16 @@ struct CapturedPdu {
     bytes: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CapturedDemandActive {
+    share_id: u32,
+    desktop_size: Option<(u16, u16)>,
+}
+
+fn valid_desktop_dimensions(width: u16, height: u16) -> bool {
+    width != 0 && height != 0 && width <= MAX_DESKTOP_DIM && height <= MAX_DESKTOP_DIM
+}
+
 fn framed_stream(stream: &PacketStream, direction: ReplayDirection, gaps: &mut Vec<ReplayGap>) -> Vec<CapturedPdu> {
     let mut bytes = Vec::new();
     let mut boundaries = Vec::with_capacity(stream.len());
@@ -428,6 +493,7 @@ fn framed_stream(stream: &PacketStream, direction: ReplayDirection, gaps: &mut V
                     packet: packet_at(offset),
                     direction,
                     kind: ReplayGapKind::TruncatedPdu,
+                    skipped_bytes: 0,
                 });
                 break;
             }
@@ -437,8 +503,11 @@ fn framed_stream(stream: &PacketStream, direction: ReplayDirection, gaps: &mut V
                         packet: packet_at(offset),
                         direction,
                         kind: ReplayGapKind::Framing,
+                        skipped_bytes: 1,
                     });
                     unframed = true;
+                } else if let Some(gap) = gaps.last_mut() {
+                    gap.skipped_bytes += 1;
                 }
                 offset += 1;
             }
@@ -447,16 +516,28 @@ fn framed_stream(stream: &PacketStream, direction: ReplayDirection, gaps: &mut V
     messages
 }
 
-fn is_demand_active(message: &CapturedPdu, io_channel_id: u16) -> bool {
+fn captured_demand_active(message: &CapturedPdu, io_channel_id: u16) -> Option<CapturedDemandActive> {
     let Ok(message) = mcs::decode_send_data_indication(&message.bytes) else {
-        return false;
+        return None;
     };
-    ironrdp_pdu::rdp::headers::decode_share_control(message).is_ok_and(|context| {
-        context.channel_id == io_channel_id
-            && matches!(
-                context.pdu,
-                ironrdp_pdu::rdp::headers::ShareControlPdu::ServerDemandActive(_)
-            )
+    let Ok(context) = ironrdp_pdu::rdp::headers::decode_share_control(message) else {
+        return None;
+    };
+    if context.channel_id != io_channel_id {
+        return None;
+    }
+    let ironrdp_pdu::rdp::headers::ShareControlPdu::ServerDemandActive(demand_active) = context.pdu else {
+        return None;
+    };
+    let desktop_size = demand_active.pdu.capability_sets.iter().find_map(|capability| {
+        let ironrdp_pdu::rdp::capability_sets::CapabilitySet::Bitmap(bitmap) = capability else {
+            return None;
+        };
+        Some((bitmap.desktop_width, bitmap.desktop_height))
+    });
+    Some(CapturedDemandActive {
+        share_id: context.share_id,
+        desktop_size,
     })
 }
 
@@ -584,8 +665,10 @@ mod tests {
     use ironrdp_core::encode_vec;
     use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcDataPdu};
     use ironrdp_pdu::gcc::ChannelName;
-    use ironrdp_pdu::mcs::McsMessage;
-    use ironrdp_pdu::rdp::capability_sets::{DemandActive, ServerDemandActive};
+    use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
+    use ironrdp_pdu::rdp::capability_sets::{
+        Bitmap, BitmapDrawingFlags, CapabilitySet, DemandActive, ServerDemandActive,
+    };
     use ironrdp_pdu::rdp::client_info::{
         AddressFamily, ClientInfo, Credentials, ExtendedClientInfo, ExtendedClientOptionalInfo,
     };
@@ -745,8 +828,79 @@ mod tests {
         assert!(report.gaps.contains(&ReplayGap {
             packet: 17,
             direction: ReplayDirection::Server,
-            kind: ReplayGapKind::Unsupported,
+            kind: ReplayGapKind::IncompleteActivation,
+            skipped_bytes: 0,
         }));
+    }
+
+    #[test]
+    fn reports_framing_bytes_skipped_during_resynchronization() {
+        let valid_pdu = encode_vec(&X224(McsMessage::DisconnectProviderUltimatum(
+            DisconnectProviderUltimatum::from_reason(DisconnectReason::UserRequested),
+        )))
+        .unwrap();
+        let mut gaps = Vec::new();
+        let messages = framed_stream(
+            &vec![(9, [vec![1], valid_pdu].concat())],
+            ReplayDirection::Server,
+            &mut gaps,
+        );
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            gaps,
+            vec![ReplayGap {
+                packet: 9,
+                direction: ReplayDirection::Server,
+                kind: ReplayGapKind::Framing,
+                skipped_bytes: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn routes_deactivate_all_through_reactivation() {
+        let mut router = ReplayRouter::new(activation()).unwrap();
+        let report = router.route_plaintext(&Plaintext {
+            client: Vec::new(),
+            server: vec![
+                (1, demand_active()),
+                (2, font_map()),
+                (3, deactivate_all()),
+                (4, demand_active_with(0x5566_7788, Some((64, 48)))),
+                (5, font_map()),
+            ],
+        });
+
+        assert_eq!(
+            report.events.iter().map(|event| event.route).collect::<Vec<_>>(),
+            vec![
+                ReplayRoute::Connection,
+                ReplayRoute::Connection,
+                ReplayRoute::IoChannel,
+                ReplayRoute::Connection,
+                ReplayRoute::Connection,
+            ]
+        );
+        assert!(report.gaps.is_empty());
+        assert_eq!(router.activation.state.share_id, 0x5566_7788);
+        assert_eq!((router.image.width(), router.image.height()), (64, 48));
+    }
+
+    #[test]
+    fn retains_non_session_mcs_messages_without_active_stage_errors() {
+        let mut router = ReplayRouter::new(activation()).unwrap();
+        let disconnect = encode_vec(&X224(McsMessage::DisconnectProviderUltimatum(
+            DisconnectProviderUltimatum::from_reason(DisconnectReason::UserRequested),
+        )))
+        .unwrap();
+        let report = router.route_plaintext(&Plaintext {
+            client: Vec::new(),
+            server: vec![(1, demand_active()), (2, font_map()), (3, disconnect)],
+        });
+
+        assert_eq!(report.events[2].route, ReplayRoute::OtherServerMessage);
+        assert!(report.gaps.is_empty());
     }
 
     #[test]
@@ -816,15 +970,45 @@ mod tests {
     }
 
     fn demand_active() -> Vec<u8> {
+        demand_active_with(0x1122_3344, None)
+    }
+
+    fn demand_active_with(share_id: u32, desktop_size: Option<(u16, u16)>) -> Vec<u8> {
+        let capability_sets = desktop_size
+            .map(|(desktop_width, desktop_height)| {
+                vec![CapabilitySet::Bitmap(Bitmap {
+                    pref_bits_per_pix: 32,
+                    desktop_width,
+                    desktop_height,
+                    desktop_resize_flag: false,
+                    drawing_flags: BitmapDrawingFlags::empty(),
+                })]
+            })
+            .unwrap_or_default();
         let user_data = encode_vec(&ShareControlHeader {
             pdu_source: 1_001,
-            share_id: 0x1122_3344,
+            share_id,
             share_control_pdu: ShareControlPdu::ServerDemandActive(ServerDemandActive {
                 pdu: DemandActive {
                     source_descriptor: "test".to_owned(),
-                    capability_sets: Vec::new(),
+                    capability_sets,
                 },
             }),
+        })
+        .unwrap();
+        encode_vec(&X224(McsMessage::SendDataIndication(mcs::SendDataIndication {
+            initiator_id: 1_001,
+            channel_id: 1_003,
+            user_data: Cow::Owned(user_data),
+        })))
+        .unwrap()
+    }
+
+    fn deactivate_all() -> Vec<u8> {
+        let user_data = encode_vec(&ShareControlHeader {
+            pdu_source: 1_001,
+            share_id: 0x1122_3344,
+            share_control_pdu: ShareControlPdu::ServerDeactivateAll(ironrdp_pdu::rdp::headers::ServerDeactivateAll),
         })
         .unwrap();
         encode_vec(&X224(McsMessage::SendDataIndication(mcs::SendDataIndication {
