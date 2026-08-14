@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::{ReplayDirection, ReplayEvent, ReplayFrame, ReplayGap, ReplayGapKind, ReplayReport, ReplayRoute};
+use crate::routing::{ReplayFrame, prepare_replay_capture};
+use crate::{Capture, ReplayDirection, ReplayError, ReplayEvent, ReplayGap, ReplayGapKind, ReplayReport, ReplayRoute};
 
 /// Options that control replay artifact export.
 #[derive(Clone, Debug)]
@@ -33,23 +34,15 @@ pub enum ExportError {
     /// The selected output path cannot contain the export.
     #[error("replay output path is not a directory")]
     OutputPathNotDirectory,
+    /// The selected output path does not name a replaceable directory.
+    #[error("replay output path must name a directory")]
+    OutputPathNotLeaf,
     /// Replacing output was not explicitly approved.
     #[error("replay output directory is not empty; use --replace to replace it")]
     OutputDirectoryNotEmpty,
-    /// A routed frame is not a complete RGBA framebuffer.
-    #[error("replay frame {frame} has invalid RGBA pixel data")]
-    InvalidFrame {
-        /// Index of the invalid frame in replay order.
-        frame: usize,
-    },
-    /// Frame order would not preserve capture provenance.
-    #[error("replay frame {current} follows packet {previous} out of capture order")]
-    FrameOutOfOrder {
-        /// Packet number of the preceding frame.
-        previous: usize,
-        /// Packet number of the out-of-order frame.
-        current: usize,
-    },
+    /// The captured replay could not be prepared.
+    #[error("failed to replay capture")]
+    Replay(#[source] ReplayError),
     /// A filesystem operation failed before output was completed.
     #[error("failed to prepare replay output")]
     PrepareOutput(#[source] io::Error),
@@ -67,92 +60,116 @@ pub enum ExportError {
     CleanupOutput(#[source] io::Error),
 }
 
-/// Write visual replay frames and payload-free diagnostics into one output directory.
+/// Replay a capture and write visual frames with payload-free diagnostics.
 ///
-/// The destination receives nothing unless all PNGs and tabular files were written successfully.
-pub fn export_replay(report: &ReplayReport, options: &ExportOptions) -> Result<ExportSummary, ExportError> {
-    validate_frames(&report.frames)?;
+/// The destination receives nothing unless every PNG and tabular file was written successfully.
+pub fn export_capture(capture: &Capture, options: &ExportOptions) -> Result<ExportSummary, ExportError> {
+    let (mut router, plaintext) = prepare_replay_capture(capture).map_err(ExportError::Replay)?;
     validate_output_directory(&options.directory, options.replace)?;
 
     let parent = output_parent(&options.directory);
     fs::create_dir_all(parent).map_err(ExportError::PrepareOutput)?;
     let staging = create_staging_directory(parent, &options.directory)?;
-
-    let result = write_export(&staging, report).and_then(|()| replace_output_directory(&staging, &options.directory));
-    if let Err(error) = result {
-        fs::remove_dir_all(&staging).map_err(ExportError::CleanupOutput)?;
-        return Err(error);
+    let mut output = StagedOutput::new(staging);
+    let result = router
+        .route_plaintext_with_frame_sink(&plaintext, &mut |frame| output.write_frame(frame))
+        .and_then(|report| finalize_staged_output(&output, &report, options));
+    match result {
+        Ok(summary) => Ok(summary),
+        Err(error) => {
+            fs::remove_dir_all(&output.directory).map_err(ExportError::CleanupOutput)?;
+            Err(error)
+        }
     }
+}
 
+fn finalize_staged_output(
+    output: &StagedOutput,
+    report: &ReplayReport,
+    options: &ExportOptions,
+) -> Result<ExportSummary, ExportError> {
+    if output.frame_count == 0 {
+        return Err(ExportError::NoVisualFrames);
+    }
+    output.write_diagnostics(report)?;
+    replace_output_directory(&output.directory, &options.directory, options.replace)?;
     Ok(ExportSummary {
         directory: options.directory.clone(),
-        frame_count: report.frames.len(),
+        frame_count: output.frame_count,
     })
 }
 
-fn validate_frames(frames: &[ReplayFrame]) -> Result<(), ExportError> {
-    if frames.is_empty() {
-        return Err(ExportError::NoVisualFrames);
-    }
+struct StagedOutput {
+    directory: PathBuf,
+    frame_count: usize,
+}
 
-    let mut previous_packet = None;
-    for (index, frame) in frames.iter().enumerate() {
-        if let Some(previous) = previous_packet
-            && frame.packet < previous
-        {
-            return Err(ExportError::FrameOutOfOrder {
-                previous,
-                current: frame.packet,
-            });
-        }
-        previous_packet = Some(frame.packet);
-
-        let expected_len = usize::from(frame.width)
-            .checked_mul(usize::from(frame.height))
-            .and_then(|pixels| pixels.checked_mul(4 /* RGBA */));
-        if frame.width == 0 || frame.height == 0 || expected_len != Some(frame.pixels.len()) {
-            return Err(ExportError::InvalidFrame { frame: index + 1 });
+impl StagedOutput {
+    fn new(directory: PathBuf) -> Self {
+        Self {
+            directory,
+            frame_count: 0,
         }
     }
 
-    Ok(())
+    fn write_frame(&mut self, frame: ReplayFrame) -> Result<(), ExportError> {
+        let name = format!("frame-{:012}-packet-{:012}.png", self.frame_count, frame.packet);
+        encode_png(&self.directory.join(name), &frame)?;
+        self.frame_count += 1;
+        Ok(())
+    }
+
+    fn write_diagnostics(&self, report: &ReplayReport) -> Result<(), ExportError> {
+        fs::write(
+            self.directory.join("metadata.tsv"),
+            metadata_tsv(report, self.frame_count),
+        )
+        .map_err(ExportError::WriteOutput)?;
+        fs::write(self.directory.join("events.tsv"), events_tsv(&report.events)).map_err(ExportError::WriteOutput)?;
+        fs::write(self.directory.join("gaps.tsv"), gaps_tsv(&report.gaps)).map_err(ExportError::WriteOutput)?;
+        fs::write(
+            self.directory.join("dynamic-channels.tsv"),
+            dynamic_channels_tsv(report),
+        )
+        .map_err(ExportError::WriteOutput)?;
+        Ok(())
+    }
 }
 
 fn validate_output_directory(directory: &Path, replace: bool) -> Result<(), ExportError> {
+    let Some(name) = directory.file_name() else {
+        return Err(ExportError::OutputPathNotLeaf);
+    };
+    if name == "." || name == ".." {
+        return Err(ExportError::OutputPathNotLeaf);
+    }
+
     match fs::symlink_metadata(directory) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
             Err(ExportError::OutputPathNotDirectory)
         }
-        Ok(_) => {
-            let is_empty = fs::read_dir(directory)
-                .map_err(ExportError::PrepareOutput)?
-                .next()
-                .transpose()
-                .map_err(ExportError::PrepareOutput)?
-                .is_none();
-            if is_empty || replace {
-                Ok(())
-            } else {
-                Err(ExportError::OutputDirectoryNotEmpty)
-            }
+        Ok(_) if !replace && !directory_is_empty(directory).map_err(ExportError::PrepareOutput)? => {
+            Err(ExportError::OutputDirectoryNotEmpty)
         }
+        Ok(_) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(ExportError::PrepareOutput(error)),
     }
 }
 
+fn directory_is_empty(directory: &Path) -> io::Result<bool> {
+    Ok(fs::read_dir(directory)?.next().transpose()?.is_none())
+}
+
 fn output_parent(directory: &Path) -> &Path {
-    directory
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
+    directory.parent().unwrap_or_else(|| Path::new("."))
 }
 
 fn create_staging_directory(parent: &Path, directory: &Path) -> Result<PathBuf, ExportError> {
     let stem = directory
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("replay-output");
+        .ok_or(ExportError::OutputPathNotLeaf)?;
     for attempt in 0..1_000 {
         let staging = parent.join(format!(".{stem}.staging-{}-{attempt}", std::process::id()));
         match fs::create_dir(&staging) {
@@ -168,45 +185,36 @@ fn create_staging_directory(parent: &Path, directory: &Path) -> Result<PathBuf, 
     )))
 }
 
-fn write_export(directory: &Path, report: &ReplayReport) -> Result<(), ExportError> {
-    for (index, frame) in report.frames.iter().enumerate() {
-        let name = format!("frame-{index:06}-packet-{:012}.png", frame.packet);
-        let png = encode_png(frame)?;
-        fs::write(directory.join(name), png).map_err(ExportError::WriteOutput)?;
-    }
-
-    fs::write(directory.join("metadata.tsv"), metadata_tsv(report)).map_err(ExportError::WriteOutput)?;
-    fs::write(directory.join("events.tsv"), events_tsv(&report.events)).map_err(ExportError::WriteOutput)?;
-    fs::write(directory.join("gaps.tsv"), gaps_tsv(&report.gaps)).map_err(ExportError::WriteOutput)?;
-    fs::write(directory.join("dynamic-channels.tsv"), dynamic_channels_tsv(report))
-        .map_err(ExportError::WriteOutput)?;
-    Ok(())
-}
-
-fn replace_output_directory(staging: &Path, directory: &Path) -> Result<(), ExportError> {
+fn replace_output_directory(staging: &Path, directory: &Path, replace: bool) -> Result<(), ExportError> {
     match fs::symlink_metadata(directory) {
-        Ok(_) => fs::remove_dir_all(directory).map_err(ExportError::FinalizeOutput)?,
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(ExportError::OutputPathNotDirectory);
+        }
+        Ok(_) if replace => fs::remove_dir_all(directory).map_err(ExportError::FinalizeOutput)?,
+        Ok(_) if directory_is_empty(directory).map_err(ExportError::FinalizeOutput)? => {
+            fs::remove_dir(directory).map_err(ExportError::FinalizeOutput)?;
+        }
+        Ok(_) => return Err(ExportError::OutputDirectoryNotEmpty),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(ExportError::FinalizeOutput(error)),
     }
     fs::rename(staging, directory).map_err(ExportError::FinalizeOutput)
 }
 
-fn encode_png(frame: &ReplayFrame) -> Result<Vec<u8>, ExportError> {
-    let mut png = Vec::new();
-    let mut encoder = png::Encoder::new(&mut png, u32::from(frame.width), u32::from(frame.height));
+fn encode_png(path: &Path, frame: &ReplayFrame) -> Result<(), ExportError> {
+    let file = fs::File::create(path).map_err(ExportError::WriteOutput)?;
+    let mut encoder = png::Encoder::new(file, u32::from(frame.width), u32::from(frame.height));
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(ExportError::EncodePng)?;
     writer.write_image_data(&frame.pixels).map_err(ExportError::EncodePng)?;
     writer.finish().map_err(ExportError::EncodePng)?;
-    Ok(png)
+    Ok(())
 }
 
-fn metadata_tsv(report: &ReplayReport) -> String {
+fn metadata_tsv(report: &ReplayReport, frame_count: usize) -> String {
     format!(
-        "field\tvalue\nformat-version\t1\nframes\t{}\nevents\t{}\ngaps\t{}\ndynamic-channels\t{}\n",
-        report.frames.len(),
+        "field\tvalue\nformat-version\t1\nframes\t{frame_count}\nevents\t{}\ngaps\t{}\ndynamic-channels\t{}\n",
         report.events.len(),
         report.gaps.len(),
         report.dynamic_channels.len(),
@@ -295,25 +303,22 @@ mod tests {
     #[test]
     fn writes_ordered_pngs_and_safe_diagnostics() {
         let directory = temporary_directory("ordered");
-        let report = report_with_frames();
+        let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
+        let mut output = StagedOutput::new(staging.clone());
+        let report = report();
+        output.write_frame(frame(12, [0x11, 0x22, 0x33, 0xff])).unwrap();
+        output.write_frame(frame(47, [0x44, 0x55, 0x66, 0xff])).unwrap();
+        output.write_diagnostics(&report).unwrap();
+        replace_output_directory(&staging, &directory, false).unwrap();
 
-        let summary = export_replay(
-            &report,
-            &ExportOptions {
-                directory: directory.clone(),
-                replace: false,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(summary.frame_count, 2);
-        let first = directory.join("frame-000000-packet-000000000012.png");
-        let second = directory.join("frame-000001-packet-000000000047.png");
-        assert!(first.is_file());
-        assert!(second.is_file());
-        assert_png_rgba(&first, [0x11, 0x22, 0x33, 0xff]);
-        assert_png_rgba(&second, [0x44, 0x55, 0x66, 0xff]);
-
+        assert_png_rgba(
+            &directory.join("frame-000000000000-packet-000000000012.png"),
+            [0x11, 0x22, 0x33, 0xff],
+        );
+        assert_png_rgba(
+            &directory.join("frame-000000000001-packet-000000000047.png"),
+            [0x44, 0x55, 0x66, 0xff],
+        );
         let diagnostics = fs::read_to_string(directory.join("events.tsv")).unwrap();
         let metadata = fs::read_to_string(directory.join("metadata.tsv")).unwrap();
         let channels = fs::read_to_string(directory.join("dynamic-channels.tsv")).unwrap();
@@ -334,14 +339,7 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         fs::write(directory.join("keep"), "existing").unwrap();
 
-        let error = export_replay(
-            &report_with_frames(),
-            &ExportOptions {
-                directory: directory.clone(),
-                replace: false,
-            },
-        )
-        .unwrap_err();
+        let error = validate_output_directory(&directory, false).unwrap_err();
 
         assert!(matches!(error, ExportError::OutputDirectoryNotEmpty));
         assert_eq!(fs::read_to_string(directory.join("keep")).unwrap(), "existing");
@@ -349,13 +347,39 @@ mod tests {
     }
 
     #[test]
-    fn replacement_removes_existing_contents_after_staging() {
+    fn rejects_non_leaf_output_paths() {
+        let error = validate_output_directory(Path::new("."), false).unwrap_err();
+
+        assert!(matches!(error, ExportError::OutputPathNotLeaf));
+    }
+
+    #[test]
+    fn does_not_replace_new_contents_without_replace() {
+        let directory = temporary_directory("race");
+        fs::create_dir(&directory).unwrap();
+        let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
+        fs::write(directory.join("keep"), "new").unwrap();
+
+        let error = replace_output_directory(&staging, &directory, false).unwrap_err();
+
+        assert!(matches!(error, ExportError::OutputDirectoryNotEmpty));
+        assert_eq!(fs::read_to_string(directory.join("keep")).unwrap(), "new");
+        fs::remove_dir_all(staging).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn replaces_non_empty_output_after_staging() {
         let directory = temporary_directory("replace");
         fs::create_dir(&directory).unwrap();
-        fs::write(directory.join("stale"), "existing").unwrap();
+        fs::write(directory.join("keep"), "old").unwrap();
+        let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
+        let mut output = StagedOutput::new(staging);
+        output.write_frame(frame(12, [0x11, 0x22, 0x33, 0xff])).unwrap();
 
-        export_replay(
-            &report_with_frames(),
+        let summary = finalize_staged_output(
+            &output,
+            &report(),
             &ExportOptions {
                 directory: directory.clone(),
                 replace: true,
@@ -363,16 +387,21 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!directory.join("stale").exists());
-        assert!(directory.join("metadata.tsv").is_file());
+        assert_eq!(summary.frame_count, 1);
+        assert!(!directory.join("keep").exists());
+        assert!(directory.join("frame-000000000000-packet-000000000012.png").exists());
         fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn refuses_reports_without_visual_frames() {
+    fn refuses_to_finalize_without_visual_frames() {
         let directory = temporary_directory("no-frames");
-        let error = export_replay(
-            &ReplayReport::default(),
+        let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
+        let output = StagedOutput::new(staging.clone());
+
+        let error = finalize_staged_output(
+            &output,
+            &report(),
             &ExportOptions {
                 directory: directory.clone(),
                 replace: false,
@@ -382,38 +411,17 @@ mod tests {
 
         assert!(matches!(error, ExportError::NoVisualFrames));
         assert!(!directory.exists());
+        fs::remove_dir_all(staging).unwrap();
     }
 
-    fn report_with_frames() -> ReplayReport {
+    fn report() -> ReplayReport {
         ReplayReport {
-            events: vec![
-                ReplayEvent {
-                    packet: 12,
-                    direction: ReplayDirection::Server,
-                    action: Action::FastPath,
-                    route: ReplayRoute::FastPath,
-                },
-                ReplayEvent {
-                    packet: 47,
-                    direction: ReplayDirection::Server,
-                    action: Action::X224,
-                    route: ReplayRoute::IoChannel,
-                },
-            ],
-            frames: vec![
-                ReplayFrame {
-                    packet: 12,
-                    width: 1,
-                    height: 1,
-                    pixels: vec![0x11, 0x22, 0x33, 0xff],
-                },
-                ReplayFrame {
-                    packet: 47,
-                    width: 1,
-                    height: 1,
-                    pixels: vec![0x44, 0x55, 0x66, 0xff],
-                },
-            ],
+            events: vec![ReplayEvent {
+                packet: 12,
+                direction: ReplayDirection::Server,
+                action: Action::FastPath,
+                route: ReplayRoute::FastPath,
+            }],
             gaps: vec![ReplayGap {
                 packet: 20,
                 direction: ReplayDirection::Server,
@@ -424,6 +432,15 @@ mod tests {
                 id: 7,
                 name: "CLIENT_RANDOM decrypted payload".to_owned(),
             }],
+        }
+    }
+
+    fn frame(packet: usize, pixels: [u8; 4]) -> ReplayFrame {
+        ReplayFrame {
+            packet,
+            width: 1,
+            height: 1,
+            pixels: pixels.to_vec(),
         }
     }
 

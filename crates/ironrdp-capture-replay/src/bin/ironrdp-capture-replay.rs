@@ -15,7 +15,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use ironrdp_capture_replay::{ExportOptions, export_replay, read_capture, replay_capture};
+use ironrdp_capture_replay::{ExportOptions, export_capture, read_capture};
 
 fn main() -> ExitCode {
     match run() {
@@ -30,9 +30,8 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let arguments = parse_arguments(std::env::args_os().skip(1))?;
     let capture = read_capture(&arguments.capture).map_err(|error| error.to_string())?;
-    let report = replay_capture(&capture).map_err(|error| error.to_string())?;
-    let summary = export_replay(
-        &report,
+    let summary = export_capture(
+        &capture,
         &ExportOptions {
             directory: arguments.output,
             replace: arguments.replace,
