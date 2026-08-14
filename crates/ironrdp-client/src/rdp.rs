@@ -787,7 +787,12 @@ fn build_rdpdr_channel(
         .into_iter()
         .map(RdpdrDrive::into_parts)
         .collect::<Vec<_>>();
-    let rdpdr_channel = ironrdp_rdpdr::Rdpdr::new(backend, "IronRDP".to_owned()).with_drives(Some(initial_drives));
+
+    // Do not advertise drive capability for smartcard-only products.
+    let mut rdpdr_channel = ironrdp_rdpdr::Rdpdr::new(backend, "IronRDP".to_owned());
+    if !initial_drives.is_empty() {
+        rdpdr_channel = rdpdr_channel.with_drives(Some(initial_drives));
+    }
 
     #[cfg(feature = "smartcard")]
     let rdpdr_channel = if smartcard {
@@ -2857,13 +2862,43 @@ mod tests {
     #[test]
     fn empty_rdpdr_product_omits_the_channel() {
         let factory = CountingRdpdrFactory::new(Vec::new());
+        // Default RdpdrConfig enables smartcard when the feature is on; disable it so
+        // this case still covers an empty drive product with no smartcard device.
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+        };
 
         assert!(
-            build_rdpdr_channel(Some(&factory), &crate::config::RdpdrConfig::default())
+            build_rdpdr_channel(Some(&factory), &config)
                 .expect("empty RDPDR product should not fail")
                 .is_none()
         );
         assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(all(feature = "rdpdr", feature = "smartcard"))]
+    #[test]
+    fn smartcard_only_rdpdr_builds_without_drives() {
+        let factory = CountingRdpdrFactory::new(Vec::new());
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            smartcard: true,
+        };
+
+        let rdpdr = build_rdpdr_channel(Some(&factory), &config)
+            .expect("smartcard-only RDPDR should not fail")
+            .expect("smartcard-only product should build a channel");
+
+        assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+        assert!(
+            rdpdr
+                .downcast_backend::<TestRdpdrBackend>()
+                .expect("test backend should be retained")
+                .instance
+                >= 1
+        );
     }
 
     #[cfg(feature = "rdpdr")]
