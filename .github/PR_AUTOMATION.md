@@ -39,13 +39,13 @@ A cancelled workflow does not publish a fallback state or change labels; the suc
 ## Models and cost
 
 The classifier explicitly selects Sonnet with `--model sonnet --effort low` in the `claude-args` step that builds `claude_args`.
-The protocol and skeptical review stages select Opus with `--model opus` and use the action's default `high` effort.
+The protocol and skeptical review stages explicitly select Sonnet with `--model sonnet --effort high`.
 
 | Stage | Model | Effort | Reason |
 | --- | --- | --- | --- |
 | Classifier | Sonnet | `low` | Runs on every push and fills a small, schema-bound triage record. |
-| Protocol conformance | Opus | Default `high` | Performs the protocol analysis worth the higher cost. |
-| Skeptical review | Opus | Default `high` | Evaluates correctness and the validated protocol handoff. |
+| Protocol conformance | Sonnet | `high` | Performs protocol analysis at a lower cost. |
+| Skeptical review | Sonnet | `high` | Evaluates correctness and the validated protocol handoff. |
 
 Automatic heavy stages run at most twice per pull request.
 `haiku` is cheaper than Sonnet at `low` effort but supports no effort level, so the classifier does not use it.
