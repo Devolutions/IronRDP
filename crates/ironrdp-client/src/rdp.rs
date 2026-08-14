@@ -3456,6 +3456,7 @@ mod tests {
             &input_sender,
             no_cliprdr_factory(),
             Some(&factory),
+            None,
         )
         .expect("RDPDR connector should build");
 
@@ -3528,7 +3529,7 @@ mod tests {
             .expect("the first event fits");
 
         sender
-            .send_clipboard(ClipboardMessage::Error(Box::new(std::io::Error::other(
+            .send_clipboard(ClipboardMessage::Error(Box::new(io::Error::other(
                 "test clipboard message",
             ))))
             .expect("clipboard messages use a dedicated queue");
