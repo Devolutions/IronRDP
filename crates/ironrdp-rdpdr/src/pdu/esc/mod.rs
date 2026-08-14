@@ -2013,16 +2013,16 @@ impl rpce::HeaderlessEncode for StatusReturn {
     }
 
     fn size(&self) -> usize {
-        // return + (names ptr/len) + state + protocol + atr[32] + atr_len [+ names bytes]
+        // return + cBytes + msz ptr + state + protocol + atr[32] + atr_len
+        // + deferred [cBytes + msz bytes] when names are present
         4 + 8
             + 4
             + 4
             + 32
             + 4
-            + self
-                .reader_names
-                .as_ref()
-                .map_or(0, |n| encoded_multistring_len(n, self.encoding))
+            + self.reader_names.as_ref().map_or(0, |n| {
+                4 /* deferred cBytes */ + encoded_multistring_len(n, self.encoding)
+            })
     }
 }
 
@@ -3119,6 +3119,76 @@ mod tests {
                 0x11, 4, 0, 0, 0, 0x44, 0x44, 0x33, 0x33,
             ]
         );
+    }
+
+    fn enc_headerless(body: &impl HeaderlessEncode) -> Vec<u8> {
+        let mut buf = vec![0u8; HeaderlessEncode::size(body)];
+        HeaderlessEncode::encode(body, &mut WriteCursor::new(&mut buf)).unwrap();
+        buf
+    }
+
+    /// size() must match bytes written for full and probe variants (Status undercount was a live bug).
+    #[test]
+    fn esc_return_size_matches_encode_full_and_probe() {
+        let names = vec!["RDR".into()];
+        let atr = [0x3Bu8; 32];
+
+        let list_full = ListReadersReturn::new(ReturnCode::Success, names.clone(), CharacterSet::Unicode).into_inner();
+        let list_probe = ListReadersReturn::probe(ReturnCode::InsufficientBuffer, 12, CharacterSet::Ansi).into_inner();
+        assert_eq!(enc_headerless(&list_full).len(), HeaderlessEncode::size(&list_full));
+        assert_eq!(enc_headerless(&list_probe).len(), HeaderlessEncode::size(&list_probe));
+
+        let xmit_full = TransmitReturn::new(ReturnCode::Success, None, vec![0x90, 0x00]).into_inner();
+        let xmit_probe = TransmitReturn::recv_probe(ReturnCode::Success, None, 256).into_inner();
+        assert_eq!(enc_headerless(&xmit_full).len(), HeaderlessEncode::size(&xmit_full));
+        assert_eq!(enc_headerless(&xmit_probe).len(), HeaderlessEncode::size(&xmit_probe));
+
+        let status_full = StatusReturn::new(
+            ReturnCode::Success,
+            names,
+            CardState::Present,
+            CardProtocol::SCARD_PROTOCOL_T0,
+            atr,
+            5,
+            CharacterSet::Unicode,
+        )
+        .into_inner();
+        let status_probe = StatusReturn::names_probe(
+            ReturnCode::InsufficientBuffer,
+            20,
+            CardState::Present,
+            CardProtocol::SCARD_PROTOCOL_T0,
+            atr,
+            5,
+            CharacterSet::Unicode,
+        )
+        .into_inner();
+        assert_eq!(
+            HeaderlessEncode::size(&status_full),
+            4 * 5 + 8 + 32 + encoded_multistring_len(status_full.reader_names.as_ref().unwrap(), CharacterSet::Unicode)
+        );
+        assert_eq!(enc_headerless(&status_full).len(), HeaderlessEncode::size(&status_full));
+        assert_eq!(
+            enc_headerless(&status_probe).len(),
+            HeaderlessEncode::size(&status_probe)
+        );
+
+        let state_full = StateReturn::new(
+            ReturnCode::Success,
+            CardState::Present,
+            CardProtocol::SCARD_PROTOCOL_T1,
+            vec![1, 2, 3],
+        )
+        .into_inner();
+        let state_probe = StateReturn::atr_probe(
+            ReturnCode::InsufficientBuffer,
+            CardState::Present,
+            CardProtocol::SCARD_PROTOCOL_T1,
+            3,
+        )
+        .into_inner();
+        assert_eq!(enc_headerless(&state_full).len(), HeaderlessEncode::size(&state_full));
+        assert_eq!(enc_headerless(&state_probe).len(), HeaderlessEncode::size(&state_probe));
     }
 
     /// 6-byte Unicode mszCards needs 2-byte NDR pad before reader states.

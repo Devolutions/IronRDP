@@ -574,13 +574,20 @@ impl ScardSession {
                 let code = map_status(status);
                 let out_pci = recv_pci.as_ref().map(PciBuf::unpack);
                 if code != ReturnCode::Success {
-                    return Outcome::Message(xmit_ret(req, code, None, None, 0));
+                    // WinSCard writes the required size into pcbRecvLength on
+                    // SCARD_E_INSUFFICIENT_BUFFER; surface it as a NULL pbRecvBuffer probe.
+                    let need = if code == ReturnCode::InsufficientBuffer {
+                        len.min(MAX_RECV)
+                    } else {
+                        0
+                    };
+                    return Outcome::Message(xmit_ret(req, code, out_pci, None, need));
                 }
                 if call.recv_buffer_is_null {
-                    Outcome::Message(xmit_ret(req, code, out_pci, None, len))
+                    Outcome::Message(xmit_ret(req, code, out_pci, None, len.min(MAX_RECV)))
                 } else {
-                    buf.truncate(len as usize);
-                    Outcome::Message(xmit_ret(req, code, out_pci, Some(buf), len))
+                    buf.truncate((len as usize).min(buf.len()));
+                    Outcome::Message(xmit_ret(req, code, out_pci, Some(buf), len.min(MAX_RECV)))
                 }
             },
             |req, c| xmit_ret(req, c, None, None, 0),
