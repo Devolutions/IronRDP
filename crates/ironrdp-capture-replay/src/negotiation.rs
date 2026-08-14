@@ -137,8 +137,10 @@ fn tpkt_frames(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
                 let end = offset.checked_add(length)?;
                 if length >= 7 && end <= bytes.len() {
                     let frame = &bytes[offset..end];
-                    offset = end;
-                    return Some(frame);
+                    if frame[4..7] == [2, 0xf0, 0x80] {
+                        offset = end;
+                        return Some(frame);
+                    }
                 }
             }
             offset += 1;
