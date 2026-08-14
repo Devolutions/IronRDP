@@ -2620,6 +2620,7 @@ dependencies = [
  "ironrdp-session",
  "ironrdp-svc",
  "pcap-parser",
+ "png",
  "sha2 0.10.9",
  "thiserror 2.0.19",
  "zeroize",

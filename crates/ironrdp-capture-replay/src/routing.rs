@@ -77,6 +77,30 @@ pub struct ReplayEvent {
     pub route: ReplayRoute,
 }
 
+/// A framebuffer snapshot produced by a captured graphics update.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ReplayFrame {
+    /// Packet number that produced this framebuffer state.
+    pub packet: usize,
+    /// Framebuffer width in pixels.
+    pub width: u16,
+    /// Framebuffer height in pixels.
+    pub height: u16,
+    /// RGBA framebuffer pixels in row-major order.
+    pub pixels: Vec<u8>,
+}
+
+impl core::fmt::Debug for ReplayFrame {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ReplayFrame")
+            .field("packet", &self.packet)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("pixels", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Classifies an explicitly recorded replay gap.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReplayGapKind {
@@ -123,6 +147,8 @@ pub struct CapturedDynamicChannel {
 pub struct ReplayReport {
     /// Routed RDP PDUs in capture order.
     pub events: Vec<ReplayEvent>,
+    /// Framebuffer snapshots produced in capture order.
+    pub frames: Vec<ReplayFrame>,
     /// Messages that were not safely replayable.
     pub gaps: Vec<ReplayGap>,
     /// Dynamic channels attached from recorded DVC create requests.
@@ -320,12 +346,25 @@ impl ReplayRouter {
             return (route, false);
         }
         match self.stage.process(&mut self.image, message.action, &message.bytes) {
-            Ok(outputs) => (
-                route,
-                outputs
+            Ok(outputs) => {
+                if outputs
                     .iter()
-                    .any(|output| matches!(output, ActiveStageOutput::DeactivateAll)),
-            ),
+                    .any(|output| matches!(output, ActiveStageOutput::GraphicsUpdate(_)))
+                {
+                    report.frames.push(ReplayFrame {
+                        packet: message.packet,
+                        width: self.image.width(),
+                        height: self.image.height(),
+                        pixels: self.image.data().to_vec(),
+                    });
+                }
+                (
+                    route,
+                    outputs
+                        .iter()
+                        .any(|output| matches!(output, ActiveStageOutput::DeactivateAll)),
+                )
+            }
             Err(_) => {
                 report.gaps.push(ReplayGap {
                     packet: message.packet,
