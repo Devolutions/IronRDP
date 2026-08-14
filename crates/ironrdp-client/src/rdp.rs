@@ -1,4 +1,3 @@
-use core::error::Error as _;
 use core::net::SocketAddr;
 use core::num::NonZeroU16;
 use core::time::Duration;

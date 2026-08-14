@@ -1078,6 +1078,9 @@ impl iron_remote_desktop::Session for Session {
                     ActiveStageOutput::AutoReconnectCookie(_) => {
                         debug!("Server Auto-Reconnect Cookie received (automatic reconnection not implemented)");
                     }
+                    ActiveStageOutput::AutoReconnectFailed => {
+                        return Err(anyhow::Error::msg("automatic reconnect rejected by server").into());
+                    }
                     ActiveStageOutput::SaveSessionInfo { logon_complete: true } => {
                         debug!("RDP login complete");
                     }
