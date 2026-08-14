@@ -85,6 +85,9 @@ ironrdp-agent sandbox config <sandbox-id>
 ironrdp-agent daemon-start
 ironrdp-agent connect --sandbox-id <sandbox-id>
 ironrdp-agent screenshot sandbox.png
+
+:: shut down when finished
+ironrdp-agent sandbox stop <sandbox-id>
 ```
 
 The agent speaks `sandboxserver.SandboxCore` in-process over the per-user named pipe (`\\.\pipe\wsandbox\<md5(user SID)>`) — no .NET helper is required.
