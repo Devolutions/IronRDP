@@ -21,15 +21,12 @@ Native backend building blocks for the IronRDP RDPDR static channel.
   64-byte output, plus the read-only `FSCTL_GET_COMPRESSION`,
   `FSCTL_GET_INTEGRITY_INFORMATION`, and `FSCTL_QUERY_ALLOCATED_RANGES`, all
   with validated, bounded buffers.
-  - On Windows, optional smartcard redirection is pluggable via
-    `WindowsRdpdrBackendFactory::with_smartcard(true)`. Smartcard-only products
-    (no drives) are valid. The current backend is a compile-ready stub that
-    completes decoded MS-RDPESC calls with `SCARD_E_UNSUPPORTED_FEATURE`; a full
-    WinSCard implementation is a follow-up.
+  - Smartcard-only products are valid when the channel is configured with `ironrdp_rdpdr::Rdpdr::with_smartcard(0)`.
+    The current Windows backend is a compile-ready stub that completes decoded MS-RDPESC calls with `SCARD_E_UNSUPPORTED_FEATURE`.
+    A full WinSCard implementation is a follow-up.
 
 The Windows implementation is intentionally layered so protocol code remains
 platform independent in `ironrdp-rdpdr`.
 
-`WindowsRdpdrBackendFactory` configures zero or more `RedirectedDrive`s and an
-optional smartcard flag. Multi-drive registry management remains outside this
-native backend.
+`WindowsRdpdrBackendFactory` configures zero or more `RedirectedDrive`s.
+Multi-drive registry management remains outside this native backend.

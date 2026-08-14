@@ -31,22 +31,22 @@ pub struct WindowsRdpdrBackend {
     pub(super) roots: HashMap<u32, RedirectedRoot>,
     pub(super) open_files: FileTable<OpenFile>,
     deferred_operations: DeferredOperations,
-    scard: Option<ScardSession>,
+    scard: ScardSession,
 }
 
 impl WindowsRdpdrBackend {
     #[cfg(test)]
     pub(crate) fn from_drive(drive: RedirectedDrive) -> Self {
-        Self::from_drives(vec![drive], false)
+        Self::from_drives(vec![drive])
     }
 
-    pub(crate) fn from_drives(drives: Vec<RedirectedDrive>, smartcard: bool) -> Self {
+    pub(crate) fn from_drives(drives: Vec<RedirectedDrive>) -> Self {
         Self {
             drives: drives.into_iter().map(|drive| (drive.device_id(), drive)).collect(),
             roots: HashMap::new(),
             open_files: FileTable::new(DEFAULT_MAX_OPEN_FILES),
             deferred_operations: DeferredOperations::new(),
-            scard: smartcard.then(ScardSession::new),
+            scard: ScardSession::new(),
         }
     }
 
@@ -151,9 +151,7 @@ impl RdpdrBackend for WindowsRdpdrBackend {
 
     fn reset(&mut self) -> PduResult<()> {
         self.deferred_operations.reset();
-        if let Some(scard) = self.scard.as_mut() {
-            scard.reset();
-        }
+        self.scard.reset();
         self.open_files.clear();
         self.roots.clear();
         Ok(())
@@ -172,11 +170,7 @@ impl RdpdrBackend for WindowsRdpdrBackend {
         req: DeviceControlRequest<ScardIoCtlCode>,
         call: ScardCall,
     ) -> PduResult<Vec<SvcMessage>> {
-        // Always complete MS-RDPESC IRPs. The channel may announce device ID 0
-        // even when the factory left `with_smartcard(false)`, and dropping the
-        // IRP hangs the server. Lazy-create the stub session on first use so
-        // announce and backend cannot diverge.
-        self.scard.get_or_insert_with(ScardSession::new).handle_call(req, call)
+        self.scard.handle_call(req, call)
     }
 
     fn add_drive(&mut self, device_id: u32) -> PduResult<()> {
@@ -215,9 +209,7 @@ impl RdpdrBackend for WindowsRdpdrBackend {
 
     fn poll_deferred_messages(&mut self) -> PduResult<Vec<SvcMessage>> {
         let mut messages = self.deferred_operations.poll();
-        if let Some(scard) = self.scard.as_mut() {
-            messages.extend(scard.poll());
-        }
+        messages.extend(self.scard.poll());
         Ok(messages)
     }
 }
@@ -254,13 +246,10 @@ mod tests {
     fn backend_restores_each_selected_drive() {
         let system_drive = std::env::var("SystemDrive").expect("SystemDrive is set on Windows");
         let root = format!(r"{system_drive}\");
-        let mut backend = WindowsRdpdrBackend::from_drives(
-            vec![
-                RedirectedDrive::new(1, "System", &root, false).expect("valid system drive"),
-                RedirectedDrive::new(2, "System copy", root, false).expect("valid system drive copy"),
-            ],
-            false,
-        );
+        let mut backend = WindowsRdpdrBackend::from_drives(vec![
+            RedirectedDrive::new(1, "System", &root, false).expect("valid system drive"),
+            RedirectedDrive::new(2, "System copy", root, false).expect("valid system drive copy"),
+        ]);
 
         ironrdp_rdpdr::RdpdrBackend::restore_drive(&mut backend, 1).expect("restore first selected drive");
         ironrdp_rdpdr::RdpdrBackend::restore_drive(&mut backend, 2).expect("restore second selected drive");
@@ -270,10 +259,8 @@ mod tests {
     }
 
     #[test]
-    fn scard_irp_completes_when_factory_smartcard_flag_is_off() {
-        // Channel announce can enable device 0 without factory.with_smartcard(true).
-        let mut backend = WindowsRdpdrBackend::from_drives(Vec::new(), false);
-        assert!(backend.scard.is_none());
+    fn scard_irp_completes_without_redirected_drives() {
+        let mut backend = WindowsRdpdrBackend::from_drives(Vec::new());
 
         let req = DeviceControlRequest {
             header: DeviceIoRequest {
@@ -293,9 +280,8 @@ mod tests {
             req,
             ScardCall::EstablishContextCall(EstablishContextCall { scope: Scope::User }),
         )
-        .expect("lazy stub must complete the IRP");
+        .expect("stub must complete the IRP");
 
         assert_eq!(messages.len(), 1);
-        assert!(backend.scard.is_some());
     }
 }

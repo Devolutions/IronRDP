@@ -18,22 +18,25 @@ use ironrdp_svc::SvcMessage;
 
 /// Per-connection smartcard state for RDPDR device ID 0.
 ///
-/// This stub holds no native WinSCard resources. It only provides the backend
-/// hooks (`new` / `reset` / `poll` / `handle_call`) expected by
-/// [`super::backend::WindowsRdpdrBackend`]. `reset` and `poll` stay no-ops until
-/// the real WinSCard backend needs deferred completions.
+/// This stub holds no native WinSCard resources.
+/// It provides the `new`, `reset`, `poll`, and `handle_call` hooks expected by [`super::backend::WindowsRdpdrBackend`].
+/// `reset` clears queued messages, and `poll` drains them for deferred completions.
 #[derive(Debug, Default)]
-pub(super) struct ScardSession;
+pub(super) struct ScardSession {
+    messages: Vec<SvcMessage>,
+}
 
 impl ScardSession {
     pub(super) fn new() -> Self {
-        Self
+        Self::default()
     }
 
-    pub(super) fn reset(&mut self) {}
+    pub(super) fn reset(&mut self) {
+        self.messages.clear();
+    }
 
     pub(super) fn poll(&mut self) -> Vec<SvcMessage> {
-        Vec::new()
+        std::mem::take(&mut self.messages)
     }
 
     pub(super) fn handle_call(
@@ -42,7 +45,8 @@ impl ScardSession {
         call: ScardCall,
     ) -> PduResult<Vec<SvcMessage>> {
         let output = stub_output(req.io_control_code, call);
-        Ok(vec![complete_rpce(req, output)])
+        self.messages.push(complete_rpce(req, output));
+        Ok(self.poll())
     }
 }
 
@@ -99,10 +103,16 @@ fn stub_output(io_control_code: ScardIoCtlCode, call: ScardCall) -> Box<dyn rpce
 }
 
 fn complete_rpce(req: DeviceControlRequest<ScardIoCtlCode>, output: Box<dyn rpce::Encode>) -> SvcMessage {
+    let (status, output_buffer) = if output.size() <= req.output_buffer_length as usize {
+        (NtStatus::SUCCESS, Some(output))
+    } else {
+        (NtStatus::BUFFER_TOO_SMALL, None)
+    };
+
     SvcMessage::from(RdpdrPdu::DeviceControlResponse(DeviceControlResponse::new(
         req,
-        NtStatus::SUCCESS,
-        Some(output),
+        status,
+        output_buffer,
     )))
 }
 
@@ -246,6 +256,30 @@ mod tests {
                 ScardContext::new(0),
             )),
         );
+        let actual = messages[0].encode_unframed_pdu().expect("encode actual");
+        let expected = expected.encode_unframed_pdu().expect("encode expected");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn handle_call_respects_output_buffer_length() {
+        let mut session = ScardSession::new();
+        let req = control_req(ScardIoCtlCode::EstablishContext, 0, 42);
+        let messages = session
+            .handle_call(
+                DeviceControlRequest {
+                    output_buffer_length: 0,
+                    ..req.clone()
+                },
+                establish_context_call(),
+            )
+            .expect("stub must complete");
+
+        let expected = SvcMessage::from(RdpdrPdu::DeviceControlResponse(DeviceControlResponse::new(
+            req,
+            NtStatus::BUFFER_TOO_SMALL,
+            None,
+        )));
         let actual = messages[0].encode_unframed_pdu().expect("encode actual");
         let expected = expected.encode_unframed_pdu().expect("encode expected");
         assert_eq!(actual, expected);

@@ -96,21 +96,17 @@ impl core::error::Error for RedirectedDriveError {}
 /// the portable RDPDR crate.
 ///
 /// Smartcard redirection is optional and independent of drives: an empty drive
-/// list with `smartcard` enabled is valid for smartcard-only sessions.
+/// list is valid for smartcard-only sessions.
 #[derive(Clone, Debug)]
 pub struct WindowsRdpdrBackendFactory {
     drives: Vec<RedirectedDrive>,
-    smartcard: bool,
 }
 
 impl WindowsRdpdrBackendFactory {
     /// Configures the single logical-volume root supported by this baseline.
     #[must_use]
     pub fn new(drive: RedirectedDrive) -> Self {
-        Self {
-            drives: vec![drive],
-            smartcard: false,
-        }
+        Self { drives: vec![drive] }
     }
 
     /// Configures the logical-volume roots selected for one connection.
@@ -122,23 +118,7 @@ impl WindowsRdpdrBackendFactory {
             }
         }
 
-        Ok(Self {
-            drives,
-            smartcard: false,
-        })
-    }
-
-    /// Enables or disables smartcard redirection on the built backend.
-    #[must_use]
-    pub fn with_smartcard(mut self, enabled: bool) -> Self {
-        self.smartcard = enabled;
-        self
-    }
-
-    /// Returns whether smartcard redirection is enabled for this factory.
-    #[must_use]
-    pub fn smartcard(&self) -> bool {
-        self.smartcard
+        Ok(Self { drives })
     }
 
     /// Returns the initial `(device_id, name)` pair for `Rdpdr::with_drives`.
@@ -157,7 +137,7 @@ impl WindowsRdpdrBackendFactory {
     /// sequence.
     #[must_use]
     pub fn build(&self) -> WindowsRdpdrBackend {
-        WindowsRdpdrBackend::from_drives(self.drives.clone(), self.smartcard)
+        WindowsRdpdrBackend::from_drives(self.drives.clone())
     }
 }
 
@@ -242,16 +222,5 @@ mod tests {
         ]);
 
         assert!(matches!(result, Err(RedirectedDriveFactoryError::DuplicateDeviceId(1))));
-    }
-
-    #[test]
-    fn factory_allows_smartcard_only_product() {
-        let factory = WindowsRdpdrBackendFactory::from_drives(Vec::new())
-            .expect("empty drive list is valid")
-            .with_smartcard(true);
-
-        assert!(factory.smartcard());
-        assert!(factory.initial_drives().is_empty());
-        let _backend = factory.build();
     }
 }

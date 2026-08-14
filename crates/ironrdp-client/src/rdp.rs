@@ -2619,8 +2619,8 @@ mod tests {
     use ironrdp_rdpdr::pdu::RdpdrPdu;
     #[cfg(feature = "rdpdr")]
     use ironrdp_rdpdr::pdu::efs::{
-        DeviceControlRequest, ServerDeviceAnnounceResponse, ServerDriveIoRequest, VERSION_MINOR_12, VersionAndIdPdu,
-        VersionAndIdPduKind,
+        CapabilityMessage, CoreCapability, CoreCapabilityKind, DeviceControlRequest, DeviceType,
+        ServerDeviceAnnounceResponse, ServerDriveIoRequest, VERSION_MINOR_12, VersionAndIdPdu, VersionAndIdPduKind,
     };
     #[cfg(feature = "rdpdr")]
     use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
@@ -2890,7 +2890,7 @@ mod tests {
             smartcard: true,
         };
 
-        let rdpdr = build_rdpdr_channel(Some(&factory), &config)
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config)
             .expect("smartcard-only RDPDR should not fail")
             .expect("smartcard-only product should build a channel");
 
@@ -2901,6 +2901,75 @@ mod tests {
                 .expect("test backend should be retained")
                 .instance
                 >= 1
+        );
+
+        let client_id = 0x1234_5678;
+        let server_announce = RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+            version_major: 1,
+            version_minor: VERSION_MINOR_12,
+            client_id,
+            kind: VersionAndIdPduKind::ServerAnnounceRequest,
+        });
+        assert_eq!(
+            rdpdr
+                .process(&encode_vec(&server_announce).expect("encode server announce"))
+                .expect("process server announce")
+                .len(),
+            2
+        );
+
+        let client_confirm = RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+            version_major: 1,
+            version_minor: VERSION_MINOR_12,
+            client_id,
+            kind: VersionAndIdPduKind::ServerClientIdConfirm,
+        });
+        let announcements = rdpdr
+            .process(&encode_vec(&client_confirm).expect("encode client ID confirm"))
+            .expect("process client ID confirm");
+        assert_eq!(announcements.len(), 1);
+        let wire = announcements[0]
+            .encode_unframed_pdu()
+            .expect("encode device announcement");
+        assert_eq!(
+            u16::from_le_bytes(wire[2..4].try_into().expect("device announcement packet ID")),
+            u16::from(ironrdp_rdpdr::pdu::PacketId::CoreDevicelistAnnounce)
+        );
+        assert_eq!(u32::from_le_bytes(wire[4..8].try_into().expect("device count")), 1);
+        assert_eq!(
+            u32::from_le_bytes(wire[8..12].try_into().expect("device type")),
+            u32::from(DeviceType::Smartcard)
+        );
+        assert_eq!(u32::from_le_bytes(wire[12..16].try_into().expect("device ID")), 0);
+
+        let server_capability = RdpdrPdu::CoreCapability(CoreCapability {
+            capabilities: vec![
+                CapabilityMessage::new_general(0),
+                CapabilityMessage::new_drive(),
+                CapabilityMessage::new_smartcard(),
+            ],
+            kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
+        });
+        let capability_response = rdpdr
+            .process(&encode_vec(&server_capability).expect("encode server capability"))
+            .expect("process server capability");
+        assert_eq!(capability_response.len(), 1);
+        assert_eq!(
+            capability_response[0]
+                .encode_unframed_pdu()
+                .expect("encode client capability"),
+            encode_vec(&RdpdrPdu::CoreCapability(CoreCapability::new_response(vec![
+                CapabilityMessage::new_general(1),
+                CapabilityMessage::new_smartcard(),
+            ])))
+            .expect("encode expected client capability")
+        );
+
+        assert!(
+            rdpdr
+                .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+                .expect("process user logged on")
+                .is_empty()
         );
     }
 
