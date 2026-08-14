@@ -59,6 +59,11 @@ pub const MAX_PEN_ROTATION: u16 = 359;
 /// Maximum absolute MS-RDPEI pen tilt angle in degrees ([MS-RDPEI] 2.2.3.7.1.1).
 pub const MAX_PEN_TILT: i16 = 90;
 
+/// Maximum retained RAIL observations, excluding a possible history-gap marker.
+pub const MAX_RAIL_RETAINED_EVENTS: usize = 256;
+
+const MAX_RAIL_EVENT_DUMP_EVENTS: usize = MAX_RAIL_RETAINED_EVENTS + 1;
+
 /// One contact sample inside a [`TouchFrameRequest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TouchContactRequest {
@@ -1862,6 +1867,9 @@ impl_pdu_pod!(RailEvent);
 
 impl Encode for RailEventDump {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        if self.events.len() > MAX_RAIL_EVENT_DUMP_EVENTS {
+            return Err(ironrdp_core::invalid_field_err!("RAIL events", "count exceeds limit"));
+        }
         ensure_size!(in: dst, size: self.size());
         dst.write_u64(self.generation);
         let count: u32 = cast_length!("RAIL event count", self.events.len())?;
@@ -1885,8 +1893,12 @@ impl Decode<'_> for RailEventDump {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 12);
         let generation = src.read_u64();
-        let count = src.read_u32();
-        let mut events = Vec::new();
+        let count = usize::try_from(src.read_u32())
+            .map_err(|_| ironrdp_core::other_err!("RAIL events", "count does not fit in usize"))?;
+        if count > MAX_RAIL_EVENT_DUMP_EVENTS {
+            return Err(ironrdp_core::invalid_field_err!("RAIL events", "count exceeds limit"));
+        }
+        let mut events = Vec::with_capacity(count);
         for _ in 0..count {
             events.push(RailEvent::decode(src)?);
         }
@@ -2863,7 +2875,9 @@ impl_pdu_pod!(OperationEvent);
 
 #[cfg(test)]
 mod tests {
-    use super::RailExecuteRequest;
+    use ironrdp_core::{decode, encode_vec};
+
+    use super::{MAX_RAIL_EVENT_DUMP_EVENTS, RailEvent, RailEventDump, RailEventKind, RailExecuteRequest};
 
     #[test]
     fn rail_execute_debug_redacts_command_fields() {
@@ -2879,6 +2893,24 @@ mod tests {
         assert!(!debug.contains("C:\\secret-directory"));
         assert!(!debug.contains("secret-token"));
         assert!(debug.contains("executable_len"));
+    }
+
+    #[test]
+    fn rail_event_dump_rejects_oversized_counts() {
+        let event = RailEvent {
+            sequence: 1,
+            kind: RailEventKind::Gap { lost_through: 1 },
+        };
+        let dump = RailEventDump {
+            generation: 1,
+            events: vec![event; MAX_RAIL_EVENT_DUMP_EVENTS + 1],
+        };
+        assert!(encode_vec(&dump).is_err());
+
+        let mut bytes = [0; 12];
+        bytes[8..]
+            .copy_from_slice(&(u32::try_from(MAX_RAIL_EVENT_DUMP_EVENTS + 1).expect("limit fits u32")).to_le_bytes());
+        assert!(decode::<RailEventDump>(&bytes).is_err());
     }
 }
 

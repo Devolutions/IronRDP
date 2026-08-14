@@ -421,6 +421,18 @@ impl fmt::Display for NowRequestError {
 
 impl core::error::Error for NowRequestError {}
 
+/// A daemon-provided RAIL error that must be rendered according to the selected output format.
+#[derive(Debug)]
+struct RailRequestError(AgentError);
+
+impl fmt::Display for RailRequestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0.message)
+    }
+}
+
+impl core::error::Error for RailRequestError {}
+
 #[derive(Args, Debug)]
 struct DaemonArgs {
     /// Path to a .rdp file whose properties are preloaded as an overlay applied to every `connect`
@@ -1110,7 +1122,7 @@ async fn run_rail(endpoint: &Endpoint, args: RailArgs) -> anyhow::Result<()> {
     let response = transport::send_request(endpoint, &request).await?;
     let payload = match response {
         Response::Ok(payload) => payload,
-        Response::Err(error) => anyhow::bail!("{error}"),
+        Response::Err(error) => return Err(RailRequestError(error).into()),
     };
     print_rail_payload(payload, format)
 }
