@@ -2502,16 +2502,16 @@ unsafe extern "system" fn advanced_get_enable_auto_reconnect(this: *mut c_void, 
 }
 
 unsafe extern "system" fn advanced_put_max_reconnect_attempts(this: *mut c_void, value: i32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
     let Ok(value) = u32::try_from(value) else {
         return E_INVALIDARG;
     };
     if value > MAX_RECONNECT_ATTEMPTS {
         return E_INVALIDARG;
-    }
-    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
-    let mut settings = object.settings.borrow_mut();
-    if settings.connection_settings_sealed {
-        return E_FAIL;
     }
     settings.max_reconnect_attempts = value;
     S_OK
@@ -15304,6 +15304,7 @@ mod tests {
             E_FAIL
         );
         assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, 4) }, E_FAIL);
+        assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, -1) }, E_FAIL);
         assert!(!settings.borrow().enable_auto_reconnect);
         assert_eq!(settings.borrow().max_reconnect_attempts, 3);
         settings.borrow_mut().connection_settings_sealed = false;

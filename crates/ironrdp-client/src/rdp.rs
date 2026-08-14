@@ -574,6 +574,7 @@ impl RdpClient {
             let reconnect_cookie = (reconnect_attempt != 0)
                 .then_some(auto_reconnect_cookie.as_ref())
                 .flatten();
+            let used_auto_reconnect_cookie = reconnect_cookie.is_some();
             let (connection_result, framed) = match &self.config.transport {
                 Transport::Direct => match Box::pin(cancelable_operation(
                     connect_direct(
@@ -589,21 +590,15 @@ impl RdpClient {
                 {
                     Some(Ok(result)) => result,
                     Some(Err(error)) => {
-                        if let Some(attempt) = next_auto_reconnect_attempt(
-                            auto_reconnect_policy,
-                            reconnect_attempt,
-                            auto_reconnect_cookie.as_ref(),
-                        ) {
-                            reconnect_attempt = attempt;
-                            if self
-                                .confirm_auto_reconnect(
-                                    attempt,
-                                    auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
-                                )
-                                .await
-                            {
-                                continue;
-                            }
+                        if self
+                            .try_auto_reconnect(
+                                auto_reconnect_policy,
+                                &mut reconnect_attempt,
+                                auto_reconnect_cookie.as_ref(),
+                            )
+                            .await
+                        {
+                            continue;
                         }
                         if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
                             self.emit_user_initiated_termination();
@@ -632,21 +627,15 @@ impl RdpClient {
                 {
                     Some(Ok(result)) => result,
                     Some(Err(error)) => {
-                        if let Some(attempt) = next_auto_reconnect_attempt(
-                            auto_reconnect_policy,
-                            reconnect_attempt,
-                            auto_reconnect_cookie.as_ref(),
-                        ) {
-                            reconnect_attempt = attempt;
-                            if self
-                                .confirm_auto_reconnect(
-                                    attempt,
-                                    auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
-                                )
-                                .await
-                            {
-                                continue;
-                            }
+                        if self
+                            .try_auto_reconnect(
+                                auto_reconnect_policy,
+                                &mut reconnect_attempt,
+                                auto_reconnect_cookie.as_ref(),
+                            )
+                            .await
+                        {
+                            continue;
                         }
                         if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
                             self.emit_user_initiated_termination();
@@ -674,21 +663,15 @@ impl RdpClient {
                 {
                     Some(Ok(result)) => result,
                     Some(Err(error)) => {
-                        if let Some(attempt) = next_auto_reconnect_attempt(
-                            auto_reconnect_policy,
-                            reconnect_attempt,
-                            auto_reconnect_cookie.as_ref(),
-                        ) {
-                            reconnect_attempt = attempt;
-                            if self
-                                .confirm_auto_reconnect(
-                                    attempt,
-                                    auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
-                                )
-                                .await
-                            {
-                                continue;
-                            }
+                        if self
+                            .try_auto_reconnect(
+                                auto_reconnect_policy,
+                                &mut reconnect_attempt,
+                                auto_reconnect_cookie.as_ref(),
+                            )
+                            .await
+                        {
+                            continue;
                         }
                         if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
                             self.emit_user_initiated_termination();
@@ -717,21 +700,15 @@ impl RdpClient {
                 {
                     Some(Ok(result)) => result,
                     Some(Err(error)) => {
-                        if let Some(attempt) = next_auto_reconnect_attempt(
-                            auto_reconnect_policy,
-                            reconnect_attempt,
-                            auto_reconnect_cookie.as_ref(),
-                        ) {
-                            reconnect_attempt = attempt;
-                            if self
-                                .confirm_auto_reconnect(
-                                    attempt,
-                                    auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
-                                )
-                                .await
-                            {
-                                continue;
-                            }
+                        if self
+                            .try_auto_reconnect(
+                                auto_reconnect_policy,
+                                &mut reconnect_attempt,
+                                auto_reconnect_cookie.as_ref(),
+                            )
+                            .await
+                        {
+                            continue;
                         }
                         if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
                             self.emit_user_initiated_termination();
@@ -744,6 +721,12 @@ impl RdpClient {
                     }
                 },
             };
+
+            // A successful ARC connection consumes the session-bound cookie.
+            // Only a subsequent Save Session Info PDU may provide a replacement.
+            if used_auto_reconnect_cookie {
+                auto_reconnect_cookie = None;
+            }
 
             if reconnect_attempt == 0 && !self.send_output_event(RdpOutputEvent::Connected).await {
                 self.emit_user_initiated_termination();
@@ -787,21 +770,15 @@ impl RdpClient {
                     break;
                 }
                 Ok(RdpControlFlow::TransportFailure(error)) => {
-                    if let Some(attempt) = next_auto_reconnect_attempt(
-                        auto_reconnect_policy,
-                        reconnect_attempt,
-                        auto_reconnect_cookie.as_ref(),
-                    ) {
-                        reconnect_attempt = attempt;
-                        if self
-                            .confirm_auto_reconnect(
-                                attempt,
-                                auto_reconnect_policy.map_or(0, |policy| policy.maximum_attempts),
-                            )
-                            .await
-                        {
-                            continue;
-                        }
+                    if self
+                        .try_auto_reconnect(
+                            auto_reconnect_policy,
+                            &mut reconnect_attempt,
+                            auto_reconnect_cookie.as_ref(),
+                        )
+                        .await
+                    {
+                        continue;
                     }
                     if !self.send_output_event(RdpOutputEvent::Terminated(Err(error))).await {
                         self.emit_user_initiated_termination();
@@ -825,6 +802,23 @@ impl RdpClient {
             .unwrap_or(false)
     }
 
+    async fn try_auto_reconnect(
+        &mut self,
+        policy: Option<AutoReconnectPolicy>,
+        reconnect_attempt: &mut u32,
+        cookie: Option<&ServerAutoReconnect>,
+    ) -> bool {
+        let Some(policy) = policy else {
+            return false;
+        };
+        let Some(attempt) = policy.next_attempt(*reconnect_attempt, cookie.is_some()) else {
+            return false;
+        };
+
+        *reconnect_attempt = attempt;
+        self.confirm_auto_reconnect(attempt, policy.maximum_attempts).await
+    }
+
     async fn confirm_auto_reconnect(&mut self, attempt: u32, maximum_attempts: u32) -> bool {
         let (response, receiver) = oneshot::channel();
         if !self
@@ -839,10 +833,12 @@ impl RdpClient {
             return false;
         }
 
-        if !matches!(
-            tokio::time::timeout(Duration::from_secs(30), receiver).await,
-            Ok(Ok(AutoReconnectDecision::Continue))
-        ) {
+        let decision = cancelable_operation(
+            tokio::time::timeout(Duration::from_secs(30), receiver),
+            &mut self.close_receiver,
+        )
+        .await;
+        if !matches!(decision, Some(Ok(Ok(AutoReconnectDecision::Continue)))) {
             return false;
         }
 
@@ -878,14 +874,6 @@ impl AutoReconnectPolicy {
             None
         }
     }
-}
-
-fn next_auto_reconnect_attempt(
-    policy: Option<AutoReconnectPolicy>,
-    previous_attempt: u32,
-    cookie: Option<&ServerAutoReconnect>,
-) -> Option<u32> {
-    policy.and_then(|policy| policy.next_attempt(previous_attempt, cookie.is_some()))
 }
 
 fn is_transport_read_error(error: &io::Error) -> bool {
@@ -2113,7 +2101,20 @@ async fn active_session(
                         *auto_reconnect_cookie = None;
                         // The server rejected the cookie but may complete this
                         // connection with the configured credentials instead.
-                        *reconnect_attempt = 0;
+                        if *reconnect_attempt != 0 {
+                            if !send_active_output_event(
+                                output_event_sender,
+                                RdpOutputEvent::Connected,
+                                close_receiver,
+                            )
+                            .await?
+                            {
+                                return Ok(RdpControlFlow::TerminatedGracefully(
+                                    GracefulDisconnectReason::UserInitiated,
+                                ));
+                            }
+                            *reconnect_attempt = 0;
+                        }
                     }
                     if *reconnect_attempt != 0
                         && outputs.iter().any(|output| {
