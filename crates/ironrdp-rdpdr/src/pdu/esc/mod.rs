@@ -237,6 +237,30 @@ impl ScardContext {
         tmp[..n].copy_from_slice(&self.bytes[..n]);
         u32::from_le_bytes(tmp)
     }
+
+    /// Creates a context from a native WinSCard `SCARDCONTEXT` (4 bytes on x86, 8 on x64).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `size_of::<usize>()` does not fit in `u8` (never on supported targets).
+    pub fn from_native(native: usize) -> Self {
+        let le = native.to_le_bytes();
+        let mut bytes = [0u8; 16];
+        bytes[..le.len()].copy_from_slice(&le);
+        Self {
+            // INVARIANT: `size_of::<usize>()` is 4 or 8, both fit in `u8`.
+            len: u8::try_from(le.len()).expect("usize byte length fits in u8"),
+            bytes,
+        }
+    }
+
+    /// Native WinSCard `SCARDCONTEXT` value (0 when empty).
+    pub fn native(self) -> usize {
+        let mut tmp = [0u8; size_of::<usize>()];
+        let n = usize::from(self.len).min(size_of::<usize>());
+        tmp[..n].copy_from_slice(&self.bytes[..n]);
+        usize::from_le_bytes(tmp)
+    }
 }
 
 impl ndr::Encode for ScardContext {
@@ -885,14 +909,33 @@ impl rpce::HeaderlessDecode for ListReadersCall {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ListReadersReturn {
     pub return_code: ReturnCode,
-    pub readers: Vec<String>,
+    pub encoding: CharacterSet,
+    /// Wire `cBytes` (byte length of multistring when present).
+    pub c_bytes: u32,
+    /// `None` => NULL `msz` (length-only / insufficient-buffer probe).
+    pub readers: Option<Vec<String>>,
 }
 
 impl ListReadersReturn {
     const NAME: &'static str = "ListReaders_Return";
 
-    pub fn new(return_code: ReturnCode, readers: Vec<String>) -> rpce::Pdu<Self> {
-        rpce::Pdu(Self { return_code, readers })
+    pub fn new(return_code: ReturnCode, readers: Vec<String>, encoding: CharacterSet) -> rpce::Pdu<Self> {
+        let c_bytes = u32::try_from(encoded_multistring_len(&readers, encoding)).unwrap_or(u32::MAX);
+        rpce::Pdu(Self {
+            return_code,
+            encoding,
+            c_bytes,
+            readers: Some(readers),
+        })
+    }
+
+    pub fn probe(return_code: ReturnCode, c_bytes: u32, encoding: CharacterSet) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            encoding,
+            c_bytes,
+            readers: None,
+        })
     }
 }
 
@@ -900,15 +943,23 @@ impl rpce::HeaderlessEncode for ListReadersReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
-        let readers_length: u32 = cast_length!(
-            "ListReadersReturn",
-            "readers",
-            encoded_multistring_len(&self.readers, CharacterSet::Unicode)
-        )?;
-        let mut index = 0;
-        ndr::encode_ptr(Some(readers_length), &mut index, dst)?;
-        dst.write_u32(readers_length);
-        write_multistring_to_cursor(dst, &self.readers, CharacterSet::Unicode)?;
+        match &self.readers {
+            Some(readers) => {
+                let c_bytes: u32 = cast_length!(
+                    "ListReadersReturn",
+                    "readers",
+                    encoded_multistring_len(readers, self.encoding)
+                )?;
+                let mut index = 0;
+                ndr::encode_ptr(Some(c_bytes), &mut index, dst)?;
+                dst.write_u32(c_bytes);
+                write_multistring_to_cursor(dst, readers, self.encoding)?;
+            }
+            None => {
+                dst.write_u32(self.c_bytes);
+                dst.write_u32(0);
+            }
+        }
         Ok(())
     }
 
@@ -917,10 +968,11 @@ impl rpce::HeaderlessEncode for ListReadersReturn {
     }
 
     fn size(&self) -> usize {
-        self.return_code.size() // dst.write_u32(self.return_code.into());
-        + ndr::ptr_size(true) // ndr::encode_ptr(...);
-        + 4 // dst.write_u32(readers_length);
-        + encoded_multistring_len(&self.readers, CharacterSet::Unicode) // write_multistring_to_cursor(...);
+        self.return_code.size()
+            + match &self.readers {
+                Some(readers) => ndr::ptr_size(true) + 4 + encoded_multistring_len(readers, self.encoding),
+                None => 8,
+            }
     }
 }
 
@@ -1455,6 +1507,31 @@ impl ScardHandle {
         tmp[..n].copy_from_slice(&self.bytes[..n]);
         u32::from_le_bytes(tmp)
     }
+
+    /// Creates a handle from a native WinSCard `SCARDHANDLE` (4 bytes on x86, 8 on x64).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `size_of::<usize>()` does not fit in `u8` (never on supported targets).
+    pub fn from_native(context: ScardContext, native: usize) -> Self {
+        let le = native.to_le_bytes();
+        let mut bytes = [0u8; 16];
+        bytes[..le.len()].copy_from_slice(&le);
+        Self {
+            context,
+            // INVARIANT: `size_of::<usize>()` is 4 or 8, both fit in `u8`.
+            len: u8::try_from(le.len()).expect("usize byte length fits in u8"),
+            bytes,
+        }
+    }
+
+    /// Native WinSCard `SCARDHANDLE` value (0 when empty).
+    pub fn native(self) -> usize {
+        let mut tmp = [0u8; size_of::<usize>()];
+        let n = usize::from(self.len).min(size_of::<usize>());
+        tmp[..n].copy_from_slice(&self.bytes[..n]);
+        usize::from_le_bytes(tmp)
+    }
 }
 
 impl ndr::Decode for ScardHandle {
@@ -1742,17 +1819,30 @@ impl ndr::Encode for SCardIORequest {
 pub struct TransmitReturn {
     pub return_code: ReturnCode,
     pub recv_pci: Option<SCardIORequest>,
-    pub recv_buffer: Vec<u8>,
+    /// `None` => NULL `pbRecvBuffer`; `recv_len` supplies `cbRecvLength`.
+    pub recv_buffer: Option<Vec<u8>>,
+    pub recv_len: u32,
 }
 
 impl TransmitReturn {
     const NAME: &'static str = "Transmit_Return";
 
     pub fn new(return_code: ReturnCode, recv_pci: Option<SCardIORequest>, recv_buffer: Vec<u8>) -> rpce::Pdu<Self> {
+        let recv_len = u32::try_from(recv_buffer.len()).unwrap_or(u32::MAX);
         rpce::Pdu(Self {
             return_code,
             recv_pci,
-            recv_buffer,
+            recv_buffer: Some(recv_buffer),
+            recv_len,
+        })
+    }
+
+    pub fn recv_probe(return_code: ReturnCode, recv_pci: Option<SCardIORequest>, recv_len: u32) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            recv_pci,
+            recv_buffer: None,
+            recv_len,
         })
     }
 }
@@ -1761,20 +1851,25 @@ impl rpce::HeaderlessEncode for TransmitReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
-
         let mut index = 0;
         if let Some(recv_pci) = &self.recv_pci {
             recv_pci.encode_ptr(&mut index, dst)?;
             recv_pci.encode_value(dst)?;
         } else {
-            dst.write_u32(0); // null value
+            dst.write_u32(0);
         }
-
-        let recv_buffer_len: u32 = cast_length!("TransmitReturn", "recv_buffer_len", self.recv_buffer.len())?;
-        ndr::encode_ptr(Some(recv_buffer_len), &mut index, dst)?;
-        dst.write_u32(recv_buffer_len);
-        dst.write_slice(&self.recv_buffer);
-
+        match &self.recv_buffer {
+            Some(buf) => {
+                let n: u32 = cast_length!("TransmitReturn", "recv_buffer_len", buf.len())?;
+                ndr::encode_ptr(Some(n), &mut index, dst)?;
+                dst.write_u32(n);
+                dst.write_slice(buf);
+            }
+            None => {
+                dst.write_u32(self.recv_len);
+                dst.write_u32(0);
+            }
+        }
         Ok(())
     }
 
@@ -1783,15 +1878,12 @@ impl rpce::HeaderlessEncode for TransmitReturn {
     }
 
     fn size(&self) -> usize {
-        self.return_code.size() // dst.write_u32(self.return_code.into());
-        + if let Some(recv_pci) = &self.recv_pci {
-            recv_pci.size()
-        } else {
-            4 // null value
-        }
-        + ndr::ptr_size(true) // ndr::encode_ptr(Some(recv_buffer_len), &mut index, dst)?;
-        + 4 // dst.write_u32(recv_buffer_len);
-        + self.recv_buffer.len() // dst.write_slice(&self.recv_buffer);
+        self.return_code.size()
+            + self.recv_pci.as_ref().map_or(4, SCardIORequest::size)
+            + match &self.recv_buffer {
+                Some(buf) => ndr::ptr_size(true) + 4 + buf.len(),
+                None => 8,
+            }
     }
 }
 
@@ -1837,12 +1929,13 @@ impl rpce::HeaderlessDecode for StatusCall {
 #[derive(Debug, PartialEq, Clone)]
 pub struct StatusReturn {
     pub return_code: ReturnCode,
-    pub reader_names: Vec<String>,
+    /// `None` => NULL reader-name multistring (probe / insufficient buffer).
+    pub reader_names: Option<Vec<String>>,
+    pub reader_c_bytes: u32,
     pub state: CardState,
     pub protocol: CardProtocol,
     pub atr: [u8; 32],
     pub atr_length: u32,
-
     pub encoding: CharacterSet,
 }
 
@@ -1858,9 +1951,32 @@ impl StatusReturn {
         atr_length: u32,
         encoding: CharacterSet,
     ) -> rpce::Pdu<Self> {
+        let reader_c_bytes = u32::try_from(encoded_multistring_len(&reader_names, encoding)).unwrap_or(u32::MAX);
         rpce::Pdu(Self {
             return_code,
-            reader_names,
+            reader_names: Some(reader_names),
+            reader_c_bytes,
+            state,
+            protocol,
+            atr,
+            atr_length,
+            encoding,
+        })
+    }
+
+    pub fn names_probe(
+        return_code: ReturnCode,
+        reader_c_bytes: u32,
+        state: CardState,
+        protocol: CardProtocol,
+        atr: [u8; 32],
+        atr_length: u32,
+        encoding: CharacterSet,
+    ) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            reader_names: None,
+            reader_c_bytes,
             state,
             protocol,
             atr,
@@ -1874,19 +1990,31 @@ impl rpce::HeaderlessEncode for StatusReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
-        let mut index = 0;
-        let reader_names_length: u32 = cast_length!(
-            "StatusReturn",
-            "reader_names_length",
-            encoded_multistring_len(&self.reader_names, self.encoding)
-        )?;
-        ndr::encode_ptr(Some(reader_names_length), &mut index, dst)?;
-        dst.write_u32(self.state.into());
-        dst.write_u32(self.protocol.bits());
-        dst.write_slice(&self.atr);
-        dst.write_u32(self.atr_length);
-        dst.write_u32(reader_names_length);
-        write_multistring_to_cursor(dst, &self.reader_names, self.encoding)?;
+        match &self.reader_names {
+            Some(names) => {
+                let c_bytes: u32 = cast_length!(
+                    "StatusReturn",
+                    "reader_names",
+                    encoded_multistring_len(names, self.encoding)
+                )?;
+                let mut index = 0;
+                ndr::encode_ptr(Some(c_bytes), &mut index, dst)?;
+                dst.write_u32(self.state.into());
+                dst.write_u32(self.protocol.bits());
+                dst.write_slice(&self.atr);
+                dst.write_u32(self.atr_length);
+                dst.write_u32(c_bytes);
+                write_multistring_to_cursor(dst, names, self.encoding)?;
+            }
+            None => {
+                dst.write_u32(self.reader_c_bytes);
+                dst.write_u32(0);
+                dst.write_u32(self.state.into());
+                dst.write_u32(self.protocol.bits());
+                dst.write_slice(&self.atr);
+                dst.write_u32(self.atr_length);
+            }
+        }
         Ok(())
     }
 
@@ -1895,10 +2023,16 @@ impl rpce::HeaderlessEncode for StatusReturn {
     }
 
     fn size(&self) -> usize {
-        size_of::<u32>() * 5 // dst.write_u32(self.return_code.into()); dst.write_u32(self.state.into()); dst.write_u32(self.protocol.bits()); dst.write_slice(&self.atr); dst.write_u32(self.atr_length);
-        + ndr::ptr_size(true) // ndr::encode_ptr(Some(reader_names_length), &mut index, dst)?;
-        + self.atr.len() // dst.write_slice(&self.atr);
-        + encoded_multistring_len(&self.reader_names, self.encoding) // write_multistring_to_cursor(dst, &self.reader_names, self.encoding)?;
+        // return + cBytes + msz ptr + state + protocol + atr[32] + atr_len
+        // + deferred [cBytes + msz bytes] when names are present
+        4 + 8
+            + 4
+            + 4
+            + 32
+            + 4
+            + self.reader_names.as_ref().map_or(0, |n| {
+                4 /* deferred cBytes */ + encoded_multistring_len(n, self.encoding)
+            })
     }
 }
 
@@ -2502,18 +2636,37 @@ pub struct StateReturn {
     pub return_code: ReturnCode,
     pub state: CardState,
     pub protocol: CardProtocol,
-    pub atr: Vec<u8>,
+    /// `None` => NULL `rgAtr`; `atr_len` supplies `cbAtrLen`.
+    pub atr: Option<Vec<u8>>,
+    pub atr_len: u32,
 }
 
 impl StateReturn {
     const NAME: &'static str = "State_Return";
 
     pub fn new(return_code: ReturnCode, state: CardState, protocol: CardProtocol, atr: Vec<u8>) -> rpce::Pdu<Self> {
+        let atr_len = u32::try_from(atr.len()).unwrap_or(u32::MAX);
         rpce::Pdu(Self {
             return_code,
             state,
             protocol,
-            atr,
+            atr: Some(atr),
+            atr_len,
+        })
+    }
+
+    pub fn atr_probe(
+        return_code: ReturnCode,
+        state: CardState,
+        protocol: CardProtocol,
+        atr_len: u32,
+    ) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            state,
+            protocol,
+            atr: None,
+            atr_len,
         })
     }
 }
@@ -2524,15 +2677,25 @@ impl rpce::HeaderlessEncode for StateReturn {
         dst.write_u32(self.return_code.into());
         dst.write_u32(self.state.into());
         dst.write_u32(self.protocol.bits());
-        // MS-RDPESC: cbAtrLen range(0,36)
-        if self.atr.len() > 36 {
-            return Err(invalid_field_err!("encode", "StateReturn cbAtrLen out of range"));
+        match &self.atr {
+            Some(atr) => {
+                if atr.len() > 36 {
+                    return Err(invalid_field_err!("encode", "StateReturn cbAtrLen out of range"));
+                }
+                let atr_len: u32 = cast_length!("StateReturn", "atr_len", atr.len())?;
+                let mut index = 0;
+                ndr::encode_ptr(Some(atr_len), &mut index, dst)?;
+                dst.write_u32(atr_len);
+                dst.write_slice(atr);
+            }
+            None => {
+                if self.atr_len > 36 {
+                    return Err(invalid_field_err!("encode", "StateReturn cbAtrLen out of range"));
+                }
+                dst.write_u32(self.atr_len);
+                dst.write_u32(0);
+            }
         }
-        let atr_len: u32 = cast_length!("StateReturn", "atr_len", self.atr.len())?;
-        let mut index = 0;
-        ndr::encode_ptr(Some(atr_len), &mut index, dst)?;
-        dst.write_u32(atr_len);
-        dst.write_slice(&self.atr);
         Ok(())
     }
 
@@ -2541,12 +2704,10 @@ impl rpce::HeaderlessEncode for StateReturn {
     }
 
     fn size(&self) -> usize {
-        self.return_code.size()
-            + 4 /* dwState */
-            + 4 /* dwProtocol */
-            + ndr::ptr_size(true)
-            + 4 /* cbAtrLen value */
-            + self.atr.len()
+        12 + match &self.atr {
+            Some(atr) => ndr::ptr_size(true) + 4 + atr.len(),
+            None => 8,
+        }
     }
 }
 
@@ -2968,6 +3129,102 @@ mod tests {
                 0x11, 4, 0, 0, 0, 0x44, 0x44, 0x33, 0x33,
             ]
         );
+    }
+
+    fn enc_headerless(body: &impl HeaderlessEncode) -> Vec<u8> {
+        let mut buf = vec![0u8; HeaderlessEncode::size(body)];
+        HeaderlessEncode::encode(body, &mut WriteCursor::new(&mut buf)).unwrap();
+        buf
+    }
+
+    /// size() must match bytes written for full and probe variants (Status undercount was a live bug).
+    #[test]
+    fn esc_return_size_matches_encode_full_and_probe() {
+        let names = vec!["RDR".into()];
+        let atr = [0x3Bu8; 32];
+
+        let list_full = ListReadersReturn::new(ReturnCode::Success, names.clone(), CharacterSet::Unicode).into_inner();
+        let list_probe = ListReadersReturn::probe(ReturnCode::InsufficientBuffer, 12, CharacterSet::Ansi).into_inner();
+        assert_eq!(enc_headerless(&list_full).len(), HeaderlessEncode::size(&list_full));
+        assert_eq!(enc_headerless(&list_probe).len(), HeaderlessEncode::size(&list_probe));
+        let list_with_stale_length = ListReadersReturn {
+            return_code: ReturnCode::Success,
+            encoding: CharacterSet::Unicode,
+            c_bytes: 0,
+            readers: Some(vec!["RDR".into()]),
+        };
+        assert_eq!(
+            enc_headerless(&list_with_stale_length),
+            enc_headerless(&list_full),
+            "full replies derive cBytes from their live multistring"
+        );
+
+        let xmit_full = TransmitReturn::new(ReturnCode::Success, None, vec![0x90, 0x00]).into_inner();
+        let xmit_probe = TransmitReturn::recv_probe(ReturnCode::Success, None, 256).into_inner();
+        assert_eq!(enc_headerless(&xmit_full).len(), HeaderlessEncode::size(&xmit_full));
+        assert_eq!(enc_headerless(&xmit_probe).len(), HeaderlessEncode::size(&xmit_probe));
+
+        let status_full = StatusReturn::new(
+            ReturnCode::Success,
+            names,
+            CardState::Present,
+            CardProtocol::SCARD_PROTOCOL_T0,
+            atr,
+            5,
+            CharacterSet::Unicode,
+        )
+        .into_inner();
+        let status_probe = StatusReturn::names_probe(
+            ReturnCode::InsufficientBuffer,
+            20,
+            CardState::Present,
+            CardProtocol::SCARD_PROTOCOL_T0,
+            atr,
+            5,
+            CharacterSet::Unicode,
+        )
+        .into_inner();
+        assert_eq!(
+            HeaderlessEncode::size(&status_full),
+            4 * 5 + 8 + 32 + encoded_multistring_len(status_full.reader_names.as_ref().unwrap(), CharacterSet::Unicode)
+        );
+        assert_eq!(enc_headerless(&status_full).len(), HeaderlessEncode::size(&status_full));
+        assert_eq!(
+            enc_headerless(&status_probe).len(),
+            HeaderlessEncode::size(&status_probe)
+        );
+        let status_with_stale_length = StatusReturn {
+            return_code: ReturnCode::Success,
+            reader_names: Some(vec!["RDR".into()]),
+            reader_c_bytes: 0,
+            state: CardState::Present,
+            protocol: CardProtocol::SCARD_PROTOCOL_T0,
+            atr,
+            atr_length: 5,
+            encoding: CharacterSet::Unicode,
+        };
+        assert_eq!(
+            enc_headerless(&status_with_stale_length),
+            enc_headerless(&status_full),
+            "full replies derive cBytes from their live multistring"
+        );
+
+        let state_full = StateReturn::new(
+            ReturnCode::Success,
+            CardState::Present,
+            CardProtocol::SCARD_PROTOCOL_T1,
+            vec![1, 2, 3],
+        )
+        .into_inner();
+        let state_probe = StateReturn::atr_probe(
+            ReturnCode::InsufficientBuffer,
+            CardState::Present,
+            CardProtocol::SCARD_PROTOCOL_T1,
+            3,
+        )
+        .into_inner();
+        assert_eq!(enc_headerless(&state_full).len(), HeaderlessEncode::size(&state_full));
+        assert_eq!(enc_headerless(&state_probe).len(), HeaderlessEncode::size(&state_probe));
     }
 
     /// 6-byte Unicode mszCards needs 2-byte NDR pad before reader states.
