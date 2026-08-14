@@ -2906,7 +2906,10 @@ mod tests {
             events: vec![event.clone(); MAX_RAIL_EVENT_DUMP_EVENTS],
         };
         let encoded = encode_vec(&accepted).expect("encode the event limit");
-        assert_eq!(decode::<RailEventDump>(&encoded).expect("decode the event limit"), accepted);
+        assert_eq!(
+            decode::<RailEventDump>(&encoded).expect("decode the event limit"),
+            accepted
+        );
 
         let dump = RailEventDump {
             generation: 1,
