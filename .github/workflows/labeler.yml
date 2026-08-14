@@ -850,7 +850,10 @@ jobs:
       needs.review-gate.outputs.eligible == 'true' &&
       needs.contributor-history.outputs.eligible == 'true'))
     runs-on: ubuntu-latest
-    permissions: {}
+    # Read-only access is used by the trusted context step; the model receives only untrusted data files.
+    permissions:
+      issues: read
+      pull-requests: read
     environment: llm-providers
     outputs:
       output: ${{ steps.claude.outputs.structured_output }}
@@ -874,6 +877,26 @@ jobs:
           mkdir -p .claude/skills
           cp -R .agents/skills/skeptical-reviewer .claude/skills/skeptical-reviewer
           test -f .claude/skills/skeptical-reviewer/SKILL.md
+
+      - name: Fetch untrusted pull request context
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+        with:
+          script: |
+            const { fetchReviewContext } = require("./.github/pr-automation/fetch-review-context");
+            const reviewContext = await fetchReviewContext({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pullNumber: Number(process.env.PULL_REQUEST_NUMBER),
+              expectedHeadSha: process.env.HEAD_SHA,
+            });
+            require("node:fs").writeFileSync(
+              "pr-evidence/pull-request-context.json",
+              JSON.stringify(reviewContext, null, 2),
+            );
 
       - id: claude-args
         uses: actions/github-script@v8
