@@ -2901,6 +2901,13 @@ mod tests {
             sequence: 1,
             kind: RailEventKind::Gap { lost_through: 1 },
         };
+        let accepted = RailEventDump {
+            generation: 1,
+            events: vec![event.clone(); MAX_RAIL_EVENT_DUMP_EVENTS],
+        };
+        let encoded = encode_vec(&accepted).expect("encode the event limit");
+        assert_eq!(decode::<RailEventDump>(&encoded).expect("decode the event limit"), accepted);
+
         let dump = RailEventDump {
             generation: 1,
             events: vec![event; MAX_RAIL_EVENT_DUMP_EVENTS + 1],
