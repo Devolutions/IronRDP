@@ -707,7 +707,7 @@ jobs:
              ".github/pr-automation/prompts/protocol-reviewer.md",
              "utf8",
            ));
-           const common = `--model opus --add-dir pr-head --add-dir pr-evidence --allowedTools "Read,Glob,Grep,Skill" --disallowedTools "Bash,Edit,Write,WebFetch,Task" --json-schema '${schema}'`;
+           const common = `--model sonnet --effort high --add-dir pr-head --add-dir pr-evidence --allowedTools "Read,Glob,Grep,Skill" --disallowedTools "Bash,Edit,Write,WebFetch,Task" --json-schema '${schema}'`;
            core.setOutput("value", `${common} --max-turns 30`);
            core.setOutput("retry", `${common} --max-turns 6`);
 
@@ -920,7 +920,7 @@ jobs:
              "utf8",
            ));
            const schema = JSON.stringify(require("./.github/pr-automation/schemas/reviewer.json"));
-           const common = `--model opus --add-dir pr-head --add-dir pr-evidence --allowedTools "Read,Glob,Grep,Skill" --disallowedTools "Bash,Edit,Write,WebFetch,Task" --json-schema '${schema}'`;
+           const common = `--model sonnet --effort high --add-dir pr-head --add-dir pr-evidence --allowedTools "Read,Glob,Grep,Skill" --disallowedTools "Bash,Edit,Write,WebFetch,Task" --json-schema '${schema}'`;
            core.setOutput("value", `${common} --max-turns 20`);
            core.setOutput("retry", `${common} --max-turns 6`);
 
