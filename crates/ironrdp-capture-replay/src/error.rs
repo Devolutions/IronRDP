@@ -29,4 +29,7 @@ pub enum ReplayError {
     /// TLS record authentication failed.
     #[error("capture TLS authentication failed")]
     TlsAuthentication,
+    /// The capture requires unsupported TLS 1.3 key rotation.
+    #[error("capture uses unsupported TLS 1.3 key rotation")]
+    TlsKeyUpdate,
 }
