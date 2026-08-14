@@ -187,6 +187,7 @@ pub mod ffi {
                 ime_file_name: self.ime_file_name.clone().unwrap_or_default(),
                 dig_product_id: self.dig_product_id.clone().unwrap_or_default(),
                 desktop_size: self.desktop_size.ok_or("desktop size not set")?,
+                monitor_layout: None,
                 bitmap: None,
                 client_build: self.client_build.unwrap_or(0),
                 client_name: self.client_name.clone().ok_or("client name not set")?,

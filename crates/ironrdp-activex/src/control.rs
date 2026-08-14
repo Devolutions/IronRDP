@@ -6021,6 +6021,7 @@ pub(crate) struct Control {
     remote_size: Cell<Option<(i32, i32)>>,
     configured_monitor_topology: RefCell<Option<MonitorTopology>>,
     active_monitor_topology: RefCell<Option<MonitorTopology>>,
+    monitor_topology_confirmation_pending: Cell<bool>,
     input_sender: RefCell<Option<RdpInputSender>>,
     static_channels: RefCell<BTreeMap<String, ActiveXStaticChannelSpec>>,
     input_database: Rc<RefCell<InputDatabase>>,
@@ -6234,6 +6235,7 @@ impl Control {
             remote_size: Cell::new(None),
             configured_monitor_topology: RefCell::new(None),
             active_monitor_topology: RefCell::new(None),
+            monitor_topology_confirmation_pending: Cell::new(false),
             input_sender: RefCell::new(None),
             static_channels: RefCell::new(BTreeMap::new()),
             input_database,
@@ -8211,7 +8213,6 @@ impl Control {
                 WorkerEvent::Connected { .. } => {
                     if self.state.get() == ConnectionState::Connecting {
                         self.state.set(ConnectionState::Connected);
-                        *self.active_monitor_topology.borrow_mut() = self.configured_monitor_topology.borrow().clone();
                         if let Some(rpc) = &self.rpc {
                             rpc.session_connected();
                         }
@@ -8246,6 +8247,13 @@ impl Control {
                 } => {
                     let width = i32::from(width);
                     let height = i32::from(height);
+                    if self.monitor_topology_confirmation_pending.replace(false)
+                        && self.active_monitor_topology.borrow().is_none()
+                        && let Some(topology) = self.configured_monitor_topology.borrow().clone()
+                        && (width, height) == (i32::from(topology.desktop_width), i32::from(topology.desktop_height))
+                    {
+                        *self.active_monitor_topology.borrow_mut() = Some(topology);
+                    }
                     if self.state.get() == ConnectionState::Connected
                         && self.remote_size.replace(Some((width, height))) != Some((width, height))
                     {
@@ -8345,6 +8353,7 @@ impl Control {
                     self.remote_size.set(None);
                     self.active_monitor_topology.borrow_mut().take();
                     self.configured_monitor_topology.borrow_mut().take();
+                    self.monitor_topology_confirmation_pending.set(false);
                     self.clear_frame();
                     self.rail_windows.borrow_mut().stop();
                     self.state.set(ConnectionState::Disconnected);
@@ -9142,6 +9151,8 @@ impl Control {
         let config = builder
             .build()
             .map_err(|error| Error::new(E_INVALIDARG, format!("invalid RDP configuration: {error}")))?;
+        self.monitor_topology_confirmation_pending
+            .set(monitor_topology.is_some());
         *self.configured_monitor_topology.borrow_mut() = monitor_topology;
         self.active_monitor_topology.borrow_mut().take();
         if using_rdcleanpath {
@@ -9192,6 +9203,7 @@ impl Control {
                 self.stop_clipboard_redirection();
                 self.compatibility.borrow_mut().connection_settings_sealed = false;
                 self.configured_monitor_topology.borrow_mut().take();
+                self.monitor_topology_confirmation_pending.set(false);
                 return Err(error);
             }
         };
@@ -9429,6 +9441,7 @@ impl Control {
             self.stop_clipboard_redirection();
             self.compatibility.borrow_mut().connection_settings_sealed = false;
             self.configured_monitor_topology.borrow_mut().take();
+            self.monitor_topology_confirmation_pending.set(false);
             let message = format!("unable to start RDP worker: {error}");
             if let Some(rpc) = &self.rpc {
                 rpc.session_failed(message.clone());
@@ -9480,10 +9493,14 @@ impl Control {
         if self.state.get() != ConnectionState::Connected {
             return Err(Error::from_hresult(E_UNEXPECTED));
         }
-        if self.active_monitor_topology.borrow().is_some() {
+        let configured_monitor_count = self
+            .configured_monitor_topology
+            .borrow()
+            .as_ref()
+            .map_or(0, |topology| topology.monitors.len());
+        if configured_monitor_count > 1 {
             return Err(Error::from_hresult(E_NOTIMPL));
         }
-
         let desktop_width = u16::try_from(layout.desktop_width)
             .map_err(|_| Error::new(E_INVALIDARG, "desktop width must fit in u16"))?;
         let desktop_height = u16::try_from(layout.desktop_height)
@@ -9529,6 +9546,11 @@ impl Control {
             })
             .map_err(|_| Error::from_hresult(E_UNEXPECTED))?;
 
+        if configured_monitor_count == 1 {
+            self.active_monitor_topology.borrow_mut().take();
+            self.configured_monitor_topology.borrow_mut().take();
+            self.monitor_topology_confirmation_pending.set(false);
+        }
         let mut settings = self.settings.borrow_mut();
         settings.desktop_width = desktop_width;
         settings.desktop_height = desktop_height;
@@ -17307,6 +17329,18 @@ mod tests {
         let (sender, mut receiver) = RdpInputSender::channel(16);
         *control.input_sender.borrow_mut() = Some(sender);
         control.state.set(ConnectionState::Connected);
+        let topology = MonitorTopology::from_host_monitors(vec![HostMonitor {
+            rect: RECT {
+                left: 0,
+                top: 0,
+                right: 1_920,
+                bottom: 1_080,
+            },
+            primary: true,
+        }])
+        .expect("a valid single-monitor topology");
+        *control.configured_monitor_topology.borrow_mut() = Some(topology.clone());
+        *control.active_monitor_topology.borrow_mut() = Some(topology);
 
         control
             .update_display_layout(DisplayLayout {
@@ -17331,6 +17365,8 @@ mod tests {
         ));
         let settings = control.settings.borrow();
         assert_eq!((settings.desktop_width, settings.desktop_height), (1280, 720));
+        assert!(control.active_monitor_topology.borrow().is_none());
+        assert!(control.configured_monitor_topology.borrow().is_none());
     }
 
     #[test]
@@ -17339,16 +17375,27 @@ mod tests {
         let (sender, mut receiver) = RdpInputSender::channel(16);
         *control.input_sender.borrow_mut() = Some(sender);
         control.state.set(ConnectionState::Connected);
-        *control.active_monitor_topology.borrow_mut() = Some(
-            MonitorTopology::from_host_monitors(vec![HostMonitor {
-                rect: RECT {
-                    left: 0,
-                    top: 0,
-                    right: 1_920,
-                    bottom: 1_080,
+        *control.configured_monitor_topology.borrow_mut() = Some(
+            MonitorTopology::from_host_monitors(vec![
+                HostMonitor {
+                    rect: RECT {
+                        left: 0,
+                        top: 0,
+                        right: 1_920,
+                        bottom: 1_080,
+                    },
+                    primary: true,
                 },
-                primary: true,
-            }])
+                HostMonitor {
+                    rect: RECT {
+                        left: 1_920,
+                        top: 0,
+                        right: 3_200,
+                        bottom: 1_080,
+                    },
+                    primary: false,
+                },
+            ])
             .expect("a valid monitor topology"),
         );
 
@@ -17365,6 +17412,113 @@ mod tests {
             .expect_err("dynamic display updates cannot change a negotiated monitor topology");
         assert_eq!(error.code(), E_NOTIMPL);
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn monitor_topology_activates_when_remote_frame_matches() {
+        let control = Control::new();
+        control.connection_generation.set(7);
+        control.state.set(ConnectionState::Connecting);
+        *control.configured_monitor_topology.borrow_mut() = Some(
+            MonitorTopology::from_host_monitors(vec![HostMonitor {
+                rect: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 800,
+                    bottom: 600,
+                },
+                primary: true,
+            }])
+            .expect("a valid monitor topology"),
+        );
+        control.monitor_topology_confirmation_pending.set(true);
+        control.events.events.lock().expect("event queue is available").extend([
+            WorkerEvent::Connected { generation: 7 },
+            WorkerEvent::Image {
+                generation: 7,
+                buffer: vec![0],
+                width: 800,
+                height: 600,
+            },
+        ]);
+
+        control.dispatch_pending_events();
+
+        assert_eq!(
+            control
+                .active_monitor_topology
+                .borrow()
+                .as_ref()
+                .expect("the matching topology is active")
+                .monitors
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn monitor_topology_requires_a_matching_remote_frame() {
+        let control = Control::new();
+        control.connection_generation.set(7);
+        control.state.set(ConnectionState::Connecting);
+        *control.configured_monitor_topology.borrow_mut() = Some(
+            MonitorTopology::from_host_monitors(vec![
+                HostMonitor {
+                    rect: RECT {
+                        left: 0,
+                        top: 0,
+                        right: 400,
+                        bottom: 600,
+                    },
+                    primary: true,
+                },
+                HostMonitor {
+                    rect: RECT {
+                        left: 400,
+                        top: 0,
+                        right: 800,
+                        bottom: 600,
+                    },
+                    primary: false,
+                },
+            ])
+            .expect("a valid monitor topology"),
+        );
+        control.monitor_topology_confirmation_pending.set(true);
+        control.events.events.lock().expect("event queue is available").extend([
+            WorkerEvent::Connected { generation: 7 },
+            WorkerEvent::Image {
+                generation: 7,
+                buffer: vec![0],
+                width: 1,
+                height: 1,
+            },
+        ]);
+
+        control.dispatch_pending_events();
+
+        assert!(control.active_monitor_topology.borrow().is_none());
+        assert!(control.configured_monitor_topology.borrow().is_some());
+        assert!(!control.monitor_topology_confirmation_pending.get());
+        assert_eq!(
+            control
+                .update_display_layout(DisplayLayout {
+                    desktop_width: 800,
+                    desktop_height: 600,
+                    physical_width: 0,
+                    physical_height: 0,
+                    orientation: 0,
+                    desktop_scale_factor: 100,
+                    device_scale_factor: 100,
+                })
+                .expect_err("a mismatched multimonitor layout still blocks dynamic display updates")
+                .code(),
+            E_NOTIMPL
+        );
+        assert_eq!(
+            control.remote_monitor_bounds().expect("read remote frame bounds"),
+            (0, 0, 1, 1)
+        );
     }
 
     #[test]
@@ -17418,6 +17572,18 @@ mod tests {
         let (sender, _) = RdpInputSender::channel(16);
         *control.input_sender.borrow_mut() = Some(sender);
         control.state.set(ConnectionState::Connected);
+        let topology = MonitorTopology::from_host_monitors(vec![HostMonitor {
+            rect: RECT {
+                left: 0,
+                top: 0,
+                right: 800,
+                bottom: 600,
+            },
+            primary: true,
+        }])
+        .expect("a valid single-monitor topology");
+        *control.configured_monitor_topology.borrow_mut() = Some(topology.clone());
+        *control.active_monitor_topology.borrow_mut() = Some(topology);
 
         let error = control
             .update_display_layout(DisplayLayout {
@@ -17457,6 +17623,7 @@ mod tests {
             })
             .expect_err("rotation without an IronRDP mapping is unsupported");
         assert_eq!(error.code(), E_NOTIMPL);
+        assert!(control.active_monitor_topology.borrow().is_some());
     }
 
     #[test]
