@@ -14,7 +14,9 @@ use std::time::Duration;
 use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
 use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind};
 use ironrdp_client::rail::RailInputEvent;
-use ironrdp_client::rdp::{CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent};
+use ironrdp_client::rdp::{
+    AutoReconnectDecision, CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent,
+};
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
@@ -37,7 +39,7 @@ use ironrdp_session::{GracefulDisconnectReason, SessionError, SessionErrorKind};
 use ironrdp_svc::{SvcClientProcessor, SvcMessage, SvcProcessor, impl_as_any};
 use ironrdp_tls::CertificateValidation;
 use sha2::{Digest as _, Sha256};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use windows::Win32::Foundation::{
     DATA_S_SAMEFORMATETC, DISP_E_BADPARAMCOUNT, DISP_E_MEMBERNOTFOUND, DISP_E_TYPEMISMATCH, DISP_E_UNKNOWNNAME,
     DV_E_DVASPECT, DV_E_DVTARGETDEVICE, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_FAIL, E_INVALIDARG, E_NOTIMPL,
@@ -399,8 +401,11 @@ const DISPID_ON_REQUEST_LEAVE_FULL_SCREEN: i32 = 9;
 const DISPID_ON_FATAL_ERROR: i32 = 10;
 const DISPID_ON_REMOTE_DESKTOP_SIZE_CHANGE: i32 = 12;
 const DISPID_ON_CONFIRM_CLOSE: i32 = 15;
+const DISPID_ON_AUTO_RECONNECTING: i32 = 17;
 const DISPID_ON_AUTHENTICATION_WARNING_DISPLAYED: i32 = 18;
 const DISPID_ON_AUTHENTICATION_WARNING_DISMISSED: i32 = 19;
+const DISPID_ON_AUTO_RECONNECTED: i32 = 33;
+const DISPID_ON_AUTO_RECONNECTING2: i32 = 34;
 
 const WM_DISPATCH_EVENTS: u32 = WM_APP + 0x52;
 const WM_DESTROY_CONTROL_WINDOW: u32 = WM_APP + 0x53;
@@ -437,6 +442,7 @@ const CONTROL_RECONNECT_BLOCKED: i32 = 1;
 const CONTROL_CLOSE_CAN_PROCEED: i32 = 0;
 const CONTROL_CLOSE_WAIT_FOR_EVENTS: i32 = 1;
 const MAX_ACTIVEX_STATIC_CHANNELS: usize = 28;
+const MAX_RECONNECT_ATTEMPTS: u32 = 200;
 const MAX_PENDING_WORKER_EVENTS: usize = 64;
 const CERTIFICATE_WARNING_CONTINUE_BUTTON: i32 = 100;
 const SECURITY_WARNING_CONTINUE_BUTTON: i32 = 101;
@@ -1046,6 +1052,8 @@ struct CompatibilitySettings {
     authentication_level: u32,
     authentication_level_set: bool,
     public_mode: bool,
+    enable_auto_reconnect: bool,
+    max_reconnect_attempts: u32,
     connection_settings_sealed: bool,
     persistence_dirty: Option<Rc<Cell<bool>>>,
 }
@@ -1117,6 +1125,8 @@ impl Default for CompatibilitySettings {
             authentication_level: 0,
             authentication_level_set: false,
             public_mode: false,
+            enable_auto_reconnect: true,
+            max_reconnect_attempts: 20,
             connection_settings_sealed: false,
             persistence_dirty: None,
         }
@@ -1854,8 +1864,6 @@ advanced_put_not_implemented!(
     (116, advanced_put_redirect_printers, i16),
     (118, advanced_put_redirect_ports, i16),
     (120, advanced_put_redirect_smart_cards, i16),
-    (132, advanced_put_enable_auto_reconnect, i16),
-    (134, advanced_put_max_reconnect_attempts, i32),
     (150, advanced_put_redirect_devices, i16),
     (161, advanced_put_pcb, Bstr),
     (169, advanced_put_connect_to_administer_server, i16),
@@ -1874,8 +1882,6 @@ advanced_get_not_implemented!(
     (117, advanced_get_redirect_printers, i16),
     (119, advanced_get_redirect_ports, i16),
     (121, advanced_get_redirect_smart_cards, i16),
-    (133, advanced_get_enable_auto_reconnect, i16),
-    (135, advanced_get_max_reconnect_attempts, i32),
     (151, advanced_get_redirect_devices, i16),
     (170, advanced_get_connect_to_administer_server, i16),
     (174, advanced_get_video_playback_mode, u32),
@@ -2465,6 +2471,58 @@ unsafe extern "system" fn advanced_put_redirect_clipboard(this: *mut c_void, val
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
     object.settings.borrow_mut().redirect_clipboard = value != VARIANT_FALSE.0;
     S_OK
+}
+
+unsafe extern "system" fn advanced_put_enable_auto_reconnect(this: *mut c_void, value: i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    settings.enable_auto_reconnect = value != VARIANT_FALSE.0;
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_enable_auto_reconnect(this: *mut c_void, value: *mut i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    match write_out(
+        value,
+        if object.settings.borrow().enable_auto_reconnect {
+            VARIANT_TRUE.0
+        } else {
+            VARIANT_FALSE.0
+        },
+    ) {
+        Ok(()) => S_OK,
+        Err(error) => error.code(),
+    }
+}
+
+unsafe extern "system" fn advanced_put_max_reconnect_attempts(this: *mut c_void, value: i32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    let Ok(value) = u32::try_from(value) else {
+        return E_INVALIDARG;
+    };
+    if value > MAX_RECONNECT_ATTEMPTS {
+        return E_INVALIDARG;
+    }
+    settings.max_reconnect_attempts = value;
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_max_reconnect_attempts(this: *mut c_void, value: *mut i32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let result = i32::try_from(object.settings.borrow().max_reconnect_attempts)
+        .map_err(|_| Error::from_hresult(E_FAIL))
+        .and_then(|configured| write_out(value, configured));
+    match result {
+        Ok(()) => S_OK,
+        Err(error) => error.code(),
+    }
 }
 
 fn set_audio_redirection_mode(settings: &mut CompatibilitySettings, value: u32) -> Result<()> {
@@ -3450,6 +3508,16 @@ enum WorkerEvent {
         generation: u64,
         data: Vec<u8>,
     },
+    AutoReconnecting {
+        generation: u64,
+        disconnect_reason: u32,
+        attempt: u32,
+        maximum_attempts: u32,
+        response: oneshot::Sender<AutoReconnectDecision>,
+    },
+    AutoReconnected {
+        generation: u64,
+    },
     FatalError {
         generation: u64,
         disconnect: DisconnectInfo,
@@ -3477,6 +3545,8 @@ impl WorkerEvent {
             | Self::Image { generation, .. }
             | Self::DisplayResizeFallback { generation }
             | Self::RailWindowingOrders { generation, .. }
+            | Self::AutoReconnecting { generation, .. }
+            | Self::AutoReconnected { generation }
             | Self::FatalError { generation, .. }
             | Self::Disconnected { generation, .. }
             | Self::StaticChannelData { generation, .. }
@@ -3485,8 +3555,14 @@ impl WorkerEvent {
     }
 
     fn reject_certificate_warning(self) {
-        if let Self::CertificateWarning { response, .. } = self {
-            let _ = response.send(CertificateDecision::Reject);
+        match self {
+            Self::CertificateWarning { response, .. } => {
+                let _ = response.send(CertificateDecision::Reject);
+            }
+            Self::AutoReconnecting { response, .. } => {
+                let _ = response.send(AutoReconnectDecision::Stop);
+            }
+            _ => {}
         }
     }
 }
@@ -6741,12 +6817,6 @@ impl Control {
         self.update_connection_health_window();
     }
 
-    // This is intentionally an internal-only hook. The current IronRDP worker does not expose
-    // retry progress, so public reconnect calls and generic failures must never call it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the current worker has no reconnect-progress event")
-    )]
     fn report_reconnect_worker_progress(&self, attempt: u32, maximum: u32) {
         let Some(status) = ConnectionHealthStatus::reconnecting(attempt, maximum) else {
             tracing::warn!(attempt, maximum, "Ignoring invalid reconnect worker progress");
@@ -7389,6 +7459,102 @@ impl Control {
         }
     }
 
+    fn fire_auto_reconnecting_event(&self, disconnect_reason: i32, attempt: i32) -> i32 {
+        if self.events_are_frozen() {
+            return 0;
+        }
+
+        let mut continuation = 0;
+        let mut variants = [
+            variant_i32_byref(&mut continuation),
+            variant_i32(attempt),
+            variant_i32(disconnect_reason),
+        ];
+        let params = DISPPARAMS {
+            rgvarg: variants.as_mut_ptr(),
+            rgdispidNamedArgs: ptr::null_mut(),
+            cArgs: variants.len() as u32,
+            cNamedArgs: 0,
+        };
+        let iid_null = GUID::zeroed();
+        let sinks = self
+            .sinks
+            .borrow()
+            .values()
+            .map(|sink| sink.dispatch.clone())
+            .collect::<Vec<_>>();
+
+        for sink in sinks {
+            let result = unsafe {
+                sink.Invoke(
+                    DISPID_ON_AUTO_RECONNECTING,
+                    &iid_null,
+                    0,
+                    DISPATCH_METHOD,
+                    &params,
+                    None,
+                    None,
+                    None,
+                )
+            };
+            if let Err(error) = result {
+                tracing::debug!(?error, "ActiveX event sink rejected automatic reconnect notification");
+            }
+        }
+
+        continuation
+    }
+
+    fn fire_auto_reconnecting2_event(
+        &self,
+        disconnect_reason: i32,
+        network_available: bool,
+        attempt: i32,
+        maximum_attempts: i32,
+    ) {
+        if self.events_are_frozen() {
+            return;
+        }
+
+        let mut variants = [
+            variant_i32(maximum_attempts),
+            variant_i32(attempt),
+            variant_bool_value(network_available),
+            variant_i32(disconnect_reason),
+        ];
+        let params = DISPPARAMS {
+            rgvarg: variants.as_mut_ptr(),
+            rgdispidNamedArgs: ptr::null_mut(),
+            cArgs: variants.len() as u32,
+            cNamedArgs: 0,
+        };
+        let iid_null = GUID::zeroed();
+        let sinks = self
+            .sinks
+            .borrow()
+            .values()
+            .map(|sink| sink.dispatch.clone())
+            .collect::<Vec<_>>();
+
+        for sink in sinks {
+            let result = unsafe {
+                sink.Invoke(
+                    DISPID_ON_AUTO_RECONNECTING2,
+                    &iid_null,
+                    0,
+                    DISPATCH_METHOD,
+                    &params,
+                    None,
+                    None,
+                    None,
+                )
+            };
+            if let Err(error) = result {
+                tracing::debug!(?error, "ActiveX event sink rejected automatic reconnect notification");
+            }
+        }
+    }
+
     fn certificate_warning_parent(&self) -> HWND {
         let renderer = self.activex_window.get();
         if !renderer.0.is_null() && unsafe { IsWindow(Some(renderer)) }.as_bool() {
@@ -7856,6 +8022,32 @@ impl Control {
                 WorkerEvent::RailWindowingOrders { data, .. } => {
                     if self.rail_windows.borrow().is_enabled() {
                         self.rail_windows.borrow_mut().consume(&data);
+                    }
+                }
+                WorkerEvent::AutoReconnecting {
+                    disconnect_reason,
+                    attempt,
+                    maximum_attempts,
+                    response,
+                    ..
+                } => {
+                    self.report_reconnect_worker_progress(attempt, maximum_attempts);
+                    let disconnect_reason = i32::try_from(disconnect_reason).unwrap_or(i32::MAX);
+                    let attempt = i32::try_from(attempt).unwrap_or(i32::MAX);
+                    let maximum_attempts = i32::try_from(maximum_attempts).unwrap_or(i32::MAX);
+                    let decision = match self.fire_auto_reconnecting_event(disconnect_reason, attempt) {
+                        0 => {
+                            self.fire_auto_reconnecting2_event(disconnect_reason, false, attempt, maximum_attempts);
+                            AutoReconnectDecision::Continue
+                        }
+                        _ => AutoReconnectDecision::Stop,
+                    };
+                    let _ = response.send(decision);
+                }
+                WorkerEvent::AutoReconnected { .. } => {
+                    if self.state.get() == ConnectionState::Connected {
+                        self.clear_connection_health_window();
+                        self.fire_event(DISPID_ON_AUTO_RECONNECTED, &[]);
                     }
                 }
                 WorkerEvent::FatalError { disconnect, .. } => {
@@ -8459,6 +8651,9 @@ impl Control {
         let authentication_level = compatibility.authentication_level;
         let authentication_level_set = compatibility.authentication_level_set;
         let public_mode = compatibility.public_mode;
+        let auto_reconnect_maximum_attempts = compatibility
+            .enable_auto_reconnect
+            .then_some(compatibility.max_reconnect_attempts);
         let direct_rpc_properties = active_x_property_snapshot(&settings, &compatibility);
         drop(compatibility);
         let remote_application = self.remote_application.borrow();
@@ -8693,6 +8888,11 @@ impl Control {
         drop(settings);
         let (output_sender, mut output_receiver) = mpsc::channel(32);
         let client = RdpClient::new(config, output_sender);
+        let client = if let Some(maximum_attempts) = auto_reconnect_maximum_attempts {
+            client.with_auto_reconnect(maximum_attempts)
+        } else {
+            client
+        };
         let input_sender = client.input_sender();
         if let Some(execute) = remote_application_execute {
             input_sender
@@ -8835,6 +9035,37 @@ impl Control {
                                                     &worker_event_posted,
                                                     hwnd,
                                                     WorkerEvent::DisplayResizeFallback { generation },
+                                                );
+                                            }
+                                            RdpOutputEvent::AutoReconnecting {
+                                                disconnect_reason,
+                                                attempt,
+                                                maximum_attempts,
+                                                response,
+                                            } => {
+                                                if !queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::AutoReconnecting {
+                                                        generation,
+                                                        disconnect_reason,
+                                                        attempt,
+                                                        maximum_attempts,
+                                                        response,
+                                                    },
+                                                ) {
+                                                    // The host cannot make a decision if its dispatcher is gone.
+                                                    // Fail closed rather than starting an unobservable retry.
+                                                    // `response` has been moved into the rejected queue request.
+                                                }
+                                            }
+                                            RdpOutputEvent::AutoReconnected => {
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::AutoReconnected { generation },
                                                 );
                                             }
                                             RdpOutputEvent::Terminated(result) => {
@@ -13123,6 +13354,12 @@ fn queue_worker_event(
     hwnd: HWND,
     event: WorkerEvent,
 ) -> bool {
+    let auto_reconnect_key = match &event {
+        WorkerEvent::AutoReconnecting {
+            generation, attempt, ..
+        } => Some((*generation, *attempt)),
+        _ => None,
+    };
     if events.closed.load(Ordering::Acquire) {
         return false;
     }
@@ -13168,7 +13405,24 @@ fn queue_worker_event(
                 false
             }
         }
-        WorkerEvent::Connected { .. } | WorkerEvent::LoginComplete { .. } | WorkerEvent::DisplayResizeFallback { .. } => {
+        WorkerEvent::AutoReconnecting { .. } => {
+            while queue.len() >= MAX_PENDING_WORKER_EVENTS {
+                if let Some(index) = queue
+                    .iter()
+                    .position(|pending| matches!(pending, WorkerEvent::Image { .. } | WorkerEvent::StaticChannelData { .. }))
+                {
+                    queue.remove(index);
+                } else {
+                    return false;
+                }
+            }
+            queue.push(event);
+            true
+        }
+        WorkerEvent::Connected { .. }
+        | WorkerEvent::LoginComplete { .. }
+        | WorkerEvent::DisplayResizeFallback { .. }
+        | WorkerEvent::AutoReconnected { .. } => {
             if queue.iter().any(|pending| {
                 pending.generation() == event.generation()
                     && core::mem::discriminant(pending) == core::mem::discriminant(&event)
@@ -13206,7 +13460,6 @@ fn queue_worker_event(
             true
         }
     };
-    drop(queue);
     if !queued {
         return false;
     }
@@ -13216,7 +13469,24 @@ fn queue_worker_event(
     {
         event_posted.store(false, Ordering::Release);
         tracing::debug!(?error, "Unable to post ActiveX event dispatch message");
+        if let Some((generation, attempt)) = auto_reconnect_key {
+            if let Some(index) = queue.iter().rposition(|pending| {
+                matches!(
+                    pending,
+                    WorkerEvent::AutoReconnecting {
+                        generation: pending_generation,
+                        attempt: pending_attempt,
+                        ..
+                    } if *pending_generation == generation && *pending_attempt == attempt
+                )
+            }) {
+                queue.remove(index);
+                events.space_available.notify_all();
+            }
+            return false;
+        }
     }
+    drop(queue);
     true
 }
 
@@ -14028,6 +14298,22 @@ fn variant_bool_byref(value: &mut VARIANT_BOOL) -> VARIANT {
                 wReserved3: 0,
                 Anonymous: VARIANT_0_0_0 {
                     pboolVal: value as *mut VARIANT_BOOL,
+                },
+            }),
+        },
+    }
+}
+
+fn variant_i32_byref(value: &mut i32) -> VARIANT {
+    VARIANT {
+        Anonymous: VARIANT_0 {
+            Anonymous: ManuallyDrop::new(VARIANT_0_0 {
+                vt: VT_I4 | VT_BYREF,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: VARIANT_0_0_0 {
+                    plVal: value as *mut i32,
                 },
             }),
         },
@@ -14979,6 +15265,47 @@ mod tests {
         };
         let this = (&mut object as *mut AdvancedSettingsObject).cast::<c_void>();
 
+        let mut auto_reconnect = VARIANT_FALSE.0;
+        assert_eq!(
+            unsafe { advanced_get_enable_auto_reconnect(this, &mut auto_reconnect) },
+            S_OK
+        );
+        assert_eq!(auto_reconnect, VARIANT_TRUE.0);
+        assert_eq!(
+            unsafe { advanced_put_enable_auto_reconnect(this, VARIANT_FALSE.0) },
+            S_OK
+        );
+        assert!(!settings.borrow().enable_auto_reconnect);
+
+        let mut max_reconnect_attempts = 0;
+        assert_eq!(
+            unsafe { advanced_get_max_reconnect_attempts(this, &mut max_reconnect_attempts) },
+            S_OK
+        );
+        assert_eq!(max_reconnect_attempts, 20);
+        assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, 3) }, S_OK);
+        assert_eq!(settings.borrow().max_reconnect_attempts, 3);
+        assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, -1) }, E_INVALIDARG);
+        assert_eq!(
+            unsafe {
+                advanced_put_max_reconnect_attempts(
+                    this,
+                    i32::try_from(MAX_RECONNECT_ATTEMPTS + 1).expect("limit fits in i32"),
+                )
+            },
+            E_INVALIDARG
+        );
+        settings.borrow_mut().connection_settings_sealed = true;
+        assert_eq!(
+            unsafe { advanced_put_enable_auto_reconnect(this, VARIANT_TRUE.0) },
+            E_FAIL
+        );
+        assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, 4) }, E_FAIL);
+        assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, -1) }, E_FAIL);
+        assert!(!settings.borrow().enable_auto_reconnect);
+        assert_eq!(settings.borrow().max_reconnect_attempts, 3);
+        settings.borrow_mut().connection_settings_sealed = false;
+
         assert_eq!(unsafe { advanced_put_compress(this, 0) }, S_OK);
         let mut compression = -1;
         assert_eq!(unsafe { advanced_get_compress(this, &mut compression) }, S_OK);
@@ -15285,6 +15612,22 @@ mod tests {
         assert_eq!(vtable.slots[28], advanced_put_rdp_port as *const () as usize);
         assert_eq!(vtable.slots[30], advanced_put_enable_mouse as *const () as usize);
         assert_eq!(vtable.slots[34], advanced_put_enable_windows_key as *const () as usize);
+        assert_eq!(
+            vtable.slots[132],
+            advanced_put_enable_auto_reconnect as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[133],
+            advanced_get_enable_auto_reconnect as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[134],
+            advanced_put_max_reconnect_attempts as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[135],
+            advanced_get_max_reconnect_attempts as *const () as usize
+        );
         assert_eq!(vtable.slots[83], advanced_put_keyboard_type as *const () as usize);
         assert_eq!(vtable.slots[85], advanced_put_keyboard_subtype as *const () as usize);
         assert_eq!(
@@ -18916,6 +19259,101 @@ mod tests {
                 .iter()
                 .all(|event| matches!(event, WorkerEvent::StaticChannelData { .. }))
         );
+    }
+
+    #[test]
+    fn worker_event_queue_preserves_auto_reconnect_decisions() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(true));
+        let dispatcher = HWND(ptr::null_mut());
+        let (first_sender, mut first_receiver) = oneshot::channel();
+        let (second_sender, mut second_receiver) = oneshot::channel();
+
+        for (attempt, response) in [(1, first_sender), (2, second_sender)] {
+            assert!(queue_worker_event(
+                &events,
+                &event_posted,
+                dispatcher,
+                WorkerEvent::AutoReconnecting {
+                    generation: 7,
+                    disconnect_reason: 0,
+                    attempt,
+                    maximum_attempts: 2,
+                    response,
+                },
+            ));
+        }
+        assert_eq!(
+            events
+                .events
+                .lock()
+                .expect("event queue is available")
+                .iter()
+                .filter(|event| matches!(event, WorkerEvent::AutoReconnecting { .. }))
+                .count(),
+            2
+        );
+        assert!(first_receiver.try_recv().is_err());
+        assert!(second_receiver.try_recv().is_err());
+
+        events.events.lock().expect("event queue is available").clear();
+        for index in 0..MAX_PENDING_WORKER_EVENTS {
+            assert!(queue_worker_event(
+                &events,
+                &event_posted,
+                dispatcher,
+                WorkerEvent::StaticChannelData {
+                    generation: 7,
+                    channel_name: "alpha".to_owned(),
+                    data: vec![u8::try_from(index).expect("queue capacity fits in u8")],
+                },
+            ));
+        }
+        let (sender, mut receiver) = oneshot::channel();
+        assert!(queue_worker_event(
+            &events,
+            &event_posted,
+            dispatcher,
+            WorkerEvent::AutoReconnecting {
+                generation: 7,
+                disconnect_reason: 0,
+                attempt: 1,
+                maximum_attempts: 1,
+                response: sender,
+            },
+        ));
+        assert!(receiver.try_recv().is_err());
+        assert!(
+            events
+                .events
+                .lock()
+                .expect("event queue is available")
+                .iter()
+                .any(|event| matches!(event, WorkerEvent::AutoReconnecting { .. }))
+        );
+    }
+
+    #[test]
+    fn worker_event_queue_rejects_auto_reconnect_when_dispatch_fails() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = oneshot::channel();
+
+        assert!(!queue_worker_event(
+            &events,
+            &event_posted,
+            HWND(ptr::dangling_mut()),
+            WorkerEvent::AutoReconnecting {
+                generation: 7,
+                disconnect_reason: 0,
+                attempt: 1,
+                maximum_attempts: 1,
+                response: sender,
+            },
+        ));
+        assert!(matches!(receiver.try_recv(), Err(oneshot::error::TryRecvError::Closed)));
+        assert!(events.events.lock().expect("event queue is available").is_empty());
+        assert!(!event_posted.load(Ordering::Acquire));
     }
 
     #[test]

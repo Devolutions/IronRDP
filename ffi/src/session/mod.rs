@@ -270,6 +270,7 @@ pub mod ffi {
         SaveSessionInfo = 10,
         AutoReconnectCookie = 11,
         WindowingOrders = 12,
+        AutoReconnectFailed = 13,
     }
 
     impl ActiveStageOutput {
@@ -292,6 +293,7 @@ pub mod ffi {
                 ironrdp::session::ActiveStageOutput::AutoReconnectCookie { .. } => {
                     ActiveStageOutputType::AutoReconnectCookie
                 }
+                ironrdp::session::ActiveStageOutput::AutoReconnectFailed => ActiveStageOutputType::AutoReconnectFailed,
             }
         }
 

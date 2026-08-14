@@ -60,6 +60,12 @@ pub enum ProcessorOutput {
     /// [\[MS-RDPBCGR\] 2.2.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18f4f605-0ee3-4175-8a62-cf8775252547
     /// [\[MS-RDPBCGR\] 1.3.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
     AutoReconnectCookie(ServerAutoReconnect),
+    /// Server rejected a Client Auto-Reconnect Packet ([\[MS-RDPBCGR\] 2.2.4.1]).
+    ///
+    /// The client must discard its cookie and not report the reconnect as successful.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.4.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/5073f4ed-1e93-45e1-b039-6e30c385867c
+    AutoReconnectFailed,
     /// Auto-detect network characteristics from server ([\[MS-RDPBCGR\] 2.2.14]).
     ///
     /// Currently only surfaces [`AutoDetectRequest::NetworkCharacteristicsResult`].
@@ -275,6 +281,13 @@ impl Processor {
                 }
 
                 Ok(outputs)
+            }
+            ShareDataPdu::ArcStatusPdu(status) => {
+                if status != [0; 4] {
+                    return Err(reason_err!("IO channel", "invalid auto-reconnect status PDU"));
+                }
+
+                Ok(vec![ProcessorOutput::AutoReconnectFailed])
             }
             // FIXME: workaround fix to not terminate the session on "unhandled PDU: Set Keyboard Indicators PDU"
             ShareDataPdu::SetKeyboardIndicators(data) => {
@@ -537,5 +550,46 @@ mod tests {
         };
 
         assert!(is_logon_complete(&session_info));
+    }
+
+    #[test]
+    fn processor_surfaces_valid_auto_reconnect_status() {
+        let mut bulk_decompressor = None;
+        let outputs = Processor::process_share_data(
+            ShareDataCtx {
+                initiator_id: 0,
+                channel_id: 0,
+                share_id: 0,
+                pdu_source: 0,
+                compression_flags: CompressionFlags::empty(),
+                compression_type: CompressionType::K64,
+                pdu: ShareDataPdu::ArcStatusPdu(vec![0; 4]),
+            },
+            &mut bulk_decompressor,
+        )
+        .expect("valid auto-reconnect status PDU should be processed");
+
+        assert!(matches!(outputs.as_slice(), [ProcessorOutput::AutoReconnectFailed]));
+    }
+
+    #[test]
+    fn processor_rejects_invalid_auto_reconnect_status() {
+        let mut bulk_decompressor = None;
+
+        assert!(
+            Processor::process_share_data(
+                ShareDataCtx {
+                    initiator_id: 0,
+                    channel_id: 0,
+                    share_id: 0,
+                    pdu_source: 0,
+                    compression_flags: CompressionFlags::empty(),
+                    compression_type: CompressionType::K64,
+                    pdu: ShareDataPdu::ArcStatusPdu(vec![0, 0, 0]),
+                },
+                &mut bulk_decompressor,
+            )
+            .is_err()
+        );
     }
 }
