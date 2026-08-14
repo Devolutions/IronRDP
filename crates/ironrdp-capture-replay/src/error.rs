@@ -44,4 +44,13 @@ pub enum ReplayError {
     /// The active RDP share identifier could not be recovered.
     #[error("capture does not contain an activated RDP share ID")]
     MissingShareId,
+    /// Captured connection state cannot configure an offline router safely.
+    #[error("capture contains contradictory routing state")]
+    ContradictoryRoutingState,
+    /// The capture requires the DRDYNVC static channel.
+    #[error("capture does not contain the DRDYNVC static channel")]
+    MissingDrdynvcChannel,
+    /// A captured dynamic channel could not be attached.
+    #[error("captured dynamic channel could not be attached")]
+    DynamicChannelAttachment,
 }
