@@ -312,22 +312,19 @@ fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
 }
 
 fn has_x224_connection_initiation(client_stream: &PacketStream, server_stream: &PacketStream) -> bool {
-    has_x224_connection_tpdu(&flatten(client_stream), 0xe0) && has_x224_connection_tpdu(&flatten(server_stream), 0xd0)
+    x224_connection_tpdu_end(&flatten(client_stream), 0xe0).is_some()
+        && x224_connection_tpdu_end(&flatten(server_stream), 0xd0).is_some()
 }
 
-fn has_x224_connection_tpdu(bytes: &[u8], code: u8) -> bool {
-    let Some(header) = bytes.get(..4) else {
-        return false;
-    };
+pub(crate) fn x224_connection_tpdu_end(bytes: &[u8], code: u8) -> Option<usize> {
+    let header = bytes.get(..4)?;
     if header[0] != 3 || header[1] != 0 {
-        return false;
+        return None;
     }
     let length = usize::from(u16::from_be_bytes([header[2], header[3]]));
-    let Some(frame) = bytes.get(..length) else {
-        return false;
-    };
+    let frame = bytes.get(..length)?;
 
-    frame.len() >= 11 && frame[4] == 6 && frame[5] == code && frame[6..11] == [0; 5]
+    (frame.len() >= 11 && frame[4] == 6 && frame[5] == code && frame[6..11] == [0; 5]).then_some(length)
 }
 
 fn reassemble(segments: Vec<Segment>, origin: u32) -> Result<PacketStream, ReplayError> {
