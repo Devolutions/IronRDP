@@ -773,7 +773,13 @@ fn build_rdpdr_channel(
         .build_rdpdr_backend()
         .map_err(|error| ironrdp_connector::custom_err!("build RDPDR backend", RdpdrBackendBuildError(error)))?
         .into_parts();
-    if initial_drives.is_empty() {
+
+    #[cfg(feature = "smartcard")]
+    let smartcard = config.smartcard;
+    #[cfg(not(feature = "smartcard"))]
+    let smartcard = false;
+
+    if initial_drives.is_empty() && !smartcard {
         return Ok(None);
     }
 
@@ -781,10 +787,18 @@ fn build_rdpdr_channel(
         .into_iter()
         .map(RdpdrDrive::into_parts)
         .collect::<Vec<_>>();
-    let rdpdr_channel = ironrdp_rdpdr::Rdpdr::new(backend, "IronRDP".to_owned()).with_drives(Some(initial_drives));
+
+    // Do not advertise drive capability for smartcard-only products.
+    // Skipping `with_drives` omits CAP_DRIVE_REDIRECT, so later
+    // `Rdpdr::add_dynamic_drive` hot-plug is unavailable on that session.
+    // Prefer attaching an empty drive list only when drive hot-plug is required.
+    let mut rdpdr_channel = ironrdp_rdpdr::Rdpdr::new(backend, "IronRDP".to_owned());
+    if !initial_drives.is_empty() {
+        rdpdr_channel = rdpdr_channel.with_drives(Some(initial_drives));
+    }
 
     #[cfg(feature = "smartcard")]
-    let rdpdr_channel = if config.smartcard {
+    let rdpdr_channel = if smartcard {
         rdpdr_channel.with_smartcard(0)
     } else {
         rdpdr_channel
@@ -2605,8 +2619,8 @@ mod tests {
     use ironrdp_rdpdr::pdu::RdpdrPdu;
     #[cfg(feature = "rdpdr")]
     use ironrdp_rdpdr::pdu::efs::{
-        DeviceControlRequest, ServerDeviceAnnounceResponse, ServerDriveIoRequest, VERSION_MINOR_12, VersionAndIdPdu,
-        VersionAndIdPduKind,
+        CapabilityMessage, CoreCapability, CoreCapabilityKind, DeviceControlRequest, DeviceType,
+        ServerDeviceAnnounceResponse, ServerDriveIoRequest, VERSION_MINOR_12, VersionAndIdPdu, VersionAndIdPduKind,
     };
     #[cfg(feature = "rdpdr")]
     use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
@@ -2653,8 +2667,8 @@ mod tests {
             &mut self,
             _req: DeviceControlRequest<ScardIoCtlCode>,
             _call: ScardCall,
-        ) -> ironrdp_pdu::PduResult<()> {
-            Ok(())
+        ) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+            Ok(Vec::new())
         }
 
         fn handle_drive_io_request(&mut self, _req: ServerDriveIoRequest) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
@@ -2851,13 +2865,112 @@ mod tests {
     #[test]
     fn empty_rdpdr_product_omits_the_channel() {
         let factory = CountingRdpdrFactory::new(Vec::new());
+        // Default RdpdrConfig enables smartcard when the feature is on; disable it so
+        // this case still covers an empty drive product with no smartcard device.
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+        };
 
         assert!(
-            build_rdpdr_channel(Some(&factory), &crate::config::RdpdrConfig::default())
+            build_rdpdr_channel(Some(&factory), &config)
                 .expect("empty RDPDR product should not fail")
                 .is_none()
         );
         assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(all(feature = "rdpdr", feature = "smartcard"))]
+    #[test]
+    fn smartcard_only_rdpdr_builds_without_drives() {
+        let factory = CountingRdpdrFactory::new(Vec::new());
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            smartcard: true,
+        };
+
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config)
+            .expect("smartcard-only RDPDR should not fail")
+            .expect("smartcard-only product should build a channel");
+
+        assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+        assert!(
+            rdpdr
+                .downcast_backend::<TestRdpdrBackend>()
+                .expect("test backend should be retained")
+                .instance
+                >= 1
+        );
+
+        let client_id = 0x1234_5678;
+        let server_announce = RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+            version_major: 1,
+            version_minor: VERSION_MINOR_12,
+            client_id,
+            kind: VersionAndIdPduKind::ServerAnnounceRequest,
+        });
+        assert_eq!(
+            rdpdr
+                .process(&encode_vec(&server_announce).expect("encode server announce"))
+                .expect("process server announce")
+                .len(),
+            2
+        );
+
+        let client_confirm = RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+            version_major: 1,
+            version_minor: VERSION_MINOR_12,
+            client_id,
+            kind: VersionAndIdPduKind::ServerClientIdConfirm,
+        });
+        let announcements = rdpdr
+            .process(&encode_vec(&client_confirm).expect("encode client ID confirm"))
+            .expect("process client ID confirm");
+        assert_eq!(announcements.len(), 1);
+        let wire = announcements[0]
+            .encode_unframed_pdu()
+            .expect("encode device announcement");
+        assert_eq!(
+            u16::from_le_bytes(wire[2..4].try_into().expect("device announcement packet ID")),
+            u16::from(ironrdp_rdpdr::pdu::PacketId::CoreDevicelistAnnounce)
+        );
+        assert_eq!(u32::from_le_bytes(wire[4..8].try_into().expect("device count")), 1);
+        assert_eq!(
+            u32::from_le_bytes(wire[8..12].try_into().expect("device type")),
+            u32::from(DeviceType::Smartcard)
+        );
+        assert_eq!(u32::from_le_bytes(wire[12..16].try_into().expect("device ID")), 0);
+
+        let server_capability = RdpdrPdu::CoreCapability(CoreCapability {
+            capabilities: vec![
+                CapabilityMessage::new_general(0),
+                CapabilityMessage::new_drive(),
+                CapabilityMessage::new_smartcard(),
+            ],
+            kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
+        });
+        let capability_response = rdpdr
+            .process(&encode_vec(&server_capability).expect("encode server capability"))
+            .expect("process server capability");
+        assert_eq!(capability_response.len(), 1);
+        assert_eq!(
+            capability_response[0]
+                .encode_unframed_pdu()
+                .expect("encode client capability"),
+            encode_vec(&RdpdrPdu::CoreCapability(CoreCapability::new_response(vec![
+                CapabilityMessage::new_general(1),
+                CapabilityMessage::new_smartcard(),
+            ])))
+            .expect("encode expected client capability")
+        );
+
+        assert!(
+            rdpdr
+                .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+                .expect("process user logged on")
+                .is_empty()
+        );
     }
 
     #[cfg(feature = "rdpdr")]

@@ -230,9 +230,13 @@ impl RdpdrBackend for WasmPrinterBackend {
         Ok(())
     }
 
-    fn handle_scard_call(&mut self, _req: DeviceControlRequest<ScardIoCtlCode>, _call: ScardCall) -> PduResult<()> {
+    fn handle_scard_call(
+        &mut self,
+        _req: DeviceControlRequest<ScardIoCtlCode>,
+        _call: ScardCall,
+    ) -> PduResult<Vec<SvcMessage>> {
         warn!("Smartcard IOCTL reached printer-only backend; ignoring");
-        Ok(())
+        Ok(Vec::new())
     }
 
     fn handle_drive_io_request(&mut self, _req: ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {

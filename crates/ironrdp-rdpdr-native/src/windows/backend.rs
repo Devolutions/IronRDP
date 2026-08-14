@@ -9,18 +9,14 @@ use ironrdp_rdpdr::pdu::efs::{
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_svc::SvcMessage;
 
-use super::control;
-use super::directory;
 use super::factory::RedirectedDrive;
-use super::file;
 use super::file_table::FileTable;
 use super::handles::{FileHandle, RootDirectory};
-use super::locks;
 use super::path::RelativePath;
 use super::pending::DeferredOperations;
-use super::security;
+use super::scard::ScardSession;
 use super::status::from_open_directory;
-use super::volume;
+use super::{control, directory, file, locks, security, volume};
 
 const DEFAULT_MAX_OPEN_FILES: usize = 1_024;
 
@@ -35,6 +31,7 @@ pub struct WindowsRdpdrBackend {
     pub(super) roots: HashMap<u32, RedirectedRoot>,
     pub(super) open_files: FileTable<OpenFile>,
     deferred_operations: DeferredOperations,
+    scard: ScardSession,
 }
 
 impl WindowsRdpdrBackend {
@@ -49,6 +46,7 @@ impl WindowsRdpdrBackend {
             roots: HashMap::new(),
             open_files: FileTable::new(DEFAULT_MAX_OPEN_FILES),
             deferred_operations: DeferredOperations::new(),
+            scard: ScardSession::new(),
         }
     }
 
@@ -153,6 +151,7 @@ impl RdpdrBackend for WindowsRdpdrBackend {
 
     fn reset(&mut self) -> PduResult<()> {
         self.deferred_operations.reset();
+        self.scard.reset();
         self.open_files.clear();
         self.roots.clear();
         Ok(())
@@ -166,8 +165,12 @@ impl RdpdrBackend for WindowsRdpdrBackend {
         Ok(())
     }
 
-    fn handle_scard_call(&mut self, _req: DeviceControlRequest<ScardIoCtlCode>, _call: ScardCall) -> PduResult<()> {
-        Ok(())
+    fn handle_scard_call(
+        &mut self,
+        req: DeviceControlRequest<ScardIoCtlCode>,
+        call: ScardCall,
+    ) -> PduResult<Vec<SvcMessage>> {
+        self.scard.handle_call(req, call)
     }
 
     fn add_drive(&mut self, device_id: u32) -> PduResult<()> {
@@ -205,7 +208,9 @@ impl RdpdrBackend for WindowsRdpdrBackend {
     }
 
     fn poll_deferred_messages(&mut self) -> PduResult<Vec<SvcMessage>> {
-        Ok(self.deferred_operations.poll())
+        let mut messages = self.deferred_operations.poll();
+        messages.extend(self.scard.poll());
+        Ok(messages)
     }
 }
 
@@ -232,6 +237,9 @@ pub(super) struct OpenFile {
 
 #[cfg(test)]
 mod tests {
+    use ironrdp_rdpdr::pdu::efs::{DeviceIoRequest, MajorFunction, MinorFunction};
+    use ironrdp_rdpdr::pdu::esc::{EstablishContextCall, ScardIoCtlCode, Scope};
+
     use super::*;
 
     #[test]
@@ -248,5 +256,32 @@ mod tests {
 
         assert!(backend.roots.contains_key(&1));
         assert!(backend.roots.contains_key(&2));
+    }
+
+    #[test]
+    fn scard_irp_completes_without_redirected_drives() {
+        let mut backend = WindowsRdpdrBackend::from_drives(Vec::new());
+
+        let req = DeviceControlRequest {
+            header: DeviceIoRequest {
+                device_id: 0,
+                file_id: 0,
+                completion_id: 11,
+                major_function: MajorFunction::DeviceControl,
+                minor_function: MinorFunction::from(0),
+            },
+            output_buffer_length: 2048,
+            input_buffer_length: 0,
+            io_control_code: ScardIoCtlCode::EstablishContext,
+        };
+
+        let messages = ironrdp_rdpdr::RdpdrBackend::handle_scard_call(
+            &mut backend,
+            req,
+            ScardCall::EstablishContextCall(EstablishContextCall { scope: Scope::User }),
+        )
+        .expect("stub must complete the IRP");
+
+        assert_eq!(messages.len(), 1);
     }
 }

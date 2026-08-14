@@ -8,6 +8,7 @@ mod handles;
 mod locks;
 mod path;
 mod pending;
+mod scard;
 mod security;
 mod status;
 mod volume;

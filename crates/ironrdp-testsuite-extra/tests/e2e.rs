@@ -692,8 +692,8 @@ impl RdpdrBackend for UnsupportedRdpdrBackend {
         &mut self,
         _: ironrdp_rdpdr::pdu::efs::DeviceControlRequest<ScardIoCtlCode>,
         _: ScardCall,
-    ) -> pdu::PduResult<()> {
-        Ok(())
+    ) -> pdu::PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
     }
 
     fn handle_drive_io_request(&mut self, req: ServerDriveIoRequest) -> pdu::PduResult<Vec<SvcMessage>> {

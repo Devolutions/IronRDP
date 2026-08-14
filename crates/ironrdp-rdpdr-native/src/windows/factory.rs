@@ -4,8 +4,9 @@ use core::fmt;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use super::backend::WindowsRdpdrBackend;
 use ironrdp_rdpdr::{RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive};
+
+use super::backend::WindowsRdpdrBackend;
 
 /// Immutable logical-volume definition selected for Windows RDPDR redirection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,6 +94,9 @@ impl core::error::Error for RedirectedDriveError {}
 /// The returned initial-drive list is intentionally shaped for
 /// [`ironrdp_rdpdr::Rdpdr::with_drives`], keeping platform configuration out of
 /// the portable RDPDR crate.
+///
+/// Smartcard redirection is optional and independent of drives: an empty drive
+/// list is valid for smartcard-only sessions.
 #[derive(Clone, Debug)]
 pub struct WindowsRdpdrBackendFactory {
     drives: Vec<RedirectedDrive>,
