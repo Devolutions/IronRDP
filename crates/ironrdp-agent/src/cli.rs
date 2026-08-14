@@ -409,29 +409,17 @@ enum OutputFormat {
 const MAX_JSON_STREAM_EVENTS: usize = 8 * 1024;
 const MAX_JSON_STREAM_OUTPUT: usize = 2 * 1024 * 1024;
 
-/// A daemon-provided error that must be rendered according to the selected NOW output format.
+/// A daemon-provided error that must be rendered according to the selected output format.
 #[derive(Debug)]
-struct NowRequestError(AgentError);
+struct DaemonRequestError(AgentError);
 
-impl fmt::Display for NowRequestError {
+impl fmt::Display for DaemonRequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0.message)
     }
 }
 
-impl core::error::Error for NowRequestError {}
-
-/// A daemon-provided RAIL error that must be rendered according to the selected output format.
-#[derive(Debug)]
-struct RailRequestError(AgentError);
-
-impl fmt::Display for RailRequestError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0.message)
-    }
-}
-
-impl core::error::Error for RailRequestError {}
+impl core::error::Error for DaemonRequestError {}
 
 #[derive(Args, Debug)]
 struct DaemonArgs {
@@ -799,7 +787,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let exit_code = match run_now(&endpoint, args).await {
                 Ok(exit_code) => exit_code,
                 Err(error) => {
-                    if let Some(error) = error.downcast_ref::<NowRequestError>() {
+                    if let Some(error) = error.downcast_ref::<DaemonRequestError>() {
                         print_request_error(&error.0, format)?;
                         std::process::exit(1);
                     }
@@ -816,7 +804,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Rail(args) => {
             let format = args.format;
             if let Err(error) = run_rail(&endpoint, args).await {
-                if let Some(error) = error.downcast_ref::<RailRequestError>() {
+                if let Some(error) = error.downcast_ref::<DaemonRequestError>() {
                     print_request_error(&error.0, format)?;
                     std::process::exit(1);
                 }
@@ -1132,7 +1120,7 @@ async fn run_rail(endpoint: &Endpoint, args: RailArgs) -> anyhow::Result<()> {
     let response = transport::send_request(endpoint, &request).await?;
     let payload = match response {
         Response::Ok(payload) => payload,
-        Response::Err(error) => return Err(RailRequestError(error).into()),
+        Response::Err(error) => return Err(DaemonRequestError(error).into()),
     };
     print_rail_payload(payload, format)
 }
@@ -1511,7 +1499,7 @@ async fn now_execution(
             let response = transport::send_request(endpoint, &Request::NowExecute(request)).await?;
             let payload = match response {
                 Response::Ok(payload) => payload,
-                Response::Err(error) => return Err(NowRequestError(error).into()),
+                Response::Err(error) => return Err(DaemonRequestError(error).into()),
             };
             let Payload::NowOperation(operation) = &payload else {
                 anyhow::bail!("unexpected response while writing operation ID");
@@ -1530,7 +1518,7 @@ async fn now_single(endpoint: &Endpoint, request: Request, format: OutputFormat)
     let response = transport::send_request(endpoint, &request).await?;
     let payload = match response {
         Response::Ok(payload) => payload,
-        Response::Err(error) => return Err(NowRequestError(error).into()),
+        Response::Err(error) => return Err(DaemonRequestError(error).into()),
     };
     print_now_payload(&payload, format)?;
     Ok(payload_remote_exit(&payload))
@@ -1547,7 +1535,7 @@ async fn now_stream(
     let first: Response = transport::read_message(&mut stream).await?;
     let first = match first {
         Response::Ok(payload) => payload,
-        Response::Err(error) => return Err(NowRequestError(error).into()),
+        Response::Err(error) => return Err(DaemonRequestError(error).into()),
     };
 
     let mut exit_code = payload_remote_exit(&first);
@@ -1587,7 +1575,7 @@ async fn now_stream(
         };
         let payload = match response {
             Response::Ok(payload) => payload,
-            Response::Err(error) => return Err(NowRequestError(error).into()),
+            Response::Err(error) => return Err(DaemonRequestError(error).into()),
         };
         if let Payload::NowEvent(event) = &payload {
             match &event.kind {
@@ -1634,7 +1622,7 @@ fn print_request_error(error: &AgentError, format: OutputFormat) -> anyhow::Resu
                     "category": error.category.as_str(),
                     "message": error.message,
                 }))
-                .context("serialize NOW error")?
+                .context("serialize daemon request error")?
             );
             Ok(())
         }
