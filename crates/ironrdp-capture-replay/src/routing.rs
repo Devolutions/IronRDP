@@ -1,0 +1,749 @@
+use core::any::TypeId;
+use core::mem;
+use std::collections::BTreeSet;
+
+use ironrdp_core::{decode, impl_as_any};
+use ironrdp_dvc::pdu::DrdynvcServerPdu;
+use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcProcessor};
+use ironrdp_graphics::image_processing::PixelFormat;
+use ironrdp_pdu::rdp::client_info::CompressionType;
+use ironrdp_pdu::{Action, decode_err, find_size, mcs};
+use ironrdp_session::image::DecodedImage;
+use ironrdp_session::{ActiveStage, ActiveStageBuilder};
+use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcessor};
+
+use crate::{Capture, NegotiatedState, PacketStream, Plaintext, ReplayError, decrypt_tls, recover_negotiated_state};
+
+/// Captured connection state used to construct an offline active-stage router.
+#[derive(Clone, Debug)]
+pub struct CapturedActivation {
+    /// RDP state recovered from the captured connection sequence.
+    pub state: NegotiatedState,
+    /// Bulk compression negotiated for the captured session.
+    pub compression_type: Option<CompressionType>,
+}
+
+impl From<NegotiatedState> for CapturedActivation {
+    fn from(state: NegotiatedState) -> Self {
+        Self {
+            state,
+            compression_type: None,
+        }
+    }
+}
+
+/// Direction of a captured transport stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayDirection {
+    /// Client-to-server traffic.
+    Client,
+    /// Server-to-client traffic.
+    Server,
+}
+
+/// The routing path selected for a captured RDP PDU.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayRoute {
+    /// Connection or activation traffic that precedes the recovered active stage.
+    Connection,
+    /// A client message retained only for ordering and provenance.
+    ClientObservation,
+    /// A server Fast-Path PDU.
+    FastPath,
+    /// A server MCS I/O channel PDU.
+    IoChannel,
+    /// A server MCS message-channel PDU.
+    MessageChannel,
+    /// A server static virtual channel PDU.
+    StaticChannel,
+    /// A server MCS message routed outside the captured active channels.
+    OtherServerMessage,
+}
+
+/// Metadata for a routed captured PDU.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplayEvent {
+    /// Packet number that contributed the first byte of this PDU.
+    pub packet: usize,
+    /// Captured transport direction.
+    pub direction: ReplayDirection,
+    /// RDP transport action selected by its framing header.
+    pub action: Action,
+    /// Routing path used for the PDU.
+    pub route: ReplayRoute,
+}
+
+/// Classifies an explicitly recorded replay gap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayGapKind {
+    /// Bytes could not be framed as an RDP PDU.
+    Framing,
+    /// A PDU ended before its declared boundary.
+    TruncatedPdu,
+    /// A static virtual-channel PDU was malformed.
+    StaticChannel,
+    /// A DVC message was malformed or could not be attached.
+    DynamicChannel,
+    /// The active session processor rejected a captured server message.
+    Session,
+    /// A protocol path is outside direct TCP replay support.
+    Unsupported,
+}
+
+/// A safe, payload-free description of an unreplayable captured message.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplayGap {
+    /// Packet number where the gap began.
+    pub packet: usize,
+    /// Stream direction containing the gap.
+    pub direction: ReplayDirection,
+    /// Layer that could not be replayed.
+    pub kind: ReplayGapKind,
+}
+
+/// A dynamic channel recovered from a recorded DVC create request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapturedDynamicChannel {
+    /// Server-assigned dynamic channel ID.
+    pub id: u32,
+    /// Name sent in the recorded DVC create request.
+    pub name: String,
+}
+
+/// Ordered replay metadata and explicit gaps.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ReplayReport {
+    /// Routed RDP PDUs in capture order.
+    pub events: Vec<ReplayEvent>,
+    /// Messages that were not safely replayable.
+    pub gaps: Vec<ReplayGap>,
+    /// Dynamic channels attached from recorded DVC create requests.
+    pub dynamic_channels: Vec<CapturedDynamicChannel>,
+}
+
+/// Offline router configured exclusively from captured RDP state.
+pub struct ReplayRouter {
+    activation: CapturedActivation,
+    stage: ActiveStage,
+    image: DecodedImage,
+    drdynvc_channel_id: Option<u16>,
+    attached_dynamic_channels: BTreeSet<u32>,
+    dvc_lifecycle: StaticVirtualChannel,
+}
+
+impl ReplayRouter {
+    /// Build a router from captured activation state without live negotiation.
+    pub fn new(activation: CapturedActivation) -> Result<Self, ReplayError> {
+        let state = &activation.state;
+        if state.width == 0 || state.height == 0 {
+            return Err(ReplayError::ContradictoryRoutingState);
+        }
+
+        let mut ids = BTreeSet::new();
+        let mut channels = StaticChannelSet::new();
+        let mut drdynvc_channel_id = None;
+        for channel in &state.static_channels {
+            if !ids.insert(channel.id) {
+                return Err(ReplayError::ContradictoryRoutingState);
+            }
+            if channel.name == DrdynvcClient::NAME {
+                if drdynvc_channel_id.replace(channel.id).is_some() {
+                    return Err(ReplayError::ContradictoryRoutingState);
+                }
+                channels.insert(DrdynvcClient::new());
+                if channels.get_by_type::<DrdynvcClient>().is_none() {
+                    return Err(ReplayError::ContradictoryRoutingState);
+                }
+                channels.attach_channel_id(TypeId::of::<DrdynvcClient>(), channel.id);
+                if channels.get_channel_id_by_type::<DrdynvcClient>() != Some(channel.id) {
+                    return Err(ReplayError::ContradictoryRoutingState);
+                }
+            } else {
+                let key = channels
+                    .insert_dynamic(OpaqueStaticChannel {
+                        name: channel.name.clone(),
+                    })
+                    .ok_or(ReplayError::ContradictoryRoutingState)?;
+                channels.attach_channel_id_by_key(key, channel.id);
+                if channels.get_key_by_channel_id(channel.id) != Some(key) {
+                    return Err(ReplayError::ContradictoryRoutingState);
+                }
+            }
+        }
+
+        let active_stage = ActiveStageBuilder {
+            static_channels: channels,
+            user_channel_id: state.user_channel_id,
+            io_channel_id: state.io_channel_id,
+            message_channel_id: state.message_channel_id,
+            share_id: state.share_id,
+            compression_type: activation.compression_type,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        Ok(Self {
+            image: DecodedImage::new(PixelFormat::RgbA32, state.width, state.height),
+            activation,
+            stage: active_stage,
+            drdynvc_channel_id,
+            attached_dynamic_channels: BTreeSet::new(),
+            dvc_lifecycle: StaticVirtualChannel::new(DynamicChannelDiscovery::default()),
+        })
+    }
+
+    /// Attach an already-created captured DVC without replaying live creation negotiation.
+    pub fn attach_established_dynamic_channel<T>(&mut self, channel_id: u32, channel: T) -> Result<(), ReplayError>
+    where
+        T: DvcClientProcessor + 'static,
+    {
+        if !self.attached_dynamic_channels.insert(channel_id) {
+            return Err(ReplayError::DynamicChannelAttachment);
+        }
+        let result = self
+            .stage
+            .get_svc_processor_mut::<DrdynvcClient>()
+            .ok_or(ReplayError::MissingDrdynvcChannel)?
+            .attach_established_dynamic_channel(channel_id, channel);
+        if result.is_err() {
+            self.attached_dynamic_channels.remove(&channel_id);
+            return Err(ReplayError::DynamicChannelAttachment);
+        }
+        Ok(())
+    }
+
+    /// Route recorded plaintext streams in packet order.
+    pub fn route_plaintext(&mut self, plaintext: &Plaintext) -> ReplayReport {
+        let mut report = ReplayReport::default();
+        let mut messages = framed_stream(&plaintext.client, ReplayDirection::Client, &mut report.gaps);
+        messages.extend(framed_stream(
+            &plaintext.server,
+            ReplayDirection::Server,
+            &mut report.gaps,
+        ));
+        messages.sort_by_key(|message| message.packet);
+
+        let mut awaiting_finalization = false;
+        let mut activated = false;
+        for message in messages {
+            let route = if message.direction == ReplayDirection::Client {
+                ReplayRoute::ClientObservation
+            } else if !activated {
+                if is_demand_active(&message, self.activation.state.io_channel_id) {
+                    awaiting_finalization = true;
+                } else if awaiting_finalization && is_server_font_map(&message, self.activation.state.io_channel_id) {
+                    activated = true;
+                }
+                ReplayRoute::Connection
+            } else {
+                self.route_server_message(&message, &mut report)
+            };
+            report.events.push(ReplayEvent {
+                packet: message.packet,
+                direction: message.direction,
+                action: message.action,
+                route,
+            });
+        }
+        if !activated {
+            report.gaps.push(ReplayGap {
+                packet: 0,
+                direction: ReplayDirection::Server,
+                kind: ReplayGapKind::Unsupported,
+            });
+        }
+        report.gaps.sort_by_key(|gap| gap.packet);
+        report
+    }
+
+    fn route_server_message(&mut self, message: &CapturedPdu, report: &mut ReplayReport) -> ReplayRoute {
+        let route = match message.action {
+            Action::FastPath => ReplayRoute::FastPath,
+            Action::X224 => match mcs::decode_send_data_indication(&message.bytes) {
+                Ok(context) if context.channel_id == self.activation.state.io_channel_id => ReplayRoute::IoChannel,
+                Ok(context) if Some(context.channel_id) == self.activation.state.message_channel_id => {
+                    ReplayRoute::MessageChannel
+                }
+                Ok(context)
+                    if Some(context.channel_id) == self.drdynvc_channel_id
+                        || self
+                            .activation
+                            .state
+                            .static_channels
+                            .iter()
+                            .any(|channel| channel.id == context.channel_id) =>
+                {
+                    ReplayRoute::StaticChannel
+                }
+                _ => ReplayRoute::OtherServerMessage,
+            },
+        };
+        if route == ReplayRoute::StaticChannel {
+            self.observe_dvc_lifecycle(message, report);
+        }
+        if self
+            .stage
+            .process(&mut self.image, message.action, &message.bytes)
+            .is_err()
+        {
+            report.gaps.push(ReplayGap {
+                packet: message.packet,
+                direction: ReplayDirection::Server,
+                kind: if route == ReplayRoute::StaticChannel {
+                    ReplayGapKind::StaticChannel
+                } else {
+                    ReplayGapKind::Session
+                },
+            });
+        }
+        route
+    }
+
+    fn observe_dvc_lifecycle(&mut self, message: &CapturedPdu, report: &mut ReplayReport) {
+        let Ok(context) = mcs::decode_send_data_indication(&message.bytes) else {
+            return;
+        };
+        if Some(context.channel_id) != self.drdynvc_channel_id {
+            return;
+        }
+        self.dvc_lifecycle
+            .channel_processor_downcast_mut::<DynamicChannelDiscovery>()
+            .expect("DynamicChannelDiscovery must retain its concrete type")
+            .packet = message.packet;
+        if self.dvc_lifecycle.process(context.user_data.as_ref()).is_err() {
+            report.gaps.push(ReplayGap {
+                packet: message.packet,
+                direction: message.direction,
+                kind: ReplayGapKind::DynamicChannel,
+            });
+            return;
+        }
+        let changes = self
+            .dvc_lifecycle
+            .channel_processor_downcast_mut::<DynamicChannelDiscovery>()
+            .expect("DynamicChannelDiscovery must retain its concrete type")
+            .take_changes();
+        for channel_id in changes.closed {
+            self.attached_dynamic_channels.remove(&channel_id);
+        }
+        for channel in changes.created {
+            report.dynamic_channels.push(CapturedDynamicChannel {
+                id: channel.id,
+                name: channel.name.clone(),
+            });
+            if !self.attached_dynamic_channels.contains(&channel.id)
+                && self
+                    .attach_established_dynamic_channel(channel.id, OpaqueDynamicChannel { name: channel.name })
+                    .is_err()
+            {
+                report.gaps.push(ReplayGap {
+                    packet: channel.packet,
+                    direction: ReplayDirection::Server,
+                    kind: ReplayGapKind::DynamicChannel,
+                });
+            }
+        }
+    }
+}
+
+/// Decrypt, recover captured activation state, and route a direct TCP RDP capture.
+pub fn replay_capture(capture: &Capture) -> Result<ReplayReport, ReplayError> {
+    let plaintext = decrypt_tls(capture)?;
+    let mut router = ReplayRouter::new(CapturedActivation::from(recover_negotiated_state(&plaintext)?))?;
+    Ok(router.route_plaintext(&plaintext))
+}
+
+#[derive(Debug)]
+struct CapturedPdu {
+    packet: usize,
+    direction: ReplayDirection,
+    action: Action,
+    bytes: Vec<u8>,
+}
+
+fn framed_stream(stream: &PacketStream, direction: ReplayDirection, gaps: &mut Vec<ReplayGap>) -> Vec<CapturedPdu> {
+    let mut bytes = Vec::new();
+    let mut boundaries = Vec::with_capacity(stream.len());
+    for (packet, payload) in stream {
+        bytes.extend_from_slice(payload);
+        boundaries.push((bytes.len(), *packet));
+    }
+    let packet_at = |offset: usize| {
+        boundaries
+            .get(boundaries.partition_point(|(end, _)| *end <= offset))
+            .map_or(0, |(_, packet)| *packet)
+    };
+    let mut messages = Vec::new();
+    let mut offset = 0;
+    let mut unframed = false;
+    while offset < bytes.len() {
+        match find_size(&bytes[offset..]) {
+            Ok(Some(info)) if info.length != 0 && info.length <= bytes.len() - offset => {
+                messages.push(CapturedPdu {
+                    packet: packet_at(offset),
+                    direction,
+                    action: info.action,
+                    bytes: bytes[offset..offset + info.length].to_vec(),
+                });
+                offset += info.length;
+                unframed = false;
+            }
+            Ok(Some(_)) | Ok(None) => {
+                gaps.push(ReplayGap {
+                    packet: packet_at(offset),
+                    direction,
+                    kind: ReplayGapKind::TruncatedPdu,
+                });
+                break;
+            }
+            Err(_) => {
+                if !unframed {
+                    gaps.push(ReplayGap {
+                        packet: packet_at(offset),
+                        direction,
+                        kind: ReplayGapKind::Framing,
+                    });
+                    unframed = true;
+                }
+                offset += 1;
+            }
+        }
+    }
+    messages
+}
+
+fn is_demand_active(message: &CapturedPdu, io_channel_id: u16) -> bool {
+    let Ok(message) = mcs::decode_send_data_indication(&message.bytes) else {
+        return false;
+    };
+    ironrdp_pdu::rdp::headers::decode_share_control(message).is_ok_and(|context| {
+        context.channel_id == io_channel_id
+            && matches!(
+                context.pdu,
+                ironrdp_pdu::rdp::headers::ShareControlPdu::ServerDemandActive(_)
+            )
+    })
+}
+
+fn is_server_font_map(message: &CapturedPdu, io_channel_id: u16) -> bool {
+    let Ok(message) = mcs::decode_send_data_indication(&message.bytes) else {
+        return false;
+    };
+    ironrdp_pdu::rdp::headers::decode_share_control(message).is_ok_and(|context| {
+        context.channel_id == io_channel_id
+            && matches!(
+                context.pdu,
+                ironrdp_pdu::rdp::headers::ShareControlPdu::Data(ironrdp_pdu::rdp::headers::ShareDataHeader {
+                    share_data_pdu: ironrdp_pdu::rdp::headers::ShareDataPdu::FontMap(_),
+                    ..
+                })
+            )
+    })
+}
+
+#[derive(Clone, Debug)]
+struct DiscoveredDynamicChannel {
+    packet: usize,
+    id: u32,
+    name: String,
+}
+
+#[derive(Debug, Default)]
+struct DynamicChannelDiscovery {
+    packet: usize,
+    active_ids: BTreeSet<u32>,
+    created: Vec<DiscoveredDynamicChannel>,
+    closed: Vec<u32>,
+}
+
+impl_as_any!(DynamicChannelDiscovery);
+
+impl SvcProcessor for DynamicChannelDiscovery {
+    fn channel_name(&self) -> ironrdp_pdu::gcc::ChannelName {
+        DrdynvcClient::NAME
+    }
+
+    fn process(&mut self, payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+        match decode(payload).map_err(|error| decode_err!(error))? {
+            DrdynvcServerPdu::Create(create) => {
+                if !self.active_ids.insert(create.channel_id()) {
+                    return Err(ironrdp_pdu::pdu_other_err!("duplicate captured dynamic channel ID"));
+                }
+                self.created.push(DiscoveredDynamicChannel {
+                    packet: self.packet,
+                    id: create.channel_id(),
+                    name: create.channel_name().to_owned(),
+                });
+            }
+            DrdynvcServerPdu::Close(close) => {
+                let channel_id = close.channel_id();
+                self.active_ids.remove(&channel_id);
+                self.closed.push(channel_id);
+            }
+            _ => {}
+        }
+        Ok(Vec::new())
+    }
+}
+
+impl DynamicChannelDiscovery {
+    fn take_changes(&mut self) -> DynamicChannelChanges {
+        DynamicChannelChanges {
+            created: mem::take(&mut self.created),
+            closed: mem::take(&mut self.closed),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct DynamicChannelChanges {
+    created: Vec<DiscoveredDynamicChannel>,
+    closed: Vec<u32>,
+}
+
+#[derive(Debug)]
+struct OpaqueStaticChannel {
+    name: ironrdp_pdu::gcc::ChannelName,
+}
+
+impl_as_any!(OpaqueStaticChannel);
+
+impl SvcProcessor for OpaqueStaticChannel {
+    fn channel_name(&self) -> ironrdp_pdu::gcc::ChannelName {
+        self.name.clone()
+    }
+
+    fn process(&mut self, _payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Debug)]
+struct OpaqueDynamicChannel {
+    name: String,
+}
+
+impl_as_any!(OpaqueDynamicChannel);
+
+impl DvcProcessor for OpaqueDynamicChannel {
+    fn channel_name(&self) -> &str {
+        &self.name
+    }
+
+    fn start(&mut self, _channel_id: u32) -> ironrdp_pdu::PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+
+    fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
+impl DvcClientProcessor for OpaqueDynamicChannel {}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+    use std::sync::{Arc, Mutex};
+
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcDataPdu};
+    use ironrdp_pdu::gcc::ChannelName;
+    use ironrdp_pdu::mcs::McsMessage;
+    use ironrdp_pdu::rdp::capability_sets::{DemandActive, ServerDemandActive};
+    use ironrdp_pdu::rdp::finalization_messages::FontPdu;
+    use ironrdp_pdu::rdp::headers::{
+        CompressionFlags, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu, StreamPriority,
+    };
+    use ironrdp_pdu::x224::X224;
+    use ironrdp_svc::server_encode_svc_messages;
+
+    use super::*;
+
+    #[test]
+    fn records_truncated_frames_as_gaps() {
+        let mut gaps = Vec::new();
+        let messages = framed_stream(&vec![(9, vec![3, 0, 0, 8])], ReplayDirection::Server, &mut gaps);
+        assert!(messages.is_empty());
+        assert_eq!(gaps[0].packet, 9);
+        assert_eq!(gaps[0].kind, ReplayGapKind::TruncatedPdu);
+    }
+
+    #[test]
+    fn preserves_packet_order_and_captured_static_ids() {
+        let mut router = ReplayRouter::new(activation()).unwrap();
+        let report = router.route_plaintext(&Plaintext {
+            client: vec![(
+                3,
+                encode_vec(&X224(mcs::AttachUserConfirm {
+                    result: 0,
+                    initiator_id: 1_001,
+                }))
+                .unwrap(),
+            )],
+            server: vec![
+                (1, demand_active()),
+                (2, font_map()),
+                (4, static_message(1_006, create(7, "opaque"))),
+            ],
+        });
+
+        assert_eq!(
+            report.events.iter().map(|event| event.packet).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(report.events[2].route, ReplayRoute::ClientObservation);
+        assert_eq!(report.events[3].route, ReplayRoute::StaticChannel);
+        assert!(report.gaps.is_empty());
+    }
+
+    #[test]
+    fn discovers_and_attaches_recorded_dynamic_channels() {
+        let mut router = ReplayRouter::new(activation()).unwrap();
+        let report = router.route_plaintext(&Plaintext {
+            client: Vec::new(),
+            server: vec![
+                (1, demand_active()),
+                (2, font_map()),
+                (3, static_message(1_005, create(7, "recorded"))),
+            ],
+        });
+
+        assert_eq!(
+            report.dynamic_channels,
+            vec![CapturedDynamicChannel {
+                id: 7,
+                name: "recorded".to_owned(),
+            }]
+        );
+        assert!(report.gaps.is_empty());
+    }
+
+    #[test]
+    fn delivers_data_to_an_explicitly_attached_dvc() {
+        let mut router = ReplayRouter::new(activation()).unwrap();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        router
+            .attach_established_dynamic_channel(
+                7,
+                TestDvc {
+                    received: Arc::clone(&received),
+                },
+            )
+            .unwrap();
+        let report = router.route_plaintext(&Plaintext {
+            client: Vec::new(),
+            server: vec![
+                (1, demand_active()),
+                (2, font_map()),
+                (
+                    3,
+                    static_message(
+                        1_005,
+                        DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(7, b"data".to_vec()))),
+                    ),
+                ),
+            ],
+        });
+
+        assert_eq!(&*received.lock().unwrap(), &[b"start".to_vec(), b"data".to_vec()]);
+        assert!(report.gaps.is_empty());
+    }
+
+    fn activation() -> CapturedActivation {
+        CapturedActivation {
+            state: NegotiatedState {
+                user_channel_id: 1_001,
+                io_channel_id: 1_003,
+                message_channel_id: None,
+                share_id: 0x1122_3344,
+                width: 32,
+                height: 32,
+                static_channels: vec![
+                    crate::StaticChannel {
+                        name: DrdynvcClient::NAME,
+                        id: 1_005,
+                    },
+                    crate::StaticChannel {
+                        name: ChannelName::from_static(b"opaque\0\0"),
+                        id: 1_006,
+                    },
+                ],
+            },
+            compression_type: None,
+        }
+    }
+
+    fn demand_active() -> Vec<u8> {
+        let user_data = encode_vec(&ShareControlHeader {
+            pdu_source: 1_001,
+            share_id: 0x1122_3344,
+            share_control_pdu: ShareControlPdu::ServerDemandActive(ServerDemandActive {
+                pdu: DemandActive {
+                    source_descriptor: "test".to_owned(),
+                    capability_sets: Vec::new(),
+                },
+            }),
+        })
+        .unwrap();
+        encode_vec(&X224(McsMessage::SendDataIndication(mcs::SendDataIndication {
+            initiator_id: 1_001,
+            channel_id: 1_003,
+            user_data: Cow::Owned(user_data),
+        })))
+        .unwrap()
+    }
+
+    fn font_map() -> Vec<u8> {
+        let user_data = encode_vec(&ShareControlHeader {
+            pdu_source: 1_001,
+            share_id: 0x1122_3344,
+            share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+                share_data_pdu: ShareDataPdu::FontMap(FontPdu::default()),
+                stream_priority: StreamPriority::Medium,
+                compression_flags: CompressionFlags::empty(),
+                compression_type: CompressionType::K8,
+            }),
+        })
+        .unwrap();
+        encode_vec(&X224(McsMessage::SendDataIndication(mcs::SendDataIndication {
+            initiator_id: 1_001,
+            channel_id: 1_003,
+            user_data: Cow::Owned(user_data),
+        })))
+        .unwrap()
+    }
+
+    fn create(id: u32, name: &str) -> DrdynvcServerPdu {
+        DrdynvcServerPdu::Create(CreateRequestPdu::new(id, name.to_owned()))
+    }
+
+    fn static_message(channel_id: u16, message: DrdynvcServerPdu) -> Vec<u8> {
+        server_encode_svc_messages(vec![SvcMessage::from(message)], channel_id, 1_001).unwrap()
+    }
+
+    #[derive(Debug)]
+    struct TestDvc {
+        received: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl_as_any!(TestDvc);
+
+    impl DvcProcessor for TestDvc {
+        fn channel_name(&self) -> &str {
+            "test"
+        }
+
+        fn start(&mut self, _channel_id: u32) -> ironrdp_pdu::PduResult<Vec<DvcMessage>> {
+            self.received.lock().unwrap().push(b"start".to_vec());
+            Ok(Vec::new())
+        }
+
+        fn process(&mut self, _channel_id: u32, payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<DvcMessage>> {
+            self.received.lock().unwrap().push(payload.to_vec());
+            Ok(Vec::new())
+        }
+    }
+
+    impl DvcClientProcessor for TestDvc {}
+}
