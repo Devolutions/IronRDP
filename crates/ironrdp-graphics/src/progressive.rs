@@ -1111,7 +1111,7 @@ struct ProgressiveContext {
 ///
 /// Maintains per-context tile state across frames, keyed by
 /// `(surface_id, codec_context_id)`.
-/// MS-RDPEGFX section 3.3.5.3 associates each codec context with a surface, so
+/// MS-RDPEGFX section 3.3.1.1 associates each codec context with a surface, so
 /// two surfaces can reuse a codec context ID without sharing tile state.
 /// Feed it progressive bitmap data from `WireToSurface2Pdu.bitmap_data` and get
 /// back decoded RGBA tiles for compositing.
@@ -1170,7 +1170,8 @@ impl ProgressiveDecoder {
 
         // Extract the band-layout flag from the CONTEXT block when present.
         // Per MS-RDPEGFX 2.2.4.2 the SYNC + CONTEXT blocks establish a codec
-        // context once (keyed by `codec_context_id`) and are not required to be
+        // context once (keyed by `(surface_id, codec_context_id)`) and are not
+        // required to be
         // repeated on subsequent frames that reference the same context.
         // Real-world servers (xrdp, GNOME Remote Desktop) omit the CONTEXT
         // block on every frame after the first one that established the
@@ -1406,7 +1407,7 @@ impl Default for ProgressiveDecoder {
 mod tests {
     use super::*;
 
-    fn minimal_progressive_stream() -> Vec<u8> {
+    fn minimal_progressive_stream(include_context: bool) -> Vec<u8> {
         use ironrdp_pdu::codecs::rfx::RfxRectangle;
         use ironrdp_pdu::codecs::rfx::progressive::{
             ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
@@ -1426,20 +1427,22 @@ mod tests {
             flags: 0,
             tiles: vec![],
         };
-        let blocks = [
-            ProgressiveBlock::Sync(ProgressiveSyncPdu),
-            ProgressiveBlock::Context(ProgressiveContextPdu {
+        let mut blocks = vec![ProgressiveBlock::Sync(ProgressiveSyncPdu)];
+        if include_context {
+            blocks.push(ProgressiveBlock::Context(ProgressiveContextPdu {
                 context_id: 0,
                 tile_size: 0x0040,
                 flags: 0,
-            }),
+            }));
+        }
+        blocks.extend([
             ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
                 frame_index: 0,
                 region_count: 1,
             }),
             ProgressiveBlock::Region(region),
             ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
-        ];
+        ]);
 
         encode_progressive_stream(&blocks).unwrap()
     }
@@ -1746,7 +1749,7 @@ mod tests {
     fn decoder_reset_clears_contexts() {
         let mut decoder = ProgressiveDecoder::new();
 
-        let result = decoder.decode_bitmap(1, 1, 640, 480, &minimal_progressive_stream());
+        let result = decoder.decode_bitmap(1, 1, 640, 480, &minimal_progressive_stream(true));
         assert!(result.is_ok());
         assert_eq!(decoder.contexts.len(), 1);
 
@@ -1758,7 +1761,7 @@ mod tests {
     fn decoder_contexts_are_scoped_by_surface() {
         let mut decoder = ProgressiveDecoder::new();
 
-        let stream = minimal_progressive_stream();
+        let stream = minimal_progressive_stream(true);
         assert!(decoder.decode_bitmap(1, 0, 640, 480, &stream).is_ok());
         assert!(decoder.decode_bitmap(2, 0, 800, 600, &stream).is_ok());
         assert_eq!(decoder.contexts.len(), 2);
@@ -1774,6 +1777,22 @@ mod tests {
         decoder.delete_surface(1);
         assert_eq!(decoder.contexts.len(), 1);
         assert!(decoder.contexts.contains_key(&(2, 0)));
+    }
+
+    #[test]
+    fn decoder_context_fallback_is_scoped_by_surface() {
+        let mut decoder = ProgressiveDecoder::new();
+        let stream_with_context = minimal_progressive_stream(true);
+        let stream_without_context = minimal_progressive_stream(false);
+
+        assert!(decoder.decode_bitmap(1, 0, 640, 480, &stream_with_context).is_ok());
+        assert!(matches!(
+            decoder.decode_bitmap(2, 0, 640, 480, &stream_without_context),
+            Err(ProgressiveDecodeError::MissingBlock("CONTEXT"))
+        ));
+
+        assert!(decoder.decode_bitmap(2, 0, 640, 480, &stream_with_context).is_ok());
+        assert!(decoder.decode_bitmap(2, 0, 640, 480, &stream_without_context).is_ok());
     }
 
     #[test]
