@@ -1009,6 +1009,7 @@ struct CompatibilitySettings {
     redirect_clipboard: bool,
     redirect_webauthn: bool,
     redirect_drives: bool,
+    redirect_smart_cards: bool,
     disable_rdpdr: bool,
     drive_catalog: Rc<RefCell<DriveCatalog>>,
     warn_about_sending_credentials: bool,
@@ -1083,6 +1084,7 @@ impl Default for CompatibilitySettings {
             redirect_clipboard: true,
             redirect_webauthn: true,
             redirect_drives: false,
+            redirect_smart_cards: false,
             disable_rdpdr: false,
             drive_catalog: Rc::new(RefCell::new(DriveCatalog::new())),
             warn_about_sending_credentials: false,
@@ -1863,7 +1865,6 @@ advanced_put_not_implemented!(
     (112, advanced_put_load_balance_info, Bstr),
     (116, advanced_put_redirect_printers, i16),
     (118, advanced_put_redirect_ports, i16),
-    (120, advanced_put_redirect_smart_cards, i16),
     (150, advanced_put_redirect_devices, i16),
     (161, advanced_put_pcb, Bstr),
     (169, advanced_put_connect_to_administer_server, i16),
@@ -1881,7 +1882,6 @@ advanced_get_not_implemented!(
     (96, advanced_get_minutes_to_idle_timeout, i32),
     (117, advanced_get_redirect_printers, i16),
     (119, advanced_get_redirect_ports, i16),
-    (121, advanced_get_redirect_smart_cards, i16),
     (151, advanced_get_redirect_devices, i16),
     (170, advanced_get_connect_to_administer_server, i16),
     (174, advanced_get_video_playback_mode, u32),
@@ -2418,6 +2418,34 @@ unsafe extern "system" fn advanced_get_redirect_drives(this: *mut c_void, value:
     write_out(
         value,
         if object.settings.borrow().redirect_drives {
+            VARIANT_TRUE.0
+        } else {
+            VARIANT_FALSE.0
+        },
+    )
+    .map_or_else(|error| error.code(), |_| S_OK)
+}
+
+unsafe extern "system" fn advanced_put_redirect_smart_cards(this: *mut c_void, value: i16) -> HRESULT {
+    let value = match normalize_variant_bool(value) {
+        Ok(value) => value == VARIANT_TRUE.0,
+        Err(error) => return error.code(),
+    };
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    settings.redirect_smart_cards = value;
+    mark_compatibility_persistence_dirty(&settings);
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_redirect_smart_cards(this: *mut c_void, value: *mut i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    write_out(
+        value,
+        if object.settings.borrow().redirect_smart_cards {
             VARIANT_TRUE.0
         } else {
             VARIANT_FALSE.0
@@ -5953,6 +5981,7 @@ fn active_x_property_snapshot(settings: &Settings, compatibility: &Compatibility
     }
     properties.insert("redirectclipboard", compatibility.redirect_clipboard);
     properties.insert("redirectwebauthn", compatibility.redirect_webauthn);
+    properties.insert("ironrdp_smartcard", compatibility.redirect_smart_cards);
     properties.insert("compression", compatibility.compression.unwrap_or(true));
     properties
 }
@@ -8593,10 +8622,16 @@ impl Control {
         } else {
             compatibility.drive_catalog.borrow().selected_drives()?
         };
-        let rdpdr_factory = (!redirected_drives.is_empty())
-            .then(|| ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(redirected_drives))
-            .transpose()
-            .map_err(|error| Error::new(E_FAIL, format!("invalid redirected-drive configuration: {error}")))?;
+        let redirect_smart_cards = !compatibility.disable_rdpdr && compatibility.redirect_smart_cards;
+        let rdpdr_factory = if redirected_drives.is_empty() && !redirect_smart_cards {
+            None
+        } else {
+            Some(
+                ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(redirected_drives)
+                    .map_err(|error| Error::new(E_FAIL, format!("invalid redirected-drive configuration: {error}")))?
+                    .with_smartcard(redirect_smart_cards),
+            )
+        };
         let rdpdr_enabled = rdpdr_factory.is_some();
         let audio_redirection_mode = audio_mode_from_raw(compatibility.audio_redirection_mode)?;
         let audio_capture_enabled = compatibility.audio_capture_redirection_mode != VARIANT_FALSE.0;
@@ -8788,7 +8823,8 @@ impl Control {
             })
             .with_webauthn(redirect_webauthn)
             .with_webauthn_parent_hwnd(hwnd.0 as isize)
-            .with_rdpdr(rdpdr_enabled);
+            .with_rdpdr(rdpdr_enabled)
+            .with_smartcard(redirect_smart_cards);
         let builder = if remote_program_mode {
             builder
                 .with_remote_application_mode(true)
@@ -15426,6 +15462,18 @@ mod tests {
             S_OK
         );
         assert_eq!(redirect_drives, VARIANT_TRUE.0);
+
+        assert_eq!(unsafe { advanced_put_redirect_smart_cards(this, VARIANT_TRUE.0) }, S_OK);
+        let mut redirect_smart_cards = VARIANT_FALSE.0;
+        assert_eq!(
+            unsafe { advanced_get_redirect_smart_cards(this, &mut redirect_smart_cards) },
+            S_OK
+        );
+        assert_eq!(redirect_smart_cards, VARIANT_TRUE.0);
+        assert_eq!(
+            unsafe { advanced_get_redirect_smart_cards(this, ptr::null_mut()) },
+            E_POINTER
+        );
 
         assert_eq!(unsafe { advanced_put_enable_mouse(this, 0) }, S_OK);
         let mut enable_mouse = -1;

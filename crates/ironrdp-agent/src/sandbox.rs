@@ -165,7 +165,7 @@ pub(crate) fn properties_from_config(cfg: &SandboxRdpConfig) -> anyhow::Result<P
     }
 
     ps.set_redirect_clipboard(cfg.clipboard_redirection);
-    let _ = cfg.smartcard_redirection;
+    ps.set_enable_smartcard(cfg.smartcard_redirection);
 
     Ok(ps)
 }
@@ -244,6 +244,24 @@ mod tests {
         assert!(props.named_pipe().is_some());
         assert_eq!(props.enable_tls(), Some(false));
         assert_eq!(props.enable_credssp_support(), Some(false));
+        assert_eq!(props.enable_smartcard(), Some(false));
+    }
+
+    #[test]
+    fn properties_from_config_sets_smartcard_redirection() {
+        let cfg = SandboxRdpConfig {
+            sandbox_id: "id".into(),
+            vm_id: "vm".into(),
+            username: "u".into(),
+            password: "p".into(),
+            rdp_transport: "NamedPipe".into(),
+            ip_address: String::new(),
+            pipe_path: Some(r"\\.\pipe\vm".into()),
+            clipboard_redirection: true,
+            smartcard_redirection: true,
+        };
+        let props = properties_from_config(&cfg).expect("named pipe props");
+        assert_eq!(props.enable_smartcard(), Some(true));
     }
 
     #[test]

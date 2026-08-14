@@ -100,13 +100,17 @@ impl core::error::Error for RedirectedDriveError {}
 #[derive(Clone, Debug)]
 pub struct WindowsRdpdrBackendFactory {
     drives: Vec<RedirectedDrive>,
+    smartcard: bool,
 }
 
 impl WindowsRdpdrBackendFactory {
     /// Configures the single logical-volume root supported by this baseline.
     #[must_use]
     pub fn new(drive: RedirectedDrive) -> Self {
-        Self { drives: vec![drive] }
+        Self {
+            drives: vec![drive],
+            smartcard: false,
+        }
     }
 
     /// Configures the logical-volume roots selected for one connection.
@@ -118,7 +122,27 @@ impl WindowsRdpdrBackendFactory {
             }
         }
 
-        Ok(Self { drives })
+        Ok(Self {
+            drives,
+            smartcard: false,
+        })
+    }
+
+    /// Enables or disables WinSCard smartcard redirection for products using this factory.
+    ///
+    /// The portable channel still announces the smartcard device through
+    /// [`ironrdp_rdpdr::Rdpdr::with_smartcard`] / the client builder. Keep both sides aligned:
+    /// never announce a smartcard device without attaching a factory built with `true`.
+    #[must_use]
+    pub fn with_smartcard(mut self, enabled: bool) -> Self {
+        self.smartcard = enabled;
+        self
+    }
+
+    /// Returns whether products requested WinSCard smartcard redirection on this factory.
+    #[must_use]
+    pub fn smartcard(&self) -> bool {
+        self.smartcard
     }
 
     /// Returns the initial `(device_id, name)` pair for `Rdpdr::with_drives`.
@@ -212,6 +236,16 @@ mod tests {
             factory.initial_drives(),
             vec![(1, "System".to_owned()), (2, "Data".to_owned())]
         );
+    }
+
+    #[test]
+    fn factory_tracks_smartcard_enablement() {
+        let factory = WindowsRdpdrBackendFactory::from_drives(Vec::new())
+            .expect("empty drive list is valid")
+            .with_smartcard(true);
+        assert!(factory.smartcard());
+        assert!(factory.initial_drives().is_empty());
+        assert!(!factory.with_smartcard(false).smartcard());
     }
 
     #[test]

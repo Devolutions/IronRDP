@@ -448,6 +448,14 @@ struct DaemonArgs {
     #[cfg(windows)]
     #[arg(long = "rdpdr-drive", value_name = "NAME=VOLUME_ROOT", value_parser = parse_rdpdr_drive)]
     rdpdr_drives: Vec<ironrdp_daemon::daemon::RdpdrDriveConfig>,
+    /// Enable Windows WinSCard smartcard redirection for every connect (Windows only).
+    ///
+    /// Equivalent to preloading `ironrdp_smartcard:i:1`. Connect can still disable with
+    /// `--prop ironrdp_smartcard:i:0`, or enable without this flag via that property / sandbox
+    /// `SmartCardRedirection`.
+    #[cfg(windows)]
+    #[arg(long)]
+    smartcard: bool,
 }
 
 #[derive(Args, Debug)]
@@ -777,9 +785,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let rdpdr_drives = args.rdpdr_drives;
             #[cfg(not(windows))]
             let rdpdr_drives = Vec::new();
+            #[cfg(windows)]
+            let smartcard = args.smartcard;
+            #[cfg(not(windows))]
+            let smartcard = false;
             let options = ironrdp_daemon::daemon::DaemonOptions::default()
                 .with_certificate_check_skipped(args.skip_certificate_check)
-                .with_rdpdr_drives(rdpdr_drives);
+                .with_rdpdr_drives(rdpdr_drives)
+                .with_smartcard(smartcard);
             return ironrdp_daemon::daemon::run(endpoint, overlay, options).await;
         }
         Command::Now(args) => {
@@ -2098,6 +2111,18 @@ mod tests {
             panic!("expected daemon-start command");
         };
         assert!(args.skip_certificate_check);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn daemon_start_can_enable_smartcard() {
+        let cli = Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--smartcard"])
+            .expect("valid smartcard configuration");
+
+        let Some(Command::DaemonStart(args)) = cli.command else {
+            panic!("expected daemon-start command");
+        };
+        assert!(args.smartcard);
     }
 
     #[test]

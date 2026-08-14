@@ -29,7 +29,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Lifecycle
 
-- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--skip-certificate-check] [--rdpdr-drive NAME=VOLUME_ROOT]...`
+- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--skip-certificate-check] [--rdpdr-drive NAME=VOLUME_ROOT]... [--smartcard]`
                                  Start the daemon (foreground). Run this first. `--overlay`
                                  preloads a .rdp file as an overlay applied to every `connect`
                                  (overlay wins), letting an operator provision any setting out of
@@ -44,7 +44,10 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  local volume root in the exact `C:\` form, and each one-to-seven-character
                                  ASCII drive name must be unique (case-insensitive). The configured
                                  set is fixed for the daemon lifetime; drive hot-plug and rescan are
-                                 not supported.
+                                 not supported. On Windows, `--smartcard` enables WinSCard smartcard
+                                 redirection (same as overlay/connect `ironrdp_smartcard:i:1`).
+                                 Sandbox connects with `SmartCardRedirection` also set that property
+                                 at connect time, which can enable smartcard without `--smartcard`.
                                  TLS certificate and hostname validation is strict by default.
                                  `--skip-certificate-check` disables both for this daemon only.
                                  Use it only for an explicitly authorized test endpoint because it accepts any certificate and is vulnerable to on-path attacks.

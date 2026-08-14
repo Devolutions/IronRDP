@@ -244,6 +244,13 @@ struct Args {
     /// or passed back via `--rdp-file` on the next invocation.
     #[clap(long)]
     dump_rdp: Option<PathBuf>,
+
+    /// Enable Windows WinSCard smartcard redirection (sets `ironrdp_smartcard`).
+    ///
+    /// On Windows this attaches the native RDPDR backend so smartcard IRPs complete via WinSCard.
+    /// Ignored on other platforms except for the property value itself.
+    #[clap(long)]
+    smartcard: bool,
 }
 
 /// Result of parsing CLI args + loading the `.rdp` file: a configured [`ConfigBuilder`] plus the
@@ -310,9 +317,17 @@ impl ViewerConfig {
         // resolved against this when applied below.
         let redirect_clipboard = properties.redirect_clipboard().unwrap_or(true);
         let redirect_webauthn = properties.redirect_webauthn().unwrap_or(true);
+        // Opt-in only: the client feature default for smartcard is `true`, which must not silently
+        // attach a WinSCard backend. Require CLI `--smartcard` or an explicit property.
+        let enable_smartcard = args.smartcard || properties.enable_smartcard().unwrap_or(false);
 
         // CLI arguments take precedence: apply them on top of the `.rdp`-derived builder.
-        let builder = apply_cli_to_builder(builder, args, redirect_clipboard, redirect_webauthn);
+        let mut builder = apply_cli_to_builder(builder, args, redirect_clipboard, redirect_webauthn);
+        builder = if enable_smartcard {
+            builder.with_rdpdr(true).with_smartcard(true)
+        } else {
+            builder.with_smartcard(false)
+        };
 
         Ok(Self {
             builder,

@@ -191,6 +191,8 @@ impl RdpdrDriveConfig {
 pub struct DaemonOptions {
     skip_certificate_check: bool,
     rdpdr_drives: Vec<RdpdrDriveConfig>,
+    /// Enables Windows WinSCard smartcard redirection when the connect property is unset.
+    smartcard: bool,
 }
 
 impl DaemonOptions {
@@ -215,6 +217,17 @@ impl DaemonOptions {
         self.rdpdr_drives = rdpdr_drives;
         self
     }
+
+    /// Enables WinSCard smartcard redirection for this daemon (Windows only).
+    ///
+    /// When `true`, smartcard is used unless a connect/`--prop`/`overlay` value of
+    /// `ironrdp_smartcard:i:0` explicitly disables it. Connect-time `ironrdp_smartcard:i:1`
+    /// can also enable smartcard without this startup flag.
+    #[must_use]
+    pub fn with_smartcard(mut self, enabled: bool) -> Self {
+        self.smartcard = enabled;
+        self
+    }
 }
 
 /// The daemon's mutable state: the (single) current session, plus the shared log buffer.
@@ -236,6 +249,8 @@ pub struct Daemon {
     /// Assigns RAIL launch IDs across every session so they remain unambiguous with their generation.
     next_rail_launch_id: AtomicU64,
     certificate_validation: CertificateValidation,
+    /// Default smartcard enablement when `ironrdp_smartcard` is absent from connect properties.
+    smartcard_default: bool,
     #[cfg(windows)]
     rdpdr_backend_factory: Option<WindowsRdpdrBackendFactory>,
     /// Notifies an optional GUI frontend whenever retained live state changes.
@@ -460,12 +475,22 @@ impl Daemon {
         if certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate {
             warn!("TLS certificate and hostname validation are disabled by explicit daemon configuration");
         }
-        let DaemonOptions { rdpdr_drives, .. } = options;
+        let DaemonOptions {
+            rdpdr_drives,
+            smartcard,
+            ..
+        } = options;
+        // Overlay may pre-enable smartcard via `ironrdp_smartcard` without a dedicated CLI flag.
+        let smartcard_default = smartcard || overlay.enable_smartcard().unwrap_or(false);
         #[cfg(windows)]
-        let rdpdr_backend_factory = rdpdr_backend_factory(rdpdr_drives)?;
+        let rdpdr_backend_factory = rdpdr_backend_factory(rdpdr_drives, smartcard_default)?;
         #[cfg(not(windows))]
         if !rdpdr_drives.is_empty() {
             anyhow::bail!("rdpdr filesystem redirection is only available on Windows");
+        }
+        #[cfg(not(windows))]
+        if smartcard_default {
+            anyhow::bail!("smartcard redirection is only available on Windows");
         }
 
         Ok(Self {
@@ -477,6 +502,7 @@ impl Daemon {
             next_rail_generation: Arc::new(AtomicU64::new(1)),
             next_rail_launch_id: AtomicU64::new(1),
             certificate_validation,
+            smartcard_default,
             #[cfg(windows)]
             rdpdr_backend_factory,
             notification: None,
@@ -675,11 +701,35 @@ impl Daemon {
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true);
+        // Prefer an explicit connect/overlay property; otherwise use the daemon startup default.
+        // Always set smartcard explicitly so the client feature default (`true`) cannot announce a
+        // smartcard device without a matching WinSCard backend.
+        let smartcard = properties.enable_smartcard().unwrap_or(self.smartcard_default);
         #[cfg(windows)]
-        let builder = if self.rdpdr_backend_factory.is_some() {
-            builder.with_rdpdr(true)
+        let rdpdr_factory = match resolve_rdpdr_factory(self.rdpdr_backend_factory.as_ref(), smartcard) {
+            Ok(factory) => factory,
+            Err(error) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Internal,
+                    format!("invalid rdpdr configuration: {error:#}"),
+                );
+            }
+        };
+        #[cfg(windows)]
+        let builder = if rdpdr_factory.is_some() {
+            builder.with_rdpdr(true).with_smartcard(smartcard)
         } else {
-            builder
+            builder.with_smartcard(false)
+        };
+        #[cfg(not(windows))]
+        let builder = if smartcard {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                "smartcard redirection is only available on Windows",
+            );
+        } else {
+            // Client feature defaults smartcard on; never announce without a WinSCard backend.
+            builder.with_smartcard(false)
         };
 
         let missing = builder.missing();
@@ -721,8 +771,8 @@ impl Daemon {
         let (output_tx, output_rx) = mpsc::channel(16);
         let client = RdpClient::new(config, output_tx);
         #[cfg(windows)]
-        let client = match &self.rdpdr_backend_factory {
-            Some(factory) => client.with_rdpdr_backend_factory(Box::new(factory.clone())),
+        let client = match rdpdr_factory {
+            Some(factory) => client.with_rdpdr_backend_factory(Box::new(factory)),
             None => client,
         };
         let input_tx = client.input_sender();
@@ -1629,8 +1679,11 @@ fn current_platform() -> MajorPlatformType {
 }
 
 #[cfg(windows)]
-fn rdpdr_backend_factory(drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<Option<WindowsRdpdrBackendFactory>> {
-    if drives.is_empty() {
+fn rdpdr_backend_factory(
+    drives: Vec<RdpdrDriveConfig>,
+    smartcard: bool,
+) -> anyhow::Result<Option<WindowsRdpdrBackendFactory>> {
+    if drives.is_empty() && !smartcard {
         return Ok(None);
     }
 
@@ -1655,8 +1708,26 @@ fn rdpdr_backend_factory(drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<Option
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     WindowsRdpdrBackendFactory::from_drives(drives)
+        .map(|factory| factory.with_smartcard(smartcard))
         .map(Some)
         .map_err(|error| anyhow::anyhow!("invalid rdpdr drive configuration: {error}"))
+}
+
+/// Resolves the RDPDR factory for one connect: clone the startup factory (if any) and apply the
+/// effective smartcard flag. Smartcard-only sessions may create an empty-drive factory on demand.
+#[cfg(windows)]
+fn resolve_rdpdr_factory(
+    base: Option<&WindowsRdpdrBackendFactory>,
+    smartcard: bool,
+) -> anyhow::Result<Option<WindowsRdpdrBackendFactory>> {
+    match base {
+        Some(factory) => Ok(Some(factory.clone().with_smartcard(smartcard))),
+        None if smartcard => WindowsRdpdrBackendFactory::from_drives(Vec::new())
+            .map(|factory| factory.with_smartcard(true))
+            .map(Some)
+            .map_err(|error| anyhow::anyhow!("invalid smartcard-only rdpdr configuration: {error}")),
+        None => Ok(None),
+    }
 }
 
 #[cfg(windows)]
@@ -2331,6 +2402,43 @@ mod tests {
         let daemon = Daemon::with_rdpdr_drives(PropertySet::new(), vec![drive]).expect("valid daemon options");
 
         assert!(daemon.rdpdr_backend_factory.is_some());
+        assert!(!daemon.rdpdr_backend_factory.as_ref().expect("factory").smartcard());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn smartcard_daemon_constructs_a_factory_without_drives() {
+        let daemon = Daemon::with_options(PropertySet::new(), DaemonOptions::default().with_smartcard(true))
+            .expect("valid daemon options");
+
+        assert!(daemon.smartcard_default);
+        let factory = daemon.rdpdr_backend_factory.as_ref().expect("smartcard factory");
+        assert!(factory.smartcard());
+        assert!(factory.initial_drives().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn smartcard_overlay_enables_factory_at_startup() {
+        use ironrdp_cfg::PropertySetExt as _;
+
+        let mut overlay = PropertySet::new();
+        overlay.set_enable_smartcard(true);
+        let daemon = Daemon::with_options(overlay, DaemonOptions::default()).expect("valid daemon options");
+
+        assert!(daemon.smartcard_default);
+        assert!(daemon.rdpdr_backend_factory.as_ref().expect("factory").smartcard());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_rdpdr_factory_creates_smartcard_only_on_demand() {
+        let factory = super::resolve_rdpdr_factory(None, true)
+            .expect("smartcard-only factory")
+            .expect("factory present");
+        assert!(factory.smartcard());
+        assert!(factory.initial_drives().is_empty());
+        assert!(super::resolve_rdpdr_factory(None, false).expect("no factory").is_none());
     }
 
     #[cfg(windows)]
