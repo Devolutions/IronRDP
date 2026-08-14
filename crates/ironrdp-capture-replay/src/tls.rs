@@ -5,6 +5,9 @@ use sha2::{Sha256, Sha384};
 
 use crate::{Capture, PacketStream, ReplayError};
 
+#[cfg(test)]
+use crate::TlsKeyLog;
+
 const TLS_CONTENT_CHANGE_CIPHER_SPEC: u8 = 20;
 const TLS_CONTENT_HANDSHAKE: u8 = 22;
 const TLS_CONTENT_APPLICATION_DATA: u8 = 23;
@@ -29,7 +32,7 @@ pub fn decrypt_tls(capture: &Capture) -> Result<Plaintext, ReplayError> {
     if client_records.is_empty() && server_records.is_empty() {
         return Err(ReplayError::StandardSecurity);
     }
-    let tls = Tls::from_records(&client_records, &server_records, &capture.tls_key_log)?;
+    let tls = Tls::from_records(&client_records, &server_records, capture.tls_key_log.as_str())?;
 
     Ok(Plaintext {
         client: tls.decrypt(Direction::Client, &client_records)?,
@@ -599,7 +602,7 @@ mod tests {
                 client_stream: vec![(1, client_records.into_iter().flat_map(|(_, record)| record).collect())],
                 server_stream: vec![(4, server_records.into_iter().flat_map(|(_, record)| record).collect())],
             },
-            tls_key_log: key_log,
+            tls_key_log: TlsKeyLog::new(key_log),
         };
 
         let plaintext = decrypt_tls(&capture).unwrap();
