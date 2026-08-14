@@ -180,6 +180,11 @@ fn parse_tcp_packet(packet: usize, bytes: &[u8]) -> Option<Segment> {
             // Some NIC offload captures leave the IPv4 total length unset.
             // In that case, bound parsing to the captured frame extent.
             let network_end = if total_len == 0 {
+                // A minimum Ethernet payload can be link-layer padding, not TCP data.
+                let minimum_frame_len = network_offset.checked_add(46)?;
+                if bytes.len() == minimum_frame_len || bytes.len() == minimum_frame_len.checked_add(4)? {
+                    return None;
+                }
                 bytes.len()
             } else {
                 network_offset.checked_add(total_len)?
@@ -708,6 +713,15 @@ mod tests {
         let segment = parse_tcp_packet(1, &packet).unwrap();
 
         assert_eq!(segment.data, b"payload");
+    }
+
+    #[test]
+    fn rejects_ambiguous_zero_length_ipv4_ethernet_padding() {
+        let mut packet = ethernet_tcp(1, 2, 100, 0x10, &[]);
+        packet[16..18].copy_from_slice(&[0; 2]);
+        packet.extend([0; 6]);
+
+        assert!(parse_tcp_packet(1, &packet).is_none());
     }
 
     #[test]
