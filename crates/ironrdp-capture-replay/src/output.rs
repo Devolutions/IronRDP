@@ -115,10 +115,10 @@ impl StagedOutput {
     }
 
     fn write_frame(&mut self, frame: ReplayFrame) -> Result<(), ExportError> {
-        let name = format!("frame_{:012}.png", self.frame_count);
+        let name = format!("frame_{:04}.png", self.frame_count);
         encode_png(&self.directory.join(name), &frame)?;
         self.frame_metadata.push_str(&format!(
-            "{}|{}|{}x{}|frame_{:012}.png|0x0|{}x{}\n",
+            "{}|{}|{}x{}|frame_{:04}.png|0x0|{}x{}\n",
             self.frame_count, frame.packet, frame.width, frame.height, self.frame_count, frame.width, frame.height,
         ));
         self.frame_count += 1;
@@ -304,8 +304,8 @@ mod tests {
         output.write_diagnostics(&report).unwrap();
         replace_output_directory(&staging, &directory, false).unwrap();
 
-        assert_png_rgba(&directory.join("frame_000000000000.png"), [0x11, 0x22, 0x33, 0xff]);
-        assert_png_rgba(&directory.join("frame_000000000001.png"), [0x44, 0x55, 0x66, 0xff]);
+        assert_png_rgba(&directory.join("frame_0000.png"), [0x11, 0x22, 0x33, 0xff]);
+        assert_png_rgba(&directory.join("frame_0001.png"), [0x44, 0x55, 0x66, 0xff]);
         let diagnostics = fs::read_to_string(directory.join("events.tsv")).unwrap();
         let metadata = fs::read_to_string(directory.join("frame_meta.psv")).unwrap();
         let channels = fs::read_to_string(directory.join("dynamic-channels.tsv")).unwrap();
@@ -313,8 +313,8 @@ mod tests {
         assert_eq!(
             metadata,
             "FrameIndex|FramePacket|FrameSize|FrameFile|UpdatePos|UpdateSize\n\
-             0|12|1x1|frame_000000000000.png|0x0|1x1\n\
-             1|47|1x1|frame_000000000001.png|0x0|1x1\n"
+             0|12|1x1|frame_0000.png|0x0|1x1\n\
+             1|47|1x1|frame_0001.png|0x0|1x1\n"
         );
         assert_eq!(channels, "id\n7\n");
         for text in [diagnostics, metadata, channels] {
@@ -381,7 +381,7 @@ mod tests {
 
         assert_eq!(summary.frame_count, 1);
         assert!(!directory.join("keep").exists());
-        assert!(directory.join("frame_000000000000.png").exists());
+        assert!(directory.join("frame_0000.png").exists());
         fs::remove_dir_all(directory).unwrap();
     }
 
