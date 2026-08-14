@@ -1,12 +1,12 @@
 use ironrdp_core::decode;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::mcs::{self, McsMessage};
+use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
+use ironrdp_pdu::rdp::headers::{self, ShareControlPdu};
 use ironrdp_pdu::x224::{X224, X224Data};
 
-use crate::{PacketStream, Plaintext, ReplayError};
-
-const MAX_DESKTOP_DIMENSION: u16 = 16_384;
-const MAX_FRAMEBUFFER_BYTES: usize = 256 * 1024 * 1024;
+use crate::transport::flatten;
+use crate::{Plaintext, ReplayError};
 
 /// A captured RDP static virtual channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,34 +44,18 @@ pub fn recover_negotiated_state(plaintext: &Plaintext) -> Result<NegotiatedState
     let server_connect = connect_response(&server_bytes).ok_or(ReplayError::MissingRdpState)?;
     let client_gcc = client_connect.conference_create_request.gcc_blocks();
     let server_gcc = server_connect.conference_create_response.gcc_blocks();
-    let width = client_gcc.core.desktop_width;
-    let height = client_gcc.core.desktop_height;
-    if width > MAX_DESKTOP_DIMENSION
-        || height > MAX_DESKTOP_DIMENSION
-        || usize::from(width)
-            .checked_mul(usize::from(height))
-            .and_then(|pixels| pixels.checked_mul(4))
-            .is_none_or(|size| size > MAX_FRAMEBUFFER_BYTES)
-    {
-        return Err(ReplayError::UnsupportedDesktopSize);
-    }
     let io_channel_id = server_gcc.network.io_channel;
     let channel_ids = &server_gcc.network.channel_ids;
-    if channel_ids.is_empty() && client_gcc.network.is_some() {
-        return Err(ReplayError::MissingChannelMap);
-    }
     let names = client_gcc.network.as_ref().map_or_else(Vec::new, |network| {
         network.channels.iter().map(|channel| channel.name.clone()).collect()
     });
-    let static_channels = names
-        .into_iter()
-        .zip(channel_ids.iter().copied())
-        .map(|(name, id)| StaticChannel { name, id })
-        .collect();
+    let static_channels = static_channels(names, channel_ids)?;
     let user_channel_id = first_user_channel(&client_bytes)
         .or_else(|| first_user_channel(&server_bytes))
         .ok_or(ReplayError::MissingUserChannel)?;
-    let share_id = first_share_id(&server_bytes).ok_or(ReplayError::MissingShareId)?;
+    let (share_id, desktop_size) =
+        first_demand_active(&server_bytes, io_channel_id).ok_or(ReplayError::MissingShareId)?;
+    let (width, height) = desktop_size.unwrap_or((client_gcc.core.desktop_width, client_gcc.core.desktop_height));
 
     Ok(NegotiatedState {
         user_channel_id,
@@ -87,8 +71,16 @@ pub fn recover_negotiated_state(plaintext: &Plaintext) -> Result<NegotiatedState
     })
 }
 
-fn flatten(records: &PacketStream) -> Vec<u8> {
-    records.iter().flat_map(|(_, bytes)| bytes).copied().collect()
+fn static_channels(names: Vec<ChannelName>, channel_ids: &[u16]) -> Result<Vec<StaticChannel>, ReplayError> {
+    if names.len() != channel_ids.len() {
+        return Err(ReplayError::MissingChannelMap);
+    }
+
+    Ok(names
+        .into_iter()
+        .zip(channel_ids.iter().copied())
+        .map(|(name, id)| StaticChannel { name, id })
+        .collect())
 }
 
 fn connect_initial(bytes: &[u8]) -> Option<mcs::ConnectInitial> {
@@ -114,14 +106,25 @@ fn first_user_channel(bytes: &[u8]) -> Option<u16> {
     })
 }
 
-fn first_share_id(bytes: &[u8]) -> Option<u32> {
+fn first_demand_active(bytes: &[u8], io_channel_id: u16) -> Option<(u32, Option<(u16, u16)>)> {
     tpkt_frames(bytes).find_map(|frame| {
-        let context = mcs::decode_send_data_indication(frame).ok()?;
-        let data = context.user_data;
-        if data.len() < 10 || u16::from_le_bytes(data.get(2..4)?.try_into().ok()?) & 0x0f != 1 {
+        let share_control = headers::decode_share_control(mcs::decode_send_data_indication(frame).ok()?).ok()?;
+        if share_control.channel_id != io_channel_id {
             return None;
         }
-        Some(u32::from_le_bytes(data.get(6..10)?.try_into().ok()?))
+        let ShareControlPdu::ServerDemandActive(demand_active) = share_control.pdu else {
+            return None;
+        };
+        let desktop_size = demand_active
+            .pdu
+            .capability_sets
+            .iter()
+            .find_map(|capability_set| match capability_set {
+                CapabilitySet::Bitmap(bitmap) => Some((bitmap.desktop_width, bitmap.desktop_height)),
+                _ => None,
+            });
+
+        Some((share_control.share_id, desktop_size))
     })
 }
 
@@ -170,5 +173,13 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, ReplayError::MissingRdpState));
+    }
+
+    #[test]
+    fn rejects_mismatched_static_channel_maps() {
+        assert!(matches!(
+            static_channels(Vec::new(), &[1]),
+            Err(ReplayError::MissingChannelMap)
+        ));
     }
 }

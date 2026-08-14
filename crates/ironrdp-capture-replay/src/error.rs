@@ -35,9 +35,6 @@ pub enum ReplayError {
     /// The capture does not contain a complete RDP connection sequence.
     #[error("capture does not contain enough negotiated RDP state")]
     MissingRdpState,
-    /// The recorded desktop dimensions are unsuitable for recovery.
-    #[error("capture desktop dimensions are unsupported")]
-    UnsupportedDesktopSize,
     /// The server did not assign all requested static channels.
     #[error("capture does not contain server-assigned static channel IDs")]
     MissingChannelMap,
