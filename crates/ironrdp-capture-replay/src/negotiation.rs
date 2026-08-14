@@ -149,7 +149,10 @@ fn tpkt_frames(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use ironrdp_core::encode_vec;
+    use ironrdp_pdu::rdp::capability_sets::{Bitmap, BitmapDrawingFlags, DemandActive, ServerDemandActive};
 
     use super::*;
 
@@ -181,5 +184,38 @@ mod tests {
             static_channels(Vec::new(), &[1]),
             Err(ReplayError::MissingChannelMap)
         ));
+    }
+
+    #[test]
+    fn recovers_demand_active_on_the_io_channel() {
+        let share_control = headers::ShareControlHeader {
+            pdu_source: 1_001,
+            share_id: 0x1122_3344,
+            share_control_pdu: ShareControlPdu::ServerDemandActive(ServerDemandActive {
+                pdu: DemandActive {
+                    source_descriptor: "test".to_owned(),
+                    capability_sets: vec![CapabilitySet::Bitmap(Bitmap {
+                        pref_bits_per_pix: 32,
+                        desktop_width: 1_920,
+                        desktop_height: 1_080,
+                        desktop_resize_flag: true,
+                        drawing_flags: BitmapDrawingFlags::empty(),
+                    })],
+                },
+            }),
+        };
+        let user_data = encode_vec(&share_control).unwrap();
+        let frame = encode_vec(&X224(McsMessage::SendDataIndication(mcs::SendDataIndication {
+            initiator_id: 1_001,
+            channel_id: 1_003,
+            user_data: Cow::Owned(user_data),
+        })))
+        .unwrap();
+
+        assert_eq!(
+            first_demand_active(&frame, 1_003),
+            Some((0x1122_3344, Some((1_920, 1_080))))
+        );
+        assert_eq!(first_demand_active(&frame, 1_004), None);
     }
 }
