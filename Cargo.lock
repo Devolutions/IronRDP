@@ -2613,6 +2613,8 @@ version = "0.0.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "hmac 0.12.1",
+ "ironrdp-core 0.2.1",
+ "ironrdp-pdu",
  "pcap-parser",
  "sha2 0.10.9",
  "thiserror 2.0.19",
