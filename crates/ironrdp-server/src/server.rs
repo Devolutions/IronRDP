@@ -624,6 +624,19 @@ where
         // the TLS handshake; everything past it is `complete_security_upgrade`.
         BeginResult::ShouldUpgrade(stream) => match tls {
             TransportTls::Managed => {
+                // INVARIANT (caller-enforced, not checked here): `acceptor`
+                // must have been built from THIS SAME `security`. Given that,
+                // `RdpServerSecurity::None` can never reach this arm:
+                // `RdpServerSecurity::flag()` returns empty flags only for
+                // `None`, and `accept_begin` (ironrdp-acceptor) yields
+                // `ShouldUpgrade` only when the negotiated flags are
+                // non-empty -- `None` always yields `Continue` instead (the
+                // arm below). This used to be locally evident, since both the
+                // `Acceptor::new(self.opts.security.flag(), ...)` call and
+                // this match lived in the same method; splitting negotiation
+                // into a free function taking `security`/`acceptor`
+                // independently makes it an undocumented precondition
+                // instead, so it's written out here.
                 let tls_acceptor = match security {
                     RdpServerSecurity::Tls(acceptor) => acceptor,
                     RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
@@ -658,11 +671,15 @@ where
 /// accordingly and, under [`RdpServerSecurity::Hybrid`], run the CredSSP
 /// exchange.
 ///
-/// Generic over the stream so both [`TransportTls`] modes share one definition
-/// of the exchange — the two differ only in what the framed stream wraps, and
-/// keeping a single call site means a future change to the argument list or to
-/// the client-name placeholder cannot be applied to one mode and missed on the
-/// other.
+/// Generic over the stream so both [`TransportTls`] modes can call this one
+/// definition of the exchange (the two differ only in what the framed stream
+/// wraps) — restoring, not introducing, the single-call-site property the
+/// pre-existing `finalize_after_upgrade` already had for the same two arms
+/// before this refactor split negotiation out of it. The actual reason this
+/// exists as its own function is [`negotiate_and_authenticate`]'s: a future
+/// caller (a preempting connection negotiating without holding `&mut self`)
+/// needs the CredSSP step available from a plain function it can drive
+/// itself, not bundled into a `&mut self` method.
 async fn complete_security_upgrade<S>(
     security: &RdpServerSecurity,
     framed: &mut TokioFramed<S>,
@@ -1185,10 +1202,14 @@ impl RdpServer {
     }
 
     /// Finalize a connection that has already negotiated (and, under Hybrid,
-    /// authenticated) via [`negotiate_and_authenticate`], then shut its stream
-    /// down. Single-sourcing this is what keeps the managed, TLS-offloaded and
-    /// no-security paths structurally identical past the handshake, so
-    /// per-connection state handling cannot drift between them.
+    /// authenticated) via [`negotiate_and_authenticate`]. Dispatches on which
+    /// [`NegotiatedTransport`] variant it got: `Continued` (no security
+    /// upgrade happened, [`RdpServerSecurity::None`]) goes straight to
+    /// `accept_finalize` with no stream to shut down, while `Tls` /
+    /// `Offloaded` route through [`Self::finalize_and_shutdown`] for the extra
+    /// shutdown step — these three paths are NOT structurally identical past
+    /// this point, only past the handshake `negotiate_and_authenticate`
+    /// itself covers.
     async fn finalize_negotiated<S>(&mut self, negotiated: NegotiatedTransport<S>, acceptor: Acceptor) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
