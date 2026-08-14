@@ -383,7 +383,7 @@ fn reassemble(segments: Vec<Segment>, origin: u32) -> Result<PacketStream, Repla
     Ok(stream)
 }
 
-fn flatten(stream: &PacketStream) -> Vec<u8> {
+pub(crate) fn flatten(stream: &PacketStream) -> Vec<u8> {
     stream.iter().flat_map(|(_, bytes)| bytes).copied().collect()
 }
 
