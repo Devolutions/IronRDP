@@ -2236,14 +2236,29 @@ impl ndr::Decode for ReadCacheCommon {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ReadCacheReturn {
     pub return_code: ReturnCode,
-    pub data: Vec<u8>,
+    /// `None` => NULL `pbData`; `data_len` supplies `cbDataLen`.
+    pub data: Option<Vec<u8>>,
+    pub data_len: u32,
 }
 
 impl ReadCacheReturn {
     const NAME: &'static str = "ReadCache_Return";
 
     pub fn new(return_code: ReturnCode, data: Vec<u8>) -> rpce::Pdu<Self> {
-        rpce::Pdu(Self { return_code, data })
+        let data_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        rpce::Pdu(Self {
+            return_code,
+            data: Some(data),
+            data_len,
+        })
+    }
+
+    pub fn data_probe(return_code: ReturnCode, data_len: u32) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            data: None,
+            data_len,
+        })
     }
 }
 
@@ -2251,11 +2266,26 @@ impl rpce::HeaderlessEncode for ReadCacheReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
-        let mut index = 0;
-        let data_len: u32 = cast_length!("ReadCacheReturn", "data_len", self.data.len())?;
-        ndr::encode_ptr(Some(data_len), &mut index, dst)?;
-        dst.write_u32(data_len);
-        dst.write_slice(&self.data);
+        // MS-RDPESC: cbDataLen range(0,65536)
+        match &self.data {
+            Some(data) => {
+                if data.len() > 65_536 {
+                    return Err(invalid_field_err!("encode", "ReadCacheReturn cbDataLen out of range"));
+                }
+                let data_len: u32 = cast_length!("ReadCacheReturn", "data_len", data.len())?;
+                let mut index = 0;
+                ndr::encode_ptr(Some(data_len), &mut index, dst)?;
+                dst.write_u32(data_len);
+                dst.write_slice(data);
+            }
+            None => {
+                if self.data_len > 65_536 {
+                    return Err(invalid_field_err!("encode", "ReadCacheReturn cbDataLen out of range"));
+                }
+                dst.write_u32(self.data_len);
+                dst.write_u32(0);
+            }
+        }
         Ok(())
     }
 
@@ -2264,10 +2294,11 @@ impl rpce::HeaderlessEncode for ReadCacheReturn {
     }
 
     fn size(&self) -> usize {
-        self.return_code.size() // dst.write_u32(self.return_code.into());
-        + ndr::ptr_size(true) // ndr::encode_ptr(Some(data_len), &mut index, dst)?;
-        + size_of::<u32>() // dst.write_u32(data_len);
-        + self.data.len() // dst.write_slice(&self.data);
+        self.return_code.size()
+            + match &self.data {
+                Some(data) => ndr::ptr_size(true) + 4 + data.len(),
+                None => 8,
+            }
     }
 }
 
@@ -2459,6 +2490,8 @@ pub struct GetReaderIconReturn {
 
 impl GetReaderIconReturn {
     const NAME: &'static str = "GetReaderIcon_Return";
+    /// MS-RDPESC: `cbDataLen` range(0, 4194304).
+    pub const MAX_DATA_LEN: usize = 4_194_304;
 
     pub fn new(return_code: ReturnCode, data: Vec<u8>) -> rpce::Pdu<Self> {
         rpce::Pdu(Self { return_code, data })
@@ -2469,6 +2502,13 @@ impl rpce::HeaderlessEncode for GetReaderIconReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
+        // MS-RDPESC: cbDataLen range(0,4194304)
+        if self.data.len() > Self::MAX_DATA_LEN {
+            return Err(invalid_field_err!(
+                "encode",
+                "GetReaderIconReturn cbDataLen out of range"
+            ));
+        }
         let data_len: u32 = cast_length!("GetReaderIconReturn", "data_len", self.data.len())?;
         let mut index = 0;
         ndr::encode_ptr(Some(data_len), &mut index, dst)?;
@@ -2784,16 +2824,28 @@ impl rpce::HeaderlessDecode for ControlCall {
 #[derive(Debug, PartialEq, Clone)]
 pub struct ControlReturn {
     pub return_code: ReturnCode,
-    pub out_buffer: Vec<u8>,
+    /// `None` => NULL `pvOutBuffer`; `out_len` supplies `cbOutBufferSize`.
+    pub out_buffer: Option<Vec<u8>>,
+    pub out_len: u32,
 }
 
 impl ControlReturn {
     const NAME: &'static str = "Control_Return";
 
     pub fn new(return_code: ReturnCode, out_buffer: Vec<u8>) -> rpce::Pdu<Self> {
+        let out_len = u32::try_from(out_buffer.len()).unwrap_or(u32::MAX);
         rpce::Pdu(Self {
             return_code,
-            out_buffer,
+            out_buffer: Some(out_buffer),
+            out_len,
+        })
+    }
+
+    pub fn out_probe(return_code: ReturnCode, out_len: u32) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            out_buffer: None,
+            out_len,
         })
     }
 }
@@ -2803,17 +2855,31 @@ impl rpce::HeaderlessEncode for ControlReturn {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
         // MS-RDPESC: cbOutBufferSize range(0,66560)
-        if self.out_buffer.len() > 66_560 {
-            return Err(invalid_field_err!(
-                "encode",
-                "ControlReturn cbOutBufferSize out of range"
-            ));
+        match &self.out_buffer {
+            Some(buf) => {
+                if buf.len() > 66_560 {
+                    return Err(invalid_field_err!(
+                        "encode",
+                        "ControlReturn cbOutBufferSize out of range"
+                    ));
+                }
+                let data_len: u32 = cast_length!("ControlReturn", "out_buffer_len", buf.len())?;
+                let mut index = 0;
+                ndr::encode_ptr(Some(data_len), &mut index, dst)?;
+                dst.write_u32(data_len);
+                dst.write_slice(buf);
+            }
+            None => {
+                if self.out_len > 66_560 {
+                    return Err(invalid_field_err!(
+                        "encode",
+                        "ControlReturn cbOutBufferSize out of range"
+                    ));
+                }
+                dst.write_u32(self.out_len);
+                dst.write_u32(0);
+            }
         }
-        let data_len: u32 = cast_length!("ControlReturn", "out_buffer_len", self.out_buffer.len())?;
-        let mut index = 0;
-        ndr::encode_ptr(Some(data_len), &mut index, dst)?;
-        dst.write_u32(data_len);
-        dst.write_slice(&self.out_buffer);
         Ok(())
     }
 
@@ -2823,9 +2889,10 @@ impl rpce::HeaderlessEncode for ControlReturn {
 
     fn size(&self) -> usize {
         self.return_code.size()
-            + ndr::ptr_size(true)
-            + 4 /* cbOutBufferSize value */
-            + self.out_buffer.len() // pvOutBuffer
+            + match &self.out_buffer {
+                Some(buf) => ndr::ptr_size(true) + 4 + buf.len(),
+                None => 8,
+            }
     }
 }
 
@@ -2871,14 +2938,29 @@ impl rpce::HeaderlessDecode for GetAttribCall {
 #[derive(Debug, PartialEq, Clone)]
 pub struct GetAttribReturn {
     pub return_code: ReturnCode,
-    pub attr: Vec<u8>,
+    /// `None` => NULL `pbAttr`; `attr_len` supplies `cbAttrLen`.
+    pub attr: Option<Vec<u8>>,
+    pub attr_len: u32,
 }
 
 impl GetAttribReturn {
     const NAME: &'static str = "GetAttrib_Return";
 
     pub fn new(return_code: ReturnCode, attr: Vec<u8>) -> rpce::Pdu<Self> {
-        rpce::Pdu(Self { return_code, attr })
+        let attr_len = u32::try_from(attr.len()).unwrap_or(u32::MAX);
+        rpce::Pdu(Self {
+            return_code,
+            attr: Some(attr),
+            attr_len,
+        })
+    }
+
+    pub fn attr_probe(return_code: ReturnCode, attr_len: u32) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            attr: None,
+            attr_len,
+        })
     }
 }
 
@@ -2887,14 +2969,25 @@ impl rpce::HeaderlessEncode for GetAttribReturn {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
         // MS-RDPESC: cbAttrLen range(0,65536)
-        if self.attr.len() > 65_536 {
-            return Err(invalid_field_err!("encode", "GetAttribReturn cbAttrLen out of range"));
+        match &self.attr {
+            Some(attr) => {
+                if attr.len() > 65_536 {
+                    return Err(invalid_field_err!("encode", "GetAttribReturn cbAttrLen out of range"));
+                }
+                let data_len: u32 = cast_length!("GetAttribReturn", "attr_len", attr.len())?;
+                let mut index = 0;
+                ndr::encode_ptr(Some(data_len), &mut index, dst)?;
+                dst.write_u32(data_len);
+                dst.write_slice(attr);
+            }
+            None => {
+                if self.attr_len > 65_536 {
+                    return Err(invalid_field_err!("encode", "GetAttribReturn cbAttrLen out of range"));
+                }
+                dst.write_u32(self.attr_len);
+                dst.write_u32(0);
+            }
         }
-        let data_len: u32 = cast_length!("GetAttribReturn", "attr_len", self.attr.len())?;
-        let mut index = 0;
-        ndr::encode_ptr(Some(data_len), &mut index, dst)?;
-        dst.write_u32(data_len);
-        dst.write_slice(&self.attr);
         Ok(())
     }
 
@@ -2904,9 +2997,10 @@ impl rpce::HeaderlessEncode for GetAttribReturn {
 
     fn size(&self) -> usize {
         self.return_code.size()
-            + ndr::ptr_size(true)
-            + 4 /* cbAttrLen value */
-            + self.attr.len() // pbAttr
+            + match &self.attr {
+                Some(attr) => ndr::ptr_size(true) + 4 + attr.len(),
+                None => 8,
+            }
     }
 }
 
@@ -3225,6 +3319,30 @@ mod tests {
         .into_inner();
         assert_eq!(enc_headerless(&state_full).len(), HeaderlessEncode::size(&state_full));
         assert_eq!(enc_headerless(&state_probe).len(), HeaderlessEncode::size(&state_probe));
+
+        let control_full = ControlReturn::new(ReturnCode::Success, vec![1, 2, 3]).into_inner();
+        let control_probe = ControlReturn::out_probe(ReturnCode::InsufficientBuffer, 64).into_inner();
+        assert_eq!(
+            enc_headerless(&control_full).len(),
+            HeaderlessEncode::size(&control_full)
+        );
+        assert_eq!(
+            enc_headerless(&control_probe).len(),
+            HeaderlessEncode::size(&control_probe)
+        );
+
+        let attrib_full = GetAttribReturn::new(ReturnCode::Success, vec![9, 8]).into_inner();
+        let attrib_probe = GetAttribReturn::attr_probe(ReturnCode::Success, 16).into_inner();
+        assert_eq!(enc_headerless(&attrib_full).len(), HeaderlessEncode::size(&attrib_full));
+        assert_eq!(
+            enc_headerless(&attrib_probe).len(),
+            HeaderlessEncode::size(&attrib_probe)
+        );
+
+        let cache_full = ReadCacheReturn::new(ReturnCode::Success, vec![4, 5, 6, 7]).into_inner();
+        let cache_probe = ReadCacheReturn::data_probe(ReturnCode::Success, 32).into_inner();
+        assert_eq!(enc_headerless(&cache_full).len(), HeaderlessEncode::size(&cache_full));
+        assert_eq!(enc_headerless(&cache_probe).len(), HeaderlessEncode::size(&cache_probe));
     }
 
     /// 6-byte Unicode mszCards needs 2-byte NDR pad before reader states.
