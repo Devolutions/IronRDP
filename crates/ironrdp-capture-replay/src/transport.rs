@@ -59,6 +59,10 @@ impl core::fmt::Debug for Capture {
 pub struct TlsKeyLog(String);
 
 impl TlsKeyLog {
+    pub(crate) fn new(value: String) -> Self {
+        Self(value)
+    }
+
     /// Get the key log required to decrypt the recorded TLS stream.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -150,7 +154,7 @@ pub fn read_capture(path: &Path) -> Result<Capture, ReplayError> {
 
     Ok(Capture {
         flow: assemble_flow(segments)?,
-        tls_key_log: TlsKeyLog(tls_key_log),
+        tls_key_log: TlsKeyLog::new(tls_key_log),
     })
 }
 
