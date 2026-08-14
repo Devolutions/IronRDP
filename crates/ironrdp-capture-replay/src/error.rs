@@ -17,4 +17,16 @@ pub enum ReplayError {
     /// The capture has incomplete or contradictory TCP data.
     #[error("capture does not contain a complete client/server TCP flow")]
     MissingTcpFlow,
+    /// The capture uses Standard RDP Security instead of TLS.
+    #[error("capture uses Standard RDP Security without decryptable session keys")]
+    StandardSecurity,
+    /// The TLS protocol version or cipher suite is unsupported.
+    #[error("capture TLS version or cipher suite is unsupported")]
+    UnsupportedTls,
+    /// The capture lacks the key-log entry required to decrypt its TLS session.
+    #[error("capture does not include an NSS TLS secret for the negotiated session")]
+    MissingTlsSecret,
+    /// TLS record authentication failed.
+    #[error("capture TLS authentication failed")]
+    TlsAuthentication,
 }
