@@ -15,8 +15,8 @@ categories.workspace = true
 [dependencies]
 aes-gcm = "0.10"
 hmac = "0.12"
-ironrdp-core = { version = "0.2.1", path = "../ironrdp-core" }
-ironrdp-pdu = { version = "0.9.0", path = "../ironrdp-pdu" } # public
+ironrdp-core = { version = "0.3.0", path = "../ironrdp-core" }
+ironrdp-pdu = { version = "0.10.0", path = "../ironrdp-pdu" } # public
 pcap-parser = "0.17"
 sha2 = "0.10"
 thiserror = "2"
