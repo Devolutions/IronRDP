@@ -504,20 +504,26 @@ impl ScardSession {
             name,
             req,
             move |req, _| match ioctl {
-                // SAFETY: session-owned card handle.
                 ScardIoCtlCode::BeginTransaction => {
+                    // SAFETY: session-owned card handle.
                     Outcome::Message(complete_long(req, map_status(unsafe { SCardBeginTransaction(handle) })))
                 }
-                ScardIoCtlCode::EndTransaction => Outcome::Message(complete_long(
-                    req,
-                    map_status(unsafe { SCardEndTransaction(handle, disp) }),
-                )),
-                ScardIoCtlCode::Disconnect => Outcome::Disconnect {
-                    req,
-                    card: handle,
+                ScardIoCtlCode::EndTransaction => {
                     // SAFETY: session-owned card handle.
-                    code: map_status(unsafe { SCardDisconnect(handle, disp) }),
-                },
+                    Outcome::Message(complete_long(
+                        req,
+                        map_status(unsafe { SCardEndTransaction(handle, disp) }),
+                    ))
+                }
+                ScardIoCtlCode::Disconnect => {
+                    // SAFETY: session-owned card handle.
+                    let code = map_status(unsafe { SCardDisconnect(handle, disp) });
+                    Outcome::Disconnect {
+                        req,
+                        card: handle,
+                        code,
+                    }
+                }
                 _ => Outcome::Message(complete_long(req, ReturnCode::UnsupportedFeature)),
             },
             complete_long,
@@ -538,8 +544,8 @@ impl ScardSession {
             "ironrdp-scard-xmit",
             req,
             move |req, _| {
-                let send_pci = pack_pci(&call.send_pci);
-                let mut recv_pci = call.recv_pci.as_ref().map(pack_pci);
+                let send_pci = PciBuf::pack(&call.send_pci);
+                let mut recv_pci = call.recv_pci.as_ref().map(PciBuf::pack);
                 let mut len = if call.recv_buffer_is_null {
                     0
                 } else {
@@ -550,13 +556,13 @@ impl ScardSession {
                 } else {
                     vec![0u8; len as usize]
                 };
-                // SAFETY: card handle session-owned; PCI/recv buffers owned above.
+                // SAFETY: session card; PCI blobs are 4-byte aligned owners; recv buffer owned above.
                 let status = unsafe {
                     SCardTransmit(
                         handle,
-                        send_pci.as_ptr().cast::<SCARD_IO_REQUEST>(),
+                        send_pci.ptr(),
                         &call.send_buffer,
-                        recv_pci.as_mut().map(|b| b.as_mut_ptr().cast::<SCARD_IO_REQUEST>()),
+                        recv_pci.as_mut().map(PciBuf::ptr_mut),
                         if call.recv_buffer_is_null {
                             core::ptr::null_mut()
                         } else {
@@ -566,7 +572,7 @@ impl ScardSession {
                     )
                 };
                 let code = map_status(status);
-                let out_pci = recv_pci.as_deref().map(unpack_pci);
+                let out_pci = recv_pci.as_ref().map(PciBuf::unpack);
                 if code != ReturnCode::Success {
                     return Outcome::Message(xmit_ret(req, code, None, None, 0));
                 }
@@ -624,7 +630,7 @@ impl ScardSession {
                 }
                 Err(c) => Outcome::Message(state_err(req, c)),
             },
-            |req, c| state_err(req, c),
+            state_err,
         )
     }
 
@@ -735,15 +741,17 @@ fn push(completions: Arc<Mutex<Vec<DeferredCompletion>>>, id: u64, epoch: u64, o
 }
 
 fn list_groups_w(context: usize) -> Result<Vec<String>, ReturnCode> {
-    list_multi(context, |ctx, buf, len| unsafe {
-        SCardListReaderGroupsW(ctx, buf, len)
+    list_multi(context, |ctx, buf, len| {
+        // SAFETY: session context; optional out buffer sized by len.
+        unsafe { SCardListReaderGroupsW(ctx, buf, len) }
     })
 }
 
 fn list_readers_w(context: usize, groups: &[String]) -> Result<Vec<String>, ReturnCode> {
     let groups_w = multi_wide(groups);
-    list_multi(context, |ctx, buf, len| unsafe {
-        SCardListReadersW(ctx, PCWSTR(groups_w.as_ptr()), buf, len)
+    list_multi(context, |ctx, buf, len| {
+        // SAFETY: session context; groups_w lives for the call.
+        unsafe { SCardListReadersW(ctx, PCWSTR(groups_w.as_ptr()), buf, len) }
     })
 }
 
@@ -772,7 +780,9 @@ where
     Ok(parse_multi_wide(&buf[..actual as usize]))
 }
 
-fn card_status_w(handle: usize) -> Result<(Vec<String>, CardState, CardProtocol, [u8; MAX_ATR], u32), ReturnCode> {
+type CardStatus = (Vec<String>, CardState, CardProtocol, [u8; MAX_ATR], u32);
+
+fn card_status_w(handle: usize) -> Result<CardStatus, ReturnCode> {
     let mut name_len = 0u32;
     let mut state = 0u32;
     let mut protocol = 0u32;
@@ -1051,39 +1061,62 @@ fn multi_chars(v: &[String], cs: CharacterSet) -> u32 {
     }
 }
 
-fn pack_pci(pci: &SCardIORequest) -> Vec<u8> {
-    let hdr = core::mem::size_of::<SCARD_IO_REQUEST>();
-    let mut buf = vec![0u8; hdr + pci.extra_bytes.len()];
-    let req = SCARD_IO_REQUEST {
-        dwProtocol: pci.protocol.bits(),
-        cbPciLength: u32::try_from(buf.len()).unwrap_or(u32::MAX),
-    };
-    // SAFETY: write unaligned header into owned byte buffer.
-    unsafe {
-        core::ptr::write_unaligned(buf.as_mut_ptr().cast::<SCARD_IO_REQUEST>(), req);
-    }
-    if !pci.extra_bytes.is_empty() {
-        buf[hdr..].copy_from_slice(&pci.extra_bytes);
-    }
-    buf
+/// Aligned owner for a WinSCard `SCARD_IO_REQUEST` plus optional extra bytes.
+struct PciBuf {
+    /// Little-endian words keep the buffer 4-byte aligned for `SCARD_IO_REQUEST`.
+    words: Vec<u32>,
+    byte_len: usize,
 }
 
-fn unpack_pci(raw: &[u8]) -> SCardIORequest {
-    let hdr = core::mem::size_of::<SCARD_IO_REQUEST>();
-    if raw.len() < hdr {
-        return SCardIORequest {
-            protocol: CardProtocol::SCARD_PROTOCOL_UNDEFINED,
-            extra_bytes_length: 0,
-            extra_bytes: Vec::new(),
+impl PciBuf {
+    fn pack(pci: &SCardIORequest) -> Self {
+        let hdr = core::mem::size_of::<SCARD_IO_REQUEST>();
+        let byte_len = hdr + pci.extra_bytes.len();
+        let nwords = byte_len.div_ceil(4);
+        let mut words = vec![0u32; nwords];
+        let req = SCARD_IO_REQUEST {
+            dwProtocol: pci.protocol.bits(),
+            cbPciLength: u32::try_from(byte_len).unwrap_or(u32::MAX),
         };
+        // SAFETY: `words` is 4-byte aligned and large enough for the header.
+        unsafe {
+            core::ptr::write(words.as_mut_ptr().cast::<SCARD_IO_REQUEST>(), req);
+        }
+        if !pci.extra_bytes.is_empty() {
+            // SAFETY: view the packed words as the byte_len prefix we own.
+            let bytes = unsafe { core::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), byte_len) };
+            bytes[hdr..].copy_from_slice(&pci.extra_bytes);
+        }
+        Self { words, byte_len }
     }
-    // SAFETY: buffer holds at least one SCARD_IO_REQUEST header.
-    let req = unsafe { core::ptr::read_unaligned(raw.as_ptr().cast::<SCARD_IO_REQUEST>()) };
-    let extra = raw[hdr..].to_vec();
-    SCardIORequest {
-        protocol: CardProtocol::from_bits_retain(req.dwProtocol),
-        extra_bytes_length: extra.len(),
-        extra_bytes: extra,
+
+    fn ptr(&self) -> *const SCARD_IO_REQUEST {
+        self.words.as_ptr().cast()
+    }
+
+    fn ptr_mut(&mut self) -> *mut SCARD_IO_REQUEST {
+        self.words.as_mut_ptr().cast()
+    }
+
+    fn unpack(&self) -> SCardIORequest {
+        let hdr = core::mem::size_of::<SCARD_IO_REQUEST>();
+        if self.byte_len < hdr {
+            return SCardIORequest {
+                protocol: CardProtocol::SCARD_PROTOCOL_UNDEFINED,
+                extra_bytes_length: 0,
+                extra_bytes: Vec::new(),
+            };
+        }
+        // SAFETY: pack() wrote a full header into aligned storage.
+        let req = unsafe { core::ptr::read(self.words.as_ptr().cast::<SCARD_IO_REQUEST>()) };
+        // SAFETY: byte_len bytes were initialized by pack().
+        let bytes = unsafe { core::slice::from_raw_parts(self.words.as_ptr().cast::<u8>(), self.byte_len) };
+        let extra = bytes[hdr..].to_vec();
+        SCardIORequest {
+            protocol: CardProtocol::from_bits_retain(req.dwProtocol),
+            extra_bytes_length: extra.len(),
+            extra_bytes: extra,
+        }
     }
 }
 
@@ -1212,7 +1245,7 @@ mod tests {
             extra_bytes_length: 1,
             extra_bytes: vec![9],
         };
-        assert_eq!(unpack_pci(&pack_pci(&pci)).extra_bytes, vec![9]);
+        assert_eq!(PciBuf::pack(&pci).unpack().extra_bytes, vec![9]);
         let mut s = ScardSession::new();
         s.contexts.insert(1, ());
         s.cards.insert(2, 1);
