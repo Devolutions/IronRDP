@@ -649,6 +649,7 @@ pub struct ConfigBuilder {
     dig_product_id: Option<String>,
     desktop_width: Option<u16>,
     desktop_height: Option<u16>,
+    monitor_layout: Option<ironrdp_pdu::gcc::ClientMonitorData>,
     desktop_scale_factor: Option<u32>,
     color_depth: Option<u32>,
     lossy_compression: Option<bool>,
@@ -847,6 +848,16 @@ impl ConfigBuilder {
     pub fn with_desktop_height(mut self, height: u16) -> Self {
         self.desktop_height = Some(height);
         self.properties.set_desktop_height(height);
+        self
+    }
+
+    /// Advertise the client monitor topology in the GCC Client Monitor Data block.
+    ///
+    /// The caller must set [`Self::with_desktop_width`] and [`Self::with_desktop_height`] to
+    /// the virtual desktop dimensions containing every monitor.
+    #[must_use]
+    pub fn with_monitor_layout(mut self, monitor_layout: ironrdp_pdu::gcc::ClientMonitorData) -> Self {
+        self.monitor_layout = Some(monitor_layout);
         self
     }
 
@@ -1579,6 +1590,7 @@ impl ConfigBuilder {
                 width: self.desktop_width.unwrap_or(DEFAULT_WIDTH),
                 height: self.desktop_height.unwrap_or(DEFAULT_HEIGHT),
             },
+            monitor_layout: self.monitor_layout,
             desktop_scale_factor: self.desktop_scale_factor.unwrap_or(0),
             bitmap: Some(bitmap),
             client_build: self.client_build.unwrap_or_default(),
@@ -1970,6 +1982,7 @@ fn kerberos_config_from_properties(
 #[cfg(test)]
 mod tests {
     use ironrdp_cfg::PropertySetExt as _;
+    use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};
     use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 
     use super::{ConfigBuilder, Destination};
@@ -2005,6 +2018,27 @@ mod tests {
 
         assert!(config.connector().remote_application_mode);
         assert_eq!(config.properties().remote_application_mode(), Some(true));
+    }
+
+    #[test]
+    fn monitor_layout_is_preserved_in_connector_configuration() {
+        let monitor_layout = ClientMonitorData {
+            monitors: vec![Monitor {
+                left: 0,
+                top: 0,
+                right: 1_919,
+                bottom: 1_079,
+                flags: MonitorFlags::PRIMARY,
+            }],
+        };
+        let config = complete_builder()
+            .with_desktop_width(1_920)
+            .with_desktop_height(1_080)
+            .with_monitor_layout(monitor_layout.clone())
+            .build()
+            .expect("valid monitor layout configuration");
+
+        assert_eq!(config.connector().monitor_layout.as_ref(), Some(&monitor_layout));
     }
 
     #[test]

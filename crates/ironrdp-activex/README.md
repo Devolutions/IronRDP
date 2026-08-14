@@ -653,10 +653,14 @@ Delayed rendering remains in the STA-bound native CLIPRDR backend while the snap
 No other clipboard format, conversion, inbound `SetData`, destination enumeration, `GetDataHere`, or data-advisory contract is claimed.
 `GetClipboardData` rejects a nonzero reserved value and reports `OLE_E_NOTRUNNING` before clipboard redirection is active.
 
-`IMsRdpClientNonScriptable5` reports one remote monitor only after an active remote framebuffer is
-available and returns its `(0, 0, width, height)` bounding box. Multi-monitor mode is not
-implemented and enabling it returns `E_NOTIMPL`; the control does not claim that the remote layout
-matches the local display topology.
+`IMsRdpClientNonScriptable5::UseMultimon` is disabled by default and can be changed only while the connection settings are mutable.
+Enabling it validates the current Windows monitor topology, then connection startup snapshots it, normalizes coordinates around the primary monitor, and sends GCC Client Monitor Data with the matching virtual-desktop dimensions.
+Invalid or overlapping monitor rectangles, an absent or ambiguous primary monitor, more than 16 monitors, and virtual desktops outside the RDP limits fail with `E_INVALIDARG`.
+The GDI presenter renders the negotiated virtual desktop as one composite framebuffer, so existing single-surface embedding and smart sizing continue to work.
+While connected, `RemoteMonitorCount` and `GetRemoteMonitorsBoundingBox` report the negotiated topology; its bounding box uses Windows `RECT`-style exclusive right and bottom coordinates.
+Before connection completes, `RemoteMonitorCount` returns zero and `GetRemoteMonitorsBoundingBox` returns `E_UNEXPECTED`.
+`RemoteMonitorLayoutMatchesLocal` re-evaluates the local topology and returns false after host-display changes; reconnect to negotiate the new layout.
+The control currently sends only basic Client Monitor Data and does not advertise per-monitor physical dimensions, orientation, or DPI scaling through Client Monitor Extended Data.
 
 The Windows-only `ironrdp-axhost` tool at `tests\ironrdp-axhost` loads a COM server through its
 `DllGetClassObject` export, so it does not need COM registration. Its default `probe` operation

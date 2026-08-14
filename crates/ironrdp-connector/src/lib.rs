@@ -143,6 +143,11 @@ impl Credentials {
 pub struct Config {
     /// The initial desktop size to request
     pub desktop_size: DesktopSize,
+    /// The optional client monitor layout advertised in the GCC Client Monitor Data block.
+    ///
+    /// When present, [`desktop_size`](Self::desktop_size) must describe the virtual desktop
+    /// containing these monitors.
+    pub monitor_layout: Option<gcc::ClientMonitorData>,
     /// The initial desktop scale factor to request.
     ///
     /// This becomes the `desktop_scale_factor` in the [`TS_UD_CS_CORE`](gcc::ClientCoreOptionalData) structure.
