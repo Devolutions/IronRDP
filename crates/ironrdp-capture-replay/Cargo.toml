@@ -1,0 +1,23 @@
+[package]
+name = "ironrdp-capture-replay"
+version = "0.0.0"
+publish = false
+description = "Offline analysis of direct TCP RDP captures"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+pcap-parser = "0.17"
+thiserror = "2"
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
