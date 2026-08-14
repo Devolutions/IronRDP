@@ -6,13 +6,17 @@ use ironrdp_core::{decode, impl_as_any};
 use ironrdp_dvc::pdu::DrdynvcServerPdu;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_graphics::image_processing::PixelFormat;
-use ironrdp_pdu::rdp::client_info::CompressionType;
+use ironrdp_pdu::rdp::ClientInfoPdu;
+use ironrdp_pdu::rdp::client_info::{ClientInfoFlags, CompressionType};
+use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, decode_err, find_size, mcs};
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStage, ActiveStageBuilder};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcessor};
 
 use crate::{Capture, NegotiatedState, PacketStream, Plaintext, ReplayError, decrypt_tls, recover_negotiated_state};
+
+const MAX_DESKTOP_DIM: u16 = 8192;
 
 /// Captured connection state used to construct an offline active-stage router.
 #[derive(Clone, Debug)]
@@ -135,11 +139,19 @@ impl ReplayRouter {
     /// Build a router from captured activation state without live negotiation.
     pub fn new(activation: CapturedActivation) -> Result<Self, ReplayError> {
         let state = &activation.state;
-        if state.width == 0 || state.height == 0 {
+        if state.width == 0 || state.height == 0 || state.width > MAX_DESKTOP_DIM || state.height > MAX_DESKTOP_DIM {
             return Err(ReplayError::ContradictoryRoutingState);
         }
 
-        let mut ids = BTreeSet::new();
+        let mut ids = BTreeSet::from([state.user_channel_id, state.io_channel_id]);
+        if ids.len() != 2 {
+            return Err(ReplayError::ContradictoryRoutingState);
+        }
+        if let Some(message_channel_id) = state.message_channel_id {
+            if !ids.insert(message_channel_id) {
+                return Err(ReplayError::ContradictoryRoutingState);
+            }
+        }
         let mut channels = StaticChannelSet::new();
         let mut drdynvc_channel_id = None;
         for channel in &state.static_channels {
@@ -200,11 +212,11 @@ impl ReplayRouter {
         if !self.attached_dynamic_channels.insert(channel_id) {
             return Err(ReplayError::DynamicChannelAttachment);
         }
-        let result = self
-            .stage
-            .get_svc_processor_mut::<DrdynvcClient>()
-            .ok_or(ReplayError::MissingDrdynvcChannel)?
-            .attach_established_dynamic_channel(channel_id, channel);
+        let Some(drdynvc) = self.stage.get_svc_processor_mut::<DrdynvcClient>() else {
+            self.attached_dynamic_channels.remove(&channel_id);
+            return Err(ReplayError::MissingDrdynvcChannel);
+        };
+        let result = drdynvc.attach_established_dynamic_channel(channel_id, channel);
         if result.is_err() {
             self.attached_dynamic_channels.remove(&channel_id);
             return Err(ReplayError::DynamicChannelAttachment);
@@ -225,12 +237,16 @@ impl ReplayRouter {
 
         let mut awaiting_finalization = false;
         let mut activated = false;
+        let mut activation_packet = None;
+        let mut first_server_packet = None;
         for message in messages {
             let route = if message.direction == ReplayDirection::Client {
                 ReplayRoute::ClientObservation
             } else if !activated {
+                first_server_packet.get_or_insert(message.packet);
                 if is_demand_active(&message, self.activation.state.io_channel_id) {
                     awaiting_finalization = true;
+                    activation_packet = Some(message.packet);
                 } else if awaiting_finalization && is_server_font_map(&message, self.activation.state.io_channel_id) {
                     activated = true;
                 }
@@ -247,7 +263,7 @@ impl ReplayRouter {
         }
         if !activated {
             report.gaps.push(ReplayGap {
-                packet: 0,
+                packet: activation_packet.or(first_server_packet).unwrap_or_default(),
                 direction: ReplayDirection::Server,
                 kind: ReplayGapKind::Unsupported,
             });
@@ -349,8 +365,27 @@ impl ReplayRouter {
 /// Decrypt, recover captured activation state, and route a direct TCP RDP capture.
 pub fn replay_capture(capture: &Capture) -> Result<ReplayReport, ReplayError> {
     let plaintext = decrypt_tls(capture)?;
-    let mut router = ReplayRouter::new(CapturedActivation::from(recover_negotiated_state(&plaintext)?))?;
+    let mut router = ReplayRouter::new(CapturedActivation {
+        state: recover_negotiated_state(&plaintext)?,
+        compression_type: captured_compression_type(&plaintext),
+    })?;
     Ok(router.route_plaintext(&plaintext))
+}
+
+fn captured_compression_type(plaintext: &Plaintext) -> Option<CompressionType> {
+    let mut gaps = Vec::new();
+    framed_stream(&plaintext.client, ReplayDirection::Client, &mut gaps)
+        .into_iter()
+        .find_map(|message| {
+            let request = decode::<X224<mcs::SendDataRequest<'_>>>(&message.bytes).ok()?.0;
+            let client_info = decode::<ClientInfoPdu>(request.user_data.as_ref()).ok()?;
+
+            client_info
+                .client_info
+                .flags
+                .contains(ClientInfoFlags::COMPRESSION)
+                .then_some(client_info.client_info.compression_type)
+        })
 }
 
 #[derive(Debug)]
@@ -551,11 +586,14 @@ mod tests {
     use ironrdp_pdu::gcc::ChannelName;
     use ironrdp_pdu::mcs::McsMessage;
     use ironrdp_pdu::rdp::capability_sets::{DemandActive, ServerDemandActive};
+    use ironrdp_pdu::rdp::client_info::{
+        AddressFamily, ClientInfo, Credentials, ExtendedClientInfo, ExtendedClientOptionalInfo,
+    };
     use ironrdp_pdu::rdp::finalization_messages::FontPdu;
     use ironrdp_pdu::rdp::headers::{
-        CompressionFlags, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu, StreamPriority,
+        BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
+        ShareDataHeader, ShareDataPdu, StreamPriority,
     };
-    use ironrdp_pdu::x224::X224;
     use ironrdp_svc::server_encode_svc_messages;
 
     use super::*;
@@ -648,6 +686,109 @@ mod tests {
 
         assert_eq!(&*received.lock().unwrap(), &[b"start".to_vec(), b"data".to_vec()]);
         assert!(report.gaps.is_empty());
+    }
+
+    #[test]
+    fn rejects_oversized_captured_desktops() {
+        let mut oversized_dimension = activation();
+        oversized_dimension.state.width = MAX_DESKTOP_DIM + 1;
+        assert!(matches!(
+            ReplayRouter::new(oversized_dimension),
+            Err(ReplayError::ContradictoryRoutingState)
+        ));
+    }
+
+    #[test]
+    fn rejects_captured_channel_id_collisions() {
+        let mut activation = activation();
+        activation.state.static_channels[0].id = activation.state.io_channel_id;
+        assert!(matches!(
+            ReplayRouter::new(activation),
+            Err(ReplayError::ContradictoryRoutingState)
+        ));
+    }
+
+    #[test]
+    fn rolls_back_missing_drdynvc_attachment() {
+        let mut activation = activation();
+        activation.state.static_channels.remove(0);
+        let mut router = ReplayRouter::new(activation).unwrap();
+
+        assert!(matches!(
+            router.attach_established_dynamic_channel(
+                7,
+                OpaqueDynamicChannel {
+                    name: "test".to_owned()
+                }
+            ),
+            Err(ReplayError::MissingDrdynvcChannel)
+        ));
+        assert!(matches!(
+            router.attach_established_dynamic_channel(
+                7,
+                OpaqueDynamicChannel {
+                    name: "test".to_owned()
+                }
+            ),
+            Err(ReplayError::MissingDrdynvcChannel)
+        ));
+    }
+
+    #[test]
+    fn reports_the_incomplete_activation_packet() {
+        let mut router = ReplayRouter::new(activation()).unwrap();
+        let report = router.route_plaintext(&Plaintext {
+            client: Vec::new(),
+            server: vec![(17, demand_active())],
+        });
+
+        assert!(report.gaps.contains(&ReplayGap {
+            packet: 17,
+            direction: ReplayDirection::Server,
+            kind: ReplayGapKind::Unsupported,
+        }));
+    }
+
+    #[test]
+    fn recovers_client_info_compression_type() {
+        let client_info = ClientInfoPdu {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::INFO_PKT,
+            },
+            client_info: ClientInfo {
+                credentials: Credentials {
+                    username: String::new(),
+                    password: String::new(),
+                    domain: None,
+                },
+                code_page: 0,
+                flags: ClientInfoFlags::UNICODE | ClientInfoFlags::COMPRESSION,
+                compression_type: CompressionType::K64,
+                alternate_shell: String::new(),
+                work_dir: String::new(),
+                extra_info: ExtendedClientInfo {
+                    address_family: AddressFamily::INET,
+                    address: String::new(),
+                    dir: String::new(),
+                    optional_data: ExtendedClientOptionalInfo::default(),
+                },
+            },
+        };
+        let user_data = encode_vec(&client_info).unwrap();
+        let client_pdu = encode_vec(&X224(McsMessage::SendDataRequest(mcs::SendDataRequest {
+            initiator_id: 1_001,
+            channel_id: 1_003,
+            user_data: Cow::Owned(user_data),
+        })))
+        .unwrap();
+
+        assert_eq!(
+            captured_compression_type(&Plaintext {
+                client: vec![(1, client_pdu)],
+                server: Vec::new(),
+            }),
+            Some(CompressionType::K64)
+        );
     }
 
     fn activation() -> CapturedActivation {
