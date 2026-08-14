@@ -642,13 +642,12 @@ fn trace_connection_failure(error: &ConnectorError) {
     let location = error.location();
     let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
     trace_host_call(&format!(
-        "RdpWorker::ConnectionFailure:{category}:{}:{file}:line_{}",
-        error.context(),
-        location.line()
+        "RdpWorker::ConnectionFailure:{category}:{file}:line_{}",
+        location.line(),
     ));
 }
 
-fn trace_decode_failure(context: &str, error: &DecodeError) {
+fn trace_decode_failure(error: &DecodeError) {
     let location = error.location();
     let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
     let marker = match error.kind() {
@@ -663,7 +662,7 @@ fn trace_decode_failure(context: &str, error: &DecodeError) {
         _ => "Decode:Unknown".to_owned(),
     };
     trace_host_call(&format!(
-        "RdpWorker::SessionFailure:{marker}:{context}:{file}:line_{}",
+        "RdpWorker::SessionFailure:{marker}:{file}:line_{}",
         location.line()
     ));
 }
@@ -672,7 +671,7 @@ fn trace_session_failure(error: &SessionError) {
     match error.kind() {
         SessionErrorKind::Pdu(_) => trace_host_call("RdpWorker::SessionFailure:Pdu"),
         SessionErrorKind::Encode(_) => trace_host_call("RdpWorker::SessionFailure:Encode"),
-        SessionErrorKind::Decode(decode_error) => trace_decode_failure(error.context(), decode_error),
+        SessionErrorKind::Decode(decode_error) => trace_decode_failure(decode_error),
         SessionErrorKind::FastPathBulkDecompression(failure) => {
             let location = error.location();
             let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
@@ -693,18 +692,16 @@ fn trace_session_failure(error: &SessionError) {
             let location = error.location();
             let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
             trace_host_call(&format!(
-                "RdpWorker::SessionFailure:Reason:{}:{file}:line_{}",
-                error.context(),
-                location.line()
+                "RdpWorker::SessionFailure:Reason:{file}:line_{}",
+                location.line(),
             ));
         }
         SessionErrorKind::General => {
             let location = error.location();
             let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
             trace_host_call(&format!(
-                "RdpWorker::SessionFailure:General:{}:{file}:line_{}",
-                error.context(),
-                location.line()
+                "RdpWorker::SessionFailure:General:{file}:line_{}",
+                location.line(),
             ));
         }
         SessionErrorKind::Custom => {
@@ -15575,7 +15572,7 @@ mod tests {
     }
 
     #[test]
-    fn connection_failure_trace_uses_only_static_diagnostics() {
+    fn connection_failure_trace_omits_error_context() {
         let trace_path = std::env::temp_dir().join(format!(
             "ironrdp-activex-connection-failure-{}.trace",
             std::process::id()
@@ -15583,15 +15580,13 @@ mod tests {
         let _ = std::fs::remove_file(&trace_path);
 
         let trace_guard = TestHostTracePath::install(trace_path.clone());
-        trace_connection_failure(&ConnectorError::new(
-            "test connector operation",
-            ConnectorErrorKind::Custom,
-        ));
+        trace_connection_failure(&ConnectorError::new("must not be traced", ConnectorErrorKind::Custom));
         drop(trace_guard);
         let trace = std::fs::read_to_string(&trace_path).expect("connection failure trace must be written");
         let _ = std::fs::remove_file(trace_path);
 
-        assert!(trace.starts_with("RdpWorker::ConnectionFailure:Custom:test connector operation:control.rs:line_"));
+        assert!(trace.starts_with("RdpWorker::ConnectionFailure:Custom:control.rs:line_"));
+        assert!(!trace.contains("must not be traced"));
     }
 
     #[test]
