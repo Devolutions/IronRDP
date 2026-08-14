@@ -184,10 +184,13 @@ capability, or mapping, even if a peer advertises it.
 
 ## Windows Sandbox (Windows only)
 
-Prefer create-then-connect: start the VM with official `wsb start` (prints the sandbox Id), then
-attach with the agent. The agent calls WindowsSandboxServer gRPC in-process over the per-user
-named pipe (no .NET helper).
+Start the Windows Sandbox UI or `wsb` once to bootstrap WindowsSandboxServer.
+The agent can then create, inspect, and stop sandboxes over its per-user named pipe without a .NET helper.
+On retail builds that permit one active sandbox, stop that initial sandbox before using `sandbox start`; the agent reports server policy errors rather than bypassing them.
 
+- `sandbox start [--id GUID] [--config FILE]`
+                                  Start a sandbox and print its Id.
+                                  The server uses its default configuration when `--config` is omitted.
 - `sandbox list`                 List running sandbox Ids via WindowsSandboxServer.
 - `sandbox config <ID>`          Print a redacted RdpClientConfig summary (password shown as set/empty).
 - `sandbox stop <ID>`            Shut down a running sandbox via gRPC.
@@ -196,8 +199,8 @@ named pipe (no .NET helper).
 - `connect --sandbox-pipe PATH -u USER -p PASS`
                                  Low-level NamedPipe connect when you already have the guest password.
 
-Default product transport is NamedPipe. Local (VMConnect :2179 + PCB) and guest TCP are not the
-primary path.
+Default product transport is NamedPipe.
+Local (VMConnect :2179 + PCB) and guest TCP are not the primary path.
 
 ## Errors
 
