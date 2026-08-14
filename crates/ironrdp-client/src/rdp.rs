@@ -808,17 +808,6 @@ impl RdpClient {
                     }
                     break;
                 }
-                Ok(RdpControlFlow::AutoReconnectRejected) => {
-                    if !self
-                        .send_output_event(RdpOutputEvent::Terminated(Err(ironrdp_session::general_err!(
-                            "auto reconnect rejected by server"
-                        ))))
-                        .await
-                    {
-                        self.emit_user_initiated_termination();
-                    }
-                    break;
-                }
                 Err(e) => {
                     if !self.send_output_event(RdpOutputEvent::Terminated(Err(e))).await {
                         self.emit_user_initiated_termination();
@@ -850,10 +839,19 @@ impl RdpClient {
             return false;
         }
 
-        matches!(
+        if !matches!(
             tokio::time::timeout(Duration::from_secs(30), receiver).await,
-            Ok(Ok(AutoReconnectDecision::Continue)) | Err(_)
-        )
+            Ok(Ok(AutoReconnectDecision::Continue))
+        ) {
+            return false;
+        }
+
+        // Keep bounded retries from exhausting their budget before a transient
+        // network failure has had time to clear. A close during the wait is
+        // handled by the connection loop before another connection attempt starts.
+        cancelable_operation(tokio::time::sleep(Duration::from_secs(1)), &mut self.close_receiver)
+            .await
+            .is_some()
     }
 
     fn emit_user_initiated_termination(&self) {
@@ -1961,7 +1959,6 @@ enum RdpControlFlow {
         reason: DisplayResizeFallbackReason,
     },
     TransportFailure(ironrdp_session::SessionError),
-    AutoReconnectRejected,
     TerminatedGracefully(GracefulDisconnectReason),
 }
 
@@ -2114,7 +2111,9 @@ async fn active_session(
                     }
                     if outputs.iter().any(|output| matches!(output, ActiveStageOutput::AutoReconnectFailed)) {
                         *auto_reconnect_cookie = None;
-                        return Ok(RdpControlFlow::AutoReconnectRejected);
+                        // The server rejected the cookie but may complete this
+                        // connection with the configured credentials instead.
+                        *reconnect_attempt = 0;
                     }
                     if *reconnect_attempt != 0
                         && outputs.iter().any(|output| {
@@ -2486,9 +2485,9 @@ async fn active_session(
                     *auto_reconnect_cookie = Some(cookie);
                     debug!("Received a Server Auto-Reconnect Cookie");
                 }
-                ActiveStageOutput::AutoReconnectFailed => {
-                    return Ok(RdpControlFlow::AutoReconnectRejected);
-                }
+                // The status pre-scan above discarded the reconnect state before
+                // success can be reported; this output has no host-facing event.
+                ActiveStageOutput::AutoReconnectFailed => {}
                 ActiveStageOutput::ResponseFrame(frame) => {
                     let Some(result) = cancelable_operation(writer.write_all(&frame), close_receiver).await else {
                         return Ok(RdpControlFlow::TerminatedGracefully(
