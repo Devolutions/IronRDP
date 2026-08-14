@@ -60,6 +60,9 @@ pub(crate) fn start_sandbox(recipe: Option<&str>, sandbox_id: Option<&str>) -> a
     let request = encode_start_sandbox_request(recipe, sandbox_id);
     let payload = block_on(unary("StartSandbox", &request, START_SANDBOX_TIMEOUT))?;
     let (hr, _, cfg) = parse_reply(&payload, ParseMode::Config)?;
+    if hr == CO_E_APPSINGLEUSE {
+        bail!("multiple Windows Sandbox instances are not permitted by this Windows build or license");
+    }
     ensure_ok(hr, "StartSandbox")?;
     if cfg.is_empty() {
         bail!("empty RdpClientConfig from WindowsSandboxServer");
@@ -89,9 +92,6 @@ pub(crate) fn shutdown_sandbox(sandbox_id: &str) -> anyhow::Result<()> {
 }
 
 fn ensure_ok(hr: i32, method: &str) -> anyhow::Result<()> {
-    if hr == CO_E_APPSINGLEUSE {
-        bail!("multiple Windows Sandbox instances are not permitted by this Windows build or license");
-    }
     if hr != 0 {
         bail!("{method} failed with hresult=0x{hr:08X}");
     }
@@ -576,15 +576,6 @@ mod tests {
         assert_eq!(
             encode_start_sandbox_request(Some("<Configuration/>"), Some("sandbox-id")),
             b"\x0a\x10<Configuration/>\x12\nsandbox-id"
-        );
-    }
-
-    #[test]
-    fn single_instance_policy_error_is_actionable() {
-        let error = ensure_ok(CO_E_APPSINGLEUSE, "StartSandbox").expect_err("single-instance policy must fail");
-        assert_eq!(
-            error.to_string(),
-            "multiple Windows Sandbox instances are not permitted by this Windows build or license"
         );
     }
 }
