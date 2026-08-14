@@ -2646,6 +2646,7 @@ dependencies = [
  "anyhow",
  "ironrdp-cfg",
  "ironrdp-client",
+ "ironrdp-connector",
  "ironrdp-input",
  "ironrdp-pdu",
  "ironrdp-propertyset",

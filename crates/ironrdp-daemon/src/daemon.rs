@@ -1481,6 +1481,7 @@ async fn consume_output(
             RdpOutputEvent::ConnectionFailure(error) => {
                 guard.state = ConnState::Failed;
                 guard.error = Some(format!("{error}"));
+                guard.rail.clear_pending();
                 error!(%error, "Session connection failed");
                 false
             }
@@ -1517,8 +1518,8 @@ async fn consume_output(
         ConnState::Connecting | ConnState::Connected | ConnState::Disconnecting
     ) {
         guard.state = ConnState::Disconnected;
-        guard.rail.clear_pending();
     }
+    guard.rail.clear_pending();
     drop(guard);
     notify(&notification);
 }
@@ -2061,6 +2062,47 @@ mod tests {
 
         drop(output_tx);
         consumer.await.expect("consume output");
+    }
+
+    #[tokio::test]
+    async fn connection_failure_discards_pending_rail_launches() {
+        let (daemon, mut input_rx, live, rail_notify) = active_rail_session(true);
+        let (output_tx, output_rx) = mpsc::channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            Arc::clone(&live),
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+
+        assert!(matches!(
+            daemon.rail_execute(RailExecuteRequest {
+                executable: "notepad.exe".to_owned(),
+                working_directory: String::new(),
+                arguments: String::new(),
+                flags: 0,
+            }),
+            Response::Ok(Payload::RailLaunch(RailLaunchInfo { launch_id: 1, .. }))
+        ));
+        assert!(matches!(input_rx.recv().await, Some(RdpInputEvent::RailExecute(_))));
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::ConnectionFailure(
+                ironrdp_connector::general_err!("test connection failure"),
+            ))
+            .await
+            .expect("send connection failure");
+        drop(output_tx);
+        consumer.await.expect("consume output");
+
+        assert_eq!(
+            live.lock().expect("session live state poisoned").state,
+            ConnState::Failed
+        );
+        assert!(matches!(
+            daemon.rail_status(),
+            Response::Ok(Payload::RailStatus(status)) if status.pending_launches.is_empty()
+        ));
     }
 
     #[test]

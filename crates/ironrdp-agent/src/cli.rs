@@ -800,7 +800,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(exit_code) => exit_code,
                 Err(error) => {
                     if let Some(error) = error.downcast_ref::<NowRequestError>() {
-                        print_now_error(&error.0, format)?;
+                        print_request_error(&error.0, format)?;
                         std::process::exit(1);
                     }
                     return Err(error);
@@ -813,7 +813,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             return Ok(());
         }
-        Command::Rail(args) => return run_rail(&endpoint, args).await,
+        Command::Rail(args) => {
+            let format = args.format;
+            if let Err(error) = run_rail(&endpoint, args).await {
+                if let Some(error) = error.downcast_ref::<RailRequestError>() {
+                    print_request_error(&error.0, format)?;
+                    std::process::exit(1);
+                }
+                return Err(error);
+            }
+            return Ok(());
+        }
         Command::Connect(args) => build_connect_request(args)?,
         #[cfg(windows)]
         Command::Sandbox(args) => {
@@ -1610,7 +1620,7 @@ async fn now_stream(
     Ok(exit_code)
 }
 
-fn print_now_error(error: &AgentError, format: OutputFormat) -> anyhow::Result<()> {
+fn print_request_error(error: &AgentError, format: OutputFormat) -> anyhow::Result<()> {
     match format {
         OutputFormat::Human => {
             eprintln!("{}", error.message);
