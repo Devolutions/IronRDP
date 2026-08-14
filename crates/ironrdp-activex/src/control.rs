@@ -15590,6 +15590,56 @@ mod tests {
     }
 
     #[test]
+    fn session_failure_trace_omits_error_contexts() {
+        let trace_path =
+            std::env::temp_dir().join(format!("ironrdp-activex-session-failure-{}.trace", std::process::id()));
+        let _ = std::fs::remove_file(&trace_path);
+
+        let trace_guard = TestHostTracePath::install(trace_path.clone());
+        let decode_error = DecodeError::new(
+            "nested decode context must not be traced",
+            DecodeErrorKind::Other {
+                description: "decode detail must not be traced",
+            },
+        );
+        trace_session_failure(&SessionError::new(
+            "outer decode context must not be traced",
+            SessionErrorKind::Decode(decode_error),
+        ));
+        trace_session_failure(&SessionError::new(
+            "reason context must not be traced",
+            SessionErrorKind::Reason("reason detail must not be traced".to_owned()),
+        ));
+        trace_session_failure(&SessionError::new(
+            "general context must not be traced",
+            SessionErrorKind::General,
+        ));
+        drop(trace_guard);
+        let trace = std::fs::read_to_string(&trace_path).expect("session failure trace must be written");
+        let _ = std::fs::remove_file(trace_path);
+
+        let mut lines = trace.lines();
+        for prefix in [
+            "RdpWorker::SessionFailure:Decode:Other:control.rs:line_",
+            "RdpWorker::SessionFailure:Reason:control.rs:line_",
+            "RdpWorker::SessionFailure:General:control.rs:line_",
+        ] {
+            assert!(lines.next().is_some_and(|line| line.starts_with(prefix)));
+        }
+        assert_eq!(lines.next(), None);
+        for secret in [
+            "nested decode context must not be traced",
+            "decode detail must not be traced",
+            "outer decode context must not be traced",
+            "reason context must not be traced",
+            "reason detail must not be traced",
+            "general context must not be traced",
+        ] {
+            assert!(!trace.contains(secret));
+        }
+    }
+
+    #[test]
     fn authentication_level_zero_requires_an_explicit_opt_in() {
         assert_eq!(
             certificate_validation_from_authentication_level(0, false),
