@@ -1,8 +1,8 @@
 //! Stub Windows smartcard session for RDPDR device ID 0.
 //!
 //! Completes every decoded MS-RDPESC call with the IOCTL-appropriate return
-//! PDU and `SCARD_E_UNSUPPORTED_FEATURE`, so peers never hang or mis-decode
-//! while the real WinSCard backend lands.
+//! PDU and `SCARD_E_UNSUPPORTED_FEATURE`, so peers never hang or decode the
+//! wrong structure while the real WinSCard backend lands.
 
 use ironrdp_pdu::PduResult;
 use ironrdp_pdu::utils::CharacterSet;
