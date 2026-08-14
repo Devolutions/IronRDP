@@ -82,6 +82,8 @@ pub struct ConnectionResult {
     /// `None` means Window List was absent or disabled, so windowing orders
     /// retain ordinary desktop-session handling.
     pub window_support_level: Option<WindowSupportLevel>,
+    /// The monitor layout reported by the server during connection finalization.
+    pub monitor_layout: Option<rdp::finalization_messages::MonitorLayoutPdu>,
     /// Factory for producing connection activation sequences.
     ///
     /// Used to drive the [Deactivation-Reactivation Sequence] when a Server Deactivate All PDU is
@@ -105,12 +107,15 @@ pub enum ClientConnectorState {
     },
     EnhancedSecurityUpgrade {
         selected_protocol: nego::SecurityProtocol,
+        response_flags: nego::ResponseFlags,
     },
     Credssp {
         selected_protocol: nego::SecurityProtocol,
+        response_flags: nego::ResponseFlags,
     },
     BasicSettingsExchangeSendInitial {
         selected_protocol: nego::SecurityProtocol,
+        response_flags: nego::ResponseFlags,
     },
     BasicSettingsExchangeWaitResponse {
         connect_initial: mcs::ConnectInitial,
@@ -815,7 +820,10 @@ impl Sequence for ClientConnector {
 
                 (
                     Written::Nothing,
-                    ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol },
+                    ClientConnectorState::EnhancedSecurityUpgrade {
+                        selected_protocol,
+                        response_flags: flags,
+                    },
                 )
             }
 
@@ -823,36 +831,61 @@ impl Sequence for ClientConnector {
             // When PROTOCOL_RDP is selected there is no TLS/CredSSP front-end: the caller should
             // still invoke mark_security_upgrade_as_done() (a no-op upgrade) before continuing.
             // When SSL/HYBRID is selected, user code must perform the TLS handshake first.
-            ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => {
+            ClientConnectorState::EnhancedSecurityUpgrade {
+                selected_protocol,
+                response_flags,
+            } => {
                 let next_state = if selected_protocol.is_standard_rdp_security() {
                     debug!("Standard RDP security selected; skipping TLS and CredSSP");
-                    ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
+                    ClientConnectorState::BasicSettingsExchangeSendInitial {
+                        selected_protocol,
+                        response_flags,
+                    }
                 } else if selected_protocol
                     .intersects(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX)
                 {
                     debug!("Begin NLA using CredSSP");
-                    ClientConnectorState::Credssp { selected_protocol }
+                    ClientConnectorState::Credssp {
+                        selected_protocol,
+                        response_flags,
+                    }
                 } else {
                     debug!("CredSSP is disabled, skipping NLA");
-                    ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
+                    ClientConnectorState::BasicSettingsExchangeSendInitial {
+                        selected_protocol,
+                        response_flags,
+                    }
                 };
 
                 (Written::Nothing, next_state)
             }
 
             //== CredSSP ==//
-            ClientConnectorState::Credssp { selected_protocol } => (
+            ClientConnectorState::Credssp {
+                selected_protocol,
+                response_flags,
+            } => (
                 Written::Nothing,
-                ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
+                ClientConnectorState::BasicSettingsExchangeSendInitial {
+                    selected_protocol,
+                    response_flags,
+                },
             ),
 
             //== Basic Settings Exchange ==//
             // Exchange basic settings including Core Data, Security Data and Network Data.
-            ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol } => {
+            ClientConnectorState::BasicSettingsExchangeSendInitial {
+                selected_protocol,
+                response_flags,
+            } => {
                 debug!("Basic Settings Exchange");
 
-                let client_gcc_blocks =
-                    create_gcc_blocks(&self.config, selected_protocol, self.static_channels.values())?;
+                let client_gcc_blocks = create_gcc_blocks(
+                    &self.config,
+                    selected_protocol,
+                    response_flags.contains(nego::ResponseFlags::EXTENDED_CLIENT_DATA_SUPPORTED),
+                    self.static_channels.values(),
+                )?;
 
                 let connect_initial =
                     mcs::ConnectInitial::with_gcc_blocks(client_gcc_blocks).map_err(ConnectorError::decode)?;
@@ -1265,6 +1298,7 @@ impl Sequence for ClientConnector {
                                     refresh_rect_support,
                                     suppress_output_support,
                                     window_support_level,
+                                    monitor_layout: connection_activation.monitor_layout(),
                                     activation_factory: ConnectionActivationFactory::new(
                                         self.config.clone(),
                                         connection_activation.io_channel_id(),
@@ -1363,6 +1397,7 @@ fn respond_to_connect_time_autodetect(
 fn create_gcc_blocks<'a>(
     config: &Config,
     selected_protocol: nego::SecurityProtocol,
+    extended_client_data_supported: bool,
     static_channels: impl Iterator<Item = &'a StaticVirtualChannel>,
 ) -> ConnectorResult<gcc::ClientGccBlocks> {
     use ironrdp_pdu::gcc::{
@@ -1431,6 +1466,9 @@ fn create_gcc_blocks<'a>(
                     if max_color_depth == 32 {
                         early_capability_flags |= ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION;
                     }
+                    if extended_client_data_supported && config.monitor_layout.is_some() {
+                        early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU;
+                    }
 
                     Some(early_capability_flags)
                 },
@@ -1463,14 +1501,20 @@ fn create_gcc_blocks<'a>(
         },
         // TODO(#139): support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
         cluster: None,
-        monitor: config.monitor_layout.clone(),
+        monitor: extended_client_data_supported
+            .then(|| config.monitor_layout.clone())
+            .flatten(),
         // Request the MCS message channel, which carries network auto-detect
         // ([MS-RDPBCGR] 2.2.14) and the multitransport / heartbeat PDUs. The
         // server assigns its ID in Server Message Channel Data.
-        message_channel: Some(gcc::ClientMessageChannelData),
-        multi_transport_channel: config
-            .multitransport_flags
-            .map(|flags| gcc::MultiTransportChannelData { flags }),
+        message_channel: extended_client_data_supported.then_some(gcc::ClientMessageChannelData),
+        multi_transport_channel: extended_client_data_supported
+            .then(|| {
+                config
+                    .multitransport_flags
+                    .map(|flags| gcc::MultiTransportChannelData { flags })
+            })
+            .flatten(),
         monitor_extended: None,
     })
 }
@@ -1702,7 +1746,7 @@ mod tests {
     }
 
     #[test]
-    fn gcc_blocks_include_the_configured_monitor_layout() {
+    fn gcc_blocks_gate_monitor_layout_on_server_support() {
         let config = Config {
             desktop_size: DesktopSize {
                 width: 1_920,
@@ -1756,9 +1800,32 @@ mod tests {
             multitransport_flags: None,
         };
 
-        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), core::iter::empty())
+        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), true, core::iter::empty())
             .expect("valid GCC Client Monitor Data");
 
         assert_eq!(blocks.monitor, config.monitor_layout);
+        assert!(
+            blocks
+                .core
+                .optional_data
+                .early_capability_flags
+                .expect("early capability flags are present")
+                .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
+        );
+
+        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), false, core::iter::empty())
+            .expect("valid GCC Client Monitor Data");
+
+        assert!(blocks.monitor.is_none());
+        assert!(blocks.message_channel.is_none());
+        assert!(blocks.multi_transport_channel.is_none());
+        assert!(
+            !blocks
+                .core
+                .optional_data
+                .early_capability_flags
+                .expect("early capability flags are present")
+                .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
+        );
     }
 }

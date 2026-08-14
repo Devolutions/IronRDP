@@ -654,12 +654,13 @@ No other clipboard format, conversion, inbound `SetData`, destination enumeratio
 `GetClipboardData` rejects a nonzero reserved value and reports `OLE_E_NOTRUNNING` before clipboard redirection is active.
 
 `IMsRdpClientNonScriptable5::UseMultimon` is disabled by default and can be changed only while the connection settings are mutable.
-Enabling it validates the current Windows monitor topology, then connection startup snapshots it, normalizes coordinates around the primary monitor, and sends GCC Client Monitor Data with the matching virtual-desktop dimensions.
+Enabling it validates the current Windows monitor topology, then connection startup snapshots it and normalizes coordinates around the primary monitor.
+The control sends GCC Client Monitor Data and requests Monitor Layout PDUs only when the server confirms `EXTENDED_CLIENT_DATA_SUPPORTED`.
 Invalid or overlapping monitor rectangles, an absent or ambiguous primary monitor, more than 16 monitors, and virtual desktops outside the RDP limits fail with `E_INVALIDARG`.
 The GDI presenter renders the negotiated virtual desktop as one composite framebuffer, so existing single-surface embedding and smart sizing continue to work.
-After the first remote framebuffer confirms the requested virtual-desktop dimensions, `RemoteMonitorCount` and `GetRemoteMonitorsBoundingBox` report the negotiated topology; its bounding box uses Windows `RECT`-style exclusive right and bottom coordinates.
-Before the first framebuffer arrives, `RemoteMonitorCount` returns zero and `GetRemoteMonitorsBoundingBox` returns `E_UNEXPECTED`.
-If that framebuffer's dimensions do not confirm the topology, these methods report the actual framebuffer as a single monitor.
+A matching server Monitor Layout PDU confirms the requested topology, after which `RemoteMonitorCount` and `GetRemoteMonitorsBoundingBox` report it using Windows `RECT`-style exclusive right and bottom coordinates.
+Before a confirmed topology or first framebuffer, `RemoteMonitorCount` returns zero and `GetRemoteMonitorsBoundingBox` returns `E_UNEXPECTED`.
+If the server omits Monitor Layout Data or reports a different layout, these methods report the actual framebuffer as a single monitor after the first frame rather than inferring success from its dimensions.
 `RemoteMonitorLayoutMatchesLocal` re-evaluates the local topology and returns false after host-display changes; reconnect to negotiate the new layout.
 The control currently sends only basic Client Monitor Data and does not advertise per-monitor physical dimensions, orientation, or DPI scaling through Client Monitor Extended Data.
 
