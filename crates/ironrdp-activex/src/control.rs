@@ -19225,12 +19225,14 @@ mod tests {
             },
         ));
         assert!(receiver.try_recv().is_err());
-        assert!(events
-            .events
-            .lock()
-            .expect("event queue is available")
-            .iter()
-            .any(|event| matches!(event, WorkerEvent::AutoReconnecting { .. })));
+        assert!(
+            events
+                .events
+                .lock()
+                .expect("event queue is available")
+                .iter()
+                .any(|event| matches!(event, WorkerEvent::AutoReconnecting { .. }))
+        );
     }
 
     #[test]
