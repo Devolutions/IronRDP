@@ -72,16 +72,12 @@ The ActiveX backend explicitly rejects this bulk input operation.
 
 ## Windows Sandbox
 
-On Windows with the Windows Sandbox feature enabled, the agent can attach to a sandbox that was
-created separately (preferred) and speak RDP over the product's default **named-pipe** transport
-(`\\.\pipe\{VMId}`), using standard RDP security with no encryption (`PROTOCOL_RDP` /
-`ENCRYPTION_LEVEL_NONE`).
+On Windows with the Windows Sandbox feature enabled, the agent can create and attach to a sandbox over the product's default **named-pipe** transport (`\\.\pipe\{VMId}`).
+The connection uses standard RDP security with no encryption (`PROTOCOL_RDP` / `ENCRYPTION_LEVEL_NONE`).
 
 ```bat
-:: create headless (prints Id only)
-wsb start
-
-:: inspect / list via WindowsSandboxServer gRPC
+:: create, inspect, and stop via WindowsSandboxServer gRPC
+ironrdp-agent sandbox start
 ironrdp-agent sandbox list
 ironrdp-agent sandbox config <sandbox-id>
 
@@ -91,9 +87,10 @@ ironrdp-agent connect --sandbox-id <sandbox-id>
 ironrdp-agent screenshot sandbox.png
 ```
 
-The agent speaks `sandboxserver.SandboxCore` in-process over the per-user named pipe
-(`\\.\pipe\wsandbox\<md5(user SID)>`) — no .NET helper is required. WindowsSandboxServer must
-already be running (starting a sandbox with `wsb start` / the Sandbox UI is enough).
+The agent speaks `sandboxserver.SandboxCore` in-process over the per-user named pipe (`\\.\pipe\wsandbox\<md5(user SID)>`) — no .NET helper is required.
+WindowsSandboxServer must already be running; opening the Sandbox UI or invoking `wsb` starts it.
+On retail builds that permit one active sandbox, stop that initial sandbox before using `sandbox start`; the agent reports server policy errors rather than bypassing them.
+`sandbox start` accepts `--id <GUID>` and `--config <FILE>`, reads the same configuration XML accepted by `wsb start --config`, and prints the created sandbox Id.
 
 Low-level escape hatch when you already have the pipe path and guest password:
 

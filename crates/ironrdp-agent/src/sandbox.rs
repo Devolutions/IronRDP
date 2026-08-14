@@ -50,6 +50,16 @@ pub(crate) fn list_sandbox_ids() -> anyhow::Result<Vec<String>> {
     sandbox_grpc::enumerate_sandbox_vms()
 }
 
+/// Start a sandbox through WindowsSandboxServer and return its RDP configuration.
+///
+/// `recipe` is the Windows Sandbox configuration XML.
+/// When it is absent, the server uses its default configuration.
+/// `sandbox_id` lets callers select a stable ID; otherwise the server assigns one.
+pub(crate) fn start_sandbox(recipe: Option<&str>, sandbox_id: Option<&str>) -> anyhow::Result<SandboxRdpConfig> {
+    let xml = sandbox_grpc::start_sandbox(recipe, sandbox_id).context("StartSandbox")?;
+    Ok(parse_config_xml(&xml, sandbox_id.unwrap_or_default()))
+}
+
 /// Fetch `RdpClientConfig` for a running sandbox.
 pub(crate) fn get_rdp_config(sandbox_id: &str) -> anyhow::Result<SandboxRdpConfig> {
     let xml = sandbox_grpc::get_rdp_client_config_xml(sandbox_id)

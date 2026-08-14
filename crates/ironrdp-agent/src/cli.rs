@@ -193,7 +193,7 @@ enum Command {
     Now(NowArgs),
     /// Inspect and exercise the validated, headless RemoteApp/RAIL audit plane.
     Rail(RailArgs),
-    /// Windows Sandbox lifecycle helpers (list/config/stop via WindowsSandboxServer gRPC).
+    /// Windows Sandbox lifecycle helpers via WindowsSandboxServer gRPC.
     #[cfg(windows)]
     Sandbox(SandboxArgs),
 }
@@ -208,6 +208,15 @@ struct SandboxArgs {
 #[cfg(windows)]
 #[derive(Subcommand, Debug)]
 enum SandboxCommand {
+    /// Start a sandbox through the running WindowsSandboxServer.
+    Start {
+        /// Optional sandbox ID. The server generates one when omitted.
+        #[arg(long, value_name = "GUID")]
+        id: Option<String>,
+        /// Read Windows Sandbox configuration XML from this file.
+        #[arg(long, value_name = "FILE")]
+        config: Option<PathBuf>,
+    },
     /// List running sandbox ids (`EnumerateSandboxVMs`).
     List,
     /// Show RDP config for a sandbox (password redacted).
@@ -1069,6 +1078,16 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
 #[cfg(windows)]
 fn run_sandbox_command(args: SandboxArgs) -> anyhow::Result<()> {
     match args.command {
+        SandboxCommand::Start { id, config } => {
+            let recipe = config
+                .as_deref()
+                .map(|path| std::fs::read_to_string(path).with_context(|| format!("read {}", path.display())))
+                .transpose()?;
+            let cfg =
+                crate::sandbox::start_sandbox(recipe.as_deref(), id.as_deref()).context("start Windows Sandbox")?;
+            println!("{}", cfg.sandbox_id);
+            Ok(())
+        }
         SandboxCommand::List => {
             let ids = crate::sandbox::list_sandbox_ids().context("list Windows sandboxes")?;
             if ids.is_empty() {
@@ -2033,6 +2052,8 @@ mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
     use super::Command;
+    #[cfg(windows)]
+    use super::SandboxCommand;
     use super::{
         Backend, Cli, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, build_now_execution,
         endpoint_from_arg,
@@ -2087,6 +2108,30 @@ mod tests {
         for drive in ["C:\\", "=C:\\", "Data=", "too-long=C:\\", "Data/C:\\"] {
             assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--rdpdr-drive", drive]).is_err());
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sandbox_start_parses_optional_id_and_config_file() {
+        let cli = Cli::try_parse_from([
+            "ironrdp-agent",
+            "sandbox",
+            "start",
+            "--id",
+            "8825f947-7d05-46e5-9efb-317ca83500ec",
+            "--config",
+            "sandbox.wsb",
+        ])
+        .expect("valid sandbox start arguments");
+
+        let Some(Command::Sandbox(args)) = cli.command else {
+            panic!("expected sandbox command");
+        };
+        let SandboxCommand::Start { id, config } = args.command else {
+            panic!("expected sandbox start command");
+        };
+        assert_eq!(id.as_deref(), Some("8825f947-7d05-46e5-9efb-317ca83500ec"));
+        assert_eq!(config, Some(PathBuf::from("sandbox.wsb")));
     }
 
     #[test]
