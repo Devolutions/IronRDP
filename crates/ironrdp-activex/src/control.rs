@@ -442,6 +442,7 @@ const CONTROL_RECONNECT_BLOCKED: i32 = 1;
 const CONTROL_CLOSE_CAN_PROCEED: i32 = 0;
 const CONTROL_CLOSE_WAIT_FOR_EVENTS: i32 = 1;
 const MAX_ACTIVEX_STATIC_CHANNELS: usize = 28;
+const MAX_RECONNECT_ATTEMPTS: u32 = 200;
 const MAX_PENDING_WORKER_EVENTS: usize = 64;
 const CERTIFICATE_WARNING_CONTINUE_BUTTON: i32 = 100;
 const SECURITY_WARNING_CONTINUE_BUTTON: i32 = 101;
@@ -2477,7 +2478,11 @@ unsafe extern "system" fn advanced_put_redirect_clipboard(this: *mut c_void, val
 
 unsafe extern "system" fn advanced_put_enable_auto_reconnect(this: *mut c_void, value: i16) -> HRESULT {
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
-    object.settings.borrow_mut().enable_auto_reconnect = value != VARIANT_FALSE.0;
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    settings.enable_auto_reconnect = value != VARIANT_FALSE.0;
     S_OK
 }
 
@@ -2500,8 +2505,15 @@ unsafe extern "system" fn advanced_put_max_reconnect_attempts(this: *mut c_void,
     let Ok(value) = u32::try_from(value) else {
         return E_INVALIDARG;
     };
+    if value > MAX_RECONNECT_ATTEMPTS {
+        return E_INVALIDARG;
+    }
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
-    object.settings.borrow_mut().max_reconnect_attempts = value;
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    settings.max_reconnect_attempts = value;
     S_OK
 }
 
@@ -13345,6 +13357,12 @@ fn queue_worker_event(
     hwnd: HWND,
     event: WorkerEvent,
 ) -> bool {
+    let auto_reconnect_key = match &event {
+        WorkerEvent::AutoReconnecting {
+            generation, attempt, ..
+        } => Some((*generation, *attempt)),
+        _ => None,
+    };
     if events.closed.load(Ordering::Acquire) {
         return false;
     }
@@ -13445,7 +13463,6 @@ fn queue_worker_event(
             true
         }
     };
-    drop(queue);
     if !queued {
         return false;
     }
@@ -13455,7 +13472,24 @@ fn queue_worker_event(
     {
         event_posted.store(false, Ordering::Release);
         tracing::debug!(?error, "Unable to post ActiveX event dispatch message");
+        if let Some((generation, attempt)) = auto_reconnect_key {
+            if let Some(index) = queue.iter().rposition(|pending| {
+                matches!(
+                    pending,
+                    WorkerEvent::AutoReconnecting {
+                        generation: pending_generation,
+                        attempt: pending_attempt,
+                        ..
+                    } if *pending_generation == generation && *pending_attempt == attempt
+                )
+            }) {
+                queue.remove(index);
+                events.space_available.notify_all();
+            }
+            return false;
+        }
     }
+    drop(queue);
     true
 }
 
@@ -15255,6 +15289,24 @@ mod tests {
         assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, 3) }, S_OK);
         assert_eq!(settings.borrow().max_reconnect_attempts, 3);
         assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, -1) }, E_INVALIDARG);
+        assert_eq!(
+            unsafe {
+                advanced_put_max_reconnect_attempts(
+                    this,
+                    i32::try_from(MAX_RECONNECT_ATTEMPTS + 1).expect("limit fits in i32"),
+                )
+            },
+            E_INVALIDARG
+        );
+        settings.borrow_mut().connection_settings_sealed = true;
+        assert_eq!(
+            unsafe { advanced_put_enable_auto_reconnect(this, VARIANT_TRUE.0) },
+            E_FAIL
+        );
+        assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, 4) }, E_FAIL);
+        assert!(!settings.borrow().enable_auto_reconnect);
+        assert_eq!(settings.borrow().max_reconnect_attempts, 3);
+        settings.borrow_mut().connection_settings_sealed = false;
 
         assert_eq!(unsafe { advanced_put_compress(this, 0) }, S_OK);
         let mut compression = -1;
@@ -19233,6 +19285,29 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, WorkerEvent::AutoReconnecting { .. }))
         );
+    }
+
+    #[test]
+    fn worker_event_queue_rejects_auto_reconnect_when_dispatch_fails() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = oneshot::channel();
+
+        assert!(!queue_worker_event(
+            &events,
+            &event_posted,
+            HWND(ptr::dangling_mut()),
+            WorkerEvent::AutoReconnecting {
+                generation: 7,
+                disconnect_reason: 0,
+                attempt: 1,
+                maximum_attempts: 1,
+                response: sender,
+            },
+        ));
+        assert!(matches!(receiver.try_recv(), Err(oneshot::error::TryRecvError::Closed)));
+        assert!(events.events.lock().expect("event queue is available").is_empty());
+        assert!(!event_posted.load(Ordering::Acquire));
     }
 
     #[test]

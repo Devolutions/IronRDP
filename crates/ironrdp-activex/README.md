@@ -284,12 +284,8 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, writable confirm-close, and worker-backed warning and auto-reconnect events are delivered on the creating apartment. |
 | Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. Non-filesystem device, camera, monitor, and preferred-redirection capabilities remain unavailable. |
 
-The audit also identified RDM settings that have no IronRDP ActiveX backend: input throttling,
-authentication policy, device/printer/port/smart-card
-redirection, RemoteApp, audio capture, video policy, PCB, load balancing, and Microsoft workspace
-extensions. Their audited AdvancedSettings vtable slots use their exact published ABI signatures,
-initialize out parameters, and return `E_NOTIMPL`; the control does not report success for settings
-that cannot affect the connection.
+The audit also identified RDM settings that have no IronRDP ActiveX backend: input throttling, authentication policy, device/printer/port/smart-card redirection, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
+Their audited AdvancedSettings vtable slots use their exact published ABI signatures, initialize out parameters, and return `E_NOTIMPL`; the control does not report success for settings that cannot affect the connection.
 
 The control exposes a standard `IConnectionPointContainer` and an event connection point for the
 published `IMsTscAxEvents` IID `{336D5562-EFA8-482E-8CB3-C5C0FC7A7DB6}`. Lifecycle events are delivered

@@ -1,3 +1,4 @@
+use core::error::Error as _;
 use core::net::SocketAddr;
 use core::num::NonZeroU16;
 use core::time::Duration;
@@ -894,6 +895,17 @@ fn is_transport_read_error(error: &io::Error) -> bool {
     !error
         .get_ref()
         .is_some_and(|source| source.is::<ironrdp_core::DecodeError>())
+}
+
+fn is_transport_session_error(error: &(dyn core::error::Error + 'static)) -> bool {
+    let mut source = Some(error);
+    while let Some(error) = source {
+        if let Some(error) = error.downcast_ref::<io::Error>() {
+            return is_transport_read_error(error);
+        }
+        source = error.source();
+    }
+    false
 }
 
 async fn cancelable_operation<T>(
@@ -2665,8 +2677,22 @@ async fn active_session(
                                 ));
                             };
                             result
-                        }
-                        .map_err(|e| ironrdp_session::custom_err!("read deactivation-reactivation sequence step", e))?;
+                        };
+                        let written = match written {
+                            Ok(written) => written,
+                            Err(error) if is_transport_session_error(&error) => {
+                                return Ok(RdpControlFlow::TransportFailure(ironrdp_session::custom_err!(
+                                    "read deactivation-reactivation sequence step",
+                                    error
+                                )));
+                            }
+                            Err(error) => {
+                                return Err(ironrdp_session::custom_err!(
+                                    "read deactivation-reactivation sequence step",
+                                    error
+                                ));
+                            }
+                        };
                         if written.size().is_some() {
                             let Some(result) =
                                 cancelable_operation(writer.write_all(buf.filled()), close_receiver).await
@@ -2722,9 +2748,12 @@ async fn active_session(
                                             GracefulDisconnectReason::UserInitiated,
                                         ));
                                     };
-                                    result.map_err(|error| {
-                                        ironrdp_session::custom_err!("write RAIL desktop size update", error)
-                                    })?;
+                                    if let Err(error) = result {
+                                        return Ok(RdpControlFlow::TransportFailure(ironrdp_session::custom_err!(
+                                            "write RAIL desktop size update",
+                                            error
+                                        )));
+                                    }
                                 }
                             }
                             refresh_rect_support = reactivated_refresh_rect_support;
@@ -3101,6 +3130,18 @@ mod tests {
         assert!(is_transport_read_error(&io::Error::from(
             io::ErrorKind::ConnectionReset
         )));
+
+        let transport_error = ironrdp_session::custom_err!(
+            "read activation",
+            ironrdp_connector::custom_err!("read frame", io::Error::from(io::ErrorKind::ConnectionReset))
+        );
+        assert!(is_transport_session_error(&transport_error));
+
+        let protocol_error = ironrdp_session::custom_err!(
+            "read activation",
+            ironrdp_connector::custom_err!("read frame", protocol_error)
+        );
+        assert!(!is_transport_session_error(&protocol_error));
     }
 
     #[test]
