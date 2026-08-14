@@ -361,8 +361,14 @@ impl ScardSession {
                     .map(|(s, r)| reader_state_w(s, r))
                     .collect();
                 // SAFETY: context + reader-state buffers owned for this call.
-                let status =
-                    unsafe { SCardGetStatusChangeW(native, call.timeout, states.as_mut_ptr(), states.len() as u32) };
+                let status = unsafe {
+                    SCardGetStatusChangeW(
+                        native,
+                        call.timeout,
+                        states.as_mut_ptr(),
+                        u32::try_from(states.len()).unwrap_or(u32::MAX),
+                    )
+                };
                 let code = if cancel.load(Ordering::Acquire) {
                     ReturnCode::Cancelled
                 } else {
@@ -771,7 +777,7 @@ fn card_status_w(handle: usize) -> Result<(Vec<String>, CardState, CardProtocol,
     let mut state = 0u32;
     let mut protocol = 0u32;
     let mut atr = [0u8; 36];
-    let mut atr_len = atr.len() as u32;
+    let mut atr_len = u32::try_from(atr.len()).unwrap_or(u32::MAX);
     // SAFETY: length probe with null name buffer.
     let probe = map_status(unsafe {
         SCardStatusW(
@@ -790,7 +796,7 @@ fn card_status_w(handle: usize) -> Result<(Vec<String>, CardState, CardProtocol,
     let mut names = Vec::new();
     if name_len > 0 {
         let mut name_buf = vec![0u16; name_len as usize];
-        atr_len = atr.len() as u32;
+        atr_len = u32::try_from(atr.len()).unwrap_or(u32::MAX);
         // SAFETY: handle session-owned; buffers sized for WinSCard.
         let code = map_status(unsafe {
             SCardStatusW(
@@ -825,7 +831,7 @@ fn card_status_w(handle: usize) -> Result<(Vec<String>, CardState, CardProtocol,
         card_state,
         CardProtocol::from_bits_retain(protocol),
         wire,
-        atr_len.min(MAX_ATR as u32),
+        atr_len.min(u32::try_from(MAX_ATR).unwrap_or(u32::MAX)),
     ))
 }
 
@@ -899,7 +905,7 @@ fn finish_list(
     cs: CharacterSet,
 ) -> SvcMessage {
     let need_chars = multi_chars(&v, cs);
-    let need_bytes = encoded_multistring_len(&v, cs) as u32;
+    let need_bytes = u32::try_from(encoded_multistring_len(&v, cs)).unwrap_or(u32::MAX);
     if is_null || size_chars == 0 {
         return complete_rpce(
             req,
@@ -929,7 +935,7 @@ fn finish_status(
 ) -> SvcMessage {
     let cs = status_cs(ioctl);
     let need_chars = multi_chars(&names, cs);
-    let need_bytes = encoded_multistring_len(&names, cs) as u32;
+    let need_bytes = u32::try_from(encoded_multistring_len(&names, cs)).unwrap_or(u32::MAX);
     if names_null || names_cap == 0 || (names_cap != SCARD_AUTOALLOCATE && names_cap < need_chars) {
         let code = if names_null || names_cap == 0 {
             ReturnCode::Success
@@ -1037,7 +1043,7 @@ fn list_cs(ioctl: ScardIoCtlCode) -> CharacterSet {
 }
 
 fn multi_chars(v: &[String], cs: CharacterSet) -> u32 {
-    let bytes = encoded_multistring_len(v, cs) as u32;
+    let bytes = u32::try_from(encoded_multistring_len(v, cs)).unwrap_or(u32::MAX);
     if matches!(cs, CharacterSet::Unicode) {
         bytes / 2
     } else {
@@ -1050,7 +1056,7 @@ fn pack_pci(pci: &SCardIORequest) -> Vec<u8> {
     let mut buf = vec![0u8; hdr + pci.extra_bytes.len()];
     let req = SCARD_IO_REQUEST {
         dwProtocol: pci.protocol.bits(),
-        cbPciLength: buf.len() as u32,
+        cbPciLength: u32::try_from(buf.len()).unwrap_or(u32::MAX),
     };
     // SAFETY: write unaligned header into owned byte buffer.
     unsafe {
@@ -1082,7 +1088,7 @@ fn unpack_pci(raw: &[u8]) -> SCardIORequest {
 }
 
 fn map_status(status: i32) -> ReturnCode {
-    let code = status as u32;
+    let code = u32::from_ne_bytes(i32::to_ne_bytes(status));
     match code {
         0 => ReturnCode::Success,
         // SAFETY: ReturnCode is #[repr(u32)]; ranges are defined variants.

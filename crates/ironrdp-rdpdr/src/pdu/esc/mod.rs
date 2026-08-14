@@ -920,7 +920,7 @@ impl ListReadersReturn {
     const NAME: &'static str = "ListReaders_Return";
 
     pub fn new(return_code: ReturnCode, readers: Vec<String>, encoding: CharacterSet) -> rpce::Pdu<Self> {
-        let c_bytes = encoded_multistring_len(&readers, encoding) as u32;
+        let c_bytes = u32::try_from(encoded_multistring_len(&readers, encoding)).unwrap_or(u32::MAX);
         rpce::Pdu(Self {
             return_code,
             encoding,
@@ -1823,7 +1823,7 @@ impl TransmitReturn {
     const NAME: &'static str = "Transmit_Return";
 
     pub fn new(return_code: ReturnCode, recv_pci: Option<SCardIORequest>, recv_buffer: Vec<u8>) -> rpce::Pdu<Self> {
-        let recv_len = recv_buffer.len() as u32;
+        let recv_len = u32::try_from(recv_buffer.len()).unwrap_or(u32::MAX);
         rpce::Pdu(Self {
             return_code,
             recv_pci,
@@ -1946,7 +1946,7 @@ impl StatusReturn {
         atr_length: u32,
         encoding: CharacterSet,
     ) -> rpce::Pdu<Self> {
-        let reader_c_bytes = encoded_multistring_len(&reader_names, encoding) as u32;
+        let reader_c_bytes = u32::try_from(encoded_multistring_len(&reader_names, encoding)).unwrap_or(u32::MAX);
         rpce::Pdu(Self {
             return_code,
             reader_names: Some(reader_names),
@@ -2635,7 +2635,7 @@ impl StateReturn {
     const NAME: &'static str = "State_Return";
 
     pub fn new(return_code: ReturnCode, state: CardState, protocol: CardProtocol, atr: Vec<u8>) -> rpce::Pdu<Self> {
-        let atr_len = atr.len() as u32;
+        let atr_len = u32::try_from(atr.len()).unwrap_or(u32::MAX);
         rpce::Pdu(Self {
             return_code,
             state,
