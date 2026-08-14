@@ -20,18 +20,31 @@ async function fetchReviewContext({ github, owner, repo, pullNumber, expectedHea
     throw new Error("pull request head changed while collecting review context");
   }
 
-  const [conversationComments, reviewComments] = await Promise.all([
+  const [conversationComments, reviewComments, submittedReviews] = await Promise.all([
     github.paginate(github.rest.issues.listComments, {
       owner, repo, issue_number: pullNumber, per_page: 100,
     }),
     github.paginate(github.rest.pulls.listReviewComments, {
       owner, repo, pull_number: pullNumber, per_page: 100,
     }),
+    github.paginate(github.rest.pulls.listReviews, {
+      owner, repo, pull_number: pullNumber, per_page: 100,
+    }),
   ]);
+  const { data: currentPullRequest } = await github.rest.pulls.get({
+    owner, repo, pull_number: pullNumber,
+  });
+  if (currentPullRequest.head?.sha !== expectedHeadSha) {
+    throw new Error("pull request head changed while collecting review context");
+  }
 
   const comments = [
     ...conversationComments.map((comment) => ({ kind: "conversation", comment })),
     ...reviewComments.map((comment) => ({ kind: "review", comment })),
+    ...submittedReviews.map((comment) => ({
+      kind: "review-body",
+      comment: { ...comment, created_at: comment.submitted_at || comment.created_at },
+    })),
   ]
     .filter(({ comment }) => comment.user?.type !== "Bot" && typeof comment.body === "string")
     .sort((left, right) => left.comment.created_at.localeCompare(right.comment.created_at));
