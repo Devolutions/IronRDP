@@ -73,18 +73,20 @@ pub fn export_capture(capture: &Capture, options: &ExportOptions) -> Result<Expo
     let mut output = StagedOutput::new(staging);
     let result = router
         .route_plaintext_with_frame_sink(&plaintext, &mut |frame| output.write_frame(frame))
-        .and_then(|report| finalize_staged_output(&output, &report, options));
+        .and_then(|report| finalize_staged_output(&mut output, &report, options));
     match result {
         Ok(summary) => Ok(summary),
         Err(error) => {
-            fs::remove_dir_all(&output.directory).map_err(ExportError::CleanupOutput)?;
+            if !output.finalization_started {
+                fs::remove_dir_all(&output.directory).map_err(ExportError::CleanupOutput)?;
+            }
             Err(error)
         }
     }
 }
 
 fn finalize_staged_output(
-    output: &StagedOutput,
+    output: &mut StagedOutput,
     report: &ReplayReport,
     options: &ExportOptions,
 ) -> Result<ExportSummary, ExportError> {
@@ -92,6 +94,7 @@ fn finalize_staged_output(
         return Err(ExportError::NoVisualFrames);
     }
     output.write_diagnostics(report)?;
+    output.finalization_started = true;
     replace_output_directory(&output.directory, &options.directory, options.replace)?;
     Ok(ExportSummary {
         directory: options.directory.clone(),
@@ -103,6 +106,7 @@ struct StagedOutput {
     directory: PathBuf,
     frame_count: usize,
     frame_metadata: String,
+    finalization_started: bool,
 }
 
 impl StagedOutput {
@@ -111,14 +115,15 @@ impl StagedOutput {
             directory,
             frame_count: 0,
             frame_metadata: String::from("FrameIndex|FramePacket|FrameSize|FrameFile|UpdatePos|UpdateSize\n"),
+            finalization_started: false,
         }
     }
 
     fn write_frame(&mut self, frame: ReplayFrame) -> Result<(), ExportError> {
-        let name = format!("frame_{:04}.png", self.frame_count);
+        let name = format!("frame_{:06}.png", self.frame_count);
         encode_png(&self.directory.join(name), &frame)?;
         self.frame_metadata.push_str(&format!(
-            "{}|{}|{}x{}|frame_{:04}.png|0x0|{}x{}\n",
+            "{}|{}|{}x{}|frame_{:06}.png|0x0|{}x{}\n",
             self.frame_count, frame.packet, frame.width, frame.height, self.frame_count, frame.width, frame.height,
         ));
         self.frame_count += 1;
@@ -192,7 +197,74 @@ fn replace_output_directory(staging: &Path, directory: &Path, replace: bool) -> 
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
             return Err(ExportError::OutputPathNotDirectory);
         }
-        Ok(_) if replace => fs::remove_dir_all(directory).map_err(ExportError::FinalizeOutput)?,
+        Ok(_) if replace => {
+            let stem = directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(ExportError::OutputPathNotLeaf)?;
+            let mut previous = None;
+            for attempt in 0..1_000 {
+                let backup =
+                    output_parent(directory).join(format!(".{stem}.previous-{}-{attempt}", std::process::id()));
+                match fs::rename(directory, &backup) {
+                    Ok(()) => {
+                        previous = Some(backup);
+                        break;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(ExportError::FinalizeOutput(error)),
+                }
+            }
+            let previous = previous.ok_or_else(|| {
+                ExportError::FinalizeOutput(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "could not allocate replay output backup directory",
+                ))
+            })?;
+
+            if let Err(error) = fs::rename(staging, directory) {
+                if let Err(restore_error) = fs::rename(&previous, directory) {
+                    return Err(ExportError::FinalizeOutput(io::Error::new(
+                        error.kind(),
+                        format!(
+                            "could not publish replay output; previous output remains at {}: {restore_error}",
+                            previous.display()
+                        ),
+                    )));
+                }
+                return Err(ExportError::FinalizeOutput(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "could not publish replay output; completed export remains staged at {}: {error}",
+                        staging.display()
+                    ),
+                )));
+            }
+
+            if let Err(error) = fs::remove_dir_all(&previous) {
+                if let Err(rollback_error) = fs::rename(directory, staging) {
+                    return Err(ExportError::FinalizeOutput(io::Error::new(
+                        error.kind(),
+                        format!(
+                            "could not remove previous replay output; replay output remains at {} and previous output remains at {}: {rollback_error}",
+                            directory.display(),
+                            previous.display()
+                        ),
+                    )));
+                }
+                if let Err(restore_error) = fs::rename(&previous, directory) {
+                    return Err(ExportError::FinalizeOutput(io::Error::new(
+                        error.kind(),
+                        format!(
+                            "could not remove previous replay output; previous output remains at {}: {restore_error}",
+                            previous.display()
+                        ),
+                    )));
+                }
+                return Err(ExportError::FinalizeOutput(error));
+            }
+            return Ok(());
+        }
         Ok(_) if directory_is_empty(directory).map_err(ExportError::FinalizeOutput)? => {
             fs::remove_dir(directory).map_err(ExportError::FinalizeOutput)?;
         }
@@ -304,8 +376,8 @@ mod tests {
         output.write_diagnostics(&report).unwrap();
         replace_output_directory(&staging, &directory, false).unwrap();
 
-        assert_png_rgba(&directory.join("frame_0000.png"), [0x11, 0x22, 0x33, 0xff]);
-        assert_png_rgba(&directory.join("frame_0001.png"), [0x44, 0x55, 0x66, 0xff]);
+        assert_png_rgba(&directory.join("frame_000000.png"), [0x11, 0x22, 0x33, 0xff]);
+        assert_png_rgba(&directory.join("frame_000001.png"), [0x44, 0x55, 0x66, 0xff]);
         let diagnostics = fs::read_to_string(directory.join("events.tsv")).unwrap();
         let metadata = fs::read_to_string(directory.join("frame_meta.psv")).unwrap();
         let channels = fs::read_to_string(directory.join("dynamic-channels.tsv")).unwrap();
@@ -313,8 +385,8 @@ mod tests {
         assert_eq!(
             metadata,
             "FrameIndex|FramePacket|FrameSize|FrameFile|UpdatePos|UpdateSize\n\
-             0|12|1x1|frame_0000.png|0x0|1x1\n\
-             1|47|1x1|frame_0001.png|0x0|1x1\n"
+             0|12|1x1|frame_000000.png|0x0|1x1\n\
+             1|47|1x1|frame_000001.png|0x0|1x1\n"
         );
         assert_eq!(channels, "id\n7\n");
         for text in [diagnostics, metadata, channels] {
@@ -370,7 +442,7 @@ mod tests {
         output.write_frame(frame(12, [0x11, 0x22, 0x33, 0xff])).unwrap();
 
         let summary = finalize_staged_output(
-            &output,
+            &mut output,
             &report(),
             &ExportOptions {
                 directory: directory.clone(),
@@ -381,7 +453,13 @@ mod tests {
 
         assert_eq!(summary.frame_count, 1);
         assert!(!directory.join("keep").exists());
-        assert!(directory.join("frame_0000.png").exists());
+        assert!(directory.join("frame_000000.png").exists());
+        let backup_prefix = format!(".{}.previous-", directory.file_name().unwrap().to_string_lossy());
+        assert!(
+            fs::read_dir(directory.parent().unwrap())
+                .unwrap()
+                .all(|entry| { !entry.unwrap().file_name().to_string_lossy().starts_with(&backup_prefix) })
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -389,10 +467,10 @@ mod tests {
     fn refuses_to_finalize_without_visual_frames() {
         let directory = temporary_directory("no-frames");
         let staging = create_staging_directory(directory.parent().unwrap(), &directory).unwrap();
-        let output = StagedOutput::new(staging.clone());
+        let mut output = StagedOutput::new(staging.clone());
 
         let error = finalize_staged_output(
-            &output,
+            &mut output,
             &report(),
             &ExportOptions {
                 directory: directory.clone(),

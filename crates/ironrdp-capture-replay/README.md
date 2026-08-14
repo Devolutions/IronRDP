@@ -12,7 +12,7 @@ cargo run -p ironrdp-capture-replay --bin ironrdp-capture-replay -- capture.pcap
 ```
 
 The command succeeds only when replay produces visual framebuffer updates.
-It writes `frame_0000.png`-style PNG files in replay order, along with payload-free `frame_meta.psv`, `events.tsv`, `gaps.tsv`, and `dynamic-channels.tsv` files.
+It writes PNG files zero-padded to at least six digits (`frame_000000.png`, `frame_000001.png`, ...) in replay order, along with payload-free `frame_meta.psv`, `events.tsv`, `gaps.tsv`, and `dynamic-channels.tsv` files.
 Each `frame_meta.psv` row maps a sequence filename to its source packet, dimensions, and full-frame update geometry.
 
 The output directory must be empty by default.
