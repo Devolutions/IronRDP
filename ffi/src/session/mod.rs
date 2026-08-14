@@ -293,9 +293,7 @@ pub mod ffi {
                 ironrdp::session::ActiveStageOutput::AutoReconnectCookie { .. } => {
                     ActiveStageOutputType::AutoReconnectCookie
                 }
-                ironrdp::session::ActiveStageOutput::AutoReconnectFailed => {
-                    ActiveStageOutputType::AutoReconnectFailed
-                }
+                ironrdp::session::ActiveStageOutput::AutoReconnectFailed => ActiveStageOutputType::AutoReconnectFailed,
             }
         }
 

@@ -552,11 +552,7 @@ impl RpcApp {
                 response,
                 ..
             } => {
-                warn!(
-                    attempt,
-                    maximum_attempts,
-                    "Stopping unsupported automatic reconnect"
-                );
+                warn!(attempt, maximum_attempts, "Stopping unsupported automatic reconnect");
                 let _ = response.send(AutoReconnectDecision::Stop);
             }
             RdpOutputEvent::AutoReconnected => {
