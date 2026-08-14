@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::Path;
 
@@ -37,7 +36,7 @@ pub struct Flow {
 }
 
 /// Capture data used by later replay stages.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Capture {
     /// Direct TCP RDP flow selected from the pcapng input.
     pub flow: Flow,
@@ -45,6 +44,15 @@ pub struct Capture {
     ///
     /// The entries are retained only in memory and must not be logged or persisted.
     pub tls_key_log: String,
+}
+
+impl core::fmt::Debug for Capture {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Capture")
+            .field("flow", &self.flow)
+            .field("tls_key_log", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +63,8 @@ struct Segment {
     sequence: u32,
     syn: bool,
     ack: bool,
+    fin: bool,
+    rst: bool,
     data: Vec<u8>,
 }
 
@@ -64,16 +74,20 @@ pub fn read_capture(path: &Path) -> Result<Capture, ReplayError> {
     let mut reader = PcapNGReader::new(1024 * 1024, file).map_err(|error| ReplayError::Pcap(error.to_string()))?;
     let mut packet = 0;
     let mut linktypes = Vec::new();
+    let mut has_ethernet = false;
     let mut segments = Vec::new();
     let mut tls_key_log = String::new();
 
     loop {
         match reader.next() {
             Ok((offset, block)) => {
-                packet += 1;
                 match block {
+                    PcapBlockOwned::NG(Block::SectionHeader(_)) => {
+                        linktypes.clear();
+                    }
                     PcapBlockOwned::NG(Block::InterfaceDescription(interface)) => {
                         linktypes.push(interface.linktype.0);
+                        has_ethernet |= interface.linktype.0 == ETHERNET_LINKTYPE;
                     }
                     PcapBlockOwned::NG(Block::DecryptionSecrets(secrets))
                         if secrets.secrets_type == SecretsType::TlsKeyLog =>
@@ -89,6 +103,7 @@ pub fn read_capture(path: &Path) -> Result<Capture, ReplayError> {
                         tls_key_log.push_str(text);
                     }
                     PcapBlockOwned::NG(Block::EnhancedPacket(packet_block)) => {
+                        packet += 1;
                         let interface = usize::try_from(packet_block.if_id)
                             .map_err(|_| ReplayError::Pcap("interface ID is too large".to_owned()))?;
                         if linktypes.get(interface) == Some(&ETHERNET_LINKTYPE) && !packet_block.truncated() {
@@ -109,7 +124,7 @@ pub fn read_capture(path: &Path) -> Result<Capture, ReplayError> {
         }
     }
 
-    if !linktypes.contains(&ETHERNET_LINKTYPE) {
+    if !has_ethernet {
         return Err(ReplayError::UnsupportedTransport);
     }
 
@@ -127,30 +142,39 @@ fn parse_tcp_packet(packet: usize, bytes: &[u8]) -> Option<Segment> {
         (14, ethernet_type)
     };
 
-    let (source, destination, tcp_offset) = match ethernet_type {
+    let (source, destination, tcp_offset, network_end) = match ethernet_type {
         0x0800 => {
             let header = bytes.get(network_offset..)?;
             let header_len = usize::from(header.first()? & 0x0f) * 4;
             if header_len < 20 || *header.get(9)? != 6 {
                 return None;
             }
+            let total_len = usize::from(u16::from_be_bytes(header.get(2..4)?.try_into().ok()?));
+            if total_len < header_len {
+                return None;
+            }
+            let network_end = network_offset.checked_add(total_len)?;
+            bytes.get(network_offset..network_end)?;
             let source = IpAddr::from(<[u8; 4]>::try_from(header.get(12..16)?).ok()?);
             let destination = IpAddr::from(<[u8; 4]>::try_from(header.get(16..20)?).ok()?);
-            (source, destination, network_offset + header_len)
+            (source, destination, network_offset + header_len, network_end)
         }
         0x86dd => {
             let header = bytes.get(network_offset..network_offset + 40)?;
             if header[6] != 6 {
                 return None;
             }
+            let payload_len = usize::from(u16::from_be_bytes(header.get(4..6)?.try_into().ok()?));
+            let network_end = network_offset.checked_add(40 + payload_len)?;
+            bytes.get(network_offset..network_end)?;
             let source = IpAddr::from(<[u8; 16]>::try_from(&header[8..24]).ok()?);
             let destination = IpAddr::from(<[u8; 16]>::try_from(&header[24..40]).ok()?);
-            (source, destination, network_offset + 40)
+            (source, destination, network_offset + 40, network_end)
         }
         _ => return None,
     };
 
-    let tcp = bytes.get(tcp_offset..)?;
+    let tcp = bytes.get(tcp_offset..network_end)?;
     let header_len = usize::from(tcp.get(12)? >> 4) * 4;
     if header_len < 20 || tcp.len() < header_len {
         return None;
@@ -170,28 +194,64 @@ fn parse_tcp_packet(packet: usize, bytes: &[u8]) -> Option<Segment> {
         sequence: u32::from_be_bytes(tcp.get(4..8)?.try_into().ok()?),
         syn: flags & 0x02 != 0,
         ack: flags & 0x10 != 0,
+        fin: flags & 0x01 != 0,
+        rst: flags & 0x04 != 0,
         data: tcp[header_len..].to_vec(),
     })
 }
 
 fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
-    segments.retain(|segment| !segment.data.is_empty() || segment.syn);
-    for syn in segments.iter().filter(|segment| segment.syn && !segment.ack) {
+    segments.retain(|segment| !segment.data.is_empty() || segment.syn || segment.fin || segment.rst);
+    for (start, syn) in segments
+        .iter()
+        .enumerate()
+        .filter(|(_, segment)| segment.syn && !segment.ack)
+    {
         let client = syn.source.clone();
         let server = syn.destination.clone();
         let mut client_segments = Vec::new();
         let mut server_segments = Vec::new();
 
-        for segment in &segments {
+        for segment in segments.iter().skip(start) {
+            if segment.syn
+                && !segment.ack
+                && segment.packet != syn.packet
+                && segment.source == client
+                && segment.destination == server
+            {
+                break;
+            }
             if segment.source == client && segment.destination == server {
                 client_segments.push(segment.clone());
             } else if segment.source == server && segment.destination == client {
                 server_segments.push(segment.clone());
             }
+            if (segment.fin || segment.rst)
+                && ((segment.source == client && segment.destination == server)
+                    || (segment.source == server && segment.destination == client))
+            {
+                break;
+            }
         }
 
-        let client_stream = reassemble(client_segments)?;
-        let server_stream = reassemble(server_segments)?;
+        let client_origin = syn.sequence.wrapping_add(1);
+        let server_origin = server_segments
+            .iter()
+            .find(|segment| segment.syn)
+            .map(|segment| segment.sequence.wrapping_add(1))
+            .or_else(|| {
+                server_segments
+                    .iter()
+                    .find(|segment| !segment.data.is_empty())
+                    .map(|segment| segment.sequence)
+            })
+            .unwrap_or(0);
+        let Ok(client_stream) = reassemble(client_segments, client_origin) else {
+            continue;
+        };
+        let Ok(server_stream) = reassemble(server_segments, server_origin) else {
+            continue;
+        };
         if !client_stream.is_empty() && !server_stream.is_empty() && has_x224_connection_request(&client_stream) {
             return Ok(Flow {
                 client,
@@ -210,46 +270,70 @@ fn has_x224_connection_request(stream: &PacketStream) -> bool {
     tpkt_frames(&bytes).any(|frame| frame.get(5) == Some(&0xe0))
 }
 
-fn reassemble(segments: Vec<Segment>) -> Result<PacketStream, ReplayError> {
-    let mut bytes = BTreeMap::new();
-    for segment in segments {
-        for (offset, byte) in segment.data.into_iter().enumerate() {
-            let offset = u32::try_from(offset).map_err(|_| ReplayError::MissingTcpFlow)?;
-            let sequence = segment
-                .sequence
-                .checked_add(offset)
-                .ok_or(ReplayError::MissingTcpFlow)?;
-            match bytes.entry(sequence) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert((segment.packet, byte));
-                }
-                std::collections::btree_map::Entry::Occupied(entry) if entry.get().1 == byte => {}
-                std::collections::btree_map::Entry::Occupied(_) => return Err(ReplayError::MissingTcpFlow),
-            }
-        }
-    }
-
-    let Some((&first, _)) = bytes.first_key_value() else {
+fn reassemble(segments: Vec<Segment>, origin: u32) -> Result<PacketStream, ReplayError> {
+    let mut segments = segments
+        .into_iter()
+        .filter(|segment| !segment.data.is_empty())
+        .map(|segment| {
+            (
+                segment.packet,
+                segment
+                    .sequence
+                    .wrapping_add(u32::from(segment.syn))
+                    .wrapping_sub(origin),
+                segment.data,
+            )
+        })
+        .collect::<Vec<_>>();
+    segments.sort_by_key(|(_, sequence, _)| *sequence);
+    let Some((packet, sequence, data)) = segments.first().cloned() else {
         return Ok(Vec::new());
     };
 
-    let mut sequence = first;
-    let mut stream = PacketStream::new();
-    while let Some((packet, byte)) = bytes.remove(&sequence) {
-        if let Some((previous_packet, chunk)) = stream.last_mut()
-            && *previous_packet == packet
-        {
-            chunk.push(byte);
-        } else {
-            stream.push((packet, vec![byte]));
+    let mut ranges = vec![(packet, sequence, data)];
+    for (packet, sequence, mut data) in segments.into_iter().skip(1) {
+        let mut data_offset = 0;
+        for (_, range_sequence, range_data) in &ranges {
+            let range_len = u32::try_from(range_data.len()).map_err(|_| ReplayError::MissingTcpFlow)?;
+            let range_end = range_sequence
+                .checked_add(range_len)
+                .ok_or(ReplayError::MissingTcpFlow)?;
+            if sequence >= range_end {
+                continue;
+            }
+            let data_sequence = sequence
+                .checked_add(u32::try_from(data_offset).map_err(|_| ReplayError::MissingTcpFlow)?)
+                .ok_or(ReplayError::MissingTcpFlow)?;
+            if data_sequence < *range_sequence {
+                return Err(ReplayError::MissingTcpFlow);
+            }
+            let range_offset =
+                usize::try_from(data_sequence - range_sequence).map_err(|_| ReplayError::MissingTcpFlow)?;
+            let count = (range_data.len() - range_offset).min(data.len() - data_offset);
+            if range_data[range_offset..range_offset + count] != data[data_offset..data_offset + count] {
+                return Err(ReplayError::MissingTcpFlow);
+            }
+            data_offset += count;
+            if data_offset == data.len() {
+                break;
+            }
         }
-        sequence = sequence.checked_add(1).ok_or(ReplayError::MissingTcpFlow)?;
-    }
-    if !bytes.is_empty() {
-        return Err(ReplayError::MissingTcpFlow);
+        if data_offset < data.len() {
+            let data_sequence = sequence
+                .checked_add(u32::try_from(data_offset).map_err(|_| ReplayError::MissingTcpFlow)?)
+                .ok_or(ReplayError::MissingTcpFlow)?;
+            let (_, previous_sequence, previous_data) = ranges.last().ok_or(ReplayError::MissingTcpFlow)?;
+            let previous_end = previous_sequence
+                .checked_add(u32::try_from(previous_data.len()).map_err(|_| ReplayError::MissingTcpFlow)?)
+                .ok_or(ReplayError::MissingTcpFlow)?;
+            if data_sequence != previous_end {
+                return Err(ReplayError::MissingTcpFlow);
+            }
+            ranges.push((packet, data_sequence, data.split_off(data_offset)));
+        }
     }
 
-    Ok(stream)
+    Ok(ranges.into_iter().map(|(packet, _, data)| (packet, data)).collect())
 }
 
 fn flatten(stream: &PacketStream) -> Vec<u8> {
@@ -289,24 +373,41 @@ mod tests {
     }
 
     fn segment(sequence: u32, packet: usize, data: &[u8]) -> Segment {
+        segment_between(endpoint(1), endpoint(2), sequence, packet, false, false, data)
+    }
+
+    fn segment_between(
+        source: Endpoint,
+        destination: Endpoint,
+        sequence: u32,
+        packet: usize,
+        syn: bool,
+        ack: bool,
+        data: &[u8],
+    ) -> Segment {
         Segment {
             packet,
-            source: endpoint(1),
-            destination: endpoint(2),
+            source,
+            destination,
             sequence,
-            syn: false,
-            ack: true,
+            syn,
+            ack,
+            fin: false,
+            rst: false,
             data: data.to_vec(),
         }
     }
 
     #[test]
     fn reassembly_deduplicates_retransmissions() {
-        let stream = reassemble(vec![
-            segment(12, 2, b"world"),
-            segment(7, 1, b"hello"),
-            segment(7, 3, b"hello"),
-        ])
+        let stream = reassemble(
+            vec![
+                segment(12, 2, b"world"),
+                segment(7, 1, b"hello"),
+                segment(7, 3, b"hello"),
+            ],
+            7,
+        )
         .unwrap();
 
         assert_eq!(flatten(&stream), b"helloworld");
@@ -315,9 +416,74 @@ mod tests {
 
     #[test]
     fn reassembly_rejects_conflicting_overlap() {
-        let error = reassemble(vec![segment(1, 1, b"hello"), segment(3, 2, b"XX")]).unwrap_err();
+        let error = reassemble(vec![segment(1, 1, b"hello"), segment(3, 2, b"XX")], 1).unwrap_err();
 
         assert!(matches!(error, ReplayError::MissingTcpFlow));
+    }
+
+    #[test]
+    fn reassembly_handles_wrapped_sequence_numbers() {
+        let stream = reassemble(
+            vec![segment(u32::MAX - 1, 1, b"abcd"), segment(2, 2, b"ef")],
+            u32::MAX - 1,
+        )
+        .unwrap();
+
+        assert_eq!(flatten(&stream), b"abcdef");
+    }
+
+    #[test]
+    fn skips_incomplete_flows_before_a_valid_rdp_connection() {
+        let first_client = endpoint(1);
+        let first_server = endpoint(2);
+        let second_client = endpoint(3);
+        let second_server = endpoint(4);
+        let flow = assemble_flow(vec![
+            segment_between(first_client.clone(), first_server.clone(), 100, 1, true, false, &[]),
+            segment_between(first_client.clone(), first_server.clone(), 101, 2, false, true, b"bad"),
+            segment_between(first_client, first_server, 101, 3, false, true, b"XX"),
+            segment_between(second_client.clone(), second_server.clone(), 200, 4, true, false, &[]),
+            segment_between(
+                second_client.clone(),
+                second_server.clone(),
+                201,
+                5,
+                false,
+                true,
+                &[3, 0, 0, 7, 2, 0xe0, 0],
+            ),
+            segment_between(second_server, second_client, 300, 6, false, true, &[0]),
+        ])
+        .unwrap();
+
+        assert_eq!(flow.client.port, 3);
+        assert_eq!(flow.server.port, 4);
+    }
+
+    #[test]
+    fn separates_connections_that_reuse_a_tcp_tuple() {
+        let client = endpoint(1);
+        let server = endpoint(2);
+        let flow = assemble_flow(vec![
+            segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
+            segment_between(client.clone(), server.clone(), 101, 2, false, true, b"old"),
+            segment_between(server.clone(), client.clone(), 300, 3, false, true, b"old"),
+            segment_between(client.clone(), server.clone(), 500, 4, true, false, &[]),
+            segment_between(
+                client.clone(),
+                server.clone(),
+                501,
+                5,
+                false,
+                true,
+                &[3, 0, 0, 7, 2, 0xe0, 0],
+            ),
+            segment_between(server, client, 700, 6, false, true, &[0]),
+        ])
+        .unwrap();
+
+        assert_eq!(flow.client_stream[0].0, 5);
+        assert_eq!(flow.server_stream[0].0, 6);
     }
 
     #[test]
@@ -338,12 +504,52 @@ mod tests {
 
         assert_eq!(capture.flow.client.port, 1);
         assert_eq!(capture.flow.server.port, 2);
+        assert_eq!(capture.flow.client_stream[0].0, 2);
+        assert_eq!(capture.flow.server_stream[0].0, 3);
         assert_eq!(flatten(&capture.flow.client_stream), [3, 0, 0, 7, 2, 0xe0, 0]);
         assert_eq!(flatten(&capture.flow.server_stream), [0]);
         std::fs::remove_file(path).unwrap();
     }
 
+    #[test]
+    fn reads_unpadded_tls_key_log_entries() {
+        let path = std::env::temp_dir().join(format!("ironrdp-capture-replay-secrets-{}.pcapng", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(
+            &path,
+            pcapng_with_key_log(
+                [
+                    ethernet_tcp(1, 2, 100, 0x02, &[]),
+                    ethernet_tcp(1, 2, 101, 0x10, &[3, 0, 0, 7, 2, 0xe0, 0]),
+                    ethernet_tcp(2, 1, 200, 0x10, &[0]),
+                ],
+                "CLIENT_RANDOM synthetic secret\n",
+            ),
+        )
+        .unwrap();
+
+        let capture = read_capture(&path).unwrap();
+
+        assert_eq!(capture.tls_key_log, "CLIENT_RANDOM synthetic secret\n");
+        assert!(!format!("{capture:?}").contains("synthetic secret"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn ignores_padding_after_the_ipv4_packet() {
+        let mut packet = ethernet_tcp(1, 2, 100, 0x10, b"payload");
+        packet.extend([0; 16]);
+
+        let segment = parse_tcp_packet(1, &packet).unwrap();
+
+        assert_eq!(segment.data, b"payload");
+    }
+
     fn pcapng(frames: impl IntoIterator<Item = Vec<u8>>) -> Vec<u8> {
+        pcapng_with_key_log(frames, "")
+    }
+
+    fn pcapng_with_key_log(frames: impl IntoIterator<Item = Vec<u8>>, tls_key_log: &str) -> Vec<u8> {
         let mut output = Vec::new();
         output.extend(block(0x0a0d0d0a, {
             let mut body = Vec::new();
@@ -360,6 +566,14 @@ mod tests {
             body.extend(u32::MAX.to_le_bytes());
             body
         }));
+        if !tls_key_log.is_empty() {
+            let mut body = Vec::new();
+            body.extend(0x544c534bu32.to_le_bytes());
+            body.extend(u32::try_from(tls_key_log.len()).unwrap().to_le_bytes());
+            body.extend(tls_key_log.as_bytes());
+            body.resize((body.len() + 3) & !3, 0);
+            output.extend(block(0x0a, body));
+        }
         for frame in frames {
             let mut body = Vec::new();
             body.extend(0u32.to_le_bytes());
