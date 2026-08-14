@@ -211,6 +211,8 @@ fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
         let server = syn.destination.clone();
         let mut client_segments = Vec::new();
         let mut server_segments = Vec::new();
+        let mut client_closed = false;
+        let mut server_closed = false;
 
         for segment in segments.iter().skip(start) {
             if segment.syn
@@ -222,14 +224,19 @@ fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
                 break;
             }
             if segment.source == client && segment.destination == server {
-                client_segments.push(segment.clone());
+                if !client_closed {
+                    client_segments.push(segment.clone());
+                    client_closed |= segment.fin;
+                }
             } else if segment.source == server && segment.destination == client {
-                server_segments.push(segment.clone());
+                if !server_closed {
+                    server_segments.push(segment.clone());
+                    server_closed |= segment.fin;
+                }
+            } else {
+                continue;
             }
-            if (segment.fin || segment.rst)
-                && ((segment.source == client && segment.destination == server)
-                    || (segment.source == server && segment.destination == client))
-            {
+            if segment.rst || (client_closed && server_closed) {
                 break;
             }
         }
@@ -286,54 +293,44 @@ fn reassemble(segments: Vec<Segment>, origin: u32) -> Result<PacketStream, Repla
         })
         .collect::<Vec<_>>();
     segments.sort_by_key(|(_, sequence, _)| *sequence);
-    let Some((packet, sequence, data)) = segments.first().cloned() else {
+    let mut segments = segments.into_iter();
+    let Some((packet, start_sequence, data)) = segments.next() else {
         return Ok(Vec::new());
     };
 
-    let mut ranges = vec![(packet, sequence, data)];
-    for (packet, sequence, mut data) in segments.into_iter().skip(1) {
-        let mut data_offset = 0;
-        for (_, range_sequence, range_data) in &ranges {
-            let range_len = u32::try_from(range_data.len()).map_err(|_| ReplayError::MissingTcpFlow)?;
-            let range_end = range_sequence
-                .checked_add(range_len)
-                .ok_or(ReplayError::MissingTcpFlow)?;
-            if sequence >= range_end {
-                continue;
-            }
-            let data_sequence = sequence
-                .checked_add(u32::try_from(data_offset).map_err(|_| ReplayError::MissingTcpFlow)?)
-                .ok_or(ReplayError::MissingTcpFlow)?;
-            if data_sequence < *range_sequence {
-                return Err(ReplayError::MissingTcpFlow);
-            }
-            let range_offset =
-                usize::try_from(data_sequence - range_sequence).map_err(|_| ReplayError::MissingTcpFlow)?;
-            let count = (range_data.len() - range_offset).min(data.len() - data_offset);
-            if range_data[range_offset..range_offset + count] != data[data_offset..data_offset + count] {
-                return Err(ReplayError::MissingTcpFlow);
-            }
-            data_offset += count;
-            if data_offset == data.len() {
-                break;
-            }
+    let mut bytes = data.clone();
+    let mut stream = vec![(packet, data)];
+    for (packet, sequence, data) in segments {
+        let data_end = sequence
+            .checked_add(u32::try_from(data.len()).map_err(|_| ReplayError::MissingTcpFlow)?)
+            .ok_or(ReplayError::MissingTcpFlow)?;
+        let stream_end = start_sequence
+            .checked_add(u32::try_from(bytes.len()).map_err(|_| ReplayError::MissingTcpFlow)?)
+            .ok_or(ReplayError::MissingTcpFlow)?;
+        if sequence > stream_end {
+            return Err(ReplayError::MissingTcpFlow);
         }
-        if data_offset < data.len() {
-            let data_sequence = sequence
-                .checked_add(u32::try_from(data_offset).map_err(|_| ReplayError::MissingTcpFlow)?)
-                .ok_or(ReplayError::MissingTcpFlow)?;
-            let (_, previous_sequence, previous_data) = ranges.last().ok_or(ReplayError::MissingTcpFlow)?;
-            let previous_end = previous_sequence
-                .checked_add(u32::try_from(previous_data.len()).map_err(|_| ReplayError::MissingTcpFlow)?)
-                .ok_or(ReplayError::MissingTcpFlow)?;
-            if data_sequence != previous_end {
-                return Err(ReplayError::MissingTcpFlow);
+        let offset = usize::try_from(sequence - start_sequence).map_err(|_| ReplayError::MissingTcpFlow)?;
+        let overlap = usize::try_from(stream_end - sequence)
+            .map_err(|_| ReplayError::MissingTcpFlow)?
+            .min(data.len());
+        if bytes[offset..offset + overlap] != data[..overlap] {
+            return Err(ReplayError::MissingTcpFlow);
+        }
+        if data_end > stream_end {
+            let data = data[overlap..].to_vec();
+            bytes.extend_from_slice(&data);
+            if let Some((previous_packet, previous_data)) = stream.last_mut()
+                && *previous_packet == packet
+            {
+                previous_data.extend(data);
+            } else {
+                stream.push((packet, data));
             }
-            ranges.push((packet, data_sequence, data.split_off(data_offset)));
         }
     }
 
-    Ok(ranges.into_iter().map(|(packet, _, data)| (packet, data)).collect())
+    Ok(stream)
 }
 
 fn flatten(stream: &PacketStream) -> Vec<u8> {
@@ -484,6 +481,35 @@ mod tests {
 
         assert_eq!(flow.client_stream[0].0, 5);
         assert_eq!(flow.server_stream[0].0, 6);
+    }
+
+    #[test]
+    fn preserves_peer_data_after_a_half_close() {
+        let client = endpoint(1);
+        let server = endpoint(2);
+        let mut client_fin = segment_between(client.clone(), server.clone(), 108, 3, false, true, &[]);
+        client_fin.fin = true;
+        let mut server_fin = segment_between(server.clone(), client.clone(), 311, 6, false, true, &[]);
+        server_fin.fin = true;
+        let flow = assemble_flow(vec![
+            segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
+            segment_between(
+                client.clone(),
+                server.clone(),
+                101,
+                2,
+                false,
+                true,
+                &[3, 0, 0, 7, 2, 0xe0, 0],
+            ),
+            client_fin,
+            segment_between(server.clone(), client.clone(), 300, 4, false, true, b"first"),
+            segment_between(server, client, 305, 5, false, true, b"second"),
+            server_fin,
+        ])
+        .unwrap();
+
+        assert_eq!(flatten(&flow.server_stream), b"firstsecond");
     }
 
     #[test]
