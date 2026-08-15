@@ -119,6 +119,7 @@ impl TpduHeader {
     pub fn read(src: &mut ReadCursor<'_>, tpkt: &TpktHeader) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
+        let li_pos = src.pos();
         let li = src.read_u8(); // LI
         let code = TpduCode::from(src.read_u8()); // Code
 
@@ -127,7 +128,7 @@ impl TpduHeader {
                 Self::NAME,
                 "li",
                 "tpdu length greater than tpkt length",
-                None,
+                Some(li_pos),
             ));
         }
 
@@ -137,7 +138,7 @@ impl TpduHeader {
                 Self::NAME,
                 "li",
                 "unsupported X.224 extension (suggested by LI field set to 255)",
-                None,
+                Some(li_pos),
             ));
         }
 

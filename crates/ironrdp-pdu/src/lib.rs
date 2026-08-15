@@ -130,7 +130,8 @@ pub fn find_size(bytes: &[u8]) -> DecodeResult<Option<PduInfo>> {
     let fp_output_header = bytes[0];
 
     let action = Action::from_fp_output_header(fp_output_header)
-        .map_err(|unknown_action| unexpected_message_type_err("fpOutputHeader", unknown_action, None))?;
+        // No cursor here: `find_size` reads the raw slice, and fpOutputHeader is byte 0.
+        .map_err(|unknown_action| unexpected_message_type_err("fpOutputHeader", unknown_action, Some(0)))?;
 
     match action {
         Action::X224 => {

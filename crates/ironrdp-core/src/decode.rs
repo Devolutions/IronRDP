@@ -25,6 +25,15 @@ pub type DecodeError = ironrdp_error::Error<DecodeErrorKind>;
 /// validator) pass `None`, which is not a placeholder for a position that was
 /// merely unavailable.
 ///
+/// A decoder that constructs its own sub-cursor over a bounded payload (for
+/// example a length-prefixed sub-message read with `ReadCursor::new(src.read_slice(len))`)
+/// reports `offset` relative to that sub-cursor, not the outer stream. `Some(0)`
+/// from a nested decoder means byte zero of its own payload, which is not the
+/// same byte as `Some(0)` from the decoder that read the outer PDU. Offsets from
+/// different decode layers are therefore not directly comparable; use them to
+/// locate the failure within whichever cursor reported it, not to reconstruct an
+/// absolute position in the original input.
+///
 /// [`DecodeErrorKind::Other`] is reserved for errors that do not fit one of the
 /// structured variants and therefore does not carry an offset.
 #[non_exhaustive]
