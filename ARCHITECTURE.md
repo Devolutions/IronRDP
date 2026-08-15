@@ -102,6 +102,10 @@ RDPDR channel implementation.
 
 RDPSND static channel for audio output implemented as described in MS-RDPEA.
 
+#### [`crates/ironrdp-egfx`](./crates/ironrdp-egfx)
+
+EGFX dynamic channel implemented as described in MS-RDPEGFX.
+
 #### [`crates/ironrdp-rdpeai`](./crates/ironrdp-rdpeai)
 
 AUDIO_INPUT dynamic channel for client microphone capture implemented as described in MS-RDPEAI.

@@ -967,6 +967,7 @@ impl GraphicsPipelineClient {
             height: dest_height,
         };
 
+        self.compositor.apply_bitmap(surface_id, dest_rect, &update.data);
         self.handler.on_bitmap_updated(&update);
         Ok(())
     }
@@ -1012,6 +1013,7 @@ impl GraphicsPipelineClient {
             height: dest_height,
         };
 
+        self.compositor.apply_bitmap(surface_id, dest_rect, &update.data);
         self.handler.on_bitmap_updated(&update);
         Ok(())
     }
@@ -1481,6 +1483,99 @@ mod tests {
 
             let expected: Vec<u8> = rgb.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 0xFF]).collect();
             assert_eq!(*data, expected, "rle={rle}");
+        }
+    }
+
+    /// ClearCodec and Planar `WireToSurface1` decodes must also reach the compositor,
+    /// not just the handler. Before this fix, `decode_avc420` and `handle_uncompressed`
+    /// called `self.compositor.apply_bitmap`, but `decode_clearcodec` and `decode_planar`
+    /// did not, so a server sending either codec painted nothing into the compositor
+    /// surface even though the handler was correctly notified.
+    #[test]
+    fn clearcodec_and_planar_feed_the_compositor() {
+        use ironrdp_graphics::clearcodec::ClearCodecEncoder;
+        use ironrdp_graphics::rdp6::{BitmapStreamEncoder, RgbChannels};
+
+        const W: u16 = 4;
+        const H: u16 = 2;
+        const ORIGIN_X: u16 = 10;
+        const ORIGIN_Y: u16 = 20;
+
+        let dest_rect = ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: W,
+            bottom: H,
+        };
+
+        let mut bgra = Vec::new();
+        for i in 0..u32::from(W) * u32::from(H) {
+            let i = u8::try_from(i).unwrap();
+            bgra.extend_from_slice(&[i, 100 + i, 200 + i, 0xFF]);
+        }
+        let clearcodec_data = ClearCodecEncoder::new().encode(&bgra, W, H);
+
+        let mut rgb = Vec::new();
+        for i in 0..u8::try_from(W).unwrap() * u8::try_from(H).unwrap() {
+            rgb.extend_from_slice(&[i, 100 + i, 200 + i]);
+        }
+        let mut planar_encoded = vec![0u8; rgb.len() * 4 + 64];
+        let len = BitmapStreamEncoder::new(usize::from(W), usize::from(H))
+            .encode_bitmap::<RgbChannels>(&rgb, &mut planar_encoded, false)
+            .unwrap();
+        planar_encoded.truncate(len);
+
+        for (codec_id, bitmap_data) in [
+            (Codec1Type::ClearCodec, clearcodec_data),
+            (Codec1Type::Planar, planar_encoded),
+        ] {
+            let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+
+            let _ = client.handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                width: 200,
+                height: 100,
+                monitors: vec![],
+            }));
+            let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 1,
+                width: W,
+                height: H,
+                pixel_format: PixelFormat::XRgb,
+            }));
+            let _ = client.handle_pdu(GfxPdu::MapSurfaceToOutput(crate::pdu::MapSurfaceToOutputPdu {
+                surface_id: 1,
+                output_origin_x: u32::from(ORIGIN_X),
+                output_origin_y: u32::from(ORIGIN_Y),
+            }));
+            // Discard the delta from the surface becoming visible: only the
+            // WireToSurface1 decode below is under test.
+            let _ = client.handle_pdu(GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id: 0 }));
+            let _ = client.drain_output();
+
+            client
+                .handle_pdu(GfxPdu::WireToSurface1(crate::pdu::WireToSurface1Pdu {
+                    surface_id: 1,
+                    codec_id,
+                    pixel_format: PixelFormat::XRgb,
+                    destination_rectangle: dest_rect.clone(),
+                    bitmap_data,
+                }))
+                .unwrap();
+            let _ = client.handle_pdu(GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id: 1 }));
+
+            let updates = client.drain_output();
+            assert_eq!(updates.len(), 1, "{codec_id:?}: the decode must reach the compositor");
+            let update = &updates[0];
+            assert_eq!(
+                (
+                    update.region.left,
+                    update.region.top,
+                    update.region.right,
+                    update.region.bottom
+                ),
+                (ORIGIN_X, ORIGIN_Y, ORIGIN_X + W, ORIGIN_Y + H),
+                "{codec_id:?}"
+            );
         }
     }
 
