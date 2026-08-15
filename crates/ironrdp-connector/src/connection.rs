@@ -107,15 +107,12 @@ pub enum ClientConnectorState {
     },
     EnhancedSecurityUpgrade {
         selected_protocol: nego::SecurityProtocol,
-        response_flags: nego::ResponseFlags,
     },
     Credssp {
         selected_protocol: nego::SecurityProtocol,
-        response_flags: nego::ResponseFlags,
     },
     BasicSettingsExchangeSendInitial {
         selected_protocol: nego::SecurityProtocol,
-        response_flags: nego::ResponseFlags,
     },
     BasicSettingsExchangeWaitResponse {
         connect_initial: mcs::ConnectInitial,
@@ -247,6 +244,8 @@ pub struct ClientConnector {
     pub static_channels: StaticChannelSet,
     /// MCS message channel ID assigned by the server, once negotiated.
     pub message_channel_id: Option<u16>,
+    /// X.224 negotiation flags supplied by the server.
+    response_flags: nego::ResponseFlags,
     /// Multitransport flags the server advertised in its GCC
     /// `MultiTransportChannelData` block, if it sent one. Retained because
     /// MS-RDPBCGR 2.2.15.2 permits an `S_OK` response only to a server that
@@ -267,6 +266,7 @@ impl ClientConnector {
             client_addr,
             static_channels: StaticChannelSet::new(),
             message_channel_id: None,
+            response_flags: nego::ResponseFlags::empty(),
             server_multitransport_flags: None,
             auto_reconnect_cookie: None,
         }
@@ -818,12 +818,11 @@ impl Sequence for ClientConnector {
                     ));
                 }
 
+                self.response_flags = flags;
+
                 (
                     Written::Nothing,
-                    ClientConnectorState::EnhancedSecurityUpgrade {
-                        selected_protocol,
-                        response_flags: flags,
-                    },
+                    ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol },
                 )
             }
 
@@ -831,59 +830,39 @@ impl Sequence for ClientConnector {
             // When PROTOCOL_RDP is selected there is no TLS/CredSSP front-end: the caller should
             // still invoke mark_security_upgrade_as_done() (a no-op upgrade) before continuing.
             // When SSL/HYBRID is selected, user code must perform the TLS handshake first.
-            ClientConnectorState::EnhancedSecurityUpgrade {
-                selected_protocol,
-                response_flags,
-            } => {
+            ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => {
                 let next_state = if selected_protocol.is_standard_rdp_security() {
                     debug!("Standard RDP security selected; skipping TLS and CredSSP");
-                    ClientConnectorState::BasicSettingsExchangeSendInitial {
-                        selected_protocol,
-                        response_flags,
-                    }
+                    ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
                 } else if selected_protocol
                     .intersects(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX)
                 {
                     debug!("Begin NLA using CredSSP");
-                    ClientConnectorState::Credssp {
-                        selected_protocol,
-                        response_flags,
-                    }
+                    ClientConnectorState::Credssp { selected_protocol }
                 } else {
                     debug!("CredSSP is disabled, skipping NLA");
-                    ClientConnectorState::BasicSettingsExchangeSendInitial {
-                        selected_protocol,
-                        response_flags,
-                    }
+                    ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
                 };
 
                 (Written::Nothing, next_state)
             }
 
             //== CredSSP ==//
-            ClientConnectorState::Credssp {
-                selected_protocol,
-                response_flags,
-            } => (
+            ClientConnectorState::Credssp { selected_protocol } => (
                 Written::Nothing,
-                ClientConnectorState::BasicSettingsExchangeSendInitial {
-                    selected_protocol,
-                    response_flags,
-                },
+                ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
             ),
 
             //== Basic Settings Exchange ==//
             // Exchange basic settings including Core Data, Security Data and Network Data.
-            ClientConnectorState::BasicSettingsExchangeSendInitial {
-                selected_protocol,
-                response_flags,
-            } => {
+            ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol } => {
                 debug!("Basic Settings Exchange");
 
                 let client_gcc_blocks = create_gcc_blocks(
                     &self.config,
                     selected_protocol,
-                    response_flags.contains(nego::ResponseFlags::EXTENDED_CLIENT_DATA_SUPPORTED),
+                    self.response_flags
+                        .contains(nego::ResponseFlags::EXTENDED_CLIENT_DATA_SUPPORTED),
                     self.static_channels.values(),
                 )?;
 
