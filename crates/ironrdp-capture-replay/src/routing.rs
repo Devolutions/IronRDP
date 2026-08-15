@@ -1,4 +1,5 @@
 use core::any::TypeId;
+use core::convert::Infallible;
 use core::mem;
 use std::collections::BTreeSet;
 
@@ -75,6 +76,25 @@ pub struct ReplayEvent {
     pub action: Action,
     /// Routing path used for the PDU.
     pub route: ReplayRoute,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct ReplayFrame {
+    pub packet: usize,
+    pub width: u16,
+    pub height: u16,
+    pub pixels: Vec<u8>,
+}
+
+impl core::fmt::Debug for ReplayFrame {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ReplayFrame")
+            .field("packet", &self.packet)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("pixels", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Classifies an explicitly recorded replay gap.
@@ -232,6 +252,17 @@ impl ReplayRouter {
     ///
     /// Construct a new router for each capture so session and channel state cannot cross capture boundaries.
     pub fn route_plaintext(&mut self, plaintext: &Plaintext) -> ReplayReport {
+        match self.route_plaintext_with_frame_sink(plaintext, &mut |_| Ok::<_, Infallible>(())) {
+            Ok(report) => report,
+            Err(error) => match error {},
+        }
+    }
+
+    pub(crate) fn route_plaintext_with_frame_sink<E>(
+        &mut self,
+        plaintext: &Plaintext,
+        frame_sink: &mut impl FnMut(ReplayFrame) -> Result<(), E>,
+    ) -> Result<ReplayReport, E> {
         let mut report = ReplayReport::default();
         let mut messages = framed_stream(&plaintext.client, ReplayDirection::Client, &mut report.gaps);
         messages.extend(framed_stream(
@@ -262,7 +293,7 @@ impl ReplayRouter {
                 }
                 ReplayRoute::Connection
             } else {
-                let (route, deactivated) = self.route_server_message(&message, &mut report);
+                let (route, deactivated) = self.route_server_message(&message, &mut report, frame_sink)?;
                 if deactivated {
                     activated = false;
                     awaiting_finalization = false;
@@ -288,10 +319,15 @@ impl ReplayRouter {
             }
         }
         report.gaps.sort_by_key(|gap| gap.packet);
-        report
+        Ok(report)
     }
 
-    fn route_server_message(&mut self, message: &CapturedPdu, report: &mut ReplayReport) -> (ReplayRoute, bool) {
+    fn route_server_message<E>(
+        &mut self,
+        message: &CapturedPdu,
+        report: &mut ReplayReport,
+        frame_sink: &mut impl FnMut(ReplayFrame) -> Result<(), E>,
+    ) -> Result<(ReplayRoute, bool), E> {
         let route = match message.action {
             Action::FastPath => ReplayRoute::FastPath,
             Action::X224 => match mcs::decode_send_data_indication(&message.bytes) {
@@ -317,15 +353,28 @@ impl ReplayRouter {
             self.observe_dvc_lifecycle(message, report);
         }
         if route == ReplayRoute::OtherServerMessage {
-            return (route, false);
+            return Ok((route, false));
         }
         match self.stage.process(&mut self.image, message.action, &message.bytes) {
-            Ok(outputs) => (
-                route,
-                outputs
+            Ok(outputs) => {
+                if outputs
                     .iter()
-                    .any(|output| matches!(output, ActiveStageOutput::DeactivateAll)),
-            ),
+                    .any(|output| matches!(output, ActiveStageOutput::GraphicsUpdate(_)))
+                {
+                    frame_sink(ReplayFrame {
+                        packet: message.packet,
+                        width: self.image.width(),
+                        height: self.image.height(),
+                        pixels: self.image.data().to_vec(),
+                    })?;
+                }
+                Ok((
+                    route,
+                    outputs
+                        .iter()
+                        .any(|output| matches!(output, ActiveStageOutput::DeactivateAll)),
+                ))
+            }
             Err(_) => {
                 report.gaps.push(ReplayGap {
                     packet: message.packet,
@@ -337,7 +386,7 @@ impl ReplayRouter {
                     },
                     skipped_bytes: 0,
                 });
-                (route, false)
+                Ok((route, false))
             }
         }
     }
@@ -419,12 +468,17 @@ impl ReplayRouter {
 
 /// Decrypt, recover captured activation state, and route a direct TCP RDP capture.
 pub fn replay_capture(capture: &Capture) -> Result<ReplayReport, ReplayError> {
+    let (mut router, plaintext) = prepare_replay_capture(capture)?;
+    Ok(router.route_plaintext(&plaintext))
+}
+
+pub(crate) fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter, Plaintext), ReplayError> {
     let plaintext = decrypt_tls(capture)?;
-    let mut router = ReplayRouter::new(CapturedActivation {
+    let router = ReplayRouter::new(CapturedActivation {
         state: recover_negotiated_state(&plaintext)?,
         compression_type: captured_compression_type(&plaintext),
     })?;
-    Ok(router.route_plaintext(&plaintext))
+    Ok((router, plaintext))
 }
 
 fn captured_compression_type(plaintext: &Plaintext) -> Option<CompressionType> {
@@ -664,7 +718,10 @@ mod tests {
 
     use ironrdp_core::encode_vec;
     use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcDataPdu};
+    use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
+    use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
     use ironrdp_pdu::gcc::ChannelName;
+    use ironrdp_pdu::geometry::InclusiveRectangle;
     use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
     use ironrdp_pdu::rdp::capability_sets::{
         Bitmap, BitmapDrawingFlags, CapabilitySet, DemandActive, ServerDemandActive,
@@ -716,6 +773,38 @@ mod tests {
         assert_eq!(report.events[2].route, ReplayRoute::ClientObservation);
         assert_eq!(report.events[3].route, ReplayRoute::StaticChannel);
         assert!(report.gaps.is_empty());
+    }
+
+    #[test]
+    fn streams_graphics_updates_in_capture_order() {
+        let mut router = ReplayRouter::new(activation()).unwrap();
+        let mut frames = Vec::new();
+        let report = router
+            .route_plaintext_with_frame_sink(
+                &Plaintext {
+                    client: Vec::new(),
+                    server: vec![
+                        (1, demand_active()),
+                        (2, font_map()),
+                        (3, bitmap_fast_path([0x11, 0x22, 0x33, 0xff])),
+                        (4, bitmap_fast_path([0x44, 0x55, 0x66, 0xff])),
+                    ],
+                },
+                &mut |frame| {
+                    frames.push(frame);
+                    Ok::<_, ()>(())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            report.events.iter().map(|event| event.packet).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(frames.iter().map(|frame| frame.packet).collect::<Vec<_>>(), vec![3, 4]);
+        assert!(frames.iter().all(|frame| (frame.width, frame.height) == (32, 32)));
+        assert_eq!(&frames[0].pixels[..4], [0x33, 0x22, 0x11, 0xff]);
+        assert_eq!(&frames[1].pixels[..4], [0x66, 0x55, 0x44, 0xff]);
     }
 
     #[test]
@@ -1037,6 +1126,37 @@ mod tests {
             user_data: Cow::Owned(user_data),
         })))
         .unwrap()
+    }
+
+    fn bitmap_fast_path(pixel: [u8; 4]) -> Vec<u8> {
+        let bitmap = encode_vec(&BitmapUpdateData {
+            rectangles: vec![BitmapData {
+                rectangle: InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+                width: 1,
+                height: 1,
+                bits_per_pixel: 32,
+                compression_flags: Compression::empty(),
+                compressed_data_header: None,
+                bitmap_data: &pixel,
+            }],
+        })
+        .unwrap();
+        let update = encode_vec(&FastPathUpdatePdu {
+            fragmentation: Fragmentation::Single,
+            update_code: UpdateCode::Bitmap,
+            compression_flags: None,
+            compression_type: None,
+            data: &bitmap,
+        })
+        .unwrap();
+        let mut frame = encode_vec(&FastPathHeader::new(EncryptionFlags::empty(), update.len())).unwrap();
+        frame.extend_from_slice(&update);
+        frame
     }
 
     fn create(id: u32, name: &str) -> DrdynvcServerPdu {

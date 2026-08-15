@@ -292,6 +292,10 @@ Contains all integration tests for code living in the extra tier, in a single bi
 
 Provides test case generators and oracles for use with fuzzing.
 
+#### [`crates/ironrdp-capture-replay`](./crates/ironrdp-capture-replay)
+
+Offline direct-TCP RDP capture analysis that routes recovered plaintext and exports payload-free replay diagnostics with rendered framebuffer snapshots.
+
 #### [`fuzz`](./fuzz)
 
 Fuzz targets for code in core tier.
