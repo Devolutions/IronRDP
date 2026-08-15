@@ -56,7 +56,7 @@ impl SynDataPayload {
     const FIXED_PART_SIZE: usize = 4 + 2 + 2;
     const NAME: &'static str = "RDPUDP_SYNDATA_PAYLOAD";
 
-    fn validate_mtu(value: u16, field: &'static str) -> DecodeResult<()> {
+    fn validate_mtu<T: ironrdp_core::InvalidFieldErr>(value: u16, field: &'static str) -> Result<(), T> {
         if !(MTU_MIN..=MTU_MAX).contains(&value) {
             return Err(ironrdp_core::invalid_field_err!(
                 "RDPUDP_SYNDATA_PAYLOAD",
@@ -71,6 +71,9 @@ impl SynDataPayload {
 impl Encode for SynDataPayload {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ironrdp_core::ensure_fixed_part_size!(in: dst);
+
+        Self::validate_mtu(self.upstream_mtu, "uUpStreamMtu")?;
+        Self::validate_mtu(self.downstream_mtu, "uDownStreamMtu")?;
 
         dst.write_u32_be(self.initial_sequence_number);
         dst.write_u16_be(self.upstream_mtu);
@@ -175,22 +178,6 @@ impl UdpVersion {
     pub fn uses_v2_wire_format(self) -> bool {
         matches!(self, Self::V3)
     }
-
-    /// Minimum retransmission timeout for this version.
-    pub fn min_retransmit_ms(self) -> u32 {
-        match self {
-            Self::V1 => 500,
-            Self::V2 | Self::V3 => 300,
-        }
-    }
-
-    /// Minimum delayed ACK timeout for this version.
-    pub fn min_ack_delay_ms(self) -> u32 {
-        match self {
-            Self::V1 => 200,
-            Self::V2 | Self::V3 => 50,
-        }
-    }
 }
 
 // -- RDPUDP_SYNDATAEX_PAYLOAD --
@@ -231,6 +218,45 @@ impl SynDataExPayload {
             base
         }
     }
+
+    fn decode_fixed_part(src: &mut ReadCursor<'_>) -> DecodeResult<(SynExFlags, UdpVersion)> {
+        ironrdp_core::ensure_fixed_part_size!(in: src);
+
+        let syn_ex_flags_raw = src.read_u16_be();
+        let syn_ex_flags = SynExFlags::from_bits_truncate(syn_ex_flags_raw);
+
+        let udp_ver_raw = src.read_u16_be();
+        let udp_ver = UdpVersion::from_u16(udp_ver_raw).ok_or_else(|| {
+            ironrdp_core::invalid_field_err!("RDPUDP_SYNDATAEX_PAYLOAD", "uUdpVer", "unknown protocol version")
+        })?;
+
+        Ok((syn_ex_flags, udp_ver))
+    }
+
+    /// Decodes as part of a v1 datagram whose direction is already known.
+    ///
+    /// `cookieHash` is carried only in a client-to-server SYN with version 3
+    /// (MS-RDPEUDP 2.2.2.9); a v3 SYN+ACK MUST NOT carry one. SYN and SYN+ACK
+    /// datagrams are padded to the negotiated MTU (3.1.5.1.1, 3.1.5.1.3), so
+    /// the plain [`Decode`] impl's remaining-length heuristic misreads that
+    /// padding as a hash on a SYN+ACK. This reads exactly the bytes the
+    /// direction says should be there, nothing inferred from what remains.
+    pub(crate) fn decode_directional(src: &mut ReadCursor<'_>, is_client_syn: bool) -> DecodeResult<Self> {
+        let (syn_ex_flags, udp_ver) = Self::decode_fixed_part(src)?;
+
+        let cookie_hash = if is_client_syn && udp_ver == UdpVersion::V3 {
+            ironrdp_core::ensure_size!(in: src, size: Self::COOKIE_HASH_SIZE);
+            Some(src.read_array::<32>())
+        } else {
+            None
+        };
+
+        Ok(Self {
+            syn_ex_flags,
+            udp_ver,
+            cookie_hash,
+        })
+    }
 }
 
 impl Encode for SynDataExPayload {
@@ -269,21 +295,17 @@ impl Encode for SynDataExPayload {
 }
 
 impl Decode<'_> for SynDataExPayload {
+    /// Decodes a standalone, exact-length `RDPUDP_SYNDATAEX_PAYLOAD` buffer.
+    ///
+    /// This infers `cookieHash` presence from the remaining buffer length,
+    /// which is correct only when the buffer holds exactly this structure and
+    /// nothing after it. It must not be used on bytes carved out of a padded
+    /// v1 datagram; use `SynDataExPayload::decode_directional` there.
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        ironrdp_core::ensure_fixed_part_size!(in: src);
-
-        let syn_ex_flags_raw = src.read_u16_be();
-        let syn_ex_flags = SynExFlags::from_bits_truncate(syn_ex_flags_raw);
-
-        let udp_ver_raw = src.read_u16_be();
-        let udp_ver = UdpVersion::from_u16(udp_ver_raw).ok_or_else(|| {
-            ironrdp_core::invalid_field_err!("RDPUDP_SYNDATAEX_PAYLOAD", "uUdpVer", "unknown protocol version")
-        })?;
+        let (syn_ex_flags, udp_ver) = Self::decode_fixed_part(src)?;
 
         // cookieHash is present only for v3 and when there are enough remaining bytes.
         // Per spec: MUST be present in client→server SYN with v3, MUST NOT be present otherwise.
-        // We detect its presence by checking for remaining bytes because the caller may not
-        // know the role (client vs server) at the PDU layer.
         let cookie_hash = if udp_ver == UdpVersion::V3 && src.len() >= Self::COOKIE_HASH_SIZE {
             Some(src.read_array::<32>())
         } else {

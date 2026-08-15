@@ -22,7 +22,7 @@ doctest = false
 # payloads this protocol carries are heap-allocated, so there is no useful build
 # without it and no `alloc` feature is offered.
 default = []
-std = ["ironrdp-core/std", "ironrdp-error/std"]
+std = ["ironrdp-core/std"]
 # Structure-aware fuzzing support, mirroring `ironrdp-pdu`.
 # `arbitrary` needs the standard library, so structure-aware fuzzing implies `std`.
 arbitrary = ["dep:arbitrary", "std", "bitflags/arbitrary"]
@@ -30,7 +30,6 @@ arbitrary = ["dep:arbitrary", "std", "bitflags/arbitrary"]
 [dependencies]
 arbitrary = { version = "1", features = ["derive"], optional = true }
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
-ironrdp-error = { path = "../ironrdp-error", version = "0.2", features = ["alloc"] } # public
 bitflags = "2.11" # public
 
 [lints]

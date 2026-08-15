@@ -271,6 +271,46 @@ fn v1_syn_v3_with_cookie_roundtrip() {
     assert_eq!(decoded, datagram);
 }
 
+/// A v3 SYN+ACK padded to the MTU must not have its trailing padding read as
+/// a cookieHash. [MS-RDPEUDP] 2.2.2.9 ties cookieHash presence to direction
+/// (client-to-server SYN only); a length-based heuristic misreads padding
+/// bytes on a SYN+ACK as a fabricated 32-byte hash.
+#[test]
+fn v1_syn_ack_v3_does_not_read_padding_as_cookie_hash() {
+    let datagram = V1Datagram {
+        header: FecHeader {
+            sn_source_ack: 100,
+            receive_window_size: 64,
+            flags: V1Flags::SYN | V1Flags::ACK | V1Flags::SYNEX,
+        },
+        ack_vector: None,
+        ack_of_acks: None,
+        syn_data: Some(SynDataPayload {
+            initial_sequence_number: 0xAABB_CCDD,
+            upstream_mtu: 1200,
+            downstream_mtu: 1200,
+        }),
+        correlation_id: None,
+        syn_data_ex: Some(SynDataExPayload {
+            syn_ex_flags: SynExFlags::VERSION_INFO_VALID,
+            udp_ver: UdpVersion::V3,
+            cookie_hash: None,
+        }),
+    };
+
+    let mut encoded = encode_vec(&datagram).expect("encode");
+    // Simulate zero-padding out to the negotiated MTU (3.1.5.1.3): this is
+    // exactly the trailing data a remaining-length heuristic would misread.
+    encoded.resize(1200, 0);
+
+    let decoded: V1Datagram = decode(&encoded).expect("decode");
+    assert_eq!(
+        decoded.syn_data_ex.expect("syn_data_ex present").cookie_hash,
+        None,
+        "padding must not be read as a cookieHash on a SYN+ACK"
+    );
+}
+
 /// Verify flags are auto-computed from populated fields.
 #[test]
 fn v1_flags_auto_computed_on_encode() {
@@ -400,13 +440,41 @@ fn v1_decode_rejects_data_flag() {
     };
     let mut encoded = encode_vec(&datagram).expect("encode");
 
-    // Manually set DATA flag in the wire bytes
-    // Flags are at offset 6..8 in FecHeader (after snSourceAck(4) + windowSize(2))
-    let flags_raw = u16::from_le_bytes([encoded[6], encoded[7]]);
+    // Manually set the DATA flag in the wire bytes. Flags are at offset 6..8
+    // in FecHeader (after snSourceAck(4) + windowSize(2)), network byte order
+    // (big-endian) per the header codec's write_u16_be/read_u16_be.
+    let flags_raw = u16::from_be_bytes([encoded[6], encoded[7]]);
     let modified = flags_raw | V1Flags::DATA.bits();
-    let [low, high] = modified.to_le_bytes();
-    encoded[6] = low;
-    encoded[7] = high;
+    let [high, low] = modified.to_be_bytes();
+    encoded[6] = high;
+    encoded[7] = low;
+
+    let result: DecodeResult<V1Datagram> = decode(&encoded);
+    assert!(result.is_err());
+}
+
+/// Reject datagrams with FEC flag (not supported in handshake).
+#[test]
+fn v1_decode_rejects_fec_flag() {
+    let datagram = V1Datagram {
+        header: FecHeader {
+            sn_source_ack: 0,
+            receive_window_size: 64,
+            flags: V1Flags::empty(),
+        },
+        ack_vector: None,
+        ack_of_acks: None,
+        syn_data: None,
+        correlation_id: None,
+        syn_data_ex: None,
+    };
+    let mut encoded = encode_vec(&datagram).expect("encode");
+
+    let flags_raw = u16::from_be_bytes([encoded[6], encoded[7]]);
+    let modified = flags_raw | V1Flags::FEC.bits();
+    let [high, low] = modified.to_be_bytes();
+    encoded[6] = high;
+    encoded[7] = low;
 
     let result: DecodeResult<V1Datagram> = decode(&encoded);
     assert!(result.is_err());

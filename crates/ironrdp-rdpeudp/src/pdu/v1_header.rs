@@ -1,7 +1,7 @@
 //! RDPUDP_FEC_HEADER: the mandatory header for every v1 datagram.
 //!
 //! MS-RDPEUDP Section 2.2.2.1.
-//! Wire layout: `snSourceAck(4)` + `uReceiveWindowSize(2)` + `uFlags(2)` = 8 bytes, little-endian.
+//! Wire layout: `snSourceAck(4)` + `uReceiveWindowSize(2)` + `uFlags(2)` = 8 bytes, big-endian (network byte order).
 
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
 

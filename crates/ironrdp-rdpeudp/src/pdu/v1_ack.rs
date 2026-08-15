@@ -4,6 +4,8 @@
 //! `RDPUDP_ACK_OF_ACKVECTOR_HEADER` (MS-RDPEUDP Section 2.2.2.6).
 
 #[cfg(not(feature = "std"))]
+use alloc::vec;
+#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
 
@@ -110,14 +112,30 @@ impl V1AckVectorHeader {
     const FIXED_PART_SIZE: usize = 2; // uAckVectorSize
     const NAME: &'static str = "RDPUDP_ACK_VECTOR_HEADER";
 
+    /// Maximum ACK vector size in bytes, one byte per element. MS-RDPEUDP 2.2.2.7.
+    const MAX_ACK_VECTOR_SIZE: usize = 2048;
+
     /// Bytes of padding needed so the structure ends on a DWORD boundary.
     fn padding_len(element_count: usize) -> usize {
         (Self::FIXED_PART_SIZE + element_count).next_multiple_of(4) - Self::FIXED_PART_SIZE - element_count
+    }
+
+    fn validate_element_count<T: ironrdp_core::InvalidFieldErr>(count: usize) -> Result<(), T> {
+        if count > Self::MAX_ACK_VECTOR_SIZE {
+            return Err(ironrdp_core::invalid_field_err!(
+                Self::NAME,
+                "uAckVectorSize",
+                "ack vector must not exceed 2048 bytes"
+            ));
+        }
+        Ok(())
     }
 }
 
 impl Encode for V1AckVectorHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        Self::validate_element_count(self.elements.len())?;
+
         let count: u16 = ironrdp_core::cast_length!("RDPUDP_ACK_VECTOR_HEADER", "uAckVectorSize", self.elements.len())?;
 
         ironrdp_core::ensure_size!(in: dst, size: self.size());
@@ -146,6 +164,8 @@ impl Decode<'_> for V1AckVectorHeader {
 
         let count = src.read_u16_be();
         let count_usize = usize::from(count);
+
+        Self::validate_element_count(count_usize)?;
 
         // The padding is part of the structure, so it has to be present before
         // we start consuming: ensuring only the elements would let a truncated
@@ -417,6 +437,53 @@ mod tests {
             assert_eq!(encoded.len() % 4, 0, "structure must end on a DWORD boundary");
             assert_eq!(decode::<V1AckVectorHeader>(&encoded).expect("decode"), original);
         }
+    }
+
+    #[test]
+    fn ack_vector_encode_rejects_over_2048_elements() {
+        let header = V1AckVectorHeader {
+            elements: core::iter::repeat_n(
+                V1AckVectorElement {
+                    state: VectorElementState::DatagramReceived,
+                    length: 0,
+                },
+                V1AckVectorHeader::MAX_ACK_VECTOR_SIZE + 1,
+            )
+            .collect(),
+        };
+
+        let result = encode_vec(&header);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ack_vector_encode_accepts_exactly_2048_elements() {
+        let header = V1AckVectorHeader {
+            elements: core::iter::repeat_n(
+                V1AckVectorElement {
+                    state: VectorElementState::DatagramReceived,
+                    length: 0,
+                },
+                V1AckVectorHeader::MAX_ACK_VECTOR_SIZE,
+            )
+            .collect(),
+        };
+
+        encode_vec(&header).expect("2048 elements is the spec maximum, not an overflow");
+    }
+
+    #[test]
+    fn ack_vector_decode_rejects_over_2048_elements() {
+        // uAckVectorSize = 2049, followed by enough bytes to satisfy the
+        // existing length check, so this exercises the ceiling specifically
+        // and not the pre-existing "not enough bytes" rejection.
+        let mut bytes = vec![0x08, 0x01];
+        bytes.extend(core::iter::repeat_n(0u8, 2049));
+        bytes.push(0x00); // DWORD-boundary padding: 2 + 2049 rounds up by 1.
+        assert_eq!(bytes.len() % 4, 0);
+
+        let result: DecodeResult<V1AckVectorHeader> = decode(&bytes);
+        assert!(result.is_err());
     }
 
     #[test]

@@ -63,6 +63,26 @@ fn syndata_mtu_above_maximum() {
 }
 
 #[test]
+fn syndata_encode_rejects_mtu_below_minimum() {
+    let bad = SynDataPayload {
+        upstream_mtu: MTU_MIN - 1,
+        ..syndata()
+    };
+    let result = encode_vec(&bad);
+    assert!(result.is_err());
+}
+
+#[test]
+fn syndata_encode_rejects_mtu_above_maximum() {
+    let bad = SynDataPayload {
+        downstream_mtu: MTU_MAX + 1,
+        ..syndata()
+    };
+    let result = encode_vec(&bad);
+    assert!(result.is_err());
+}
+
+#[test]
 fn syndata_mtu_boundary_values() {
     // Both at minimum
     let min_mtu = SynDataPayload {
@@ -212,23 +232,13 @@ fn only_version_3_selects_the_v2_wire_format() {
     assert!(UdpVersion::V3.uses_v2_wire_format());
 }
 
-#[test]
-fn version_timer_minimums() {
-    assert_eq!(UdpVersion::V1.min_retransmit_ms(), 500);
-    assert_eq!(UdpVersion::V2.min_retransmit_ms(), 300);
-    assert_eq!(UdpVersion::V3.min_retransmit_ms(), 300);
-
-    assert_eq!(UdpVersion::V1.min_ack_delay_ms(), 200);
-    assert_eq!(UdpVersion::V2.min_ack_delay_ms(), 50);
-    assert_eq!(UdpVersion::V3.min_ack_delay_ms(), 50);
-}
-
 /// The cookie hash rides only on version 3, so any other version carrying one
 /// must be rejected rather than encoded and silently dropped on the way back.
 ///
 /// The decoder reads the hash only for version 3; the encoder used to write it
 /// for any version, so 32 bytes went out that no peer would read back.
-/// Found by the `rdpeudp_pdu_round_trip` fuzz oracle.
+/// Found while fuzzing the round trip during development; the
+/// `rdpeudp_pdu_round_trip` oracle that caught it is filed separately.
 #[test]
 fn syn_data_ex_rejects_a_cookie_hash_without_version_3() {
     let payload = SynDataExPayload {

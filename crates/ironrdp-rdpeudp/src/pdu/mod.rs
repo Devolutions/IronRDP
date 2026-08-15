@@ -71,6 +71,12 @@ const V1_STANDALONE_FLAGS: u16 = V1Flags::FIN.bits()
 ///
 /// V1 data payloads (SOURCE_PAYLOAD / FEC_PAYLOAD) are not represented;
 /// this crate always negotiates v2+ for data transfer.
+///
+/// `encode` does not zero-pad SYN and SYN+ACK datagrams to the negotiated
+/// MTU that MS-RDPEUDP 3.1.5.1.1 and 3.1.5.1.3 require: this crate has no
+/// socket to size the padding against. A caller sending these bytes on the
+/// wire is responsible for padding to the smaller of `upstream_mtu` and
+/// `downstream_mtu` before transmitting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct V1Datagram {
     /// Mandatory FecHeader. Standalone flags (FIN, CN, CWR, etc.)
@@ -248,7 +254,11 @@ impl Decode<'_> for V1Datagram {
         };
 
         let syn_data_ex = if header.flags.contains(V1Flags::SYNEX) {
-            Some(SynDataExPayload::decode(src)?)
+            // Same SYN-without-ACK direction test as the ack_vector gate above:
+            // cookieHash rides only on a client-to-server SYN (MS-RDPEUDP
+            // 2.2.2.9), never on a SYN+ACK.
+            let is_client_syn = header.flags.contains(V1Flags::SYN) && !header.flags.contains(V1Flags::ACK);
+            Some(SynDataExPayload::decode_directional(src, is_client_syn)?)
         } else {
             None
         };
