@@ -1495,15 +1495,13 @@ impl RdpServer {
                             writer.write_all(&data).await?;
                         }
 
-                        // Periodically measure bandwidth: Start → Payload → Stop sent
-                        // back-to-back so the client counts only the payload window, then
-                        // replies with a Bandwidth Measure Results PDU. Until one has
-                        // completed there is no characteristics result to send at all.
-                        if let Some(bw_pdus) = ad.build_bandwidth_measure() {
-                            for pdu in bw_pdus {
-                                let data = encode_autodetect_request(pdu, message_channel_id, user_channel_id)?;
-                                writer.write_all(&data).await?;
-                            }
+                        // Periodically measure bandwidth: Start on one tick, Stop several
+                        // ticks later, with ordinary traffic in between counted by the
+                        // client, then a Bandwidth Measure Results PDU in reply. Until one
+                        // has completed there is no characteristics result to send at all.
+                        if let Some(pdu) = ad.build_bandwidth_measure() {
+                            let data = encode_autodetect_request(pdu, message_channel_id, user_channel_id)?;
+                            writer.write_all(&data).await?;
                         }
                     }
                 }

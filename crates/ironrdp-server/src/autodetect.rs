@@ -1,8 +1,11 @@
-//! Server-side auto-detect (RTT measurement) per [MS-RDPBCGR 2.2.14].
+//! Server-side auto-detect (RTT and bandwidth measurement) per [MS-RDPBCGR 2.2.14].
 //!
 //! The server periodically sends RTT Measure Request PDUs and records the
-//! round-trip time from the client's response. Results are exposed via
-//! [`AutoDetectManager::snapshot()`].
+//! round-trip time from the client's response, and periodically brackets
+//! ordinary traffic with a Bandwidth Measure Start/Stop pair so the client
+//! can report the bandwidth it observed. RTT results are exposed via
+//! [`AutoDetectManager::snapshot()`]; both RTT and bandwidth are reported to
+//! the client via [`AutoDetectManager::build_netchar_result()`].
 //!
 //! [MS-RDPBCGR 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dc672839-4f4e-40b1-a71c-cd6a959baa38
 
@@ -17,9 +20,19 @@ const RTT_WINDOW_SIZE: usize = 8;
 pub(crate) const RTT_PROBE_MAX_AGE_MS: u64 = 30_000;
 
 /// Run a bandwidth measurement once every this many RTT ticks. Bandwidth
-/// changes far more slowly than RTT and each measurement sends a payload, so it
-/// is sampled less often than the per-tick RTT probe.
+/// changes far more slowly than RTT, so it is sampled less often than the
+/// per-tick RTT probe.
 const BW_MEASURE_INTERVAL_TICKS: u32 = 8;
+
+/// Number of RTT ticks a bandwidth window stays open between Start and Stop.
+///
+/// [MS-RDPBCGR] 1.3.9 and 2.2.14.2.2 scope the Bandwidth Measure Payload
+/// message to the connect-time transaction only; after the RDP Connection
+/// Sequence, "the PDUs sent from server to client (between start and stop
+/// messages) replace the payload messages". So the window has to stay open
+/// long enough for ordinary traffic to fill it, rather than closing
+/// immediately the way a synthetic payload would allow.
+const BW_WINDOW_TICKS: u32 = 4;
 
 /// Minimum spacing between Network Characteristics Result PDUs.
 ///
@@ -28,11 +41,6 @@ const BW_MEASURE_INTERVAL_TICKS: u32 = 8;
 /// aggressive probe rate from turning into an equally aggressive stream of
 /// unsolicited PDUs.
 const NETCHAR_RESULT_MIN_INTERVAL_MS: u64 = 1_000;
-
-/// Size of the synthetic Bandwidth Measure Payload, in bytes. Large enough that
-/// the client's measured time delta is meaningful on a real link, small enough
-/// not to be a noticeable periodic cost.
-const BW_PAYLOAD_LEN: usize = 8192;
 
 /// Server-side auto-detect state machine.
 ///
@@ -53,9 +61,9 @@ pub struct AutoDetectManager {
     /// Outstanding probes as `(sequence_number, sent_at_ms)`.
     pending_probes: Vec<(u16, u64)>,
     rtt_samples: VecDeque<u32>,
-    /// Sequence number of an in-flight bandwidth measurement, if any. A new
-    /// measurement is not started while one is outstanding.
-    pending_bw: Option<u16>,
+    /// State of an in-flight bandwidth measurement, if any. A new measurement
+    /// is not started while one is outstanding.
+    pending_bw: Option<PendingBandwidth>,
     /// Most recently measured bandwidth in kilobits per second.
     bandwidth_kbps: Option<u32>,
     /// Counts RTT ticks to pace bandwidth measurements (see [`BW_MEASURE_INTERVAL_TICKS`]).
@@ -71,12 +79,29 @@ pub struct AutoDetectManager {
     /// the baseRTT / averageRTT pair unusable for the queueing-delay difference
     /// a client computes from it.
     min_rtt_ms: Option<u32>,
-    /// Set when a client response updates the measured figures, cleared when a
+    /// Set when an RTT response updates the measured figures, cleared when a
     /// Network Characteristics Result reports them.
     ///
     /// Without it a client that stops answering leaves the last window values
     /// being advertised indefinitely, since they never age out of `rtt_samples`.
-    measurement_is_fresh: bool,
+    rtt_is_fresh: bool,
+    /// Set when a bandwidth measurement completes, cleared when a Network
+    /// Characteristics Result reports it.
+    ///
+    /// Tracked separately from [`rtt_is_fresh`](Self::rtt_is_fresh): bandwidth
+    /// measurements complete far less often than RTT samples arrive, so an RTT
+    /// response alone must not re-arm reporting of a bandwidth figure that may
+    /// be several measurements stale.
+    bandwidth_is_fresh: bool,
+}
+
+/// State of an in-flight continuous bandwidth measurement.
+enum PendingBandwidth {
+    /// Start has been sent; the window stays open for this many more ticks
+    /// before Stop is sent, so ordinary traffic can fill it.
+    Open { sequence: u16, ticks_remaining: u32 },
+    /// Stop has been sent; awaiting the client's Bandwidth Measure Results.
+    AwaitingResults { sequence: u16 },
 }
 
 impl AutoDetectManager {
@@ -89,7 +114,8 @@ impl AutoDetectManager {
             bandwidth_kbps: None,
             bw_tick_count: 0,
             last_netchar_result_ms: None,
-            measurement_is_fresh: false,
+            rtt_is_fresh: false,
+            bandwidth_is_fresh: false,
             min_rtt_ms: None,
         }
     }
@@ -107,27 +133,49 @@ impl AutoDetectManager {
         AutoDetectRequest::rtt_continuous(seq)
     }
 
-    /// Build a Bandwidth Measure transaction (Start → Payload → Stop) when one
-    /// is due, or `None` otherwise.
+    /// Advance the bandwidth measurement state machine by one tick, returning
+    /// a PDU to send when the machine has one, or `None` otherwise.
     ///
-    /// Paced to one measurement per [`BW_MEASURE_INTERVAL_TICKS`] calls and
-    /// suppressed while a prior measurement is still outstanding. The three PDUs
-    /// must be sent back-to-back on the MCS message channel; the client counts
-    /// the bytes received between Start and Stop and replies with a Bandwidth
-    /// Measure Results PDU, processed by [`handle_response()`](Self::handle_response).
-    pub fn build_bandwidth_measure(&mut self) -> Option<[AutoDetectRequest; 3]> {
-        self.bw_tick_count = self.bw_tick_count.wrapping_add(1);
-        if self.pending_bw.is_some() || !self.bw_tick_count.is_multiple_of(BW_MEASURE_INTERVAL_TICKS) {
-            return None;
+    /// A measurement is a Start sent when one is due (paced to once every
+    /// [`BW_MEASURE_INTERVAL_TICKS`] calls and suppressed while a prior one is
+    /// outstanding), followed by a Stop sent [`BW_WINDOW_TICKS`] calls later.
+    /// No payload PDU is sent between them: per [MS-RDPBCGR] 1.3.9, Continuous
+    /// Auto-Detection's server-to-client message set for bandwidth measurement
+    /// is Start and Stop only, and 2.2.14.2.2 states that after the RDP
+    /// Connection Sequence the ordinary PDUs the server sends between them
+    /// are what the client counts. The caller sends whichever PDU this
+    /// returns on the MCS message channel; the client eventually replies with
+    /// a Bandwidth Measure Results PDU, processed by
+    /// [`handle_response()`](Self::handle_response).
+    pub fn build_bandwidth_measure(&mut self) -> Option<AutoDetectRequest> {
+        match &mut self.pending_bw {
+            Some(PendingBandwidth::Open {
+                sequence,
+                ticks_remaining,
+            }) => {
+                if *ticks_remaining == 0 {
+                    let sequence = *sequence;
+                    self.pending_bw = Some(PendingBandwidth::AwaitingResults { sequence });
+                    return Some(AutoDetectRequest::bw_stop_continuous(sequence));
+                }
+                *ticks_remaining -= 1;
+                None
+            }
+            Some(PendingBandwidth::AwaitingResults { .. }) => None,
+            None => {
+                self.bw_tick_count = self.bw_tick_count.wrapping_add(1);
+                if !self.bw_tick_count.is_multiple_of(BW_MEASURE_INTERVAL_TICKS) {
+                    return None;
+                }
+                let seq = self.next_sequence;
+                self.next_sequence = seq.wrapping_add(1);
+                self.pending_bw = Some(PendingBandwidth::Open {
+                    sequence: seq,
+                    ticks_remaining: BW_WINDOW_TICKS,
+                });
+                Some(AutoDetectRequest::bw_start_continuous(seq))
+            }
         }
-        let seq = self.next_sequence;
-        self.next_sequence = seq.wrapping_add(1);
-        self.pending_bw = Some(seq);
-        Some([
-            AutoDetectRequest::bw_start_continuous(seq),
-            AutoDetectRequest::bw_payload(seq, vec![0u8; BW_PAYLOAD_LEN]),
-            AutoDetectRequest::bw_stop_continuous(seq),
-        ])
     }
 
     /// Build a Network Characteristics Result reporting the measured network.
@@ -144,12 +192,17 @@ impl AutoDetectManager {
     /// figures meaningfully change, so the result is paced independently rather
     /// than emitted once per probe.
     ///
-    /// Finally, returns `None` unless a client response has updated the figures
-    /// since the last result. Samples do not age out of the window, so a client
-    /// that stops answering would otherwise leave the last values being
-    /// advertised forever. `snapshot()` still reports them, where staleness is
-    /// the embedder's to judge, but they are not put on the wire as a current
-    /// claim.
+    /// Finally, returns `None` unless a client response has updated either
+    /// figure since the last result. RTT samples do not age out of the
+    /// window, and a completed bandwidth measurement is never invalidated by
+    /// a later failed one on its own, so a client that stops answering would
+    /// otherwise leave the last values being advertised forever. `snapshot()`
+    /// still reports them, where staleness is the embedder's to judge, but
+    /// they are not put on the wire as a current claim; a bandwidth
+    /// measurement that completes without a usable figure clears
+    /// `bandwidth_kbps` rather than leaving the previous one in place, so a
+    /// run of failures withholds the result entirely instead of reporting an
+    /// increasingly stale number.
     ///
     /// `baseRTT` is the lowest RTT seen over the whole session, not the lowest in
     /// the current window, so it never rises. `averageRTT` is the window average
@@ -159,7 +212,7 @@ impl AutoDetectManager {
     /// Like [`send_rtt_request()`](Self::send_rtt_request), the caller sends the
     /// returned PDU on the MCS message channel. The client does not reply to it.
     pub fn build_netchar_result(&mut self, now_ms: u64) -> Option<AutoDetectRequest> {
-        if !self.measurement_is_fresh {
+        if !self.rtt_is_fresh && !self.bandwidth_is_fresh {
             return None;
         }
         let bandwidth_kbps = self.bandwidth_kbps?;
@@ -172,7 +225,8 @@ impl AutoDetectManager {
             }
         }
         self.last_netchar_result_ms = Some(now_ms);
-        self.measurement_is_fresh = false;
+        self.rtt_is_fresh = false;
+        self.bandwidth_is_fresh = false;
 
         let seq = self.next_sequence;
         self.next_sequence = seq.wrapping_add(1);
@@ -208,16 +262,24 @@ impl AutoDetectManager {
                 }
                 self.rtt_samples.push_back(rtt_ms);
                 self.min_rtt_ms = Some(self.min_rtt_ms.map_or(rtt_ms, |m| m.min(rtt_ms)));
-                self.measurement_is_fresh = true;
+                self.rtt_is_fresh = true;
 
                 Some(rtt_ms)
             }
             AutoDetectResponse::BandwidthMeasureResults { sequence_number, .. } => {
-                if self.pending_bw == Some(*sequence_number) {
+                let awaiting = matches!(
+                    self.pending_bw,
+                    Some(PendingBandwidth::AwaitingResults { sequence }) if sequence == *sequence_number
+                );
+                if awaiting {
                     self.pending_bw = None;
-                    if let Some(kbps) = response.computed_bandwidth_kbps() {
-                        self.bandwidth_kbps = Some(kbps);
-                        self.measurement_is_fresh = true;
+                    // A transaction that completes without a usable figure clears the
+                    // previous one rather than leaving it in place, so a run of failures
+                    // withholds the result (see `build_netchar_result`) instead of
+                    // reporting an increasingly stale bandwidth.
+                    self.bandwidth_kbps = response.computed_bandwidth_kbps();
+                    if self.bandwidth_kbps.is_some() {
+                        self.bandwidth_is_fresh = true;
                     }
                 }
                 None

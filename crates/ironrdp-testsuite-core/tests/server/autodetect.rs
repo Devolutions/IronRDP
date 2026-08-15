@@ -1,6 +1,42 @@
 use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
 use ironrdp_server::autodetect::AutoDetectManager;
 
+/// Upper bound on ticks to drive while waiting for a bandwidth transaction:
+/// generous enough to cover the pacing plus the window, tight enough that a
+/// regression that stops `build_bandwidth_measure` from ever completing a
+/// transaction fails the test instead of hanging CI.
+const MAX_BANDWIDTH_TICKS: usize = 64;
+
+/// Drives `build_bandwidth_measure` until it has produced both a Start and a
+/// Stop, asserting the transaction shape along the way: exactly those two
+/// PDUs, sharing one sequence number, with nothing in between. Pinning the
+/// PDU types here is what would have caught a synthetic payload PDU sent
+/// between them, which is off-spec for continuous detection per
+/// [MS-RDPBCGR] 1.3.9. Returns the transaction's sequence number.
+fn drive_bandwidth_start_and_stop(mgr: &mut AutoDetectManager) -> u16 {
+    let mut start_sequence = None;
+    for _ in 0..MAX_BANDWIDTH_TICKS {
+        let Some(pdu) = mgr.build_bandwidth_measure() else {
+            continue;
+        };
+        match (start_sequence, pdu) {
+            (None, AutoDetectRequest::BandwidthMeasureStart { sequence_number, .. }) => {
+                start_sequence = Some(sequence_number);
+            }
+            (Some(start), AutoDetectRequest::BandwidthMeasureStop { sequence_number, .. }) => {
+                assert_eq!(
+                    sequence_number, start,
+                    "Start and Stop must share the transaction sequence"
+                );
+                return start;
+            }
+            (None, other) => panic!("expected Start first, got {other:?}"),
+            (Some(_), other) => panic!("expected Stop after Start, got {other:?}"),
+        }
+    }
+    panic!("bandwidth transaction did not complete within {MAX_BANDWIDTH_TICKS} ticks");
+}
+
 #[test]
 fn rtt_request_increments_sequence() {
     let mut mgr = AutoDetectManager::new();
@@ -99,19 +135,9 @@ fn bandwidth_measure_transacts_and_enables_netchar() {
         20,
     );
 
-    // Drive a bandwidth measurement to completion (paced internally).
-    let pdus = loop {
-        if let Some(p) = mgr.build_bandwidth_measure() {
-            break p;
-        }
-    };
-    assert_eq!(
-        pdus[0].sequence_number(),
-        pdus[2].sequence_number(),
-        "Start and Stop share the transaction sequence"
-    );
+    let bw_seq = drive_bandwidth_start_and_stop(&mut mgr);
     let results = AutoDetectResponse::BandwidthMeasureResults {
-        sequence_number: pdus[0].sequence_number(),
+        sequence_number: bw_seq,
         response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
         time_delta_ms: 10,
         byte_count: 100_000,
@@ -127,6 +153,125 @@ fn bandwidth_measure_transacts_and_enables_netchar() {
         }
         other => panic!("expected NetworkCharacteristicsResult, got {other:?}"),
     }
+}
+
+/// A second call to `build_bandwidth_measure` after Stop has been sent, while
+/// the client's Bandwidth Measure Results is still outstanding, must not
+/// start a new transaction. `drive_bandwidth_start_and_stop` already pins
+/// that nothing is sent between Start and Stop themselves; this covers the
+/// phase after Stop that it does not drive into.
+#[test]
+fn a_second_measurement_does_not_start_while_awaiting_results() {
+    let mut mgr = AutoDetectManager::new();
+    let _ = drive_bandwidth_start_and_stop(&mut mgr);
+
+    for _ in 0..MAX_BANDWIDTH_TICKS {
+        assert!(
+            mgr.build_bandwidth_measure().is_none(),
+            "no new transaction while the prior one awaits results"
+        );
+    }
+}
+
+/// A Bandwidth Measure Results whose sequence number does not match the
+/// outstanding transaction must be ignored: no bandwidth recorded, and the
+/// transaction stays outstanding rather than being cleared by an unrelated
+/// reply.
+#[test]
+fn mismatched_bandwidth_sequence_is_ignored() {
+    let mut mgr = AutoDetectManager::new();
+    let req = mgr.send_rtt_request(0);
+    let _ = mgr.handle_response(
+        &AutoDetectResponse::RttResponse {
+            sequence_number: req.sequence_number(),
+        },
+        20,
+    );
+    let bw_seq = drive_bandwidth_start_and_stop(&mut mgr);
+
+    // A reply for a different sequence must not be treated as completing the
+    // outstanding transaction.
+    let mismatched = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: bw_seq.wrapping_add(1),
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 10,
+        byte_count: 100_000,
+    };
+    assert!(mgr.handle_response(&mismatched, 20).is_none());
+    assert!(
+        mgr.build_netchar_result(1_000).is_none(),
+        "a mismatched reply must not have recorded a bandwidth figure"
+    );
+
+    // The real transaction is still outstanding, so its own reply still
+    // completes it. If the mismatched reply above had been accepted, this
+    // second reply would find no outstanding transaction to match and the
+    // measurement would never complete.
+    let matching = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: bw_seq,
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 10,
+        byte_count: 100_000,
+    };
+    assert!(mgr.handle_response(&matching, 20).is_none());
+    assert!(
+        mgr.build_netchar_result(1_000).is_some(),
+        "the outstanding transaction's own reply must still complete it"
+    );
+}
+
+/// A Bandwidth Measure Results with `time_delta_ms: 0` cannot compute a
+/// figure. It must not be reported, and it must not leave a stale
+/// `bandwidth_kbps` from an earlier successful measurement on the wire as if
+/// it were current.
+#[test]
+fn zero_time_delta_ages_out_a_previous_bandwidth_figure() {
+    let mut mgr = AutoDetectManager::new();
+    let req = mgr.send_rtt_request(0);
+    let _ = mgr.handle_response(
+        &AutoDetectResponse::RttResponse {
+            sequence_number: req.sequence_number(),
+        },
+        20,
+    );
+
+    // First measurement succeeds.
+    let bw_seq = drive_bandwidth_start_and_stop(&mut mgr);
+    let good_results = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: bw_seq,
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 10,
+        byte_count: 100_000,
+    };
+    assert!(mgr.handle_response(&good_results, 20).is_none());
+    assert!(
+        mgr.build_netchar_result(1_000).is_some(),
+        "a real bandwidth figure is known"
+    );
+
+    // Second measurement fails: timeDelta 0.
+    let req = mgr.send_rtt_request(1_000);
+    let _ = mgr.handle_response(
+        &AutoDetectResponse::RttResponse {
+            sequence_number: req.sequence_number(),
+        },
+        1_020,
+    );
+    let bw_seq = drive_bandwidth_start_and_stop(&mut mgr);
+    let zero_delta_results = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: bw_seq,
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 0,
+        byte_count: 100_000,
+    };
+    assert!(mgr.handle_response(&zero_delta_results, 1_020).is_none());
+
+    // The RTT sample is fresh, but the old bandwidth figure must not ride
+    // along as though it were still current.
+    assert!(
+        mgr.build_netchar_result(2_000).is_none(),
+        "the aged-out bandwidth figure must withhold the result, not report the stale one"
+    );
 }
 
 #[test]
@@ -219,11 +364,7 @@ fn netchar_result_is_paced_independently_of_the_probe_cadence() {
     };
     let _ = mgr.handle_response(&response, 20);
 
-    let bw_seq = loop {
-        if let Some(pdus) = mgr.build_bandwidth_measure() {
-            break pdus[0].sequence_number();
-        }
-    };
+    let bw_seq = drive_bandwidth_start_and_stop(&mut mgr);
     let results = AutoDetectResponse::BandwidthMeasureResults {
         sequence_number: bw_seq,
         response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
@@ -268,11 +409,7 @@ fn netchar_result_stops_when_the_client_stops_answering() {
         },
         20,
     );
-    let bw_seq = loop {
-        if let Some(pdus) = mgr.build_bandwidth_measure() {
-            break pdus[0].sequence_number();
-        }
-    };
+    let bw_seq = drive_bandwidth_start_and_stop(&mut mgr);
     let results = AutoDetectResponse::BandwidthMeasureResults {
         sequence_number: bw_seq,
         response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
@@ -339,11 +476,7 @@ fn base_rtt_is_the_session_low_not_the_window_low() {
         "the 5 ms sample has aged out of the window"
     );
 
-    let bw_seq = loop {
-        if let Some(pdus) = mgr.build_bandwidth_measure() {
-            break pdus[0].sequence_number();
-        }
-    };
+    let bw_seq = drive_bandwidth_start_and_stop(&mut mgr);
     let results = AutoDetectResponse::BandwidthMeasureResults {
         sequence_number: bw_seq,
         response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
@@ -387,11 +520,7 @@ fn netchar_result_maps_each_measurement_to_its_own_field() {
     assert_eq!(snap.min_ms, 10, "the 5 ms sample has left the window");
     assert_eq!(snap.avg_ms, 45, "average of 10 through 80");
 
-    let bw_seq = loop {
-        if let Some(pdus) = mgr.build_bandwidth_measure() {
-            break pdus[0].sequence_number();
-        }
-    };
+    let bw_seq = drive_bandwidth_start_and_stop(&mut mgr);
     let results = AutoDetectResponse::BandwidthMeasureResults {
         sequence_number: bw_seq,
         response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
