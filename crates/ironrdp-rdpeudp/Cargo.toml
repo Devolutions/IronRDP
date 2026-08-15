@@ -1,0 +1,36 @@
+[package]
+name = "ironrdp-rdpeudp"
+version = "0.1.0"
+readme = "README.md"
+description = "RDP-UDP transport ([MS-RDPEUDP] and [MS-RDPEUDP2]) implementation for IronRDP"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+# test = false # FIXME: turn off and keep tests in testsuite crates
+
+[features]
+# Matches `ironrdp-pdu` and `ironrdp-rdpeusb`: `no_std` unless a consumer asks
+# for `std`. The `alloc` crate is not optional here, because the variable-length
+# payloads this protocol carries are heap-allocated, so there is no useful build
+# without it and no `alloc` feature is offered.
+default = []
+std = ["ironrdp-core/std"]
+# Structure-aware fuzzing support, mirroring `ironrdp-pdu`.
+# `arbitrary` needs the standard library, so structure-aware fuzzing implies `std`.
+arbitrary = ["dep:arbitrary", "std", "bitflags/arbitrary"]
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"], optional = true }
+ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
+bitflags = "2.11" # public
+
+[lints]
+workspace = true
