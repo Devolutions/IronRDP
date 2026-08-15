@@ -427,14 +427,20 @@ impl<'de> Decode<'de> for ClientAutoReconnect {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
+        let cb_len_pos = src.pos();
         let packet_length = src.read_u32();
         if packet_length != RECONNECT_COOKIE_CB_LEN {
-            return Err(invalid_field_err!("cbLen", "invalid auto-reconnect packet size", in: src));
+            return Err(invalid_field_err!(
+                "cbLen",
+                "invalid auto-reconnect packet size",
+                at: cb_len_pos
+            ));
         }
 
+        let version_pos = src.pos();
         let version = src.read_u32();
         if version != RECONNECT_COOKIE_VERSION {
-            return Err(invalid_field_err!("Version", "invalid auto-reconnect version", in: src));
+            return Err(invalid_field_err!("Version", "invalid auto-reconnect version", at: version_pos));
         }
 
         let logon_id = src.read_u32();

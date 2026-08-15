@@ -35,9 +35,10 @@ pub fn read_string(src: &mut ReadCursor<'_>) -> DecodeResult<String> {
     let len = src.read_u32();
     let len = usize::try_from(len).map_err(|_| ironrdp_core::other_err!("string", "length does not fit in usize"))?;
     ensure_size!(in: src, size: len);
+    let start = src.pos();
     let bytes = src.read_slice(len);
     String::from_utf8(bytes.to_vec())
-        .map_err(|_| ironrdp_core::invalid_field_err!("string", "not valid UTF-8", in: src))
+        .map_err(|_| ironrdp_core::invalid_field_err!("string", "not valid UTF-8", at: start))
 }
 
 /// Size on the wire of a length-prefixed raw byte blob.

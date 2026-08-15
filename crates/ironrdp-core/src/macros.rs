@@ -60,27 +60,9 @@ macro_rules! function {
 /// If the context is not provided, it will use the current function name.
 #[macro_export]
 macro_rules! not_enough_bytes_err {
-    // offset extracted from cursor.pos()
-    ( $context:expr, $received:expr, $expected:expr, in: $cursor:expr $(,)? ) => {{
-        $crate::not_enough_bytes_err($context, $received, $expected, Some($cursor.pos()))
-    }};
-    ( $received:expr, $expected:expr, in: $cursor:expr $(,)? ) => {{
-        $crate::not_enough_bytes_err!($crate::function!(), $received, $expected, in: $cursor)
-    }};
-    // explicit offset (use 0 when the producer has no stream-cursor access)
-    ( $context:expr, $received:expr, $expected:expr, at: $offset:expr $(,)? ) => {{
-        $crate::not_enough_bytes_err($context, $received, $expected, Some($offset))
-    }};
-    ( $received:expr, $expected:expr, at: $offset:expr $(,)? ) => {{
-        $crate::not_enough_bytes_err!($crate::function!(), $received, $expected, at: $offset)
-    }};
     // no position: the error does not arise from a stream at all
-    ( $context:expr, $received:expr, $expected:expr $(,)? ) => {{
-        $crate::not_enough_bytes_err($context, $received, $expected, None)
-    }};
-    ( $received:expr, $expected:expr $(,)? ) => {{
-        $crate::not_enough_bytes_err!($crate::function!(), $received, $expected)
-    }};
+    ( $context:expr, $received:expr, $expected:expr $(,)? ) => {{ $crate::not_enough_bytes_err($context, $received, $expected, None) }};
+    ( $received:expr, $expected:expr $(,)? ) => {{ $crate::not_enough_bytes_err!($crate::function!(), $received, $expected) }};
 }
 
 /// Creates an "invalid field" error with context information.
