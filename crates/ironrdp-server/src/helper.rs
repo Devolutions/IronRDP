@@ -9,7 +9,7 @@ use tokio_rustls::rustls::pki_types::pem::PemObject as _;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::{TlsAcceptor, rustls};
 
-use crate::error::{ServerResult, from_anyhow};
+use crate::error::{ServerResult, from_anyhow_with_context};
 
 pub struct TlsIdentityCtx {
     pub certs: Vec<CertificateDer<'static>>,
@@ -22,7 +22,8 @@ impl TlsIdentityCtx {
     ///
     /// The file format can be either PEM (if the file extension ends with .pem) or DER.
     pub fn init_from_paths(cert_path: &Path, key_path: &Path) -> ServerResult<Self> {
-        Self::init_from_paths_inner(cert_path, key_path).map_err(from_anyhow)
+        Self::init_from_paths_inner(cert_path, key_path)
+            .map_err(|e| from_anyhow_with_context(e, "loading TLS identity"))
     }
 
     fn init_from_paths_inner(cert_path: &Path, key_path: &Path) -> anyhow::Result<Self> {
@@ -69,7 +70,8 @@ impl TlsIdentityCtx {
     }
 
     pub fn make_acceptor(&self) -> ServerResult<TlsAcceptor> {
-        self.make_acceptor_inner().map_err(from_anyhow)
+        self.make_acceptor_inner()
+            .map_err(|e| from_anyhow_with_context(e, "building TLS acceptor"))
     }
 
     fn make_acceptor_inner(&self) -> anyhow::Result<TlsAcceptor> {
