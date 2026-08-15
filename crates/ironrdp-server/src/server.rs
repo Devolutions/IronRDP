@@ -19,6 +19,7 @@ use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer
 use ironrdp_dvc as dvc;
 #[cfg(feature = "usb")]
 use ironrdp_dvc::DynamicChannelId;
+use ironrdp_error::ResultExt as _;
 use ironrdp_pdu::codecs::rfx::Quant;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
@@ -50,7 +51,9 @@ use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
-use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _, from_anyhow};
+use crate::error::{
+    ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult, ServerResultExt as _, from_anyhow_with_context,
+};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
@@ -1314,7 +1317,7 @@ impl RdpServer {
 
         let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
             .await
-            .map_err(|e| ServerError::custom("accept_begin failed", e))?;
+            .map_err_kind("accept_begin failed", ServerErrorKind::Connector)?;
 
         match res {
             // The only thing that varies between the two modes is who performs
@@ -1384,7 +1387,7 @@ impl RdpServer {
                 None,
             )
             .await
-            .map_err(|e| ServerError::custom("accept_credssp", e))?;
+            .map_err_kind("accept_credssp", ServerErrorKind::Connector)?;
         }
 
         let framed = self.accept_finalize(framed, acceptor).await?;
@@ -1527,8 +1530,7 @@ impl RdpServer {
             Action::X224 => {
                 if self
                     .handle_x224(writer, io_channel_id, user_channel_id, message_channel_id, &bytes)
-                    .await
-                    .map_err(|e| ServerError::custom("X224 input error", e))?
+                    .await?
                 {
                     debug!("Got disconnect request");
                     return Ok(RunState::Disconnect);
@@ -1638,7 +1640,7 @@ impl RdpServer {
                             continue;
                         }
                     }
-                    .map_err(|e| ServerError::custom("failed to send rdpsnd event", e))?;
+                    .map_err_kind("failed to send rdpsnd event", ServerErrorKind::Pdu)?;
                     let channel_id = self
                         .get_channel_id_by_type::<RdpsndServer>()
                         .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
@@ -1666,7 +1668,7 @@ impl RdpServer {
                             continue;
                         }
                     }
-                    .map_err(|e| ServerError::custom("failed to send clipboard event", e))?;
+                    .map_err_kind("failed to send clipboard event", ServerErrorKind::Pdu)?;
                     let channel_id = self
                         .get_channel_id_by_type::<CliprdrServer>()
                         .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
@@ -2001,7 +2003,13 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Starting client loop");
-        let mut display_updates = self.display.lock().await.updates().await.map_err(from_anyhow)?;
+        let mut display_updates = self
+            .display
+            .lock()
+            .await
+            .updates()
+            .await
+            .map_err(|e| from_anyhow_with_context(e, "getting display updates"))?;
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
@@ -2012,10 +2020,7 @@ impl RdpServer {
         let this = Rc::clone(&s);
         let dispatch_pdu = async move {
             loop {
-                let (action, bytes) = reader
-                    .read_pdu()
-                    .await
-                    .map_err(|e| ServerError::custom("read pdu", e))?;
+                let (action, bytes) = reader.read_pdu().await.map_err(|e| ServerError::io("read pdu", e))?;
                 let mut this = this.lock().await;
                 match this
                     .dispatch_pdu(
@@ -2203,7 +2208,7 @@ impl RdpServer {
                 let Some(channel_id) = channel_id else {
                     continue;
                 };
-                let svc_responses = channel.start().map_err(|e| ServerError::custom("svc start", e))?;
+                let svc_responses = channel.start().map_err_kind("svc start", ServerErrorKind::Pdu)?;
                 let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)
                     .map_err(ServerError::encode)?;
                 writer
@@ -2506,7 +2511,7 @@ impl RdpServer {
                 if let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) {
                     let response_pdus = svc
                         .process(&data.user_data)
-                        .map_err(|e| ServerError::custom("svc process", e))?;
+                        .map_err_kind("svc process", ServerErrorKind::Pdu)?;
                     let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)
                         .map_err(ServerError::encode)?;
                     writer
@@ -2576,7 +2581,7 @@ impl RdpServer {
         loop {
             let (new_framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor)
                 .await
-                .map_err(|e| ServerError::custom("failed to accept client during finalize", e))?;
+                .map_err_kind("failed to accept client during finalize", ServerErrorKind::Connector)?;
 
             let (mut reader, mut writer) = split_tokio_framed(new_framed);
 
@@ -2594,7 +2599,7 @@ impl RdpServer {
                         core::mem::take(&mut self.static_channels),
                         desktop_size,
                     )
-                    .map_err(|e| ServerError::custom("deactivation-reactivation acceptor", e))?;
+                    .map_err_kind("deactivation-reactivation acceptor", ServerErrorKind::Connector)?;
                     framed = unsplit_tokio_framed(reader, writer);
                     continue;
                 }
