@@ -299,12 +299,70 @@ fn connect_time_bandwidth_coalesced_into_one_read_reports_the_floor() {
 
     let results = decode_bandwidth_results(&output);
     assert_eq!(results.0, 1, "a window that arrived in one read floors to 1 ms");
-    assert_eq!(results.1, 1536, "every byte in the timed window is still counted");
+    assert_eq!(
+        results.1, 1552,
+        "every byte in the timed window is still counted, plus the 8-byte header on each of the Payload and Stop"
+    );
 }
 
-/// A driver with no clock reports no arrival times, so no window is ever opened and
-/// there is nothing to accumulate into. The wasm32 and FFI drivers are in this
-/// position for the whole connection.
+/// A window can open on one driver and close on another, for example when a
+/// `Framed` is rebuilt with leftover bytes between the Start and this Stop: the
+/// rebuilt `Framed` starts with no arrival time of its own, so the Stop reports
+/// `None` even though the Start that opened the window reported `Some`. Nothing
+/// upstream of this function stops that from happening, so it is reachable even
+/// though it did not use to be exercised by a test.
+///
+/// The window's accumulated bytes are dropped in that case: reporting them
+/// against `timeDelta = UNMEASURABLE_INTERVAL_MS` would pair a byte count that
+/// arrived over the window's real duration with a floor timer that understates
+/// it, inflating the reported bandwidth the same way an uncounted header would.
+#[test]
+fn connect_time_bandwidth_stop_with_no_arrival_time_drops_the_open_window() {
+    let mut connector = connect_time_autodetect_connector();
+    let mut output = WriteBuf::new();
+
+    let arrival = Some(MonotonicInstant::from_millis(9_000));
+
+    for request in [
+        AutoDetectRequest::bw_start_connect_time(0x7777),
+        AutoDetectRequest::bw_payload(0x7777, vec![0u8; 2048]),
+    ] {
+        output.clear();
+        connector
+            .step(
+                &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&AutoDetectReqPdu::new(request)).unwrap()),
+                arrival,
+                &mut output,
+            )
+            .unwrap();
+    }
+
+    output.clear();
+    let stop = encode_vec(&AutoDetectReqPdu::new(AutoDetectRequest::bw_stop_connect_time(
+        0x7777,
+        vec![0u8; 512],
+    )))
+    .unwrap();
+    connector
+        .step(
+            &server_send_data_indication(MESSAGE_CHANNEL_ID, stop),
+            None,
+            &mut output,
+        )
+        .unwrap();
+
+    let results = decode_bandwidth_results(&output);
+    assert_eq!(results.0, 1, "an unmeasured window still floors to 1 ms");
+    assert_eq!(
+        results.1, 520,
+        "the 2048-byte Payload is dropped along with the window; only the Stop's own 512 bytes plus its 8-byte header remain"
+    );
+}
+
+/// A driver with no clock reports no arrival time for this step, so no window is
+/// ever opened and there is nothing to accumulate into. The FFI driver is in this
+/// position for the whole connection; the wasm32 driver only for the single
+/// x224_connection_response step.
 ///
 /// The server still blocks without a reply, so one is sent, but it claims no more
 /// than this Stop's own payload. Counting the Payload messages here would pair a
@@ -333,8 +391,8 @@ fn connect_time_bandwidth_without_a_clock_reports_the_stop_payload_alone() {
     let results = decode_bandwidth_results(&output);
     assert_eq!(results.0, 1, "a driver with no clock measured no interval");
     assert_eq!(
-        results.1, 512,
-        "the 1024-byte Payload is not counted, since no window was open to count it"
+        results.1, 520,
+        "the 1024-byte Payload is not counted, since no window was open; the Stop's own 512 bytes plus its 8-byte header are"
     );
 }
 
@@ -368,8 +426,8 @@ fn connect_time_bandwidth_measured_window_reports_every_payload() {
     let results = decode_bandwidth_results(&output);
     assert_eq!(results.0, 250, "interval is Stop arrival minus Start arrival");
     assert_eq!(
-        results.1, 3584,
-        "both Payload messages and the Stop payload are counted"
+        results.1, 3608,
+        "both Payload messages and the Stop payload are counted, each with its 8-byte header"
     );
 }
 
@@ -402,7 +460,7 @@ fn connect_time_bandwidth_second_start_discards_the_first_window() {
     let results = decode_bandwidth_results(&output);
     assert_eq!(results.0, 500, "interval runs from the second Start, not the first");
     assert_eq!(
-        results.1, 1536,
-        "the 4096 bytes counted before the second Start are discarded"
+        results.1, 1552,
+        "the 4096 bytes counted before the second Start are discarded; only the second window's Payload and Stop, each with an 8-byte header, remain"
     );
 }

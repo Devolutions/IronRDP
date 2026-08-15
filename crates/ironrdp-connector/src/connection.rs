@@ -745,9 +745,15 @@ impl ClientConnector {
             // 2.2.14.1.3). No reply is due; accumulate so Stop can report the total.
             // With no window open there is nothing for the total to be divided by, so
             // there is nothing worth accumulating.
+            //
+            // [MS-RDPBCGR] 3.2.5.14 increments the Byte Count store by payloadLength
+            // plus the size of the header fields (8 bytes: headerLength, headerTypeId,
+            // sequenceNumber, requestType, and payloadLength itself), not by
+            // payloadLength alone. `payload.len()` is exactly payloadLength, since
+            // decode reads that many bytes into it after consuming the header fields.
             AutoDetectRequest::BandwidthMeasurePayload { payload, .. } => {
                 if self.connect_time_bw_started_at.is_some() {
-                    let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+                    let len = u32::try_from(payload.len()).unwrap_or(u32::MAX).saturating_add(8);
                     self.connect_time_bw_bytes = self.connect_time_bw_bytes.saturating_add(len);
                 }
                 Ok(Written::Nothing)
@@ -766,8 +772,9 @@ impl ClientConnector {
             //
             // The spec does not contemplate a window it could not time, and two arise in
             // practice. No Start was seen, so no window exists. Or the driver reports no
-            // arrival times at all, as the wasm32 and FFI drivers do for the whole
-            // connection, so no window was opened to accumulate into.
+            // arrival time for this particular step, as the FFI driver does for the whole
+            // connection and the wasm32 driver does for the single x224_connection_response
+            // step, so no window was opened to accumulate into.
             //
             // Both still owe the server a reply, and `timeDelta` of 0 divides out to an
             // unbounded bandwidth for a server computing `byteCount * 8 / timeDelta`
@@ -785,12 +792,21 @@ impl ClientConnector {
                 payload,
                 ..
             } => {
+                // Same 8-byte header addition as the Payload arm above, and for the
+                // same spec reason ([MS-RDPBCGR] 3.2.5.14): only applies when this Stop
+                // actually carries a payloadLength/payload pair.
                 let stop_bytes = payload
                     .as_ref()
-                    .map_or(0, |p| u32::try_from(p.len()).unwrap_or(u32::MAX));
+                    .map_or(0, |p| u32::try_from(p.len()).unwrap_or(u32::MAX).saturating_add(8));
 
-                // A window only opens when the Start carried a reading, so the same
-                // driver stamps this Stop. The `None` arm covers the unopened window.
+                // A window normally opens and closes on the same driver, so the same
+                // driver stamps both Start and this Stop. Nothing enforces that: a
+                // `Framed` rebuilt between the two (leftover bytes handed to a fresh
+                // `Framed`, which starts with no arrival time of its own) would open a
+                // window on one driver and close it on another with no reading, landing
+                // in the `(Some, None)` arm below. That arm silently drops whatever this
+                // window had accumulated; the debug log makes the drop visible instead of
+                // leaving it indistinguishable from the ordinary no-window case.
                 let (time_delta_ms, byte_count) = match (self.connect_time_bw_started_at, received_at) {
                     (Some(started_at), Some(stopped_at)) => {
                         let measured_ms =
@@ -800,7 +816,15 @@ impl ClientConnector {
                             self.connect_time_bw_bytes.saturating_add(stop_bytes),
                         )
                     }
-                    _ => (UNMEASURABLE_INTERVAL_MS, stop_bytes),
+                    (Some(_), None) => {
+                        debug!(
+                            dropped_bytes = self.connect_time_bw_bytes,
+                            "Bandwidth Measure Stop arrived with no arrival time although its window was open; \
+                             dropping the accumulated count"
+                        );
+                        (UNMEASURABLE_INTERVAL_MS, stop_bytes)
+                    }
+                    (None, _) => (UNMEASURABLE_INTERVAL_MS, stop_bytes),
                 };
 
                 self.connect_time_bw_started_at = None;
