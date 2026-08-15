@@ -51,7 +51,7 @@ use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
-use crate::error::{ServerResult, from_anyhow};
+use crate::error::{ServerResult, from_anyhow_with_context};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
@@ -1273,15 +1273,17 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
-        self.run_connection_with_inner(stream, tls).await.map_err(from_anyhow)
+        self.run_connection_with_inner(stream, tls)
+            .await
+            .map_err(|e| from_anyhow_with_context(e, "running connection"))
     }
 
     /// The anyhow-returning body behind [`Self::run_connection_with`].
     ///
     /// Kept private and untyped only because the accept loop feeds its error to
-    /// [`ServerConnectionHandler::on_disconnected`], whose parameter is still
-    /// `Option<&anyhow::Error>`. Migrating that callback is tracked under #1209;
-    /// once it takes a `ServerError` this helper collapses into its caller.
+    /// [`ConnectionHandler::on_disconnected`], whose parameter is still
+    /// `Option<&anyhow::Error>`. #1244 migrates that callback and collapses this
+    /// helper into its caller once it takes a `ServerError`.
     async fn run_connection_with_inner<S>(&mut self, stream: S, tls: TransportTls) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
@@ -1408,7 +1410,9 @@ impl RdpServer {
     }
 
     pub async fn run(&mut self) -> ServerResult<()> {
-        self.run_inner().await.map_err(from_anyhow)
+        self.run_inner()
+            .await
+            .map_err(|e| from_anyhow_with_context(e, "running accept loop"))
     }
 
     async fn run_inner(&mut self) -> Result<()> {
@@ -1482,8 +1486,9 @@ impl RdpServer {
                         let started = tokio::time::Instant::now();
                         // Internal accept loop uses the anyhow-returning inner method so the
                         // existing `on_disconnected(error: Option<&anyhow::Error>)` parameter
-                        // continues to receive an anyhow value. Migration of that parameter
-                        // to ServerError is tracked as a follow-up PR per #1209.
+                        // continues to receive an anyhow value. #1244, already filed and
+                        // stacked on this PR, converts that parameter to `ServerError` and
+                        // removes this indirection.
                         let result = self.run_connection_with_inner(stream, TransportTls::Managed).await;
                         let duration = started.elapsed();
 

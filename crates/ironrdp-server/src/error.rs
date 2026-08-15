@@ -14,7 +14,7 @@
 use core::fmt;
 use std::io;
 
-use ironrdp_core::{DecodeError, EncodeError};
+use ironrdp_core::EncodeError;
 
 /// Categorizes the failure modes the server crate exposes through
 /// [`ServerError`].
@@ -26,8 +26,6 @@ use ironrdp_core::{DecodeError, EncodeError};
 pub enum ServerErrorKind {
     /// PDU encoding failed.
     Encode(EncodeError),
-    /// PDU decoding failed.
-    Decode(DecodeError),
     /// I/O error during TLS setup, listener setup, or client communication.
     Io(io::Error),
     /// A required virtual channel was missing or a channel send failed.
@@ -48,7 +46,6 @@ impl fmt::Display for ServerErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Encode(_) => write!(f, "encode error"),
-            Self::Decode(_) => write!(f, "decode error"),
             Self::Io(_) => write!(f, "I/O error"),
             Self::Channel => write!(f, "channel error"),
             Self::Unsupported => write!(f, "unsupported"),
@@ -62,7 +59,6 @@ impl core::error::Error for ServerErrorKind {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Encode(e) => Some(e),
-            Self::Decode(e) => Some(e),
             Self::Io(e) => Some(e),
             Self::Channel | Self::Unsupported | Self::Reason(_) | Self::Custom => None,
         }
@@ -84,8 +80,6 @@ pub type ServerResult<T> = Result<T, ServerError>;
 pub trait ServerErrorExt {
     /// Build a [`ServerErrorKind::Encode`] error from an [`EncodeError`].
     fn encode(error: EncodeError) -> Self;
-    /// Build a [`ServerErrorKind::Decode`] error from a [`DecodeError`].
-    fn decode(error: DecodeError) -> Self;
     /// Build a [`ServerErrorKind::Io`] error with a static context and an
     /// [`io::Error`] source.
     fn io(context: &'static str, error: io::Error) -> Self;
@@ -106,30 +100,32 @@ pub trait ServerErrorExt {
 }
 
 impl ServerErrorExt for ServerError {
+    #[track_caller]
     fn encode(error: EncodeError) -> Self {
         Self::new("encode error", ServerErrorKind::Encode(error))
     }
 
-    fn decode(error: DecodeError) -> Self {
-        Self::new("decode error", ServerErrorKind::Decode(error))
-    }
-
+    #[track_caller]
     fn io(context: &'static str, error: io::Error) -> Self {
         Self::new(context, ServerErrorKind::Io(error))
     }
 
+    #[track_caller]
     fn channel(context: &'static str) -> Self {
         Self::new(context, ServerErrorKind::Channel)
     }
 
+    #[track_caller]
     fn unsupported(context: &'static str) -> Self {
         Self::new(context, ServerErrorKind::Unsupported)
     }
 
+    #[track_caller]
     fn reason(context: &'static str, reason: impl Into<String>) -> Self {
         Self::new(context, ServerErrorKind::Reason(reason.into()))
     }
 
+    #[track_caller]
     fn custom<E>(context: &'static str, error: E) -> Self
     where
         E: core::error::Error + Sync + Send + 'static,
@@ -143,11 +139,6 @@ pub trait ServerResultExt {
     /// Replace the `&'static str` context on any error in `Self`.
     #[must_use]
     fn with_context(self, context: &'static str) -> Self;
-    /// Attach a source to any error in `Self`.
-    #[must_use]
-    fn with_source<E>(self, source: E) -> Self
-    where
-        E: core::error::Error + Sync + Send + 'static;
 }
 
 impl<T> ServerResultExt for ServerResult<T> {
@@ -157,17 +148,11 @@ impl<T> ServerResultExt for ServerResult<T> {
             e
         })
     }
-
-    fn with_source<E>(self, source: E) -> Self
-    where
-        E: core::error::Error + Sync + Send + 'static,
-    {
-        self.map_err(|e| e.with_source(source))
-    }
 }
 
-/// Bridges anyhow errors at the public API boundary while the migration to
-/// typed errors is staged.
+/// Bridges an anyhow error at the public API boundary while the migration to
+/// typed errors is staged, tagging it with `context` naming the operation
+/// that failed.
 ///
 /// Internal call sites still use `anyhow::Result`; conversion happens here so
 /// the public signatures can advertise [`ServerResult`] today without forcing
@@ -175,8 +160,9 @@ impl<T> ServerResultExt for ServerResult<T> {
 /// (see [#1209]) remove the remaining `anyhow` usage and this helper.
 ///
 /// [#1209]: https://github.com/Devolutions/IronRDP/issues/1209
-pub(crate) fn from_anyhow(error: anyhow::Error) -> ServerError {
-    ServerError::new("server error", ServerErrorKind::Custom).with_source(AnyhowError(error))
+#[track_caller]
+pub(crate) fn from_anyhow_with_context(error: anyhow::Error, context: &'static str) -> ServerError {
+    ServerError::new(context, ServerErrorKind::Custom).with_source(AnyhowError(error))
 }
 
 /// Newtype wrapper that gives [`anyhow::Error`] a `core::error::Error` impl
