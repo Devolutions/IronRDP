@@ -40,6 +40,7 @@ tokio-rustls = "0.26" # public
 async-trait = "0.1"
 ironrdp-async = { path = "../ironrdp-async", version = "0.10" }
 ironrdp-ainput = { path = "../ironrdp-ainput", version = "0.8" }
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.10" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.3", optional = true }
 ironrdp-error = { path = "../ironrdp-error", version = "0.2", features = ["std"] } # public

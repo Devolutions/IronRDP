@@ -14,7 +14,9 @@
 use core::fmt;
 use std::io;
 
+use ironrdp_connector::ConnectorError;
 use ironrdp_core::{DecodeError, EncodeError};
+use ironrdp_pdu::PduError;
 
 /// Categorizes the failure modes the server crate exposes through
 /// [`ServerError`].
@@ -37,6 +39,10 @@ pub enum ServerErrorKind {
     /// A feature requested by the client is not supported by this server.
     /// The specific feature is named in the [`ServerError`] context.
     Unsupported,
+    /// The RDP connection sequence (acceptor handshake) failed.
+    Connector(ConnectorError),
+    /// A static virtual channel failed to encode or decode a PDU.
+    Pdu(PduError),
     /// Generic failure with a runtime description. Prefer a specific variant.
     Reason(String),
     /// Custom failure with the actual source attached via
@@ -52,6 +58,8 @@ impl fmt::Display for ServerErrorKind {
             Self::Io(_) => write!(f, "I/O error"),
             Self::Channel => write!(f, "channel error"),
             Self::Unsupported => write!(f, "unsupported"),
+            Self::Connector(_) => write!(f, "connector error"),
+            Self::Pdu(_) => write!(f, "PDU error"),
             Self::Reason(reason) => write!(f, "reason: {reason}"),
             Self::Custom => write!(f, "custom error"),
         }
@@ -64,6 +72,8 @@ impl core::error::Error for ServerErrorKind {
             Self::Encode(e) => Some(e),
             Self::Decode(e) => Some(e),
             Self::Io(e) => Some(e),
+            Self::Connector(e) => Some(e),
+            Self::Pdu(e) => Some(e),
             Self::Channel | Self::Unsupported | Self::Reason(_) | Self::Custom => None,
         }
     }
