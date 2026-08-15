@@ -35,18 +35,40 @@ const MAX_MULTITRANSPORT_REQUESTS: usize = 2;
 const AUTO_DETECT_HEADER_LEN: u32 = 8;
 
 /// What one Bandwidth Measure message contributes to the Network Characteristics
-/// Byte Count store.
+/// Byte Count store, and the canonical source for the connect-time bandwidth
+/// reasoning this file uses in several places (`UNMEASURABLE_INTERVAL_MS`, the
+/// `BandwidthMeasureStop` arm below, [`Sequence::step`]'s doc). Those restate
+/// only their own local decision plus a pointer here, so the reasoning behind
+/// each one stays single-sourced instead of drifting across independent copies.
 ///
-/// [MS-RDPBCGR] 3.2.5.14 gives connect-time detection exactly two accumulation
-/// steps, one on the Bandwidth Measure Payload and one on the 0x002B Stop, both
-/// reading "increment ... by the value specified in the **payloadLength** field
-/// plus the size of the header fields (8 bytes)".
+/// **What is counted.** [MS-RDPBCGR] 3.2.5.14 gives connect-time detection
+/// exactly two accumulation steps, one on the Bandwidth Measure Payload and one
+/// on the 0x002B Stop, both reading "increment ... by the value specified in
+/// the **payloadLength** field plus the size of the header fields (8 bytes)".
+/// The section's other accumulation rule, the one that counts every byte
+/// received while the window is open, belongs to the 0x0014 and 0x0114 Starts,
+/// the reliable and lossy UDP variants. Connect-time is 0x1014, whose step list
+/// contains no such clause, so on this path the two per-message increments are
+/// the whole of the byte count.
 ///
-/// The section's other accumulation rule, the one that counts every byte received
-/// while the window is open, belongs to the 0x0014 and 0x0114 Starts. Those are
-/// the reliable and lossy UDP variants, not connect-time, which is 0x1014 and
-/// whose step list contains no such clause. So on this path the two per-message
-/// increments are the whole of the byte count.
+/// **Which request types are in scope.** Only the 0x002B Stop, encapsulated in
+/// an Auto-Detect Request PDU during the connect-time phase, is handled here.
+/// [MS-RDPBCGR] 2.2.14.1.4 scopes the Auto-Detect-Request-PDU form of 0x0429 to
+/// *after* the RDP Connection Sequence has completed, so it cannot legitimately
+/// arrive here; its other form, and 0x0629, are tunneled over a multitransport
+/// channel this step never sees. The same 2.2.14.1.4 split sets `headerLength`
+/// to 0x08 for 0x002B and 0x06 otherwise, which is what fixes `AUTO_DETECT_HEADER_LEN`
+/// at 8 for this path specifically.
+///
+/// **Windows that could not be timed.** A driver whose `received_at` is always
+/// `None` never opens a window (see [`Sequence::step`]'s doc), so its Results
+/// report only the Stop's own payload against the untimed floor
+/// (`UNMEASURABLE_INTERVAL_MS`) rather than a full count divided by a
+/// `timeDelta` nobody measured. [MS-RDPBCGR] 3.2.5.14 states the Payload
+/// increment unconditionally; gating it on the window being open is a
+/// deliberate SHOULD-level deviation. It under-reports rather than over-reports
+/// (a server acting on 3.3.5.14 picks conservative settings for such a client),
+/// so it is not treated as a spec violation worth rejecting.
 ///
 /// **This deliberately does not match FreeRDP.** FreeRDP counts the whole PDU
 /// length at the framing layer, `bandwidthMeasureByteCount += length` in
@@ -56,7 +78,9 @@ const AUTO_DETECT_HEADER_LEN: u32 = 8;
 /// connect-time path that counts the payload twice and adds framing bytes the
 /// spec does not ask for. The figure is an informational QoS hint and the server
 /// proceeds either way, so following the spec costs no interop and is easier to
-/// justify than reproducing the reference's arithmetic.
+/// justify than reproducing the reference's arithmetic. (This citation names
+/// files and expressions in a project outside this tree; it may drift as
+/// FreeRDP changes, and is not itself load-bearing for the decision above.)
 fn counted_len(payload_len: usize) -> u32 {
     u32::try_from(payload_len)
         .unwrap_or(u32::MAX)
@@ -64,6 +88,7 @@ fn counted_len(payload_len: usize) -> u32 {
 }
 
 /// Reported as `timeDelta` when a connect-time bandwidth window was not timed.
+/// See [`counted_len`]'s doc for why an untimed window is reported at all.
 ///
 /// One millisecond rather than zero, because a server computing
 /// `byteCount * 8 / timeDelta` divides by it ([MS-RDPBCGR] 3.3.5.14). It also
@@ -804,50 +829,14 @@ impl ClientConnector {
                 Ok(Written::Nothing)
             }
             // A connect-time Bandwidth Measure Stop ([MS-RDPBCGR] 2.2.14.1.4) warrants a
-            // Bandwidth Measure Results reply ([MS-RDPBCGR] 2.2.14.2.2). This reply must
-            // be sent: FreeRDP-based servers (for example GNOME Remote Desktop) block in
-            // their AWAIT_BW_RESULT state until they receive it and never proceed to
-            // licensing without it, so omitting it stalls the whole connection.
+            // Bandwidth Measure Results reply ([MS-RDPBCGR] 2.2.14.2.2), and only the
+            // 0x002B form is handled here; see `counted_len`'s doc for why, and for the
+            // byte-count and untimed-window reasoning this arm applies below.
             //
-            // [MS-RDPBCGR] 3.2.5.14 has the client increment its Network Characteristics
-            // Byte Count store on each Payload and on this Stop, then send the store
-            // together with the elapsed timer. That is what a timed window reports here,
-            // measured from the Start that opened it using the times the I/O driver
-            // observed rather than any clock this sequence could read for itself.
-            //
-            // The spec does not contemplate a window it could not time, and two arise in
-            // practice. No Start was seen, so no window exists. Or the driver reports no
-            // arrival time for this particular step, as the FFI driver does for the whole
-            // connection and the wasm32 driver does for the single x224_connection_response
-            // step, so no window was opened to accumulate into.
-            //
-            // Both still owe the server a reply, and `timeDelta` of 0 divides out to an
-            // unbounded bandwidth for a server computing `byteCount * 8 / timeDelta`
-            // (3.2.5.14 again, and [MS-RDPBCGR] 3.3.5.14 for the server side). They
-            // report the floor against this Stop's payload alone, which is the smallest
-            // claim that answers the question asked.
-            //
-            // A window that was timed reports its full count even when the elapsed time
-            // rounds down to the floor, which happens when one socket read delivered the
-            // whole exchange. The bytes did arrive within that millisecond, so the floor
-            // is a real bound on a real measurement rather than a stand-in for a missing
-            // one, and the quotient it yields is honest.
-            //
-            // Only the 0x002B Stop is answered. 3.2.5.14 keys this whole step to the
-            // request type, and only 0x002B increments the byte count and replies with
-            // responseType 0x0003. The other two report 0x000B and count nothing.
-            //
-            // 0x0629 is always answered over the lossy UDP multitransport channel, and
-            // carries a sequence-number correlation this phase does not track. 0x0429 is
-            // not simply the reliable-UDP counterpart: 3.2.5.14 gives it two forms, and
-            // the one encapsulated in an Auto-Detect Request PDU is answered on the main
-            // RDP channel, not a multitransport one. What puts it out of scope here is
-            // 2.2.14.1.4, which scopes that form to an Auto-Detect Request sent after the
-            // RDP Connection Sequence has completed, and this state runs during it.
-            //
-            // The header size follows the same split: 2.2.14.1.4 sets `headerLength` to
-            // 0x08 for 0x002B and 0x06 otherwise, so the fixed addend in `counted_len` is
-            // only right for the connect-time Stop.
+            // The reply is mandatory, not best-effort: FreeRDP-based servers (for
+            // example GNOME Remote Desktop) block in their AWAIT_BW_RESULT state until
+            // they receive it and never proceed to licensing without it, so omitting it
+            // stalls the whole connection.
             AutoDetectRequest::BandwidthMeasureStop {
                 sequence_number,
                 request_type,
@@ -895,13 +884,33 @@ impl ClientConnector {
                 let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
                 Written::from_size(written)
             }
+            // A Stop reaching here with any other requestType means a nonconformant
+            // server. [MS-RDPBCGR] 2.2.14.1.4 scopes 0x0429-via-Auto-Detect-Request-PDU
+            // to after the RDP Connection Sequence has completed, so during connect-time
+            // detection the only legitimate form on this channel is 0x002B, matched
+            // above; 0x0429 as a tunneled Sub-Header and 0x0629 both belong to a
+            // multitransport channel this step never sees. No reply is owed here per
+            // spec, but silently dropping it leaves nothing to debug a stalled
+            // connection with, so it is noted rather than swallowed like the truly
+            // expected continuous variants below.
+            AutoDetectRequest::BandwidthMeasureStop {
+                sequence_number,
+                request_type,
+                ..
+            } => {
+                warn!(
+                    sequence_number,
+                    request_type, "Unexpected Bandwidth Measure Stop requestType during connect-time auto-detection"
+                );
+                Ok(Written::Nothing)
+            }
             // The Network Characteristics Result is informational; nothing to send.
             //
-            // This also catches the continuous-detection Bandwidth Measure variants,
-            // whose Starts and Stops are answered on a multitransport channel under a
-            // different procedure. Reaching them here means a server sent a
-            // continuous request during connect-time detection, which [MS-RDPBCGR]
-            // 3.2.5.14 does not provide for; ignoring is the conservative response.
+            // This also catches the continuous-detection Bandwidth Measure Start,
+            // answered on a multitransport channel under a different procedure.
+            // Reaching it here means a server sent a continuous request during
+            // connect-time detection, which [MS-RDPBCGR] 3.2.5.14 does not provide for;
+            // ignoring is the conservative response.
             _ => Ok(Written::Nothing),
         }
     }

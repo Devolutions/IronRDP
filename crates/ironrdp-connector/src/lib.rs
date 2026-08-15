@@ -358,15 +358,20 @@ impl Written {
 /// A point on a monotonic millisecond clock owned by the I/O driver.
 ///
 /// Lives in `ironrdp-core`, shared with `ironrdp-rdpeudp`, and re-exported
-/// here. The clock deliberately lives outside the sans-I/O sequences, because
-/// a sequence reading a clock itself would measure how quickly it drained an
+/// here. The epoch is arbitrary and carries no meaning; only differences
+/// between two instants do. All instants passed to one connector across its
+/// lifetime must come from the same clock: comparing instants from two
+/// different epochs produces a meaningless delta rather than an error, either
+/// saturating to zero or landing on a huge value with no diagnostic.
+///
+/// The clock deliberately lives outside the sans-I/O sequences, because a
+/// sequence reading a clock itself would measure how quickly it drained an
 /// already-filled buffer rather than how long the bytes took to arrive. Only
 /// the driver that performed the read knows the latter, which is what the
 /// `None` in [`Sequence::step`] is for: a driver with no reading to pass on.
-/// The FFI connector is in that position today because its own `step` has no
-/// parameter to receive one through, not because its caller is unable to
-/// supply it. A caller that owns the read loop does know when the read
-/// completed.
+/// `ironrdp-blocking` and `ironrdp-async` each stamp with their own
+/// driver-owned epoch; the FFI connector, which has no read loop of its own to
+/// time, stamps on entry to its `step` binding instead.
 pub use ironrdp_core::MonotonicInstant;
 
 pub trait Sequence: Send {
@@ -385,12 +390,8 @@ pub trait Sequence: Send {
     ///
     /// A driver that always passes `None` never opens a connect-time bandwidth
     /// window, so the Bandwidth Measure Results it sends report only the Stop's
-    /// own payload against the untimed floor. The byte count is measurement-gated
-    /// on purpose: [MS-RDPBCGR] 3.2.5.14 states the Payload increment
-    /// unconditionally, but a full count paired with a `timeDelta` the client
-    /// never measured yields a bandwidth figure that grows with whatever the
-    /// server chose to send. A server acting on 3.3.5.14 reads the low figure and
-    /// picks conservative bandwidth-dependent settings for that client.
+    /// own payload against the untimed floor. See `connection::counted_len`'s doc
+    /// for why the byte count is measurement-gated rather than reported in full.
     fn step(
         &mut self,
         input: &[u8],
