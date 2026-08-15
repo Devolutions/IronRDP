@@ -56,8 +56,12 @@ pub enum ExportError {
     #[error("failed to finalize replay output")]
     FinalizeOutput(#[source] io::Error),
     /// An incomplete staged export could not be removed.
-    #[error("failed to clean up incomplete replay output")]
-    CleanupOutput(#[source] io::Error),
+    #[error("{original_error}; additionally failed to clean up incomplete replay output: {cleanup_error}")]
+    CleanupOutput {
+        #[source]
+        original_error: Box<ExportError>,
+        cleanup_error: io::Error,
+    },
 }
 
 /// Replay a capture and write visual frames with payload-free diagnostics.
@@ -78,7 +82,12 @@ pub fn export_capture(capture: &Capture, options: &ExportOptions) -> Result<Expo
         Ok(summary) => Ok(summary),
         Err(error) => {
             if !output.finalization_started {
-                fs::remove_dir_all(&output.directory).map_err(ExportError::CleanupOutput)?;
+                if let Err(cleanup_error) = fs::remove_dir_all(&output.directory) {
+                    return Err(ExportError::CleanupOutput {
+                        original_error: Box::new(error),
+                        cleanup_error,
+                    });
+                }
             }
             Err(error)
         }
@@ -144,10 +153,7 @@ impl StagedOutput {
 }
 
 fn validate_output_directory(directory: &Path, replace: bool) -> Result<(), ExportError> {
-    let Some(name) = directory.file_name() else {
-        return Err(ExportError::OutputPathNotLeaf);
-    };
-    if name == "." || name == ".." {
+    if directory.file_name().is_none() {
         return Err(ExportError::OutputPathNotLeaf);
     }
 
