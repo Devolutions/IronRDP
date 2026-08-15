@@ -60,14 +60,13 @@ async fn main() -> Result<(), anyhow::Error> {
     };
 
     let mut encoder = UpdateEncoder::new(DesktopSize { width, height }, flags, update_codecs, 8 * 1024 * 1024)
-        .map_err(|e| anyhow::anyhow!(e))
         .context("failed to initialize update encoder")?;
 
     let mut total_raw = 0u64;
     let mut total_enc = 0u64;
     let mut n_updates = 0u64;
     let mut updates = DisplayUpdates::new(file, DesktopSize { width, height }, fps);
-    while let Some(up) = updates.next_update().await.map_err(|e| anyhow::anyhow!(e))? {
+    while let Some(up) = updates.next_update().await? {
         if let DisplayUpdate::Bitmap(ref up) = up {
             total_raw += u64::try_from(up.data.len())?;
         } else {
@@ -79,7 +78,7 @@ async fn main() -> Result<(), anyhow::Error> {
             let Some(frag) = iter.next().await else {
                 break;
             };
-            let len = u64::try_from(frag.map_err(|e| anyhow::anyhow!(e))?.data.len())?;
+            let len = u64::try_from(frag?.data.len())?;
             total_enc += len;
         }
         n_updates += 1;
