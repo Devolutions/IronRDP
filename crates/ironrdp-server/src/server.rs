@@ -43,9 +43,7 @@ use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
-use crate::error::{
-    ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult, ServerResultExt as _, from_anyhow_with_context,
-};
+use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult, from_anyhow_with_context};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
@@ -1862,8 +1860,7 @@ impl RdpServer {
         }
 
         let desktop_size = self.display.lock().await.size().await;
-        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs, self.opts.max_request_size)
-            .with_context("failed to initialize update encoder")?;
+        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs, self.opts.max_request_size)?;
 
         self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)
             .await?;
@@ -1877,8 +1874,7 @@ impl RdpServer {
                 result.message_channel_id,
                 encoder,
             )
-            .await
-            .with_context("client loop failure")?;
+            .await?;
 
         Ok(state)
     }
