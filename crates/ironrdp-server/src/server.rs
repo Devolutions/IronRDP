@@ -1570,7 +1570,7 @@ impl RdpServer {
                 writer
                     .write_all(&buffer[..len])
                     .await
-                    .map_err(|e| ServerError::custom("failed to write display update", e))?;
+                    .map_err(|e| ServerError::io("failed to write display update", e))?;
             }
         }
 
