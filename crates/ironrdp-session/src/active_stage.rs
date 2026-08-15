@@ -24,7 +24,7 @@ use ironrdp_pdu::window::{
 use ironrdp_pdu::{Action, mcs};
 use ironrdp_rdpei::RdpeiClient;
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
@@ -217,23 +217,24 @@ impl ActiveStage {
                     }
                 }
 
+                // Drain the client-side EGFX compositor: composite each completed-frame
+                // output region into the image and surface it as a graphics update. EGFX
+                // data only ever arrives over a DVC, which is X224-carried, so this stays
+                // out of the Action::FastPath arm rather than running on every fast-path
+                // frame (the highest-frequency path in a session).
+                let graphics_updates = self
+                    .get_dvc_mut::<GraphicsPipelineClient>()
+                    .map(|mut gfx| gfx.processor_mut().drain_output())
+                    .unwrap_or_default();
+                if let Some(region) =
+                    composite_graphics_updates(image, graphics_updates.into_iter().map(|u| (u.region, u.data)))?
+                {
+                    stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
+                }
+
                 (stage_outputs, processor_updates)
             }
         };
-
-        // Drain the client-side EGFX compositor: composite each completed-frame
-        // output region into the image and surface it as a graphics update. Present
-        // only when the graphics pipeline DVC is registered and active, so non-EGFX
-        // sessions are unaffected.
-        let graphics_updates = self
-            .get_dvc_mut::<GraphicsPipelineClient>()
-            .map(|mut gfx| gfx.processor_mut().drain_output())
-            .unwrap_or_default();
-        if let Some(region) =
-            composite_graphics_updates(image, graphics_updates.into_iter().map(|u| (u.region, u.data)))?
-        {
-            stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
-        }
 
         for update in processor_updates {
             match update {
@@ -838,6 +839,7 @@ fn process_slow_path_pointer(
 /// times. A single SolidFill or CacheToSurface can name up to `u16::MAX` rectangles, so
 /// N is the server's choice, not ours. The union's worst case is the full desktop, which
 /// is still one copy rather than N.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 fn composite_graphics_updates(
     image: &mut DecodedImage,
     updates: impl IntoIterator<Item = (ExclusiveRectangle, Vec<u8>)>,
@@ -853,6 +855,30 @@ fn composite_graphics_updates(
             right: region.right.saturating_sub(1),
             bottom: region.bottom.saturating_sub(1),
         };
+
+        // `apply_rgba32` reports rejection by returning `InclusiveRectangle::empty()`,
+        // which is `(0, 0, 0, 0)` and not distinguishable from a real 1x1 update at the
+        // origin. Checking fit here first, rather than branching on that return value,
+        // means the delta is skipped outright rather than folded into the accumulator
+        // as a phantom region. This can happen for real: the compositor clips to the
+        // dimensions ResetGraphics declared, while `image` is sized from the desktop
+        // size negotiated at connection time and is never resized on ResetGraphics, so
+        // a server that reports a larger graphics output than the desktop hits this on
+        // every delta outside the desktop bounds.
+        let fits = region.left <= region.right
+            && region.top <= region.bottom
+            && region.right < image.width()
+            && region.bottom < image.height();
+        if !fits {
+            warn!(
+                ?region,
+                image_width = image.width(),
+                image_height = image.height(),
+                "Dropping a compositor delta outside the image bounds"
+            );
+            continue;
+        }
+
         let applied = image.apply_rgba32(&data, &region, false)?;
         dirty = Some(match dirty {
             Some(acc) => acc.union(&applied),
@@ -864,26 +890,12 @@ fn composite_graphics_updates(
 
 #[cfg(test)]
 mod tests {
-    use ironrdp_core::Decode as _;
     use super::*;
+    use ironrdp_core::Decode as _;
     use ironrdp_graphics::image_processing::PixelFormat;
     use ironrdp_pdu::gcc::MonitorFlags;
     use ironrdp_pdu::input::fast_path::KeyboardFlags;
     use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
-
-    fn update(left: u16, top: u16, right: u16, bottom: u16) -> (ExclusiveRectangle, Vec<u8>) {
-        let w = usize::from(right - left);
-        let h = usize::from(bottom - top);
-        (
-            ExclusiveRectangle {
-                left,
-                top,
-                right,
-                bottom,
-            },
-            vec![0xFF; w * h * 4],
-        )
-    }
 
     #[test]
     fn full_redraw_prefers_suppress_output_toggle_when_supported() {
@@ -1109,67 +1121,5 @@ mod tests {
             )
             .is_ok()
         );
-    }
-
-    /// Two disjoint deltas collapse to the rectangle spanning both, so a consumer that
-    /// redraws the named region does one copy instead of one per delta.
-    #[test]
-    fn disjoint_deltas_collapse_to_their_union() {
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, 200, 200);
-
-        let region = composite_graphics_updates(&mut image, [update(10, 10, 20, 20), update(100, 100, 150, 150)])
-            .expect("both deltas are inside the image")
-            .expect("two deltas produce a region");
-
-        // Exclusive right/bottom of 20 and 150 become inclusive 19 and 149.
-        assert_eq!(region.left, 10);
-        assert_eq!(region.top, 10);
-        assert_eq!(region.right, 149);
-        assert_eq!(region.bottom, 149);
-    }
-
-    /// The count is what matters: any number of deltas yields exactly one region, which
-    /// is the property that keeps `ironrdp-client` from rebuilding the framebuffer once
-    /// per rectangle.
-    #[test]
-    fn many_deltas_yield_one_region() {
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, 512, 512);
-        let updates: Vec<_> = (0..64).map(|i| update(i, i, i + 8, i + 8)).collect();
-
-        let region = composite_graphics_updates(&mut image, updates)
-            .expect("all deltas are inside the image")
-            .expect("64 deltas produce a region");
-
-        assert_eq!(region.left, 0);
-        assert_eq!(region.top, 0);
-        assert_eq!(region.right, 70);
-        assert_eq!(region.bottom, 70);
-    }
-
-    /// A drain that produced nothing must not surface an update at all, so a non-EGFX
-    /// session sees no change in behavior.
-    #[test]
-    fn no_deltas_yield_no_region() {
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, 64, 64);
-        assert!(
-            composite_graphics_updates(&mut image, [])
-                .expect("an empty drain cannot fail")
-                .is_none()
-        );
-    }
-
-    /// One delta passes through as itself rather than being widened by the accumulator.
-    #[test]
-    fn a_single_delta_is_its_own_region() {
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, 64, 64);
-
-        let region = composite_graphics_updates(&mut image, [update(4, 8, 12, 16)])
-            .expect("the delta is inside the image")
-            .expect("one delta produces a region");
-
-        assert_eq!(region.left, 4);
-        assert_eq!(region.top, 8);
-        assert_eq!(region.right, 11);
-        assert_eq!(region.bottom, 15);
     }
 }

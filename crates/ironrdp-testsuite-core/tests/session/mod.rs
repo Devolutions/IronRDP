@@ -1,3 +1,4 @@
+mod active_stage;
 mod autodetect;
 mod connection_activation;
 mod fast_path;

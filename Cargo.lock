@@ -3324,6 +3324,7 @@ dependencies = [
  "ironrdp-svc",
  "qoicoubeh",
  "tracing",
+ "visibility",
  "zstd-safe",
 ]
 
