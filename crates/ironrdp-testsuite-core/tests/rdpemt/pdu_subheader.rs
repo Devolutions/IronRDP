@@ -29,6 +29,31 @@ fn round_trip_subheader_with_data() {
     assert_eq!(decoded, sub);
 }
 
+/// `total` (2 + data.len()) above 255 must not silently wrap into the
+/// one-byte SubHeaderLength field: the length byte would then disagree
+/// with the data bytes that actually follow it on the wire.
+#[test]
+fn encode_rejects_data_that_overflows_sub_header_length() {
+    let sub = TunnelSubHeader {
+        sub_header_type: SubHeaderType::AutoDetectRequest,
+        data: vec![0u8; 254], // 2 + 254 = 256, one past u8::MAX
+    };
+
+    let result = ironrdp_core::encode_vec(&sub);
+    assert!(result.is_err());
+}
+
+#[test]
+fn encode_accepts_data_at_the_sub_header_length_boundary() {
+    let sub = TunnelSubHeader {
+        sub_header_type: SubHeaderType::AutoDetectRequest,
+        data: vec![0u8; 253], // 2 + 253 = 255, the u8::MAX boundary
+    };
+
+    let encoded = ironrdp_core::encode_vec(&sub).expect("255 is the boundary, not an overflow");
+    assert_eq!(encoded[0], 255);
+}
+
 #[test]
 fn decode_rejects_too_small_length() {
     let wire = [0x01, 0x00]; // length=1, but minimum is 2

@@ -118,6 +118,40 @@ fn server_handles_matching_create_request() {
     assert_eq!(event, TunnelEvent::Established);
 }
 
+/// MS-RDPEMT §3.1.5.5 forbids sending data before CreateResponse is sent. A
+/// caller reacting to `Established` and calling `send_data` before draining
+/// `poll_pdu` must still see CreateResponse ahead of that data on the wire.
+#[test]
+fn established_event_does_not_let_send_data_race_ahead_of_create_response() {
+    let mut server = RdpemtTunnel::server(test_config());
+    let request = TunnelCreateRequest {
+        request_id: 7,
+        security_cookie: test_config().security_cookie,
+    };
+    let request_bytes = ironrdp_core::encode_vec(&request).expect("encode");
+
+    server.handle_pdu(&request_bytes).expect("handle ok");
+
+    // React to Established immediately, before draining poll_pdu, exactly
+    // the ordering the caller is free to use.
+    while let Some(event) = server.poll_event() {
+        if event == TunnelEvent::Established {
+            server
+                .send_data(b"racing data")
+                .expect("send_data succeeds once Established");
+        }
+    }
+
+    let first: TunnelPdu = ironrdp_core::decode(&server.poll_pdu().expect("first pdu")).expect("decode");
+    assert!(
+        matches!(first, TunnelPdu::CreateResponse(_)),
+        "CreateResponse must be the first PDU on the wire, got {first:?}"
+    );
+
+    let second: TunnelPdu = ironrdp_core::decode(&server.poll_pdu().expect("second pdu")).expect("decode");
+    assert!(matches!(second, TunnelPdu::Data(_)));
+}
+
 #[test]
 fn server_rejects_mismatching_request_id() {
     let mut server = RdpemtTunnel::server(test_config());
@@ -211,7 +245,85 @@ fn established_tunnel_receives_data() {
     tunnel.handle_pdu(&incoming_bytes).expect("handle ok");
 
     let event = tunnel.poll_event().expect("should have Data event");
-    assert_eq!(event, TunnelEvent::Data(b"from server".to_vec()));
+    assert_eq!(
+        event,
+        TunnelEvent::Data {
+            sub_headers: Vec::new(),
+            data: b"from server".to_vec(),
+        }
+    );
+}
+
+/// A sub-header carried on a received Data PDU (e.g. an auto-detect
+/// bandwidth-measurement result, MS-RDPBCGR Section 2.2.14) must reach the
+/// caller through TunnelEvent::Data, not be discarded.
+#[test]
+fn established_tunnel_surfaces_sub_headers_on_receive() {
+    let mut tunnel = RdpemtTunnel::client(test_config());
+    let _create_req = tunnel.poll_pdu();
+
+    let response = TunnelCreateResponse {
+        hr_response: TunnelCreateResponse::S_OK,
+    };
+    let response_bytes = ironrdp_core::encode_vec(&response).expect("encode");
+    tunnel.handle_pdu(&response_bytes).expect("handle ok");
+    let _event = tunnel.poll_event();
+
+    let sub_header = TunnelSubHeader {
+        sub_header_type: SubHeaderType::AutoDetectResponse,
+        data: vec![0xAA, 0xBB],
+    };
+    let incoming = TunnelData {
+        sub_headers: vec![sub_header.clone()],
+        higher_layer_data: b"payload".to_vec(),
+    };
+    let incoming_bytes = ironrdp_core::encode_vec(&incoming).expect("encode");
+
+    tunnel.handle_pdu(&incoming_bytes).expect("handle ok");
+
+    let event = tunnel.poll_event().expect("should have Data event");
+    assert_eq!(
+        event,
+        TunnelEvent::Data {
+            sub_headers: vec![sub_header],
+            data: b"payload".to_vec(),
+        }
+    );
+}
+
+/// A sub-header attached via send_data_with_sub_headers must reach the wire
+/// and round-trip through the peer's handle_pdu.
+#[test]
+fn send_data_with_sub_headers_round_trips() {
+    let mut client = RdpemtTunnel::client(test_config());
+    let create_req = client.poll_pdu().expect("CreateRequest");
+
+    let mut server = RdpemtTunnel::server(test_config());
+    server.handle_pdu(&create_req).expect("server handle CreateRequest");
+    let create_resp = server.poll_pdu().expect("CreateResponse");
+    let _ = server.poll_event();
+
+    client.handle_pdu(&create_resp).expect("client handle CreateResponse");
+    let _ = client.poll_event();
+
+    let sub_header = TunnelSubHeader {
+        sub_header_type: SubHeaderType::AutoDetectRequest,
+        data: vec![0x01, 0x02, 0x03],
+    };
+    client
+        .send_data_with_sub_headers(vec![sub_header.clone()], b"measurement")
+        .expect("send ok");
+    let data_bytes = client.poll_pdu().expect("Data PDU");
+
+    server.handle_pdu(&data_bytes).expect("server handle Data");
+    let event = server.poll_event().expect("should have Data event");
+    assert_eq!(
+        event,
+        TunnelEvent::Data {
+            sub_headers: vec![sub_header],
+            data: b"measurement".to_vec(),
+        }
+    );
 }
 
 // ── State violation tests ──
@@ -315,12 +427,24 @@ fn end_to_end_handshake_and_data() {
     let data_to_server = client.poll_pdu().expect("client Data PDU");
 
     server.handle_pdu(&data_to_server).expect("server handle Data");
-    assert_eq!(server.poll_event(), Some(TunnelEvent::Data(b"request data".to_vec())));
+    assert_eq!(
+        server.poll_event(),
+        Some(TunnelEvent::Data {
+            sub_headers: Vec::new(),
+            data: b"request data".to_vec(),
+        })
+    );
 
     // Server sends data to client
     server.send_data(b"response data").expect("server send");
     let data_to_client = server.poll_pdu().expect("server Data PDU");
 
     client.handle_pdu(&data_to_client).expect("client handle Data");
-    assert_eq!(client.poll_event(), Some(TunnelEvent::Data(b"response data".to_vec())));
+    assert_eq!(
+        client.poll_event(),
+        Some(TunnelEvent::Data {
+            sub_headers: Vec::new(),
+            data: b"response data".to_vec(),
+        })
+    );
 }

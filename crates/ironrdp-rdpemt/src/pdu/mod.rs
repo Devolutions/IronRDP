@@ -13,8 +13,6 @@ pub mod create_request;
 pub mod create_response;
 pub mod data;
 pub mod header;
-pub mod multitransport_request;
-pub mod multitransport_response;
 pub mod subheader;
 
 pub use create_request::{SECURITY_COOKIE_LEN, TunnelCreateRequest};
@@ -22,8 +20,6 @@ pub use create_response::TunnelCreateResponse;
 pub use data::TunnelData;
 pub use header::{TunnelAction, TunnelHeader};
 use ironrdp_core::{Decode, DecodeResult, ReadCursor, UnexpectedMessageTypeErr as _};
-pub use multitransport_request::{MultitransportRequest, RequestedProtocol};
-pub use multitransport_response::MultitransportResponse;
 pub use subheader::{SubHeaderType, TunnelSubHeader};
 
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]

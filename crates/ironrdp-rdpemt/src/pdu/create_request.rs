@@ -99,6 +99,18 @@ impl Decode<'_> for TunnelCreateRequest {
             ));
         }
 
+        // PayloadLength is fixed at 24 for this PDU (MS-RDPEMT 2.2.2.1);
+        // reject a declared length that disagrees with the fixed body this
+        // decoder actually reads, since ironrdp_core::decode does not
+        // require the cursor to be fully consumed.
+        if usize::from(header.payload_length) != PAYLOAD_SIZE {
+            return Err(ironrdp_core::DecodeError::invalid_field(
+                Self::NAME,
+                "PayloadLength",
+                "must be 24 for CreateRequest",
+            ));
+        }
+
         ironrdp_core::ensure_size!(in: src, size: PAYLOAD_SIZE);
 
         let request_id = src.read_u32();

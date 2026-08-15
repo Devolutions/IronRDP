@@ -46,6 +46,19 @@ fn round_trip() {
     assert_eq!(decoded, original);
 }
 
+/// PayloadLength is fixed at 24 for this PDU (MS-RDPEMT 2.2.2.1). A wire
+/// claiming a different value, followed by the real 24-byte body, must be
+/// rejected rather than silently accepted: ironrdp_core::decode does not
+/// require the cursor to be fully consumed, so a wrong length here would
+/// otherwise never surface.
+#[test]
+fn decode_rejects_payload_length_that_disagrees_with_the_body() {
+    let mut wire = SPEC_EXAMPLE.to_vec();
+    wire[1] = 0x00; // PayloadLength low byte: 24 -> 0, header still claims 4 bytes
+    let result: ironrdp_core::DecodeResult<TunnelCreateRequest> = ironrdp_core::decode(&wire);
+    assert!(result.is_err());
+}
+
 #[test]
 fn wire_size_is_28() {
     let pdu = TunnelCreateRequest {

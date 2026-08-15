@@ -64,7 +64,12 @@ pub struct TunnelHeader {
     pub action: TunnelAction,
     /// Bytes of payload following the header (does NOT include header size).
     pub payload_length: u16,
-    /// Total header size in bytes, including any SubHeaders. Minimum 4.
+    /// Total header size as last decoded from the wire, including any
+    /// SubHeaders. Minimum 4. `encode` does not trust this field: it derives
+    /// the real value fresh from `sub_headers`, since a stored value that
+    /// disagrees with `sub_headers` would encode a header the following
+    /// bytes contradict. This field exists for inspecting a decoded header,
+    /// not for controlling what `encode` writes.
     pub header_length: u8,
     /// Parsed sub-headers. Empty for CreateRequest/CreateResponse.
     pub sub_headers: Vec<TunnelSubHeader>,
@@ -75,16 +80,27 @@ impl TunnelHeader {
     pub(crate) const MIN_SIZE: usize = 4;
 
     const NAME: &'static str = "RDP_TUNNEL_HEADER";
+
+    /// The header length `encode` will actually write: `MIN_SIZE` plus the
+    /// encoded size of every sub-header, checked to fit the one-byte field.
+    fn derived_header_length(&self) -> EncodeResult<u8> {
+        let total = Self::MIN_SIZE + self.sub_headers.iter().map(TunnelSubHeader::size).sum::<usize>();
+        u8::try_from(total).map_err(|_| {
+            ironrdp_core::invalid_field_err!(Self::NAME, "HeaderLength", "sub-headers exceed one byte of length")
+        })
+    }
 }
 
 impl Encode for TunnelHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ironrdp_core::ensure_size!(in: dst, size: self.size());
 
+        let header_length = self.derived_header_length()?;
+
         // Byte 0: (flags << 4) | action, flags are always 0
         dst.write_u8(self.action.to_u8());
         dst.write_u16(self.payload_length);
-        dst.write_u8(self.header_length);
+        dst.write_u8(header_length);
 
         for sub in &self.sub_headers {
             sub.encode(dst)?;

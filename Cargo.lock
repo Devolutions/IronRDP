@@ -3032,6 +3032,7 @@ dependencies = [
  "arbitrary",
  "ironrdp-core 0.2.1",
  "ironrdp-error 0.2.0",
+ "subtle",
 ]
 
 [[package]]

@@ -6,7 +6,9 @@
 //! # Lifecycle
 //!
 //! ```text
-//! Client: Created ──(poll_pdu → CreateRequest)──→ AwaitingResponse
+//! Client: `client()` constructs directly into AwaitingResponse, with
+//!         CreateRequest already queued for poll_pdu(); a client is never
+//!         observably in Created.
 //!         AwaitingResponse ──(CreateResponse S_OK)──→ Established
 //!         AwaitingResponse ──(CreateResponse !S_OK)──→ Failed
 //!
@@ -20,9 +22,11 @@ use alloc::collections::VecDeque;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
+use subtle::ConstantTimeEq as _;
+
 use crate::error::{RdpemtError, RdpemtErrorExt as _};
 use crate::pdu::create_request::SECURITY_COOKIE_LEN;
-use crate::pdu::{TunnelCreateRequest, TunnelCreateResponse, TunnelData, TunnelPdu};
+use crate::pdu::{TunnelCreateRequest, TunnelCreateResponse, TunnelData, TunnelPdu, TunnelSubHeader};
 
 // ════════════════════════════════════════════════════════════════════
 // Public types
@@ -40,16 +44,24 @@ pub enum Side {
 /// Events produced by the tunnel for the application layer.
 ///
 /// Retrieved by calling `poll_event()` after `handle_pdu()`.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TunnelEvent {
     /// The tunnel has been established (CreateResponse with S_OK).
     Established,
     /// Higher-layer data received through the tunnel.
-    Data(Vec<u8>),
+    Data {
+        /// Sub-headers carried alongside the data (e.g. auto-detect
+        /// bandwidth measurement, MS-RDPBCGR Section 2.2.14). Empty when
+        /// none were present.
+        sub_headers: Vec<TunnelSubHeader>,
+        /// The higher-layer (DVC) payload.
+        data: Vec<u8>,
+    },
     /// The tunnel creation failed (non-recoverable).
     Failed {
-        /// The HRESULT from the CreateResponse, or 0xFFFFFFFF for server-side
-        /// cookie mismatch.
+        /// The HRESULT from the CreateResponse, or `0x80070005`
+        /// (E_ACCESSDENIED) for server-side cookie mismatch.
         hr_response: u32,
     },
 }
@@ -124,6 +136,13 @@ pub struct RdpemtTunnel {
     state: TunnelState,
     config: TunnelConfig,
     /// PDUs waiting to be sent (encoded wire bytes).
+    ///
+    /// INVARIANT: a single FIFO shared by every enqueueing path. This is what
+    /// keeps `send_data` from racing ahead of an in-flight `CreateResponse`
+    /// (MS-RDPEMT §3.1.5.5 forbids sending data before CreateResponse is
+    /// sent): `handle_pdu` pushes CreateResponse before it becomes possible
+    /// for a caller to observe `Established` and call `send_data`, so
+    /// anything `send_data` pushes always lands behind it.
     outgoing: VecDeque<Vec<u8>>,
     /// Events waiting to be delivered to the application.
     events: VecDeque<TunnelEvent>,
@@ -162,6 +181,13 @@ impl RdpemtTunnel {
 
     /// Process a received (already TLS-decrypted) PDU.
     ///
+    /// `data` must hold exactly one tunnel PDU, no more and no less. Decoding
+    /// does not require the buffer to be fully consumed, so a `data` slice
+    /// spanning two concatenated PDUs decodes only the first and silently
+    /// drops the rest with no signal that anything was lost. A caller
+    /// reading from a byte stream must frame each PDU itself first, using
+    /// the header's own HeaderLength and PayloadLength, before calling this.
+    ///
     /// After calling this, use `poll_event()` to retrieve any events
     /// and `poll_pdu()` to retrieve any response PDUs.
     pub fn handle_pdu(&mut self, data: &[u8]) -> Result<(), RdpemtError> {
@@ -183,7 +209,12 @@ impl RdpemtTunnel {
 
             // Server in Created receives CreateRequest
             (TunnelState::Created, Side::Server, TunnelPdu::CreateRequest(req)) => {
-                if req.request_id == self.config.request_id && req.security_cookie == self.config.security_cookie {
+                // Constant-time: the cookie is the binding secret between the
+                // main session and this tunnel (MS-RDPEMT §3.2.5.1, §5.1), so
+                // a variable-time compare would leak how many leading bytes
+                // an attacker guessed correctly.
+                let cookie_matches: bool = req.security_cookie.ct_eq(&self.config.security_cookie).into();
+                if req.request_id == self.config.request_id && cookie_matches {
                     self.state = TunnelState::Established;
                     self.enqueue_create_response(TunnelCreateResponse::S_OK);
                     self.events.push_back(TunnelEvent::Established);
@@ -198,7 +229,10 @@ impl RdpemtTunnel {
 
             // Either side in Established receives Data
             (TunnelState::Established, _, TunnelPdu::Data(data_pdu)) => {
-                self.events.push_back(TunnelEvent::Data(data_pdu.higher_layer_data));
+                self.events.push_back(TunnelEvent::Data {
+                    sub_headers: data_pdu.sub_headers,
+                    data: data_pdu.higher_layer_data,
+                });
             }
 
             // Any other combination is a state violation
@@ -227,12 +261,26 @@ impl RdpemtTunnel {
     /// The data is wrapped in a TunnelData PDU and enqueued for `poll_pdu()`.
     /// Returns an error if the tunnel is not in the Established state.
     pub fn send_data(&mut self, data: &[u8]) -> Result<(), RdpemtError> {
+        self.send_data_with_sub_headers(Vec::new(), data)
+    }
+
+    /// Queue application data, with sub-headers, for transmission as a Data PDU.
+    ///
+    /// Sub-headers carry sideband auto-detect traffic (e.g. bandwidth
+    /// measurement results, MS-RDPBCGR Section 2.2.14) alongside the
+    /// higher-layer data. Returns an error if the tunnel is not in the
+    /// Established state.
+    pub fn send_data_with_sub_headers(
+        &mut self,
+        sub_headers: Vec<TunnelSubHeader>,
+        data: &[u8],
+    ) -> Result<(), RdpemtError> {
         if self.state != TunnelState::Established {
             return Err(RdpemtError::invalid_state("send tunnel data"));
         }
 
         let pdu = TunnelData {
-            sub_headers: Vec::new(),
+            sub_headers,
             higher_layer_data: data.to_vec(),
         };
 

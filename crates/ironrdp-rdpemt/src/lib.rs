@@ -10,7 +10,7 @@ pub mod tunnel;
 
 pub use self::error::{RdpemtError, RdpemtErrorExt, RdpemtErrorKind, RdpemtResult};
 pub use self::pdu::{
-    MultitransportRequest, MultitransportResponse, RequestedProtocol, SECURITY_COOKIE_LEN, SubHeaderType, TunnelAction,
-    TunnelCreateRequest, TunnelCreateResponse, TunnelData, TunnelHeader, TunnelPdu, TunnelSubHeader,
+    SECURITY_COOKIE_LEN, SubHeaderType, TunnelAction, TunnelCreateRequest, TunnelCreateResponse, TunnelData,
+    TunnelHeader, TunnelPdu, TunnelSubHeader,
 };
 pub use self::tunnel::{RdpemtTunnel, Side, TunnelConfig, TunnelEvent};

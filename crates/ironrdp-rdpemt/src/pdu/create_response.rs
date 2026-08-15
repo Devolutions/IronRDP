@@ -42,9 +42,17 @@ impl TunnelCreateResponse {
     /// Total wire size: 4 (header) + 4 (payload) = 8 bytes.
     const WIRE_SIZE: usize = TunnelHeader::MIN_SIZE + PAYLOAD_SIZE;
 
+    /// HRESULT severity bit (bit 31). Clear means success, set means failure.
+    ///
+    /// MS-RDPEMT 3.1.5.5 / 3.3.5.1 require a successful HRESULT, not
+    /// specifically `S_OK`; this matches the Win32 `SUCCEEDED(hr)` macro
+    /// rather than an exact-equality check, so any success code a non-Windows
+    /// peer might send is still recognized.
+    const SEVERITY_BIT: u32 = 0x8000_0000;
+
     /// Whether this response indicates successful tunnel creation.
     pub fn is_success(&self) -> bool {
-        self.hr_response == Self::S_OK
+        self.hr_response & Self::SEVERITY_BIT == 0
     }
 }
 
@@ -94,6 +102,18 @@ impl Decode<'_> for TunnelCreateResponse {
             return Err(ironrdp_core::DecodeError::invalid_field(
                 Self::NAME,
                 "HeaderLength",
+                "must be 4 for CreateResponse",
+            ));
+        }
+
+        // PayloadLength is fixed at 4 for this PDU (MS-RDPEMT 2.2.2.2);
+        // reject a declared length that disagrees with the fixed body this
+        // decoder actually reads, since ironrdp_core::decode does not
+        // require the cursor to be fully consumed.
+        if usize::from(header.payload_length) != PAYLOAD_SIZE {
+            return Err(ironrdp_core::DecodeError::invalid_field(
+                Self::NAME,
+                "PayloadLength",
                 "must be 4 for CreateResponse",
             ));
         }

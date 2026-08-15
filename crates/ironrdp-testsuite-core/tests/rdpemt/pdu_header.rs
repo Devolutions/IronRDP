@@ -100,3 +100,31 @@ fn round_trip_header_with_subheader() {
     let decoded: TunnelHeader = ironrdp_core::decode(&encoded).expect("decode");
     assert_eq!(decoded, header);
 }
+
+/// `header_length` claiming no sub-headers while `sub_headers` is non-empty
+/// must not reach the wire: `encode` derives the real header length from
+/// `sub_headers` rather than trusting the stored field, so this cannot
+/// desync a receiver into misreading sub-header bytes as the next PDU.
+#[test]
+fn encode_derives_header_length_from_sub_headers_not_the_stored_field() {
+    let header = TunnelHeader {
+        action: TunnelAction::Data,
+        payload_length: 0,
+        header_length: 4, // claims no sub-headers
+        sub_headers: vec![TunnelSubHeader {
+            sub_header_type: SubHeaderType::AutoDetectResponse,
+            data: vec![0xAA, 0xBB],
+        }],
+    };
+
+    let encoded = ironrdp_core::encode_vec(&header).expect("encode");
+    // Byte 3 must be the real 8, not the stored 4, so the sub-header bytes
+    // that follow are accounted for in the wire header length.
+    assert_eq!(
+        encoded[3], 8,
+        "wire header_length must match the encoded sub-headers, not the stored field"
+    );
+
+    let decoded: TunnelHeader = ironrdp_core::decode(&encoded).expect("decode");
+    assert_eq!(decoded.sub_headers, header.sub_headers);
+}

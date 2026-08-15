@@ -79,13 +79,12 @@ impl Encode for TunnelSubHeader {
         let total = self.wire_size();
         ironrdp_core::ensure_size!(in: dst, size: total);
 
-        // SubHeaderLength includes itself and SubHeaderType
-        #[expect(
-            clippy::as_conversions,
-            clippy::cast_possible_truncation,
-            reason = "sub-headers are small; max 257 bytes"
-        )]
-        let sub_header_length: u8 = total as u8;
+        // SubHeaderLength includes itself and SubHeaderType. A truncating
+        // cast here would silently wrap once `data` pushes `total` past 255,
+        // writing a length byte that disagrees with the bytes that follow.
+        let sub_header_length = u8::try_from(total).map_err(|_| {
+            ironrdp_core::invalid_field_err!(Self::NAME, "SubHeaderLength", "sub-header exceeds 255 bytes")
+        })?;
         dst.write_u8(sub_header_length);
         dst.write_u8(self.sub_header_type.to_u8());
         dst.write_slice(&self.data);
