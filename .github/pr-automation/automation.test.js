@@ -12,6 +12,7 @@ const { validateReviewer } = require("./validate-reviewer");
 const {
   resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER,
   LEGACY_XL_MARKER, LEGITIMACY_LABEL, LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER,
+  OVERSIZED_REVIEW_LABEL,
 } = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
 const { StaleHeadError, applyLabels, escapeMarkdown, markerBody, writeState } = require("./write-state");
@@ -146,6 +147,8 @@ test("workflow isolates CI completion concurrency by source commit", () => {
   const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
   assert.match(workflow, /pr-automation-\$\{\{ github\.event_name }}-\$\{\{/);
   assert.match(workflow, /github\.event\.workflow_run\.head_sha \|\|/);
+  assert.match(workflow, /github\.event\.label\.name == 'ai-review\/allow-oversized'/);
+  assert.match(workflow, /format\('label-\{0\}', github\.event\.label\.name\)/);
   assert.doesNotMatch(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number/);
 });
 
@@ -175,6 +178,7 @@ test("workflow force mode bypasses model policy gates without changing automatic
   assert.match(classificationGate, /if \(force\) \{/);
   assert.match(classificationGate, /setOutput\("required", true\)/);
   assert.match(classificationGate, /state\?\.automaticReviewEligible === true/);
+  assert.match(classificationGate, /run\.output\?\.title === "Classification complete"/);
 
   const classifierJob = workflowJob(workflow, "classifier");
   assert.match(classifierJob, /if: >-\n\s+always\(\) && !cancelled\(\) &&/);
@@ -798,6 +802,35 @@ test("force is dispatch-only and bypasses draft and bot eligibility", async () =
   assert.equal(automaticBot.reason, "bot-authored pull request");
 });
 
+test("only the persistent oversized-review label starts automation from a label event", async () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  assert.match(workflow, /types: \[opened, reopened, synchronize, ready_for_review, edited, labeled\]/);
+  assert.match(workflowJob(workflow, "classifier"),
+    /contains\(fromJSON\(needs\.resolve-pr\.outputs\.labels\), 'ai-review\/allow-oversized'\)/);
+
+  const pullRequest = (labels = []) => ({
+    number: 7, draft: false, state: "open", labels,
+    user: { node_id: "U_1", login: "contributor", type: "User" },
+    head: { sha: SHA, repo: { full_name: "Devolutions/IronRDP" } }, base: { sha: "b".repeat(40) },
+  });
+  const resolve = async (label) => resolvePr({
+    github: { rest: { pulls: {
+      get: async () => ({ data: pullRequest([OVERSIZED_REVIEW_LABEL]) }),
+      list: async () => ({ data: [pullRequest([OVERSIZED_REVIEW_LABEL])] }),
+    } } },
+    context: {
+      eventName: "pull_request_target", repo: { owner: "Devolutions", repo: "IronRDP" },
+      payload: { action: "labeled", label: { name: label }, pull_request: { number: 7 } },
+    },
+  });
+
+  const requested = await resolve(OVERSIZED_REVIEW_LABEL);
+  assert.equal(requested.ok, true);
+  assert.equal(requested.classificationRequested, true);
+  assert.equal(requested.force, false);
+  assert.equal((await resolve("size/XXL")).reason, "unrelated pull request label");
+});
+
 test("deterministic semver outranks the model and a model-only break cannot stay low", () => {
   const deterministic = { ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S", sizeLabels: ["size/S"],
     firstTime: false };
@@ -927,6 +960,9 @@ test("protocol relevance overrides risk suppression but no other exclusion", () 
     assert.equal(reviewPolicyEligible({ labels: ["risk/high", blocking], protocolRelated: true }), false);
   }
   assert.equal(reviewPolicyEligible({
+    labels: ["risk/high", "size/XXL", OVERSIZED_REVIEW_LABEL], protocolRelated: true,
+  }), true);
+  assert.equal(reviewPolicyEligible({
     labels: ["risk/high"], protocolRelated: true, legitimacyStopped: true,
   }), false);
 });
@@ -949,6 +985,26 @@ test("review publication applies the same policy the workflow spent its call on"
   assert.equal(resolveReviewState({
     ...args, labels: ["risk/low", "size/XXL"], gate: gate({ protocolRelated: true }),
   }).failed, true);
+  assert.equal(resolveReviewState({
+    ...args, labels: ["risk/low", "size/XXL", OVERSIZED_REVIEW_LABEL],
+    gate: gate({ protocolRelated: true }),
+  }).failed, undefined);
+});
+
+test("persistent oversized-review label runs normal classification and review", () => {
+  const deterministic = { ok: true, pathLabels: [], ownedPathLabels: [],
+    sizeLabel: "size/XXL", sizeLabels: ["size/XL", "size/XXL"], firstTime: false };
+  const state = resolveClassificationState({
+    expectedSha: SHA, labels: [OVERSIZED_REVIEW_LABEL], deterministic, classifier: classifier({
+      protocol_related: true,
+    }), semver: { head_sha: SHA, status: "not-suspected" },
+  });
+
+  assert.equal(state.oversized, undefined);
+  assert.equal(state.check.title, "Classification complete");
+  assert.equal(state.dispatchReview, true);
+  assert.deepEqual(state.comments, []);
+  assert.equal(state.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
 });
 
 test("XXL guidance is posted once and withdrawn when the change shrinks", () => {
@@ -991,6 +1047,9 @@ test("an oversized change retains deterministic labels without a classifier", ()
   assert.deepEqual(state.comments.map((comment) => comment.kind), ["oversized"]);
   // The review gate only trusts a check announcing a completed classification.
   assert.notEqual(state.check.title, "Classification complete");
+  assert.equal(state.check.machineState.automaticReviewEligible, false);
+  assert.equal(parseCheckState(`${state.check.summary}\n\n${encodeCheckState(state.check.machineState)}`)
+    .automaticReviewEligible, false);
   // No model ran, so a duplicate or legitimacy verdict from an earlier head is neither confirmed
   // nor refuted and must be left in place.
   assert.deepEqual(state.removeCommentMarkers, [LEGACY_XL_MARKER]);
