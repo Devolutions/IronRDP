@@ -94,7 +94,9 @@ pub enum RailExecuteFailureReason {
 pub enum RdpOutputEvent {
     /// Connection negotiation and activation have completed.
     Connected,
-    /// The server-reported remote monitor layout received during connection finalization.
+    /// The server-reported remote monitor layout.
+    ///
+    /// The server may send this during activation or after activation.
     MonitorLayout(Vec<Monitor>),
     /// Server Save Session Info notification.
     ///
@@ -2587,6 +2589,19 @@ async fn active_session(
                         ));
                     }
                 }
+                ActiveStageOutput::MonitorLayout(monitors) => {
+                    if !send_active_output_event(
+                        output_event_sender,
+                        RdpOutputEvent::MonitorLayout(monitors),
+                        close_receiver,
+                    )
+                    .await?
+                    {
+                        return Ok(RdpControlFlow::TerminatedGracefully(
+                            GracefulDisconnectReason::UserInitiated,
+                        ));
+                    }
+                }
                 ActiveStageOutput::WindowingOrders(orders) => {
                     if !send_active_output_event(
                         output_event_sender,
@@ -2746,6 +2761,18 @@ async fn active_session(
                                 return Err(ironrdp_session::general_err!("invalid static channel chunk size"));
                             }
                             active_stage.set_window_support_level(window_support_level);
+                            if let Some(monitor_layout) = connection_activation.monitor_layout()
+                                && !send_active_output_event(
+                                    output_event_sender,
+                                    RdpOutputEvent::MonitorLayout(monitor_layout.monitors),
+                                    close_receiver,
+                                )
+                                .await?
+                            {
+                                return Ok(RdpControlFlow::TerminatedGracefully(
+                                    GracefulDisconnectReason::UserInitiated,
+                                ));
+                            }
                             if let Some(messages) =
                                 active_stage.get_svc_processor_mut::<RailClient>().map(|rail_client| {
                                     rail_client.update_desktop_size(desktop_size.width, desktop_size.height)

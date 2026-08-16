@@ -39,6 +39,14 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
+    public MonitorLayoutIterator MonitorLayout
+    {
+        get
+        {
+            return GetMonitorLayout();
+        }
+    }
+
     public MultitransportRequest MultitransportRequest
     {
         get
@@ -224,6 +232,28 @@ public partial class ActiveStageOutput: IDisposable
             }
             Raw.BytesSlice* retVal = result.Ok;
             return new BytesSlice(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>MonitorLayoutIterator</c> allocated on Rust side.
+    /// </returns>
+    public MonitorLayoutIterator GetMonitorLayout()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStageOutput");
+            }
+            Raw.SessionFfiResultBoxMonitorLayoutIteratorBoxIronRdpError result = Raw.ActiveStageOutput.GetMonitorLayout(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.MonitorLayoutIterator* retVal = result.Ok;
+            return new MonitorLayoutIterator(retVal);
         }
     }
 

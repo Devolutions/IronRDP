@@ -62,7 +62,8 @@ impl ConnectionActivationSequence {
         self.state.clone()
     }
 
-    pub(crate) fn monitor_layout(&self) -> Option<rdp::finalization_messages::MonitorLayoutPdu> {
+    /// Returns the server-reported monitor layout received during this activation.
+    pub fn monitor_layout(&self) -> Option<rdp::finalization_messages::MonitorLayoutPdu> {
         self.monitor_layout.clone()
     }
 }

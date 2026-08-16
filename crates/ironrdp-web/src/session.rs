@@ -1010,6 +1010,12 @@ impl iron_remote_desktop::Session for Session {
                             hotspot_y,
                         })?;
                     }
+                    ActiveStageOutput::MonitorLayout(monitors) => {
+                        debug!(
+                            monitor_count = monitors.len(),
+                            "Received remote monitor layout without multi-monitor support"
+                        );
+                    }
                     ActiveStageOutput::WindowingOrders(_) => {
                         // Windowing orders are not meaningful to the protocol-agnostic web component.
                     }

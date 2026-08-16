@@ -1,7 +1,7 @@
 use ironrdp_bulk::BulkCompressor;
 use ironrdp_core::{WriteBuf, decode};
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelRef};
-use ironrdp_pdu::gcc::ChannelName;
+use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::client_info::CompressionType;
@@ -79,6 +79,11 @@ pub enum ProcessorOutput {
     /// Slow-path pointer update ([MS-RDPBCGR] 2.2.9.1.1.4).
     /// Raw pointer payload starting with `messageType(u16) + pad(u16)`.
     PointerUpdate(Vec<u8>),
+    /// Server-reported remote monitor layout ([MS-RDPBCGR] 2.2.12.1).
+    ///
+    /// The server may send this after activation when the client advertises
+    /// `RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU`.
+    MonitorLayout(Vec<Monitor>),
 }
 
 #[derive(Debug, Clone)]
@@ -337,6 +342,9 @@ impl Processor {
                 debug!("Got slow-path pointer update ({} bytes)", data.len());
                 Ok(vec![ProcessorOutput::PointerUpdate(data)])
             }
+            ShareDataPdu::MonitorLayout(monitor_layout) => {
+                Ok(vec![ProcessorOutput::MonitorLayout(monitor_layout.monitors)])
+            }
             pdu => Err(reason_err!("IO channel", "unhandled PDU: {:?}", pdu.as_short_name())),
         }
     }
@@ -446,6 +454,8 @@ fn process_svc_messages(
 mod tests {
     use ironrdp_bulk::{CompressionType as BulkCompressionType, flags};
     use ironrdp_core::encode_vec;
+    use ironrdp_pdu::gcc::MonitorFlags;
+    use ironrdp_pdu::rdp::finalization_messages::MonitorLayoutPdu;
     use ironrdp_pdu::rdp::headers::ShareDataPduType;
     use ironrdp_pdu::rdp::session_info::{InfoType, LogonExFlags, LogonInfoExtended};
 
@@ -570,6 +580,38 @@ mod tests {
         .expect("valid auto-reconnect status PDU should be processed");
 
         assert!(matches!(outputs.as_slice(), [ProcessorOutput::AutoReconnectFailed]));
+    }
+
+    #[test]
+    fn processor_surfaces_monitor_layout() {
+        let monitors = vec![Monitor {
+            left: 0,
+            top: 0,
+            right: 799,
+            bottom: 599,
+            flags: MonitorFlags::PRIMARY,
+        }];
+        let mut bulk_decompressor = None;
+        let outputs = Processor::process_share_data(
+            ShareDataCtx {
+                initiator_id: 0,
+                channel_id: 0,
+                share_id: 0,
+                pdu_source: 0,
+                compression_flags: CompressionFlags::empty(),
+                compression_type: CompressionType::K64,
+                pdu: ShareDataPdu::MonitorLayout(MonitorLayoutPdu {
+                    monitors: monitors.clone(),
+                }),
+            },
+            &mut bulk_decompressor,
+        )
+        .expect("monitor layout PDU should be processed");
+
+        let [ProcessorOutput::MonitorLayout(actual)] = outputs.as_slice() else {
+            panic!("expected a monitor layout output");
+        };
+        assert_eq!(actual, &monitors);
     }
 
     #[test]
