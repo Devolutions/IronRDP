@@ -78,7 +78,7 @@ pub mod ffi {
         pub fn get_connection_finalization(
             &self,
         ) -> Result<Box<ConnectionActivationStateConnectionFinalization>, Box<IronRdpError>> {
-            match self.state {
+            match &self.state {
                 ironrdp::connector::connection_activation::ConnectionActivationState::ConnectionFinalization {
                     desktop_size,
                     share_id: _,
@@ -86,8 +86,8 @@ pub mod ffi {
                     connection_finalization,
                     ..
                 } => Ok(Box::new(ConnectionActivationStateConnectionFinalization {
-                    desktop_size,
-                    connection_finalization,
+                    desktop_size: *desktop_size,
+                    connection_finalization: connection_finalization.clone(),
                 })),
                 _ => Err(IncorrectEnumTypeError::on_variant("ConnectionFinalization")
                     .of_enum("ConnectionActivationState")
