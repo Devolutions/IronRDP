@@ -72,13 +72,17 @@ Size uses the larger bucket from additions plus deletions in Rust, C#, JavaScrip
 | `size/XL` | 900-1299 | 21-49 |
 | `size/XXL` | 1300 or more | 50 or more |
 
-For a `size/XXL` pull request, automatic routes skip classification and review before any model runs.
-Classification falls back to deterministic scope, size, first-time-contributor, and `cargo-semver-checks` results, while every classified pull request retains exactly one `size/*` label.
+For a `size/XXL` pull request, automatic routes skip classification and review before any model runs unless a maintainer adds `ai-review/allow-oversized`.
+Without that label, classification falls back to deterministic scope, size, first-time-contributor, and `cargo-semver-checks` results, while every classified pull request retains exactly one `size/*` label.
 
 The workflow comments once to explain the exclusion and point to [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) for splitting dependent work.
 Because stacks require every branch to live in this repository, fork authors should open separate pull requests.
 The comment is removed automatically once a later push brings the change below the threshold.
 Duplicate and legitimacy verdicts are model-derived, so an oversized run leaves any earlier verdict untouched rather than silently clearing it.
+
+`ai-review/allow-oversized` remains on the pull request and treats `size/XXL` as eligible on the initial label event and later pushes.
+It permits the normal classifier and up to two automatic reviews, including protocol analysis when applicable.
+It only waives the size exclusion; CI, quota, duplicate, legitimacy, contributor-history, and review-count gates still apply.
 
 ### Fork automation limits
 
@@ -162,7 +166,7 @@ It never deletes repository labels.
 On automatic routes, risk measures maintainer scrutiny, so it does not decide whether a protocol change is worth reviewing.
 A `protocol_related` classification is review-eligible at any risk level, subject to the remaining review gates.
 For every other change, `risk/low` without `breaking-change` skips the review.
-Duplicates, `size/XXL`, a legitimacy stop, and the terminal review count stop every automatic route.
+Duplicates, `size/XXL` without `ai-review/allow-oversized`, a legitimacy stop, and the terminal review count stop every automatic route.
 
 ## Review prerequisites
 

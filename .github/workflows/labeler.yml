@@ -2,7 +2,7 @@ name: Pull request automation
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, edited]
+    types: [opened, reopened, synchronize, ready_for_review, edited, labeled]
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -368,7 +368,8 @@ jobs:
       (needs.resolve-pr.outputs.force == 'true' ||
       (needs.classification-gate.outputs.available == 'true' &&
       needs.classification-gate.outputs.required == 'true' &&
-      needs.deterministic-analysis.outputs.size-label != 'size/XXL' &&
+      (needs.deterministic-analysis.outputs.size-label != 'size/XXL' ||
+      contains(fromJSON(needs.resolve-pr.outputs.labels), 'ai-review/allow-oversized')) &&
       needs.fork-rate-limit.result == 'success' &&
       needs.fork-rate-limit.outputs.allowed == 'true' &&
       !contains(fromJSON(needs.resolve-pr.outputs.labels), 'ai-reviewed/2')))

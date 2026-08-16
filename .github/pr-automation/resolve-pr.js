@@ -1,5 +1,7 @@
 "use strict";
 
+const { OVERSIZED_REVIEW_LABEL } = require("./resolve-state");
+
 const SHA = /^[0-9a-f]{40}$/;
 
 function noResult(reason, route = "unknown") {
@@ -57,6 +59,11 @@ async function resolvePr({ github, context, inputs = {} }) {
   let pr;
   try {
     if (route === "classification") {
+      // State writes also emit `labeled` events, so only the explicit maintainer opt-in may start
+      // automation through that event.
+      if (context.payload.action === "labeled" && context.payload.label?.name !== OVERSIZED_REVIEW_LABEL) {
+        return noResult("unrelated pull request label", route);
+      }
       const number = positiveNumber(context.payload.pull_request?.number);
       if (!number) return noResult("missing pull request number", route);
       pr = await getOpenAtHead(github, owner, repo, number);
