@@ -1,16 +1,17 @@
 //! RDPEUDP PDU definitions.
 //!
-//! V1 handshake format, MS-RDPEUDP section 2.2.
+//! V1 handshake format (MS-RDPEUDP Section 2.2) and
+//! V2 data transfer format (MS-RDPEUDP2 Section 2.2).
 //!
-//! These structures carry the three-way handshake (SYN, SYN+ACK, ACK) that
-//! opens an RDP-UDP connection. They are used whatever protocol version the
-//! endpoints settle on, because the version is what the handshake negotiates.
+//! The v1 format is used for the three-way handshake (SYN/SYN+ACK/ACK)
+//! even when both sides negotiate v2+ for data transfer. Once the
+//! handshake completes, all subsequent packets use the v2 wire format
+//! from MS-RDPEUDP2.
 //!
-//! Everything here is big-endian: section 2.2 says "all of the messages
-//! written to the network or read from the network MUST be in network byte
-//! order", and the field diagrams number bits most significant first. The
-//! MS-RDPEUDP2 data transfer that a version 3 handshake leads to takes the
-//! opposite convention on both counts.
+//! Types are organized by protocol version:
+//! - `v1_*` modules: MS-RDPEUDP handshake structures.
+//! - `v2_*` modules: MS-RDPEUDP2 data transfer structures.
+//! - `prefix`: PacketPrefixByte wire-level framing for v2 packets.
 
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
 
@@ -21,12 +22,32 @@ pub mod v1_flags;
 pub mod v1_header;
 pub mod v1_syn;
 
+// ── V2 Data Transfer modules ──
+
+pub mod v2_ack;
+pub mod v2_control;
+pub mod v2_data;
+pub mod v2_flags;
+pub mod v2_header;
+
+// ── Wire-level framing ──
+
+pub mod prefix;
+
 // ── V1 re-exports ──
 
+// ── Prefix re-exports ──
+pub use prefix::{PacketPrefixByte, PrefixError, decode_with_prefix, encode_with_prefix};
 pub use v1_ack::{CorrelationIdPayload, V1AckOfAcksHeader, V1AckVectorElement, V1AckVectorHeader, VectorElementState};
 pub use v1_flags::V1Flags;
 pub use v1_header::FecHeader;
 pub use v1_syn::{MTU_MAX, MTU_MIN, SynDataExPayload, SynDataPayload, SynExFlags, UdpVersion};
+// ── V2 re-exports ──
+pub use v2_ack::{AckPayload, AckVectorEntry, AckVectorPayload};
+pub use v2_control::{AckOfAcksPayload, DelayAckInfoPayload, OverheadSizePayload};
+pub use v2_data::{DataBody, DataHeader};
+pub use v2_flags::V2Flags;
+pub use v2_header::{LOG_WINDOW_SIZE_MAX, V2Header};
 
 // ════════════════════════════════════════════════════════════════════
 // Composite V1 Datagram
@@ -270,6 +291,244 @@ impl Decode<'_> for V1Datagram {
             syn_data,
             correlation_id,
             syn_data_ex,
+        })
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Composite V2 Packet
+// ════════════════════════════════════════════════════════════════════
+
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+/// A complete RDP-UDP2 packet (after prefix byte extraction).
+///
+/// MS-RDPEUDP2 Section 2.2.1.
+/// The V2Header's flags field determines which optional payloads
+/// are present. On encode, payload-gating flags are auto-derived;
+/// there are no standalone flags to preserve.
+///
+/// Wire payload ordering (per MS-RDPEUDP2 Section 2.2.1):
+/// 1. V2Header (mandatory, 2 bytes)
+/// 2. AckPayload (if ACK flag)
+/// 3. OverheadSizePayload (if OVERHEADSIZE flag)
+/// 4. DelayAckInfoPayload (if DELAYACKINFO flag)
+/// 5. AckOfAcksPayload (if AOA flag)
+/// 6. DataHeader (if DATA flag)
+/// 7. AckVectorPayload (if ACKVEC flag)
+/// 8. DataBody (if DATA flag), always last, extending to the end of the packet
+///
+/// Invariants:
+/// - `ack` and `ack_vector` are mutually exclusive.
+/// - `data_header` and `data_body` must be both present or both absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct V2Packet {
+    /// Mandatory header. Only `log_window_size` is taken from this field
+    /// as given; the flags are always derived from which payloads are
+    /// present and overwrite whatever `header.flags` was set to.
+    pub header: V2Header,
+
+    /// ACK payload. Gated by `V2Flags::ACK`.
+    /// Mutually exclusive with `ack_vector`.
+    pub ack: Option<AckPayload>,
+
+    /// OverheadSize payload. Gated by `V2Flags::OVERHEADSIZE`.
+    pub overhead_size: Option<OverheadSizePayload>,
+
+    /// DelayAckInfo payload. Gated by `V2Flags::DELAYACKINFO`.
+    pub delay_ack_info: Option<DelayAckInfoPayload>,
+
+    /// AckOfAcks payload. Gated by `V2Flags::AOA`.
+    pub ack_of_acks: Option<AckOfAcksPayload>,
+
+    /// DataHeader payload. Gated by `V2Flags::DATA`.
+    /// Must be paired with `data_body`.
+    pub data_header: Option<DataHeader>,
+
+    /// AckVector payload. Gated by `V2Flags::ACKVEC`.
+    /// Mutually exclusive with `ack`.
+    pub ack_vector: Option<AckVectorPayload>,
+
+    /// DataBody payload. Gated by `V2Flags::DATA`.
+    /// Must be paired with `data_header`.
+    /// Always last in wire layout (consumes remaining bytes on decode).
+    pub data_body: Option<DataBody>,
+}
+
+impl V2Packet {
+    const NAME: &'static str = "RDP-UDP2 Packet";
+
+    /// Compute flags from populated fields.
+    ///
+    /// Every flag [MS-RDPEUDP2] 2.2.1.1 defines announces a payload, so there
+    /// is nothing to carry over from the caller's header: what is present
+    /// determines the field completely.
+    fn compute_flags(&self) -> V2Flags {
+        let mut flags = V2Flags::empty();
+
+        if self.ack.is_some() {
+            flags |= V2Flags::ACK;
+        }
+        if self.overhead_size.is_some() {
+            flags |= V2Flags::OVERHEADSIZE;
+        }
+        if self.delay_ack_info.is_some() {
+            flags |= V2Flags::DELAYACKINFO;
+        }
+        if self.ack_of_acks.is_some() {
+            flags |= V2Flags::AOA;
+        }
+        if self.data_header.is_some() {
+            flags |= V2Flags::DATA;
+        }
+        if self.ack_vector.is_some() {
+            flags |= V2Flags::ACKVEC;
+        }
+
+        flags
+    }
+}
+
+impl Encode for V2Packet {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        // Validate invariants before writing anything
+        if self.data_header.is_some() != self.data_body.is_some() {
+            return Err(ironrdp_core::invalid_field_err!(
+                "V2Packet",
+                "DATA",
+                "data_header and data_body must be both present or both absent"
+            ));
+        }
+        if self.ack.is_some() && self.ack_vector.is_some() {
+            return Err(ironrdp_core::invalid_field_err!(
+                "V2Packet",
+                "ACK/ACKVEC",
+                "ACK and ACKVEC are mutually exclusive"
+            ));
+        }
+
+        ironrdp_core::ensure_size!(in: dst, size: self.size());
+
+        // Write header with auto-computed flags
+        let header = V2Header {
+            flags: self.compute_flags(),
+            ..self.header
+        };
+        header.encode(dst)?;
+
+        // Write payloads in spec-mandated order (MS-RDPEUDP2 Section 2.2.1)
+        if let Some(ref ack) = self.ack {
+            ack.encode(dst)?;
+        }
+        if let Some(ref overhead) = self.overhead_size {
+            overhead.encode(dst)?;
+        }
+        if let Some(ref dai) = self.delay_ack_info {
+            dai.encode(dst)?;
+        }
+        if let Some(ref aoa) = self.ack_of_acks {
+            aoa.encode(dst)?;
+        }
+        if let Some(ref dh) = self.data_header {
+            dh.encode(dst)?;
+        }
+        if let Some(ref av) = self.ack_vector {
+            av.encode(dst)?;
+        }
+        if let Some(ref db) = self.data_body {
+            db.encode(dst)?;
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        let mut total = self.header.size();
+        if let Some(ref a) = self.ack {
+            total += a.size();
+        }
+        if let Some(ref os) = self.overhead_size {
+            total += os.size();
+        }
+        if let Some(ref dai) = self.delay_ack_info {
+            total += dai.size();
+        }
+        if let Some(ref aoa) = self.ack_of_acks {
+            total += aoa.size();
+        }
+        if let Some(ref dh) = self.data_header {
+            total += dh.size();
+        }
+        if let Some(ref av) = self.ack_vector {
+            total += av.size();
+        }
+        if let Some(ref db) = self.data_body {
+            total += db.size();
+        }
+        total
+    }
+}
+
+impl Decode<'_> for V2Packet {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        // V2Header::decode validates ACK/ACKVEC mutual exclusion
+        let header = V2Header::decode(src)?;
+
+        let ack = if header.flags.contains(V2Flags::ACK) {
+            Some(AckPayload::decode(src)?)
+        } else {
+            None
+        };
+
+        let overhead_size = if header.flags.contains(V2Flags::OVERHEADSIZE) {
+            Some(OverheadSizePayload::decode(src)?)
+        } else {
+            None
+        };
+
+        let delay_ack_info = if header.flags.contains(V2Flags::DELAYACKINFO) {
+            Some(DelayAckInfoPayload::decode(src)?)
+        } else {
+            None
+        };
+
+        let ack_of_acks = if header.flags.contains(V2Flags::AOA) {
+            Some(AckOfAcksPayload::decode(src)?)
+        } else {
+            None
+        };
+
+        let data_header = if header.flags.contains(V2Flags::DATA) {
+            Some(DataHeader::decode(src)?)
+        } else {
+            None
+        };
+
+        let ack_vector = if header.flags.contains(V2Flags::ACKVEC) {
+            Some(AckVectorPayload::decode(src)?)
+        } else {
+            None
+        };
+
+        // DataBody is always last: it consumes all remaining bytes
+        let data_body = if header.flags.contains(V2Flags::DATA) {
+            Some(DataBody::decode(src)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            header,
+            ack,
+            overhead_size,
+            delay_ack_info,
+            ack_of_acks,
+            data_header,
+            ack_vector,
+            data_body,
         })
     }
 }
