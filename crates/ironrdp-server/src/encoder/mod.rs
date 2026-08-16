@@ -4,6 +4,7 @@ use core::num::NonZeroU16;
 use anyhow::{Context as _, Result, anyhow};
 use ironrdp_acceptor::DesktopSize;
 use ironrdp_graphics::diff::{Rect, find_different_rects_sub};
+use ironrdp_pdu::codecs::rfx::Quant;
 use ironrdp_pdu::encode_vec;
 use ironrdp_pdu::fast_path::UpdateCode;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
@@ -47,6 +48,11 @@ impl CodecId {
 #[derive(Debug)]
 pub(crate) struct UpdateEncoderCodecs {
     remotefx: Option<(EntropyBits, u8)>,
+    /// Quantization values for the RemoteFX encoder. Independent of
+    /// `remotefx` (entropy coder + codec id, negotiated from the client's
+    /// capabilities) because this is server-chosen, not client-negotiated:
+    /// [MS-RDPRFX] 2.2.2.1.5 leaves quantization entirely up to the sender.
+    remotefx_quant: Quant,
     #[cfg(feature = "qoi")]
     qoi: Option<u8>,
     #[cfg(feature = "qoiz")]
@@ -61,6 +67,7 @@ impl UpdateEncoderCodecs {
     pub(crate) fn new() -> Self {
         Self {
             remotefx: None,
+            remotefx_quant: Quant::default(),
             #[cfg(feature = "qoi")]
             qoi: None,
             #[cfg(feature = "qoiz")]
@@ -73,6 +80,15 @@ impl UpdateEncoderCodecs {
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn set_remotefx(&mut self, remotefx: Option<(EntropyBits, u8)>) {
         self.remotefx = remotefx
+    }
+
+    /// Set the quantization values the RemoteFX encoder uses once selected.
+    /// Has no effect unless `set_remotefx` also selects RemoteFX; kept
+    /// separate because quantization is server policy, not part of codec
+    /// selection.
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    pub(crate) fn set_remotefx_quant(&mut self, quant: Quant) {
+        self.remotefx_quant = quant
     }
 
     #[cfg(feature = "qoi")]
@@ -139,8 +155,9 @@ impl UpdateEncoder {
                 UpdateEncoderCodecs { qoi: Some(id), .. } => BitmapUpdater::Qoi(QoiHandler::new(id)),
                 UpdateEncoderCodecs {
                     remotefx: Some((algo, id)),
+                    remotefx_quant,
                     ..
-                } => BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, id, desktop_size)),
+                } => BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, remotefx_quant, id, desktop_size)),
                 // NSCodec is the lowest-priority codec because it predates
                 // RemoteFX and produces larger output. It's relevant mainly
                 // for clients (notably macOS Microsoft Remote Desktop /
@@ -550,9 +567,9 @@ struct RemoteFxHandler {
 }
 
 impl RemoteFxHandler {
-    fn new(algo: EntropyBits, codec_id: u8, desktop_size: DesktopSize) -> Self {
+    fn new(algo: EntropyBits, quant: Quant, codec_id: u8, desktop_size: DesktopSize) -> Self {
         Self {
-            remotefx: RfxEncoder::new(algo),
+            remotefx: RfxEncoder::new(algo, quant),
             desktop_size: Some(desktop_size),
             codec_id,
         }
