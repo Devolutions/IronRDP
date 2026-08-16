@@ -235,6 +235,10 @@ impl State for ClientConnectorState {
     }
 }
 
+#[expect(
+    clippy::partial_pub_fields,
+    reason = "server response flags are negotiated internally and must not expand the public connector construction API"
+)]
 #[derive(Debug)]
 pub struct ClientConnector {
     pub config: Config,
