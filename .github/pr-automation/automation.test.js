@@ -147,6 +147,8 @@ test("workflow isolates CI completion concurrency by source commit", () => {
   const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
   assert.match(workflow, /pr-automation-\$\{\{ github\.event_name }}-\$\{\{/);
   assert.match(workflow, /github\.event\.workflow_run\.head_sha \|\|/);
+  assert.match(workflow, /github\.event\.label\.name == 'ai-review\/allow-oversized'/);
+  assert.match(workflow, /format\('label-\{0\}', github\.event\.label\.name\)/);
   assert.doesNotMatch(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number/);
 });
 
@@ -176,6 +178,7 @@ test("workflow force mode bypasses model policy gates without changing automatic
   assert.match(classificationGate, /if \(force\) \{/);
   assert.match(classificationGate, /setOutput\("required", true\)/);
   assert.match(classificationGate, /state\?\.automaticReviewEligible === true/);
+  assert.match(classificationGate, /run\.output\?\.title === "Classification complete"/);
 
   const classifierJob = workflowJob(workflow, "classifier");
   assert.match(classifierJob, /if: >-\n\s+always\(\) && !cancelled\(\) &&/);
@@ -1044,6 +1047,9 @@ test("an oversized change retains deterministic labels without a classifier", ()
   assert.deepEqual(state.comments.map((comment) => comment.kind), ["oversized"]);
   // The review gate only trusts a check announcing a completed classification.
   assert.notEqual(state.check.title, "Classification complete");
+  assert.equal(state.check.machineState.automaticReviewEligible, false);
+  assert.equal(parseCheckState(`${state.check.summary}\n\n${encodeCheckState(state.check.machineState)}`)
+    .automaticReviewEligible, false);
   // No model ran, so a duplicate or legitimacy verdict from an earlier head is neither confirmed
   // nor refuted and must be left in place.
   assert.deepEqual(state.removeCommentMarkers, [LEGACY_XL_MARKER]);

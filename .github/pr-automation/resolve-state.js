@@ -74,7 +74,7 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
       externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
       title: "Classification unavailable",
       summary: `Automated classification was unavailable: ${reason}. Maintainer review is required.`,
-      machineState: { protocolRelated: false },
+      machineState: { protocolRelated: false, automaticReviewEligible: false },
       conclusion: "neutral",
     },
   };
@@ -103,7 +103,7 @@ function oversizedClassification(expectedSha, deterministic, semverStatus) {
       externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
       title: "Deterministic labelling only",
       summary: "This pull request is too large for automated review, so no model was invoked.",
-      machineState: { protocolRelated: false },
+      machineState: { protocolRelated: false, automaticReviewEligible: false },
     },
   };
 }

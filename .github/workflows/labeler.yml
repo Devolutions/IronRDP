@@ -28,11 +28,13 @@ on:
 concurrency:
   # Keep event routes separate so a stale CI completion cannot cancel newer PR-head automation.
   # Group CI completions by source commit because their associated PR may already have moved ahead.
+  # Non-request labels get their own group, so their no-op runs cannot cancel active automation.
   group: >-
     pr-automation-${{ github.event_name }}-${{ github.event.workflow_run.head_sha ||
     github.event.pull_request.number || inputs.pr-number ||
     github.event.client_payload.pr_number ||
-    github.run_id }}
+    github.run_id }}-${{ github.event.label.name == 'ai-review/allow-oversized' && 'pr' ||
+    github.event.label.name && format('label-{0}', github.event.label.name) || 'pr' }}
   cancel-in-progress: true
 
 permissions: {}
@@ -142,7 +144,8 @@ jobs:
               const completed = data.check_runs.some((run) => {
                 const state = parseCheckState(run.output?.summary);
                 return run.external_id === externalId && run.conclusion === "success" &&
-                  run.app?.slug === "github-actions" && state?.automaticReviewEligible === true;
+                  run.app?.slug === "github-actions" && state?.automaticReviewEligible === true &&
+                  run.output?.title === "Classification complete";
               });
               core.setOutput("required", !completed);
               core.setOutput("available", true);
