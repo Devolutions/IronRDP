@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use ironrdp_pdu::codecs::rfx::*;
-use ironrdp_pdu::decode;
+use ironrdp_pdu::{decode, encode_vec};
 use ironrdp_testsuite_core::encode_decode_test;
 
 const SYNC_PDU_BUFFER: [u8; 12] = [
@@ -374,4 +374,64 @@ fn from_buffer_returns_error_on_invalid_number_of_quants_for_tile_set_pdu() {
 #[test]
 fn from_buffer_returns_error_on_invalid_tiles_data_size_for_tile_set_pdu() {
     decode::<Block<'_>>(TILESET_PDU_BUFFER_WITH_INVALID_TILES_DATA_SIZE.as_ref()).unwrap_err();
+}
+
+#[test]
+fn quant_try_new_accepts_the_full_valid_range() {
+    Quant::try_new(6, 15, 6, 15, 6, 15, 6, 15, 6, 15).unwrap();
+}
+
+#[test]
+fn quant_try_new_rejects_a_value_below_the_valid_range() {
+    Quant::try_new(5, 6, 6, 6, 7, 7, 8, 8, 8, 9).unwrap_err();
+}
+
+#[test]
+fn quant_try_new_rejects_a_value_above_the_valid_range() {
+    Quant::try_new(6, 6, 6, 6, 7, 7, 8, 8, 8, 16).unwrap_err();
+}
+
+/// `try_new` is not the only way to build a [`Quant`]: its ten fields are
+/// public, so a struct literal reaches [`Encode::encode`] with no validation
+/// at all unless `encode` checks for itself. This value still fits its 4-bit
+/// wire slot (0..16), so nothing here would panic; without the check, it
+/// would encode a spec-violating value onto the wire silently.
+#[test]
+fn quant_encode_rejects_a_bypassed_value_below_the_valid_range() {
+    let quant = Quant {
+        ll3: 5,
+        lh3: 6,
+        hl3: 6,
+        hh3: 6,
+        lh2: 7,
+        hl2: 7,
+        hh2: 8,
+        lh1: 8,
+        hl1: 8,
+        hh1: 9,
+    };
+
+    encode_vec(&quant).unwrap_err();
+}
+
+/// The other direction of the same gap: a value that does not fit its 4-bit
+/// wire slot at all. Without the check, this panics inside
+/// `bit_field::BitField::set_bits` (`value does not fit into bit range`)
+/// rather than returning the `EncodeResult` the signature promises.
+#[test]
+fn quant_encode_rejects_a_bypassed_value_that_does_not_fit_its_wire_slot() {
+    let quant = Quant {
+        ll3: 6,
+        lh3: 6,
+        hl3: 6,
+        hh3: 6,
+        lh2: 7,
+        hl2: 7,
+        hh2: 8,
+        lh1: 8,
+        hl1: 8,
+        hh1: 16,
+    };
+
+    encode_vec(&quant).unwrap_err();
 }

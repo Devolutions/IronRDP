@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::Arc;
 
 use anyhow::Result;
+use ironrdp_pdu::codecs::rfx::Quant;
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, server_codecs_capabilities};
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use tokio_rustls::TlsAcceptor;
@@ -48,6 +49,7 @@ pub struct BuilderDone {
     autodetect_rtt: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
+    remotefx_quant: Quant,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -151,6 +153,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_rtt: None,
                 honor_client_desktop_size: None,
                 auto_reconnect_cookie: None,
+                remotefx_quant: Quant::default(),
             },
         }
     }
@@ -175,6 +178,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_rtt: None,
                 honor_client_desktop_size: None,
                 auto_reconnect_cookie: None,
+                remotefx_quant: Quant::default(),
             },
         }
     }
@@ -334,6 +338,17 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Set the quantization values the RemoteFX encoder uses once selected.
+    /// Defaults to [`Quant::default`], the same values Windows RDP servers
+    /// send. Build a validated [`Quant`] with [`Quant::try_new`].
+    ///
+    /// Has no effect unless the client and server negotiate RemoteFX; this
+    /// only changes the quantization RemoteFX uses when it is picked.
+    pub fn with_remotefx_quant(mut self, quant: Quant) -> Self {
+        self.state.remotefx_quant = quant;
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         let mut server = RdpServer::new(
             RdpServerOptions {
@@ -342,6 +357,7 @@ impl RdpServerBuilder<BuilderDone> {
                 codecs: self.state.codecs,
                 max_request_size: self.state.max_request_size,
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
+                remotefx_quant: self.state.remotefx_quant,
             },
             self.state.handler,
             self.state.display,

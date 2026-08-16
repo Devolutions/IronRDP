@@ -248,6 +248,11 @@ pub struct RdpServerOptions {
     /// server-provided size. Set via
     /// [`RdpServerBuilder::with_honor_client_desktop_size`](crate::RdpServerBuilder::with_honor_client_desktop_size).
     pub honor_client_desktop_size: Option<DesktopSize>,
+    /// Quantization values the RemoteFX encoder uses once selected. Defaults
+    /// to [`Quant::default`], the same values Windows RDP servers send. Set
+    /// via
+    /// [`RdpServerBuilder::with_remotefx_quant`](crate::RdpServerBuilder::with_remotefx_quant).
+    pub remotefx_quant: Quant,
 }
 
 impl RdpServerOptions {
@@ -1773,7 +1778,7 @@ impl RdpServer {
                             {
                                 for caps in c.caps_data.0.0 {
                                     update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
-                                    update_codecs.set_remotefx_quant(Quant::default());
+                                    update_codecs.set_remotefx_quant(self.opts.remotefx_quant.clone());
                                 }
                             }
                             CodecProperty::ImageRemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(
@@ -1781,7 +1786,7 @@ impl RdpServer {
                             )) if self.opts.has_image_remote_fx() => {
                                 for caps in c.caps_data.0.0 {
                                     update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
-                                    update_codecs.set_remotefx_quant(Quant::default());
+                                    update_codecs.set_remotefx_quant(self.opts.remotefx_quant.clone());
                                 }
                             }
                             #[cfg(feature = "nscodec")]
