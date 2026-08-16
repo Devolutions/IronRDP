@@ -1376,12 +1376,16 @@ pub fn egfx_zgfx_decompress(data: &[u8]) {
 ///
 /// Sibling of [`egfx_multi_frame`] with two distinct properties:
 ///
-/// 1. The PDU stream is narrowed to a `SurfaceLifecyclePdu` enum that contains
-///    only the seven state-affecting variants (`ResetGraphics`, `CreateSurface`,
-///    `DeleteSurface`, `MapSurfaceToOutput`, `StartFrame`, `EndFrame`,
-///    `FrameAcknowledge`). This approximately doubles the per-iteration density
-///    of state-affecting PDUs compared with [`egfx_multi_frame`]'s broad
-///    `Vec<GfxPdu>` shape.
+/// 1. The PDU stream is narrowed to a `SurfaceLifecyclePdu` enum containing
+///    the seven variants relevant to surface lifecycle (`ResetGraphics`,
+///    `CreateSurface`, `DeleteSurface`, `MapSurfaceToOutput`, `StartFrame`,
+///    `EndFrame`, `FrameAcknowledge`), raising the density of relevant PDUs
+///    per iteration compared with [`egfx_multi_frame`]'s broad `Vec<GfxPdu>`
+///    shape. Two of the seven do not themselves affect modeled state:
+///    `FrameAcknowledge` is a client-to-server PDU with no arm in the
+///    client's receive path, included as legitimate hostile-server input
+///    rather than for its own state effect; `StartFrame` is unmodeled for
+///    the reason given below.
 ///
 /// 2. The oracle maintains a parallel `ExpectedState` model alongside the
 ///    client. For each PDU, the model is updated to mirror the client's
@@ -1417,10 +1421,10 @@ pub fn egfx_zgfx_decompress(data: &[u8]) {
 /// - `client.total_frames_decoded()` diverges from the expected counter.
 #[expect(clippy::panic, reason = "panic is the libFuzzer bug-reporting mechanism")]
 pub fn egfx_surface_state(data: &[u8]) {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use arbitrary::{Arbitrary as _, Unstructured};
-    use ironrdp_core::encode_vec;
+    use ironrdp_core::{decode, encode_vec};
     use ironrdp_dvc::DvcProcessor as _;
     use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
     use ironrdp_egfx::pdu::{
@@ -1479,6 +1483,11 @@ pub fn egfx_surface_state(data: &[u8]) {
     #[derive(Debug, Default)]
     struct ExpectedState {
         surfaces: BTreeMap<u16, ExpectedSurface>,
+        /// Every surface id `CreateSurface` has ever inserted into `surfaces`,
+        /// kept even after removal. `surfaces` alone cannot drive the
+        /// post-dispatch absence check: once an id is removed it is gone from
+        /// the map, so iterating the map only ever asserts presence.
+        known_surface_ids: BTreeSet<u16>,
         total_frames_decoded: u32,
     }
 
@@ -1509,6 +1518,7 @@ pub fn egfx_surface_state(data: &[u8]) {
                             output_origin_y: 0,
                         },
                     );
+                    self.known_surface_ids.insert(p.surface_id);
                 }
                 GfxPdu::DeleteSurface(p) => {
                     self.surfaces.remove(&p.surface_id);
@@ -1541,12 +1551,38 @@ pub fn egfx_surface_state(data: &[u8]) {
 
     let mut expected = ExpectedState::default();
 
+    // `ResetGraphicsPdu::size()` computes padding as a fixed 332-byte budget
+    // minus the fixed part (12 bytes) minus 20 bytes per monitor, with no
+    // saturating/checked subtraction: more than 16 monitors underflows and
+    // panics inside the encoder. That is a pre-existing ironrdp-egfx defect,
+    // already reachable from the sibling `egfx_multi_frame` target, not
+    // something this state-machine oracle is trying to catch; without a
+    // bound here this target's narrower 7-variant set would report it far
+    // more often than that sibling does. Mirrors the decoder's own
+    // `MONITOR_COUNT_MAX`, so a bounded PDU is decodable too.
+    const RESET_GRAPHICS_MONITOR_COUNT_MAX: usize = 16;
+
     for shape in pdus {
-        let pdu = shape.into_gfx_pdu();
+        let mut pdu = shape.into_gfx_pdu();
+        if let GfxPdu::ResetGraphics(reset) = &mut pdu {
+            reset.monitors.truncate(RESET_GRAPHICS_MONITOR_COUNT_MAX);
+        }
 
         // Encode first. If encoding rejects the Arbitrary-generated value the
         // dispatcher will never see this PDU, so the expected state stays put.
         let Ok(pdu_bytes) = encode_vec(&pdu) else {
+            continue;
+        };
+
+        // Decode the encoded bytes back before mirroring the transition.
+        // Encoding some fields unchecked while decoding validates them (for
+        // example `ResetGraphics`'s width/height against MS-RDPEGFX's 32766
+        // bound) means encode success alone does not prove the client will
+        // dispatch the PDU: `client.process` decodes internally too, and
+        // rejects the same bytes this would. Applying the model transition
+        // on encode success alone would desync it from a PDU the client
+        // never actually processed.
+        let Ok(_) = decode::<GfxPdu>(&pdu_bytes) else {
             continue;
         };
 
@@ -1558,30 +1594,39 @@ pub fn egfx_surface_state(data: &[u8]) {
         let payload = wrap_uncompressed(&pdu_bytes);
         let _ = client.process(FUZZ_CHANNEL_ID, &payload);
 
-        // Assert observable per-surface state matches the model.
-        for (&id, expected_surface) in &expected.surfaces {
-            let actual = client
-                .get_surface(id)
-                .unwrap_or_else(|| panic!("expected surface {id} present after PDU; client has none"));
-            assert_eq!(actual.id, id, "surface id mismatch");
-            assert_eq!(actual.width, expected_surface.width, "surface {id} width mismatch");
-            assert_eq!(actual.height, expected_surface.height, "surface {id} height mismatch");
-            assert_eq!(
-                actual.pixel_format, expected_surface.pixel_format,
-                "surface {id} pixel_format mismatch"
-            );
-            assert_eq!(
-                actual.is_mapped, expected_surface.is_mapped,
-                "surface {id} is_mapped mismatch"
-            );
-            assert_eq!(
-                actual.output_origin_x, expected_surface.output_origin_x,
-                "surface {id} output_origin_x mismatch"
-            );
-            assert_eq!(
-                actual.output_origin_y, expected_surface.output_origin_y,
-                "surface {id} output_origin_y mismatch"
-            );
+        // Assert observable per-surface state matches the model, in both
+        // directions: a modeled surface must be present with matching
+        // fields, and an id the model has removed must be absent from the
+        // client. Iterating `known_surface_ids` rather than `surfaces`
+        // covers the removed case too, since a removed id has no entry
+        // left in `surfaces` to iterate.
+        for &id in &expected.known_surface_ids {
+            match (expected.surfaces.get(&id), client.get_surface(id)) {
+                (Some(expected_surface), Some(actual)) => {
+                    assert_eq!(actual.id, id, "surface id mismatch");
+                    assert_eq!(actual.width, expected_surface.width, "surface {id} width mismatch");
+                    assert_eq!(actual.height, expected_surface.height, "surface {id} height mismatch");
+                    assert_eq!(
+                        actual.pixel_format, expected_surface.pixel_format,
+                        "surface {id} pixel_format mismatch"
+                    );
+                    assert_eq!(
+                        actual.is_mapped, expected_surface.is_mapped,
+                        "surface {id} is_mapped mismatch"
+                    );
+                    assert_eq!(
+                        actual.output_origin_x, expected_surface.output_origin_x,
+                        "surface {id} output_origin_x mismatch"
+                    );
+                    assert_eq!(
+                        actual.output_origin_y, expected_surface.output_origin_y,
+                        "surface {id} output_origin_y mismatch"
+                    );
+                }
+                (None, None) => {}
+                (Some(_), None) => panic!("expected surface {id} present after PDU; client has none"),
+                (None, Some(_)) => panic!("expected surface {id} removed after PDU; client still has it"),
+            }
         }
 
         // Assert the running frame counter.
