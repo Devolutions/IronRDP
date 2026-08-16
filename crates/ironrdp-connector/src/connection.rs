@@ -82,6 +82,8 @@ pub struct ConnectionResult {
     /// `None` means Window List was absent or disabled, so windowing orders
     /// retain ordinary desktop-session handling.
     pub window_support_level: Option<WindowSupportLevel>,
+    /// The monitor layout reported by the server during connection finalization.
+    pub monitor_layout: Option<rdp::finalization_messages::MonitorLayoutPdu>,
     /// Factory for producing connection activation sequences.
     ///
     /// Used to drive the [Deactivation-Reactivation Sequence] when a Server Deactivate All PDU is
@@ -233,6 +235,10 @@ impl State for ClientConnectorState {
     }
 }
 
+#[expect(
+    clippy::partial_pub_fields,
+    reason = "server response flags are negotiated internally and must not expand the public connector construction API"
+)]
 #[derive(Debug)]
 pub struct ClientConnector {
     pub config: Config,
@@ -242,6 +248,8 @@ pub struct ClientConnector {
     pub static_channels: StaticChannelSet,
     /// MCS message channel ID assigned by the server, once negotiated.
     pub message_channel_id: Option<u16>,
+    /// X.224 negotiation flags supplied by the server.
+    response_flags: nego::ResponseFlags,
     /// Multitransport flags the server advertised in its GCC
     /// `MultiTransportChannelData` block, if it sent one. Retained because
     /// MS-RDPBCGR 2.2.15.2 permits an `S_OK` response only to a server that
@@ -262,6 +270,7 @@ impl ClientConnector {
             client_addr,
             static_channels: StaticChannelSet::new(),
             message_channel_id: None,
+            response_flags: nego::ResponseFlags::empty(),
             server_multitransport_flags: None,
             auto_reconnect_cookie: None,
         }
@@ -813,6 +822,8 @@ impl Sequence for ClientConnector {
                     ));
                 }
 
+                self.response_flags = flags;
+
                 (
                     Written::Nothing,
                     ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol },
@@ -851,8 +862,13 @@ impl Sequence for ClientConnector {
             ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol } => {
                 debug!("Basic Settings Exchange");
 
-                let client_gcc_blocks =
-                    create_gcc_blocks(&self.config, selected_protocol, self.static_channels.values())?;
+                let client_gcc_blocks = create_gcc_blocks(
+                    &self.config,
+                    selected_protocol,
+                    self.response_flags
+                        .contains(nego::ResponseFlags::EXTENDED_CLIENT_DATA_SUPPORTED),
+                    self.static_channels.values(),
+                )?;
 
                 let connect_initial =
                     mcs::ConnectInitial::with_gcc_blocks(client_gcc_blocks).map_err(ConnectorError::decode)?;
@@ -1265,6 +1281,7 @@ impl Sequence for ClientConnector {
                                     refresh_rect_support,
                                     suppress_output_support,
                                     window_support_level,
+                                    monitor_layout: connection_activation.monitor_layout(),
                                     activation_factory: ConnectionActivationFactory::new(
                                         self.config.clone(),
                                         connection_activation.io_channel_id(),
@@ -1363,6 +1380,7 @@ fn respond_to_connect_time_autodetect(
 fn create_gcc_blocks<'a>(
     config: &Config,
     selected_protocol: nego::SecurityProtocol,
+    extended_client_data_supported: bool,
     static_channels: impl Iterator<Item = &'a StaticVirtualChannel>,
 ) -> ConnectorResult<gcc::ClientGccBlocks> {
     use ironrdp_pdu::gcc::{
@@ -1431,6 +1449,9 @@ fn create_gcc_blocks<'a>(
                     if max_color_depth == 32 {
                         early_capability_flags |= ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION;
                     }
+                    if extended_client_data_supported {
+                        early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU;
+                    }
 
                     Some(early_capability_flags)
                 },
@@ -1463,14 +1484,20 @@ fn create_gcc_blocks<'a>(
         },
         // TODO(#139): support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
         cluster: None,
-        monitor: None,
+        monitor: extended_client_data_supported
+            .then(|| config.monitor_layout.clone())
+            .flatten(),
         // Request the MCS message channel, which carries network auto-detect
         // ([MS-RDPBCGR] 2.2.14) and the multitransport / heartbeat PDUs. The
         // server assigns its ID in Server Message Channel Data.
-        message_channel: Some(gcc::ClientMessageChannelData),
-        multi_transport_channel: config
-            .multitransport_flags
-            .map(|flags| gcc::MultiTransportChannelData { flags }),
+        message_channel: extended_client_data_supported.then_some(gcc::ClientMessageChannelData),
+        multi_transport_channel: extended_client_data_supported
+            .then(|| {
+                config
+                    .multitransport_flags
+                    .map(|flags| gcc::MultiTransportChannelData { flags })
+            })
+            .flatten(),
         monitor_extended: None,
     })
 }
@@ -1583,11 +1610,11 @@ fn create_client_info_pdu(
 
 #[cfg(test)]
 mod tests {
-    use ironrdp_pdu::gcc;
     use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
     use ironrdp_pdu::rdp::client_info::ClientInfoFlags;
+    use ironrdp_pdu::{gcc, nego};
 
-    use super::create_client_info_pdu;
+    use super::{create_client_info_pdu, create_gcc_blocks};
     use crate::{Config, Credentials, DesktopSize};
 
     #[test]
@@ -1597,6 +1624,7 @@ mod tests {
                 width: 1024,
                 height: 768,
             },
+            monitor_layout: None,
             desktop_scale_factor: 0,
             enable_tls: true,
             enable_credssp: false,
@@ -1651,6 +1679,7 @@ mod tests {
                 width: 1024,
                 height: 768,
             },
+            monitor_layout: None,
             desktop_scale_factor: 0,
             enable_tls: true,
             enable_credssp: false,
@@ -1697,5 +1726,103 @@ mod tests {
         config.enable_audio_capture = false;
         let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
         assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
+    }
+
+    #[test]
+    fn gcc_blocks_advertise_monitor_layout_when_supported() {
+        let mut config = Config {
+            desktop_size: DesktopSize {
+                width: 1_920,
+                height: 1_080,
+            },
+            monitor_layout: Some(gcc::ClientMonitorData {
+                monitors: vec![gcc::Monitor {
+                    left: 0,
+                    top: 0,
+                    right: 1_919,
+                    bottom: 1_079,
+                    flags: gcc::MonitorFlags::PRIMARY,
+                }],
+            }),
+            desktop_scale_factor: 0,
+            enable_tls: true,
+            enable_credssp: false,
+            enable_standard_rdp_security: false,
+            credentials: Credentials::UsernamePassword {
+                username: "test".into(),
+                password: "test".into(),
+            },
+            domain: None,
+            client_build: 0,
+            client_name: "test".into(),
+            keyboard_type: gcc::KeyboardType::IbmEnhanced,
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 12,
+            keyboard_layout: 0,
+            connection_type: gcc::ConnectionType::Lan,
+            ime_file_name: String::new(),
+            bitmap: None,
+            dig_product_id: String::new(),
+            client_dir: String::new(),
+            alternate_shell: String::new(),
+            work_dir: String::new(),
+            remote_application_mode: false,
+            rail_support_level: RailSupportLevel::empty(),
+            platform: MajorPlatformType::UNIX,
+            hardware_id: None,
+            request_data: None,
+            autologon: false,
+            enable_audio_playback: false,
+            enable_audio_capture: false,
+            performance_flags: Default::default(),
+            license_cache: None,
+            timezone_info: Default::default(),
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+            multitransport_flags: None,
+        };
+
+        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), true, core::iter::empty())
+            .expect("valid GCC Client Monitor Data");
+
+        assert_eq!(blocks.monitor, config.monitor_layout);
+        assert!(
+            blocks
+                .core
+                .optional_data
+                .early_capability_flags
+                .expect("early capability flags are present")
+                .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
+        );
+
+        config.monitor_layout = None;
+        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), true, core::iter::empty())
+            .expect("valid GCC Client Monitor Data");
+
+        assert!(blocks.monitor.is_none());
+        assert!(
+            blocks
+                .core
+                .optional_data
+                .early_capability_flags
+                .expect("early capability flags are present")
+                .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
+        );
+
+        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), false, core::iter::empty())
+            .expect("valid GCC Client Monitor Data");
+
+        assert!(blocks.monitor.is_none());
+        assert!(blocks.message_channel.is_none());
+        assert!(blocks.multi_transport_channel.is_none());
+        assert!(
+            !blocks
+                .core
+                .optional_data
+                .early_capability_flags
+                .expect("early capability flags are present")
+                .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
+        );
     }
 }

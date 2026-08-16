@@ -477,6 +477,9 @@ impl RpcApp {
         };
         match event {
             RdpOutputEvent::Connected => info!("RDP session connected"),
+            RdpOutputEvent::MonitorLayout(monitors) => {
+                debug!(monitor_count = monitors.len(), "Received remote monitor layout");
+            }
             RdpOutputEvent::LoginComplete => info!("RDP login complete"),
             RdpOutputEvent::PostLogonDisplayRedraw => info!("Requested post-logon display redraw"),
             RdpOutputEvent::MalformedBitmapDisplayRedraw => {

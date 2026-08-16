@@ -1018,6 +1018,7 @@ fn default_client_config() -> connector::Config {
             width: DESKTOP_WIDTH,
             height: DESKTOP_HEIGHT,
         },
+        monitor_layout: None,
         desktop_scale_factor: 0, // Default to 0 per FreeRDP
         enable_tls: true,
         enable_credssp: true,

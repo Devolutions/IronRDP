@@ -236,6 +236,7 @@ fn build_config(
             width: 1280,
             height: 1024,
         },
+        monitor_layout: None,
         bitmap: None,
         client_build: 0,
         client_name: "ironrdp-screenshot-example".to_owned(),

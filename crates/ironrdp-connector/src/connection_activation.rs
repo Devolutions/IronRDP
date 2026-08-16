@@ -26,6 +26,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct ConnectionActivationSequence {
     state: ConnectionActivationState,
+    monitor_layout: Option<rdp::finalization_messages::MonitorLayoutPdu>,
     config: Config,
     // The MCS channel IDs are invariant for the whole life of the sequence: they are negotiated
     // once and never change, even across a Deactivation-Reactivation Sequence. They are stored
@@ -41,6 +42,7 @@ impl ConnectionActivationSequence {
         //   I doubt this type really needs every field there.
         Self {
             state: ConnectionActivationState::CapabilitiesExchange,
+            monitor_layout: None,
             config,
             io_channel_id,
             user_channel_id,
@@ -57,7 +59,12 @@ impl ConnectionActivationSequence {
 
     /// Returns the current state as a distinct type, rather than `&dyn State` provided by [`Self::state`].
     pub fn connection_activation_state(&self) -> ConnectionActivationState {
-        self.state
+        self.state.clone()
+    }
+
+    /// Returns the server-reported monitor layout received during this activation.
+    pub fn monitor_layout(&self) -> Option<rdp::finalization_messages::MonitorLayoutPdu> {
+        self.monitor_layout.clone()
     }
 }
 
@@ -330,6 +337,7 @@ impl Sequence for ConnectionActivationSequence {
                         connection_finalization,
                     }
                 } else {
+                    self.monitor_layout = connection_finalization.monitor_layout;
                     ConnectionActivationState::Finalized {
                         desktop_size,
                         share_id,
@@ -353,7 +361,7 @@ impl Sequence for ConnectionActivationSequence {
     }
 }
 
-#[derive(Default, Debug, Copy, Clone)]
+#[derive(Default, Debug, Clone)]
 pub enum ConnectionActivationState {
     #[default]
     Consumed,

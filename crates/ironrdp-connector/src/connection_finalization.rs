@@ -49,12 +49,13 @@ impl State for ConnectionFinalizationState {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct ConnectionFinalizationSequence {
     pub state: ConnectionFinalizationState,
     pub io_channel_id: u16,
     pub user_channel_id: u16,
     pub share_id: u32,
+    pub monitor_layout: Option<finalization_messages::MonitorLayoutPdu>,
 }
 
 impl ConnectionFinalizationSequence {
@@ -64,6 +65,7 @@ impl ConnectionFinalizationSequence {
             io_channel_id,
             user_channel_id,
             share_id,
+            monitor_layout: None,
         }
     }
 }
@@ -244,6 +246,10 @@ impl Sequence for ConnectionFinalizationSequence {
                                 ));
                             }
                         }
+                    }
+                    ShareDataPdu::MonitorLayout(monitor_layout) => {
+                        self.monitor_layout = Some(monitor_layout);
+                        ConnectionFinalizationState::WaitForResponse
                     }
                     ShareDataPdu::FontMap(_) => {
                         // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/023f1e69-cfe8-4ee6-9ee0-7e759fb4e4ee

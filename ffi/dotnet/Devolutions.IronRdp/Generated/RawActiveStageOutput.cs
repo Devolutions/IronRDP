@@ -34,6 +34,9 @@ public partial struct ActiveStageOutput
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_windowing_orders", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxBytesSliceBoxIronRdpError GetWindowingOrders(ActiveStageOutput* self);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_monitor_layout", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxMonitorLayoutIteratorBoxIronRdpError GetMonitorLayout(ActiveStageOutput* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_terminate", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxGracefulDisconnectReasonBoxIronRdpError GetTerminate(ActiveStageOutput* self);
 

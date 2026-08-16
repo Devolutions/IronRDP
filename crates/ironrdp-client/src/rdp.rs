@@ -16,7 +16,7 @@ use ironrdp_dvc::DvcChannelListener as _;
 use ironrdp_echo::client::EchoClient;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::DecodedPointer;
-use ironrdp_pdu::gcc::ChannelName;
+use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::input::MousePdu;
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
 use ironrdp_pdu::input::mouse::PointerFlags;
@@ -94,6 +94,10 @@ pub enum RailExecuteFailureReason {
 pub enum RdpOutputEvent {
     /// Connection negotiation and activation have completed.
     Connected,
+    /// The server-reported remote monitor layout.
+    ///
+    /// The server may send this during activation or after activation.
+    MonitorLayout(Vec<Monitor>),
     /// Server Save Session Info notification.
     ///
     /// The PDU can contain sensitive session data, so this event does not expose its contents.
@@ -728,9 +732,19 @@ impl RdpClient {
                 auto_reconnect_cookie = None;
             }
 
-            if reconnect_attempt == 0 && !self.send_output_event(RdpOutputEvent::Connected).await {
-                self.emit_user_initiated_termination();
-                break;
+            if reconnect_attempt == 0 {
+                if let Some(monitor_layout) = connection_result.monitor_layout.as_ref()
+                    && !self
+                        .send_output_event(RdpOutputEvent::MonitorLayout(monitor_layout.monitors.clone()))
+                        .await
+                {
+                    self.emit_user_initiated_termination();
+                    break;
+                }
+                if !self.send_output_event(RdpOutputEvent::Connected).await {
+                    self.emit_user_initiated_termination();
+                    break;
+                }
             }
 
             match active_session(
@@ -2575,6 +2589,19 @@ async fn active_session(
                         ));
                     }
                 }
+                ActiveStageOutput::MonitorLayout(monitors) => {
+                    if !send_active_output_event(
+                        output_event_sender,
+                        RdpOutputEvent::MonitorLayout(monitors),
+                        close_receiver,
+                    )
+                    .await?
+                    {
+                        return Ok(RdpControlFlow::TerminatedGracefully(
+                            GracefulDisconnectReason::UserInitiated,
+                        ));
+                    }
+                }
                 ActiveStageOutput::WindowingOrders(orders) => {
                     if !send_active_output_event(
                         output_event_sender,
@@ -2717,6 +2744,7 @@ async fn active_session(
                             refresh_rect_support: reactivated_refresh_rect_support,
                             suppress_output_support: reactivated_suppress_output_support,
                             window_support_level,
+                            ..
                         } = connection_activation.connection_activation_state()
                         {
                             debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
@@ -2733,6 +2761,18 @@ async fn active_session(
                                 return Err(ironrdp_session::general_err!("invalid static channel chunk size"));
                             }
                             active_stage.set_window_support_level(window_support_level);
+                            if let Some(monitor_layout) = connection_activation.monitor_layout()
+                                && !send_active_output_event(
+                                    output_event_sender,
+                                    RdpOutputEvent::MonitorLayout(monitor_layout.monitors),
+                                    close_receiver,
+                                )
+                                .await?
+                            {
+                                return Ok(RdpControlFlow::TerminatedGracefully(
+                                    GracefulDisconnectReason::UserInitiated,
+                                ));
+                            }
                             if let Some(messages) =
                                 active_stage.get_svc_processor_mut::<RailClient>().map(|rail_client| {
                                     rail_client.update_desktop_size(desktop_size.width, desktop_size.height)

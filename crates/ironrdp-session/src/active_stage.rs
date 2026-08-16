@@ -5,7 +5,7 @@ use ironrdp_core::{ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelRef};
 use ironrdp_graphics::pointer::DecodedPointer;
-use ironrdp_pdu::gcc::ChannelName;
+use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
@@ -615,6 +615,8 @@ pub enum ActiveStageOutput {
         y: u16,
     },
     PointerBitmap(Arc<DecodedPointer>),
+    /// Server-reported remote monitor layout ([MS-RDPBCGR] 2.2.12.1).
+    MonitorLayout(Vec<Monitor>),
     /// Validated Windowing Alternate Secondary Drawing Orders.
     ///
     /// The payload is a complete slow-path Orders graphics update. It remains
@@ -687,6 +689,7 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
             x224::ProcessorOutput::AutoDetect(request) => Ok(Self::AutoDetect(request)),
             x224::ProcessorOutput::AutoReconnectCookie(cookie) => Ok(Self::AutoReconnectCookie(cookie)),
             x224::ProcessorOutput::AutoReconnectFailed => Ok(Self::AutoReconnectFailed),
+            x224::ProcessorOutput::MonitorLayout(monitors) => Ok(Self::MonitorLayout(monitors)),
             // GraphicsUpdate and PointerUpdate are consumed in ActiveStage::process()
             // before reaching this conversion.
             x224::ProcessorOutput::GraphicsUpdate(_) | x224::ProcessorOutput::PointerUpdate(_) => Err(
@@ -812,6 +815,7 @@ fn process_slow_path_pointer(
 mod tests {
     use ironrdp_core::Decode as _;
     use ironrdp_graphics::image_processing::PixelFormat;
+    use ironrdp_pdu::gcc::MonitorFlags;
     use ironrdp_pdu::input::fast_path::KeyboardFlags;
     use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
 
@@ -882,6 +886,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             events.iter().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn monitor_layout_is_forwarded_from_x224() {
+        let monitors = vec![Monitor {
+            left: 0,
+            top: 0,
+            right: 799,
+            bottom: 599,
+            flags: MonitorFlags::PRIMARY,
+        }];
+
+        let output = ActiveStageOutput::try_from(x224::ProcessorOutput::MonitorLayout(monitors.clone()))
+            .expect("monitor layout should be forwarded from X.224");
+
+        let ActiveStageOutput::MonitorLayout(actual) = output else {
+            panic!("expected a monitor layout output");
+        };
+        assert_eq!(actual, monitors);
     }
 
     #[test]

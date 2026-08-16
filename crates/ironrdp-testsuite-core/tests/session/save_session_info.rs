@@ -1,6 +1,8 @@
 use ironrdp_core::encode_vec;
+use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
 use ironrdp_pdu::mcs::SendDataIndication;
 use ironrdp_pdu::rdp::client_info::CompressionType;
+use ironrdp_pdu::rdp::finalization_messages::MonitorLayoutPdu;
 use ironrdp_pdu::rdp::headers::{
     CompressionFlags, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu, StreamPriority,
 };
@@ -42,6 +44,27 @@ fn encode_save_session_info(auto_reconnect: Option<ServerAutoReconnect>) -> Vec<
         pdu_source: USER_CHANNEL_ID,
         share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
             share_data_pdu: pdu,
+            stream_priority: StreamPriority::Medium,
+            compression_flags: CompressionFlags::empty(),
+            compression_type: CompressionType::K8,
+        }),
+    };
+
+    let indication = SendDataIndication {
+        initiator_id: USER_CHANNEL_ID,
+        channel_id: IO_CHANNEL_ID,
+        user_data: encode_vec(&control).unwrap().into(),
+    };
+
+    encode_vec(&X224(indication)).unwrap()
+}
+
+fn encode_monitor_layout(monitors: Vec<Monitor>) -> Vec<u8> {
+    let control = ShareControlHeader {
+        share_id: 0,
+        pdu_source: USER_CHANNEL_ID,
+        share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+            share_data_pdu: ShareDataPdu::MonitorLayout(MonitorLayoutPdu { monitors }),
             stream_priority: StreamPriority::Medium,
             compression_flags: CompressionFlags::empty(),
             compression_type: CompressionType::K8,
@@ -106,4 +129,31 @@ fn save_session_info_without_a_cookie_surfaces_no_cookie() {
             .any(|output| matches!(output, ProcessorOutput::AutoReconnectCookie(_))),
         "no cookie was sent, so none may be surfaced"
     );
+}
+
+#[test]
+fn monitor_layout_is_forwarded_from_the_active_io_channel() {
+    let monitors = vec![Monitor {
+        left: 0,
+        top: 0,
+        right: 799,
+        bottom: 599,
+        flags: MonitorFlags::PRIMARY,
+    }];
+    let mut bulk_decompressor = None;
+    let outputs = make_processor()
+        .process(&encode_monitor_layout(monitors.clone()), &mut bulk_decompressor)
+        .expect("the monitor layout PDU should be processed");
+
+    let [ProcessorOutput::MonitorLayout(actual)] = outputs.as_slice() else {
+        panic!("expected a monitor layout output");
+    };
+    assert_eq!(actual, &monitors);
+
+    let output = ironrdp_session::ActiveStageOutput::try_from(ProcessorOutput::MonitorLayout(actual.clone()))
+        .expect("the monitor layout should be forwarded through the active stage");
+    let ironrdp_session::ActiveStageOutput::MonitorLayout(actual) = output else {
+        panic!("expected an active-stage monitor layout output");
+    };
+    assert_eq!(actual, monitors);
 }
