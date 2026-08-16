@@ -24,7 +24,8 @@ use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, encode_vec};
 use ironrdp_input::{Database as InputDatabase, MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::PduResult;
 use ironrdp_pdu::gcc::{
-    ChannelName, ChannelOptions, ClientMonitorData, ConnectionType, KeyboardType, Monitor, MonitorFlags,
+    ChannelName, ChannelOptions, ClientMonitorData, ConnectionType, KeyboardType, MONITOR_COUNT_MAX, Monitor,
+    MonitorFlags,
 };
 use ironrdp_pdu::rdp::{
     capability_sets::{MajorPlatformType, RailSupportLevel},
@@ -867,7 +868,6 @@ struct DisplayLayout {
     device_scale_factor: u32,
 }
 
-const MAX_RDP_MONITORS: usize = 16;
 const MAX_RDP_VIRTUAL_DESKTOP_DIMENSION: i64 = 32_766;
 const MIN_RDP_VIRTUAL_DESKTOP_DIMENSION: i64 = 200;
 
@@ -886,7 +886,7 @@ struct MonitorTopology {
 
 impl MonitorTopology {
     fn from_host_monitors(host_monitors: Vec<HostMonitor>) -> Result<Self> {
-        if host_monitors.is_empty() || host_monitors.len() > MAX_RDP_MONITORS {
+        if host_monitors.is_empty() || host_monitors.len() > MONITOR_COUNT_MAX {
             return Err(Error::from_hresult(E_INVALIDARG));
         }
 
@@ -14908,7 +14908,7 @@ mod tests {
                 },
                 primary: true,
             };
-            MAX_RDP_MONITORS + 1
+            MONITOR_COUNT_MAX + 1
         ])
         .expect_err("Client Monitor Data supports at most sixteen monitors");
         assert_eq!(too_many.code(), E_INVALIDARG);

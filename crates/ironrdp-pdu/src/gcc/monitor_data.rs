@@ -8,7 +8,8 @@ pub const MONITOR_COUNT_SIZE: usize = 4;
 pub const MONITOR_SIZE: usize = 20;
 pub const MONITOR_FLAGS_SIZE: usize = 4;
 
-const MONITOR_COUNT_MAX: usize = 16;
+/// Maximum monitors supported by Client Monitor Data.
+pub const MONITOR_COUNT_MAX: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]

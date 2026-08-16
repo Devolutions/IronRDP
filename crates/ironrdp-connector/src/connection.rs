@@ -1449,7 +1449,7 @@ fn create_gcc_blocks<'a>(
                     if max_color_depth == 32 {
                         early_capability_flags |= ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION;
                     }
-                    if extended_client_data_supported && config.monitor_layout.is_some() {
+                    if extended_client_data_supported {
                         early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU;
                     }
 
@@ -1729,8 +1729,8 @@ mod tests {
     }
 
     #[test]
-    fn gcc_blocks_gate_monitor_layout_on_server_support() {
-        let config = Config {
+    fn gcc_blocks_advertise_monitor_layout_when_supported() {
+        let mut config = Config {
             desktop_size: DesktopSize {
                 width: 1_920,
                 height: 1_080,
@@ -1787,6 +1787,20 @@ mod tests {
             .expect("valid GCC Client Monitor Data");
 
         assert_eq!(blocks.monitor, config.monitor_layout);
+        assert!(
+            blocks
+                .core
+                .optional_data
+                .early_capability_flags
+                .expect("early capability flags are present")
+                .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
+        );
+
+        config.monitor_layout = None;
+        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), true, core::iter::empty())
+            .expect("valid GCC Client Monitor Data");
+
+        assert!(blocks.monitor.is_none());
         assert!(
             blocks
                 .core
