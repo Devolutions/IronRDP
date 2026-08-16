@@ -21,6 +21,8 @@ mod helper;
 mod rdpei;
 mod server;
 mod sound;
+#[cfg(feature = "usb")]
+mod urbdrc;
 
 pub use clipboard::CliprdrServerFactory;
 pub use display::{
@@ -35,6 +37,8 @@ pub use handler::{KeyboardEvent, MouseButton, MouseEvent, RdpServerInputHandler}
 pub use helper::TlsIdentityCtx;
 pub use ironrdp_acceptor::Acceptor;
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
+#[cfg(feature = "usb")]
+pub use ironrdp_rdpeusb::io::{CompletionData, DeviceAnnounce, DeviceText, InternalIoControlPacket};
 pub use rdpei::{
     CsReadyFlags, CsReadyPdu, DismissHoveringTouchContactPdu, PenContact, PenContactDataFlags, PenContactFields,
     PenContactFlags, PenEventPdu, PenFlags, PenFrame, RdpInputProtocolVersion, RdpeiHandler, RdpeiServer,
@@ -47,7 +51,11 @@ pub use server::{
     RdpServerSecurity, ServerEvent, ServerEventSender, StaticChannelFactory, TransportTls, pick_remotefx_entropy_coder,
 };
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
-
+#[cfg(feature = "usb")]
+pub use urbdrc::{
+    CompletionFut, DeviceFactory, PendingHandle, PendingRequest, RawPending, RdpUsbDeviceAnnounceInfo, UsbDeviceHandle,
+    UsbRedirDevice, UsbRequestCompletion,
+};
 #[cfg(feature = "__bench")]
 pub mod bench {
     pub mod encoder {
