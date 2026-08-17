@@ -696,78 +696,155 @@ enum NegotiatedTransport<S> {
     Offloaded(TokioFramed<S>),
 }
 
-/// Negotiate `stream` and, where the security mode provides it, AUTHENTICATE
-/// it — everything up to (but not including) `accept_finalize`.
+/// A freshly built [`Acceptor`], paired with the exact [`RdpServerSecurity`]
+/// it was constructed from.
 ///
-/// Deliberately a free function taking `&RdpServerSecurity` + `&mut Acceptor`
-/// rather than `&mut self`: that is what lets a preempting candidate run this
-/// concurrently with the live connection's `&mut self` borrow. Both the normal
-/// path ([`RdpServer::run_connection_with`]) and the candidate path
-/// ([`negotiate_candidate`]) go through here, so there is exactly one
-/// negotiation implementation and the two cannot drift.
+/// Negotiation needs both together: [`Acceptor::new`] takes `security.flag()`
+/// up front, and the TLS-upgrade step later needs the full `security` value
+/// again (for the [`TlsAcceptor`] and, under Hybrid, the CredSSP public key).
+/// Threading `security` and `acceptor` as independent parameters — which an
+/// earlier revision of this refactor did — turns that pairing into a
+/// caller-enforced precondition: nothing stops a future caller from passing
+/// an `Acceptor` built from a *different* `RdpServerSecurity`, and the
+/// failure mode is a panic on a server connection path
+/// (`RdpServerSecurity::None => unreachable!()`, below). The single
+/// constructor here makes the pairing a construction-time guarantee instead:
+/// there is no way to reach [`Self::negotiate_and_authenticate`] with a
+/// mismatched pair, because there is no way to build a `PendingConnection`
+/// without going through [`Self::new`], which ties them together atomically.
 ///
-/// `Ok(None)` means the TLS handshake failed and was already logged — the
-/// caller should abandon the connection quietly rather than treat it as a
-/// connection error (preserving the pre-existing `return Ok(())` behaviour).
-async fn negotiate_and_authenticate<S>(
-    security: &RdpServerSecurity,
-    acceptor: &mut Acceptor,
-    stream: S,
-    tls: TransportTls,
-) -> Result<Option<NegotiatedTransport<S>>>
-where
-    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
-{
-    let framed = TokioFramed::new(stream);
+/// Owns a cloned `RdpServerSecurity` rather than borrowing `&self.opts.security`
+/// — `RdpServerSecurity` is a cheap `Clone` (its `TlsAcceptor` is an `Arc`
+/// underneath) — deliberately: a caller in `run_connection_with` needs `&mut
+/// self` (for `attach_channels`) while a live `PendingConnection` is still in
+/// scope, which a borrowed `security` would conflict with for as long as the
+/// pending connection exists.
+struct PendingConnection {
+    security: RdpServerSecurity,
+    acceptor: Acceptor,
+}
 
-    let res = ironrdp_acceptor::accept_begin(framed, acceptor)
-        .await
-        .context("accept_begin failed")?;
-
-    match res {
-        // The only thing that varies between the two modes is who performs
-        // the TLS handshake; everything past it is `complete_security_upgrade`.
-        BeginResult::ShouldUpgrade(stream) => match tls {
-            TransportTls::Managed => {
-                let tls_acceptor = match security {
-                    RdpServerSecurity::Tls(acceptor) => acceptor,
-                    RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
-                    RdpServerSecurity::None => unreachable!(),
-                };
-                let accept = match tls_acceptor.accept(stream).await {
-                    Ok(accept) => accept,
-                    Err(e) => {
-                        warn!("Failed to TLS accept: {}", e);
-                        return Ok(None);
-                    }
-                };
-                let mut framed = TokioFramed::new(accept);
-                complete_security_upgrade(security, &mut framed, acceptor).await?;
-                Ok(Some(NegotiatedTransport::Tls(Box::new(framed))))
-            }
-            // The stream is already past TLS (terminated at a lower
-            // layer, e.g. a WSS terminator); do NOT call
-            // tls_acceptor.accept on it.
-            TransportTls::AlreadyDone => {
-                let mut framed = TokioFramed::new(stream);
-                complete_security_upgrade(security, &mut framed, acceptor).await?;
-                Ok(Some(NegotiatedTransport::Offloaded(framed)))
-            }
-        },
-
-        BeginResult::Continue(framed) => Ok(Some(NegotiatedTransport::Continued(framed))),
+impl PendingConnection {
+    fn new(
+        security: RdpServerSecurity,
+        desktop_size: DesktopSize,
+        capabilities: Vec<CapabilitySet>,
+        creds: Option<Credentials>,
+        honor_client_desktop_size: Option<DesktopSize>,
+    ) -> Self {
+        let mut acceptor = Acceptor::new(security.flag(), desktop_size, capabilities, creds);
+        acceptor.set_honor_client_desktop_size(honor_client_desktop_size);
+        Self { security, acceptor }
     }
+
+    /// Mutable access to the acceptor for the one thing that must happen
+    /// before negotiation: attaching static/dynamic channels. Negotiation
+    /// itself (`negotiate_and_authenticate`) owns the acceptor from here on,
+    /// so this is only available pre-negotiation.
+    fn acceptor_mut(&mut self) -> &mut Acceptor {
+        &mut self.acceptor
+    }
+
+    /// Negotiate `stream` and, where the security mode provides it,
+    /// AUTHENTICATE it — everything up to (but not including)
+    /// `accept_finalize`.
+    ///
+    /// Consumes `self` rather than taking `&mut self`, so it can be driven
+    /// without holding a mutable borrow of the whole server for the
+    /// duration — a future caller (a preempting connection negotiating
+    /// concurrently with the live one) needs exactly that.
+    ///
+    /// `Ok(None)` means the TLS handshake failed and was already logged — the
+    /// caller should abandon the connection quietly rather than treat it as a
+    /// connection error (preserving the pre-existing `return Ok(())` behaviour).
+    async fn negotiate_and_authenticate<S>(
+        self,
+        stream: S,
+        tls: TransportTls,
+    ) -> Result<Option<NegotiatedConnection<S>>>
+    where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    {
+        let PendingConnection { security, mut acceptor } = self;
+        let security = &security;
+        let framed = TokioFramed::new(stream);
+
+        let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
+            .await
+            .context("accept_begin failed")?;
+
+        match res {
+            // The only thing that varies between the two modes is who performs
+            // the TLS handshake; everything past it is `complete_security_upgrade`.
+            BeginResult::ShouldUpgrade(stream) => match tls {
+                TransportTls::Managed => {
+                    // `RdpServerSecurity::None` can never reach this arm: `Self::new`
+                    // built `acceptor` from THIS `security` via `security.flag()`,
+                    // which is empty only for `None`, and `accept_begin` yields
+                    // `ShouldUpgrade` only when the negotiated flags are non-empty
+                    // -- `None` always yields `Continue` instead (the arm below).
+                    let tls_acceptor = match security {
+                        RdpServerSecurity::Tls(acceptor) => acceptor,
+                        RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
+                        RdpServerSecurity::None => unreachable!(),
+                    };
+                    let accept = match tls_acceptor.accept(stream).await {
+                        Ok(accept) => accept,
+                        Err(e) => {
+                            warn!("Failed to TLS accept: {}", e);
+                            return Ok(None);
+                        }
+                    };
+                    let mut framed = TokioFramed::new(accept);
+                    complete_security_upgrade(security, &mut framed, &mut acceptor).await?;
+                    Ok(Some(NegotiatedConnection {
+                        transport: NegotiatedTransport::Tls(Box::new(framed)),
+                        acceptor,
+                    }))
+                }
+                // The stream is already past TLS (terminated at a lower
+                // layer, e.g. a WSS terminator); do NOT call
+                // tls_acceptor.accept on it.
+                TransportTls::AlreadyDone => {
+                    let mut framed = TokioFramed::new(stream);
+                    complete_security_upgrade(security, &mut framed, &mut acceptor).await?;
+                    Ok(Some(NegotiatedConnection {
+                        transport: NegotiatedTransport::Offloaded(framed),
+                        acceptor,
+                    }))
+                }
+            },
+
+            BeginResult::Continue(framed) => Ok(Some(NegotiatedConnection {
+                transport: NegotiatedTransport::Continued(framed),
+                acceptor,
+            })),
+        }
+    }
+}
+
+/// The result of [`PendingConnection::negotiate_and_authenticate`]: the
+/// [`NegotiatedTransport`] it landed on, bundled with the same [`Acceptor`]
+/// that negotiated it (rather than the caller tracking the two as separate
+/// values, which is how this looked before `PendingConnection` existed).
+struct NegotiatedConnection<S> {
+    transport: NegotiatedTransport<S>,
+    acceptor: Acceptor,
 }
 
 /// Advance a stream that is now past the security upgrade: mark the acceptor
 /// accordingly and, under [`RdpServerSecurity::Hybrid`], run the CredSSP
 /// exchange.
 ///
-/// Generic over the stream so both [`TransportTls`] modes share one definition
-/// of the exchange — the two differ only in what the framed stream wraps, and
-/// keeping a single call site means a future change to the argument list or to
-/// the client-name placeholder cannot be applied to one mode and missed on the
-/// other.
+/// Generic over the stream so both [`TransportTls`] modes can call this one
+/// definition of the exchange (the two differ only in what the framed stream
+/// wraps) — restoring, not introducing, the single-call-site property the
+/// pre-existing `finalize_after_upgrade` already had for the same two arms
+/// before this refactor split negotiation out of it. The actual reason this
+/// exists as its own function is [`negotiate_and_authenticate`]'s: a future
+/// caller (a preempting connection negotiating without holding `&mut self`)
+/// needs the CredSSP step available from a plain function it can drive
+/// itself, not bundled into a `&mut self` method.
 async fn complete_security_upgrade<S>(
     security: &RdpServerSecurity,
     framed: &mut TokioFramed<S>,
@@ -939,11 +1016,10 @@ struct NegotiationContext {
 
 /// A candidate that has negotiated AND authenticated, and so has earned the
 /// right to evict the live session. Everything needed to resume at
-/// finalization, which [`RdpServer::serve_negotiated`] does once it wins.
-struct NegotiatedCandidate {
-    transport: NegotiatedTransport<TcpStream>,
-    acceptor: Acceptor,
-}
+/// finalization, which [`RdpServer::serve_negotiated`] does once it wins --
+/// just [`PendingConnection::negotiate_and_authenticate`]'s own result type,
+/// named for what it means in this context.
+type NegotiatedCandidate = NegotiatedConnection<TcpStream>;
 
 /// Negotiate and authenticate a candidate connection against a cloned `ctx`,
 /// touching no `&mut self` — which is what lets this run inside
@@ -963,8 +1039,13 @@ async fn negotiate_candidate(
 ) -> Option<(Box<NegotiatedCandidate>, SocketAddr)> {
     let size = ctx.display.lock().await.size().await;
     let capabilities = capabilities::capabilities(&ctx.opts, size);
-    let mut acceptor = Acceptor::new(ctx.opts.security.flag(), size, capabilities, ctx.creds.clone());
-    acceptor.set_honor_client_desktop_size(ctx.opts.honor_client_desktop_size);
+    let pending = PendingConnection::new(
+        ctx.opts.security.clone(),
+        size,
+        capabilities,
+        ctx.creds.clone(),
+        ctx.opts.honor_client_desktop_size,
+    );
 
     // NOTE: deliberately NO channel attachment here. Building the cliprdr /
     // sound / gfx backends means running user-supplied factories for a peer
@@ -976,10 +1057,10 @@ async fn negotiate_candidate(
     // the static channel set until it processes the MCS Connect Initial, which
     // happens there, not in `accept_begin`.
 
-    match negotiate_and_authenticate(&ctx.opts.security, &mut acceptor, stream, TransportTls::Managed).await {
-        Ok(Some(transport)) => {
+    match pending.negotiate_and_authenticate(stream, TransportTls::Managed).await {
+        Ok(Some(negotiated)) => {
             debug!(?peer, "candidate authenticated -- eligible to preempt the live session");
-            Some((Box::new(NegotiatedCandidate { transport, acceptor }), peer))
+            Some((Box::new(negotiated), peer))
         }
         Ok(None) => {
             debug!(
@@ -1536,7 +1617,7 @@ impl RdpServer {
         // done, stops at the security-upgrade gate before that.
         self.attach_channels(&mut candidate.acceptor);
 
-        self.finalize_negotiated(candidate.transport, candidate.acceptor).await
+        self.finalize_negotiated(*candidate).await
     }
 
     /// Run a single RDP connection over `stream`, performing the
@@ -1638,31 +1719,38 @@ impl RdpServer {
 
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
-        let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities, self.creds.clone());
-        acceptor.set_honor_client_desktop_size(self.opts.honor_client_desktop_size);
+        let mut pending = PendingConnection::new(
+            self.opts.security.clone(),
+            size,
+            capabilities,
+            self.creds.clone(),
+            self.opts.honor_client_desktop_size,
+        );
 
-        self.attach_channels(&mut acceptor);
+        self.attach_channels(pending.acceptor_mut());
 
-        // Shared with the preemption candidate path — see
-        // `negotiate_and_authenticate`.
-        let Some(negotiated) = negotiate_and_authenticate(&self.opts.security, &mut acceptor, stream, tls).await?
-        else {
+        let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
             return Ok(());
         };
 
-        self.finalize_negotiated(negotiated, acceptor).await
+        self.finalize_negotiated(negotiated).await
     }
 
     /// Finalize a connection that has already negotiated (and, under Hybrid,
-    /// authenticated) via [`negotiate_and_authenticate`], then shut its stream
-    /// down. Single-sourcing this is what keeps the managed, TLS-offloaded and
-    /// no-security paths structurally identical past the handshake, so
-    /// per-connection state handling cannot drift between them.
-    async fn finalize_negotiated<S>(&mut self, negotiated: NegotiatedTransport<S>, acceptor: Acceptor) -> Result<()>
+    /// authenticated) via [`PendingConnection::negotiate_and_authenticate`].
+    /// Dispatches on which [`NegotiatedTransport`] variant it got: `Continued`
+    /// (no security upgrade happened, [`RdpServerSecurity::None`]) goes
+    /// straight to `accept_finalize` with no stream to shut down, while `Tls`
+    /// / `Offloaded` route through [`Self::finalize_and_shutdown`] for the
+    /// extra shutdown step — these three paths are NOT structurally identical
+    /// past this point, only past the handshake `negotiate_and_authenticate`
+    /// itself covers.
+    async fn finalize_negotiated<S>(&mut self, negotiated: NegotiatedConnection<S>) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
-        match negotiated {
+        let NegotiatedConnection { transport, acceptor } = negotiated;
+        match transport {
             // No security upgrade happened, so there is no TLS session to shut
             // down — matches the pre-existing `BeginResult::Continue` arm.
             NegotiatedTransport::Continued(framed) => {
