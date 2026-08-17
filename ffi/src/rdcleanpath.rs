@@ -19,7 +19,7 @@ pub mod ffi {
         /// * `x224_pdu` - The X.224 Connection Request PDU bytes
         /// * `destination` - The destination RDP server address (e.g., "10.10.0.3:3389")
         /// * `proxy_auth` - The JWT authentication token
-        /// * `pcb` - Optional preconnection blob (for Hyper-V VM connections, empty string if not needed)
+        /// * `pcb` - Optional legacy complete preconnection blob represented as a string
         pub fn new_request(
             x224_pdu: &[u8],
             destination: &str,
@@ -38,6 +38,27 @@ pub mod ffi {
             .map_err(GenericError)?;
 
             Ok(Box::new(RDCleanPathPdu(pdu)))
+        }
+
+        /// VMConnect request: proxy encodes the payload as PCB V2 and does TLS; client runs CredSSP then X.224.
+        pub fn new_vmconnect_request(
+            destination: &str,
+            proxy_auth: &str,
+            pcb_payload: &str,
+        ) -> Result<Box<RDCleanPathPdu>, Box<IronRdpError>> {
+            let pdu = ironrdp_rdcleanpath::RDCleanPathPdu::new_vmconnect_request(
+                destination.to_owned(),
+                proxy_auth.to_owned(),
+                pcb_payload.to_owned(),
+            )
+            .context("failed to create VMConnect RDCleanPath request")
+            .map_err(GenericError)?;
+            Ok(Box::new(RDCleanPathPdu(pdu)))
+        }
+
+        /// True when the PDU carries an X.224 payload.
+        pub fn has_x224(&self) -> bool {
+            self.0.x224_connection_pdu.is_some()
         }
 
         /// Decodes a RDCleanPath PDU from DER-encoded bytes
@@ -73,16 +94,18 @@ pub mod ffi {
                     return Err(Self::missing_field("proxy_auth"));
                 }
 
-                if self.0.x224_connection_pdu.is_none() {
-                    return Err(Self::missing_field("x224_connection_pdu"));
+                if self.0.x224_connection_pdu.is_none()
+                    && self
+                        .0
+                        .preconnection_blob
+                        .as_deref()
+                        .is_none_or(|payload| payload.trim().is_empty())
+                {
+                    return Err(Self::missing_field("x224_connection_pdu or preconnection_blob"));
                 }
 
                 Ok(RDCleanPathResultType::Request)
             } else if self.0.server_addr.is_some() {
-                if self.0.x224_connection_pdu.is_none() {
-                    return Err(Self::missing_field("x224_connection_pdu"));
-                }
-
                 if self.0.server_cert_chain.is_none() {
                     return Err(Self::missing_field("server_cert_chain"));
                 }
@@ -127,10 +150,10 @@ pub mod ffi {
 
                     Ok(Box::new(VecU8(x224.as_bytes().to_vec())))
                 } else {
-                    Err(GenericError(anyhow::anyhow!("RDCleanPath variant does not contain X.224 response")).into())
+                    Err(GenericError(anyhow::anyhow!("message variant does not contain X.224 response")).into())
                 }
             } else {
-                Err(GenericError(anyhow::anyhow!("RDCleanPath variant does not contain X.224 response")).into())
+                Err(GenericError(anyhow::anyhow!("message variant does not contain X.224 response")).into())
             }
         }
 
@@ -138,10 +161,6 @@ pub mod ffi {
         /// Returns a vector iterator of certificate bytes
         pub fn get_server_cert_chain(&self) -> Result<Box<CertificateChainIterator>, Box<IronRdpError>> {
             if self.0.server_addr.is_some() {
-                self.0
-                    .x224_connection_pdu
-                    .as_ref()
-                    .ok_or_else(|| Self::missing_field("x224_connection_pdu"))?;
                 let certs = self
                     .0
                     .server_cert_chain
@@ -151,19 +170,13 @@ pub mod ffi {
                 let certs: Vec<Vec<u8>> = certs.iter().map(|cert| cert.as_bytes().to_vec()).collect();
                 Ok(Box::new(CertificateChainIterator { certs, index: 0 }))
             } else {
-                Err(GenericError(anyhow::anyhow!(
-                    "RDCleanPath variant does not contain certificate chain"
-                ))
-                .into())
+                Err(GenericError(anyhow::anyhow!("message variant does not contain certificate chain")).into())
             }
         }
 
         /// Gets the server address string (for Response variant)
         pub fn get_server_addr<'a>(&'a self, writeable: &'a mut DiplomatWriteable) {
-            if self.0.server_addr.is_some()
-                && self.0.server_cert_chain.is_some()
-                && self.0.x224_connection_pdu.is_some()
-            {
+            if self.0.server_addr.is_some() && self.0.server_cert_chain.is_some() {
                 if let Some(server_addr) = &self.0.server_addr {
                     let _ = write!(writeable, "{server_addr}");
                 }
@@ -193,7 +206,7 @@ pub mod ffi {
         }
 
         fn missing_field(field: &'static str) -> Box<IronRdpError> {
-            GenericError(anyhow::anyhow!("RDCleanPath is missing {field} field")).into()
+            GenericError(anyhow::anyhow!("missing RDCleanPath field: {field}")).into()
         }
 
         fn general_error(&self) -> Result<&ironrdp_rdcleanpath::RDCleanPathErr, Box<IronRdpError>> {

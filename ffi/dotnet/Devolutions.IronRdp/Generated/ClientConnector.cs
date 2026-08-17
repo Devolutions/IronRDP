@@ -223,6 +223,77 @@ public partial class ClientConnector: IDisposable
         }
     }
 
+    /// <summary>
+    /// Send X.224 with an explicit protocol set (VMConnect uses HYBRID only).
+    /// </summary>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>Written</c> allocated on Rust side.
+    /// </returns>
+    public Written InitiateWithSecurityProtocol(uint securityProtocol, WriteBuf writeBuf)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnector");
+            }
+            Raw.WriteBuf* writeBufRaw;
+            writeBufRaw = writeBuf.AsFFI();
+            if (writeBufRaw == null)
+            {
+                throw new ObjectDisposedException("WriteBuf");
+            }
+            Raw.ConnectorFfiResultBoxWrittenBoxIronRdpError result = Raw.ClientConnector.InitiateWithSecurityProtocol(_inner, securityProtocol, writeBufRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.Written* retVal = result.Ok;
+            return new Written(retVal);
+        }
+    }
+
+    /// <summary>
+    /// Drop host identity after pre-X.224 CredSSP so it is not forwarded into guest RDP.
+    /// </summary>
+    /// <exception cref="IronRdpException"></exception>
+    public void ClearCredentialsAfterHostAuth()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnector");
+            }
+            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.ClientConnector.ClearCredentialsAfterHostAuth(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Require EnhancedSecurityUpgrade with HYBRID, matching ironrdp-vmconnect::connect_front.
+    /// </summary>
+    /// <exception cref="IronRdpException"></exception>
+    public void EnsureSelectedHybrid()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnector");
+            }
+            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.ClientConnector.EnsureSelectedHybrid(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+        }
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>Written</c> allocated on Rust side.

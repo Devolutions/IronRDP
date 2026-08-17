@@ -31,6 +31,8 @@ mod mstsc;
 mod registration;
 #[cfg(windows)]
 mod rpc;
+#[cfg(windows)]
+mod touch;
 
 #[cfg(windows)]
 pub use com::{

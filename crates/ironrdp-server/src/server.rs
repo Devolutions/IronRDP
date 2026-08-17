@@ -454,6 +454,7 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channels: StaticChannelSet,
+    static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     echo_handle: EchoServerHandle,
@@ -543,6 +544,15 @@ pub enum ServerEvent {
     Egfx(EgfxServerMessage),
     /// Trigger an RTT measurement probe (requires auto-detect enabled).
     AutoDetectRttRequest,
+}
+
+/// Creates a fresh static-channel processor for each accepted RDP connection.
+///
+/// Factories are invoked before the Basic Settings Exchange so their channels
+/// participate in GCC static-channel negotiation.
+pub trait StaticChannelFactory: Send {
+    /// Attaches the connection-local static-channel processor to `acceptor`.
+    fn attach(&self, acceptor: &mut Acceptor);
 }
 
 impl fmt::Debug for ServerEvent {
@@ -719,6 +729,7 @@ impl RdpServer {
         opts: RdpServerOptions,
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
+        static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
@@ -742,6 +753,7 @@ impl RdpServer {
             handler: Arc::new(Mutex::new(handler)),
             display: Arc::new(Mutex::new(display)),
             static_channels: StaticChannelSet::new(),
+            static_channel_factories,
             sound_factory,
             cliprdr_factory,
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
@@ -1087,6 +1099,10 @@ impl RdpServer {
         };
 
         acceptor.attach_static_channel(dvc);
+
+        for factory in &self.static_channel_factories {
+            factory.attach(acceptor);
+        }
     }
 
     /// Run a single RDP connection over `stream`, performing the
@@ -1573,6 +1589,25 @@ impl RdpServer {
                         let request = ad.send_rtt_request(now_ms);
                         let data = encode_autodetect_request(request, message_channel_id, user_channel_id)?;
                         writer.write_all(&data).await?;
+
+                        // Report the measured characteristics to the client
+                        // ([MS-RDPBCGR] 2.2.14.1.5). The client does not reply. Sent only
+                        // once both RTT and bandwidth are known, and paced independently
+                        // of this probe cadence, so a fast caller does not turn into a
+                        // fast stream of unsolicited PDUs.
+                        if let Some(result) = ad.build_netchar_result(now_ms) {
+                            let data = encode_autodetect_request(result, message_channel_id, user_channel_id)?;
+                            writer.write_all(&data).await?;
+                        }
+
+                        // Periodically measure bandwidth: Start on one tick, Stop several
+                        // ticks later, with ordinary traffic in between counted by the
+                        // client, then a Bandwidth Measure Results PDU in reply. Until one
+                        // has completed there is no characteristics result to send at all.
+                        if let Some(pdu) = ad.build_bandwidth_measure() {
+                            let data = encode_autodetect_request(pdu, message_channel_id, user_channel_id)?;
+                            writer.write_all(&data).await?;
+                        }
                     }
                 }
             }

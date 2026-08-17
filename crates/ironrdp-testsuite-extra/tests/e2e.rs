@@ -3,12 +3,12 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
 use anyhow::Result;
 use ironrdp::connector;
-use ironrdp::core::Encode as _;
+use ironrdp::core::{Encode as _, encode_vec, impl_as_any};
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::echo::client::EchoClient;
 use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
@@ -19,14 +19,22 @@ use ironrdp::pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp::pdu::rdp::headers::CompressionFlags;
 use ironrdp::pdu::{self, gcc};
 use ironrdp::server::{
-    self, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer, RdpServerDisplay,
-    RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, TlsIdentityCtx,
+    self, Acceptor, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer, RdpServerDisplay,
+    RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, StaticChannelFactory, TlsIdentityCtx,
 };
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput};
-use ironrdp::svc::StaticChannelSet;
+use ironrdp::svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcServerProcessor};
 use ironrdp_async::{Framed, FramedWrite as _};
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType, flags as bulk_flags};
+use ironrdp_rdpdr::pdu::RdpdrPdu;
+use ironrdp_rdpdr::pdu::efs::{
+    Capabilities, CoreCapability, CoreCapabilityKind, DeviceCreateResponse, DeviceIoRequest, DeviceIoResponse,
+    MajorFunction, MinorFunction, NtStatus, ServerDeviceAnnounceResponse, ServerDriveIoRequest, VERSION_MAJOR,
+    VERSION_MINOR_12, VersionAndIdPdu, VersionAndIdPduKind,
+};
+use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
+use ironrdp_rdpdr::{Rdpdr, RdpdrBackend, RdpdrBackendFactory, RdpdrBackendProduct, RdpdrDrive};
 use ironrdp_testsuite_extra as _;
 use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
@@ -39,6 +47,11 @@ const DESKTOP_WIDTH: u16 = 1024;
 const DESKTOP_HEIGHT: u16 = 768;
 const USERNAME: &str = "";
 const PASSWORD: &str = "";
+const RDPDR_DEVICE_ID: u32 = 1;
+const RDPDR_CLIENT_ID: u32 = 0x1234;
+const RDPDR_COMPLETION_ID: u32 = 1;
+#[cfg(windows)]
+const RDPDR_READ_LENGTH: u32 = 32 * 1024;
 
 #[tokio::test]
 async fn test_client_server() {
@@ -104,6 +117,7 @@ async fn test_deactivation_reactivation() {
                                 input_flags: _,
                                 enable_server_pointer,
                                 pointer_software_rendering,
+                                static_channel_chunk_size,
                                 ..
                             } = connection_activation.connection_activation_state()
                             {
@@ -111,13 +125,14 @@ async fn test_deactivation_reactivation() {
                                 // Update image size with the new desktop size.
                                 // image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                                 // Update the active stage with the new channel IDs and pointer settings.
-                                stage.reactivate(
+                                assert!(stage.reactivate(
                                     connection_activation.io_channel_id(),
                                     connection_activation.user_channel_id(),
                                     share_id,
                                     enable_server_pointer,
                                     pointer_software_rendering,
-                                );
+                                    static_channel_chunk_size,
+                                ));
                                 break 'activation_seq;
                             }
                         }
@@ -154,7 +169,7 @@ fn test_reactivation_preserves_bulk_decompression_history() {
         .process(&mut image, pdu::Action::FastPath, &first_frame)
         .expect("compressed FastPath update before reactivation");
 
-    stage.reactivate(1003, 1001, 2, false, false);
+    assert!(stage.reactivate(1003, 1001, 2, false, false, 1600));
 
     let (second_frame, second_flags) = compressed_bitmap_fastpath_frame(&mut compressor);
     assert_ne!(second_flags & bulk_flags::PACKET_COMPRESSED, 0);
@@ -191,7 +206,7 @@ fn compressed_bitmap_fastpath_frame(compressor: &mut BulkCompressor) -> (Vec<u8>
             bitmap_data: &[0x40; 64],
         }],
     };
-    let bitmap_data = ironrdp::core::encode_vec(&bitmap).expect("encode bitmap update");
+    let bitmap_data = encode_vec(&bitmap).expect("encode bitmap update");
 
     let (compressed_size, flags) = compressor.compress(&bitmap_data).expect("compress bitmap update");
 
@@ -207,8 +222,8 @@ fn compressed_bitmap_fastpath_frame(compressor: &mut BulkCompressor) -> (Vec<u8>
     };
     let header = FastPathHeader::new(EncryptionFlags::empty(), update.size());
 
-    let mut frame = ironrdp::core::encode_vec(&header).expect("encode FastPath header");
-    frame.extend(ironrdp::core::encode_vec(&update).expect("encode FastPath update"));
+    let mut frame = encode_vec(&header).expect("encode FastPath header");
+    frame.extend(encode_vec(&update).expect("encode FastPath update"));
     (frame, flags)
 }
 
@@ -219,6 +234,7 @@ async fn test_echo_virtual_channel_end_to_end() {
 
     client_server_with_connector(
         default_client_config(),
+        Vec::new(),
         |connector| connector.with_static_channel(DrdynvcClient::new().with_dynamic_channel(EchoClient::new())),
         move |mut stage, _activation_factory, mut framed, display_tx, echo_handle| async move {
             let _display_tx = display_tx;
@@ -264,6 +280,95 @@ async fn test_echo_virtual_channel_end_to_end() {
         },
     )
     .await
+}
+
+#[tokio::test]
+async fn rdpdr_static_channel_announces_a_drive_and_completes_an_unsupported_create() {
+    let fixture = RdpdrFixtureFactory::new(RdpdrFixtureOperation::UnsupportedCreate);
+    let fixture_state = fixture.state();
+
+    client_server_with_connector(
+        default_client_config(),
+        vec![Box::new(fixture)],
+        |connector| connector.with_static_channel(test_rdpdr_channel()),
+        move |stage, _activation_factory, framed, display_tx, _echo_handle| {
+            drive_rdpdr_until_complete(stage, framed, display_tx, fixture_state)
+        },
+    )
+    .await;
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn rdpdr_static_channel_creates_a_file_with_the_windows_backend() {
+    use std::fs;
+
+    let root = test_directory("create");
+    fs::create_dir_all(&root).expect("create redirected-drive root");
+    let factory = ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::new(
+        ironrdp_rdpdr_native::RedirectedDrive::new(RDPDR_DEVICE_ID, "test", volume_root(&root), false)
+            .expect("valid redirected drive"),
+    );
+    let fixture = RdpdrFixtureFactory::new(RdpdrFixtureOperation::CreateFile {
+        path: volume_relative_path(&root, "created.txt"),
+    });
+    let fixture_state = fixture.state();
+    let fixture_state_for_client = Arc::clone(&fixture_state);
+
+    client_server_with_connector(
+        default_client_config(),
+        vec![Box::new(fixture)],
+        move |connector| connector.with_static_channel(rdpdr_channel(&factory)),
+        move |stage, _activation_factory, framed, display_tx, _echo_handle| {
+            drive_rdpdr_until_complete(stage, framed, display_tx, fixture_state_for_client)
+        },
+    )
+    .await;
+
+    assert!(root.join("created.txt").is_file());
+    fs::remove_dir_all(root).expect("remove redirected-drive root");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn rdpdr_static_channel_preserves_large_read_response_lengths() {
+    use std::fs;
+
+    let root = test_directory("read");
+    fs::create_dir_all(&root).expect("create redirected-drive root");
+    fs::write(
+        root.join("fixture.bin"),
+        vec![0xA5; usize::try_from(RDPDR_READ_LENGTH * 2).expect("read length fits usize")],
+    )
+    .expect("write redirected file");
+    let factory = ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::new(
+        ironrdp_rdpdr_native::RedirectedDrive::new(RDPDR_DEVICE_ID, "test", volume_root(&root), false)
+            .expect("valid redirected drive"),
+    );
+    let fixture = RdpdrFixtureFactory::new(RdpdrFixtureOperation::ReadFile {
+        path: volume_relative_path(&root, "fixture.bin"),
+        response_lengths: Vec::new(),
+    });
+    let fixture_state = fixture.state();
+    let fixture_state_for_client = Arc::clone(&fixture_state);
+
+    client_server_with_connector(
+        default_client_config(),
+        vec![Box::new(fixture)],
+        move |connector| connector.with_static_channel(rdpdr_channel(&factory)),
+        move |stage, _activation_factory, framed, display_tx, _echo_handle| {
+            drive_rdpdr_until_complete(stage, framed, display_tx, fixture_state_for_client)
+        },
+    )
+    .await;
+
+    let state = fixture_state.lock().expect("fixture state");
+    let RdpdrFixtureOperation::ReadFile { response_lengths, .. } = &state.operation else {
+        unreachable!("read fixture remains configured for reads");
+    };
+    assert_eq!(response_lengths, &[RDPDR_READ_LENGTH, RDPDR_READ_LENGTH]);
+    drop(state);
+    fs::remove_dir_all(root).expect("remove redirected-drive root");
 }
 
 #[tokio::test]
@@ -364,6 +469,393 @@ impl RdpServerInputHandler for TestInputHandler {
     fn mouse(&mut self, _: MouseEvent) {}
 }
 
+#[derive(Debug)]
+enum RdpdrFixtureOperation {
+    UnsupportedCreate,
+    #[cfg(windows)]
+    CreateFile {
+        path: String,
+    },
+    #[cfg(windows)]
+    ReadFile {
+        path: String,
+        response_lengths: Vec<u32>,
+    },
+}
+
+#[derive(Debug)]
+enum RdpdrFixturePhase {
+    AwaitClientAnnounce,
+    AwaitClientName,
+    AwaitClientCapabilities,
+    AwaitDeviceAnnouncement,
+    AwaitCreateCompletion,
+    #[cfg(windows)]
+    AwaitReadCreateCompletion,
+    #[cfg(windows)]
+    AwaitFirstReadCompletion {
+        file_id: u32,
+    },
+    #[cfg(windows)]
+    AwaitSecondReadCompletion,
+    Complete,
+}
+
+#[derive(Debug)]
+struct RdpdrFixtureState {
+    phase: RdpdrFixturePhase,
+    operation: RdpdrFixtureOperation,
+    announced_device_id: Option<u32>,
+    completion_status: Option<NtStatus>,
+}
+
+impl RdpdrFixtureState {
+    fn new(operation: RdpdrFixtureOperation) -> Self {
+        Self {
+            phase: RdpdrFixturePhase::AwaitClientAnnounce,
+            operation,
+            announced_device_id: None,
+            completion_status: None,
+        }
+    }
+
+    fn start() -> Vec<SvcMessage> {
+        vec![SvcMessage::from(RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+            version_major: VERSION_MAJOR,
+            version_minor: VERSION_MINOR_12,
+            client_id: RDPDR_CLIENT_ID,
+            kind: VersionAndIdPduKind::ServerAnnounceRequest,
+        }))]
+    }
+
+    fn process(&mut self, payload: &[u8]) -> pdu::PduResult<Vec<SvcMessage>> {
+        match self.phase {
+            RdpdrFixturePhase::AwaitClientAnnounce => {
+                self.phase = RdpdrFixturePhase::AwaitClientName;
+                Ok(vec![server_capabilities()])
+            }
+            RdpdrFixturePhase::AwaitClientName => {
+                self.phase = RdpdrFixturePhase::AwaitClientCapabilities;
+                Ok(Vec::new())
+            }
+            RdpdrFixturePhase::AwaitClientCapabilities => {
+                self.phase = RdpdrFixturePhase::AwaitDeviceAnnouncement;
+                Ok(vec![
+                    SvcMessage::from(RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+                        version_major: VERSION_MAJOR,
+                        version_minor: VERSION_MINOR_12,
+                        client_id: RDPDR_CLIENT_ID,
+                        kind: VersionAndIdPduKind::ServerClientIdConfirm,
+                    })),
+                    SvcMessage::from(RdpdrPdu::UserLoggedon),
+                ])
+            }
+            RdpdrFixturePhase::AwaitDeviceAnnouncement => {
+                let device_id = read_u32(payload, 12);
+                self.announced_device_id = Some(device_id);
+
+                let mut messages = vec![SvcMessage::from(RdpdrPdu::ServerDeviceAnnounceResponse(
+                    ServerDeviceAnnounceResponse {
+                        device_id,
+                        result_code: NtStatus::SUCCESS,
+                    },
+                ))];
+                messages.extend(self.start_operation(device_id));
+                Ok(messages)
+            }
+            RdpdrFixturePhase::AwaitCreateCompletion => {
+                self.completion_status = Some(read_status(payload));
+                self.phase = RdpdrFixturePhase::Complete;
+                Ok(Vec::new())
+            }
+            #[cfg(windows)]
+            RdpdrFixturePhase::AwaitReadCreateCompletion => {
+                self.completion_status = Some(read_status(payload));
+                let file_id = read_u32(payload, 16);
+                self.phase = RdpdrFixturePhase::AwaitFirstReadCompletion { file_id };
+                Ok(vec![read_request(
+                    self.announced_device_id.expect("announced device"),
+                    file_id,
+                    RDPDR_COMPLETION_ID + 1,
+                    0,
+                )])
+            }
+            #[cfg(windows)]
+            RdpdrFixturePhase::AwaitFirstReadCompletion { file_id } => {
+                self.record_read_response(payload);
+                self.phase = RdpdrFixturePhase::AwaitSecondReadCompletion;
+                Ok(vec![read_request(
+                    self.announced_device_id.expect("announced device"),
+                    file_id,
+                    RDPDR_COMPLETION_ID + 2,
+                    u64::from(RDPDR_READ_LENGTH),
+                )])
+            }
+            #[cfg(windows)]
+            RdpdrFixturePhase::AwaitSecondReadCompletion => {
+                self.record_read_response(payload);
+                self.phase = RdpdrFixturePhase::Complete;
+                Ok(Vec::new())
+            }
+            RdpdrFixturePhase::Complete => Ok(Vec::new()),
+        }
+    }
+
+    fn start_operation(&mut self, device_id: u32) -> Vec<SvcMessage> {
+        match &self.operation {
+            RdpdrFixtureOperation::UnsupportedCreate => {
+                self.phase = RdpdrFixturePhase::AwaitCreateCompletion;
+                vec![create_request(device_id, "unsupported.txt", 1)]
+            }
+            #[cfg(windows)]
+            RdpdrFixtureOperation::CreateFile { path } => {
+                self.phase = RdpdrFixturePhase::AwaitCreateCompletion;
+                vec![create_request(device_id, path, 2)]
+            }
+            #[cfg(windows)]
+            RdpdrFixtureOperation::ReadFile { path, .. } => {
+                self.phase = RdpdrFixturePhase::AwaitReadCreateCompletion;
+                vec![create_request(device_id, path, 1)]
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn record_read_response(&mut self, payload: &[u8]) {
+        self.completion_status = Some(read_status(payload));
+        let RdpdrFixtureOperation::ReadFile { response_lengths, .. } = &mut self.operation else {
+            unreachable!("only the read fixture receives read completions");
+        };
+        response_lengths.push(read_u32(payload, 16));
+    }
+}
+
+#[derive(Debug)]
+struct RdpdrFixtureFactory {
+    state: Arc<StdMutex<RdpdrFixtureState>>,
+}
+
+impl RdpdrFixtureFactory {
+    fn new(operation: RdpdrFixtureOperation) -> Self {
+        Self {
+            state: Arc::new(StdMutex::new(RdpdrFixtureState::new(operation))),
+        }
+    }
+
+    fn state(&self) -> Arc<StdMutex<RdpdrFixtureState>> {
+        Arc::clone(&self.state)
+    }
+}
+
+impl StaticChannelFactory for RdpdrFixtureFactory {
+    fn attach(&self, acceptor: &mut Acceptor) {
+        acceptor.attach_static_channel(RdpdrFixture {
+            state: Arc::clone(&self.state),
+        });
+    }
+}
+
+#[derive(Debug)]
+struct RdpdrFixture {
+    state: Arc<StdMutex<RdpdrFixtureState>>,
+}
+
+impl_as_any!(RdpdrFixture);
+
+impl SvcProcessor for RdpdrFixture {
+    fn channel_name(&self) -> gcc::ChannelName {
+        Rdpdr::NAME
+    }
+
+    fn start(&mut self) -> pdu::PduResult<Vec<SvcMessage>> {
+        Ok(RdpdrFixtureState::start())
+    }
+
+    fn process(&mut self, payload: &[u8]) -> pdu::PduResult<Vec<SvcMessage>> {
+        self.state.lock().expect("fixture state").process(payload)
+    }
+}
+
+impl SvcServerProcessor for RdpdrFixture {}
+
+#[derive(Debug)]
+struct UnsupportedRdpdrBackend;
+
+impl_as_any!(UnsupportedRdpdrBackend);
+
+impl RdpdrBackend for UnsupportedRdpdrBackend {
+    fn handle_server_device_announce_response(&mut self, _: ServerDeviceAnnounceResponse) -> pdu::PduResult<()> {
+        Ok(())
+    }
+
+    fn handle_scard_call(
+        &mut self,
+        _: ironrdp_rdpdr::pdu::efs::DeviceControlRequest<ScardIoCtlCode>,
+        _: ScardCall,
+    ) -> pdu::PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
+    }
+
+    fn handle_drive_io_request(&mut self, req: ServerDriveIoRequest) -> pdu::PduResult<Vec<SvcMessage>> {
+        let ServerDriveIoRequest::ServerCreateDriveRequest(request) = req else {
+            unreachable!("fixture only issues create requests");
+        };
+        Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCreateResponse(
+            DeviceCreateResponse {
+                device_io_reply: DeviceIoResponse::new(request.device_io_request, NtStatus::NOT_SUPPORTED),
+                file_id: 0,
+                information: ironrdp_rdpdr::pdu::efs::Information::file_superseded(),
+            },
+        ))])
+    }
+}
+
+struct TestRdpdrBackendFactory;
+
+impl RdpdrBackendFactory for TestRdpdrBackendFactory {
+    fn build_rdpdr_backend(&self) -> ironrdp_rdpdr::RdpdrBackendFactoryResult<RdpdrBackendProduct> {
+        Ok(RdpdrBackendProduct::new(
+            Box::new(UnsupportedRdpdrBackend),
+            vec![RdpdrDrive::new(RDPDR_DEVICE_ID, "test".to_owned())],
+        ))
+    }
+}
+
+fn test_rdpdr_channel() -> Rdpdr {
+    rdpdr_channel(&TestRdpdrBackendFactory)
+}
+
+fn rdpdr_channel(factory: &dyn RdpdrBackendFactory) -> Rdpdr {
+    let (backend, initial_drives) = factory.build_rdpdr_backend().expect("build RDPDR backend").into_parts();
+    Rdpdr::new(backend, "IronRDP".to_owned())
+        .with_drives(Some(initial_drives.into_iter().map(RdpdrDrive::into_parts).collect()))
+}
+
+fn server_capabilities() -> SvcMessage {
+    let mut capabilities = Capabilities::new();
+    capabilities.add_drive();
+    SvcMessage::from(RdpdrPdu::CoreCapability(CoreCapability {
+        capabilities: capabilities.clone_inner(),
+        kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
+    }))
+}
+
+fn create_request(device_id: u32, path: &str, create_disposition: u32) -> SvcMessage {
+    let mut request = encode_vec(&RdpdrPdu::DeviceIoRequest(DeviceIoRequest {
+        device_id,
+        file_id: 0,
+        completion_id: RDPDR_COMPLETION_ID,
+        major_function: MajorFunction::Create,
+        minor_function: MinorFunction::from(0),
+    }))
+    .expect("encode create request");
+    let path = path
+        .encode_utf16()
+        .chain(Some(0))
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    request.extend_from_slice(&0xC000_0000u32.to_le_bytes()); // DesiredAccess
+    request.extend_from_slice(&0u64.to_le_bytes()); // AllocationSize
+    request.extend_from_slice(&0x80u32.to_le_bytes()); // FileAttributes
+    request.extend_from_slice(&1u32.to_le_bytes()); // SharedAccess
+    request.extend_from_slice(&create_disposition.to_le_bytes()); // CreateDisposition
+    request.extend_from_slice(&0x40u32.to_le_bytes()); // CreateOptions
+    request.extend_from_slice(&u32::try_from(path.len()).expect("path length fits u32").to_le_bytes());
+    request.extend_from_slice(&path);
+    SvcMessage::from(request)
+}
+
+#[cfg(windows)]
+fn read_request(device_id: u32, file_id: u32, completion_id: u32, offset: u64) -> SvcMessage {
+    let mut request = encode_vec(&RdpdrPdu::DeviceIoRequest(DeviceIoRequest {
+        device_id,
+        file_id,
+        completion_id,
+        major_function: MajorFunction::Read,
+        minor_function: MinorFunction::from(0),
+    }))
+    .expect("encode read request");
+    request.extend_from_slice(&RDPDR_READ_LENGTH.to_le_bytes());
+    request.extend_from_slice(&offset.to_le_bytes());
+    request.extend_from_slice(&[0; 20]);
+    SvcMessage::from(request)
+}
+
+fn read_u32(payload: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(
+        payload[offset..offset + 4]
+            .try_into()
+            .expect("RDPDR fixture received a complete response"),
+    )
+}
+
+fn read_status(payload: &[u8]) -> NtStatus {
+    NtStatus::from(read_u32(payload, 12))
+}
+
+async fn drive_rdpdr_until_complete(
+    mut stage: ActiveStage,
+    mut framed: Framed<TokioStream<TlsStream<TcpStream>>>,
+    display_tx: UnboundedSender<DisplayUpdate>,
+    fixture_state: Arc<StdMutex<RdpdrFixtureState>>,
+) -> (ActiveStage, Framed<TokioStream<TlsStream<TcpStream>>>) {
+    let _display_tx = display_tx;
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    while !matches!(
+        fixture_state.lock().expect("fixture state").phase,
+        RdpdrFixturePhase::Complete
+    ) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "RDPDR fixture did not complete");
+        let read_result = tokio::time::timeout(remaining.min(Duration::from_millis(250)), framed.read_pdu()).await;
+        let Ok(frame_result) = read_result else {
+            continue;
+        };
+        let (action, frame) = frame_result.expect("read RDPDR frame");
+        let outputs = stage.process(&mut image, action, &frame).expect("process RDPDR frame");
+        for output in outputs {
+            if let ActiveStageOutput::ResponseFrame(frame) = output {
+                framed.write_all(&frame).await.expect("write RDPDR response");
+            }
+        }
+        tokio::task::yield_now().await;
+    }
+
+    let rdpdr_state = fixture_state.lock().expect("fixture state");
+    assert_eq!(rdpdr_state.announced_device_id, Some(RDPDR_DEVICE_ID));
+    match &rdpdr_state.operation {
+        RdpdrFixtureOperation::UnsupportedCreate => {
+            assert_eq!(rdpdr_state.completion_status, Some(NtStatus::NOT_SUPPORTED));
+        }
+        #[cfg(windows)]
+        RdpdrFixtureOperation::CreateFile { .. } | RdpdrFixtureOperation::ReadFile { .. } => {
+            assert_eq!(rdpdr_state.completion_status, Some(NtStatus::SUCCESS));
+        }
+    }
+    drop(rdpdr_state);
+    (stage, framed)
+}
+
+#[cfg(windows)]
+fn test_directory(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("ironrdp-rdpdr-{name}-{}", uuid::Uuid::new_v4()))
+}
+
+#[cfg(windows)]
+fn volume_root(path: &Path) -> &Path {
+    path.ancestors().last().expect("test directory has a volume root")
+}
+
+#[cfg(windows)]
+fn volume_relative_path(directory: &Path, file_name: &str) -> String {
+    let relative = directory
+        .strip_prefix(volume_root(directory))
+        .expect("test directory is beneath its volume root");
+    format!(r"\{}\{file_name}", relative.display()).replace('/', r"\")
+}
+
 async fn client_server<F, Fut>(client_config: connector::Config, clientfn: F)
 where
     F: FnOnce(
@@ -377,6 +869,7 @@ where
 {
     client_server_with_connector(
         client_config,
+        Vec::new(),
         |connector| connector,
         move |stage, connection_activation, framed, display_tx, _echo_handle| {
             clientfn(stage, connection_activation, framed, display_tx)
@@ -385,8 +878,12 @@ where
     .await;
 }
 
-async fn client_server_with_connector<F, Fut, C>(client_config: connector::Config, connector_factory: C, clientfn: F)
-where
+async fn client_server_with_connector<F, Fut, C>(
+    client_config: connector::Config,
+    static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    connector_factory: C,
+    clientfn: F,
+) where
     F: FnOnce(
             ActiveStage,
             connector::connection_activation::ConnectionActivationFactory,
@@ -409,14 +906,17 @@ where
     let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
 
     let (display_tx, display_rx) = mpsc::unbounded_channel();
-    let mut server = RdpServer::builder()
+    let mut server_builder = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
         .with_tls(acceptor)
         .with_input_handler(TestInputHandler)
         .with_display_handler(TestDisplay {
             rx: Arc::new(Mutex::new(display_rx)),
-        })
-        .build();
+        });
+    for factory in static_channel_factories {
+        server_builder = server_builder.with_static_channel_factory(factory);
+    }
+    let mut server = server_builder.build();
     server.set_credentials(Some(server::Credentials {
         username: USERNAME.into(),
         password: PASSWORD.into(),
@@ -518,6 +1018,7 @@ fn default_client_config() -> connector::Config {
             width: DESKTOP_WIDTH,
             height: DESKTOP_HEIGHT,
         },
+        monitor_layout: None,
         desktop_scale_factor: 0, // Default to 0 per FreeRDP
         enable_tls: true,
         enable_credssp: true,
@@ -566,6 +1067,7 @@ fn default_client_config() -> connector::Config {
         request_data: None,
         autologon: false,
         enable_audio_playback: true,
+        enable_audio_capture: false,
         license_cache: None,
         compression_type: None,
         enable_server_pointer: true,
@@ -575,5 +1077,7 @@ fn default_client_config() -> connector::Config {
         timezone_info: Default::default(),
         alternate_shell: String::new(),
         work_dir: String::new(),
+        remote_application_mode: false,
+        rail_support_level: pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED,
     }
 }

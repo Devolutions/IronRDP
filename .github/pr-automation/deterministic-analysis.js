@@ -5,7 +5,7 @@ const { isDocumentationPath } = require("./validate-classifier");
 
 const MAX_FILES = 3000;
 const MAX_FILENAME = 500;
-const SIZE_LABELS = ["size/XS", "size/S", "size/M", "size/L", "size/XL"];
+const SIZE_LABELS = ["size/XS", "size/S", "size/M", "size/L", "size/XL", "size/XXL"];
 const SOURCE_FILE = /\.(?:rs|cs|[cm]?js|jsx|[cm]?ts|tsx|svelte|ya?ml|toml)$/i;
 
 function globToRegExp(pattern) {
@@ -46,8 +46,15 @@ function parseLabelerRules(source) {
 function sourceSizeLabel(files) {
   const lines = files.reduce((total, file) => SOURCE_FILE.test(file.filename) ?
     total + file.additions + file.deletions : total, 0);
-  return { changedLines: lines, label: lines < 30 ? "size/XS" : lines < 150 ? "size/S" :
-    lines < 400 ? "size/M" : lines < 800 ? "size/L" : "size/XL" };
+  const lineSize = lines < 50 ? 0 : lines < 200 ? 1 : lines < 450 ? 2 :
+    lines < 900 ? 3 : lines < 1300 ? 4 : 5;
+  const fileSize = files.length < 3 ? 0 : files.length < 6 ? 1 : files.length < 11 ? 2 :
+    files.length < 21 ? 3 : files.length < 50 ? 4 : 5;
+  return {
+    changedLines: lines,
+    touchedFiles: files.length,
+    label: SIZE_LABELS[Math.max(lineSize, fileSize)],
+  };
 }
 
 function analyzeFiles(files, { labelerRules, authorAssociation } = {}) {
@@ -64,7 +71,7 @@ function analyzeFiles(files, { labelerRules, authorAssociation } = {}) {
   const size = sourceSizeLabel(files);
   return {
     ok: true, pathLabels, ownedPathLabels: Object.keys(labelerRules), sizeLabel: size.label,
-    sizeLabels: SIZE_LABELS, changedLines: size.changedLines,
+    sizeLabels: SIZE_LABELS, changedLines: size.changedLines, touchedFiles: size.touchedFiles,
     firstTime: ["FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER"].includes(authorAssociation),
     documentationOnlyPaths: files.every((file) => isDocumentationPath(file.filename)),
   };

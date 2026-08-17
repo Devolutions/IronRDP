@@ -32,6 +32,7 @@ fn test_config() -> ironrdp_connector::Config {
             width: 1024,
             height: 768,
         },
+        monitor_layout: None,
         desktop_scale_factor: 0,
         enable_tls: true,
         enable_credssp: false,
@@ -57,6 +58,7 @@ fn test_config() -> ironrdp_connector::Config {
         request_data: None,
         autologon: false,
         enable_audio_playback: false,
+        enable_audio_capture: false,
         license_cache: None,
         compression_type: None,
         enable_server_pointer: false,
@@ -66,6 +68,8 @@ fn test_config() -> ironrdp_connector::Config {
         timezone_info: Default::default(),
         alternate_shell: String::new(),
         work_dir: String::new(),
+        remote_application_mode: false,
+        rail_support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED,
     }
 }
 

@@ -152,6 +152,43 @@ pub mod ffi {
             Ok(())
         }
 
+        /// Send X.224 with an explicit protocol set (VMConnect uses HYBRID only).
+        pub fn initiate_with_security_protocol(
+            &mut self,
+            security_protocol: u32,
+            write_buf: &mut WriteBuf,
+        ) -> Result<Box<Written>, Box<IronRdpError>> {
+            let Some(connector) = self.0.as_mut() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            let security_protocol = ironrdp::pdu::nego::SecurityProtocol::from_bits(security_protocol)
+                .ok_or_else(|| ironrdp::connector::general_err!("invalid security protocol"))?;
+            let written = connector.initiate_with_security_protocol(security_protocol, &mut write_buf.0)?;
+            Ok(Box::new(Written(written)))
+        }
+
+        /// Drop host identity after pre-X.224 CredSSP so it is not forwarded into guest RDP.
+        pub fn clear_credentials_after_host_auth(&mut self) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.as_mut() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            connector.config.credentials = ironrdp::connector::Credentials::UsernamePassword {
+                username: String::new(),
+                password: String::new(),
+            };
+            connector.config.domain = None;
+            connector.config.autologon = false;
+            Ok(())
+        }
+
+        /// Require EnhancedSecurityUpgrade with HYBRID, matching ironrdp-vmconnect::connect_front.
+        pub fn ensure_selected_hybrid(&self) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.as_ref() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            ironrdp_vmconnect::ensure_selected_credssp(&connector.state).map_err(Into::into)
+        }
+
         pub fn step(&mut self, input: &[u8], write_buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());

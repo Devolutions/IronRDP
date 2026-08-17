@@ -11,9 +11,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use anyhow::Context as _;
+#[cfg(test)]
+use ironrdp_agent::ipc::TouchContactRequest;
 use ironrdp_agent::ipc::{
-    AgentErrorCategory, ConnState, KeyFilter, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry, Request,
-    Response, StatusInfo,
+    AgentErrorCategory, ConnState, KeyFilter, NowDiagnostics, Payload, PenFrameRequest, PropValue, PropertyDump,
+    PropertyEntry, Request, Response, StatusInfo, TouchFrameRequest, pen_event_from_request, touch_event_from_request,
 };
 use ironrdp_daemon::logbuf::{self, LogBuffer};
 use ironrdp_daemon::now::NowEndpoint;
@@ -77,6 +79,20 @@ pub(crate) enum Command {
     },
     Input {
         operation: Operation,
+        response: oneshot::Sender<Response>,
+    },
+    Touch {
+        encode_time: u32,
+        frames: Vec<TouchFrameRequest>,
+        response: oneshot::Sender<Response>,
+    },
+    Pen {
+        encode_time: u32,
+        frames: Vec<PenFrameRequest>,
+        response: oneshot::Sender<Response>,
+    },
+    DismissHoveringTouchContact {
+        contact_id: u8,
         response: oneshot::Sender<Response>,
     },
     Resize {
@@ -390,6 +406,45 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             })
             .await
         }
+        Request::UnicodeText { .. } => Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "bulk Unicode text input is unsupported by ActiveX",
+        ),
+        Request::Touch { encode_time, frames } => {
+            if let Err(response) = touch_event_from_request(encode_time, frames.clone()) {
+                return ConnectionResponse::Single(response);
+            }
+            queue_command(shared, dispatcher, |response| Command::Touch {
+                encode_time,
+                frames,
+                response,
+            })
+            .await
+        }
+        Request::Pen { encode_time, frames } => {
+            if let Err(response) = pen_event_from_request(encode_time, frames.clone()) {
+                return ConnectionResponse::Single(response);
+            }
+            queue_command(shared, dispatcher, |response| Command::Pen {
+                encode_time,
+                frames,
+                response,
+            })
+            .await
+        }
+        Request::DismissHoveringTouchContact { contact_id } => {
+            queue_command(shared, dispatcher, |response| Command::DismissHoveringTouchContact {
+                contact_id,
+                response,
+            })
+            .await
+        }
+        Request::RailStatus | Request::RailEvents { .. } | Request::RailWait { .. } | Request::RailExecute(_) => {
+            Response::typed_error(
+                AgentErrorCategory::Unavailable,
+                "RAIL audit endpoints are unavailable through ActiveX",
+            )
+        }
         Request::Resize { width, height } => {
             queue_command(shared, dispatcher, |response| Command::Resize {
                 width,
@@ -688,6 +743,9 @@ fn respond(command: Command, response: Response) {
         Command::Connect { response, .. }
         | Command::Disconnect { response }
         | Command::Input { response, .. }
+        | Command::Touch { response, .. }
+        | Command::Pen { response, .. }
+        | Command::DismissHoveringTouchContact { response, .. }
         | Command::Resize { response, .. } => response,
     };
     let _ = sender.send(response);
@@ -748,6 +806,67 @@ mod tests {
     fn screenshot_without_a_frame_is_unavailable() {
         let rpc = rpc();
         assert!(!screenshot(&rpc.shared).is_ok());
+    }
+
+    #[tokio::test]
+    async fn unicode_text_is_explicitly_unsupported() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) = handle_request(
+            &rpc.shared,
+            0,
+            Request::UnicodeText {
+                text: "test".to_owned(),
+            },
+        )
+        .await
+        else {
+            panic!("bulk Unicode text input must be rejected");
+        };
+        assert_eq!(error.category, AgentErrorCategory::InvalidRequest);
+        assert_eq!(error.message, "bulk Unicode text input is unsupported by ActiveX");
+    }
+
+    #[tokio::test]
+    async fn rail_audit_is_explicitly_unavailable() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) =
+            handle_request(&rpc.shared, 0, Request::RailStatus).await
+        else {
+            panic!("RAIL audit endpoints must be unavailable through ActiveX");
+        };
+        assert_eq!(error.category, AgentErrorCategory::Unavailable);
+        assert_eq!(error.message, "RAIL audit endpoints are unavailable through ActiveX");
+    }
+
+    #[tokio::test]
+    async fn touch_with_illegal_flags_is_rejected() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) = handle_request(
+            &rpc.shared,
+            0,
+            Request::Touch {
+                encode_time: 0,
+                frames: vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![TouchContactRequest {
+                        contact_id: 0,
+                        x: 1,
+                        y: 2,
+                        // INRANGE alone is illegal.
+                        flags: 0x0008,
+                    }],
+                }],
+            },
+        )
+        .await
+        else {
+            panic!("illegal touch flags must be rejected");
+        };
+        assert_eq!(error.category, AgentErrorCategory::InvalidRequest);
+        assert!(error.message.contains("legal"));
     }
 
     #[test]

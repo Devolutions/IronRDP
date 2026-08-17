@@ -198,13 +198,28 @@ impl RdpsndServer {
             };
             RdpsndSvcMessages::new(vec![pdu::ServerAudioOutputPdu::Wave2(pdu).into()])
         } else {
-            let pdu = pdu::WavePdu {
+            // Pre-v8: WaveInfo PDU (§2.2.3.3), then a bare Wave payload (§2.2.3.4).
+            if data.len() < usize::from(pdu::WavePdu::MIN_AUDIO_LENGTH) {
+                return Err(pdu_other_err!("wave data shorter than WaveInfo Data prefix"));
+            }
+            // BodySize = 8 + audio_length must fit in the 16-bit RDPSND header field.
+            if data.len() > usize::from(pdu::WavePdu::MAX_AUDIO_LENGTH) {
+                return Err(pdu_other_err!("wave data too large for WaveInfo BodySize"));
+            }
+            let audio_length = u16::try_from(data.len()).map_err(|_| pdu_other_err!("wave data too large"))?;
+            let mut data_prefix = [0u8; 4];
+            data_prefix.copy_from_slice(&data[..4]);
+            let info = pdu::WavePdu {
                 block_no: self.block_no,
                 format_no,
                 timestamp: 0,
-                data: data.into(),
+                data_prefix,
+                audio_length,
             };
-            RdpsndSvcMessages::new(vec![pdu::ServerAudioOutputPdu::Wave(pdu).into()])
+            let wave_data = pdu::WaveDataPdu {
+                data: data[4..].to_vec(),
+            };
+            RdpsndSvcMessages::new(vec![pdu::ServerAudioOutputPdu::Wave(info).into(), wave_data.into()])
         };
 
         self.block_no = self.block_no.overflowing_add(1).0;
@@ -246,7 +261,7 @@ fn negotiate_formats(
         .filter_map(|server_format| {
             client_formats
                 .iter()
-                .position(|client_fmt| audio_format_eq(client_fmt, server_format))
+                .position(|client_fmt| client_fmt.matches_for_negotiation(server_format))
                 .and_then(|idx| u16::try_from(idx).ok())
                 .map(|wformat_no| NegotiatedFormat {
                     format: server_format.clone(),
@@ -254,26 +269,6 @@ fn negotiate_formats(
                 })
         })
         .collect()
-}
-
-/// Compare two audio formats for negotiation. The WAVEFORMATEX identity fields
-/// — wave format tag, channel count, sample rate, bit depth — must match, and so
-/// must the codec-specific extra-data blob (`data`).
-///
-/// The two derived fields (`n_avg_bytes_per_sec`, `n_block_align`) are
-/// deliberately ignored: they are computable from the others and a client may
-/// legitimately not echo them back byte-for-byte. The `data` blob is a different
-/// category, though — for codecs whose extra-format bytes carry real
-/// configuration (AAC's HEAACWAVEINFO extra data is the clear case, MS-RDPEA
-/// 2.2.2.1.1's `cbSize` + extra data), ignoring it could match two genuinely
-/// incompatible formats, so it IS compared.
-#[cfg_attr(feature = "__test", visibility::make(pub))]
-fn audio_format_eq(a: &pdu::AudioFormat, b: &pdu::AudioFormat) -> bool {
-    a.format == b.format
-        && a.n_channels == b.n_channels
-        && a.n_samples_per_sec == b.n_samples_per_sec
-        && a.bits_per_sample == b.bits_per_sample
-        && a.data == b.data
 }
 
 impl_as_any!(RdpsndServer);

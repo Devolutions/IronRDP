@@ -135,7 +135,8 @@ try {
             -AgentPath $AgentPath `
             -Endpoint $endpoint `
             -ArtifactsDir $ArtifactsDir `
-            -StatePath $daemonStatePath | Write-Host
+            -StatePath $daemonStatePath `
+            -SkipCertificateCheck | Write-Host
         Write-Host '::endgroup::'
     }
 

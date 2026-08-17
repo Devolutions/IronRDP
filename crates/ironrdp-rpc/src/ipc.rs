@@ -18,12 +18,316 @@ use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, Write
 use ironrdp_input::MouseButton;
 use ironrdp_pdu::impl_pdu_pod;
 use ironrdp_propertyset::PropertySet;
+use ironrdp_rdpei::pdu::{
+    EightByteUnsigned, FourByteSigned, FourByteUnsigned, PenContact, PenContactDataFlags, PenContactFlags, PenEventPdu,
+    PenFlags, PenFrame, TouchContact, TouchContactFlags, TouchEventPdu, TouchFrame,
+};
 
 use crate::wire::{
     bytes_size, opt_string_size, opt_u16_size, opt_u64_size, propertyset, read_bool, read_bytes, read_char,
     read_mouse_button, read_opt_string, read_opt_u16, read_opt_u64, read_string, string_size, write_bool, write_bytes,
     write_char, write_mouse_button, write_opt_string, write_opt_u16, write_opt_u64, write_string,
 };
+
+/// Maximum number of Unicode scalar values accepted in one [`Request::UnicodeText`] request.
+///
+/// The agent reserves one bounded input-queue entry for each character before submitting any text.
+pub const MAX_UNICODE_TEXT_CHARS: usize = 96;
+
+/// Maximum contacts in one MS-RDPEI touch frame accepted over RPC.
+pub const MAX_TOUCH_CONTACTS: usize = 10;
+
+/// Maximum touch frames in one [`Request::Touch`] PDU accepted over RPC.
+pub const MAX_TOUCH_FRAMES: usize = 64;
+
+/// Maximum contacts in one MS-RDPEI pen frame accepted over RPC.
+///
+/// Clients currently construct [`ironrdp_rdpei::RdpeiClient::default`], which advertises V200 with
+/// empty `CS_READY` feature flags. Until multi-pen negotiation is plumbed through, only a single
+/// pen contact with `deviceId == 0` is accepted ([MS-RDPEI] 3.1.1.1).
+pub const MAX_PEN_CONTACTS: usize = 1;
+
+/// Maximum pen frames in one [`Request::Pen`] PDU accepted over RPC.
+pub const MAX_PEN_FRAMES: usize = 64;
+
+/// Maximum MS-RDPEI pen pressure value ([MS-RDPEI] 2.2.3.7.1.1).
+pub const MAX_PEN_PRESSURE: u32 = 1024;
+
+/// Maximum MS-RDPEI pen rotation value in degrees ([MS-RDPEI] 2.2.3.7.1.1).
+pub const MAX_PEN_ROTATION: u16 = 359;
+
+/// Maximum absolute MS-RDPEI pen tilt angle in degrees ([MS-RDPEI] 2.2.3.7.1.1).
+pub const MAX_PEN_TILT: i16 = 90;
+
+/// Maximum retained RAIL observations, excluding a possible history-gap marker.
+pub const MAX_RAIL_RETAINED_EVENTS: usize = 256;
+
+const MAX_RAIL_EVENT_DUMP_EVENTS: usize = MAX_RAIL_RETAINED_EVENTS + 1;
+
+/// One contact sample inside a [`TouchFrameRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TouchContactRequest {
+    pub contact_id: u8,
+    pub x: i32,
+    pub y: i32,
+    /// Raw MS-RDPEI `contactFlags` bits ([MS-RDPEI] 2.2.3.3.1.1).
+    pub flags: u16,
+}
+
+/// One frame inside a [`Request::Touch`] event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TouchFrameRequest {
+    /// Microseconds since the previous frame (`0` for the first frame of a transaction).
+    pub frame_offset: u64,
+    pub contacts: Vec<TouchContactRequest>,
+}
+
+/// One pen contact sample inside a [`PenFrameRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PenContactRequest {
+    pub device_id: u8,
+    pub x: i32,
+    pub y: i32,
+    /// Raw MS-RDPEI pen `contactFlags` bits ([MS-RDPEI] 2.2.3.7.1.1).
+    pub flags: u16,
+    pub pressure: Option<u32>,
+    pub rotation: Option<u16>,
+    pub tilt_x: Option<i16>,
+    pub tilt_y: Option<i16>,
+    /// Optional MS-RDPEI `penFlags` bits ([MS-RDPEI] 2.2.3.7.1.1).
+    pub pen_flags: Option<u32>,
+}
+
+/// One frame inside a [`Request::Pen`] event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PenFrameRequest {
+    /// Microseconds since the previous frame (`0` for the first frame of a transaction).
+    pub frame_offset: u64,
+    pub contacts: Vec<PenContactRequest>,
+}
+
+/// Validates and converts an RPC touch request into an MS-RDPEI touch event PDU.
+///
+/// Rejects empty frames/contacts, count limits, unknown or illegal flag combinations, and
+/// values outside the MS-RDPEI varint ranges used on the wire.
+pub fn touch_event_from_request(encode_time: u32, frames: Vec<TouchFrameRequest>) -> Result<TouchEventPdu, Response> {
+    if frames.is_empty() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch event requires at least one frame",
+        ));
+    }
+    if frames.len() > MAX_TOUCH_FRAMES {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            format!("touch event exceeds the {MAX_TOUCH_FRAMES}-frame limit"),
+        ));
+    }
+    if FourByteUnsigned::new(encode_time).is_err() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch encode_time is out of MS-RDPEI range",
+        ));
+    }
+
+    let mut built_frames = Vec::with_capacity(frames.len());
+    for frame in frames {
+        if frame.contacts.is_empty() {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                "touch frame requires at least one contact",
+            ));
+        }
+        if frame.contacts.len() > MAX_TOUCH_CONTACTS {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                format!("touch frame exceeds the {MAX_TOUCH_CONTACTS}-contact limit"),
+            ));
+        }
+        if EightByteUnsigned::new(frame.frame_offset).is_err() {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                "touch frame_offset is out of MS-RDPEI range",
+            ));
+        }
+
+        let mut contacts = Vec::with_capacity(frame.contacts.len());
+        for contact in frame.contacts {
+            contacts.push(touch_contact_from_request(contact)?);
+        }
+        built_frames.push(TouchFrame::new(frame.frame_offset, contacts));
+    }
+
+    Ok(TouchEventPdu::new(encode_time, built_frames))
+}
+
+fn touch_contact_from_request(contact: TouchContactRequest) -> Result<TouchContact, Response> {
+    if FourByteSigned::new(contact.x).is_err() || FourByteSigned::new(contact.y).is_err() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch contact coordinates are out of MS-RDPEI range",
+        ));
+    }
+    let flags = TouchContactFlags::from_bits(u32::from(contact.flags)).ok_or_else(|| {
+        Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch contact flags contain unknown bits",
+        )
+    })?;
+    if !flags.is_legal() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "touch contact flags are not a legal MS-RDPEI combination",
+        ));
+    }
+    Ok(TouchContact::new(contact.contact_id, contact.x, contact.y, flags))
+}
+
+/// Validates and converts an RPC pen request into an MS-RDPEI pen event PDU.
+///
+/// Rejects empty frames/contacts, count limits, nonzero device IDs, a nonzero first-frame offset,
+/// unknown or illegal flag combinations, optional-field semantic ranges, and values outside the
+/// MS-RDPEI varint ranges used on the wire.
+pub fn pen_event_from_request(encode_time: u32, frames: Vec<PenFrameRequest>) -> Result<PenEventPdu, Response> {
+    if frames.is_empty() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen event requires at least one frame",
+        ));
+    }
+    if frames.len() > MAX_PEN_FRAMES {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            format!("pen event exceeds the {MAX_PEN_FRAMES}-frame limit"),
+        ));
+    }
+    if FourByteUnsigned::new(encode_time).is_err() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen encode_time is out of MS-RDPEI range",
+        ));
+    }
+    if frames[0].frame_offset != 0 {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen first frame_offset must be zero",
+        ));
+    }
+
+    let mut built_frames = Vec::with_capacity(frames.len());
+    for frame in frames {
+        if frame.contacts.is_empty() {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                "pen frame requires at least one contact",
+            ));
+        }
+        if frame.contacts.len() > MAX_PEN_CONTACTS {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                format!("pen frame exceeds the {MAX_PEN_CONTACTS}-contact limit"),
+            ));
+        }
+        if EightByteUnsigned::new(frame.frame_offset).is_err() {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                "pen frame_offset is out of MS-RDPEI range",
+            ));
+        }
+
+        let mut contacts = Vec::with_capacity(frame.contacts.len());
+        for contact in frame.contacts {
+            contacts.push(pen_contact_from_request(contact)?);
+        }
+        built_frames.push(PenFrame::new(frame.frame_offset, contacts));
+    }
+
+    Ok(PenEventPdu::new(encode_time, built_frames))
+}
+
+fn pen_contact_from_request(contact: PenContactRequest) -> Result<PenContact, Response> {
+    if contact.device_id != 0 {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen device_id must be zero until multi-pen is negotiated",
+        ));
+    }
+    if FourByteSigned::new(contact.x).is_err() || FourByteSigned::new(contact.y).is_err() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen contact coordinates are out of MS-RDPEI range",
+        ));
+    }
+    let flags = PenContactFlags::from_bits(u32::from(contact.flags)).ok_or_else(|| {
+        Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen contact flags contain unknown bits",
+        )
+    })?;
+    if !flags.is_legal() {
+        return Err(Response::typed_error(
+            AgentErrorCategory::InvalidRequest,
+            "pen contact flags are not a legal MS-RDPEI combination",
+        ));
+    }
+
+    let mut pen = PenContact::new(contact.device_id, contact.x, contact.y, flags);
+    if let Some(pen_flags_bits) = contact.pen_flags {
+        let pen_flags = PenFlags::from_bits(pen_flags_bits).ok_or_else(|| {
+            Response::typed_error(AgentErrorCategory::InvalidRequest, "pen flags contain unknown bits")
+        })?;
+        pen = pen.with_pen_flags(pen_flags);
+    }
+    if let Some(pressure) = contact.pressure {
+        if pressure > MAX_PEN_PRESSURE {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                format!("pen pressure must be in 0..={MAX_PEN_PRESSURE}"),
+            ));
+        }
+        pen = pen.with_pressure(pressure);
+    }
+    if let Some(rotation) = contact.rotation {
+        if rotation > MAX_PEN_ROTATION {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                format!("pen rotation must be in 0..={MAX_PEN_ROTATION}"),
+            ));
+        }
+        pen = pen.with_rotation(rotation);
+    }
+    if let Some(tilt_x) = contact.tilt_x {
+        if !(-MAX_PEN_TILT..=MAX_PEN_TILT).contains(&tilt_x) {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                format!("pen tilt_x must be in -{MAX_PEN_TILT}..={MAX_PEN_TILT}"),
+            ));
+        }
+    }
+    if let Some(tilt_y) = contact.tilt_y {
+        if !(-MAX_PEN_TILT..=MAX_PEN_TILT).contains(&tilt_y) {
+            return Err(Response::typed_error(
+                AgentErrorCategory::InvalidRequest,
+                format!("pen tilt_y must be in -{MAX_PEN_TILT}..={MAX_PEN_TILT}"),
+            ));
+        }
+    }
+    match (contact.tilt_x, contact.tilt_y) {
+        (Some(tilt_x), Some(tilt_y)) => {
+            pen = pen.with_tilt(tilt_x, tilt_y);
+        }
+        (Some(tilt_x), None) => {
+            pen.fields_present.insert(PenContactDataFlags::TILTX_PRESENT);
+            pen.fields.tilt_x = Some(tilt_x);
+        }
+        (None, Some(tilt_y)) => {
+            pen.fields_present.insert(PenContactDataFlags::TILTY_PRESENT);
+            pen.fields.tilt_y = Some(tilt_y);
+        }
+        (None, None) => {}
+    }
+    Ok(pen)
+}
 
 /// A request sent by the CLI to the daemon.
 ///
@@ -66,6 +370,8 @@ pub enum Request {
     KeyScancode { scancode: u16, pressed: bool },
     /// Press or release a key identified by a Unicode character.
     KeyUnicode { ch: char, pressed: bool },
+    /// Type bounded Unicode text in ordered FastPath input messages.
+    UnicodeText { text: String },
     /// Resize the remote desktop.
     Resize { width: u16, height: u16 },
     /// Query and negotiate the capabilities of the session's NOW endpoint.
@@ -98,6 +404,40 @@ pub enum Request {
     },
     /// Inspect the local NOW endpoint without exposing protocol internals.
     NowDiagnostics,
+    /// Queue one MS-RDPEI touch event PDU (`RDPINPUT_TOUCH_EVENT_PDU`) for the session input loop.
+    ///
+    /// `Ok` means the request was validated and reserved on the local input queue, not that the
+    /// Input DVC delivered it to the host. The session loop may still drop the event when RDPEI is
+    /// absent, unready, or suspended. Contacts must use legal flag sets from [MS-RDPEI] 3.1.1.1. At
+    /// most [`MAX_TOUCH_FRAMES`] frames and [`MAX_TOUCH_CONTACTS`] contacts per frame are accepted.
+    Touch {
+        /// Milliseconds elapsed for the oldest frame in this PDU.
+        encode_time: u32,
+        frames: Vec<TouchFrameRequest>,
+    },
+    /// Queue one MS-RDPEI pen event PDU (`RDPINPUT_PEN_EVENT_PDU`) for the session input loop.
+    ///
+    /// `Ok` means the request was validated and reserved on the local input queue, not that the
+    /// Input DVC delivered it to the host. The session loop may still drop the event when RDPEI is
+    /// absent, unready, suspended, or below the negotiated version that allows pen (V200+). Until
+    /// multi-pen is negotiated, only one contact with `deviceId == 0` is accepted.
+    Pen {
+        encode_time: u32,
+        frames: Vec<PenFrameRequest>,
+    },
+    /// Dismiss a hovering touch contact (`RDPINPUT_DISMISS_HOVERING_TOUCH_CONTACT_PDU`).
+    DismissHoveringTouchContact { contact_id: u8 },
+    /// Inspect the bounded, session-local RAIL observation ledger.
+    RailStatus,
+    /// Return RAIL observations after a sequence number.
+    RailEvents { after_sequence: Option<u64> },
+    /// Wait for a RAIL observation after a sequence number.
+    RailWait {
+        after_sequence: Option<u64>,
+        timeout_ms: u32,
+    },
+    /// Queue a validated RAIL Execute request.
+    RailExecute(RailExecuteRequest),
     // TODO: add clipboard support (CLIPRDR), e.g. requests to read the remote clipboard text and to
     // set it, so an LLM can copy/paste to and from the session.
 }
@@ -145,6 +485,10 @@ impl fmt::Debug for Request {
                 .field("ch", ch)
                 .field("pressed", pressed)
                 .finish(),
+            Self::UnicodeText { text } => f
+                .debug_struct("UnicodeText")
+                .field("char_count", &text.chars().count())
+                .finish(),
             Self::Resize { width, height } => f
                 .debug_struct("Resize")
                 .field("width", width)
@@ -183,6 +527,34 @@ impl fmt::Debug for Request {
                 .field("last", last)
                 .finish(),
             Self::NowDiagnostics => f.write_str("NowDiagnostics"),
+            Self::Touch { encode_time, frames } => f
+                .debug_struct("Touch")
+                .field("encode_time", encode_time)
+                .field("frames", frames)
+                .finish(),
+            Self::Pen { encode_time, frames } => f
+                .debug_struct("Pen")
+                .field("encode_time", encode_time)
+                .field("frames", frames)
+                .finish(),
+            Self::DismissHoveringTouchContact { contact_id } => f
+                .debug_struct("DismissHoveringTouchContact")
+                .field("contact_id", contact_id)
+                .finish(),
+            Self::RailStatus => f.write_str("RailStatus"),
+            Self::RailEvents { after_sequence } => f
+                .debug_struct("RailEvents")
+                .field("after_sequence", after_sequence)
+                .finish(),
+            Self::RailWait {
+                after_sequence,
+                timeout_ms,
+            } => f
+                .debug_struct("RailWait")
+                .field("after_sequence", after_sequence)
+                .field("timeout_ms", timeout_ms)
+                .finish(),
+            Self::RailExecute(request) => f.debug_tuple("RailExecute").field(request).finish(),
         }
     }
 }
@@ -253,6 +625,12 @@ pub enum Payload {
     NowEvent(OperationEvent),
     /// Local NOW endpoint diagnostic state.
     NowDiagnostics(NowDiagnostics),
+    /// Session-local RAIL state.
+    RailStatus(RailStatusInfo),
+    /// Sequenced RAIL observations.
+    RailEvents(RailEventDump),
+    /// A locally assigned RAIL launch identifier.
+    RailLaunch(RailLaunchInfo),
 }
 
 impl fmt::Debug for Payload {
@@ -274,6 +652,152 @@ impl fmt::Debug for Payload {
             Self::NowOperations(operations) => f.debug_tuple("NowOperations").field(operations).finish(),
             Self::NowEvent(event) => f.debug_tuple("NowEvent").field(event).finish(),
             Self::NowDiagnostics(diagnostics) => f.debug_tuple("NowDiagnostics").field(diagnostics).finish(),
+            Self::RailStatus(status) => f.debug_tuple("RailStatus").field(status).finish(),
+            Self::RailEvents(events) => f.debug_tuple("RailEvents").field(events).finish(),
+            Self::RailLaunch(launch) => f.debug_tuple("RailLaunch").field(launch).finish(),
+        }
+    }
+}
+
+/// One locally initiated RAIL launch.
+///
+/// `launch_id` is assigned by the daemon for audit correlation. It is not a protocol identifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailLaunchInfo {
+    pub launch_id: u64,
+    pub executable: String,
+    pub flags: u16,
+}
+
+/// A validated RAIL Execute request.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RailExecuteRequest {
+    pub executable: String,
+    pub working_directory: String,
+    pub arguments: String,
+    pub flags: u16,
+}
+
+impl fmt::Debug for RailExecuteRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RailExecuteRequest")
+            .field("executable_len", &self.executable.len())
+            .field("working_directory_len", &self.working_directory.len())
+            .field("arguments_len", &self.arguments.len())
+            .field("flags", &self.flags)
+            .finish()
+    }
+}
+
+/// Summary of the current RAIL observation generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailStatusInfo {
+    pub generation: u64,
+    pub next_sequence: u64,
+    pub handshake_complete: bool,
+    pub desktop_synchronized: bool,
+    pub pending_launches: Vec<RailLaunchInfo>,
+}
+
+/// Bounded RAIL observation history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailEventDump {
+    pub generation: u64,
+    pub events: Vec<RailEvent>,
+}
+
+/// A sequence-numbered RAIL observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailEvent {
+    pub sequence: u64,
+    pub kind: RailEventKind,
+}
+
+/// One client-validated RAIL observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RailEventKind {
+    Handshake {
+        handshake_ex_flags: Option<u32>,
+        initialization_message_count: u16,
+        queued_execute_count: u16,
+    },
+    DesktopSynchronized {
+        released_execute_count: u16,
+    },
+    PostHandshakeQueueReleased {
+        released_execute_count: u16,
+    },
+    ExecuteQueued(RailLaunchInfo),
+    ExecuteResult {
+        launch_id: Option<u64>,
+        executable: String,
+        flags: u16,
+        result: u16,
+        raw_result: u32,
+    },
+    /// A locally accepted Execute request could not be processed.
+    ExecuteFailed {
+        launch_id: Option<u64>,
+        executable: String,
+        flags: u16,
+        reason: RailExecuteFailureReason,
+    },
+    ApplicationId {
+        window_id: u32,
+        application_id: String,
+        process_id: Option<u32>,
+        process_image_name: Option<String>,
+    },
+    Control {
+        kind: String,
+    },
+    WindowingOrders {
+        byte_count: u32,
+    },
+    /// History before this sequence was evicted from the bounded ledger.
+    Gap {
+        lost_through: u64,
+    },
+}
+
+/// Stable, command-free diagnostic for a locally failed RAIL Execute request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RailExecuteFailureReason {
+    /// The active session did not retain a RAIL static-channel processor.
+    RailUnavailable,
+    /// The RAIL client rejected the Execute request before sending it.
+    QueueRejected,
+    /// The active stage could not encode the queued RAIL messages.
+    MessageProcessingFailed,
+}
+
+impl RailExecuteFailureReason {
+    /// Stable lowercase diagnostic text for structured CLI output.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RailUnavailable => "rail_unavailable",
+            Self::QueueRejected => "queue_rejected",
+            Self::MessageProcessingFailed => "message_processing_failed",
+        }
+    }
+
+    const fn tag(self) -> u8 {
+        match self {
+            Self::RailUnavailable => 0,
+            Self::QueueRejected => 1,
+            Self::MessageProcessingFailed => 2,
+        }
+    }
+
+    fn from_tag(tag: u8) -> DecodeResult<Self> {
+        match tag {
+            0 => Ok(Self::RailUnavailable),
+            1 => Ok(Self::QueueRejected),
+            2 => Ok(Self::MessageProcessingFailed),
+            _ => Err(ironrdp_core::invalid_field_err!(
+                "RAIL Execute failure",
+                "unknown reason"
+            )),
         }
     }
 }
@@ -644,6 +1168,113 @@ impl KeyFilter {
 
 // ── KeyFilter codec ─────────────────────────────────────────────────────────
 
+// ── Pen contact RPC helpers ─────────────────────────────────────────────────
+
+const PEN_CONTACT_PRESSURE: u8 = 0x01;
+const PEN_CONTACT_ROTATION: u8 = 0x02;
+const PEN_CONTACT_TILT_X: u8 = 0x04;
+const PEN_CONTACT_TILT_Y: u8 = 0x08;
+const PEN_CONTACT_PEN_FLAGS: u8 = 0x10;
+
+fn pen_contact_size(contact: &PenContactRequest) -> usize {
+    1 /* device_id */ + 4 /* x */ + 4 /* y */ + 2 /* flags */ + 1 /* presence */
+        + contact.pressure.map_or(0, |_| 4)
+        + contact.rotation.map_or(0, |_| 2)
+        + contact.tilt_x.map_or(0, |_| 2)
+        + contact.tilt_y.map_or(0, |_| 2)
+        + contact.pen_flags.map_or(0, |_| 4)
+}
+
+fn write_pen_contact(dst: &mut WriteCursor<'_>, contact: &PenContactRequest) -> EncodeResult<()> {
+    dst.write_u8(contact.device_id);
+    dst.write_i32(contact.x);
+    dst.write_i32(contact.y);
+    dst.write_u16(contact.flags);
+    let mut presence = 0u8;
+    if contact.pressure.is_some() {
+        presence |= PEN_CONTACT_PRESSURE;
+    }
+    if contact.rotation.is_some() {
+        presence |= PEN_CONTACT_ROTATION;
+    }
+    if contact.tilt_x.is_some() {
+        presence |= PEN_CONTACT_TILT_X;
+    }
+    if contact.tilt_y.is_some() {
+        presence |= PEN_CONTACT_TILT_Y;
+    }
+    if contact.pen_flags.is_some() {
+        presence |= PEN_CONTACT_PEN_FLAGS;
+    }
+    dst.write_u8(presence);
+    if let Some(pressure) = contact.pressure {
+        dst.write_u32(pressure);
+    }
+    if let Some(rotation) = contact.rotation {
+        dst.write_u16(rotation);
+    }
+    if let Some(tilt_x) = contact.tilt_x {
+        dst.write_i16(tilt_x);
+    }
+    if let Some(tilt_y) = contact.tilt_y {
+        dst.write_i16(tilt_y);
+    }
+    if let Some(pen_flags) = contact.pen_flags {
+        dst.write_u32(pen_flags);
+    }
+    Ok(())
+}
+
+fn read_pen_contact(src: &mut ReadCursor<'_>) -> DecodeResult<PenContactRequest> {
+    ensure_size!(in: src, size: 12);
+    let device_id = src.read_u8();
+    let x = src.read_i32();
+    let y = src.read_i32();
+    let flags = src.read_u16();
+    let presence = src.read_u8();
+    let pressure = if presence & PEN_CONTACT_PRESSURE != 0 {
+        ensure_size!(in: src, size: 4);
+        Some(src.read_u32())
+    } else {
+        None
+    };
+    let rotation = if presence & PEN_CONTACT_ROTATION != 0 {
+        ensure_size!(in: src, size: 2);
+        Some(src.read_u16())
+    } else {
+        None
+    };
+    let tilt_x = if presence & PEN_CONTACT_TILT_X != 0 {
+        ensure_size!(in: src, size: 2);
+        Some(src.read_i16())
+    } else {
+        None
+    };
+    let tilt_y = if presence & PEN_CONTACT_TILT_Y != 0 {
+        ensure_size!(in: src, size: 2);
+        Some(src.read_i16())
+    } else {
+        None
+    };
+    let pen_flags = if presence & PEN_CONTACT_PEN_FLAGS != 0 {
+        ensure_size!(in: src, size: 4);
+        Some(src.read_u32())
+    } else {
+        None
+    };
+    Ok(PenContactRequest {
+        device_id,
+        x,
+        y,
+        flags,
+        pressure,
+        rotation,
+        tilt_x,
+        tilt_y,
+        pen_flags,
+    })
+}
+
 impl Encode for KeyFilter {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
@@ -840,6 +1471,443 @@ impl Decode<'_> for StatusInfo {
 
 impl_pdu_pod!(StatusInfo);
 
+// ── RAIL audit codec ─────────────────────────────────────────────────────────
+
+impl Encode for RailLaunchInfo {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u64(self.launch_id);
+        write_string(dst, &self.executable)?;
+        dst.write_u16(self.flags);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::RailLaunchInfo"
+    }
+
+    fn size(&self) -> usize {
+        8 /* launch_id */ + string_size(&self.executable) + 2 /* flags */
+    }
+}
+
+impl Decode<'_> for RailLaunchInfo {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 8);
+        let launch_id = src.read_u64();
+        let executable = read_string(src)?;
+        ensure_size!(in: src, size: 2);
+        let flags = src.read_u16();
+        Ok(Self {
+            launch_id,
+            executable,
+            flags,
+        })
+    }
+}
+
+impl_pdu_pod!(RailLaunchInfo);
+
+impl Encode for RailExecuteRequest {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        write_string(dst, &self.executable)?;
+        write_string(dst, &self.working_directory)?;
+        write_string(dst, &self.arguments)?;
+        dst.write_u16(self.flags);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::RailExecuteRequest"
+    }
+
+    fn size(&self) -> usize {
+        string_size(&self.executable) + string_size(&self.working_directory) + string_size(&self.arguments) + 2 /* flags */
+    }
+}
+
+impl Decode<'_> for RailExecuteRequest {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        let executable = read_string(src)?;
+        let working_directory = read_string(src)?;
+        let arguments = read_string(src)?;
+        ensure_size!(in: src, size: 2);
+        let flags = src.read_u16();
+        Ok(Self {
+            executable,
+            working_directory,
+            arguments,
+            flags,
+        })
+    }
+}
+
+impl_pdu_pod!(RailExecuteRequest);
+
+impl Encode for RailStatusInfo {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u64(self.generation);
+        dst.write_u64(self.next_sequence);
+        write_bool(dst, self.handshake_complete)?;
+        write_bool(dst, self.desktop_synchronized)?;
+        let count: u32 = cast_length!("pending RAIL launch count", self.pending_launches.len())?;
+        dst.write_u32(count);
+        for launch in &self.pending_launches {
+            launch.encode(dst)?;
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::RailStatusInfo"
+    }
+
+    fn size(&self) -> usize {
+        8 /* generation */
+            + 8 /* next_sequence */
+            + 1 /* handshake_complete */
+            + 1 /* desktop_synchronized */
+            + 4 /* pending launch count */
+            + self.pending_launches.iter().map(Encode::size).sum::<usize>()
+    }
+}
+
+impl Decode<'_> for RailStatusInfo {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 16);
+        let generation = src.read_u64();
+        let next_sequence = src.read_u64();
+        let handshake_complete = read_bool(src)?;
+        let desktop_synchronized = read_bool(src)?;
+        ensure_size!(in: src, size: 4);
+        let count = src.read_u32();
+        let mut pending_launches = Vec::new();
+        for _ in 0..count {
+            pending_launches.push(RailLaunchInfo::decode(src)?);
+        }
+        Ok(Self {
+            generation,
+            next_sequence,
+            handshake_complete,
+            desktop_synchronized,
+            pending_launches,
+        })
+    }
+}
+
+impl_pdu_pod!(RailStatusInfo);
+
+impl Encode for RailEventKind {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        match self {
+            Self::Handshake {
+                handshake_ex_flags,
+                initialization_message_count,
+                queued_execute_count,
+            } => {
+                dst.write_u8(0);
+                match handshake_ex_flags {
+                    Some(flags) => {
+                        dst.write_u8(1);
+                        dst.write_u32(*flags);
+                    }
+                    None => dst.write_u8(0),
+                }
+                dst.write_u16(*initialization_message_count);
+                dst.write_u16(*queued_execute_count);
+            }
+            Self::DesktopSynchronized { released_execute_count } => {
+                dst.write_u8(1);
+                dst.write_u16(*released_execute_count);
+            }
+            Self::PostHandshakeQueueReleased { released_execute_count } => {
+                dst.write_u8(2);
+                dst.write_u16(*released_execute_count);
+            }
+            Self::ExecuteQueued(launch) => {
+                dst.write_u8(3);
+                launch.encode(dst)?;
+            }
+            Self::ExecuteResult {
+                launch_id,
+                executable,
+                flags,
+                result,
+                raw_result,
+            } => {
+                dst.write_u8(4);
+                write_opt_u64(dst, *launch_id)?;
+                write_string(dst, executable)?;
+                dst.write_u16(*flags);
+                dst.write_u16(*result);
+                dst.write_u32(*raw_result);
+            }
+            Self::ExecuteFailed {
+                launch_id,
+                executable,
+                flags,
+                reason,
+            } => {
+                dst.write_u8(9);
+                write_opt_u64(dst, *launch_id)?;
+                write_string(dst, executable)?;
+                dst.write_u16(*flags);
+                dst.write_u8(reason.tag());
+            }
+            Self::ApplicationId {
+                window_id,
+                application_id,
+                process_id,
+                process_image_name,
+            } => {
+                dst.write_u8(5);
+                dst.write_u32(*window_id);
+                write_string(dst, application_id)?;
+                match process_id {
+                    Some(process_id) => {
+                        dst.write_u8(1);
+                        dst.write_u32(*process_id);
+                    }
+                    None => dst.write_u8(0),
+                }
+                write_opt_string(dst, process_image_name.as_deref())?;
+            }
+            Self::Control { kind } => {
+                dst.write_u8(6);
+                write_string(dst, kind)?;
+            }
+            Self::WindowingOrders { byte_count } => {
+                dst.write_u8(7);
+                dst.write_u32(*byte_count);
+            }
+            Self::Gap { lost_through } => {
+                dst.write_u8(8);
+                dst.write_u64(*lost_through);
+            }
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::RailEventKind"
+    }
+
+    fn size(&self) -> usize {
+        1 /* tag */
+            + match self {
+                Self::Handshake {
+                    handshake_ex_flags,
+                    ..
+                } => 1 /* flags presence */ + handshake_ex_flags.map_or(0, |_| 4) + 2 + 2,
+                Self::DesktopSynchronized { .. } | Self::PostHandshakeQueueReleased { .. } => 2,
+                Self::ExecuteQueued(launch) => launch.size(),
+                Self::ExecuteResult {
+                    launch_id,
+                    executable,
+                    ..
+                } => opt_u64_size(*launch_id) + string_size(executable) + 2 + 2 + 4,
+                Self::ExecuteFailed {
+                    launch_id,
+                    executable,
+                    ..
+                } => opt_u64_size(*launch_id) + string_size(executable) + 2 + 1,
+                Self::ApplicationId {
+                    application_id,
+                    process_id,
+                    process_image_name,
+                    ..
+                } => 4 + string_size(application_id) + 1 + process_id.map_or(0, |_| 4) + opt_string_size(process_image_name.as_deref()),
+                Self::Control { kind } => string_size(kind),
+                Self::WindowingOrders { .. } => 4,
+                Self::Gap { .. } => 8,
+            }
+    }
+}
+
+impl Decode<'_> for RailEventKind {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 1);
+        match src.read_u8() {
+            0 => {
+                ensure_size!(in: src, size: 1);
+                let handshake_ex_flags = match src.read_u8() {
+                    0 => None,
+                    1 => {
+                        ensure_size!(in: src, size: 4);
+                        Some(src.read_u32())
+                    }
+                    _ => {
+                        return Err(ironrdp_core::invalid_field_err!(
+                            "RAIL handshake",
+                            "invalid flags presence"
+                        ));
+                    }
+                };
+                ensure_size!(in: src, size: 4);
+                Ok(Self::Handshake {
+                    handshake_ex_flags,
+                    initialization_message_count: src.read_u16(),
+                    queued_execute_count: src.read_u16(),
+                })
+            }
+            1 => {
+                ensure_size!(in: src, size: 2);
+                Ok(Self::DesktopSynchronized {
+                    released_execute_count: src.read_u16(),
+                })
+            }
+            2 => {
+                ensure_size!(in: src, size: 2);
+                Ok(Self::PostHandshakeQueueReleased {
+                    released_execute_count: src.read_u16(),
+                })
+            }
+            3 => Ok(Self::ExecuteQueued(RailLaunchInfo::decode(src)?)),
+            4 => {
+                let launch_id = read_opt_u64(src)?;
+                let executable = read_string(src)?;
+                ensure_size!(in: src, size: 8);
+                Ok(Self::ExecuteResult {
+                    launch_id,
+                    executable,
+                    flags: src.read_u16(),
+                    result: src.read_u16(),
+                    raw_result: src.read_u32(),
+                })
+            }
+            9 => {
+                let launch_id = read_opt_u64(src)?;
+                let executable = read_string(src)?;
+                ensure_size!(in: src, size: 3);
+                Ok(Self::ExecuteFailed {
+                    launch_id,
+                    executable,
+                    flags: src.read_u16(),
+                    reason: RailExecuteFailureReason::from_tag(src.read_u8())?,
+                })
+            }
+            5 => {
+                ensure_size!(in: src, size: 4);
+                let window_id = src.read_u32();
+                let application_id = read_string(src)?;
+                ensure_size!(in: src, size: 1);
+                let process_id = match src.read_u8() {
+                    0 => None,
+                    1 => {
+                        ensure_size!(in: src, size: 4);
+                        Some(src.read_u32())
+                    }
+                    _ => {
+                        return Err(ironrdp_core::invalid_field_err!(
+                            "RAIL application ID",
+                            "invalid process ID presence"
+                        ));
+                    }
+                };
+                let process_image_name = read_opt_string(src)?;
+                Ok(Self::ApplicationId {
+                    window_id,
+                    application_id,
+                    process_id,
+                    process_image_name,
+                })
+            }
+            6 => Ok(Self::Control {
+                kind: read_string(src)?,
+            }),
+            7 => {
+                ensure_size!(in: src, size: 4);
+                Ok(Self::WindowingOrders {
+                    byte_count: src.read_u32(),
+                })
+            }
+            8 => {
+                ensure_size!(in: src, size: 8);
+                Ok(Self::Gap {
+                    lost_through: src.read_u64(),
+                })
+            }
+            _ => Err(ironrdp_core::invalid_field_err!("RAIL event", "unknown tag")),
+        }
+    }
+}
+
+impl_pdu_pod!(RailEventKind);
+
+impl Encode for RailEvent {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u64(self.sequence);
+        self.kind.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::RailEvent"
+    }
+
+    fn size(&self) -> usize {
+        8 /* sequence */ + self.kind.size()
+    }
+}
+
+impl Decode<'_> for RailEvent {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 8);
+        Ok(Self {
+            sequence: src.read_u64(),
+            kind: RailEventKind::decode(src)?,
+        })
+    }
+}
+
+impl_pdu_pod!(RailEvent);
+
+impl Encode for RailEventDump {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        if self.events.len() > MAX_RAIL_EVENT_DUMP_EVENTS {
+            return Err(ironrdp_core::invalid_field_err!("RAIL events", "count exceeds limit"));
+        }
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u64(self.generation);
+        let count: u32 = cast_length!("RAIL event count", self.events.len())?;
+        dst.write_u32(count);
+        for event in &self.events {
+            event.encode(dst)?;
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::RailEventDump"
+    }
+
+    fn size(&self) -> usize {
+        8 /* generation */ + 4 /* event count */ + self.events.iter().map(Encode::size).sum::<usize>()
+    }
+}
+
+impl Decode<'_> for RailEventDump {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 12);
+        let generation = src.read_u64();
+        let count = usize::try_from(src.read_u32())
+            .map_err(|_| ironrdp_core::other_err!("RAIL events", "count does not fit in usize"))?;
+        if count > MAX_RAIL_EVENT_DUMP_EVENTS {
+            return Err(ironrdp_core::invalid_field_err!("RAIL events", "count exceeds limit"));
+        }
+        let mut events = Vec::with_capacity(count);
+        for _ in 0..count {
+            events.push(RailEvent::decode(src)?);
+        }
+        Ok(Self { generation, events })
+    }
+}
+
+impl_pdu_pod!(RailEventDump);
+
 // ── Payload codec ───────────────────────────────────────────────────────────
 
 impl Encode for Payload {
@@ -893,6 +1961,18 @@ impl Encode for Payload {
                 dst.write_u8(9);
                 diagnostics.encode(dst)?;
             }
+            Self::RailStatus(status) => {
+                dst.write_u8(10);
+                status.encode(dst)?;
+            }
+            Self::RailEvents(events) => {
+                dst.write_u8(11);
+                events.encode(dst)?;
+            }
+            Self::RailLaunch(launch) => {
+                dst.write_u8(12);
+                launch.encode(dst)?;
+            }
         }
         Ok(())
     }
@@ -914,6 +1994,9 @@ impl Encode for Payload {
                 Self::NowOperations(operations) => 4 + operations.iter().map(Encode::size).sum::<usize>(),
                 Self::NowEvent(event) => event.size(),
                 Self::NowDiagnostics(diagnostics) => diagnostics.size(),
+                Self::RailStatus(status) => status.size(),
+                Self::RailEvents(events) => events.size(),
+                Self::RailLaunch(launch) => launch.size(),
             }
     }
 }
@@ -954,6 +2037,9 @@ impl Decode<'_> for Payload {
             }
             8 => Ok(Self::NowEvent(OperationEvent::decode(src)?)),
             9 => Ok(Self::NowDiagnostics(NowDiagnostics::decode(src)?)),
+            10 => Ok(Self::RailStatus(RailStatusInfo::decode(src)?)),
+            11 => Ok(Self::RailEvents(RailEventDump::decode(src)?)),
+            12 => Ok(Self::RailLaunch(RailLaunchInfo::decode(src)?)),
             _ => Err(ironrdp_core::invalid_field_err!("payload", "unknown tag")),
         }
     }
@@ -1067,6 +2153,10 @@ impl Encode for Request {
                 write_char(dst, *ch)?;
                 write_bool(dst, *pressed)?;
             }
+            Self::UnicodeText { text } => {
+                dst.write_u8(21);
+                write_string(dst, text)?;
+            }
             Self::Resize { width, height } => {
                 dst.write_u8(11);
                 dst.write_u16(*width);
@@ -1110,6 +2200,61 @@ impl Encode for Request {
                 write_bool(dst, *last)?;
             }
             Self::NowDiagnostics => dst.write_u8(20),
+            Self::Touch { encode_time, frames } => {
+                // Tag 26: free after RAIL tags 22-25 on master.
+                dst.write_u8(26);
+                dst.write_u32(*encode_time);
+                let frame_count: u16 = cast_length!("touch frame count", frames.len())?;
+                dst.write_u16(frame_count);
+                for frame in frames {
+                    dst.write_u64(frame.frame_offset);
+                    let contact_count: u16 = cast_length!("touch contact count", frame.contacts.len())?;
+                    dst.write_u16(contact_count);
+                    for contact in &frame.contacts {
+                        dst.write_u8(contact.contact_id);
+                        dst.write_i32(contact.x);
+                        dst.write_i32(contact.y);
+                        dst.write_u16(contact.flags);
+                    }
+                }
+            }
+            Self::RailStatus => dst.write_u8(22),
+            Self::RailEvents { after_sequence } => {
+                dst.write_u8(23);
+                write_opt_u64(dst, *after_sequence)?;
+            }
+            Self::RailExecute(request) => {
+                dst.write_u8(24);
+                request.encode(dst)?;
+            }
+            Self::RailWait {
+                after_sequence,
+                timeout_ms,
+            } => {
+                dst.write_u8(25);
+                write_opt_u64(dst, *after_sequence)?;
+                dst.write_u32(*timeout_ms);
+            }
+            Self::Pen { encode_time, frames } => {
+                // Tag 27: after Touch (26) and RAIL (22-25).
+                dst.write_u8(27);
+                dst.write_u32(*encode_time);
+                let frame_count: u16 = cast_length!("pen frame count", frames.len())?;
+                dst.write_u16(frame_count);
+                for frame in frames {
+                    dst.write_u64(frame.frame_offset);
+                    let contact_count: u16 = cast_length!("pen contact count", frame.contacts.len())?;
+                    dst.write_u16(contact_count);
+                    for contact in &frame.contacts {
+                        write_pen_contact(dst, contact)?;
+                    }
+                }
+            }
+            Self::DismissHoveringTouchContact { contact_id } => {
+                // Tag 28: dismiss hovering touch contact.
+                dst.write_u8(28);
+                dst.write_u8(*contact_id);
+            }
         }
         Ok(())
     }
@@ -1129,7 +2274,8 @@ impl Encode for Request {
                 | Self::Screenshot
                 | Self::NowCapabilities
                 | Self::NowList
-                | Self::NowDiagnostics => 0,
+                | Self::NowDiagnostics
+                | Self::RailStatus => 0,
                 Self::QueryProps { filter } => 1 /* presence */ + filter.as_ref().map_or(0, Encode::size),
                 Self::QueryLogs { substring, last } => {
                     opt_string_size(substring.as_deref()) + 1 /* presence */ + last.map_or(0, |_| 4)
@@ -1139,12 +2285,35 @@ impl Encode for Request {
                 Self::Wheel { .. } => 2 /* delta */ + 1 /* horizontal */,
                 Self::KeyScancode { .. } => 2 /* scancode */ + 1 /* pressed */,
                 Self::KeyUnicode { .. } => 4 /* ch */ + 1 /* pressed */,
+                Self::Touch { frames, .. } => {
+                    4 /* encode_time */ + 2 /* frame_count */
+                        + frames.iter().map(|frame| {
+                            8 /* frame_offset */ + 2 /* contact_count */
+                                + frame.contacts.len()
+                                    * (1 /* contact_id */ + 4 /* x */ + 4 /* y */ + 2 /* flags */)
+                        }).sum::<usize>()
+                }
+                Self::UnicodeText { text } => string_size(text),
                 Self::Resize { .. } => 2 /* width */ + 2 /* height */,
                 Self::NowRun { command, directory } => string_size(command) + opt_string_size(directory.as_deref()),
                 Self::NowExecute(request) => request.size(),
                 Self::NowCancel { .. } | Self::NowStatus { .. } => 8,
                 Self::NowAttach { after_sequence, .. } => 8 /* operation_id */ + opt_u64_size(*after_sequence),
                 Self::NowStdin { data, .. } => 8 /* operation_id */ + bytes_size(data) + 1 /* last */,
+                Self::RailEvents { after_sequence } => opt_u64_size(*after_sequence),
+                Self::RailExecute(request) => request.size(),
+                Self::RailWait { after_sequence, .. } => opt_u64_size(*after_sequence) + 4 /* timeout_ms */,
+                Self::Pen { frames, .. } => {
+                    4 /* encode_time */ + 2 /* frame_count */
+                        + frames
+                            .iter()
+                            .map(|frame| {
+                                8 /* frame_offset */ + 2 /* contact_count */
+                                    + frame.contacts.iter().map(pen_contact_size).sum::<usize>()
+                            })
+                            .sum::<usize>()
+                }
+                Self::DismissHoveringTouchContact { .. } => 1 /* contact_id */,
             }
     }
 }
@@ -1215,6 +2384,9 @@ impl Decode<'_> for Request {
                 let pressed = read_bool(src)?;
                 Ok(Self::KeyUnicode { ch, pressed })
             }
+            21 => Ok(Self::UnicodeText {
+                text: read_string(src)?,
+            }),
             11 => {
                 ensure_size!(in: src, size: 4);
                 let width = src.read_u16();
@@ -1261,6 +2433,77 @@ impl Decode<'_> for Request {
                 })
             }
             20 => Ok(Self::NowDiagnostics),
+            26 => {
+                ensure_size!(in: src, size: 6);
+                let encode_time = src.read_u32();
+                let frame_count = usize::from(src.read_u16());
+                if frame_count > MAX_TOUCH_FRAMES {
+                    return Err(ironrdp_core::invalid_field_err!("touch frames", "too many frames"));
+                }
+                let mut frames = Vec::with_capacity(frame_count);
+                for _ in 0..frame_count {
+                    ensure_size!(in: src, size: 10);
+                    let frame_offset = src.read_u64();
+                    let contact_count = usize::from(src.read_u16());
+                    if contact_count > MAX_TOUCH_CONTACTS {
+                        return Err(ironrdp_core::invalid_field_err!("touch contacts", "too many contacts"));
+                    }
+                    let mut contacts = Vec::with_capacity(contact_count);
+                    for _ in 0..contact_count {
+                        ensure_size!(in: src, size: 11);
+                        contacts.push(TouchContactRequest {
+                            contact_id: src.read_u8(),
+                            x: src.read_i32(),
+                            y: src.read_i32(),
+                            flags: src.read_u16(),
+                        });
+                    }
+                    frames.push(TouchFrameRequest { frame_offset, contacts });
+                }
+                Ok(Self::Touch { encode_time, frames })
+            }
+            27 => {
+                ensure_size!(in: src, size: 6);
+                let encode_time = src.read_u32();
+                let frame_count = usize::from(src.read_u16());
+                if frame_count > MAX_PEN_FRAMES {
+                    return Err(ironrdp_core::invalid_field_err!("pen frames", "too many frames"));
+                }
+                let mut frames = Vec::with_capacity(frame_count);
+                for _ in 0..frame_count {
+                    ensure_size!(in: src, size: 10);
+                    let frame_offset = src.read_u64();
+                    let contact_count = usize::from(src.read_u16());
+                    if contact_count > MAX_PEN_CONTACTS {
+                        return Err(ironrdp_core::invalid_field_err!("pen contacts", "too many contacts"));
+                    }
+                    let mut contacts = Vec::with_capacity(contact_count);
+                    for _ in 0..contact_count {
+                        contacts.push(read_pen_contact(src)?);
+                    }
+                    frames.push(PenFrameRequest { frame_offset, contacts });
+                }
+                Ok(Self::Pen { encode_time, frames })
+            }
+            28 => {
+                ensure_size!(in: src, size: 1);
+                Ok(Self::DismissHoveringTouchContact {
+                    contact_id: src.read_u8(),
+                })
+            }
+            22 => Ok(Self::RailStatus),
+            23 => Ok(Self::RailEvents {
+                after_sequence: read_opt_u64(src)?,
+            }),
+            24 => Ok(Self::RailExecute(RailExecuteRequest::decode(src)?)),
+            25 => {
+                let after_sequence = read_opt_u64(src)?;
+                ensure_size!(in: src, size: 4);
+                Ok(Self::RailWait {
+                    after_sequence,
+                    timeout_ms: src.read_u32(),
+                })
+            }
             _ => Err(ironrdp_core::invalid_field_err!("request", "unknown tag")),
         }
     }
@@ -1630,6 +2873,57 @@ impl Decode<'_> for OperationEvent {
 
 impl_pdu_pod!(OperationEvent);
 
+#[cfg(test)]
+mod tests {
+    use ironrdp_core::{decode, encode_vec};
+
+    use super::{MAX_RAIL_EVENT_DUMP_EVENTS, RailEvent, RailEventDump, RailEventKind, RailExecuteRequest};
+
+    #[test]
+    fn rail_execute_debug_redacts_command_fields() {
+        let request = RailExecuteRequest {
+            executable: "secret-program.exe".to_owned(),
+            working_directory: "C:\\secret-directory".to_owned(),
+            arguments: "--token secret-token".to_owned(),
+            flags: 0,
+        };
+
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("secret-program.exe"));
+        assert!(!debug.contains("C:\\secret-directory"));
+        assert!(!debug.contains("secret-token"));
+        assert!(debug.contains("executable_len"));
+    }
+
+    #[test]
+    fn rail_event_dump_rejects_oversized_counts() {
+        let event = RailEvent {
+            sequence: 1,
+            kind: RailEventKind::Gap { lost_through: 1 },
+        };
+        let accepted = RailEventDump {
+            generation: 1,
+            events: vec![event.clone(); MAX_RAIL_EVENT_DUMP_EVENTS],
+        };
+        let encoded = encode_vec(&accepted).expect("encode the event limit");
+        assert_eq!(
+            decode::<RailEventDump>(&encoded).expect("decode the event limit"),
+            accepted
+        );
+
+        let dump = RailEventDump {
+            generation: 1,
+            events: vec![event; MAX_RAIL_EVENT_DUMP_EVENTS + 1],
+        };
+        assert!(encode_vec(&dump).is_err());
+
+        let mut bytes = [0; 12];
+        bytes[8..]
+            .copy_from_slice(&(u32::try_from(MAX_RAIL_EVENT_DUMP_EVENTS + 1).expect("limit fits u32")).to_le_bytes());
+        assert!(decode::<RailEventDump>(&bytes).is_err());
+    }
+}
+
 impl Encode for NowCapabilities {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
@@ -1735,3 +3029,398 @@ impl Decode<'_> for NowDiagnostics {
 }
 
 impl_pdu_pod!(NowDiagnostics);
+
+#[cfg(test)]
+mod rdpei_request_tests {
+    use super::{
+        MAX_PEN_CONTACTS, MAX_PEN_FRAMES, MAX_PEN_PRESSURE, MAX_PEN_ROTATION, MAX_PEN_TILT, MAX_TOUCH_CONTACTS,
+        MAX_TOUCH_FRAMES, PenContactRequest, PenFrameRequest, TouchContactRequest, TouchFrameRequest,
+        pen_event_from_request, touch_event_from_request,
+    };
+    use ironrdp_rdpei::pdu::{EightByteUnsigned, FourByteSigned, FourByteUnsigned, PenContactFlags, TouchContactFlags};
+
+    fn contact(flags: u16) -> TouchContactRequest {
+        TouchContactRequest {
+            contact_id: 1,
+            x: 10,
+            y: 20,
+            flags,
+        }
+    }
+
+    fn contact_flags(flags: TouchContactFlags) -> u16 {
+        u16::try_from(flags.bits()).expect("touch contact flags fit in u16")
+    }
+
+    fn pen_contact(flags: u16) -> PenContactRequest {
+        PenContactRequest {
+            device_id: 0,
+            x: 10,
+            y: 20,
+            flags,
+            pressure: None,
+            rotation: None,
+            tilt_x: None,
+            tilt_y: None,
+            pen_flags: None,
+        }
+    }
+
+    fn pen_contact_flags(flags: PenContactFlags) -> u16 {
+        u16::try_from(flags.bits()).expect("pen contact flags fit in u16")
+    }
+
+    #[test]
+    fn touch_event_accepts_legal_down_and_up() {
+        let down = contact_flags(TouchContactFlags::DOWN | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT);
+        let up = contact_flags(TouchContactFlags::UP);
+        let event = touch_event_from_request(
+            0,
+            vec![
+                TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![contact(down)],
+                },
+                TouchFrameRequest {
+                    frame_offset: 16_000,
+                    contacts: vec![contact(up)],
+                },
+            ],
+        )
+        .expect("legal touch tap frames");
+        assert_eq!(event.frames.len(), 2);
+        assert_eq!(event.frames[1].frame_offset, 16_000);
+    }
+
+    #[test]
+    fn touch_event_rejects_empty_frames_and_contacts() {
+        assert!(touch_event_from_request(0, Vec::new()).is_err());
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: Vec::new(),
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn touch_event_rejects_illegal_and_unknown_flags() {
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![contact(0x0008)], // INRANGE alone
+                }],
+            )
+            .is_err()
+        );
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![contact(0x0040)], // unknown bit
+                }],
+            )
+            .is_err()
+        );
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![contact(0x0001)], // DOWN alone
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn touch_event_rejects_count_and_range_limits() {
+        let legal = contact_flags(TouchContactFlags::DOWN | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT);
+        let max_contacts = u8::try_from(MAX_TOUCH_CONTACTS).expect("MAX_TOUCH_CONTACTS fits u8");
+        let too_many_contacts = (0..=max_contacts)
+            .map(|contact_id| TouchContactRequest {
+                contact_id,
+                x: 0,
+                y: 0,
+                flags: legal,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: too_many_contacts,
+                }],
+            )
+            .is_err()
+        );
+
+        let too_many_frames = core::iter::repeat_with(|| TouchFrameRequest {
+            frame_offset: 0,
+            contacts: vec![contact(legal)],
+        })
+        .take(MAX_TOUCH_FRAMES + 1)
+        .collect::<Vec<_>>();
+        assert!(touch_event_from_request(0, too_many_frames).is_err());
+
+        assert!(
+            touch_event_from_request(
+                FourByteUnsigned::MAX + 1,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![contact(legal)],
+                }],
+            )
+            .is_err()
+        );
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: EightByteUnsigned::MAX + 1,
+                    contacts: vec![contact(legal)],
+                }],
+            )
+            .is_err()
+        );
+        assert!(
+            touch_event_from_request(
+                0,
+                vec![TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![TouchContactRequest {
+                        contact_id: 0,
+                        x: FourByteSigned::MAX + 1,
+                        y: 0,
+                        flags: legal,
+                    }],
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pen_event_accepts_legal_down_and_up() {
+        let down = pen_contact_flags(PenContactFlags::DOWN | PenContactFlags::INRANGE | PenContactFlags::INCONTACT);
+        let up = pen_contact_flags(PenContactFlags::UP);
+        let mut down_contact = pen_contact(down);
+        down_contact.pressure = Some(MAX_PEN_PRESSURE);
+        down_contact.rotation = Some(MAX_PEN_ROTATION);
+        down_contact.tilt_x = Some(-MAX_PEN_TILT);
+        down_contact.tilt_y = Some(MAX_PEN_TILT);
+        let event = pen_event_from_request(
+            0,
+            vec![
+                PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![down_contact],
+                },
+                PenFrameRequest {
+                    frame_offset: 16_000,
+                    contacts: vec![pen_contact(up)],
+                },
+            ],
+        )
+        .expect("legal pen tap frames");
+        assert_eq!(event.frames.len(), 2);
+        assert_eq!(event.frames[0].frame_offset, 0);
+        assert_eq!(event.frames[1].frame_offset, 16_000);
+    }
+
+    #[test]
+    fn pen_event_rejects_empty_frames_and_contacts() {
+        assert!(pen_event_from_request(0, Vec::new()).is_err());
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: Vec::new(),
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pen_event_rejects_illegal_unknown_flags_and_device_id() {
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![pen_contact(0x0008)], // INRANGE alone
+                }],
+            )
+            .is_err()
+        );
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![pen_contact(0x0040)], // unknown bit
+                }],
+            )
+            .is_err()
+        );
+        let mut nonzero_device = pen_contact(pen_contact_flags(
+            PenContactFlags::DOWN | PenContactFlags::INRANGE | PenContactFlags::INCONTACT,
+        ));
+        nonzero_device.device_id = 1;
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![nonzero_device],
+                }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pen_event_rejects_count_offset_and_field_ranges() {
+        let legal = pen_contact_flags(PenContactFlags::DOWN | PenContactFlags::INRANGE | PenContactFlags::INCONTACT);
+        assert_eq!(MAX_PEN_CONTACTS, 1);
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![pen_contact(legal), pen_contact(legal)],
+                }],
+            )
+            .is_err()
+        );
+
+        let too_many_frames = core::iter::repeat_with(|| PenFrameRequest {
+            frame_offset: 0,
+            contacts: vec![pen_contact(legal)],
+        })
+        .take(MAX_PEN_FRAMES + 1)
+        .collect::<Vec<_>>();
+        assert!(pen_event_from_request(0, too_many_frames).is_err());
+
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 1,
+                    contacts: vec![pen_contact(legal)],
+                }],
+            )
+            .is_err()
+        );
+
+        let mut pressure = pen_contact(legal);
+        pressure.pressure = Some(MAX_PEN_PRESSURE + 1);
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![pressure],
+                }],
+            )
+            .is_err()
+        );
+
+        let mut rotation = pen_contact(legal);
+        rotation.rotation = Some(MAX_PEN_ROTATION + 1);
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![rotation],
+                }],
+            )
+            .is_err()
+        );
+
+        let mut tilt_x = pen_contact(legal);
+        tilt_x.tilt_x = Some(MAX_PEN_TILT + 1);
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![tilt_x],
+                }],
+            )
+            .is_err()
+        );
+
+        let mut tilt_y = pen_contact(legal);
+        tilt_y.tilt_y = Some(-MAX_PEN_TILT - 1);
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![tilt_y],
+                }],
+            )
+            .is_err()
+        );
+
+        assert!(
+            pen_event_from_request(
+                FourByteUnsigned::MAX + 1,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![pen_contact(legal)],
+                }],
+            )
+            .is_err()
+        );
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![
+                    PenFrameRequest {
+                        frame_offset: 0,
+                        contacts: vec![pen_contact(legal)],
+                    },
+                    PenFrameRequest {
+                        frame_offset: EightByteUnsigned::MAX + 1,
+                        contacts: vec![pen_contact(legal)],
+                    },
+                ],
+            )
+            .is_err()
+        );
+        assert!(
+            pen_event_from_request(
+                0,
+                vec![PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![PenContactRequest {
+                        device_id: 0,
+                        x: FourByteSigned::MAX + 1,
+                        y: 0,
+                        flags: legal,
+                        pressure: None,
+                        rotation: None,
+                        tilt_x: None,
+                        tilt_y: None,
+                        pen_flags: None,
+                    }],
+                }],
+            )
+            .is_err()
+        );
+    }
+}

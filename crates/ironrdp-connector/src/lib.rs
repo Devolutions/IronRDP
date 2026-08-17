@@ -143,6 +143,11 @@ impl Credentials {
 pub struct Config {
     /// The initial desktop size to request
     pub desktop_size: DesktopSize,
+    /// The optional client monitor layout advertised in the GCC Client Monitor Data block.
+    ///
+    /// When present, [`desktop_size`](Self::desktop_size) must describe the virtual desktop
+    /// containing these monitors.
+    pub monitor_layout: Option<gcc::ClientMonitorData>,
     /// The initial desktop scale factor to request.
     ///
     /// This becomes the `desktop_scale_factor` in the [`TS_UD_CS_CORE`](gcc::ClientCoreOptionalData) structure.
@@ -228,6 +233,15 @@ pub struct Config {
     pub alternate_shell: String,
     /// Working directory for the alternate shell
     pub work_dir: String,
+    /// Whether the connection uses the RemoteApp/RAIL connection model.
+    ///
+    /// RemoteApp launch information travels over the `rail` static virtual channel.
+    pub remote_application_mode: bool,
+    /// RAIL extensions implemented by the client.
+    ///
+    /// This must include [`capability_sets::RailSupportLevel::SUPPORTED`] when
+    /// [`Self::remote_application_mode`] is enabled.
+    pub rail_support_level: capability_sets::RailSupportLevel,
     pub platform: capability_sets::MajorPlatformType,
     /// Unique identifier for the computer
     ///
@@ -242,8 +256,12 @@ pub struct Config {
     pub request_data: Option<NegoRequestData>,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub autologon: bool,
-    /// If true, the INFO_NOAUDIOPLAYBACK flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
+    /// If true, local audio playback is enabled and `INFO_NOAUDIOPLAYBACK` is left clear
+    /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
     pub enable_audio_playback: bool,
+    /// If true, client microphone capture is enabled and `INFO_AUDIOCAPTURE` is set
+    /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
+    pub enable_audio_capture: bool,
     pub performance_flags: PerformanceFlags,
 
     pub license_cache: Option<Arc<dyn LicenseCache>>,

@@ -25,10 +25,11 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
   `ironrdp-activex` endpoint. The host must set `IRONRDP_ACTIVEX_RPC=1` before creating the
   control; the agent never starts an ActiveX host. Use `--endpoint` when the host uses
   `IRONRDP_ACTIVEX_RPC_ENDPOINT`.
+  RAIL audit commands require the daemon backend.
 
 ## Lifecycle
 
-- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]...`
+- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--skip-certificate-check] [--rdpdr-drive NAME=VOLUME_ROOT]... [--smartcard]`
                                  Start the daemon (foreground). Run this first. `--overlay`
                                  preloads a .rdp file as an overlay applied to every `connect`
                                  (overlay wins), letting an operator provision any setting out of
@@ -38,6 +39,18 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  file line (TYPE is `i` for integer or `s` for string), e.g.
                                  `--prop ironrdp_autologon:i:1`. Check `status` to see whether
                                  credentials are already loaded before supplying any yourself.
+                                 On Windows, repeat `--rdpdr-drive NAME=VOLUME_ROOT` to opt in to
+                                 static filesystem redirection. Each root must be a unique existing
+                                 local volume root in the exact `C:\` form, and each one-to-seven-character
+                                 ASCII drive name must be unique (case-insensitive). The configured
+                                 set is fixed for the daemon lifetime; drive hot-plug and rescan are
+                                 not supported. On Windows, `--smartcard` enables WinSCard smartcard
+                                 redirection (same as overlay/connect `ironrdp_smartcard:i:1`).
+                                 Sandbox connects with `SmartCardRedirection` also set that property
+                                 at connect time, which can enable smartcard without `--smartcard`.
+                                 TLS certificate and hostname validation is strict by default.
+                                 `--skip-certificate-check` disables both for this daemon only.
+                                 Use it only for an explicitly authorized test endpoint because it accepts any certificate and is vulnerable to on-path attacks.
 - `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. Precedence (low to high): .rdp file -> `--prop`
@@ -67,6 +80,23 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Inspection
 
+  RAIL commands require the daemon backend.
+  Connect with `--prop remoteapplicationmode:i:1`; add
+  `--prop remoteapplicationprogram:s:<program>` to queue an initial launch.
+
+- `rail status`                     Show RAIL handshake and synchronization state plus agent-queued
+                                   launches.
+- `rail events [--after-sequence N]`
+                                   Show validated RAIL observations retained by the daemon.
+- `rail wait [--after-sequence N] [--timeout-ms MS]`
+                                   Return retained RAIL events newer than `--after-sequence`, waiting
+                                   up to the timeout only when none are available.
+- `rail execute EXECUTABLE [--working-directory DIR] [--arguments ARGS] [--flags FLAGS]`
+                                   Queue a bounded, validated RemoteApp launch.
+  All `rail` subcommands accept `--format human|json|ndjson` before the subcommand.
+  `json` prints one JSON document; `ndjson` prints one JSON object per returned event or response.
+  RAIL event history is bounded to 256 records per connection generation and returns an explicit
+  `gap` event after eviction.
 - `query-props [--filter SUBSTR] [--prefix PREFIX]`
                                  Print the live session property bag, one `key = value` per line.
                                  Secrets are stripped from the configuration before a session
@@ -92,6 +122,19 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 - `wheel --delta N [--horizontal]`               Rotate the wheel (negative N scrolls down/left).
 - `key-scancode --scancode <0x1D|29> --pressed <true|false>`
 - `key-unicode --char C --pressed <true|false>`  Type by Unicode character.
+- `type-unicode --text TEXT`                     Type at most 96 Unicode characters all-or-nothing.
+- `touch --x X --y Y --action <down|move|up|out-of-range|cancel|hover>
+    [--contact-id N] [--encode-time MS] [--frame-offset US]`
+                                                 Send one MS-RDPEI touch contact sample.
+- `touch-tap --x X --y Y [--contact-id N]`       DOWN then UP at the same point via RDPEI.
+- `touch-frame --contact id:x:y:action [...]`    One multi-contact MS-RDPEI touch frame.
+- `pen --x X --y Y --action <down|move|up|out-of-range|cancel|hover>
+    [--device-id N] [--pressure N] [--rotation N] [--tilt-x N] [--tilt-y N]
+    [--eraser] [--inverted] [--encode-time MS] [--frame-offset US]`
+                                                 Send one MS-RDPEI pen contact sample.
+- `pen-tap --x X --y Y [--device-id N] [--pressure N]`
+                                                 DOWN then UP pen tap via RDPEI.
+- `dismiss-hovering [--contact-id N]`            Dismiss a hovering touch contact.
 - `resize --width W --height H`                  Resize the remote desktop.
 
 ## NOW remote execution (requires an active, connected RDP session)
@@ -141,10 +184,13 @@ capability, or mapping, even if a peer advertises it.
 
 ## Windows Sandbox (Windows only)
 
-Prefer create-then-connect: start the VM with official `wsb start` (prints the sandbox Id), then
-attach with the agent. The agent calls WindowsSandboxServer gRPC in-process over the per-user
-named pipe (no .NET helper).
+Start the Windows Sandbox UI or `wsb` once to bootstrap WindowsSandboxServer.
+The agent can then create, inspect, and stop sandboxes over its per-user named pipe without a .NET helper.
+On retail builds that permit one active sandbox, stop that initial sandbox before using `sandbox start`; the agent reports server policy errors rather than bypassing them.
 
+- `sandbox start [--id GUID] [--config FILE]`
+                                  Start a sandbox and print its Id.
+                                  The server uses its default configuration when `--config` is omitted.
 - `sandbox list`                 List running sandbox Ids via WindowsSandboxServer.
 - `sandbox config <ID>`          Print a redacted RdpClientConfig summary (password shown as set/empty).
 - `sandbox stop <ID>`            Shut down a running sandbox via gRPC.
@@ -153,8 +199,8 @@ named pipe (no .NET helper).
 - `connect --sandbox-pipe PATH -u USER -p PASS`
                                  Low-level NamedPipe connect when you already have the guest password.
 
-Default product transport is NamedPipe. Local (VMConnect :2179 + PCB) and guest TCP are not the
-primary path.
+Default product transport is NamedPipe.
+Local (VMConnect :2179 + PCB) and guest TCP are not the primary path.
 
 ## Errors
 

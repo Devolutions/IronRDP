@@ -284,7 +284,9 @@ internal sealed record AxHostOptions(
     string? ScreenshotPath,
     string? Server,
     string? UserName,
-    string PasswordVariable);
+    string PasswordVariable,
+    string? RemoteApplicationProgram,
+    string? RemoteApplicationArgs);
 
 internal sealed record AxHostReport(
     string Operation,
@@ -414,6 +416,13 @@ internal sealed class LifecycleRunner
         SetProperty("IronRdpPassword", settings.Password);
         if (options.AutoLogon)
             SetExtendedSetting("IronRdpAutoLogon", true);
+        if (options.RemoteApplicationProgram is not null)
+        {
+            SetExtendedSetting("IronRdpRemoteProgramMode", true);
+            SetExtendedSetting("IronRdpRemoteApplicationProgram", options.RemoteApplicationProgram);
+            if (options.RemoteApplicationArgs is not null)
+                SetExtendedSetting("IronRdpRemoteApplicationArgs", options.RemoteApplicationArgs);
+        }
     }
 
     private void AttachEvents()
@@ -865,6 +874,8 @@ internal static class Program
         bool serverSpecified = false;
         bool userNameSpecified = false;
         bool passwordVariableSpecified = false;
+        bool remoteApplicationProgramSpecified = false;
+        bool remoteApplicationArgsSpecified = false;
         bool show = false;
         bool json = false;
         TimeSpan timeout = DefaultTimeout;
@@ -873,6 +884,8 @@ internal static class Program
         string? server = null;
         string? userName = null;
         string passwordVariable = DefaultPasswordVariable;
+        string? remoteApplicationProgram = null;
+        string? remoteApplicationArgs = null;
 
         for (int index = 1; index < args.Length; index++)
         {
@@ -964,14 +977,35 @@ internal static class Program
                 continue;
             }
 
+            if (argument == "--remoteapp-program" && !remoteApplicationProgramSpecified)
+            {
+                remoteApplicationProgram = NextValue(args, ref index, "--remoteapp-program");
+                remoteApplicationProgramSpecified = true;
+                continue;
+            }
+
+            if (argument == "--remoteapp-args" && !remoteApplicationArgsSpecified)
+            {
+                remoteApplicationArgs = NextValue(args, ref index, "--remoteapp-args");
+                remoteApplicationArgsSpecified = true;
+                continue;
+            }
+
             throw new ArgumentException();
         }
 
         if ((operation is Operation.Probe or Operation.Unload)
-            && (server is not null || userName is not null || screenshotPath is not null || passwordVariable != DefaultPasswordVariable))
+            && (server is not null
+                || userName is not null
+                || screenshotPath is not null
+                || passwordVariable != DefaultPasswordVariable
+                || remoteApplicationProgram is not null
+                || remoteApplicationArgs is not null))
         {
             throw new ArgumentException();
         }
+        if (remoteApplicationArgs is not null && remoteApplicationProgram is null)
+            throw new ArgumentException();
 
         if (show && observe == TimeSpan.Zero)
             observe = TimeSpan.FromSeconds(30);
@@ -990,7 +1024,9 @@ internal static class Program
             screenshotPath,
             server,
             userName,
-            passwordVariable);
+            passwordVariable,
+            remoteApplicationProgram,
+            remoteApplicationArgs);
     }
 
     private static TimeSpan ParseSeconds(string[] args, ref int index, string option)
@@ -1011,7 +1047,7 @@ internal static class Program
 
     private static void PrintUsage() =>
         Console.Error.WriteLine(
-            "Usage: ironrdp-axhost <com-server.dll> [class-id] [probe|connect|unload] [--autologon] [--json] [--show] [--timeout <seconds>] [--observe <seconds>] [--server <host[:port]>] [--username <name>] [--password-env <variable>] [--screenshot <path>]\nUse --help-agent for the machine-readable contract.");
+            "Usage: ironrdp-axhost <com-server.dll> [class-id] [probe|connect|unload] [--autologon] [--json] [--show] [--timeout <seconds>] [--observe <seconds>] [--server <host[:port]>] [--username <name>] [--password-env <variable>] [--screenshot <path>] [--remoteapp-program <program>] [--remoteapp-args <arguments>]\nUse --help-agent for the machine-readable contract.");
 
     private const string AgentGuide = """
 # ironrdp-axhost
@@ -1045,6 +1081,8 @@ failed. Exit `64` means the command line was invalid.
 
 Pass `--autologon` with `connect` to set the control's documented `IronRdpAutoLogon` extended
 setting before the connection begins.
+Pass `--remoteapp-program PROGRAM` with `connect` to launch one RemoteApp program.
+Pass `--remoteapp-args ARGUMENTS` with `connect` and `--remoteapp-program PROGRAM` to set the program's optional arguments.
 
 ## Credentials and configuration
 

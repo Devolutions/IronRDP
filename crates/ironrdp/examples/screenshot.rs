@@ -236,6 +236,7 @@ fn build_config(
             width: 1280,
             height: 1024,
         },
+        monitor_layout: None,
         bitmap: None,
         client_build: 0,
         client_name: "ironrdp-screenshot-example".to_owned(),
@@ -264,6 +265,7 @@ fn build_config(
         request_data: None,
         autologon: false,
         enable_audio_playback: false,
+        enable_audio_capture: false,
         compression_type,
         pointer_software_rendering: true,
         multitransport_flags: None,
@@ -274,6 +276,8 @@ fn build_config(
         timezone_info: TimezoneInfo::default(),
         alternate_shell: String::new(),
         work_dir: String::new(),
+        remote_application_mode: false,
+        rail_support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel::empty(),
     })
 }
 

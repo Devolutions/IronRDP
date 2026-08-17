@@ -130,7 +130,7 @@ impl Encode for PreconnectionBlob {
 
         if let Some(v2_payload) = &self.v2_payload {
             // cchPCB
-            let utf16_character_count = v2_payload.chars().count() + 1; // +1 for null terminator
+            let utf16_character_count = v2_payload.encode_utf16().count() + 1; // +1 for null terminator
             dst.write_u16(cast_length!("cchPCB", utf16_character_count)?);
 
             // wszPCB

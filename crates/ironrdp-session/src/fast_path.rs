@@ -114,6 +114,7 @@ impl FastPathBulkDecompressionFailure {
 #[derive(Debug)]
 pub enum UpdateKind {
     None,
+    Orders(Vec<u8>),
     Region(InclusiveRectangle),
     PointerDefault,
     PointerHidden,
@@ -248,6 +249,10 @@ impl Processor {
         let update = FastPathUpdate::decode_with_code(data.as_slice(), attributes.update_code);
 
         match update {
+            Ok(FastPathUpdate::Orders(orders)) => {
+                trace!("Received Fast-Path Orders update");
+                processor_updates.push(UpdateKind::Orders(orders.to_vec()));
+            }
             Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
                 trace!("Received Surface Commands: {} pieces", surface_commands.len());
                 let update_region = self.process_surface_commands(image, output, surface_commands)?;

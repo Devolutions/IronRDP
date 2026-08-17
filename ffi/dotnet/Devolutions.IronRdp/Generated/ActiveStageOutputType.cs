@@ -28,4 +28,9 @@ public enum ActiveStageOutputType
     /// RTT and bandwidth values for connection quality monitoring.
     /// </summary>
     AutoDetect = 9,
+    SaveSessionInfo = 10,
+    AutoReconnectCookie = 11,
+    WindowingOrders = 12,
+    AutoReconnectFailed = 13,
+    MonitorLayout = 14,
 }

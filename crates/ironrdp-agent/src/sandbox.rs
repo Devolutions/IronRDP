@@ -50,6 +50,16 @@ pub(crate) fn list_sandbox_ids() -> anyhow::Result<Vec<String>> {
     sandbox_grpc::enumerate_sandbox_vms()
 }
 
+/// Start a sandbox through WindowsSandboxServer and return its RDP configuration.
+///
+/// `recipe` is the Windows Sandbox configuration XML.
+/// When it is absent, the server uses its default configuration.
+/// `sandbox_id` lets callers select a stable ID; otherwise the server assigns one.
+pub(crate) fn start_sandbox(recipe: Option<&str>, sandbox_id: Option<&str>) -> anyhow::Result<SandboxRdpConfig> {
+    let xml = sandbox_grpc::start_sandbox(recipe, sandbox_id).context("StartSandbox")?;
+    Ok(parse_config_xml(&xml, sandbox_id.unwrap_or_default()))
+}
+
 /// Fetch `RdpClientConfig` for a running sandbox.
 pub(crate) fn get_rdp_config(sandbox_id: &str) -> anyhow::Result<SandboxRdpConfig> {
     let xml = sandbox_grpc::get_rdp_client_config_xml(sandbox_id)
@@ -165,7 +175,7 @@ pub(crate) fn properties_from_config(cfg: &SandboxRdpConfig) -> anyhow::Result<P
     }
 
     ps.set_redirect_clipboard(cfg.clipboard_redirection);
-    let _ = cfg.smartcard_redirection;
+    ps.set_enable_smartcard(cfg.smartcard_redirection);
 
     Ok(ps)
 }
@@ -244,6 +254,24 @@ mod tests {
         assert!(props.named_pipe().is_some());
         assert_eq!(props.enable_tls(), Some(false));
         assert_eq!(props.enable_credssp_support(), Some(false));
+        assert_eq!(props.enable_smartcard(), Some(false));
+    }
+
+    #[test]
+    fn properties_from_config_sets_smartcard_redirection() {
+        let cfg = SandboxRdpConfig {
+            sandbox_id: "id".into(),
+            vm_id: "vm".into(),
+            username: "u".into(),
+            password: "p".into(),
+            rdp_transport: "NamedPipe".into(),
+            ip_address: String::new(),
+            pipe_path: Some(r"\\.\pipe\vm".into()),
+            clipboard_redirection: true,
+            smartcard_redirection: true,
+        };
+        let props = properties_from_config(&cfg).expect("named pipe props");
+        assert_eq!(props.enable_smartcard(), Some(true));
     }
 
     #[test]

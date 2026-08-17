@@ -187,6 +187,7 @@ pub mod ffi {
                 ime_file_name: self.ime_file_name.clone().unwrap_or_default(),
                 dig_product_id: self.dig_product_id.clone().unwrap_or_default(),
                 desktop_size: self.desktop_size.ok_or("desktop size not set")?,
+                monitor_layout: None,
                 bitmap: None,
                 client_build: self.client_build.unwrap_or(0),
                 client_name: self.client_name.clone().ok_or("client name not set")?,
@@ -214,6 +215,7 @@ pub mod ffi {
                 enable_server_pointer: self.enable_server_pointer.unwrap_or(false),
                 autologon: self.autologon.unwrap_or(false),
                 enable_audio_playback: self.no_audio_playback.unwrap_or(true),
+                enable_audio_capture: false,
                 request_data: None,
                 compression_type: None,
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
@@ -225,6 +227,8 @@ pub mod ffi {
                 timezone_info: self.timezone_info.clone().unwrap_or_default(),
                 alternate_shell: String::new(),
                 work_dir: String::new(),
+                remote_application_mode: false,
+                rail_support_level: ironrdp::pdu::rdp::capability_sets::RailSupportLevel::empty(),
             };
             let dvc_pipe_proxy = self.dvc_pipe_proxy.clone();
 

@@ -78,7 +78,7 @@ pub mod ffi {
         pub fn get_connection_finalization(
             &self,
         ) -> Result<Box<ConnectionActivationStateConnectionFinalization>, Box<IronRdpError>> {
-            match self.state {
+            match &self.state {
                 ironrdp::connector::connection_activation::ConnectionActivationState::ConnectionFinalization {
                     desktop_size,
                     share_id: _,
@@ -86,8 +86,8 @@ pub mod ffi {
                     connection_finalization,
                     ..
                 } => Ok(Box::new(ConnectionActivationStateConnectionFinalization {
-                    desktop_size,
-                    connection_finalization,
+                    desktop_size: *desktop_size,
+                    connection_finalization: connection_finalization.clone(),
                 })),
                 _ => Err(IncorrectEnumTypeError::on_variant("ConnectionFinalization")
                     .of_enum("ConnectionActivationState")
@@ -103,12 +103,16 @@ pub mod ffi {
                     input_flags: _,
                     enable_server_pointer,
                     pointer_software_rendering,
+                    static_channel_chunk_size,
+                    window_support_level,
                     ..
                 } => Ok(Box::new(ConnectionActivationStateFinalized {
                     share_id: *share_id,
                     desktop_size: *desktop_size,
                     enable_server_pointer: *enable_server_pointer,
                     pointer_software_rendering: *pointer_software_rendering,
+                    static_channel_chunk_size: *static_channel_chunk_size,
+                    window_support_level: *window_support_level,
                 })),
                 _ => Err(IncorrectEnumTypeError::on_variant("Finalized")
                     .of_enum("ConnectionActivationState")
@@ -135,6 +139,8 @@ pub mod ffi {
         pub desktop_size: ironrdp::connector::DesktopSize,
         pub enable_server_pointer: bool,
         pub pointer_software_rendering: bool,
+        pub static_channel_chunk_size: usize,
+        pub window_support_level: Option<ironrdp::pdu::rdp::capability_sets::WindowSupportLevel>,
     }
 
     impl ConnectionActivationStateFinalized {
@@ -152,6 +158,21 @@ pub mod ffi {
 
         pub fn get_pointer_software_rendering(&self) -> bool {
             self.pointer_software_rendering
+        }
+
+        pub fn get_static_channel_chunk_size(&self) -> usize {
+            self.static_channel_chunk_size
+        }
+
+        /// Returns -1 when Window List support was not negotiated, otherwise
+        /// the negotiated Window List support level.
+        pub fn get_window_support_level(&self) -> i8 {
+            match self.window_support_level {
+                None => -1,
+                Some(ironrdp::pdu::rdp::capability_sets::WindowSupportLevel::Supported) => 1,
+                Some(ironrdp::pdu::rdp::capability_sets::WindowSupportLevel::SupportedEx) => 2,
+                Some(ironrdp::pdu::rdp::capability_sets::WindowSupportLevel::NotSupported) => 0,
+            }
         }
     }
 }

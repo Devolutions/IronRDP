@@ -47,27 +47,32 @@
   {
     "name": "size/XS",
     "color": "f9d0c4",
-    "description": "Size: Under 30 lines of code"
+    "description": "Size: up to 49 counted lines and 2 files"
   },
   {
     "name": "size/S",
     "color": "f9d0c4",
-    "description": "Size: 30-149 lines of code"
+    "description": "Size: up to 199 counted lines and 5 files; exceeds XS in either measure"
   },
   {
     "name": "size/M",
     "color": "f9d0c4",
-    "description": "Size: 150-399 lines of code"
+    "description": "Size: up to 449 counted lines and 10 files; exceeds S in either measure"
   },
   {
     "name": "size/L",
     "color": "f9d0c4",
-    "description": "Size: 400-799 lines of code"
+    "description": "Size: up to 899 counted lines and 20 files; exceeds M in either measure"
   },
   {
     "name": "size/XL",
     "color": "f9d0c4",
-    "description": "Size: 800 or more lines of code"
+    "description": "Size: up to 1299 counted lines and 49 files; exceeds L in either measure"
+  },
+  {
+    "name": "size/XXL",
+    "color": "f9d0c4",
+    "description": "Size: 1300 or more counted lines or 50 or more files"
   },
   {
     "name": "risk/low",
@@ -105,6 +110,11 @@
     "description": "Maintainer review or intervention is required"
   },
   {
+    "name": "triage/legitimacy",
+    "color": "fbca04",
+    "description": "A classifier flagged at least one commit for legitimacy triage"
+  },
+  {
     "name": "ai-reviewed/1",
     "color": "000000",
     "description": "One automated review completed"
@@ -113,5 +123,10 @@
     "name": "ai-reviewed/2",
     "color": "000000",
     "description": "Final automated review completed"
+  },
+  {
+    "name": "ai-review/allow-oversized",
+    "color": "fbca04",
+    "description": "Allows normal automated review of an oversized pull request"
   }
 ]

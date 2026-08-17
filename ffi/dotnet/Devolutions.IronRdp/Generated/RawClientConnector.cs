@@ -49,6 +49,24 @@ public partial struct ClientConnector
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_mark_credssp_as_done", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError MarkCredsspAsDone(ClientConnector* self);
 
+    /// <summary>
+    /// Send X.224 with an explicit protocol set (VMConnect uses HYBRID only).
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_initiate_with_security_protocol", ExactSpelling = true)]
+    public static unsafe extern ConnectorFfiResultBoxWrittenBoxIronRdpError InitiateWithSecurityProtocol(ClientConnector* self, uint securityProtocol, WriteBuf* writeBuf);
+
+    /// <summary>
+    /// Drop host identity after pre-X.224 CredSSP so it is not forwarded into guest RDP.
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_clear_credentials_after_host_auth", ExactSpelling = true)]
+    public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError ClearCredentialsAfterHostAuth(ClientConnector* self);
+
+    /// <summary>
+    /// Require EnhancedSecurityUpgrade with HYBRID, matching ironrdp-vmconnect::connect_front.
+    /// </summary>
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_ensure_selected_hybrid", ExactSpelling = true)]
+    public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError EnsureSelectedHybrid(ClientConnector* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_step", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultBoxWrittenBoxIronRdpError Step(ClientConnector* self, byte* input, nuint inputSz, WriteBuf* writeBuf);
 

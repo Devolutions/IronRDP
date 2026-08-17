@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_propertyset::PropertySet;
+use ironrdp_rail::pdu::ExecutePdu;
 use url::Url;
 
 #[cfg(feature = "vmconnect")]
@@ -72,6 +73,9 @@ pub struct Config {
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
+    pub(crate) rail_client_status_flags: Option<u32>,
+    /// Initial RemoteApp launch queued after the RAIL handshake.
+    pub(crate) rail_initial_execute: Option<ExecutePdu>,
 
     /// DVC channel ↔ named-pipe proxy configuration.
     ///
@@ -86,6 +90,10 @@ pub struct Config {
     /// called to obtain DVC plugin COM objects.  Example: `C:\Windows\System32\webauthn.dll`.
     #[cfg(all(windows, feature = "dvc-com-plugin"))]
     pub(crate) dvc_plugins: Vec<PathBuf>,
+
+    /// Parent HWND for WebAuthn UI prompts (Windows only).
+    #[cfg(all(windows, feature = "webauthn"))]
+    pub(crate) webauthn_parent_hwnd: Option<isize>,
 
     /// The merged PropertySet that produced this config, shared (read-only) with channel factories.
     ///
@@ -160,6 +168,12 @@ impl Config {
         &self.dvc_plugins
     }
 
+    /// Parent HWND for native WebAuthn redirection prompts (Windows only).
+    #[cfg(all(windows, feature = "webauthn"))]
+    pub fn webauthn_parent_hwnd(&self) -> Option<isize> {
+        self.webauthn_parent_hwnd
+    }
+
     /// Merged `.rdp` PropertySet that produced this config.
     pub fn properties(&self) -> &PropertySet {
         &self.properties
@@ -185,10 +199,13 @@ impl fmt::Debug for Config {
         s.field("kerberos_config", &self.kerberos_config);
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
+        s.field("rail_client_status_flags", &self.rail_client_status_flags);
         #[cfg(feature = "dvc-pipe-proxy")]
         s.field("dvc_pipe_proxies", &self.dvc_pipe_proxies);
         #[cfg(all(windows, feature = "dvc-com-plugin"))]
         s.field("dvc_plugins", &self.dvc_plugins);
+        #[cfg(all(windows, feature = "webauthn"))]
+        s.field("webauthn_parent_hwnd", &self.webauthn_parent_hwnd);
         s.field("extensions", &self.extensions);
         s.finish()
     }
@@ -227,6 +244,10 @@ pub struct ChannelConfig {
     #[cfg(feature = "sound")]
     pub sound: bool,
 
+    /// Enable the AUDIO_INPUT (microphone capture) dynamic virtual channel.
+    #[cfg(feature = "sound")]
+    pub audio_capture: bool,
+
     /// Clipboard redirection mode.
     #[cfg(feature = "clipboard")]
     pub clipboard: ClipboardType,
@@ -245,10 +266,20 @@ pub struct ChannelConfig {
     /// Enable QOIZ (QOI with zlib) bitmap codec.
     #[cfg(feature = "qoiz")]
     pub qoiz: bool,
+
+    /// Enable native MS-RDPEWA WebAuthn redirection.
+    #[cfg(feature = "webauthn")]
+    pub webauthn: bool,
 }
 
 #[cfg_attr(
-    not(any(feature = "sound", feature = "clipboard", feature = "qoi", feature = "qoiz")),
+    not(any(
+        feature = "sound",
+        feature = "clipboard",
+        feature = "qoi",
+        feature = "qoiz",
+        feature = "webauthn"
+    )),
     expect(
         clippy::derivable_impls,
         reason = "fields setting non-default values are feature-gated; the impl is only trivially derivable in some feature combinations"
@@ -259,6 +290,8 @@ impl Default for ChannelConfig {
         Self {
             #[cfg(feature = "sound")]
             sound: true,
+            #[cfg(feature = "sound")]
+            audio_capture: false,
             #[cfg(feature = "clipboard")]
             clipboard: ClipboardType::Enable,
             #[cfg(feature = "rdpdr")]
@@ -267,6 +300,8 @@ impl Default for ChannelConfig {
             qoi: true,
             #[cfg(feature = "qoiz")]
             qoiz: true,
+            #[cfg(feature = "webauthn")]
+            webauthn: true,
         }
     }
 }
@@ -614,6 +649,7 @@ pub struct ConfigBuilder {
     dig_product_id: Option<String>,
     desktop_width: Option<u16>,
     desktop_height: Option<u16>,
+    monitor_layout: Option<ironrdp_pdu::gcc::ClientMonitorData>,
     desktop_scale_factor: Option<u32>,
     color_depth: Option<u32>,
     lossy_compression: Option<bool>,
@@ -623,10 +659,15 @@ pub struct ConfigBuilder {
     pointer_software_rendering: Option<bool>,
     performance_flags: Option<ironrdp_pdu::rdp::client_info::PerformanceFlags>,
     enable_audio_playback: Option<bool>,
+    enable_audio_capture: Option<bool>,
     compression_type: Option<ironrdp_pdu::rdp::client_info::CompressionType>,
     compression_enabled: Option<bool>,
     alternate_shell: Option<String>,
     work_dir: Option<String>,
+    remote_application_mode: Option<bool>,
+    remote_application_program: Option<String>,
+    rail_support_level: Option<ironrdp_pdu::rdp::capability_sets::RailSupportLevel>,
+    rail_client_status_flags: Option<u32>,
 
     transport: TransportKind,
     #[cfg(feature = "vmconnect")]
@@ -641,6 +682,8 @@ pub struct ConfigBuilder {
     dvc_pipe_proxies: Vec<DvcProxyInfo>,
     #[cfg(all(windows, feature = "dvc-com-plugin"))]
     dvc_plugins: Vec<PathBuf>,
+    #[cfg(all(windows, feature = "webauthn"))]
+    webauthn_parent_hwnd: Option<isize>,
     properties: PropertySet,
     extensions: ExtensionRegistry,
 }
@@ -808,6 +851,16 @@ impl ConfigBuilder {
         self
     }
 
+    /// Advertise the client monitor topology in the GCC Client Monitor Data block.
+    ///
+    /// The caller must set [`Self::with_desktop_width`] and [`Self::with_desktop_height`] to
+    /// the virtual desktop dimensions containing every monitor.
+    #[must_use]
+    pub fn with_monitor_layout(mut self, monitor_layout: ironrdp_pdu::gcc::ClientMonitorData) -> Self {
+        self.monitor_layout = Some(monitor_layout);
+        self
+    }
+
     /// Set the desktop scale factor (percentage, typically 100–500) to request. Upserts the
     /// `desktopscalefactor` property.
     ///
@@ -877,6 +930,37 @@ impl ConfigBuilder {
             self.properties.set_shell_working_directory(work_dir.clone());
             self.work_dir = Some(work_dir);
         }
+        self
+    }
+
+    /// Enable or disable RemoteApp/RAIL connection mode.
+    ///
+    /// RemoteApp launch information is sent on the RAIL static virtual channel
+    /// rather than through the Client Info Alternate Shell field.
+    #[must_use]
+    pub fn with_remote_application_mode(mut self, enabled: bool) -> Self {
+        self.properties.set_remote_application_mode(enabled);
+        self.remote_application_mode = Some(enabled);
+        self
+    }
+
+    /// Declares the RAIL capabilities implemented by this client.
+    ///
+    /// RemoteApp mode requires
+    /// [`RailSupportLevel::SUPPORTED`](ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED).
+    #[must_use]
+    pub fn with_rail_support_level(
+        mut self,
+        support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel,
+    ) -> Self {
+        self.rail_support_level = Some(support_level);
+        self
+    }
+
+    /// Overrides the RAIL Client Status flags advertised during channel initialization.
+    #[must_use]
+    pub fn with_rail_client_status_flags(mut self, flags: u32) -> Self {
+        self.rail_client_status_flags = Some(flags);
         self
     }
 
@@ -1037,8 +1121,8 @@ impl ConfigBuilder {
     /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
     ///
     /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
-    /// embedder (error if disabled). This builder only rejects transports that cannot target port
-    /// 2179 yet (RDCleanPath / RDS Gateway in [`build`](Self::build)).
+    /// embedder (error if disabled). Works over Direct and RDCleanPath. RDS Gateway is rejected
+    /// until it can propagate the VMConnect target port.
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
@@ -1100,12 +1184,30 @@ impl ConfigBuilder {
     }
 
     /// Set the public RDP audio redirection mode.
+    ///
+    /// `PlayOnServer` and `Disabled` currently share the same client-info outcome:
+    /// both clear local RDPSND playback and set `INFO_NOAUDIOPLAYBACK`. Distinct
+    /// `INFO_REMOTECONSOLEAUDIO` (true “play on server console”) is not wired yet.
     #[cfg(feature = "sound")]
     #[must_use]
     pub fn with_audio_mode(mut self, mode: ironrdp_cfg::AudioMode) -> Self {
         self.channels.sound = matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient);
         self.enable_audio_playback = Some(matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient));
         self.properties.set_audio_mode(mode);
+        self
+    }
+
+    /// Enable or disable client microphone capture (MS-RDPEAI / AUDIO_INPUT).
+    #[cfg(feature = "sound")]
+    #[must_use]
+    pub fn with_audio_capture(mut self, enabled: bool) -> Self {
+        self.channels.audio_capture = enabled;
+        self.enable_audio_capture = Some(enabled);
+        self.properties.set_audio_capture_mode(if enabled {
+            ironrdp_cfg::AudioCaptureMode::CaptureFromClient
+        } else {
+            ironrdp_cfg::AudioCaptureMode::Disabled
+        });
         self
     }
 
@@ -1152,6 +1254,23 @@ impl ConfigBuilder {
     pub fn with_qoiz(mut self, enabled: bool) -> Self {
         self.channels.qoiz = enabled;
         self.properties.set_enable_qoiz(enabled);
+        self
+    }
+
+    /// Enable or disable native MS-RDPEWA WebAuthn redirection.
+    #[cfg(feature = "webauthn")]
+    #[must_use]
+    pub fn with_webauthn(mut self, enabled: bool) -> Self {
+        self.channels.webauthn = enabled;
+        self.properties.set_redirect_webauthn(enabled);
+        self
+    }
+
+    /// Parent HWND used for WebAuthn UI prompts (Windows only).
+    #[cfg(all(windows, feature = "webauthn"))]
+    #[must_use]
+    pub fn with_webauthn_parent_hwnd(mut self, hwnd: isize) -> Self {
+        self.webauthn_parent_hwnd = Some(hwnd);
         self
     }
 
@@ -1312,6 +1431,11 @@ impl ConfigBuilder {
         }
 
         #[cfg(feature = "vmconnect")]
+        if let Some(vm_id) = &self.vm_id {
+            anyhow::ensure!(!vm_id.trim().is_empty(), "vmconnect VM ID is empty");
+        }
+
+        #[cfg(feature = "vmconnect")]
         if self.vm_id.is_some()
             && let Some(destination) = self.destination.as_mut()
             && destination.port.is_none()
@@ -1376,9 +1500,6 @@ impl ConfigBuilder {
             if !self.enable_credssp.unwrap_or(true) {
                 anyhow::bail!("vmconnect requires CredSSP");
             }
-            if matches!(transport, Transport::RDCleanPath(_)) {
-                anyhow::bail!("vmconnect cannot be used over an RDCleanPath proxy");
-            }
             #[cfg(feature = "gateway")]
             if matches!(transport, Transport::Gateway(_)) {
                 anyhow::bail!("vmconnect cannot be used over an RDS gateway until the target port is propagated");
@@ -1422,6 +1543,31 @@ impl ConfigBuilder {
             self.enable_credssp.unwrap_or(true)
         };
 
+        let remote_application_mode = self.remote_application_mode.unwrap_or(false);
+        let rail_support_level = self
+            .rail_support_level
+            .unwrap_or(ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED);
+        if remote_application_mode
+            && !rail_support_level.contains(ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED)
+        {
+            anyhow::bail!("RAIL support level must include remote programs support when RemoteApp mode is enabled");
+        }
+
+        let rail_initial_execute = if remote_application_mode {
+            self.remote_application_program
+                .as_deref()
+                .filter(|program| !program.is_empty())
+                .or_else(|| self.alternate_shell.as_deref().filter(|shell| !shell.is_empty()))
+                .map(|executable| ExecutePdu {
+                    flags: 0,
+                    executable: executable.to_owned(),
+                    working_directory: self.work_dir.clone().unwrap_or_default(),
+                    arguments: String::new(),
+                })
+        } else {
+            None
+        };
+
         let connector = ironrdp_connector::Config {
             credentials: ironrdp_connector::Credentials::UsernamePassword {
                 username: self.username.unwrap_or_default(),
@@ -1444,6 +1590,7 @@ impl ConfigBuilder {
                 width: self.desktop_width.unwrap_or(DEFAULT_WIDTH),
                 height: self.desktop_height.unwrap_or(DEFAULT_HEIGHT),
             },
+            monitor_layout: self.monitor_layout,
             desktop_scale_factor: self.desktop_scale_factor.unwrap_or(0),
             bitmap: Some(bitmap),
             client_build: self.client_build.unwrap_or_default(),
@@ -1457,14 +1604,25 @@ impl ConfigBuilder {
             enable_server_pointer: self.enable_server_pointer.unwrap_or(true),
             autologon: self.autologon.unwrap_or(false),
             enable_audio_playback: self.enable_audio_playback.unwrap_or(true),
+            enable_audio_capture: self.enable_audio_capture.unwrap_or(false),
             request_data: None,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
             compression_type,
             performance_flags: self.performance_flags.unwrap_or_default(),
             timezone_info: TimezoneInfo::default(),
-            alternate_shell: self.alternate_shell.unwrap_or_default(),
-            work_dir: self.work_dir.unwrap_or_default(),
+            alternate_shell: if remote_application_mode {
+                String::new()
+            } else {
+                self.alternate_shell.unwrap_or_default()
+            },
+            work_dir: if remote_application_mode {
+                String::new()
+            } else {
+                self.work_dir.unwrap_or_default()
+            },
+            remote_application_mode,
+            rail_support_level,
         };
 
         // To avoid easily leaking secrets, strip any known secret property before returning the resulting Config.
@@ -1491,10 +1649,14 @@ impl ConfigBuilder {
             kerberos_config,
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,
+            rail_client_status_flags: self.rail_client_status_flags,
+            rail_initial_execute,
             #[cfg(feature = "dvc-pipe-proxy")]
             dvc_pipe_proxies: self.dvc_pipe_proxies,
             #[cfg(all(windows, feature = "dvc-com-plugin"))]
             dvc_plugins: self.dvc_plugins,
+            #[cfg(all(windows, feature = "webauthn"))]
+            webauthn_parent_hwnd: self.webauthn_parent_hwnd,
             properties,
             extensions: self.extensions,
         })
@@ -1515,7 +1677,7 @@ impl ConfigBuilder {
     pub fn with_property_set(mut self, ps: &PropertySet) -> anyhow::Result<Self> {
         #[cfg(feature = "gateway")]
         use ironrdp_cfg::GatewayUsageMethod;
-        use ironrdp_cfg::{AudioMode, TargetHost};
+        use ironrdp_cfg::{AudioCaptureMode, AudioMode, TargetHost};
 
         self.properties.merge(ps);
 
@@ -1567,6 +1729,12 @@ impl ConfigBuilder {
         if let Some(dir) = ps.shell_working_directory() {
             self.work_dir = Some(dir.to_owned());
         }
+        if let Some(remote_application_mode) = ps.remote_application_mode() {
+            self.remote_application_mode = Some(remote_application_mode);
+        }
+        if let Some(program) = ps.remote_application_program() {
+            self.remote_application_program = Some(program.to_owned());
+        }
         if let Some(minutes) = ps.fake_events_interval() {
             self.fake_events_interval = Some(Duration::from_secs(u64::from(minutes) * 60));
         }
@@ -1579,9 +1747,40 @@ impl ConfigBuilder {
         if let Some(depth) = ps.color_depth() {
             self.color_depth = Some(depth);
         }
+        #[cfg(feature = "sound")]
+        match ps.audio_mode() {
+            Ok(Some(AudioMode::RedirectToClient)) => {
+                self.enable_audio_playback = Some(true);
+                self.channels.sound = true;
+            }
+            Ok(Some(AudioMode::PlayOnServer | AudioMode::Disabled)) => {
+                self.enable_audio_playback = Some(false);
+                self.channels.sound = false;
+            }
+            _ => {}
+        }
+        #[cfg(not(feature = "sound"))]
         match ps.audio_mode() {
             Ok(Some(AudioMode::PlayOnServer | AudioMode::Disabled)) => self.enable_audio_playback = Some(false),
             Ok(Some(AudioMode::RedirectToClient)) => self.enable_audio_playback = Some(true),
+            _ => {}
+        }
+        #[cfg(feature = "sound")]
+        match ps.audio_capture_mode() {
+            Ok(Some(AudioCaptureMode::CaptureFromClient)) => {
+                self.enable_audio_capture = Some(true);
+                self.channels.audio_capture = true;
+            }
+            Ok(Some(AudioCaptureMode::Disabled)) => {
+                self.enable_audio_capture = Some(false);
+                self.channels.audio_capture = false;
+            }
+            _ => {}
+        }
+        #[cfg(not(feature = "sound"))]
+        match ps.audio_capture_mode() {
+            Ok(Some(AudioCaptureMode::CaptureFromClient)) => self.enable_audio_capture = Some(true),
+            Ok(Some(AudioCaptureMode::Disabled)) => self.enable_audio_capture = Some(false),
             _ => {}
         }
 
@@ -1685,10 +1884,14 @@ impl ConfigBuilder {
             }
             let _ = redirect;
         }
-        #[cfg(feature = "sound")]
-        if matches!(ps.audio_mode(), Ok(Some(AudioMode::Disabled))) {
-            self.channels.sound = false;
+        if let Some(redirect) = ps.redirect_webauthn() {
+            #[cfg(feature = "webauthn")]
+            {
+                self.channels.webauthn = redirect;
+            }
+            let _ = redirect;
         }
+
         #[cfg(feature = "rdpdr")]
         if let Some(enabled) = ps.enable_rdpdr() {
             self.channels.rdpdr.enabled = enabled;
@@ -1774,4 +1977,204 @@ fn kerberos_config_from_properties(
             kdc_proxy_url: Some(url),
             hostname: client_name.to_owned(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_cfg::PropertySetExt as _;
+    use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};
+    use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
+
+    use super::{ConfigBuilder, Destination};
+
+    fn complete_builder() -> ConfigBuilder {
+        ConfigBuilder::new()
+            .with_destination(Destination::new("server.example:3389").unwrap())
+            .with_username("user")
+            .with_password("password")
+            .with_client_build(1)
+            .with_client_dir("C:\\")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+    }
+
+    #[test]
+    fn remote_application_mode_requires_remote_programs_support() {
+        let error = complete_builder()
+            .with_remote_application_mode(true)
+            .with_rail_support_level(RailSupportLevel::empty())
+            .build()
+            .expect_err("RemoteApp must require remote programs support");
+
+        assert!(error.to_string().contains("RAIL support level"), "{error:?}");
+    }
+
+    #[test]
+    fn remote_application_mode_is_preserved_in_properties() {
+        let config = complete_builder()
+            .with_remote_application_mode(true)
+            .build()
+            .expect("valid RemoteApp configuration");
+
+        assert!(config.connector().remote_application_mode);
+        assert_eq!(config.properties().remote_application_mode(), Some(true));
+    }
+
+    #[test]
+    fn monitor_layout_is_preserved_in_connector_configuration() {
+        let monitor_layout = ClientMonitorData {
+            monitors: vec![Monitor {
+                left: 0,
+                top: 0,
+                right: 1_919,
+                bottom: 1_079,
+                flags: MonitorFlags::PRIMARY,
+            }],
+        };
+        let config = complete_builder()
+            .with_desktop_width(1_920)
+            .with_desktop_height(1_080)
+            .with_monitor_layout(monitor_layout.clone())
+            .build()
+            .expect("valid monitor layout configuration");
+
+        assert_eq!(config.connector().monitor_layout.as_ref(), Some(&monitor_layout));
+    }
+
+    #[test]
+    fn remote_application_program_queues_rail_execute_and_clears_client_info_shell() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_remote_application_mode(true);
+        properties.set_remote_application_program("notepad.exe");
+        properties.set_alternate_shell("fallback.exe");
+        properties.set_shell_working_directory("C:\\Temp");
+
+        let config = complete_builder()
+            .with_property_set(&properties)
+            .expect("valid properties")
+            .build()
+            .expect("valid RemoteApp configuration");
+
+        assert!(config.connector().alternate_shell.is_empty());
+        assert!(config.connector().work_dir.is_empty());
+        let execute = config.rail_initial_execute.expect("initial Execute PDU");
+        assert_eq!(execute.executable, "notepad.exe");
+        assert_eq!(execute.working_directory, "C:\\Temp");
+    }
+
+    #[cfg(feature = "sound")]
+    #[test]
+    fn with_audio_mode_redirect_enables_playback_channel() {
+        use ironrdp_cfg::AudioMode;
+
+        let config = complete_builder()
+            .with_audio_mode(AudioMode::RedirectToClient)
+            .build()
+            .expect("valid configuration");
+
+        assert!(config.connector().enable_audio_playback);
+        assert!(config.channels().sound);
+        assert_eq!(
+            config.properties().audio_mode().unwrap(),
+            Some(AudioMode::RedirectToClient)
+        );
+    }
+
+    #[cfg(feature = "sound")]
+    #[test]
+    fn with_audio_mode_play_on_server_disables_local_playback() {
+        use ironrdp_cfg::AudioMode;
+
+        let config = complete_builder()
+            .with_audio_mode(AudioMode::PlayOnServer)
+            .build()
+            .expect("valid configuration");
+
+        assert!(!config.connector().enable_audio_playback);
+        assert!(!config.channels().sound);
+        assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::PlayOnServer));
+    }
+
+    #[cfg(feature = "sound")]
+    #[test]
+    fn with_audio_mode_disabled_suppresses_sound_channel() {
+        use ironrdp_cfg::AudioMode;
+
+        let config = complete_builder()
+            .with_audio_mode(AudioMode::Disabled)
+            .build()
+            .expect("valid configuration");
+
+        assert!(!config.connector().enable_audio_playback);
+        assert!(!config.channels().sound);
+        assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::Disabled));
+    }
+
+    #[cfg(feature = "sound")]
+    #[test]
+    fn with_audio_capture_enables_client_info_flag_and_channel() {
+        use ironrdp_cfg::AudioCaptureMode;
+
+        let config = complete_builder()
+            .with_audio_capture(true)
+            .build()
+            .expect("valid configuration");
+
+        assert!(config.connector().enable_audio_capture);
+        assert!(config.channels().audio_capture);
+        assert_eq!(
+            config.properties().audio_capture_mode().unwrap(),
+            Some(AudioCaptureMode::CaptureFromClient)
+        );
+    }
+
+    #[cfg(feature = "sound")]
+    #[test]
+    fn with_audio_capture_disabled_clears_channel() {
+        use ironrdp_cfg::AudioCaptureMode;
+
+        let config = complete_builder()
+            .with_audio_capture(true)
+            .with_audio_capture(false)
+            .build()
+            .expect("valid configuration");
+
+        assert!(!config.connector().enable_audio_capture);
+        assert!(!config.channels().audio_capture);
+        assert_eq!(
+            config.properties().audio_capture_mode().unwrap(),
+            Some(AudioCaptureMode::Disabled)
+        );
+    }
+
+    #[cfg(feature = "webauthn")]
+    #[test]
+    fn with_webauthn_updates_the_channel_and_property() {
+        let builder = ConfigBuilder::new().with_webauthn(false);
+
+        assert!(!builder.channels.webauthn);
+        assert!(!builder.properties.redirect_webauthn().unwrap());
+    }
+
+    #[cfg(feature = "webauthn")]
+    #[test]
+    fn property_set_enables_webauthn_redirection() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_redirect_webauthn(true);
+
+        let builder = ConfigBuilder::from_property_set(&properties).expect("valid WebAuthn property");
+        assert!(builder.channels.webauthn);
+        assert!(builder.properties.redirect_webauthn().unwrap());
+    }
+
+    #[cfg(feature = "webauthn")]
+    #[test]
+    fn property_set_disables_webauthn_redirection() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_redirect_webauthn(false);
+
+        let builder = ConfigBuilder::from_property_set(&properties).expect("valid WebAuthn property");
+        assert!(!builder.channels.webauthn);
+        assert!(!builder.properties.redirect_webauthn().unwrap());
+    }
 }

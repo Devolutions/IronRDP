@@ -4,6 +4,7 @@ use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
 use ironrdp_dvc::pdu::{
     CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateRequestPdu, CreateResponsePdu,
     CreationStatus, DataFirstPdu, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu, FieldType,
+    SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncResponsePdu, SoftSyncTunnelType,
 };
 
 // TODO: This likely generalizes to many tests and can thus be reused outside of this module.
@@ -21,7 +22,9 @@ fn test_decodes<'a, T: Decode<'a> + PartialEq + core::fmt::Debug>(encoded: &'a [
 }
 
 mod capabilities;
+mod client;
 mod close;
 mod create;
 mod data;
 mod data_first;
+mod soft_sync;

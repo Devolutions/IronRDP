@@ -26,10 +26,11 @@ ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" }
 tracing = { version = "0.1", features = ["log"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
-    "Win32_System_RemoteDesktop",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_LibraryLoader",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_SystemInformation",
 ] }
 windows-core = "0.62"
 

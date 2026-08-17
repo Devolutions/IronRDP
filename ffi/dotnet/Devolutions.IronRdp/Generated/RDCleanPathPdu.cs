@@ -93,7 +93,7 @@ public partial class RDCleanPathPdu: IDisposable
     /// * `x224_pdu` - The X.224 Connection Request PDU bytes
     /// * `destination` - The destination RDP server address (e.g., "10.10.0.3:3389")
     /// * `proxy_auth` - The JWT authentication token
-    /// * `pcb` - Optional preconnection blob (for Hyper-V VM connections, empty string if not needed)
+    /// * `pcb` - Optional legacy complete preconnection blob represented as a string
     /// </remarks>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
@@ -129,6 +129,58 @@ public partial class RDCleanPathPdu: IDisposable
                     }
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// VMConnect request: proxy encodes the payload as PCB V2 and does TLS; client runs CredSSP then X.224.
+    /// </summary>
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>RDCleanPathPdu</c> allocated on Rust side.
+    /// </returns>
+    public static RDCleanPathPdu NewVmconnectRequest(string destination, string proxyAuth, string pcbPayload)
+    {
+        unsafe
+        {
+            byte[] destinationBuf = DiplomatUtils.StringToUtf8(destination);
+            byte[] proxyAuthBuf = DiplomatUtils.StringToUtf8(proxyAuth);
+            byte[] pcbPayloadBuf = DiplomatUtils.StringToUtf8(pcbPayload);
+            nuint destinationBufLength = (nuint)destinationBuf.Length;
+            nuint proxyAuthBufLength = (nuint)proxyAuthBuf.Length;
+            nuint pcbPayloadBufLength = (nuint)pcbPayloadBuf.Length;
+            fixed (byte* destinationBufPtr = destinationBuf)
+            {
+                fixed (byte* proxyAuthBufPtr = proxyAuthBuf)
+                {
+                    fixed (byte* pcbPayloadBufPtr = pcbPayloadBuf)
+                    {
+                        Raw.RdcleanpathFfiResultBoxRDCleanPathPduBoxIronRdpError result = Raw.RDCleanPathPdu.NewVmconnectRequest(destinationBufPtr, destinationBufLength, proxyAuthBufPtr, proxyAuthBufLength, pcbPayloadBufPtr, pcbPayloadBufLength);
+                        if (!result.isOk)
+                        {
+                            throw new IronRdpException(new IronRdpError(result.Err));
+                        }
+                        Raw.RDCleanPathPdu* retVal = result.Ok;
+                        return new RDCleanPathPdu(retVal);
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when the PDU carries an X.224 payload.
+    /// </summary>
+    public bool HasX224()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("RDCleanPathPdu");
+            }
+            bool retVal = Raw.RDCleanPathPdu.HasX224(_inner);
+            return retVal;
         }
     }
 
