@@ -66,3 +66,8 @@ fn check_egfx_avc420_decode() {
 fn check_egfx_multi_frame() {
     check!(egfx_multi_frame);
 }
+
+#[test]
+fn check_rdpeusb_decode() {
+    check!(rdpeusb_decode);
+}

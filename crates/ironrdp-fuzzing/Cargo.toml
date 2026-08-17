@@ -19,6 +19,7 @@ ironrdp-cliprdr.path = "../ironrdp-cliprdr"
 ironrdp-rdpdr.path = "../ironrdp-rdpdr"
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", features = ["arbitrary"] }
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", features = ["arbitrary"] }
+ironrdp-rdpeusb.path = "../ironrdp-rdpeusb"
 ironrdp-rdpsnd.path = "../ironrdp-rdpsnd"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-displaycontrol.path = "../ironrdp-displaycontrol"

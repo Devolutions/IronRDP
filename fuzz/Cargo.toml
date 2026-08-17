@@ -158,3 +158,10 @@ name = "rdpeudp_ack_vector"
 path = "fuzz_targets/rdpeudp_ack_vector.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "rdpeusb_decode"
+path = "fuzz_targets/rdpeusb_decode.rs"
+test = false
+doc = false
+bench = false

@@ -2883,6 +2883,7 @@ dependencies = [
  "ironrdp-rdpdr",
  "ironrdp-rdpemt",
  "ironrdp-rdpeudp",
+ "ironrdp-rdpeusb",
  "ironrdp-rdpsnd",
  "ironrdp-svc",
 ]
