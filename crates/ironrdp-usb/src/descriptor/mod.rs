@@ -74,24 +74,24 @@ fn le_u16(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }
 
+/// Enforce the subclass rule shared by the device and interface descriptors.
+///
+/// [USB 2.0] Table 9-8 and Table 9-12 both state that a subclass code must be
+/// reset to zero when its class code is, so the same check applies to
+/// `bDeviceSubClass` and `bInterfaceSubClass` alike.
+///
+/// The protocol code is deliberately not checked: neither table requires it to
+/// be zero when the class code is. Both only describe what a zero protocol code
+/// means, so rejecting a nonzero one would invent a rule USB does not state.
+///
+/// [USB 2.0]: https://www.usb.org/document-library/usb-20-specification
 fn validate_class_code(offset: usize, descriptor_type: u8, class: ClassCode) -> Result<(), DescriptorError> {
-    if class.class != 0 {
-        return Ok(());
-    }
-    if class.subclass != 0 {
+    if class.class == 0 && class.subclass != 0 {
         return Err(invalid_field(
             offset,
             descriptor_type,
             DescriptorField::Subclass,
             u32::from(class.subclass),
-        ));
-    }
-    if class.protocol != 0 {
-        return Err(invalid_field(
-            offset,
-            descriptor_type,
-            DescriptorField::Protocol,
-            u32::from(class.protocol),
         ));
     }
     Ok(())
