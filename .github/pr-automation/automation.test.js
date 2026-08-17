@@ -827,6 +827,7 @@ test("only the persistent oversized-review label starts automation from a label 
   const requested = await resolve(OVERSIZED_REVIEW_LABEL);
   assert.equal(requested.ok, true);
   assert.equal(requested.classificationRequested, true);
+  assert.equal(requested.reviewRequested, true);
   assert.equal(requested.force, false);
   assert.equal((await resolve("size/XXL")).reason, "unrelated pull request label");
 });
@@ -1478,13 +1479,25 @@ test("writer upgrades a neutral automated review check instead of creating a dup
   assert.equal(update.output.title, "Automated review complete");
 });
 
-test("writer dispatches automatic but not forced completed classifications", async () => {
-  const writeClassification = async (dispatchReview) => {
+test("writer dispatches new or explicitly requested completed classifications", async () => {
+  const writeClassification = async ({ dispatchReview, existing = false, reviewRequested = false }) => {
     let dispatches = 0;
     const github = {
       paginate: { iterator: async function* () { yield { data: [] }; } },
       rest: {
-        checks: { listForRef: () => {}, create: async () => {} },
+        checks: {
+          listForRef: async () => ({ data: { check_runs: existing ? [{
+            id: 7,
+            external_id: `classifier-v2:${SHA}`,
+            conclusion: "success",
+            output: {
+              title: "Classification complete",
+              summary: "Validated classification.\n\nironrdp-pr-automation-state: " +
+                "{\"schema_version\":\"classifier-v2\",\"protocol_related\":false,\"automatic_review_eligible\":true}",
+            },
+          }] : [] } }),
+          create: async () => {},
+        },
         pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
         issues: { get: async () => ({ data: { labels: [] } }) },
         repos: { createDispatchEvent: async () => { dispatches += 1; } },
@@ -1501,12 +1514,16 @@ test("writer dispatches automatic but not forced completed classifications", asy
           machineState: { protocolRelated: false },
         },
       },
+      reviewRequested,
     });
     return dispatches;
   };
 
-  assert.equal(await writeClassification(true), 1);
-  assert.equal(await writeClassification(false), 0);
+  assert.equal(await writeClassification({ dispatchReview: true }), 1);
+  assert.equal(await writeClassification({ dispatchReview: false }), 0);
+  assert.equal(await writeClassification({
+    dispatchReview: true, existing: true, reviewRequested: true,
+  }), 1);
 });
 
 test("writer deduplicates one forced review invocation but publishes a later one", async () => {

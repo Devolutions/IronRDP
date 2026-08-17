@@ -1039,6 +1039,7 @@ jobs:
       - uses: actions/github-script@v8
         env:
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          REVIEW_REQUESTED: ${{ needs.resolve-pr.outputs.review-requested }}
           CLASSIFICATION_STATE: ${{ needs.resolve-classification-state.outputs.state }}
           REVIEW_STATE: ${{ needs.resolve-review-state.outputs.state }}
           UPSTREAM_RESULTS: >-
@@ -1062,6 +1063,7 @@ jobs:
               github, owner: context.repo.owner, repo: context.repo.repo,
               prNumber: Number(process.env.PULL_REQUEST_NUMBER), state,
               botLogin: "github-actions[bot]",
+              reviewRequested: process.env.REVIEW_REQUESTED === "true",
             });
             core.info(JSON.stringify({
               event: "pr-automation.write-state-complete",
