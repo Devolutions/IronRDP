@@ -191,6 +191,14 @@ impl DrdynvcClient {
         self.dynamic_channels.register_once(channel);
     }
 
+    pub fn attach_established_dynamic_channel<T>(&mut self, channel_id: DynamicChannelId, channel: T) -> PduResult<()>
+    where
+        T: DvcClientProcessor + 'static,
+    {
+        self.dynamic_channels
+            .attach_established_channel(channel_id, Box::new(channel))
+    }
+
     /// Bind a listener.
     ///
     /// # Note
@@ -506,6 +514,21 @@ impl DynamicChannelSet {
                 type_id: Some(TypeId::of::<T>()),
             },
         );
+    }
+
+    fn attach_established_channel(
+        &mut self,
+        channel_id: DynamicChannelId,
+        channel: Box<dyn DvcClientProcessor>,
+    ) -> PduResult<()> {
+        if self.active_channels.contains_key(&channel_id) {
+            return Err(pdu_other_err!("dynamic channel ID is already attached"));
+        }
+
+        let mut channel = DynamicVirtualChannel::from_boxed(channel);
+        let _messages = channel.start(channel_id)?;
+        self.active_channels.insert(channel_id, channel);
+        Ok(())
     }
 
     fn try_create_channel(

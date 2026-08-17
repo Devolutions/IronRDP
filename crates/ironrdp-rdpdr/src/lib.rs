@@ -542,9 +542,7 @@ impl Rdpdr {
                 self.backend
                     .as_mut()
                     .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
-                    .handle_scard_call(req, call)?;
-
-                Ok(Vec::new())
+                    .handle_scard_call(req, call)
             }
             DeviceType::Filesystem => {
                 if self.rejected_device_ids.contains(&dev_io_req.device_id) {
@@ -713,8 +711,9 @@ impl SvcClientProcessor for Rdpdr {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ironrdp_core::encode_vec;
+
+    use super::*;
 
     #[derive(Debug, Default)]
     struct TrackingBackend {
@@ -756,8 +755,12 @@ mod tests {
             Ok(())
         }
 
-        fn handle_scard_call(&mut self, _req: DeviceControlRequest<ScardIoCtlCode>, _call: ScardCall) -> PduResult<()> {
-            Ok(())
+        fn handle_scard_call(
+            &mut self,
+            _req: DeviceControlRequest<ScardIoCtlCode>,
+            _call: ScardCall,
+        ) -> PduResult<Vec<SvcMessage>> {
+            Ok(Vec::new())
         }
 
         fn handle_drive_io_request(&mut self, req: ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {

@@ -234,6 +234,26 @@ fn audiomode_two_disables_audio_playback() {
 }
 
 #[test]
+fn audiomode_one_play_on_server_disables_local_playback() {
+    let config = parse_config_from_rdp(
+        "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:1\n",
+        &[],
+    );
+
+    assert!(!config.connector().enable_audio_playback);
+}
+
+#[test]
+fn audiomode_zero_enables_client_redirection() {
+    let config = parse_config_from_rdp(
+        "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:0\n",
+        &[],
+    );
+
+    assert!(config.connector().enable_audio_playback);
+}
+
+#[test]
 fn invalid_audiomode_falls_back_to_audio_playback_enabled() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\naudiomode:i:99\n",

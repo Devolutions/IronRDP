@@ -31,4 +31,6 @@ public enum ActiveStageOutputType
     SaveSessionInfo = 10,
     AutoReconnectCookie = 11,
     WindowingOrders = 12,
+    AutoReconnectFailed = 13,
+    MonitorLayout = 14,
 }

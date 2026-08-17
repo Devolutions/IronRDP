@@ -63,6 +63,7 @@ fn main() -> anyhow::Result<()> {
         Action::CheckLints => check::lints(&sh)?,
         Action::CheckLocks => check::lock_files(&sh)?,
         Action::CheckDependencies => check::dependencies(&sh)?,
+        Action::CheckTestSettings { base, head } => check::test_settings(&sh, &base, &head)?,
         Action::CheckTests { no_run } => {
             if no_run {
                 check::tests_compile(&sh)?;

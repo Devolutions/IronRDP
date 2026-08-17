@@ -24,8 +24,8 @@ use ironrdp_propertyset::{PropertySet, Value};
 
 use ironrdp_rpc::ipc::{
     AgentError, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent,
-    OperationEventKind, OperationInfo, OperationState, Payload, PropValue, RailEvent, RailEventKind,
-    RailExecuteRequest, Request, Response,
+    OperationEventKind, OperationInfo, OperationState, Payload, PenContactRequest, PenFrameRequest, PropValue,
+    RailEvent, RailEventKind, RailExecuteRequest, Request, Response, TouchContactRequest, TouchFrameRequest,
 };
 use ironrdp_rpc::transport::{self, Endpoint};
 
@@ -105,6 +105,83 @@ enum Command {
         #[arg(long, value_parser = parse_unicode_text)]
         text: String,
     },
+    /// Send one MS-RDPEI touch contact sample (legal flag sets only).
+    Touch {
+        #[arg(long, default_value_t = 0)]
+        contact_id: u8,
+        #[arg(long, allow_hyphen_values = true)]
+        x: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        y: i32,
+        #[arg(long, value_enum)]
+        action: CliTouchAction,
+        #[arg(long, default_value_t = 0)]
+        encode_time: u32,
+        #[arg(long, default_value_t = 0)]
+        frame_offset: u64,
+    },
+    /// Tap once via MS-RDPEI (one touch PDU: DOWN then out-of-range UP).
+    TouchTap {
+        #[arg(long, default_value_t = 0)]
+        contact_id: u8,
+        #[arg(long, allow_hyphen_values = true)]
+        x: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        y: i32,
+    },
+    /// Send one multi-contact MS-RDPEI touch frame (`id:x:y:action` entries).
+    TouchFrame {
+        /// Contacts as `id:x:y:action` (action uses the same names as `touch --action`).
+        #[arg(long = "contact", required = true, num_args = 1..)]
+        contacts: Vec<String>,
+        #[arg(long, default_value_t = 0)]
+        encode_time: u32,
+        #[arg(long, default_value_t = 0)]
+        frame_offset: u64,
+    },
+    /// Send one MS-RDPEI pen contact sample (legal flag sets only).
+    Pen {
+        #[arg(long, default_value_t = 0)]
+        device_id: u8,
+        #[arg(long, allow_hyphen_values = true)]
+        x: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        y: i32,
+        #[arg(long, value_enum)]
+        action: CliPenAction,
+        #[arg(long, default_value_t = 0)]
+        encode_time: u32,
+        #[arg(long, default_value_t = 0)]
+        frame_offset: u64,
+        #[arg(long)]
+        pressure: Option<u32>,
+        #[arg(long)]
+        rotation: Option<u16>,
+        #[arg(long, allow_hyphen_values = true)]
+        tilt_x: Option<i16>,
+        #[arg(long, allow_hyphen_values = true)]
+        tilt_y: Option<i16>,
+        #[arg(long, default_value_t = false)]
+        eraser: bool,
+        #[arg(long, default_value_t = false)]
+        inverted: bool,
+    },
+    /// Tap once via MS-RDPEI pen (one pen PDU: DOWN then out-of-range UP).
+    PenTap {
+        #[arg(long, default_value_t = 0)]
+        device_id: u8,
+        #[arg(long, allow_hyphen_values = true)]
+        x: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        y: i32,
+        #[arg(long)]
+        pressure: Option<u32>,
+    },
+    /// Dismiss a hovering MS-RDPEI touch contact.
+    DismissHovering {
+        #[arg(long, default_value_t = 0)]
+        contact_id: u8,
+    },
     /// Resize the remote desktop.
     Resize {
         #[arg(long)]
@@ -116,7 +193,7 @@ enum Command {
     Now(NowArgs),
     /// Inspect and exercise the validated, headless RemoteApp/RAIL audit plane.
     Rail(RailArgs),
-    /// Windows Sandbox lifecycle helpers (list/config/stop via WindowsSandboxServer gRPC).
+    /// Windows Sandbox lifecycle helpers via WindowsSandboxServer gRPC.
     #[cfg(windows)]
     Sandbox(SandboxArgs),
 }
@@ -131,6 +208,15 @@ struct SandboxArgs {
 #[cfg(windows)]
 #[derive(Subcommand, Debug)]
 enum SandboxCommand {
+    /// Start a sandbox through the running WindowsSandboxServer.
+    Start {
+        /// Optional sandbox ID. The server generates one when omitted.
+        #[arg(long, value_name = "GUID")]
+        id: Option<String>,
+        /// Read Windows Sandbox configuration XML from this file.
+        #[arg(long, value_name = "FILE")]
+        config: Option<PathBuf>,
+    },
     /// List running sandbox ids (`EnumerateSandboxVMs`).
     List,
     /// Show RDP config for a sandbox (password redacted).
@@ -332,22 +418,22 @@ enum OutputFormat {
 const MAX_JSON_STREAM_EVENTS: usize = 8 * 1024;
 const MAX_JSON_STREAM_OUTPUT: usize = 2 * 1024 * 1024;
 
-/// A daemon-provided error that must be rendered according to the selected NOW output format.
+/// A daemon-provided error that must be rendered according to the selected output format.
 #[derive(Debug)]
-struct NowRequestError(AgentError);
+struct DaemonRequestError(AgentError);
 
-impl fmt::Display for NowRequestError {
+impl fmt::Display for DaemonRequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0.message)
     }
 }
 
-impl core::error::Error for NowRequestError {}
+impl core::error::Error for DaemonRequestError {}
 
 #[derive(Args, Debug)]
 struct DaemonArgs {
     /// Path to a .rdp file whose properties are preloaded as an overlay applied to every `connect`
-    /// (overlay wins). Use this to provision any setting out of band — credentials in particular
+    /// (overlay wins). Use this to provision any setting out of band â€” credentials in particular
     /// (e.g. `ClearTextPassword`), so a caller never needs to supply them; `status` then reports
     /// `credentials loaded: true`.
     #[arg(long)]
@@ -371,6 +457,14 @@ struct DaemonArgs {
     #[cfg(windows)]
     #[arg(long = "rdpdr-drive", value_name = "NAME=VOLUME_ROOT", value_parser = parse_rdpdr_drive)]
     rdpdr_drives: Vec<ironrdp_daemon::daemon::RdpdrDriveConfig>,
+    /// Enable Windows WinSCard smartcard redirection for every connect (Windows only).
+    ///
+    /// Equivalent to preloading `ironrdp_smartcard:i:1`. Connect can still disable with
+    /// `--prop ironrdp_smartcard:i:0`, or enable without this flag via that property / sandbox
+    /// `SmartCardRedirection`.
+    #[cfg(windows)]
+    #[arg(long)]
+    smartcard: bool,
 }
 
 #[derive(Args, Debug)]
@@ -538,6 +632,139 @@ fn parse_rdpdr_drive(input: &str) -> Result<ironrdp_daemon::daemon::RdpdrDriveCo
         .map_err(|error| error.to_string())
 }
 
+/// Legal MS-RDPEI pen contact transitions for agent testing.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CliPenAction {
+    /// DOWN | INRANGE | INCONTACT
+    Down,
+    /// UPDATE | INRANGE | INCONTACT
+    Move,
+    /// UP | INRANGE
+    Up,
+    /// UP
+    OutOfRange,
+    /// UPDATE | CANCELED
+    Cancel,
+    /// UPDATE | INRANGE
+    Hover,
+}
+
+impl CliPenAction {
+    fn flags(self) -> u16 {
+        const DOWN: u16 = 0x0001;
+        const UPDATE: u16 = 0x0002;
+        const UP: u16 = 0x0004;
+        const INRANGE: u16 = 0x0008;
+        const INCONTACT: u16 = 0x0010;
+        const CANCELED: u16 = 0x0020;
+
+        match self {
+            Self::Down => DOWN | INRANGE | INCONTACT,
+            Self::Move => UPDATE | INRANGE | INCONTACT,
+            Self::Up => UP | INRANGE,
+            Self::OutOfRange => UP,
+            Self::Cancel => UPDATE | CANCELED,
+            Self::Hover => UPDATE | INRANGE,
+        }
+    }
+
+    fn pen_flags(eraser: bool, inverted: bool) -> Option<u32> {
+        // MS-RDPEI penFlags: ERASER_PRESSED=0x2, INVERTED=0x4
+        let mut flags = 0u32;
+        if eraser {
+            flags |= 0x0002;
+        }
+        if inverted {
+            flags |= 0x0004;
+        }
+        if flags == 0 { None } else { Some(flags) }
+    }
+}
+
+fn pen_request(encode_time: u32, frame_offset: u64, contact: PenContactRequest) -> Request {
+    Request::Pen {
+        encode_time,
+        frames: vec![PenFrameRequest {
+            frame_offset,
+            contacts: vec![contact],
+        }],
+    }
+}
+
+fn parse_touch_contact_spec(spec: &str) -> anyhow::Result<TouchContactRequest> {
+    let mut parts = spec.splitn(4, ':');
+    let (Some(id), Some(x), Some(y), Some(action)) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+        anyhow::bail!("malformed contact '{spec}', expected id:x:y:action");
+    };
+    Ok(TouchContactRequest {
+        contact_id: id.parse().with_context(|| format!("contact id in '{spec}'"))?,
+        x: x.parse().with_context(|| format!("contact x in '{spec}'"))?,
+        y: y.parse().with_context(|| format!("contact y in '{spec}'"))?,
+        flags: action.parse::<CliTouchAction>().map_err(anyhow::Error::msg)?.flags(),
+    })
+}
+
+/// Legal MS-RDPEI touch contact transitions for agent testing.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CliTouchAction {
+    /// DOWN | INRANGE | INCONTACT (engage)
+    Down,
+    /// UPDATE | INRANGE | INCONTACT (engaged move)
+    Move,
+    /// UP | INRANGE (leave contact while still in range / hover)
+    Up,
+    /// UP (leave range / out of range)
+    OutOfRange,
+    /// UPDATE | CANCELED
+    Cancel,
+    /// UPDATE | INRANGE (hover move)
+    Hover,
+}
+
+impl CliTouchAction {
+    fn flags(self) -> u16 {
+        // Matches `ironrdp_rdpei::pdu::TouchContactFlags` / MS-RDPEI 2.2.3.3.1.1.
+        const DOWN: u16 = 0x0001;
+        const UPDATE: u16 = 0x0002;
+        const UP: u16 = 0x0004;
+        const INRANGE: u16 = 0x0008;
+        const INCONTACT: u16 = 0x0010;
+        const CANCELED: u16 = 0x0020;
+
+        match self {
+            Self::Down => DOWN | INRANGE | INCONTACT,
+            Self::Move => UPDATE | INRANGE | INCONTACT,
+            Self::Up => UP | INRANGE,
+            Self::OutOfRange => UP,
+            Self::Cancel => UPDATE | CANCELED,
+            Self::Hover => UPDATE | INRANGE,
+        }
+    }
+}
+
+impl FromStr for CliTouchAction {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        ValueEnum::from_str(s, true)
+    }
+}
+
+fn touch_request(encode_time: u32, frame_offset: u64, contact_id: u8, x: i32, y: i32, flags: u16) -> Request {
+    Request::Touch {
+        encode_time,
+        frames: vec![TouchFrameRequest {
+            frame_offset,
+            contacts: vec![TouchContactRequest {
+                contact_id,
+                x,
+                y,
+                flags,
+            }],
+        }],
+    }
+}
+
 /// Entry point shared by the binary: dispatches the parsed [`Cli`].
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     if cli.help_agent {
@@ -567,9 +794,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let rdpdr_drives = args.rdpdr_drives;
             #[cfg(not(windows))]
             let rdpdr_drives = Vec::new();
+            #[cfg(windows)]
+            let smartcard = args.smartcard;
+            #[cfg(not(windows))]
+            let smartcard = false;
             let options = ironrdp_daemon::daemon::DaemonOptions::default()
                 .with_certificate_check_skipped(args.skip_certificate_check)
-                .with_rdpdr_drives(rdpdr_drives);
+                .with_rdpdr_drives(rdpdr_drives)
+                .with_smartcard(smartcard);
             return ironrdp_daemon::daemon::run(endpoint, overlay, options).await;
         }
         Command::Now(args) => {
@@ -577,8 +809,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let exit_code = match run_now(&endpoint, args).await {
                 Ok(exit_code) => exit_code,
                 Err(error) => {
-                    if let Some(error) = error.downcast_ref::<NowRequestError>() {
-                        print_now_error(&error.0, format)?;
+                    if let Some(error) = error.downcast_ref::<DaemonRequestError>() {
+                        print_request_error(&error.0, format)?;
                         std::process::exit(1);
                     }
                     return Err(error);
@@ -591,7 +823,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             return Ok(());
         }
-        Command::Rail(args) => return run_rail(&endpoint, args).await,
+        Command::Rail(args) => {
+            let format = args.format;
+            if let Err(error) = run_rail(&endpoint, args).await {
+                if let Some(error) = error.downcast_ref::<DaemonRequestError>() {
+                    print_request_error(&error.0, format)?;
+                    std::process::exit(1);
+                }
+                return Err(error);
+            }
+            return Ok(());
+        }
         Command::Connect(args) => build_connect_request(args)?,
         #[cfg(windows)]
         Command::Sandbox(args) => {
@@ -630,6 +872,124 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::KeyScancode { scancode, pressed } => Request::KeyScancode { scancode, pressed },
         Command::KeyUnicode { character, pressed } => Request::KeyUnicode { ch: character, pressed },
         Command::TypeUnicode { text } => Request::UnicodeText { text },
+        Command::Touch {
+            contact_id,
+            x,
+            y,
+            action,
+            encode_time,
+            frame_offset,
+        } => touch_request(encode_time, frame_offset, contact_id, x, y, action.flags()),
+        Command::TouchTap { contact_id, x, y } => Request::Touch {
+            encode_time: 0,
+            frames: vec![
+                TouchFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![TouchContactRequest {
+                        contact_id,
+                        x,
+                        y,
+                        flags: CliTouchAction::Down.flags(),
+                    }],
+                },
+                TouchFrameRequest {
+                    // 16 ms between engage and release, matching a short physical tap.
+                    frame_offset: 16_000,
+                    contacts: vec![TouchContactRequest {
+                        contact_id,
+                        x,
+                        y,
+                        // Bare UP ends the contact lifecycle (out of range), not hover-up.
+                        flags: CliTouchAction::OutOfRange.flags(),
+                    }],
+                },
+            ],
+        },
+        Command::TouchFrame {
+            contacts,
+            encode_time,
+            frame_offset,
+        } => {
+            let mut parsed = Vec::with_capacity(contacts.len());
+            for spec in contacts {
+                parsed.push(parse_touch_contact_spec(&spec)?);
+            }
+            Request::Touch {
+                encode_time,
+                frames: vec![TouchFrameRequest {
+                    frame_offset,
+                    contacts: parsed,
+                }],
+            }
+        }
+        Command::Pen {
+            device_id,
+            x,
+            y,
+            action,
+            encode_time,
+            frame_offset,
+            pressure,
+            rotation,
+            tilt_x,
+            tilt_y,
+            eraser,
+            inverted,
+        } => pen_request(
+            encode_time,
+            frame_offset,
+            PenContactRequest {
+                device_id,
+                x,
+                y,
+                flags: action.flags(),
+                pressure,
+                rotation,
+                tilt_x,
+                tilt_y,
+                pen_flags: CliPenAction::pen_flags(eraser, inverted),
+            },
+        ),
+        Command::PenTap {
+            device_id,
+            x,
+            y,
+            pressure,
+        } => Request::Pen {
+            encode_time: 0,
+            frames: vec![
+                PenFrameRequest {
+                    frame_offset: 0,
+                    contacts: vec![PenContactRequest {
+                        device_id,
+                        x,
+                        y,
+                        flags: CliPenAction::Down.flags(),
+                        pressure,
+                        rotation: None,
+                        tilt_x: None,
+                        tilt_y: None,
+                        pen_flags: None,
+                    }],
+                },
+                PenFrameRequest {
+                    // 16 ms between engage and release, matching a short physical tap.
+                    frame_offset: 16_000,
+                    contacts: vec![PenContactRequest {
+                        device_id,
+                        x,
+                        y,
+                        flags: CliPenAction::OutOfRange.flags(),
+                        pressure,
+                        rotation: None,
+                        tilt_x: None,
+                        tilt_y: None,
+                        pen_flags: None,
+                    }],
+                },
+            ],
+        },
+        Command::DismissHovering { contact_id } => Request::DismissHoveringTouchContact { contact_id },
         Command::Resize { width, height } => Request::Resize { width, height },
     };
 
@@ -731,6 +1091,16 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
 #[cfg(windows)]
 fn run_sandbox_command(args: SandboxArgs) -> anyhow::Result<()> {
     match args.command {
+        SandboxCommand::Start { id, config } => {
+            let recipe = config
+                .as_deref()
+                .map(|path| std::fs::read_to_string(path).with_context(|| format!("read {}", path.display())))
+                .transpose()?;
+            let cfg =
+                crate::sandbox::start_sandbox(recipe.as_deref(), id.as_deref()).context("start Windows Sandbox")?;
+            println!("{}", cfg.sandbox_id);
+            Ok(())
+        }
         SandboxCommand::List => {
             let ids = crate::sandbox::list_sandbox_ids().context("list Windows sandboxes")?;
             if ids.is_empty() {
@@ -782,7 +1152,7 @@ async fn run_rail(endpoint: &Endpoint, args: RailArgs) -> anyhow::Result<()> {
     let response = transport::send_request(endpoint, &request).await?;
     let payload = match response {
         Response::Ok(payload) => payload,
-        Response::Err(error) => anyhow::bail!("{error}"),
+        Response::Err(error) => return Err(DaemonRequestError(error).into()),
     };
     print_rail_payload(payload, format)
 }
@@ -1161,7 +1531,7 @@ async fn now_execution(
             let response = transport::send_request(endpoint, &Request::NowExecute(request)).await?;
             let payload = match response {
                 Response::Ok(payload) => payload,
-                Response::Err(error) => return Err(NowRequestError(error).into()),
+                Response::Err(error) => return Err(DaemonRequestError(error).into()),
             };
             let Payload::NowOperation(operation) = &payload else {
                 anyhow::bail!("unexpected response while writing operation ID");
@@ -1180,7 +1550,7 @@ async fn now_single(endpoint: &Endpoint, request: Request, format: OutputFormat)
     let response = transport::send_request(endpoint, &request).await?;
     let payload = match response {
         Response::Ok(payload) => payload,
-        Response::Err(error) => return Err(NowRequestError(error).into()),
+        Response::Err(error) => return Err(DaemonRequestError(error).into()),
     };
     print_now_payload(&payload, format)?;
     Ok(payload_remote_exit(&payload))
@@ -1197,7 +1567,7 @@ async fn now_stream(
     let first: Response = transport::read_message(&mut stream).await?;
     let first = match first {
         Response::Ok(payload) => payload,
-        Response::Err(error) => return Err(NowRequestError(error).into()),
+        Response::Err(error) => return Err(DaemonRequestError(error).into()),
     };
 
     let mut exit_code = payload_remote_exit(&first);
@@ -1237,7 +1607,7 @@ async fn now_stream(
         };
         let payload = match response {
             Response::Ok(payload) => payload,
-            Response::Err(error) => return Err(NowRequestError(error).into()),
+            Response::Err(error) => return Err(DaemonRequestError(error).into()),
         };
         if let Payload::NowEvent(event) = &payload {
             match &event.kind {
@@ -1270,7 +1640,7 @@ async fn now_stream(
     Ok(exit_code)
 }
 
-fn print_now_error(error: &AgentError, format: OutputFormat) -> anyhow::Result<()> {
+fn print_request_error(error: &AgentError, format: OutputFormat) -> anyhow::Result<()> {
     match format {
         OutputFormat::Human => {
             eprintln!("{}", error.message);
@@ -1284,7 +1654,7 @@ fn print_now_error(error: &AgentError, format: OutputFormat) -> anyhow::Result<(
                     "category": error.category.as_str(),
                     "message": error.message,
                 }))
-                .context("serialize NOW error")?
+                .context("serialize daemon request error")?
             );
             Ok(())
         }
@@ -1635,7 +2005,7 @@ fn property_description(key: &str) -> Option<&'static str> {
     // PropertySet keys are case-sensitive and ironrdp-cfg mixes casings (e.g. `ClearTextPassword`),
     // so normalize to lowercase to match the canonical lowercase arms below.
     let description = match key.to_ascii_lowercase().as_str() {
-        // ── Standard .rdp keys ──────────────────────────────────────────────
+        // â”€â”€ Standard .rdp keys â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "full address" => "RDP server address as host[:port]",
         "alternate full address" => "fallback RDP server address (host[:port]) tried if 'full address' fails",
         "server port" => "RDP server TCP port (default 3389)",
@@ -1653,7 +2023,7 @@ fn property_description(key: &str) -> Option<&'static str> {
         "shell working directory" => "working directory for the alternate shell or RemoteApp program",
         "remoteapplicationname" => "RemoteApp display name",
         "remoteapplicationprogram" => "RemoteApp program path to launch",
-        // ── RD gateway ──────────────────────────────────────────────────────
+        // â”€â”€ RD gateway â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "gatewayhostname" => "RD gateway host name",
         "gatewayusername" => "RD gateway user name",
         "gatewaypassword" => "RD gateway password (secret)",
@@ -1663,10 +2033,10 @@ fn property_description(key: &str) -> Option<&'static str> {
         "gatewaycredentialssource" => {
             "RD gateway credential source (0 = server, 1 = user, 2 = profile, 3 = prompt, 4 = smart card, 5 = logon)"
         }
-        // ── Kerberos ────────────────────────────────────────────────────────
+        // â”€â”€ Kerberos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "kdcproxyname" => "Kerberos KDC proxy name",
         "kdcproxyurl" => "Kerberos KDC proxy URL",
-        // ── IronRDP extensions (ironrdp_ prefix) ────────────────────────────
+        // â”€â”€ IronRDP extensions (ironrdp_ prefix) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         "ironrdp_autologon" => "attempt automatic logon with the supplied credentials (0/1)",
         "ironrdp_colordepth" => "color depth in bits per pixel (e.g. 16 or 32)",
         "ironrdp_compressionlevel" => "bulk compression level",
@@ -1695,6 +2065,8 @@ mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
     use super::Command;
+    #[cfg(windows)]
+    use super::SandboxCommand;
     use super::{
         Backend, Cli, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, build_now_execution,
         endpoint_from_arg,
@@ -1751,6 +2123,30 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn sandbox_start_parses_optional_id_and_config_file() {
+        let cli = Cli::try_parse_from([
+            "ironrdp-agent",
+            "sandbox",
+            "start",
+            "--id",
+            "8825f947-7d05-46e5-9efb-317ca83500ec",
+            "--config",
+            "sandbox.wsb",
+        ])
+        .expect("valid sandbox start arguments");
+
+        let Some(Command::Sandbox(args)) = cli.command else {
+            panic!("expected sandbox command");
+        };
+        let SandboxCommand::Start { id, config } = args.command else {
+            panic!("expected sandbox start command");
+        };
+        assert_eq!(id.as_deref(), Some("8825f947-7d05-46e5-9efb-317ca83500ec"));
+        assert_eq!(config, Some(PathBuf::from("sandbox.wsb")));
+    }
+
     #[test]
     fn daemon_start_can_skip_certificate_check() {
         let cli = Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--skip-certificate-check"])
@@ -1760,6 +2156,18 @@ mod tests {
             panic!("expected daemon-start command");
         };
         assert!(args.skip_certificate_check);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn daemon_start_can_enable_smartcard() {
+        let cli = Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--smartcard"])
+            .expect("valid smartcard configuration");
+
+        let Some(Command::DaemonStart(args)) = cli.command else {
+            panic!("expected daemon-start command");
+        };
+        assert!(args.smartcard);
     }
 
     #[test]

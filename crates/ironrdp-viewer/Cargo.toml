@@ -60,5 +60,8 @@ semver = "1"
 raw-window-handle = "0.6"
 url = "2"
 
+[target.'cfg(windows)'.dependencies]
+ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.7" }
+
 [lints]
 workspace = true

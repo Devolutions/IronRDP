@@ -8,6 +8,7 @@ const { validateReviewer } = require("./validate-reviewer");
 const RISK = ["risk/low", "risk/medium", "risk/high", "risk/unknown"];
 const AI_COUNTS = ["ai-reviewed/1", "ai-reviewed/2"];
 const LEGITIMACY_LABEL = "triage/legitimacy";
+const OVERSIZED_REVIEW_LABEL = "ai-review/allow-oversized";
 const LEGITIMACY_MARKER_PREFIX = "<!-- ironrdp-pr-automation:legitimacy:v2:";
 const DUPLICATE_MARKER = "<!-- ironrdp-pr-automation:duplicate -->";
 const OVERSIZED_MARKER = "<!-- ironrdp-pr-automation:oversized -->";
@@ -25,7 +26,8 @@ function labelsOf(labels) {
 // of being restated in the workflow where the two copies could drift apart.
 function reviewPolicyEligible({ labels, legitimacyStopped, protocolRelated } = {}) {
   const present = labelsOf(labels);
-  if (present.has("ai-reviewed/2") || present.has("duplicate") || present.has("size/XXL") ||
+  const oversized = present.has("size/XXL") && !present.has(OVERSIZED_REVIEW_LABEL);
+  if (present.has("ai-reviewed/2") || present.has("duplicate") || oversized ||
       present.has(LEGITIMACY_LABEL) || legitimacyStopped === true) return false;
   // Risk gates the non-protocol route only. Risk measures how much human scrutiny a change needs,
   // not how much an automated review is worth, so a protocol-related change is always reviewed.
@@ -72,7 +74,7 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
       externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
       title: "Classification unavailable",
       summary: `Automated classification was unavailable: ${reason}. Maintainer review is required.`,
-      machineState: { protocolRelated: false },
+      machineState: { protocolRelated: false, automaticReviewEligible: false },
       conclusion: "neutral",
     },
   };
@@ -101,7 +103,7 @@ function oversizedClassification(expectedSha, deterministic, semverStatus) {
       externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
       title: "Deterministic labelling only",
       summary: "This pull request is too large for automated review, so no model was invoked.",
-      machineState: { protocolRelated: false },
+      machineState: { protocolRelated: false, automaticReviewEligible: false },
     },
   };
 }
@@ -117,9 +119,11 @@ function resolveClassificationState({
     return failedClassification(expectedSha, deterministic, "terminal AI review count", failureRateLimit);
   }
   const semverStatus = boundStatus(semver, expectedSha, ["suspected", "not-suspected"]);
-  // Checked before the classifier is consulted: an oversized pull request never reaches a model, so
-  // there is no classifier output to validate and no quota to charge.
-  if (!forced && deterministic?.ok && deterministic.sizeLabel === "size/XXL") {
+  // Checked before the classifier is consulted unless a maintainer has opted the pull request into
+  // normal oversized review, avoiding a model call and quota charge for the default exclusion.
+  const oversized = deterministic?.ok && deterministic.sizeLabel === "size/XXL" &&
+    !existing.has(OVERSIZED_REVIEW_LABEL);
+  if (!forced && oversized) {
     return oversizedClassification(expectedSha, deterministic, semverStatus);
   }
   if (!forced && rateLimit && rateLimit.status !== "allowed") {
@@ -153,7 +157,6 @@ function resolveClassificationState({
     : model.breaking_change_suspected && model.risk === "low" ? "medium"
     : model.risk;
   const duplicate = model.duplicate.detected && model.duplicate.confidence >= 0.85;
-  const isOversized = deterministic.sizeLabel === "size/XXL";
   const optional = [
     ["kind/technical-debt", model.technical_debt],
     ["kind/protocol", model.protocol_related],
@@ -177,7 +180,7 @@ function resolveClassificationState({
       kind: "duplicate", marker: DUPLICATE_MARKER,
       url: model.duplicate.similar_pr_url, rationale: model.duplicate.rationale,
     }] : []),
-    ...(isOversized && !forced ? [{ kind: "oversized", marker: OVERSIZED_MARKER }] : []),
+    ...(oversized && !forced ? [{ kind: "oversized", marker: OVERSIZED_MARKER }] : []),
   ];
   const auditComments = [
     ...(legitimacyStopped ? [{
@@ -192,7 +195,7 @@ function resolveClassificationState({
       // A later push can make a previously reported duplicate or oversized verdict wrong, and stale
       // guidance would then contradict the labels this run just wrote.
       ...(duplicate ? [] : [DUPLICATE_MARKER]),
-      ...(isOversized && !forced ? [LEGACY_XL_MARKER] : [OVERSIZED_MARKER, LEGACY_XL_MARKER]),
+      ...(oversized && !forced ? [LEGACY_XL_MARKER] : [OVERSIZED_MARKER, LEGACY_XL_MARKER]),
     ],
     legitimacyStopped,
     check: {
@@ -340,6 +343,7 @@ function resolveReviewState({
 
 module.exports = {
   AI_COUNTS, DUPLICATE_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
-  LEGITIMACY_MARKER_PREFIX, RISK, OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS, contributorEligibility, isExcludedHistory,
-  qualifyingMergedPrs, resolveClassificationState, resolveReviewState, reviewPolicyEligible,
+  LEGITIMACY_MARKER_PREFIX, OVERSIZED_REVIEW_LABEL, RISK, OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
+  contributorEligibility, isExcludedHistory, qualifyingMergedPrs, resolveClassificationState,
+  resolveReviewState, reviewPolicyEligible,
 };

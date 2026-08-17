@@ -5,7 +5,7 @@ use ironrdp_core::{ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelRef};
 use ironrdp_graphics::pointer::DecodedPointer;
-use ironrdp_pdu::gcc::ChannelName;
+use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
@@ -21,6 +21,7 @@ use ironrdp_pdu::window::{
     WindowingOrdersUpdate, try_decode_fast_path_windowing_orders, try_decode_slow_path_windowing_orders,
 };
 use ironrdp_pdu::{Action, mcs};
+use ironrdp_rdpei::RdpeiClient;
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
 use tracing::debug;
 
@@ -506,6 +507,98 @@ impl ActiveStage {
         None
     }
 
+    /// Returns whether the RDPEI channel is available and ready (SC_READY / CS_READY exchanged).
+    ///
+    /// `None` means no RDPEI client is configured. `Some(false)` means it is registered but not
+    /// yet ready (or currently suspended for touch/pen send purposes when checking readiness for
+    /// injection — use [`Self::rdpei_can_send_touch`] for the send gate).
+    pub fn rdpei_ready(&mut self) -> Option<bool> {
+        let Some(dvc) = self.get_dvc::<RdpeiClient>() else {
+            return self
+                .get_svc_processor::<DrdynvcClient>()
+                .and_then(|drdynvc| drdynvc.has_registered_dvc::<RdpeiClient>().then_some(false));
+        };
+        Some(dvc.processor().ready())
+    }
+
+    /// True when RDPEI is ready and the server has not suspended input.
+    pub fn rdpei_can_send_touch(&mut self) -> bool {
+        self.get_dvc::<RdpeiClient>()
+            .is_some_and(|dvc| dvc.processor().ready() && !dvc.processor().is_suspended())
+    }
+
+    /// Encodes a touch event for the RDPEI dynamic channel.
+    ///
+    /// Returns `None` when the channel is unavailable, not ready, or suspended.
+    pub fn encode_rdpei_touch(&mut self, event: ironrdp_rdpei::pdu::TouchEventPdu) -> Option<SessionResult<Vec<u8>>> {
+        if let Some(dvc) = self.get_dvc::<RdpeiClient>() {
+            let channel_id = dvc.channel_id();
+            let rdpei = dvc.processor();
+            if !rdpei.ready() {
+                return Some(Err(SessionError::general("RDPEI channel is not ready")));
+            }
+            if rdpei.is_suspended() {
+                return Some(Err(SessionError::general("RDPEI input is suspended")));
+            }
+            let svc_messages = match rdpei.encode_touch_event(channel_id, event) {
+                Ok(messages) => messages,
+                Err(e) => return Some(Err(SessionError::encode(e))),
+            };
+            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
+        } else {
+            debug!("Could not encode RDPEI touch: Input Virtual Channel is not available");
+        }
+        None
+    }
+
+    /// Encodes a dismiss-hovering-touch-contact PDU on the RDPEI channel.
+    pub fn encode_rdpei_dismiss_hovering(&mut self, contact_id: u8) -> Option<SessionResult<Vec<u8>>> {
+        if let Some(dvc) = self.get_dvc::<RdpeiClient>() {
+            let channel_id = dvc.channel_id();
+            let rdpei = dvc.processor();
+            if !rdpei.ready() {
+                debug!("Could not encode RDPEI dismiss hovering: channel is not ready");
+                return None;
+            }
+            let svc_messages = match rdpei.encode_dismiss_hovering(channel_id, contact_id) {
+                Ok(messages) => messages,
+                Err(e) => return Some(Err(SessionError::encode(e))),
+            };
+            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
+        }
+        None
+    }
+
+    /// Encodes a pen event for the RDPEI dynamic channel.
+    ///
+    /// Returns `None` when the channel is unavailable, not ready, suspended, or pen is not allowed.
+    pub fn encode_rdpei_pen(&mut self, event: ironrdp_rdpei::pdu::PenEventPdu) -> Option<SessionResult<Vec<u8>>> {
+        if let Some(dvc) = self.get_dvc::<RdpeiClient>() {
+            let channel_id = dvc.channel_id();
+            let rdpei = dvc.processor();
+            if !rdpei.ready() {
+                debug!("Could not encode RDPEI pen: channel is not ready");
+                return None;
+            }
+            if rdpei.is_suspended() {
+                debug!("Could not encode RDPEI pen: input is suspended");
+                return None;
+            }
+            if !rdpei.pen_allowed() {
+                debug!("Could not encode RDPEI pen: pen not allowed for negotiated version");
+                return None;
+            }
+            let svc_messages = match rdpei.encode_pen_event(channel_id, event) {
+                Ok(messages) => messages,
+                Err(e) => return Some(Err(SessionError::encode(e))),
+            };
+            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
+        } else {
+            debug!("Could not encode RDPEI pen: Input Virtual Channel is not available");
+        }
+        None
+    }
+
     pub fn encode_dvc_messages(&mut self, messages: Vec<SvcMessage>) -> SessionResult<Vec<u8>> {
         self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(messages))
     }
@@ -522,6 +615,8 @@ pub enum ActiveStageOutput {
         y: u16,
     },
     PointerBitmap(Arc<DecodedPointer>),
+    /// Server-reported remote monitor layout ([MS-RDPBCGR] 2.2.12.1).
+    MonitorLayout(Vec<Monitor>),
     /// Validated Windowing Alternate Secondary Drawing Orders.
     ///
     /// The payload is a complete slow-path Orders graphics update. It remains
@@ -566,6 +661,8 @@ pub enum ActiveStageOutput {
     ///
     /// [\[MS-RDPBCGR\] 2.2.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18f4f605-0ee3-4175-8a62-cf8775252547
     AutoReconnectCookie(ServerAutoReconnect),
+    /// Server rejected the automatic reconnection attempt.
+    AutoReconnectFailed,
 }
 
 impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
@@ -591,6 +688,8 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
             x224::ProcessorOutput::MultitransportRequest(pdu) => Ok(Self::MultitransportRequest(pdu)),
             x224::ProcessorOutput::AutoDetect(request) => Ok(Self::AutoDetect(request)),
             x224::ProcessorOutput::AutoReconnectCookie(cookie) => Ok(Self::AutoReconnectCookie(cookie)),
+            x224::ProcessorOutput::AutoReconnectFailed => Ok(Self::AutoReconnectFailed),
+            x224::ProcessorOutput::MonitorLayout(monitors) => Ok(Self::MonitorLayout(monitors)),
             // GraphicsUpdate and PointerUpdate are consumed in ActiveStage::process()
             // before reaching this conversion.
             x224::ProcessorOutput::GraphicsUpdate(_) | x224::ProcessorOutput::PointerUpdate(_) => Err(
@@ -716,6 +815,7 @@ fn process_slow_path_pointer(
 mod tests {
     use ironrdp_core::Decode as _;
     use ironrdp_graphics::image_processing::PixelFormat;
+    use ironrdp_pdu::gcc::MonitorFlags;
     use ironrdp_pdu::input::fast_path::KeyboardFlags;
     use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
 
@@ -786,6 +886,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             events.iter().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn monitor_layout_is_forwarded_from_x224() {
+        let monitors = vec![Monitor {
+            left: 0,
+            top: 0,
+            right: 799,
+            bottom: 599,
+            flags: MonitorFlags::PRIMARY,
+        }];
+
+        let output = ActiveStageOutput::try_from(x224::ProcessorOutput::MonitorLayout(monitors.clone()))
+            .expect("monitor layout should be forwarded from X.224");
+
+        let ActiveStageOutput::MonitorLayout(actual) = output else {
+            panic!("expected a monitor layout output");
+        };
+        assert_eq!(actual, monitors);
     }
 
     #[test]

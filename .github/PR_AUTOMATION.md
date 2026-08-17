@@ -39,13 +39,13 @@ A cancelled workflow does not publish a fallback state or change labels; the suc
 ## Models and cost
 
 The classifier explicitly selects Sonnet with `--model sonnet --effort low` in the `claude-args` step that builds `claude_args`.
-The protocol and skeptical review stages select Opus with `--model opus` and use the action's default `high` effort.
+The protocol and skeptical review stages explicitly select Sonnet with `--model sonnet --effort high`.
 
 | Stage | Model | Effort | Reason |
 | --- | --- | --- | --- |
 | Classifier | Sonnet | `low` | Runs on every push and fills a small, schema-bound triage record. |
-| Protocol conformance | Opus | Default `high` | Performs the protocol analysis worth the higher cost. |
-| Skeptical review | Opus | Default `high` | Evaluates correctness and the validated protocol handoff. |
+| Protocol conformance | Sonnet | `high` | Performs protocol analysis at a lower cost. |
+| Skeptical review | Sonnet | `high` | Evaluates correctness and the validated protocol handoff. |
 
 Automatic heavy stages run at most twice per pull request.
 `haiku` is cheaper than Sonnet at `low` effort but supports no effort level, so the classifier does not use it.
@@ -72,13 +72,17 @@ Size uses the larger bucket from additions plus deletions in Rust, C#, JavaScrip
 | `size/XL` | 900-1299 | 21-49 |
 | `size/XXL` | 1300 or more | 50 or more |
 
-For a `size/XXL` pull request, automatic routes skip classification and review before any model runs.
-Classification falls back to deterministic scope, size, first-time-contributor, and `cargo-semver-checks` results, while every classified pull request retains exactly one `size/*` label.
+For a `size/XXL` pull request, automatic routes skip classification and review before any model runs unless a maintainer adds `ai-review/allow-oversized`.
+Without that label, classification falls back to deterministic scope, size, first-time-contributor, and `cargo-semver-checks` results, while every classified pull request retains exactly one `size/*` label.
 
 The workflow comments once to explain the exclusion and point to [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) for splitting dependent work.
 Because stacks require every branch to live in this repository, fork authors should open separate pull requests.
 The comment is removed automatically once a later push brings the change below the threshold.
 Duplicate and legitimacy verdicts are model-derived, so an oversized run leaves any earlier verdict untouched rather than silently clearing it.
+
+`ai-review/allow-oversized` remains on the pull request and treats `size/XXL` as eligible on the initial label event and later pushes.
+It permits the normal classifier and up to two automatic reviews, including protocol analysis when applicable.
+It only waives the size exclusion; CI, quota, duplicate, legitimacy, contributor-history, and review-count gates still apply.
 
 ### Fork automation limits
 
@@ -92,7 +96,7 @@ A high-confidence non-legitimate classifier result adds `triage/legitimacy`, rec
 
 ### Inputs
 
-Every LLM stage receives the same evidence from `.github/pr-automation/fetch-pr-evidence.sh`, which runs from the trusted base checkout.
+Every LLM stage receives diff evidence from `.github/pr-automation/fetch-pr-evidence.sh`, which runs from the trusted base checkout.
 Each Claude action uses only an explicit file or skill invocation, which injects no pull request context of its own.
 `Bash` is denied, so a model cannot derive a diff by itself.
 Trusted workflow code writes the target head SHA and handoff-receipt status to `pr-automation-context.json` instead of interpolating them into instructions.
@@ -100,6 +104,9 @@ Trusted workflow code writes the target head SHA and handoff-receipt status to `
 The evidence script writes `pr-evidence/changed-files.txt` and `pr-evidence/pull-request.diff`.
 Both files are computed from the merge base of the resolved base and head SHAs so they match GitHub's pull request file list without racing changes to `master`.
 The head tree remains available in `pr-head` for surrounding context.
+The skeptical reviewer additionally receives `pr-evidence/pull-request-context.json`, collected with read-only issue and pull-request permissions.
+It contains a bounded PR description and non-bot conversation, inline-review, and submitted-review comments.
+The collector verifies the head before and after collection, and the model treats all supplied prose as untrusted evidence.
 
 Before exposing that tree to filesystem-reading tools, the script removes every symlink so a pull request cannot redirect a read outside the checkout.
 It also recursively removes contributor-controlled agent instruction files: `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `.claude`, `.cursor`, and `.cursorrules`.
@@ -159,7 +166,7 @@ It never deletes repository labels.
 On automatic routes, risk measures maintainer scrutiny, so it does not decide whether a protocol change is worth reviewing.
 A `protocol_related` classification is review-eligible at any risk level, subject to the remaining review gates.
 For every other change, `risk/low` without `breaking-change` skips the review.
-Duplicates, `size/XXL`, a legitimacy stop, and the terminal review count stop every automatic route.
+Duplicates, `size/XXL` without `ai-review/allow-oversized`, a legitimacy stop, and the terminal review count stop every automatic route.
 
 ## Review prerequisites
 

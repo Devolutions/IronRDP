@@ -19,8 +19,11 @@ use windows::core::PWSTR;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const PIPE_BUSY_RETRY: Duration = Duration::from_millis(50);
 const RPC_TIMEOUT: Duration = Duration::from_secs(15);
+const START_SANDBOX_TIMEOUT: Duration = Duration::from_secs(120);
 /// `ERROR_PIPE_BUSY` — another client still holds the pipe instance.
 const ERROR_PIPE_BUSY: i32 = 231;
+/// `CO_E_APPSINGLEUSE` — the Windows Sandbox policy permits only one active VM.
+const CO_E_APPSINGLEUSE: i32 = -2_147_221_002;
 
 /// Resolve the per-user WindowsSandboxServer gRPC pipe path.
 pub(crate) fn grpc_pipe_path() -> anyhow::Result<String> {
@@ -42,16 +45,35 @@ fn grpc_pipe_path_for_sid(sid: &str) -> String {
 
 /// `EnumerateSandboxVMs` → sandbox id list.
 pub(crate) fn enumerate_sandbox_vms() -> anyhow::Result<Vec<String>> {
-    let payload = block_on(unary("EnumerateSandboxVMs", &[]))?;
+    let payload = block_on(unary("EnumerateSandboxVMs", &[], RPC_TIMEOUT))?;
     let (hr, ids, _) = parse_reply(&payload, ParseMode::Ids)?;
     ensure_ok(hr, "EnumerateSandboxVMs")?;
     Ok(ids)
 }
 
+/// `StartSandbox` → serialized `RdpClientConfig` for the new sandbox.
+///
+/// `recipe` is the Windows Sandbox configuration XML.
+/// When omitted, the server uses its default recipe.
+/// `sandbox_id` is optional; the server generates an ID when it is absent.
+pub(crate) fn start_sandbox(recipe: Option<&str>, sandbox_id: Option<&str>) -> anyhow::Result<String> {
+    let request = encode_start_sandbox_request(recipe, sandbox_id);
+    let payload = block_on(unary("StartSandbox", &request, START_SANDBOX_TIMEOUT))?;
+    let (hr, _, cfg) = parse_reply(&payload, ParseMode::Config)?;
+    if hr == CO_E_APPSINGLEUSE {
+        bail!("multiple Windows Sandbox instances are not permitted by this Windows build or license");
+    }
+    ensure_ok(hr, "StartSandbox")?;
+    if cfg.is_empty() {
+        bail!("empty RdpClientConfig from WindowsSandboxServer");
+    }
+    Ok(cfg)
+}
+
 /// `GetRdpClientConfig` → serialized RdpClientConfig XML.
 pub(crate) fn get_rdp_client_config_xml(sandbox_id: &str) -> anyhow::Result<String> {
     let req = encode_string_field(1, sandbox_id);
-    let payload = block_on(unary("GetRdpClientConfig", &req))?;
+    let payload = block_on(unary("GetRdpClientConfig", &req, RPC_TIMEOUT))?;
     let (hr, _, cfg) = parse_reply(&payload, ParseMode::Config)?;
     ensure_ok(hr, "GetRdpClientConfig")?;
     if cfg.is_empty() {
@@ -63,7 +85,7 @@ pub(crate) fn get_rdp_client_config_xml(sandbox_id: &str) -> anyhow::Result<Stri
 /// `ShutdownSandbox`.
 pub(crate) fn shutdown_sandbox(sandbox_id: &str) -> anyhow::Result<()> {
     let req = encode_string_field(1, sandbox_id);
-    let payload = block_on(unary("ShutdownSandbox", &req))?;
+    let payload = block_on(unary("ShutdownSandbox", &req, RPC_TIMEOUT))?;
     let (hr, _, _) = parse_reply(&payload, ParseMode::Config)?;
     ensure_ok(hr, "ShutdownSandbox")?;
     Ok(())
@@ -97,7 +119,7 @@ where
     }
 }
 
-async fn unary(method: &str, request_proto: &[u8]) -> anyhow::Result<Vec<u8>> {
+async fn unary(method: &str, request_proto: &[u8], timeout: Duration) -> anyhow::Result<Vec<u8>> {
     let path = grpc_pipe_path()?;
     let stream = open_pipe(&path).await?;
 
@@ -132,7 +154,7 @@ async fn unary(method: &str, request_proto: &[u8]) -> anyhow::Result<Vec<u8>> {
         .send_data(frame.freeze(), true)
         .context("send gRPC request body")?;
 
-    let response = tokio::time::timeout(RPC_TIMEOUT, response_future)
+    let response = tokio::time::timeout(timeout, response_future)
         .await
         .context("timeout waiting for gRPC response headers")?
         .context("await gRPC response headers")?;
@@ -143,7 +165,7 @@ async fn unary(method: &str, request_proto: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut body = response.into_body();
     let mut data = BytesMut::new();
     loop {
-        let next = tokio::time::timeout(RPC_TIMEOUT, body.data())
+        let next = tokio::time::timeout(timeout, body.data())
             .await
             .context("timeout reading gRPC response body")?;
         match next {
@@ -157,7 +179,7 @@ async fn unary(method: &str, request_proto: &[u8]) -> anyhow::Result<Vec<u8>> {
         }
     }
 
-    if let Some(trailers) = tokio::time::timeout(RPC_TIMEOUT, body.trailers())
+    if let Some(trailers) = tokio::time::timeout(timeout, body.trailers())
         .await
         .context("timeout reading gRPC trailers")?
         .context("read gRPC trailers")?
@@ -290,6 +312,17 @@ fn encode_string_field(field_number: u32, value: &str) -> Vec<u8> {
     write_varint(u64::try_from(value.len()).expect("usize fits u64"), &mut out);
     out.extend_from_slice(value.as_bytes());
     out
+}
+
+fn encode_start_sandbox_request(recipe: Option<&str>, sandbox_id: Option<&str>) -> Vec<u8> {
+    let mut request = Vec::new();
+    if let Some(recipe) = recipe {
+        request.extend_from_slice(&encode_string_field(1, recipe));
+    }
+    if let Some(sandbox_id) = sandbox_id {
+        request.extend_from_slice(&encode_string_field(2, sandbox_id));
+    }
+    request
 }
 
 fn write_varint(mut value: u64, out: &mut Vec<u8>) {
@@ -527,5 +560,22 @@ mod tests {
         let (hr, _, cfg) = parse_reply(&msg, ParseMode::Config).unwrap();
         assert_eq!(hr, 0);
         assert_eq!(cfg, "hi");
+    }
+
+    #[test]
+    fn start_request_encodes_optional_recipe_and_id() {
+        assert_eq!(encode_start_sandbox_request(None, None), b"");
+        assert_eq!(
+            encode_start_sandbox_request(Some("<Configuration/>"), None),
+            b"\x0a\x10<Configuration/>"
+        );
+        assert_eq!(
+            encode_start_sandbox_request(None, Some("sandbox-id")),
+            b"\x12\nsandbox-id"
+        );
+        assert_eq!(
+            encode_start_sandbox_request(Some("<Configuration/>"), Some("sandbox-id")),
+            b"\x0a\x10<Configuration/>\x12\nsandbox-id"
+        );
     }
 }

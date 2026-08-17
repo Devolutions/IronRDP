@@ -3,7 +3,7 @@
 //! MS-RDPEGFX surfaces are persistent pixel canvases: the server creates them,
 //! writes decoded bitmaps into sub-rectangles, fills and scrolls regions, caches
 //! tiles, and maps surfaces onto the graphics output. A client that only decodes
-//! `WireToSurface1` bitmaps and forwards the remaining surface commands renders
+//! `WireToSurface1` or `WireToSurface2` bitmaps and forwards the remaining surface commands renders
 //! incorrectly against any server that uses them (GNOME Remote Desktop and
 //! Windows both do).
 //!
@@ -245,7 +245,7 @@ impl Compositor {
     }
 
     /// Write a decoded RGBA8888 bitmap into a surface sub-rectangle (the output of
-    /// a `WireToSurface1` decode) and record the resulting output delta.
+    /// a `WireToSurface1` or `WireToSurface2` decode) and record the resulting output delta.
     ///
     /// `rgba` is expected to be `dest.width() * dest.height() * 4` bytes; short or
     /// long buffers are handled defensively by the row-wise blit.

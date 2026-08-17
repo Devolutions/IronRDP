@@ -692,8 +692,8 @@ impl RdpdrBackend for UnsupportedRdpdrBackend {
         &mut self,
         _: ironrdp_rdpdr::pdu::efs::DeviceControlRequest<ScardIoCtlCode>,
         _: ScardCall,
-    ) -> pdu::PduResult<()> {
-        Ok(())
+    ) -> pdu::PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
     }
 
     fn handle_drive_io_request(&mut self, req: ServerDriveIoRequest) -> pdu::PduResult<Vec<SvcMessage>> {
@@ -1018,6 +1018,7 @@ fn default_client_config() -> connector::Config {
             width: DESKTOP_WIDTH,
             height: DESKTOP_HEIGHT,
         },
+        monitor_layout: None,
         desktop_scale_factor: 0, // Default to 0 per FreeRDP
         enable_tls: true,
         enable_credssp: true,
@@ -1066,6 +1067,7 @@ fn default_client_config() -> connector::Config {
         request_data: None,
         autologon: false,
         enable_audio_playback: true,
+        enable_audio_capture: false,
         license_cache: None,
         compression_type: None,
         enable_server_pointer: true,

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context as _;
-use ironrdp::client::rdp::{RdpInputEvent, RdpInputSender, RdpOutputEvent};
+use ironrdp::client::rdp::{AutoReconnectDecision, RdpInputEvent, RdpInputSender, RdpOutputEvent};
 use ironrdp_daemon::daemon::{Daemon, ResizeError};
 use raw_window_handle::{DisplayHandle, HasDisplayHandle as _};
 use smallvec::SmallVec;
@@ -477,6 +477,9 @@ impl RpcApp {
         };
         match event {
             RdpOutputEvent::Connected => info!("RDP session connected"),
+            RdpOutputEvent::MonitorLayout(monitors) => {
+                debug!(monitor_count = monitors.len(), "Received remote monitor layout");
+            }
             RdpOutputEvent::LoginComplete => info!("RDP login complete"),
             RdpOutputEvent::PostLogonDisplayRedraw => info!("Requested post-logon display redraw"),
             RdpOutputEvent::MalformedBitmapDisplayRedraw => {
@@ -545,6 +548,18 @@ impl RpcApp {
                     ?reason,
                     "Reconnecting because dynamic display resize could not complete"
                 );
+            }
+            RdpOutputEvent::AutoReconnecting {
+                attempt,
+                maximum_attempts,
+                response,
+                ..
+            } => {
+                warn!(attempt, maximum_attempts, "Stopping unsupported automatic reconnect");
+                let _ = response.send(AutoReconnectDecision::Stop);
+            }
+            RdpOutputEvent::AutoReconnected => {
+                info!("RDP session automatically reconnected");
             }
             RdpOutputEvent::RailHandshake {
                 handshake_ex_flags,

@@ -14,14 +14,19 @@ use std::time::Duration;
 use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
 use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind};
 use ironrdp_client::rail::RailInputEvent;
-use ironrdp_client::rdp::{CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent};
+use ironrdp_client::rdp::{
+    AutoReconnectDecision, CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent,
+};
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
 use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, encode_vec};
 use ironrdp_input::{Database as InputDatabase, MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::PduResult;
-use ironrdp_pdu::gcc::{ChannelName, ChannelOptions, ConnectionType, KeyboardType};
+use ironrdp_pdu::gcc::{
+    ChannelName, ChannelOptions, ClientMonitorData, ConnectionType, KeyboardType, MONITOR_COUNT_MAX, Monitor,
+    MonitorFlags,
+};
 use ironrdp_pdu::rdp::{
     capability_sets::{MajorPlatformType, RailSupportLevel},
     client_info::PerformanceFlags,
@@ -29,11 +34,15 @@ use ironrdp_pdu::rdp::{
 use ironrdp_pdu::window::try_decode_slow_path_windowing_orders;
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rail::pdu::{ActivatePdu, ExecutePdu, RailPdu, SystemCommand, SystemCommandPdu};
+use ironrdp_rdpei::pdu::{
+    PenContact, PenContactDataFlags, PenContactFlags, PenEventPdu, PenFlags, PenFrame, TouchContact, TouchContactFlags,
+    TouchEventPdu, TouchFrame,
+};
 use ironrdp_session::{GracefulDisconnectReason, SessionError, SessionErrorKind};
 use ironrdp_svc::{SvcClientProcessor, SvcMessage, SvcProcessor, impl_as_any};
 use ironrdp_tls::CertificateValidation;
 use sha2::{Digest as _, Sha256};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use windows::Win32::Foundation::{
     DATA_S_SAMEFORMATETC, DISP_E_BADPARAMCOUNT, DISP_E_MEMBERNOTFOUND, DISP_E_TYPEMISMATCH, DISP_E_UNKNOWNNAME,
     DV_E_DVASPECT, DV_E_DVTARGETDEVICE, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_FAIL, E_INVALIDARG, E_NOTIMPL,
@@ -44,8 +53,9 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateRectRgn,
-    DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint, GdiFlush, HBITMAP, HDC, HGDIOBJ, InvalidateRect, PAINTSTRUCT,
-    PatBlt, SRCCOPY, ScreenToClient, SelectObject, SetWindowRgn, StretchBlt, StretchDIBits,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint, EnumDisplayMonitors, GdiFlush, GetMonitorInfoW, HBITMAP, HDC,
+    HGDIOBJ, HMONITOR, InvalidateRect, MONITORINFO, PAINTSTRUCT, PatBlt, SRCCOPY, ScreenToClient, SelectObject,
+    SetWindowRgn, StretchBlt, StretchDIBits,
 };
 use windows::Win32::Security::Credentials::{
     CREDUI_FLAGS_ALWAYS_SHOW_UI, CREDUI_FLAGS_DO_NOT_PERSIST, CREDUI_FLAGS_GENERIC_CREDENTIALS, CREDUI_INFOW,
@@ -90,20 +100,26 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetKeyState, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT,
     TrackMouseEvent, VIRTUAL_KEY, VK_CANCEL, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_PAUSE, VK_SHIFT, VK_TAB,
 };
+use windows::Win32::UI::Input::Pointer::{
+    GetPointerFrameTouchInfo, GetPointerInfo, POINTER_FLAG_CANCELED, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE,
+    POINTER_FLAG_UP, POINTER_INFO, POINTER_TOUCH_INFO, SkipPointerFrameMessages,
+};
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     BS_PUSHBUTTON, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, GA_ROOT, GA_ROOTOWNER,
     GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GWLP_USERDATA, GetAncestor, GetClassNameW, GetClientRect, GetCursorPos,
     GetDlgItem, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, HMENU, HWND_MESSAGE, IsIconic, IsWindow, IsWindowVisible, KillTimer, PostMessageW,
-    RegisterClassW, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SW_HIDE, SW_MAXIMIZE,
-    SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER, SendMessageW,
-    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, UnregisterClassW, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DPICHANGED,
-    WM_ENABLE, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN,
-    WM_XBUTTONUP, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    GetWindowThreadProcessId, HMENU, HWND_MESSAGE, IsIconic, IsWindow, IsWindowVisible, KillTimer, PT_TOUCH,
+    PostMessageW, RegisterClassW, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SW_HIDE,
+    SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER,
+    SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TOUCH_MASK_CONTACTAREA,
+    TOUCH_MASK_ORIENTATION, TOUCH_MASK_PRESSURE, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP,
+    WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_ENABLE, WM_KEYDOWN, WM_KEYUP,
+    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN,
+    WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE,
+    WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_CHILD,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{s, w};
 use windows_core::{
@@ -129,6 +145,7 @@ use crate::mstsc::{
     IMsTscNonScriptable_Impl, InterfaceOut,
 };
 use crate::rpc::{self, ActiveXRpc, Command as RpcCommand};
+use crate::touch::{TouchContactTracker, TouchSample};
 use ironrdp_rpc as ironrdp_agent;
 
 /// The IronRDP-owned class identifier registered by this DLL.
@@ -388,8 +405,11 @@ const DISPID_ON_REQUEST_LEAVE_FULL_SCREEN: i32 = 9;
 const DISPID_ON_FATAL_ERROR: i32 = 10;
 const DISPID_ON_REMOTE_DESKTOP_SIZE_CHANGE: i32 = 12;
 const DISPID_ON_CONFIRM_CLOSE: i32 = 15;
+const DISPID_ON_AUTO_RECONNECTING: i32 = 17;
 const DISPID_ON_AUTHENTICATION_WARNING_DISPLAYED: i32 = 18;
 const DISPID_ON_AUTHENTICATION_WARNING_DISMISSED: i32 = 19;
+const DISPID_ON_AUTO_RECONNECTED: i32 = 33;
+const DISPID_ON_AUTO_RECONNECTING2: i32 = 34;
 
 const WM_DISPATCH_EVENTS: u32 = WM_APP + 0x52;
 const WM_DESTROY_CONTROL_WINDOW: u32 = WM_APP + 0x53;
@@ -426,6 +446,7 @@ const CONTROL_RECONNECT_BLOCKED: i32 = 1;
 const CONTROL_CLOSE_CAN_PROCEED: i32 = 0;
 const CONTROL_CLOSE_WAIT_FOR_EVENTS: i32 = 1;
 const MAX_ACTIVEX_STATIC_CHANNELS: usize = 28;
+const MAX_RECONNECT_ATTEMPTS: u32 = 200;
 const MAX_PENDING_WORKER_EVENTS: usize = 64;
 const CERTIFICATE_WARNING_CONTINUE_BUTTON: i32 = 100;
 const SECURITY_WARNING_CONTINUE_BUTTON: i32 = 101;
@@ -631,13 +652,12 @@ fn trace_connection_failure(error: &ConnectorError) {
     let location = error.location();
     let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
     trace_host_call(&format!(
-        "RdpWorker::ConnectionFailure:{category}:{}:{file}:line_{}",
-        error.context(),
-        location.line()
+        "RdpWorker::ConnectionFailure:{category}:{file}:line_{}",
+        location.line(),
     ));
 }
 
-fn trace_decode_failure(context: &str, error: &DecodeError) {
+fn trace_decode_failure(error: &DecodeError) {
     let location = error.location();
     let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
     let marker = match error.kind() {
@@ -652,7 +672,7 @@ fn trace_decode_failure(context: &str, error: &DecodeError) {
         _ => "Decode:Unknown".to_owned(),
     };
     trace_host_call(&format!(
-        "RdpWorker::SessionFailure:{marker}:{context}:{file}:line_{}",
+        "RdpWorker::SessionFailure:{marker}:{file}:line_{}",
         location.line()
     ));
 }
@@ -661,7 +681,7 @@ fn trace_session_failure(error: &SessionError) {
     match error.kind() {
         SessionErrorKind::Pdu(_) => trace_host_call("RdpWorker::SessionFailure:Pdu"),
         SessionErrorKind::Encode(_) => trace_host_call("RdpWorker::SessionFailure:Encode"),
-        SessionErrorKind::Decode(decode_error) => trace_decode_failure(error.context(), decode_error),
+        SessionErrorKind::Decode(decode_error) => trace_decode_failure(decode_error),
         SessionErrorKind::FastPathBulkDecompression(failure) => {
             let location = error.location();
             let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
@@ -682,18 +702,16 @@ fn trace_session_failure(error: &SessionError) {
             let location = error.location();
             let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
             trace_host_call(&format!(
-                "RdpWorker::SessionFailure:Reason:{}:{file}:line_{}",
-                error.context(),
-                location.line()
+                "RdpWorker::SessionFailure:Reason:{file}:line_{}",
+                location.line(),
             ));
         }
         SessionErrorKind::General => {
             let location = error.location();
             let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
             trace_host_call(&format!(
-                "RdpWorker::SessionFailure:General:{}:{file}:line_{}",
-                error.context(),
-                location.line()
+                "RdpWorker::SessionFailure:General:{file}:line_{}",
+                location.line(),
             ));
         }
         SessionErrorKind::Custom => {
@@ -850,6 +868,205 @@ struct DisplayLayout {
     device_scale_factor: u32,
 }
 
+const MAX_RDP_VIRTUAL_DESKTOP_DIMENSION: i64 = 32_766;
+const MIN_RDP_VIRTUAL_DESKTOP_DIMENSION: i64 = 200;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HostMonitor {
+    rect: RECT,
+    primary: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MonitorTopology {
+    monitors: Vec<Monitor>,
+    desktop_width: u16,
+    desktop_height: u16,
+}
+
+impl MonitorTopology {
+    fn from_host_monitors(host_monitors: Vec<HostMonitor>) -> Result<Self> {
+        if host_monitors.is_empty() || host_monitors.len() > MONITOR_COUNT_MAX {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+
+        let primary_monitors = host_monitors
+            .iter()
+            .filter(|monitor| monitor.primary)
+            .collect::<Vec<_>>();
+        if primary_monitors.len() != 1 {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+        let primary = primary_monitors[0].rect;
+
+        let mut monitors = Vec::with_capacity(host_monitors.len());
+        for monitor in host_monitors {
+            let width = i64::from(monitor.rect.right) - i64::from(monitor.rect.left);
+            let height = i64::from(monitor.rect.bottom) - i64::from(monitor.rect.top);
+            if width <= 0 || height <= 0 {
+                return Err(Error::from_hresult(E_INVALIDARG));
+            }
+
+            let left = i64::from(monitor.rect.left) - i64::from(primary.left);
+            let top = i64::from(monitor.rect.top) - i64::from(primary.top);
+            let right = left
+                .checked_add(width - 1)
+                .ok_or_else(|| Error::from_hresult(E_INVALIDARG))?;
+            let bottom = top
+                .checked_add(height - 1)
+                .ok_or_else(|| Error::from_hresult(E_INVALIDARG))?;
+            let (Ok(left), Ok(top), Ok(right), Ok(bottom)) = (
+                i32::try_from(left),
+                i32::try_from(top),
+                i32::try_from(right),
+                i32::try_from(bottom),
+            ) else {
+                return Err(Error::from_hresult(E_INVALIDARG));
+            };
+
+            monitors.push(Monitor {
+                left,
+                top,
+                right,
+                bottom,
+                flags: if monitor.primary {
+                    MonitorFlags::PRIMARY
+                } else {
+                    MonitorFlags::empty()
+                },
+            });
+        }
+
+        let primary_monitor = monitors
+            .iter()
+            .find(|monitor| monitor.flags.contains(MonitorFlags::PRIMARY))
+            .expect("a validated topology has a primary monitor");
+        if primary_monitor.left != 0 || primary_monitor.top != 0 {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+
+        for (index, monitor) in monitors.iter().enumerate() {
+            if monitors[..index].iter().any(|other| monitors_overlap(other, monitor)) {
+                return Err(Error::from_hresult(E_INVALIDARG));
+            }
+        }
+
+        let left = monitors
+            .iter()
+            .map(|monitor| i64::from(monitor.left))
+            .min()
+            .expect("nonempty topology");
+        let top = monitors
+            .iter()
+            .map(|monitor| i64::from(monitor.top))
+            .min()
+            .expect("nonempty topology");
+        let right = monitors
+            .iter()
+            .map(|monitor| i64::from(monitor.right))
+            .max()
+            .expect("nonempty topology");
+        let bottom = monitors
+            .iter()
+            .map(|monitor| i64::from(monitor.bottom))
+            .max()
+            .expect("nonempty topology");
+        let width = right
+            .checked_sub(left)
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| Error::from_hresult(E_INVALIDARG))?;
+        let height = bottom
+            .checked_sub(top)
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| Error::from_hresult(E_INVALIDARG))?;
+        if !(MIN_RDP_VIRTUAL_DESKTOP_DIMENSION..=MAX_RDP_VIRTUAL_DESKTOP_DIMENSION).contains(&width)
+            || !(MIN_RDP_VIRTUAL_DESKTOP_DIMENSION..=MAX_RDP_VIRTUAL_DESKTOP_DIMENSION).contains(&height)
+        {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+
+        Ok(Self {
+            monitors,
+            desktop_width: u16::try_from(width).expect("RDP virtual desktop width is within u16 range"),
+            desktop_height: u16::try_from(height).expect("RDP virtual desktop height is within u16 range"),
+        })
+    }
+
+    fn client_monitor_data(&self) -> ClientMonitorData {
+        ClientMonitorData {
+            monitors: self.monitors.clone(),
+        }
+    }
+
+    fn bounds(&self) -> (i32, i32, i32, i32) {
+        (
+            self.monitors
+                .iter()
+                .map(|monitor| monitor.left)
+                .min()
+                .expect("nonempty topology"),
+            self.monitors
+                .iter()
+                .map(|monitor| monitor.top)
+                .min()
+                .expect("nonempty topology"),
+            self.monitors
+                .iter()
+                .map(|monitor| monitor.right)
+                .max()
+                .expect("nonempty topology"),
+            self.monitors
+                .iter()
+                .map(|monitor| monitor.bottom)
+                .max()
+                .expect("nonempty topology"),
+        )
+    }
+}
+
+fn monitors_overlap(left: &Monitor, right: &Monitor) -> bool {
+    left.left <= right.right && right.left <= left.right && left.top <= right.bottom && right.top <= left.bottom
+}
+
+fn local_monitor_topology() -> Result<MonitorTopology> {
+    let mut host_monitors = Vec::new();
+    let result = unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(collect_local_monitor),
+            LPARAM((&raw mut host_monitors).cast::<c_void>() as isize),
+        )
+    };
+    if !result.as_bool() {
+        return Err(Error::from_hresult(E_FAIL));
+    }
+
+    MonitorTopology::from_host_monitors(host_monitors)
+}
+
+unsafe extern "system" fn collect_local_monitor(
+    monitor: HMONITOR,
+    _device_context: HDC,
+    _clip: *mut RECT,
+    context: LPARAM,
+) -> WinBool {
+    let host_monitors = unsafe { &mut *(context.0 as *mut Vec<HostMonitor>) };
+    let mut monitor_info = MONITORINFO {
+        cbSize: u32::try_from(size_of::<MONITORINFO>()).expect("MONITORINFO size fits in u32"),
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut monitor_info) }.as_bool() {
+        return WinBool(0);
+    }
+
+    host_monitors.push(HostMonitor {
+        rect: monitor_info.rcMonitor,
+        primary: monitor_info.dwFlags & 0x0000_0001 != 0,
+    });
+    WinBool(1)
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct ConnectionBarOwnerLayout {
     left: i32,
@@ -993,7 +1210,9 @@ struct CompatibilitySettings {
     enable_mouse: bool,
     enable_windows_key: bool,
     redirect_clipboard: bool,
+    redirect_webauthn: bool,
     redirect_drives: bool,
+    redirect_smart_cards: bool,
     disable_rdpdr: bool,
     drive_catalog: Rc<RefCell<DriveCatalog>>,
     warn_about_sending_credentials: bool,
@@ -1016,6 +1235,8 @@ struct CompatibilitySettings {
     secured_work_dir: String,
     secured_fullscreen: i32,
     audio_redirection_mode: i32,
+    /// MSTSC `AudioCaptureRedirectionMode` (VARIANT_BOOL; non-zero enables mic capture).
+    audio_capture_redirection_mode: i16,
     remote_program_mode: bool,
     remote_application_name: String,
     remote_application_program: String,
@@ -1035,6 +1256,9 @@ struct CompatibilitySettings {
     authentication_level: u32,
     authentication_level_set: bool,
     public_mode: bool,
+    enable_auto_reconnect: bool,
+    max_reconnect_attempts: u32,
+    use_multimon: bool,
     connection_settings_sealed: bool,
     persistence_dirty: Option<Rc<Cell<bool>>>,
 }
@@ -1062,7 +1286,9 @@ impl Default for CompatibilitySettings {
             enable_mouse: true,
             enable_windows_key: true,
             redirect_clipboard: true,
+            redirect_webauthn: true,
             redirect_drives: false,
+            redirect_smart_cards: false,
             disable_rdpdr: false,
             drive_catalog: Rc::new(RefCell::new(DriveCatalog::new())),
             warn_about_sending_credentials: false,
@@ -1085,6 +1311,7 @@ impl Default for CompatibilitySettings {
             secured_work_dir: String::new(),
             secured_fullscreen: 0,
             audio_redirection_mode: 0,
+            audio_capture_redirection_mode: VARIANT_FALSE.0,
             remote_program_mode: false,
             remote_application_name: String::new(),
             remote_application_program: String::new(),
@@ -1104,6 +1331,9 @@ impl Default for CompatibilitySettings {
             authentication_level: 0,
             authentication_level_set: false,
             public_mode: false,
+            enable_auto_reconnect: true,
+            max_reconnect_attempts: 20,
+            use_multimon: false,
             connection_settings_sealed: false,
             persistence_dirty: None,
         }
@@ -1840,13 +2070,9 @@ advanced_put_not_implemented!(
     (112, advanced_put_load_balance_info, Bstr),
     (116, advanced_put_redirect_printers, i16),
     (118, advanced_put_redirect_ports, i16),
-    (120, advanced_put_redirect_smart_cards, i16),
-    (132, advanced_put_enable_auto_reconnect, i16),
-    (134, advanced_put_max_reconnect_attempts, i32),
     (150, advanced_put_redirect_devices, i16),
     (161, advanced_put_pcb, Bstr),
     (169, advanced_put_connect_to_administer_server, i16),
-    (171, advanced_put_audio_capture_redirection_mode, i16),
     (173, advanced_put_video_playback_mode, u32),
     (175, advanced_put_enable_super_pan, i16),
     (179, advanced_put_negotiate_security_layer, i16),
@@ -1861,12 +2087,8 @@ advanced_get_not_implemented!(
     (96, advanced_get_minutes_to_idle_timeout, i32),
     (117, advanced_get_redirect_printers, i16),
     (119, advanced_get_redirect_ports, i16),
-    (121, advanced_get_redirect_smart_cards, i16),
-    (133, advanced_get_enable_auto_reconnect, i16),
-    (135, advanced_get_max_reconnect_attempts, i32),
     (151, advanced_get_redirect_devices, i16),
     (170, advanced_get_connect_to_administer_server, i16),
-    (172, advanced_get_audio_capture_redirection_mode, i16),
     (174, advanced_get_video_playback_mode, u32),
     (176, advanced_get_enable_super_pan, i16),
     (180, advanced_get_negotiate_security_layer, i16),
@@ -2409,6 +2631,34 @@ unsafe extern "system" fn advanced_get_redirect_drives(this: *mut c_void, value:
     .map_or_else(|error| error.code(), |_| S_OK)
 }
 
+unsafe extern "system" fn advanced_put_redirect_smart_cards(this: *mut c_void, value: i16) -> HRESULT {
+    let value = match normalize_variant_bool(value) {
+        Ok(value) => value == VARIANT_TRUE.0,
+        Err(error) => return error.code(),
+    };
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    settings.redirect_smart_cards = value;
+    mark_compatibility_persistence_dirty(&settings);
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_redirect_smart_cards(this: *mut c_void, value: *mut i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    write_out(
+        value,
+        if object.settings.borrow().redirect_smart_cards {
+            VARIANT_TRUE.0
+        } else {
+            VARIANT_FALSE.0
+        },
+    )
+    .map_or_else(|error| error.code(), |_| S_OK)
+}
+
 unsafe extern "system" fn advanced_put_enable_mouse(this: *mut c_void, value: i32) -> HRESULT {
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
     object.settings.borrow_mut().enable_mouse = value != 0;
@@ -2454,6 +2704,58 @@ unsafe extern "system" fn advanced_put_redirect_clipboard(this: *mut c_void, val
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
     object.settings.borrow_mut().redirect_clipboard = value != VARIANT_FALSE.0;
     S_OK
+}
+
+unsafe extern "system" fn advanced_put_enable_auto_reconnect(this: *mut c_void, value: i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    settings.enable_auto_reconnect = value != VARIANT_FALSE.0;
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_enable_auto_reconnect(this: *mut c_void, value: *mut i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    match write_out(
+        value,
+        if object.settings.borrow().enable_auto_reconnect {
+            VARIANT_TRUE.0
+        } else {
+            VARIANT_FALSE.0
+        },
+    ) {
+        Ok(()) => S_OK,
+        Err(error) => error.code(),
+    }
+}
+
+unsafe extern "system" fn advanced_put_max_reconnect_attempts(this: *mut c_void, value: i32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    let Ok(value) = u32::try_from(value) else {
+        return E_INVALIDARG;
+    };
+    if value > MAX_RECONNECT_ATTEMPTS {
+        return E_INVALIDARG;
+    }
+    settings.max_reconnect_attempts = value;
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_max_reconnect_attempts(this: *mut c_void, value: *mut i32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let result = i32::try_from(object.settings.borrow().max_reconnect_attempts)
+        .map_err(|_| Error::from_hresult(E_FAIL))
+        .and_then(|configured| write_out(value, configured));
+    match result {
+        Ok(()) => S_OK,
+        Err(error) => error.code(),
+    }
 }
 
 fn set_audio_redirection_mode(settings: &mut CompatibilitySettings, value: u32) -> Result<()> {
@@ -2655,6 +2957,27 @@ unsafe extern "system" fn advanced_get_audio_redirection(this: *mut c_void, out:
         Err(_) => return E_FAIL,
     };
     match write_out(out, value) {
+        Ok(()) => S_OK,
+        Err(error) => error.code(),
+    }
+}
+
+unsafe extern "system" fn advanced_put_audio_capture_redirection_mode(this: *mut c_void, value: i16) -> HRESULT {
+    trace_host_call("IMsRdpClientAdvancedSettings6::put_AudioCaptureRedirectionMode");
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    // MSTSC documents VARIANT_BOOL; treat any non-zero value as enable.
+    object.settings.borrow_mut().audio_capture_redirection_mode = if value == VARIANT_FALSE.0 {
+        VARIANT_FALSE.0
+    } else {
+        VARIANT_TRUE.0
+    };
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_audio_capture_redirection_mode(this: *mut c_void, out: *mut i16) -> HRESULT {
+    trace_host_call("IMsRdpClientAdvancedSettings6::get_AudioCaptureRedirectionMode");
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    match write_out(out, object.settings.borrow().audio_capture_redirection_mode) {
         Ok(()) => S_OK,
         Err(error) => error.code(),
     }
@@ -3402,6 +3725,10 @@ enum WorkerEvent {
     Connected {
         generation: u64,
     },
+    MonitorLayout {
+        generation: u64,
+        monitors: Vec<Monitor>,
+    },
     LoginComplete {
         generation: u64,
     },
@@ -3417,6 +3744,16 @@ enum WorkerEvent {
     RailWindowingOrders {
         generation: u64,
         data: Vec<u8>,
+    },
+    AutoReconnecting {
+        generation: u64,
+        disconnect_reason: u32,
+        attempt: u32,
+        maximum_attempts: u32,
+        response: oneshot::Sender<AutoReconnectDecision>,
+    },
+    AutoReconnected {
+        generation: u64,
     },
     FatalError {
         generation: u64,
@@ -3441,10 +3778,13 @@ impl WorkerEvent {
         match self {
             Self::CertificateWarning { generation, .. }
             | Self::Connected { generation }
+            | Self::MonitorLayout { generation, .. }
             | Self::LoginComplete { generation }
             | Self::Image { generation, .. }
             | Self::DisplayResizeFallback { generation }
             | Self::RailWindowingOrders { generation, .. }
+            | Self::AutoReconnecting { generation, .. }
+            | Self::AutoReconnected { generation }
             | Self::FatalError { generation, .. }
             | Self::Disconnected { generation, .. }
             | Self::StaticChannelData { generation, .. }
@@ -3453,8 +3793,14 @@ impl WorkerEvent {
     }
 
     fn reject_certificate_warning(self) {
-        if let Self::CertificateWarning { response, .. } = self {
-            let _ = response.send(CertificateDecision::Reject);
+        match self {
+            Self::CertificateWarning { response, .. } => {
+                let _ = response.send(CertificateDecision::Reject);
+            }
+            Self::AutoReconnecting { response, .. } => {
+                let _ = response.send(AutoReconnectDecision::Stop);
+            }
+            _ => {}
         }
     }
 }
@@ -5678,9 +6024,12 @@ pub(crate) struct Control {
     connection_generation: Cell<u64>,
     login_complete_fired: Cell<bool>,
     remote_size: Cell<Option<(i32, i32)>>,
+    configured_monitor_topology: RefCell<Option<MonitorTopology>>,
+    active_monitor_topology: RefCell<Option<MonitorTopology>>,
     input_sender: RefCell<Option<RdpInputSender>>,
     static_channels: RefCell<BTreeMap<String, ActiveXStaticChannelSpec>>,
     input_database: Rc<RefCell<InputDatabase>>,
+    touch_tracker: RefCell<TouchContactTracker>,
     sinks: Rc<RefCell<BTreeMap<u32, EventSink>>>,
     next_cookie: Rc<Cell<u32>>,
     ole_advise_sinks: Rc<RefCell<BTreeMap<u32, IAdviseSink>>>,
@@ -5725,6 +6074,88 @@ pub(crate) struct Control {
     rpc_log_directive: RefCell<Option<String>>,
 }
 
+fn build_rpc_touch_event(
+    encode_time: u32,
+    frames: Vec<ironrdp_agent::ipc::TouchFrameRequest>,
+) -> core::result::Result<TouchEventPdu, ironrdp_agent::ipc::Response> {
+    let mut built_frames = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let mut contacts = Vec::with_capacity(frame.contacts.len());
+        for contact in frame.contacts {
+            let Some(flags) = TouchContactFlags::from_bits(u32::from(contact.flags)) else {
+                return Err(ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    "touch contact flags contain unknown bits",
+                ));
+            };
+            if !flags.is_legal() {
+                return Err(ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    "touch contact flags are not a legal MS-RDPEI combination",
+                ));
+            }
+            contacts.push(TouchContact::new(contact.contact_id, contact.x, contact.y, flags));
+        }
+        built_frames.push(TouchFrame::new(frame.frame_offset, contacts));
+    }
+    Ok(TouchEventPdu::new(encode_time, built_frames))
+}
+
+fn build_rpc_pen_event(
+    encode_time: u32,
+    frames: Vec<ironrdp_agent::ipc::PenFrameRequest>,
+) -> core::result::Result<PenEventPdu, ironrdp_agent::ipc::Response> {
+    let mut built_frames = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let mut contacts = Vec::with_capacity(frame.contacts.len());
+        for contact in frame.contacts {
+            let Some(flags) = PenContactFlags::from_bits(u32::from(contact.flags)) else {
+                return Err(ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    "pen contact flags contain unknown bits",
+                ));
+            };
+            if !flags.is_legal() {
+                return Err(ironrdp_agent::ipc::Response::typed_error(
+                    ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                    "pen contact flags are not a legal MS-RDPEI combination",
+                ));
+            }
+            let mut pen = PenContact::new(contact.device_id, contact.x, contact.y, flags);
+            if let Some(pen_flags_bits) = contact.pen_flags {
+                let Some(pen_flags) = PenFlags::from_bits(pen_flags_bits) else {
+                    return Err(ironrdp_agent::ipc::Response::typed_error(
+                        ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest,
+                        "pen flags contain unknown bits",
+                    ));
+                };
+                pen = pen.with_pen_flags(pen_flags);
+            }
+            if let Some(pressure) = contact.pressure {
+                pen = pen.with_pressure(pressure);
+            }
+            if let Some(rotation) = contact.rotation {
+                pen = pen.with_rotation(rotation);
+            }
+            match (contact.tilt_x, contact.tilt_y) {
+                (Some(tilt_x), Some(tilt_y)) => pen = pen.with_tilt(tilt_x, tilt_y),
+                (Some(tilt_x), None) => {
+                    pen.fields_present.insert(PenContactDataFlags::TILTX_PRESENT);
+                    pen.fields.tilt_x = Some(tilt_x);
+                }
+                (None, Some(tilt_y)) => {
+                    pen.fields_present.insert(PenContactDataFlags::TILTY_PRESENT);
+                    pen.fields.tilt_y = Some(tilt_y);
+                }
+                (None, None) => {}
+            }
+            contacts.push(pen);
+        }
+        built_frames.push(PenFrame::new(frame.frame_offset, contacts));
+    }
+    Ok(PenEventPdu::new(encode_time, built_frames))
+}
+
 fn rpc_control_error(error: Error) -> ironrdp_agent::ipc::Response {
     let category = if error.code() == E_INVALIDARG || error.code() == E_NOTIMPL {
         ironrdp_agent::ipc::AgentErrorCategory::InvalidRequest
@@ -5761,6 +6192,8 @@ fn active_x_property_snapshot(settings: &Settings, compatibility: &Compatibility
         properties.insert("desktopscalefactor", value);
     }
     properties.insert("redirectclipboard", compatibility.redirect_clipboard);
+    properties.insert("redirectwebauthn", compatibility.redirect_webauthn);
+    properties.insert("ironrdp_smartcard", compatibility.redirect_smart_cards);
     properties.insert("compression", compatibility.compression.unwrap_or(true));
     properties
 }
@@ -5804,9 +6237,12 @@ impl Control {
             connection_generation: Cell::new(0),
             login_complete_fired: Cell::new(false),
             remote_size: Cell::new(None),
+            configured_monitor_topology: RefCell::new(None),
+            active_monitor_topology: RefCell::new(None),
             input_sender: RefCell::new(None),
             static_channels: RefCell::new(BTreeMap::new()),
             input_database,
+            touch_tracker: RefCell::new(TouchContactTracker::new()),
             sinks: Rc::new(RefCell::new(BTreeMap::new())),
             next_cookie: Rc::new(Cell::new(1)),
             ole_advise_sinks: Rc::new(RefCell::new(BTreeMap::new())),
@@ -6624,12 +7060,6 @@ impl Control {
         self.update_connection_health_window();
     }
 
-    // This is intentionally an internal-only hook. The current IronRDP worker does not expose
-    // retry progress, so public reconnect calls and generic failures must never call it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the current worker has no reconnect-progress event")
-    )]
     fn report_reconnect_worker_progress(&self, attempt: u32, maximum: u32) {
         let Some(status) = ConnectionHealthStatus::reconnecting(attempt, maximum) else {
             tracing::warn!(attempt, maximum, "Ignoring invalid reconnect worker progress");
@@ -7272,6 +7702,102 @@ impl Control {
         }
     }
 
+    fn fire_auto_reconnecting_event(&self, disconnect_reason: i32, attempt: i32) -> i32 {
+        if self.events_are_frozen() {
+            return 0;
+        }
+
+        let mut continuation = 0;
+        let mut variants = [
+            variant_i32_byref(&mut continuation),
+            variant_i32(attempt),
+            variant_i32(disconnect_reason),
+        ];
+        let params = DISPPARAMS {
+            rgvarg: variants.as_mut_ptr(),
+            rgdispidNamedArgs: ptr::null_mut(),
+            cArgs: variants.len() as u32,
+            cNamedArgs: 0,
+        };
+        let iid_null = GUID::zeroed();
+        let sinks = self
+            .sinks
+            .borrow()
+            .values()
+            .map(|sink| sink.dispatch.clone())
+            .collect::<Vec<_>>();
+
+        for sink in sinks {
+            let result = unsafe {
+                sink.Invoke(
+                    DISPID_ON_AUTO_RECONNECTING,
+                    &iid_null,
+                    0,
+                    DISPATCH_METHOD,
+                    &params,
+                    None,
+                    None,
+                    None,
+                )
+            };
+            if let Err(error) = result {
+                tracing::debug!(?error, "ActiveX event sink rejected automatic reconnect notification");
+            }
+        }
+
+        continuation
+    }
+
+    fn fire_auto_reconnecting2_event(
+        &self,
+        disconnect_reason: i32,
+        network_available: bool,
+        attempt: i32,
+        maximum_attempts: i32,
+    ) {
+        if self.events_are_frozen() {
+            return;
+        }
+
+        let mut variants = [
+            variant_i32(maximum_attempts),
+            variant_i32(attempt),
+            variant_bool_value(network_available),
+            variant_i32(disconnect_reason),
+        ];
+        let params = DISPPARAMS {
+            rgvarg: variants.as_mut_ptr(),
+            rgdispidNamedArgs: ptr::null_mut(),
+            cArgs: variants.len() as u32,
+            cNamedArgs: 0,
+        };
+        let iid_null = GUID::zeroed();
+        let sinks = self
+            .sinks
+            .borrow()
+            .values()
+            .map(|sink| sink.dispatch.clone())
+            .collect::<Vec<_>>();
+
+        for sink in sinks {
+            let result = unsafe {
+                sink.Invoke(
+                    DISPID_ON_AUTO_RECONNECTING2,
+                    &iid_null,
+                    0,
+                    DISPATCH_METHOD,
+                    &params,
+                    None,
+                    None,
+                    None,
+                )
+            };
+            if let Err(error) = result {
+                tracing::debug!(?error, "ActiveX event sink rejected automatic reconnect notification");
+            }
+        }
+    }
+
     fn certificate_warning_parent(&self) -> HWND {
         let renderer = self.activex_window.get();
         if !renderer.0.is_null() && unsafe { IsWindow(Some(renderer)) }.as_bool() {
@@ -7714,6 +8240,14 @@ impl Control {
                         self.clear_connection_health_window();
                     }
                 }
+                WorkerEvent::MonitorLayout { monitors, .. } => {
+                    let topology = self.configured_monitor_topology.borrow().clone();
+                    if topology.as_ref().is_some_and(|topology| topology.monitors == monitors) {
+                        *self.active_monitor_topology.borrow_mut() = topology;
+                    } else {
+                        self.active_monitor_topology.borrow_mut().take();
+                    }
+                }
                 WorkerEvent::LoginComplete { .. } => {
                     if self.state.get() == ConnectionState::Connected && !self.login_complete_fired.replace(true) {
                         self.fire_event(DISPID_ON_LOGIN_COMPLETE, &[]);
@@ -7741,6 +8275,32 @@ impl Control {
                         self.rail_windows.borrow_mut().consume(&data);
                     }
                 }
+                WorkerEvent::AutoReconnecting {
+                    disconnect_reason,
+                    attempt,
+                    maximum_attempts,
+                    response,
+                    ..
+                } => {
+                    self.report_reconnect_worker_progress(attempt, maximum_attempts);
+                    let disconnect_reason = i32::try_from(disconnect_reason).unwrap_or(i32::MAX);
+                    let attempt = i32::try_from(attempt).unwrap_or(i32::MAX);
+                    let maximum_attempts = i32::try_from(maximum_attempts).unwrap_or(i32::MAX);
+                    let decision = match self.fire_auto_reconnecting_event(disconnect_reason, attempt) {
+                        0 => {
+                            self.fire_auto_reconnecting2_event(disconnect_reason, false, attempt, maximum_attempts);
+                            AutoReconnectDecision::Continue
+                        }
+                        _ => AutoReconnectDecision::Stop,
+                    };
+                    let _ = response.send(decision);
+                }
+                WorkerEvent::AutoReconnected { .. } => {
+                    if self.state.get() == ConnectionState::Connected {
+                        self.clear_connection_health_window();
+                        self.fire_event(DISPID_ON_AUTO_RECONNECTED, &[]);
+                    }
+                }
                 WorkerEvent::FatalError { disconnect, .. } => {
                     if let Some(rpc) = &self.rpc {
                         rpc.session_failed(disconnect.description.to_owned());
@@ -7756,6 +8316,7 @@ impl Control {
                     self.last_disconnect.set(disconnect);
                     self.clipboard_state.connected.set(false);
                     self.remote_size.set(None);
+                    self.active_monitor_topology.borrow_mut().take();
                     self.clear_frame();
                     self.rail_windows.borrow_mut().stop();
                     self.fire_event(DISPID_ON_FATAL_ERROR, &[disconnect.event_reason]);
@@ -7774,6 +8335,7 @@ impl Control {
                     self.last_disconnect.set(disconnect);
                     self.clipboard_state.connected.set(false);
                     self.remote_size.set(None);
+                    self.active_monitor_topology.borrow_mut().take();
                     self.clear_frame();
                     self.rail_windows.borrow_mut().stop();
                     self.fire_event(DISPID_ON_DISCONNECTED, &[disconnect.event_reason]);
@@ -7793,6 +8355,8 @@ impl Control {
                     self.stop_clipboard_redirection();
                     self.input_sender.borrow_mut().take();
                     self.remote_size.set(None);
+                    self.active_monitor_topology.borrow_mut().take();
+                    self.configured_monitor_topology.borrow_mut().take();
                     self.clear_frame();
                     self.rail_windows.borrow_mut().stop();
                     self.state.set(ConnectionState::Disconnected);
@@ -7836,6 +8400,23 @@ impl Control {
             }
             RpcCommand::Input { operation, response } => {
                 let _ = response.send(self.rpc_input(operation));
+            }
+            RpcCommand::Touch {
+                encode_time,
+                frames,
+                response,
+            } => {
+                let _ = response.send(self.rpc_touch(encode_time, frames));
+            }
+            RpcCommand::Pen {
+                encode_time,
+                frames,
+                response,
+            } => {
+                let _ = response.send(self.rpc_pen(encode_time, frames));
+            }
+            RpcCommand::DismissHoveringTouchContact { contact_id, response } => {
+                let _ = response.send(self.rpc_dismiss_hovering_touch_contact(contact_id));
             }
             RpcCommand::Resize {
                 width,
@@ -8016,6 +8597,7 @@ impl Control {
                 ironrdp_pdu::rdp::client_info::CompressionType::Rdp61 => 3,
             });
             compatibility.redirect_clipboard = matches!(config.channels().clipboard, ClipboardType::Enable);
+            compatibility.redirect_webauthn = config.channels().webauthn;
             compatibility.performance_flags = connector.performance_flags;
             compatibility.keyboard_type = connector.keyboard_type;
             compatibility.keyboard_subtype = connector.keyboard_subtype;
@@ -8034,6 +8616,11 @@ impl Control {
                 .fake_events_interval()
                 .map(|interval| u32::try_from(interval.as_secs() / 60).unwrap_or(u32::MAX));
             compatibility.audio_redirection_mode = if connector.enable_audio_playback { 0 } else { 2 };
+            compatibility.audio_capture_redirection_mode = if connector.enable_audio_capture {
+                VARIANT_TRUE.0
+            } else {
+                VARIANT_FALSE.0
+            };
             compatibility.secured_start_program = connector.alternate_shell.clone();
             compatibility.secured_work_dir = connector.work_dir.clone();
             compatibility.authentication_level_set =
@@ -8092,6 +8679,96 @@ impl Control {
         }
     }
 
+    fn rpc_touch(
+        &self,
+        encode_time: u32,
+        frames: Vec<ironrdp_agent::ipc::TouchFrameRequest>,
+    ) -> ironrdp_agent::ipc::Response {
+        if self.state.get() != ConnectionState::Connected {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "no active RDP session",
+            );
+        }
+        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            );
+        };
+        let event = match build_rpc_touch_event(encode_time, frames) {
+            Ok(event) => event,
+            Err(response) => return response,
+        };
+        match sender.try_reserve() {
+            Ok(permit) => {
+                permit.send(RdpInputEvent::Touch(event));
+                ironrdp_agent::ipc::Response::ok()
+            }
+            Err(_) => ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            ),
+        }
+    }
+
+    fn rpc_pen(
+        &self,
+        encode_time: u32,
+        frames: Vec<ironrdp_agent::ipc::PenFrameRequest>,
+    ) -> ironrdp_agent::ipc::Response {
+        if self.state.get() != ConnectionState::Connected {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "no active RDP session",
+            );
+        }
+        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            );
+        };
+        let event = match build_rpc_pen_event(encode_time, frames) {
+            Ok(event) => event,
+            Err(response) => return response,
+        };
+        match sender.try_reserve() {
+            Ok(permit) => {
+                permit.send(RdpInputEvent::Pen(event));
+                ironrdp_agent::ipc::Response::ok()
+            }
+            Err(_) => ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            ),
+        }
+    }
+
+    fn rpc_dismiss_hovering_touch_contact(&self, contact_id: u8) -> ironrdp_agent::ipc::Response {
+        if self.state.get() != ConnectionState::Connected {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "no active RDP session",
+            );
+        }
+        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+            return ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            );
+        };
+        match sender.try_reserve() {
+            Ok(permit) => {
+                permit.send(RdpInputEvent::DismissHoveringTouchContact { contact_id });
+                ironrdp_agent::ipc::Response::ok()
+            }
+            Err(_) => ironrdp_agent::ipc::Response::typed_error(
+                ironrdp_agent::ipc::AgentErrorCategory::Unavailable,
+                "session input channel is unavailable",
+            ),
+        }
+    }
     fn rpc_input(&self, operation: Operation) -> ironrdp_agent::ipc::Response {
         if self.state.get() != ConnectionState::Connected {
             return ironrdp_agent::ipc::Response::typed_error(
@@ -8163,6 +8840,7 @@ impl Control {
         let enable_credssp = compatibility.enable_credssp;
         let compression = compatibility.compression;
         let clipboard = compatibility.redirect_clipboard;
+        let redirect_webauthn = compatibility.redirect_webauthn;
         let warn_about_credentials = compatibility.warn_about_sending_credentials;
         let warn_about_clipboard = clipboard && compatibility.warn_about_clipboard_redirection;
         let redirected_drives = if compatibility.disable_rdpdr {
@@ -8170,12 +8848,19 @@ impl Control {
         } else {
             compatibility.drive_catalog.borrow().selected_drives()?
         };
-        let rdpdr_factory = (!redirected_drives.is_empty())
-            .then(|| ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(redirected_drives))
-            .transpose()
-            .map_err(|error| Error::new(E_FAIL, format!("invalid redirected-drive configuration: {error}")))?;
+        let redirect_smart_cards = !compatibility.disable_rdpdr && compatibility.redirect_smart_cards;
+        let rdpdr_factory = if redirected_drives.is_empty() && !redirect_smart_cards {
+            None
+        } else {
+            Some(
+                ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(redirected_drives)
+                    .map_err(|error| Error::new(E_FAIL, format!("invalid redirected-drive configuration: {error}")))?
+                    .with_smartcard(redirect_smart_cards),
+            )
+        };
         let rdpdr_enabled = rdpdr_factory.is_some();
         let audio_redirection_mode = audio_mode_from_raw(compatibility.audio_redirection_mode)?;
+        let audio_capture_enabled = compatibility.audio_capture_redirection_mode != VARIANT_FALSE.0;
         let keyboard_type = compatibility.keyboard_type;
         let keyboard_subtype = compatibility.keyboard_subtype;
         let keyboard_functional_keys_count = compatibility.keyboard_functional_keys_count;
@@ -8195,7 +8880,26 @@ impl Control {
             .client_name
             .clone()
             .unwrap_or_else(|| "IronRDP ActiveX".to_owned());
-        let dvc_plugin_paths = compatibility.dvc_plugin_paths.clone();
+        let dvc_plugin_paths = if redirect_webauthn {
+            let mut filtered = Vec::new();
+            for path in &compatibility.dvc_plugin_paths {
+                let is_webauthn_plugin = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case("webauthn.dll"));
+                if is_webauthn_plugin {
+                    tracing::warn!(
+                        dll = %path.display(),
+                        "Skipping webauthn.dll COM DVC plugin because native RedirectWebAuthn is enabled"
+                    );
+                } else {
+                    filtered.push(path.clone());
+                }
+            }
+            filtered
+        } else {
+            compatibility.dvc_plugin_paths.clone()
+        };
         let enable_tls = compatibility.enable_tls;
         let autologon = compatibility.autologon;
         let desktop_scale_factor = compatibility.desktop_scale_factor;
@@ -8208,8 +8912,17 @@ impl Control {
         let authentication_level = compatibility.authentication_level;
         let authentication_level_set = compatibility.authentication_level_set;
         let public_mode = compatibility.public_mode;
+        let use_multimon = compatibility.use_multimon;
+        let auto_reconnect_maximum_attempts = compatibility
+            .enable_auto_reconnect
+            .then_some(compatibility.max_reconnect_attempts);
         let direct_rpc_properties = active_x_property_snapshot(&settings, &compatibility);
         drop(compatibility);
+        let monitor_topology = use_multimon.then(local_monitor_topology).transpose()?;
+        let (desktop_width, desktop_height) = monitor_topology
+            .as_ref()
+            .map(|topology| (topology.desktop_width, topology.desktop_height))
+            .unwrap_or((settings.desktop_width, settings.desktop_height));
         let remote_application = self.remote_application.borrow();
         let remote_program_mode = remote_application.enabled;
         let remote_application_execute = configured_remote_application_execute(&remote_application)?;
@@ -8303,8 +9016,8 @@ impl Control {
             .with_username(settings.username.clone())
             .with_domain(settings.domain.clone())
             .with_password(password)
-            .with_desktop_width(settings.desktop_width)
-            .with_desktop_height(settings.desktop_height)
+            .with_desktop_width(desktop_width)
+            .with_desktop_height(desktop_height)
             .with_color_depth(settings.color_depth)
             // Keep ActiveX bitmap drawing lossless and avoid RemoteFX until its live display-update
             // stream transitions are fully validated.
@@ -8330,6 +9043,7 @@ impl Control {
             .with_keyboard_layout(keyboard_layout)
             .with_connection_type(connection_type)
             .with_audio_mode(audio_redirection_mode)
+            .with_audio_capture(audio_capture_enabled)
             .with_certificate_validation(certificate_validation)
             // The GDI presenter has no hardware-cursor overlay, so cursor updates must be
             // composited into the decoded framebuffer before it receives image events.
@@ -8339,7 +9053,15 @@ impl Control {
             } else {
                 ClipboardType::Disable
             })
-            .with_rdpdr(rdpdr_enabled);
+            .with_webauthn(redirect_webauthn)
+            .with_webauthn_parent_hwnd(hwnd.0 as isize)
+            .with_rdpdr(rdpdr_enabled)
+            .with_smartcard(redirect_smart_cards);
+        let builder = if let Some(topology) = &monitor_topology {
+            builder.with_monitor_layout(topology.client_monitor_data())
+        } else {
+            builder
+        };
         let builder = if remote_program_mode {
             builder
                 .with_remote_application_mode(true)
@@ -8432,6 +9154,8 @@ impl Control {
         let config = builder
             .build()
             .map_err(|error| Error::new(E_INVALIDARG, format!("invalid RDP configuration: {error}")))?;
+        *self.configured_monitor_topology.borrow_mut() = monitor_topology;
+        self.active_monitor_topology.borrow_mut().take();
         if using_rdcleanpath {
             self.clear_rdcleanpath_token();
         }
@@ -8439,6 +9163,11 @@ impl Control {
         drop(settings);
         let (output_sender, mut output_receiver) = mpsc::channel(32);
         let client = RdpClient::new(config, output_sender);
+        let client = if let Some(maximum_attempts) = auto_reconnect_maximum_attempts {
+            client.with_auto_reconnect(maximum_attempts)
+        } else {
+            client
+        };
         let input_sender = client.input_sender();
         if let Some(execute) = remote_application_execute {
             input_sender
@@ -8474,6 +9203,7 @@ impl Control {
             Err(error) => {
                 self.stop_clipboard_redirection();
                 self.compatibility.borrow_mut().connection_settings_sealed = false;
+                self.configured_monitor_topology.borrow_mut().take();
                 return Err(error);
             }
         };
@@ -8538,6 +9268,14 @@ impl Control {
                                                     WorkerEvent::Connected { generation },
                                                 );
                                             }
+                                            RdpOutputEvent::MonitorLayout(monitors) => {
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::MonitorLayout { generation, monitors },
+                                                );
+                                            }
                                             RdpOutputEvent::LoginComplete => {
                                                 queue_worker_event(
                                                     &worker_events,
@@ -8581,6 +9319,37 @@ impl Control {
                                                     &worker_event_posted,
                                                     hwnd,
                                                     WorkerEvent::DisplayResizeFallback { generation },
+                                                );
+                                            }
+                                            RdpOutputEvent::AutoReconnecting {
+                                                disconnect_reason,
+                                                attempt,
+                                                maximum_attempts,
+                                                response,
+                                            } => {
+                                                if !queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::AutoReconnecting {
+                                                        generation,
+                                                        disconnect_reason,
+                                                        attempt,
+                                                        maximum_attempts,
+                                                        response,
+                                                    },
+                                                ) {
+                                                    // The host cannot make a decision if its dispatcher is gone.
+                                                    // Fail closed rather than starting an unobservable retry.
+                                                    // `response` has been moved into the rejected queue request.
+                                                }
+                                            }
+                                            RdpOutputEvent::AutoReconnected => {
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::AutoReconnected { generation },
                                                 );
                                             }
                                             RdpOutputEvent::Terminated(result) => {
@@ -8679,6 +9448,7 @@ impl Control {
             com::release_module_reference(module);
             self.stop_clipboard_redirection();
             self.compatibility.borrow_mut().connection_settings_sealed = false;
+            self.configured_monitor_topology.borrow_mut().take();
             let message = format!("unable to start RDP worker: {error}");
             if let Some(rpc) = &self.rpc {
                 rpc.session_failed(message.clone());
@@ -8696,8 +9466,10 @@ impl Control {
         self.connection_generation.set(generation);
         self.login_complete_fired.set(false);
         self.remote_size.set(None);
+        self.active_monitor_topology.borrow_mut().take();
         self.clear_frame();
         self.input_database.borrow_mut().release_all();
+        *self.touch_tracker.borrow_mut() = TouchContactTracker::new();
         self.state.set(ConnectionState::Connecting);
         self.fire_event(DISPID_ON_CONNECTING, &[]);
         if self.state.get() == ConnectionState::Connecting {
@@ -8728,7 +9500,14 @@ impl Control {
         if self.state.get() != ConnectionState::Connected {
             return Err(Error::from_hresult(E_UNEXPECTED));
         }
-
+        let configured_monitor_count = self
+            .configured_monitor_topology
+            .borrow()
+            .as_ref()
+            .map_or(0, |topology| topology.monitors.len());
+        if configured_monitor_count > 1 {
+            return Err(Error::from_hresult(E_NOTIMPL));
+        }
         let desktop_width = u16::try_from(layout.desktop_width)
             .map_err(|_| Error::new(E_INVALIDARG, "desktop width must fit in u16"))?;
         let desktop_height = u16::try_from(layout.desktop_height)
@@ -8774,6 +9553,10 @@ impl Control {
             })
             .map_err(|_| Error::from_hresult(E_UNEXPECTED))?;
 
+        if configured_monitor_count == 1 {
+            self.active_monitor_topology.borrow_mut().take();
+            self.configured_monitor_topology.borrow_mut().take();
+        }
         let mut settings = self.settings.borrow_mut();
         settings.desktop_width = desktop_width;
         settings.desktop_height = desktop_height;
@@ -8800,6 +9583,17 @@ impl Control {
     }
 
     fn remote_monitor_bounds(&self) -> Result<(i32, i32, i32, i32)> {
+        if self.state.get() == ConnectionState::Connected
+            && let Some(topology) = self.active_monitor_topology.borrow().as_ref()
+        {
+            let (left, top, right, bottom) = topology.bounds();
+            return Ok((
+                left,
+                top,
+                right.checked_add(1).ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?,
+                bottom.checked_add(1).ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?,
+            ));
+        }
         let Some((width, height)) = self.remote_size.get() else {
             return Err(Error::from_hresult(E_UNEXPECTED));
         };
@@ -9421,6 +10215,165 @@ impl Control {
         }
     }
 
+    /// Reserves input-queue capacity, then commits tracker transitions and sends.
+    ///
+    /// Capacity is reserved before mutating the tracker so a full queue cannot
+    /// desynchronize local contact state from the server.
+    fn send_touch_event_with<F>(&self, build: F)
+    where
+        F: FnOnce(&mut TouchContactTracker) -> Option<TouchEventPdu>,
+    {
+        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Ok(permit) = sender.try_reserve() else {
+            tracing::warn!("Unable to enqueue ActiveX RDPEI touch event for the RDP session");
+            return;
+        };
+        if let Some(event) = build(&mut self.touch_tracker.borrow_mut()) {
+            permit.send(RdpInputEvent::Touch(event));
+        }
+    }
+
+    fn release_touch_contacts(&self) {
+        self.send_touch_event_with(|tracker| tracker.release_all());
+    }
+
+    /// Maps client-area coordinates onto the remote desktop (signed RDPEI space).
+    fn desktop_position(&self, window: HWND, x: i32, y: i32) -> Option<(i32, i32)> {
+        let position = self.mouse_position(window, x, y)?;
+        Some((i32::from(position.x), i32::from(position.y)))
+    }
+
+    fn suppress_mouse_for_touch(&self) -> bool {
+        self.touch_tracker.borrow().has_active_contacts()
+    }
+
+    fn handle_pointer_message(&self, window: HWND, message: u32, wparam: WPARAM, _lparam: LPARAM) -> bool {
+        let pointer_id = (wparam.0 & 0xffff) as u32;
+
+        let mut info = POINTER_INFO::default();
+        if unsafe { GetPointerInfo(pointer_id, &mut info) }.is_err() {
+            return false;
+        }
+        if info.pointerType != PT_TOUCH {
+            // Pen and other pointer types are not remoted in this cut.
+            return false;
+        }
+
+        let mut pointer_count = 0u32;
+        if unsafe { GetPointerFrameTouchInfo(pointer_id, &mut pointer_count, None) }.is_err() || pointer_count == 0 {
+            return true;
+        }
+
+        let mut touch_infos = vec![POINTER_TOUCH_INFO::default(); pointer_count as usize];
+        if unsafe { GetPointerFrameTouchInfo(pointer_id, &mut pointer_count, Some(touch_infos.as_mut_ptr())) }.is_err()
+        {
+            return true;
+        }
+        touch_infos.truncate(pointer_count as usize);
+
+        let mut samples = Vec::with_capacity(touch_infos.len());
+        for touch in &touch_infos {
+            let ptr = touch.pointerInfo;
+            if ptr.pointerType != PT_TOUCH {
+                continue;
+            }
+
+            let mut client_point = ptr.ptPixelLocation;
+            if !unsafe { ScreenToClient(window, &mut client_point) }.as_bool() {
+                continue;
+            }
+            let mapped = self.desktop_position(window, client_point.x, client_point.y);
+            let canceled = (ptr.pointerFlags & POINTER_FLAG_CANCELED).0 != 0
+                || message == WM_POINTERCAPTURECHANGED
+                || (message == WM_POINTERLEAVE && (ptr.pointerFlags & POINTER_FLAG_INCONTACT).0 == 0);
+            let leaving = (ptr.pointerFlags & POINTER_FLAG_UP).0 != 0 || canceled;
+
+            let Some((x, y)) = mapped else {
+                // Outside the rendered desktop: still emit terminal transitions, keeping
+                // the last tracked coordinates rather than inventing (0, 0).
+                if leaving {
+                    samples.push(TouchSample {
+                        pointer_id: ptr.pointerId,
+                        x: 0,
+                        y: 0,
+                        preserve_position: true,
+                        in_range: false,
+                        in_contact: false,
+                        canceled,
+                        orientation: None,
+                        pressure: None,
+                        contact_rect: None,
+                    });
+                }
+                continue;
+            };
+
+            let contact_rect = if touch.touchMask & TOUCH_MASK_CONTACTAREA != 0 {
+                let mut tl = POINT {
+                    x: touch.rcContact.left,
+                    y: touch.rcContact.top,
+                };
+                let mut br = POINT {
+                    x: touch.rcContact.right,
+                    y: touch.rcContact.bottom,
+                };
+                if unsafe { ScreenToClient(window, &mut tl) }.as_bool()
+                    && unsafe { ScreenToClient(window, &mut br) }.as_bool()
+                {
+                    // Contact rect is exclusive bounds relative to the contact point.
+                    match (
+                        self.desktop_position(window, tl.x, tl.y),
+                        self.desktop_position(window, br.x, br.y),
+                    ) {
+                        (Some((l, t)), Some((r, b))) => {
+                            let left = i16::try_from(l.saturating_sub(x)).unwrap_or(i16::MIN);
+                            let top = i16::try_from(t.saturating_sub(y)).unwrap_or(i16::MIN);
+                            let right = i16::try_from(r.saturating_sub(x)).unwrap_or(i16::MAX);
+                            let bottom = i16::try_from(b.saturating_sub(y)).unwrap_or(i16::MAX);
+                            Some((left, top, right, bottom))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let orientation = if touch.touchMask & TOUCH_MASK_ORIENTATION != 0 {
+                Some(TouchContactTracker::win32_orientation_to_rdpei(touch.orientation))
+            } else {
+                None
+            };
+            let pressure = if touch.touchMask & TOUCH_MASK_PRESSURE != 0 {
+                Some(touch.pressure)
+            } else {
+                None
+            };
+
+            samples.push(TouchSample {
+                pointer_id: ptr.pointerId,
+                x,
+                y,
+                preserve_position: false,
+                in_range: (ptr.pointerFlags & POINTER_FLAG_INRANGE).0 != 0,
+                in_contact: (ptr.pointerFlags & POINTER_FLAG_INCONTACT).0 != 0,
+                canceled,
+                orientation,
+                pressure,
+                contact_rect,
+            });
+        }
+
+        self.send_touch_event_with(|tracker| tracker.process_samples(&samples));
+
+        let _ = unsafe { SkipPointerFrameMessages(pointer_id) };
+        true
+    }
+
     fn send_keys(&self, key_count: i32, key_up: *const i16, key_data: *const i32) -> Result<()> {
         let key_count = usize::try_from(key_count)
             .ok()
@@ -9505,6 +10458,7 @@ impl Control {
     }
 
     fn release_input(&self) {
+        self.release_touch_contacts();
         let fast_path = self.input_database.borrow_mut().release_all();
         if fast_path.is_empty() {
             return;
@@ -9668,11 +10622,14 @@ impl Control {
                 self.apply_input([operation]);
                 true
             }
+            WM_POINTERUPDATE | WM_POINTERDOWN | WM_POINTERUP | WM_POINTERLEAVE | WM_POINTERCAPTURECHANGED => {
+                self.handle_pointer_message(window, message, wparam, lparam)
+            }
             WM_MOUSEMOVE => {
                 if i32::from((lparam.0 >> 16) as i16) <= 4 {
                     self.expose_connection_bar();
                 }
-                if !self.compatibility.borrow().enable_mouse {
+                if !self.compatibility.borrow().enable_mouse || self.suppress_mouse_for_touch() {
                     return true;
                 }
                 let x = i32::from(lparam.0 as i32 as i16);
@@ -9683,7 +10640,7 @@ impl Control {
                 true
             }
             WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
-                if !self.compatibility.borrow().enable_mouse {
+                if !self.compatibility.borrow().enable_mouse || self.suppress_mouse_for_touch() {
                     return true;
                 }
                 if let Err(error) = unsafe { SetFocus(Some(window)) } {
@@ -9703,6 +10660,9 @@ impl Control {
                 true
             }
             WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP | WM_XBUTTONUP => {
+                if self.suppress_mouse_for_touch() {
+                    return true;
+                }
                 let button = match message {
                     WM_LBUTTONUP => MouseButton::Left,
                     WM_RBUTTONUP => MouseButton::Right,
@@ -9715,7 +10675,7 @@ impl Control {
                 true
             }
             WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
-                if !self.compatibility.borrow().enable_mouse {
+                if !self.compatibility.borrow().enable_mouse || self.suppress_mouse_for_touch() {
                     return true;
                 }
                 let mut point = POINT {
@@ -10605,21 +11565,37 @@ impl IMsRdpClientNonScriptable4_Impl for Control_Impl {
 
 impl IMsRdpClientNonScriptable5_Impl for Control_Impl {
     unsafe fn put_UseMultimon(&self, value: i16) -> Result<()> {
-        if value == VARIANT_FALSE.0 {
-            Ok(())
-        } else {
-            // IronRDP currently renders one remote desktop surface. Never retain a
-            // multi-monitor value that cannot be applied to the connection.
-            unsupported()
+        let use_multimon = normalize_variant_bool(value)? == VARIANT_TRUE.0;
+        let mut compatibility = self.compatibility.borrow_mut();
+        active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
+        if use_multimon {
+            local_monitor_topology()?;
         }
+        compatibility.use_multimon = use_multimon;
+        Ok(())
     }
 
     unsafe fn get_UseMultimon(&self, value: *mut i16) -> Result<()> {
-        write_out(value, VARIANT_FALSE.0)
+        write_out(
+            value,
+            if self.compatibility.borrow().use_multimon {
+                VARIANT_TRUE.0
+            } else {
+                VARIANT_FALSE.0
+            },
+        )
     }
 
     unsafe fn get_RemoteMonitorCount(&self, count: *mut u32) -> Result<()> {
-        write_out(count, u32::from(self.remote_monitor_bounds().is_ok()))
+        let monitor_count = if self.state.get() == ConnectionState::Connected {
+            self.active_monitor_topology.borrow().as_ref().map_or_else(
+                || u32::from(self.remote_size.get().is_some()),
+                |topology| topology.monitors.len() as u32,
+            )
+        } else {
+            0
+        };
+        write_out(count, monitor_count)
     }
 
     unsafe fn GetRemoteMonitorsBoundingBox(
@@ -10647,8 +11623,13 @@ impl IMsRdpClientNonScriptable5_Impl for Control_Impl {
     }
 
     unsafe fn get_RemoteMonitorLayoutMatchesLocal(&self, value: *mut i16) -> Result<()> {
-        // The single remote framebuffer is not a claim about the local display topology.
-        write_out(value, VARIANT_FALSE.0)
+        let matches_local = self.state.get() == ConnectionState::Connected
+            && self
+                .active_monitor_topology
+                .borrow()
+                .as_ref()
+                .is_some_and(|topology| local_monitor_topology().is_ok_and(|local| local == *topology));
+        write_out(value, if matches_local { VARIANT_TRUE.0 } else { VARIANT_FALSE.0 })
     }
 
     unsafe fn put_DisableConnectionBar(&self, value: i16) -> Result<()> {
@@ -11026,6 +12007,18 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
             trace_host_call("IMsRdpExtendedSettings::put_IronRdpDvcPluginPaths");
             return Ok(());
         }
+        if name.eq_ignore_ascii_case("RedirectWebAuthn") {
+            if value.is_null() {
+                return Err(Error::from_hresult(E_POINTER));
+            }
+            let redirect_webauthn = variant_bool(unsafe { &*value }, ptr::null_mut())?;
+            let mut compatibility = self.compatibility.borrow_mut();
+            active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
+            compatibility.redirect_webauthn = redirect_webauthn;
+            mark_compatibility_persistence_dirty(&compatibility);
+            trace_host_call("IMsRdpExtendedSettings::put_RedirectWebAuthn");
+            return Ok(());
+        }
 
         Err(Error::from_hresult(E_NOTIMPL))
     }
@@ -11159,6 +12152,10 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
                 .join(";");
             trace_host_call("IMsRdpExtendedSettings::get_IronRdpDvcPluginPaths");
             return write_out(value, variant_bstr(paths));
+        }
+        if name.eq_ignore_ascii_case("RedirectWebAuthn") {
+            trace_host_call("IMsRdpExtendedSettings::get_RedirectWebAuthn");
+            return write_out(value, variant_bool_value(self.compatibility.borrow().redirect_webauthn));
         }
         write_out(value, VARIANT::default())?;
         Err(Error::from_hresult(E_NOTIMPL))
@@ -12686,6 +13683,12 @@ fn queue_worker_event(
     hwnd: HWND,
     event: WorkerEvent,
 ) -> bool {
+    let auto_reconnect_key = match &event {
+        WorkerEvent::AutoReconnecting {
+            generation, attempt, ..
+        } => Some((*generation, *attempt)),
+        _ => None,
+    };
     if events.closed.load(Ordering::Acquire) {
         return false;
     }
@@ -12731,7 +13734,25 @@ fn queue_worker_event(
                 false
             }
         }
-        WorkerEvent::Connected { .. } | WorkerEvent::LoginComplete { .. } | WorkerEvent::DisplayResizeFallback { .. } => {
+        WorkerEvent::AutoReconnecting { .. } => {
+            while queue.len() >= MAX_PENDING_WORKER_EVENTS {
+                if let Some(index) = queue
+                    .iter()
+                    .position(|pending| matches!(pending, WorkerEvent::Image { .. } | WorkerEvent::StaticChannelData { .. }))
+                {
+                    queue.remove(index);
+                } else {
+                    return false;
+                }
+            }
+            queue.push(event);
+            true
+        }
+        WorkerEvent::Connected { .. }
+        | WorkerEvent::MonitorLayout { .. }
+        | WorkerEvent::LoginComplete { .. }
+        | WorkerEvent::DisplayResizeFallback { .. }
+        | WorkerEvent::AutoReconnected { .. } => {
             if queue.iter().any(|pending| {
                 pending.generation() == event.generation()
                     && core::mem::discriminant(pending) == core::mem::discriminant(&event)
@@ -12769,7 +13790,6 @@ fn queue_worker_event(
             true
         }
     };
-    drop(queue);
     if !queued {
         return false;
     }
@@ -12779,7 +13799,24 @@ fn queue_worker_event(
     {
         event_posted.store(false, Ordering::Release);
         tracing::debug!(?error, "Unable to post ActiveX event dispatch message");
+        if let Some((generation, attempt)) = auto_reconnect_key {
+            if let Some(index) = queue.iter().rposition(|pending| {
+                matches!(
+                    pending,
+                    WorkerEvent::AutoReconnecting {
+                        generation: pending_generation,
+                        attempt: pending_attempt,
+                        ..
+                    } if *pending_generation == generation && *pending_attempt == attempt
+                )
+            }) {
+                queue.remove(index);
+                events.space_available.notify_all();
+            }
+            return false;
+        }
     }
+    drop(queue);
     true
 }
 
@@ -13597,6 +14634,22 @@ fn variant_bool_byref(value: &mut VARIANT_BOOL) -> VARIANT {
     }
 }
 
+fn variant_i32_byref(value: &mut i32) -> VARIANT {
+    VARIANT {
+        Anonymous: VARIANT_0 {
+            Anonymous: ManuallyDrop::new(VARIANT_0_0 {
+                vt: VT_I4 | VT_BYREF,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: VARIANT_0_0_0 {
+                    plVal: value as *mut i32,
+                },
+            }),
+        },
+    }
+}
+
 fn property_put_value(params: &DISPPARAMS) -> Result<&VARIANT> {
     if params.cArgs != 1 || params.cNamedArgs != 1 || params.rgvarg.is_null() || params.rgdispidNamedArgs.is_null() {
         return Err(Error::from_hresult(DISP_E_BADPARAMCOUNT));
@@ -13758,6 +14811,144 @@ mod tests {
             .expect("ActiveX config includes bitmap capabilities");
         assert_eq!(bitmap.color_depth, 32);
         assert!(!bitmap.lossy_compression);
+    }
+
+    #[test]
+    fn monitor_topology_normalizes_primary_relative_coordinates() {
+        let topology = MonitorTopology::from_host_monitors(vec![
+            HostMonitor {
+                rect: RECT {
+                    left: 100,
+                    top: 200,
+                    right: 1_100,
+                    bottom: 1_000,
+                },
+                primary: true,
+            },
+            HostMonitor {
+                rect: RECT {
+                    left: -700,
+                    top: 200,
+                    right: 100,
+                    bottom: 1_000,
+                },
+                primary: false,
+            },
+        ])
+        .expect("a valid two-monitor topology");
+
+        assert_eq!(topology.desktop_width, 1_800);
+        assert_eq!(topology.desktop_height, 800);
+        assert_eq!(topology.bounds(), (-800, 0, 999, 799));
+        assert_eq!(
+            topology.client_monitor_data().monitors,
+            vec![
+                Monitor {
+                    left: 0,
+                    top: 0,
+                    right: 999,
+                    bottom: 799,
+                    flags: MonitorFlags::PRIMARY,
+                },
+                Monitor {
+                    left: -800,
+                    top: 0,
+                    right: -1,
+                    bottom: 799,
+                    flags: MonitorFlags::empty(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn monitor_topology_rejects_invalid_geometry() {
+        let invalid_primary = MonitorTopology::from_host_monitors(vec![HostMonitor {
+            rect: RECT {
+                left: 0,
+                top: 0,
+                right: 800,
+                bottom: 600,
+            },
+            primary: false,
+        }])
+        .expect_err("a monitor topology needs exactly one primary monitor");
+        assert_eq!(invalid_primary.code(), E_INVALIDARG);
+
+        let overlapping = MonitorTopology::from_host_monitors(vec![
+            HostMonitor {
+                rect: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 800,
+                    bottom: 600,
+                },
+                primary: true,
+            },
+            HostMonitor {
+                rect: RECT {
+                    left: 700,
+                    top: 0,
+                    right: 1_500,
+                    bottom: 600,
+                },
+                primary: false,
+            },
+        ])
+        .expect_err("overlapping monitor rectangles are invalid");
+        assert_eq!(overlapping.code(), E_INVALIDARG);
+
+        let too_many = MonitorTopology::from_host_monitors(vec![
+            HostMonitor {
+                rect: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 800,
+                    bottom: 600,
+                },
+                primary: true,
+            };
+            MONITOR_COUNT_MAX + 1
+        ])
+        .expect_err("Client Monitor Data supports at most sixteen monitors");
+        assert_eq!(too_many.code(), E_INVALIDARG);
+    }
+
+    #[test]
+    fn non_scriptable5_reports_the_connected_monitor_topology() {
+        let control = Control::new();
+        let topology = MonitorTopology::from_host_monitors(vec![
+            HostMonitor {
+                rect: RECT {
+                    left: 100,
+                    top: 200,
+                    right: 1_100,
+                    bottom: 1_000,
+                },
+                primary: true,
+            },
+            HostMonitor {
+                rect: RECT {
+                    left: -700,
+                    top: 200,
+                    right: 100,
+                    bottom: 1_000,
+                },
+                primary: false,
+            },
+        ])
+        .expect("a valid two-monitor topology");
+        control.state.set(ConnectionState::Connected);
+        *control.active_monitor_topology.borrow_mut() = Some(topology);
+        assert_eq!(
+            control.remote_monitor_bounds().expect("read remote monitor bounds"),
+            (-800, 0, 1_000, 800)
+        );
+        let non_scriptable: IMsRdpClientNonScriptable5 = control.into();
+
+        let mut count = 0;
+        unsafe { non_scriptable.get_RemoteMonitorCount(&mut count) }.expect("read remote monitor count");
+        assert_eq!(count, 2);
     }
 
     #[test]
@@ -13926,6 +15117,53 @@ mod tests {
         };
         assert_eq!(error.code(), E_NOTIMPL);
         assert_eq!(variant_header(&returned_token).vt, VT_EMPTY);
+    }
+
+    #[test]
+    fn extended_settings_redirect_webauthn_round_trip() {
+        let control: IMsRdpClient10 = Control::new().into();
+        let extended = control
+            .cast::<IMsRdpExtendedSettings>()
+            .expect("control supports IMsRdpExtendedSettings");
+
+        let mut default_value = VARIANT::default();
+        unsafe {
+            extended
+                .get_Property(BSTR::from("RedirectWebAuthn").as_ptr(), &mut default_value)
+                .expect("get default RedirectWebAuthn");
+        }
+        assert!(
+            variant_bool(&default_value, ptr::null_mut()).expect("RedirectWebAuthn boolean"),
+            "RedirectWebAuthn defaults to true"
+        );
+
+        let mut disabled = variant_bool_value(false);
+        unsafe {
+            extended
+                .put_Property(BSTR::from("RedirectWebAuthn").as_ptr(), &mut disabled)
+                .expect("disable RedirectWebAuthn");
+        }
+        let mut returned = VARIANT::default();
+        unsafe {
+            extended
+                .get_Property(BSTR::from("RedirectWebAuthn").as_ptr(), &mut returned)
+                .expect("get RedirectWebAuthn after disable");
+        }
+        assert!(!variant_bool(&returned, ptr::null_mut()).expect("RedirectWebAuthn boolean"));
+
+        let mut enabled = variant_bool_value(true);
+        unsafe {
+            extended
+                .put_Property(BSTR::from("RedirectWebAuthn").as_ptr(), &mut enabled)
+                .expect("enable RedirectWebAuthn");
+        }
+        let mut returned = VARIANT::default();
+        unsafe {
+            extended
+                .get_Property(BSTR::from("RedirectWebAuthn").as_ptr(), &mut returned)
+                .expect("get RedirectWebAuthn after enable");
+        }
+        assert!(variant_bool(&returned, ptr::null_mut()).expect("RedirectWebAuthn boolean"));
     }
 
     #[test]
@@ -14495,6 +15733,47 @@ mod tests {
         };
         let this = (&mut object as *mut AdvancedSettingsObject).cast::<c_void>();
 
+        let mut auto_reconnect = VARIANT_FALSE.0;
+        assert_eq!(
+            unsafe { advanced_get_enable_auto_reconnect(this, &mut auto_reconnect) },
+            S_OK
+        );
+        assert_eq!(auto_reconnect, VARIANT_TRUE.0);
+        assert_eq!(
+            unsafe { advanced_put_enable_auto_reconnect(this, VARIANT_FALSE.0) },
+            S_OK
+        );
+        assert!(!settings.borrow().enable_auto_reconnect);
+
+        let mut max_reconnect_attempts = 0;
+        assert_eq!(
+            unsafe { advanced_get_max_reconnect_attempts(this, &mut max_reconnect_attempts) },
+            S_OK
+        );
+        assert_eq!(max_reconnect_attempts, 20);
+        assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, 3) }, S_OK);
+        assert_eq!(settings.borrow().max_reconnect_attempts, 3);
+        assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, -1) }, E_INVALIDARG);
+        assert_eq!(
+            unsafe {
+                advanced_put_max_reconnect_attempts(
+                    this,
+                    i32::try_from(MAX_RECONNECT_ATTEMPTS + 1).expect("limit fits in i32"),
+                )
+            },
+            E_INVALIDARG
+        );
+        settings.borrow_mut().connection_settings_sealed = true;
+        assert_eq!(
+            unsafe { advanced_put_enable_auto_reconnect(this, VARIANT_TRUE.0) },
+            E_FAIL
+        );
+        assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, 4) }, E_FAIL);
+        assert_eq!(unsafe { advanced_put_max_reconnect_attempts(this, -1) }, E_FAIL);
+        assert!(!settings.borrow().enable_auto_reconnect);
+        assert_eq!(settings.borrow().max_reconnect_attempts, 3);
+        settings.borrow_mut().connection_settings_sealed = false;
+
         assert_eq!(unsafe { advanced_put_compress(this, 0) }, S_OK);
         let mut compression = -1;
         assert_eq!(unsafe { advanced_get_compress(this, &mut compression) }, S_OK);
@@ -14616,6 +15895,18 @@ mod tests {
         );
         assert_eq!(redirect_drives, VARIANT_TRUE.0);
 
+        assert_eq!(unsafe { advanced_put_redirect_smart_cards(this, VARIANT_TRUE.0) }, S_OK);
+        let mut redirect_smart_cards = VARIANT_FALSE.0;
+        assert_eq!(
+            unsafe { advanced_get_redirect_smart_cards(this, &mut redirect_smart_cards) },
+            S_OK
+        );
+        assert_eq!(redirect_smart_cards, VARIANT_TRUE.0);
+        assert_eq!(
+            unsafe { advanced_get_redirect_smart_cards(this, ptr::null_mut()) },
+            E_POINTER
+        );
+
         assert_eq!(unsafe { advanced_put_enable_mouse(this, 0) }, S_OK);
         let mut enable_mouse = -1;
         assert_eq!(unsafe { advanced_get_enable_mouse(this, &mut enable_mouse) }, S_OK);
@@ -14704,6 +15995,28 @@ mod tests {
         assert_eq!(audio_redirection_mode, 2);
         assert_eq!(unsafe { advanced_put_audio_redirection(this, 3) }, E_INVALIDARG);
 
+        assert_eq!(
+            unsafe { advanced_put_audio_capture_redirection_mode(this, VARIANT_TRUE.0) },
+            S_OK
+        );
+        let mut audio_capture_mode = VARIANT_FALSE.0;
+        assert_eq!(
+            unsafe { advanced_get_audio_capture_redirection_mode(this, &mut audio_capture_mode) },
+            S_OK
+        );
+        assert_eq!(audio_capture_mode, VARIANT_TRUE.0);
+        // Non-zero values normalize to VARIANT_TRUE.
+        assert_eq!(unsafe { advanced_put_audio_capture_redirection_mode(this, 1) }, S_OK);
+        assert_eq!(
+            unsafe { advanced_get_audio_capture_redirection_mode(this, &mut audio_capture_mode) },
+            S_OK
+        );
+        assert_eq!(audio_capture_mode, VARIANT_TRUE.0);
+        assert_eq!(
+            unsafe { advanced_put_audio_capture_redirection_mode(this, VARIANT_FALSE.0) },
+            S_OK
+        );
+
         assert_eq!(unsafe { advanced_put_authentication_level(this, 2) }, S_OK);
         let mut authentication_level = u32::MAX;
         assert_eq!(
@@ -14779,6 +16092,22 @@ mod tests {
         assert_eq!(vtable.slots[28], advanced_put_rdp_port as *const () as usize);
         assert_eq!(vtable.slots[30], advanced_put_enable_mouse as *const () as usize);
         assert_eq!(vtable.slots[34], advanced_put_enable_windows_key as *const () as usize);
+        assert_eq!(
+            vtable.slots[132],
+            advanced_put_enable_auto_reconnect as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[133],
+            advanced_get_enable_auto_reconnect as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[134],
+            advanced_put_max_reconnect_attempts as *const () as usize
+        );
+        assert_eq!(
+            vtable.slots[135],
+            advanced_get_max_reconnect_attempts as *const () as usize
+        );
         assert_eq!(vtable.slots[83], advanced_put_keyboard_type as *const () as usize);
         assert_eq!(vtable.slots[85], advanced_put_keyboard_subtype as *const () as usize);
         assert_eq!(
@@ -15066,7 +16395,7 @@ mod tests {
     }
 
     #[test]
-    fn connection_failure_trace_uses_only_static_diagnostics() {
+    fn connection_failure_trace_omits_error_context() {
         let trace_path = std::env::temp_dir().join(format!(
             "ironrdp-activex-connection-failure-{}.trace",
             std::process::id()
@@ -15074,15 +16403,63 @@ mod tests {
         let _ = std::fs::remove_file(&trace_path);
 
         let trace_guard = TestHostTracePath::install(trace_path.clone());
-        trace_connection_failure(&ConnectorError::new(
-            "test connector operation",
-            ConnectorErrorKind::Custom,
-        ));
+        trace_connection_failure(&ConnectorError::new("must not be traced", ConnectorErrorKind::Custom));
         drop(trace_guard);
         let trace = std::fs::read_to_string(&trace_path).expect("connection failure trace must be written");
         let _ = std::fs::remove_file(trace_path);
 
-        assert!(trace.starts_with("RdpWorker::ConnectionFailure:Custom:test connector operation:control.rs:line_"));
+        assert!(trace.starts_with("RdpWorker::ConnectionFailure:Custom:control.rs:line_"));
+        assert!(!trace.contains("must not be traced"));
+    }
+
+    #[test]
+    fn session_failure_trace_omits_error_contexts() {
+        let trace_path =
+            std::env::temp_dir().join(format!("ironrdp-activex-session-failure-{}.trace", std::process::id()));
+        let _ = std::fs::remove_file(&trace_path);
+
+        let trace_guard = TestHostTracePath::install(trace_path.clone());
+        let decode_error = DecodeError::new(
+            "nested decode context must not be traced",
+            DecodeErrorKind::Other {
+                description: "decode detail must not be traced",
+            },
+        );
+        trace_session_failure(&SessionError::new(
+            "outer decode context must not be traced",
+            SessionErrorKind::Decode(decode_error),
+        ));
+        trace_session_failure(&SessionError::new(
+            "reason context must not be traced",
+            SessionErrorKind::Reason("reason detail must not be traced".to_owned()),
+        ));
+        trace_session_failure(&SessionError::new(
+            "general context must not be traced",
+            SessionErrorKind::General,
+        ));
+        drop(trace_guard);
+        let trace = std::fs::read_to_string(&trace_path).expect("session failure trace must be written");
+        let _ = std::fs::remove_file(trace_path);
+
+        let mut lines = trace.lines();
+        for prefix in [
+            "RdpWorker::SessionFailure:Decode:Other:control.rs:line_",
+            "RdpWorker::SessionFailure:Reason:control.rs:line_",
+            "RdpWorker::SessionFailure:General:control.rs:line_",
+        ] {
+            assert!(lines.next().is_some_and(|line| line.starts_with(prefix)));
+        }
+        assert_eq!(lines.next(), None);
+        for secret in [
+            "nested decode context must not be traced",
+            "decode detail must not be traced",
+            "outer decode context must not be traced",
+            "reason context must not be traced",
+            "reason detail must not be traced",
+            "general context must not be traced",
+        ] {
+            assert!(!trace.contains(secret));
+        }
     }
 
     #[test]
@@ -15959,6 +17336,18 @@ mod tests {
         let (sender, mut receiver) = RdpInputSender::channel(16);
         *control.input_sender.borrow_mut() = Some(sender);
         control.state.set(ConnectionState::Connected);
+        let topology = MonitorTopology::from_host_monitors(vec![HostMonitor {
+            rect: RECT {
+                left: 0,
+                top: 0,
+                right: 1_920,
+                bottom: 1_080,
+            },
+            primary: true,
+        }])
+        .expect("a valid single-monitor topology");
+        *control.configured_monitor_topology.borrow_mut() = Some(topology.clone());
+        *control.active_monitor_topology.borrow_mut() = Some(topology);
 
         control
             .update_display_layout(DisplayLayout {
@@ -15983,6 +17372,180 @@ mod tests {
         ));
         let settings = control.settings.borrow();
         assert_eq!((settings.desktop_width, settings.desktop_height), (1280, 720));
+        assert!(control.active_monitor_topology.borrow().is_none());
+        assert!(control.configured_monitor_topology.borrow().is_none());
+    }
+
+    #[test]
+    fn active_multimon_layout_rejects_dynamic_display_updates() {
+        let control = Control::new();
+        let (sender, mut receiver) = RdpInputSender::channel(16);
+        *control.input_sender.borrow_mut() = Some(sender);
+        control.state.set(ConnectionState::Connected);
+        *control.configured_monitor_topology.borrow_mut() = Some(
+            MonitorTopology::from_host_monitors(vec![
+                HostMonitor {
+                    rect: RECT {
+                        left: 0,
+                        top: 0,
+                        right: 1_920,
+                        bottom: 1_080,
+                    },
+                    primary: true,
+                },
+                HostMonitor {
+                    rect: RECT {
+                        left: 1_920,
+                        top: 0,
+                        right: 3_200,
+                        bottom: 1_080,
+                    },
+                    primary: false,
+                },
+            ])
+            .expect("a valid monitor topology"),
+        );
+
+        let error = control
+            .update_display_layout(DisplayLayout {
+                desktop_width: 1280,
+                desktop_height: 720,
+                physical_width: 0,
+                physical_height: 0,
+                orientation: 0,
+                desktop_scale_factor: 100,
+                device_scale_factor: 100,
+            })
+            .expect_err("dynamic display updates cannot change a negotiated monitor topology");
+        assert_eq!(error.code(), E_NOTIMPL);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn monitor_topology_activates_when_server_layout_matches() {
+        let control = Control::new();
+        control.connection_generation.set(7);
+        control.state.set(ConnectionState::Connecting);
+        *control.configured_monitor_topology.borrow_mut() = Some(
+            MonitorTopology::from_host_monitors(vec![HostMonitor {
+                rect: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 800,
+                    bottom: 600,
+                },
+                primary: true,
+            }])
+            .expect("a valid monitor topology"),
+        );
+        let monitors = control
+            .configured_monitor_topology
+            .borrow()
+            .as_ref()
+            .expect("the configured topology is available")
+            .monitors
+            .clone();
+        control.events.events.lock().expect("event queue is available").extend([
+            WorkerEvent::MonitorLayout {
+                generation: 7,
+                monitors,
+            },
+            WorkerEvent::Connected { generation: 7 },
+            WorkerEvent::Image {
+                generation: 7,
+                buffer: vec![0],
+                width: 800,
+                height: 600,
+            },
+        ]);
+
+        control.dispatch_pending_events();
+
+        assert_eq!(
+            control
+                .active_monitor_topology
+                .borrow()
+                .as_ref()
+                .expect("the matching topology is active")
+                .monitors
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn monitor_topology_requires_a_matching_server_layout() {
+        let control = Control::new();
+        control.connection_generation.set(7);
+        control.state.set(ConnectionState::Connecting);
+        *control.configured_monitor_topology.borrow_mut() = Some(
+            MonitorTopology::from_host_monitors(vec![
+                HostMonitor {
+                    rect: RECT {
+                        left: 0,
+                        top: 0,
+                        right: 400,
+                        bottom: 600,
+                    },
+                    primary: true,
+                },
+                HostMonitor {
+                    rect: RECT {
+                        left: 400,
+                        top: 0,
+                        right: 800,
+                        bottom: 600,
+                    },
+                    primary: false,
+                },
+            ])
+            .expect("a valid monitor topology"),
+        );
+        let mut monitors = control
+            .configured_monitor_topology
+            .borrow()
+            .as_ref()
+            .expect("the configured topology is available")
+            .monitors
+            .clone();
+        monitors[1].right = 798;
+        control.events.events.lock().expect("event queue is available").extend([
+            WorkerEvent::MonitorLayout {
+                generation: 7,
+                monitors,
+            },
+            WorkerEvent::Connected { generation: 7 },
+            WorkerEvent::Image {
+                generation: 7,
+                buffer: vec![0],
+                width: 1,
+                height: 1,
+            },
+        ]);
+
+        control.dispatch_pending_events();
+
+        assert!(control.active_monitor_topology.borrow().is_none());
+        assert!(control.configured_monitor_topology.borrow().is_some());
+        assert_eq!(
+            control
+                .update_display_layout(DisplayLayout {
+                    desktop_width: 800,
+                    desktop_height: 600,
+                    physical_width: 0,
+                    physical_height: 0,
+                    orientation: 0,
+                    desktop_scale_factor: 100,
+                    device_scale_factor: 100,
+                })
+                .expect_err("a mismatched multimonitor layout still blocks dynamic display updates")
+                .code(),
+            E_NOTIMPL
+        );
+        assert_eq!(
+            control.remote_monitor_bounds().expect("read remote frame bounds"),
+            (0, 0, 1, 1)
+        );
     }
 
     #[test]
@@ -16036,6 +17599,18 @@ mod tests {
         let (sender, _) = RdpInputSender::channel(16);
         *control.input_sender.borrow_mut() = Some(sender);
         control.state.set(ConnectionState::Connected);
+        let topology = MonitorTopology::from_host_monitors(vec![HostMonitor {
+            rect: RECT {
+                left: 0,
+                top: 0,
+                right: 800,
+                bottom: 600,
+            },
+            primary: true,
+        }])
+        .expect("a valid single-monitor topology");
+        *control.configured_monitor_topology.borrow_mut() = Some(topology.clone());
+        *control.active_monitor_topology.borrow_mut() = Some(topology);
 
         let error = control
             .update_display_layout(DisplayLayout {
@@ -16075,6 +17650,7 @@ mod tests {
             })
             .expect_err("rotation without an IronRDP mapping is unsupported");
         assert_eq!(error.code(), E_NOTIMPL);
+        assert!(control.active_monitor_topology.borrow().is_some());
     }
 
     #[test]
@@ -18362,6 +19938,101 @@ mod tests {
                 .iter()
                 .all(|event| matches!(event, WorkerEvent::StaticChannelData { .. }))
         );
+    }
+
+    #[test]
+    fn worker_event_queue_preserves_auto_reconnect_decisions() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(true));
+        let dispatcher = HWND(ptr::null_mut());
+        let (first_sender, mut first_receiver) = oneshot::channel();
+        let (second_sender, mut second_receiver) = oneshot::channel();
+
+        for (attempt, response) in [(1, first_sender), (2, second_sender)] {
+            assert!(queue_worker_event(
+                &events,
+                &event_posted,
+                dispatcher,
+                WorkerEvent::AutoReconnecting {
+                    generation: 7,
+                    disconnect_reason: 0,
+                    attempt,
+                    maximum_attempts: 2,
+                    response,
+                },
+            ));
+        }
+        assert_eq!(
+            events
+                .events
+                .lock()
+                .expect("event queue is available")
+                .iter()
+                .filter(|event| matches!(event, WorkerEvent::AutoReconnecting { .. }))
+                .count(),
+            2
+        );
+        assert!(first_receiver.try_recv().is_err());
+        assert!(second_receiver.try_recv().is_err());
+
+        events.events.lock().expect("event queue is available").clear();
+        for index in 0..MAX_PENDING_WORKER_EVENTS {
+            assert!(queue_worker_event(
+                &events,
+                &event_posted,
+                dispatcher,
+                WorkerEvent::StaticChannelData {
+                    generation: 7,
+                    channel_name: "alpha".to_owned(),
+                    data: vec![u8::try_from(index).expect("queue capacity fits in u8")],
+                },
+            ));
+        }
+        let (sender, mut receiver) = oneshot::channel();
+        assert!(queue_worker_event(
+            &events,
+            &event_posted,
+            dispatcher,
+            WorkerEvent::AutoReconnecting {
+                generation: 7,
+                disconnect_reason: 0,
+                attempt: 1,
+                maximum_attempts: 1,
+                response: sender,
+            },
+        ));
+        assert!(receiver.try_recv().is_err());
+        assert!(
+            events
+                .events
+                .lock()
+                .expect("event queue is available")
+                .iter()
+                .any(|event| matches!(event, WorkerEvent::AutoReconnecting { .. }))
+        );
+    }
+
+    #[test]
+    fn worker_event_queue_rejects_auto_reconnect_when_dispatch_fails() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = oneshot::channel();
+
+        assert!(!queue_worker_event(
+            &events,
+            &event_posted,
+            HWND(ptr::dangling_mut()),
+            WorkerEvent::AutoReconnecting {
+                generation: 7,
+                disconnect_reason: 0,
+                attempt: 1,
+                maximum_attempts: 1,
+                response: sender,
+            },
+        ));
+        assert!(matches!(receiver.try_recv(), Err(oneshot::error::TryRecvError::Closed)));
+        assert!(events.events.lock().expect("event queue is available").is_empty());
+        assert!(!event_posted.load(Ordering::Acquire));
     }
 
     #[test]

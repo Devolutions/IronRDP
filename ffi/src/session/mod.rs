@@ -27,6 +27,12 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct ActiveStageOutputIterator(pub VecDeque<ironrdp::session::ActiveStageOutput>);
 
+    #[diplomat::opaque]
+    pub struct MonitorLayoutIterator(pub VecDeque<ironrdp::pdu::gcc::Monitor>);
+
+    #[diplomat::opaque]
+    pub struct MonitorLayoutEntry(pub ironrdp::pdu::gcc::Monitor);
+
     impl ActiveStageOutputIterator {
         pub fn len(&self) -> usize {
             self.0.len()
@@ -38,6 +44,42 @@ pub mod ffi {
 
         pub fn next(&mut self) -> Option<Box<ActiveStageOutput>> {
             self.0.pop_front().map(ActiveStageOutput).map(Box::new)
+        }
+    }
+
+    impl MonitorLayoutIterator {
+        pub fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.0.is_empty()
+        }
+
+        pub fn next(&mut self) -> Option<Box<MonitorLayoutEntry>> {
+            self.0.pop_front().map(MonitorLayoutEntry).map(Box::new)
+        }
+    }
+
+    impl MonitorLayoutEntry {
+        pub fn get_left(&self) -> i32 {
+            self.0.left
+        }
+
+        pub fn get_top(&self) -> i32 {
+            self.0.top
+        }
+
+        pub fn get_right(&self) -> i32 {
+            self.0.right
+        }
+
+        pub fn get_bottom(&self) -> i32 {
+            self.0.bottom
+        }
+
+        pub fn is_primary(&self) -> bool {
+            self.0.flags.contains(ironrdp::pdu::gcc::MonitorFlags::PRIMARY)
         }
     }
 
@@ -270,6 +312,8 @@ pub mod ffi {
         SaveSessionInfo = 10,
         AutoReconnectCookie = 11,
         WindowingOrders = 12,
+        AutoReconnectFailed = 13,
+        MonitorLayout = 14,
     }
 
     impl ActiveStageOutput {
@@ -292,6 +336,8 @@ pub mod ffi {
                 ironrdp::session::ActiveStageOutput::AutoReconnectCookie { .. } => {
                     ActiveStageOutputType::AutoReconnectCookie
                 }
+                ironrdp::session::ActiveStageOutput::AutoReconnectFailed => ActiveStageOutputType::AutoReconnectFailed,
+                ironrdp::session::ActiveStageOutput::MonitorLayout(_) => ActiveStageOutputType::MonitorLayout,
             }
         }
 
@@ -340,6 +386,17 @@ pub mod ffi {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::WindowingOrders(orders) => Ok(Box::new(BytesSlice(orders))),
                 _ => Err(IncorrectEnumTypeError::on_variant("WindowingOrders")
+                    .of_enum("ActiveStageOutput")
+                    .into()),
+            }
+        }
+
+        pub fn get_monitor_layout(&self) -> Result<Box<MonitorLayoutIterator>, Box<IronRdpError>> {
+            match &self.0 {
+                ironrdp::session::ActiveStageOutput::MonitorLayout(monitors) => {
+                    Ok(Box::new(MonitorLayoutIterator(monitors.clone().into())))
+                }
+                _ => Err(IncorrectEnumTypeError::on_variant("MonitorLayout")
                     .of_enum("ActiveStageOutput")
                     .into()),
             }
@@ -429,7 +486,9 @@ pub mod ffi {
 mod tests {
     use std::collections::VecDeque;
 
-    use super::ffi::ActiveStageOutputIterator;
+    use ironrdp::pdu::gcc::{Monitor, MonitorFlags};
+
+    use super::ffi::{ActiveStageOutput, ActiveStageOutputIterator, ActiveStageOutputType};
 
     #[test]
     fn active_stage_output_iterator_preserves_response_frame_order() {
@@ -451,5 +510,29 @@ mod tests {
         assert_eq!(second, &[2]);
 
         assert!(iterator.next().is_none());
+    }
+
+    #[test]
+    fn active_stage_output_exposes_monitor_layout() {
+        let output = ActiveStageOutput(ironrdp::session::ActiveStageOutput::MonitorLayout(vec![Monitor {
+            left: -800,
+            top: 0,
+            right: -1,
+            bottom: 599,
+            flags: MonitorFlags::PRIMARY,
+        }]));
+
+        assert!(matches!(output.get_enum_type(), ActiveStageOutputType::MonitorLayout));
+
+        let Ok(mut monitors) = output.get_monitor_layout() else {
+            panic!("monitor layout should be accessible");
+        };
+        let monitor = monitors.next().expect("the monitor layout should contain one monitor");
+        assert_eq!(monitor.get_left(), -800);
+        assert_eq!(monitor.get_top(), 0);
+        assert_eq!(monitor.get_right(), -1);
+        assert_eq!(monitor.get_bottom(), 599);
+        assert!(monitor.is_primary());
+        assert!(monitors.next().is_none());
     }
 }

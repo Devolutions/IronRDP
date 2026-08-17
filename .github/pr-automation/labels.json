@@ -123,5 +123,10 @@
     "name": "ai-reviewed/2",
     "color": "000000",
     "description": "Final automated review completed"
+  },
+  {
+    "name": "ai-review/allow-oversized",
+    "color": "fbca04",
+    "description": "Allows normal automated review of an oversized pull request"
   }
 ]

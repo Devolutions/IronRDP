@@ -878,8 +878,8 @@ impl Sequence for Acceptor {
                         monitors: vec![gcc::Monitor {
                             left: 0,
                             top: 0,
-                            right: i32::from(self.desktop_size.width),
-                            bottom: i32::from(self.desktop_size.height),
+                            right: i32::from(self.desktop_size.width) - 1,
+                            bottom: i32::from(self.desktop_size.height) - 1,
                             flags: gcc::MonitorFlags::PRIMARY,
                         }],
                     });

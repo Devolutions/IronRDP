@@ -35,9 +35,10 @@ use std::collections::BTreeSet;
 use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackendFactory};
 
 use crate::ipc::{
-    ConnState, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PropValue, PropertyDump, PropertyEntry,
-    RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo,
-    RailStatusInfo, Request, Response, StatusInfo,
+    ConnState, KeyFilter, MAX_RAIL_RETAINED_EVENTS, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PenFrameRequest,
+    PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason,
+    RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo, TouchFrameRequest,
+    pen_event_from_request, touch_event_from_request,
 };
 use crate::logbuf::{self, LogBuffer};
 use crate::now::NowEndpoint;
@@ -190,6 +191,8 @@ impl RdpdrDriveConfig {
 pub struct DaemonOptions {
     skip_certificate_check: bool,
     rdpdr_drives: Vec<RdpdrDriveConfig>,
+    /// Enables Windows WinSCard smartcard redirection when the connect property is unset.
+    smartcard: bool,
 }
 
 impl DaemonOptions {
@@ -214,6 +217,17 @@ impl DaemonOptions {
         self.rdpdr_drives = rdpdr_drives;
         self
     }
+
+    /// Enables WinSCard smartcard redirection for this daemon (Windows only).
+    ///
+    /// When `true`, smartcard is used unless a connect/`--prop`/`overlay` value of
+    /// `ironrdp_smartcard:i:0` explicitly disables it. Connect-time `ironrdp_smartcard:i:1`
+    /// can also enable smartcard without this startup flag.
+    #[must_use]
+    pub fn with_smartcard(mut self, enabled: bool) -> Self {
+        self.smartcard = enabled;
+        self
+    }
 }
 
 /// The daemon's mutable state: the (single) current session, plus the shared log buffer.
@@ -232,7 +246,11 @@ pub struct Daemon {
     /// Monotonically assigns RAIL ledger generations so observations from a former session cannot be
     /// mistaken for the active connection.
     next_rail_generation: Arc<AtomicU64>,
+    /// Assigns RAIL launch IDs across every session so they remain unambiguous with their generation.
+    next_rail_launch_id: AtomicU64,
     certificate_validation: CertificateValidation,
+    /// Default smartcard enablement when `ironrdp_smartcard` is absent from connect properties.
+    smartcard_default: bool,
     #[cfg(windows)]
     rdpdr_backend_factory: Option<WindowsRdpdrBackendFactory>,
     /// Notifies an optional GUI frontend whenever retained live state changes.
@@ -292,7 +310,6 @@ struct Live {
     rail: RailLedger,
 }
 
-const MAX_RAIL_EVENTS: usize = 256;
 const MAX_PENDING_RAIL_LAUNCHES: usize = 64;
 
 #[derive(Debug)]
@@ -341,7 +358,7 @@ impl RailLedger {
             kind,
         };
         self.next_sequence = self.next_sequence.saturating_add(1);
-        if self.events.len() == MAX_RAIL_EVENTS {
+        if self.events.len() == MAX_RAIL_RETAINED_EVENTS {
             let _ = self.events.pop_front();
         }
         self.events.push_back(event);
@@ -420,6 +437,23 @@ impl RailLedger {
             Some(PendingRailLaunch::Agent(launch)) => Some(launch.launch_id),
         }
     }
+
+    fn fail_pending_launches(&mut self) -> bool {
+        let pending_launches = core::mem::take(&mut self.pending_launches);
+        let mut recorded_failure = false;
+        for launch in pending_launches {
+            if let PendingRailLaunch::Agent(launch) = launch {
+                self.record(RailEventKind::ExecuteFailed {
+                    launch_id: Some(launch.launch_id),
+                    executable: launch.executable,
+                    flags: launch.flags,
+                    reason: RailExecuteFailureReason::RailUnavailable,
+                });
+                recorded_failure = true;
+            }
+        }
+        recorded_failure
+    }
 }
 
 /// A decoded frame retained for screenshots. `pixels` are `0x00RRGGBB` (`to_be_bytes()` yields
@@ -441,12 +475,22 @@ impl Daemon {
         if certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate {
             warn!("TLS certificate and hostname validation are disabled by explicit daemon configuration");
         }
-        let DaemonOptions { rdpdr_drives, .. } = options;
+        let DaemonOptions {
+            rdpdr_drives,
+            smartcard,
+            ..
+        } = options;
+        // Overlay may pre-enable smartcard via `ironrdp_smartcard` without a dedicated CLI flag.
+        let smartcard_default = smartcard || overlay.enable_smartcard().unwrap_or(false);
         #[cfg(windows)]
-        let rdpdr_backend_factory = rdpdr_backend_factory(rdpdr_drives)?;
+        let rdpdr_backend_factory = rdpdr_backend_factory(rdpdr_drives, smartcard_default)?;
         #[cfg(not(windows))]
         if !rdpdr_drives.is_empty() {
             anyhow::bail!("rdpdr filesystem redirection is only available on Windows");
+        }
+        #[cfg(not(windows))]
+        if smartcard_default {
+            anyhow::bail!("smartcard redirection is only available on Windows");
         }
 
         Ok(Self {
@@ -456,7 +500,9 @@ impl Daemon {
             overlay,
             credentials_loaded,
             next_rail_generation: Arc::new(AtomicU64::new(1)),
+            next_rail_launch_id: AtomicU64::new(1),
             certificate_validation,
+            smartcard_default,
             #[cfg(windows)]
             rdpdr_backend_factory,
             notification: None,
@@ -568,6 +614,11 @@ impl Daemon {
                 last,
             } => DaemonResponse::Single(self.now_stdin(operation_id, data, last).await),
             Request::NowDiagnostics => DaemonResponse::Single(self.now_diagnostics().await),
+            Request::Touch { encode_time, frames } => DaemonResponse::Single(self.touch(encode_time, frames)),
+            Request::Pen { encode_time, frames } => DaemonResponse::Single(self.pen(encode_time, frames)),
+            Request::DismissHoveringTouchContact { contact_id } => {
+                DaemonResponse::Single(self.dismiss_hovering_touch_contact(contact_id))
+            }
             Request::RailStatus => DaemonResponse::Single(self.rail_status()),
             Request::RailEvents { after_sequence } => DaemonResponse::Single(self.rail_events(after_sequence)),
             Request::RailWait {
@@ -650,11 +701,35 @@ impl Daemon {
             // Headless: composite the remote cursor into the framebuffer so it appears in
             // screenshots (there is no separate overlay to draw it).
             .with_pointer_software_rendering(true);
+        // Prefer an explicit connect/overlay property; otherwise use the daemon startup default.
+        // Always set smartcard explicitly so the client feature default (`true`) cannot announce a
+        // smartcard device without a matching WinSCard backend.
+        let smartcard = properties.enable_smartcard().unwrap_or(self.smartcard_default);
         #[cfg(windows)]
-        let builder = if self.rdpdr_backend_factory.is_some() {
-            builder.with_rdpdr(true)
+        let rdpdr_factory = match resolve_rdpdr_factory(self.rdpdr_backend_factory.as_ref(), smartcard) {
+            Ok(factory) => factory,
+            Err(error) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Internal,
+                    format!("invalid rdpdr configuration: {error:#}"),
+                );
+            }
+        };
+        #[cfg(windows)]
+        let builder = if rdpdr_factory.is_some() {
+            builder.with_rdpdr(true).with_smartcard(smartcard)
         } else {
-            builder
+            builder.with_smartcard(false)
+        };
+        #[cfg(not(windows))]
+        let builder = if smartcard {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                "smartcard redirection is only available on Windows",
+            );
+        } else {
+            // Client feature defaults smartcard on; never announce without a WinSCard backend.
+            builder.with_smartcard(false)
         };
 
         let missing = builder.missing();
@@ -696,8 +771,8 @@ impl Daemon {
         let (output_tx, output_rx) = mpsc::channel(16);
         let client = RdpClient::new(config, output_tx);
         #[cfg(windows)]
-        let client = match &self.rdpdr_backend_factory {
-            Some(factory) => client.with_rdpdr_backend_factory(Box::new(factory.clone())),
+        let client = match rdpdr_factory {
+            Some(factory) => client.with_rdpdr_backend_factory(Box::new(factory)),
             None => client,
         };
         let input_tx = client.input_sender();
@@ -942,6 +1017,13 @@ impl Daemon {
                 "RAIL is not enabled for this session",
             );
         }
+        let mut live = session.live.lock().expect("session live state poisoned");
+        if !matches!(live.state, ConnState::Connecting | ConnState::Connected) {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::Unavailable,
+                "RAIL session is not accepting launch requests",
+            );
+        }
         let permit = match session.input_tx.try_reserve() {
             Ok(permit) => permit,
             Err(_) => {
@@ -951,9 +1033,8 @@ impl Daemon {
                 );
             }
         };
-        let mut live = session.live.lock().expect("session live state poisoned");
         let launch = RailLaunchInfo {
-            launch_id: live.rail.next_sequence,
+            launch_id: self.next_rail_launch_id.fetch_add(1, Ordering::Relaxed),
             executable: execute.executable.clone(),
             flags: execute.flags,
         };
@@ -1063,6 +1144,85 @@ impl Daemon {
     /// Panics if the daemon state mutex is poisoned.
     pub fn input(&self, operation: Operation) -> Response {
         self.input_operations([operation])
+    }
+
+    /// Sends one MS-RDPEI touch event to the active RDP session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    fn touch(&self, encode_time: u32, frames: Vec<TouchFrameRequest>) -> Response {
+        let event = match touch_event_from_request(encode_time, frames) {
+            Ok(event) => event,
+            Err(response) => return response,
+        };
+
+        let mut guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_mut() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        let permit = match session.input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        permit.send(RdpInputEvent::Touch(event));
+        Response::ok()
+    }
+
+    /// Sends one MS-RDPEI pen event to the active RDP session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    fn pen(&self, encode_time: u32, frames: Vec<PenFrameRequest>) -> Response {
+        let event = match pen_event_from_request(encode_time, frames) {
+            Ok(event) => event,
+            Err(response) => return response,
+        };
+
+        let mut guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_mut() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        let permit = match session.input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        permit.send(RdpInputEvent::Pen(event));
+        Response::ok()
+    }
+
+    /// Dismisses a hovering MS-RDPEI touch contact on the active RDP session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon state mutex is poisoned.
+    fn dismiss_hovering_touch_contact(&self, contact_id: u8) -> Response {
+        let mut guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_mut() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        let permit = match session.input_tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Response::typed_error(
+                    crate::ipc::AgentErrorCategory::Unavailable,
+                    "session input channel is unavailable",
+                );
+            }
+        };
+        permit.send(RdpInputEvent::DismissHoveringTouchContact { contact_id });
+        Response::ok()
     }
 
     fn unicode_text(&self, text: &str) -> Response {
@@ -1390,20 +1550,23 @@ async fn consume_output(
             RdpOutputEvent::ConnectionFailure(error) => {
                 guard.state = ConnState::Failed;
                 guard.error = Some(format!("{error}"));
+                let rail_changed = guard.rail.fail_pending_launches();
                 error!(%error, "Session connection failed");
-                false
+                rail_changed
             }
             RdpOutputEvent::Terminated(Ok(reason)) => {
                 guard.state = ConnState::Disconnected;
                 guard.error = Some(format!("{reason:?}"));
+                let rail_changed = guard.rail.fail_pending_launches();
                 info!(?reason, "Session terminated");
-                false
+                rail_changed
             }
             RdpOutputEvent::Terminated(Err(error)) => {
                 guard.state = ConnState::Failed;
                 guard.error = Some(format!("{error}"));
+                let rail_changed = guard.rail.fail_pending_launches();
                 warn!(%error, "Session terminated with an error");
-                false
+                rail_changed
             }
             // With software pointer rendering the cursor is composited into the `Image` frames
             // above; the remaining pointer events (default/hidden) carry no live state we track.
@@ -1425,7 +1588,11 @@ async fn consume_output(
     ) {
         guard.state = ConnState::Disconnected;
     }
+    let rail_changed = guard.rail.fail_pending_launches();
     drop(guard);
+    if rail_changed {
+        rail_notify.notify_waiters();
+    }
     notify(&notification);
 }
 
@@ -1512,8 +1679,11 @@ fn current_platform() -> MajorPlatformType {
 }
 
 #[cfg(windows)]
-fn rdpdr_backend_factory(drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<Option<WindowsRdpdrBackendFactory>> {
-    if drives.is_empty() {
+fn rdpdr_backend_factory(
+    drives: Vec<RdpdrDriveConfig>,
+    smartcard: bool,
+) -> anyhow::Result<Option<WindowsRdpdrBackendFactory>> {
+    if drives.is_empty() && !smartcard {
         return Ok(None);
     }
 
@@ -1538,8 +1708,35 @@ fn rdpdr_backend_factory(drives: Vec<RdpdrDriveConfig>) -> anyhow::Result<Option
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     WindowsRdpdrBackendFactory::from_drives(drives)
+        .map(|factory| factory.with_smartcard(smartcard))
         .map(Some)
         .map_err(|error| anyhow::anyhow!("invalid rdpdr drive configuration: {error}"))
+}
+
+/// Resolves the RDPDR factory for one connect: clone the startup factory (if any) and apply the
+/// effective smartcard flag. Smartcard-only sessions may create an empty-drive factory on demand.
+/// An empty-drive factory is dropped when smartcard is disabled so RDPDR is not attached without a
+/// device to announce.
+#[cfg(windows)]
+fn resolve_rdpdr_factory(
+    base: Option<&WindowsRdpdrBackendFactory>,
+    smartcard: bool,
+) -> anyhow::Result<Option<WindowsRdpdrBackendFactory>> {
+    match base {
+        Some(factory) => {
+            let factory = factory.clone().with_smartcard(smartcard);
+            if factory.initial_drives().is_empty() && !smartcard {
+                Ok(None)
+            } else {
+                Ok(Some(factory))
+            }
+        }
+        None if smartcard => WindowsRdpdrBackendFactory::from_drives(Vec::new())
+            .map(|factory| factory.with_smartcard(true))
+            .map(Some)
+            .map_err(|error| anyhow::anyhow!("invalid smartcard-only rdpdr configuration: {error}")),
+        None => Ok(None),
+    }
 }
 
 #[cfg(windows)]
@@ -1589,9 +1786,9 @@ mod tests {
     use ironrdp_propertyset::PropertySet;
 
     use super::{
-        ConnState, Daemon, DaemonOptions, Live, MAX_PENDING_RAIL_LAUNCHES, MAX_RAIL_EVENTS, MAX_UNICODE_TEXT_CHARS,
-        NowEndpoint, OperationManager, RailLedger, RdpdrDriveConfig, ResizeError, Session, consume_output,
-        enqueue_unicode_text, notify,
+        ConnState, Daemon, DaemonOptions, Live, MAX_PENDING_RAIL_LAUNCHES, MAX_RAIL_RETAINED_EVENTS,
+        MAX_UNICODE_TEXT_CHARS, NowEndpoint, OperationManager, RailLedger, RdpdrDriveConfig, ResizeError, Session,
+        consume_output, enqueue_unicode_text, notify,
     };
     use crate::ipc::{Payload, Response};
     use ironrdp_rpc::ipc::{RailEventKind, RailExecuteRequest, RailLaunchInfo};
@@ -1620,7 +1817,7 @@ mod tests {
         ledger.queue_launch(launch).expect("room for launch");
         assert_eq!(ledger.take_launch(0, "notepad.exe"), Some(1));
 
-        for byte_count in 0..=MAX_RAIL_EVENTS {
+        for byte_count in 0..=MAX_RAIL_RETAINED_EVENTS {
             ledger.record(RailEventKind::WindowingOrders {
                 byte_count: u32::try_from(byte_count).expect("test count fits"),
             });
@@ -1632,7 +1829,7 @@ mod tests {
             dump.events.first(),
             Some(event) if matches!(event.kind, RailEventKind::Gap { .. })
         ));
-        assert_eq!(dump.events.len(), MAX_RAIL_EVENTS + 1);
+        assert_eq!(dump.events.len(), MAX_RAIL_RETAINED_EVENTS + 1);
     }
 
     #[test]
@@ -1969,6 +2166,113 @@ mod tests {
         consumer.await.expect("consume output");
     }
 
+    #[tokio::test]
+    async fn connection_failure_discards_pending_rail_launches() {
+        let (daemon, mut input_rx, live, rail_notify) = active_rail_session(true);
+        let (output_tx, output_rx) = mpsc::channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            Arc::clone(&live),
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+
+        assert!(matches!(
+            daemon.rail_execute(RailExecuteRequest {
+                executable: "notepad.exe".to_owned(),
+                working_directory: String::new(),
+                arguments: String::new(),
+                flags: 0,
+            }),
+            Response::Ok(Payload::RailLaunch(RailLaunchInfo { launch_id: 1, .. }))
+        ));
+        assert!(matches!(input_rx.recv().await, Some(RdpInputEvent::RailExecute(_))));
+        let mut wait = Box::pin(daemon.rail_wait(Some(1), 1_000));
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::ConnectionFailure(
+                ironrdp_connector::general_err!("test connection failure"),
+            ))
+            .await
+            .expect("send connection failure");
+
+        let response = tokio::time::timeout(Duration::from_secs(1), wait.as_mut())
+            .await
+            .expect("connection failure wakes wait");
+        assert!(matches!(
+            response,
+            Response::Ok(Payload::RailEvents(events))
+                if matches!(
+                    events.events.as_slice(),
+                    [event] if matches!(
+                        event.kind,
+                        RailEventKind::ExecuteFailed {
+                            launch_id: Some(1),
+                            reason: ironrdp_rpc::ipc::RailExecuteFailureReason::RailUnavailable,
+                            ..
+                        }
+                    )
+                )
+        ));
+        assert_eq!(
+            live.lock().expect("session live state poisoned").state,
+            ConnState::Failed
+        );
+        assert!(matches!(
+            daemon.rail_status(),
+            Response::Ok(Payload::RailStatus(status)) if status.pending_launches.is_empty()
+        ));
+
+        drop(output_tx);
+        consumer.await.expect("consume output");
+    }
+
+    #[test]
+    fn rail_launch_ids_do_not_repeat_after_a_session_reconnects() {
+        let (daemon, mut input_rx, live, _) = active_rail_session(true);
+
+        assert!(matches!(
+            daemon.rail_execute(RailExecuteRequest {
+                executable: "notepad.exe".to_owned(),
+                working_directory: String::new(),
+                arguments: String::new(),
+                flags: 0,
+            }),
+            Response::Ok(Payload::RailLaunch(RailLaunchInfo { launch_id: 1, .. }))
+        ));
+        assert!(matches!(input_rx.try_recv(), Ok(RdpInputEvent::RailExecute(_))));
+        live.lock().expect("session live state poisoned").rail = RailLedger::new(2, 1, None);
+
+        assert!(matches!(
+            daemon.rail_execute(RailExecuteRequest {
+                executable: "wordpad.exe".to_owned(),
+                working_directory: String::new(),
+                arguments: String::new(),
+                flags: 0,
+            }),
+            Response::Ok(Payload::RailLaunch(RailLaunchInfo { launch_id: 2, .. }))
+        ));
+    }
+
+    #[test]
+    fn rail_execute_rejects_terminal_sessions_without_queueing_input() {
+        let (daemon, mut input_rx, live, _) = active_rail_session(true);
+        live.lock().expect("session live state poisoned").state = ConnState::Failed;
+
+        let response = daemon.rail_execute(RailExecuteRequest {
+            executable: "notepad.exe".to_owned(),
+            working_directory: String::new(),
+            arguments: String::new(),
+            flags: 0,
+        });
+
+        assert!(matches!(
+            response,
+            Response::Err(error) if error.message == "RAIL session is not accepting launch requests"
+        ));
+        assert!(matches!(input_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
     #[test]
     fn rail_execute_rejects_desktop_sessions_without_queueing_input() {
         let (daemon, mut input_rx, _, _) = active_rail_session(false);
@@ -2107,6 +2411,48 @@ mod tests {
         let daemon = Daemon::with_rdpdr_drives(PropertySet::new(), vec![drive]).expect("valid daemon options");
 
         assert!(daemon.rdpdr_backend_factory.is_some());
+        assert!(!daemon.rdpdr_backend_factory.as_ref().expect("factory").smartcard());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn smartcard_daemon_constructs_a_factory_without_drives() {
+        let daemon = Daemon::with_options(PropertySet::new(), DaemonOptions::default().with_smartcard(true))
+            .expect("valid daemon options");
+
+        assert!(daemon.smartcard_default);
+        let factory = daemon.rdpdr_backend_factory.as_ref().expect("smartcard factory");
+        assert!(factory.smartcard());
+        assert!(factory.initial_drives().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn smartcard_overlay_enables_factory_at_startup() {
+        use ironrdp_cfg::PropertySetExt as _;
+
+        let mut overlay = PropertySet::new();
+        overlay.set_enable_smartcard(true);
+        let daemon = Daemon::with_options(overlay, DaemonOptions::default()).expect("valid daemon options");
+
+        assert!(daemon.smartcard_default);
+        assert!(daemon.rdpdr_backend_factory.as_ref().expect("factory").smartcard());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_rdpdr_factory_creates_smartcard_only_on_demand() {
+        let factory = super::resolve_rdpdr_factory(None, true)
+            .expect("smartcard-only factory")
+            .expect("factory present");
+        assert!(factory.smartcard());
+        assert!(factory.initial_drives().is_empty());
+        assert!(super::resolve_rdpdr_factory(None, false).expect("no factory").is_none());
+        assert!(
+            super::resolve_rdpdr_factory(Some(&factory), false)
+                .expect("disable smartcard-only")
+                .is_none()
+        );
     }
 
     #[cfg(windows)]

@@ -183,16 +183,13 @@ The public OLE `EnableModeless` notification enables or disables only the bar's 
 commands while a container-owned modal dialog is active; it neither hides the bar nor changes the
 RDP session. The setting is retained for a subsequently created bar.
 
-While an IronRDP connection is genuinely starting, the control also presents an IronRDP-owned,
+While an IronRDP connection is genuinely starting or retrying after an eligible transport loss, the control presents an IronRDP-owned,
 modeless, non-activating connection-health popup owned by the renderer. It is centered over the
 renderer, scales from that child window's DPI, and polls only its own owner-relative geometry; it
-does not subclass or otherwise modify an embedding host window. The generic worker currently has
-no truthful reconnect-progress transition, so the popup shows only **Connecting...** and is removed
-after actual connection, final disconnect/error, OLE close/deactivation, or renderer destruction.
-An internal hook accepts future worker retry progress only when both a positive attempt and its
-maximum are known; only then may it display **Reconnecting...** and `Attempt N of M`. It has no
-Cancel action, never includes endpoints, credentials, certificates, or error detail, and never
-raises a COM event.
+does not subclass or otherwise modify an embedding host window. During a real automatic reconnect it
+shows **Reconnecting...** and `Attempt N of M`; it is removed only after a successful reconnect, final
+disconnect/error, OLE close/deactivation, or renderer destruction. It has no Cancel action and never
+includes endpoints, credentials, certificates, cookie values, or error detail.
 
 When an actual Display Control update cannot complete in-session, IronRDP's worker reports that it
 is reconnecting with the requested display size. The same popup then shows **Updating remote
@@ -284,12 +281,12 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | Legacy RDP 6.1 through 11 host selection | The six published `MsRdpClient*NotSafeForScripting` class identifiers are accepted by `DllGetClassObject` and preserve their requested `IPersist` class identity. They are explicit backend aliases, not global COM registrations. |
 | WinForms `AxHost` lifecycle | Windowed OLE activation, focus, sizing, the inherited `IMsRdpClient` through `IMsRdpClient10` raw interfaces, and the RDM virtual channels `RDMJump`, `RDMLog`, and `RDMCmd` are supported. |
 | Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio, clipboard, CredSSP, client-device name, RemoteApp, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
-| Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, and writable confirm-close events are delivered on the creating apartment. Warning and auto-reconnect events remain unfired until an IronRDP worker produces their real state. |
+| Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, writable confirm-close, and worker-backed warning and auto-reconnect events are delivered on the creating apartment. |
 | Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. Non-filesystem device, camera, monitor, and preferred-redirection capabilities remain unavailable. |
+| Smartcard redirection | `IMsRdpClientAdvancedSettings::RedirectSmartCards` enables WinSCard RDPDR smartcard redirection (smartcard-only sessions are valid without redirected drives). |
 
-The audit also identified RDM settings with no IronRDP ActiveX backend: input throttling, automatic reconnect, authentication policy, printer/port/smart-card and non-filesystem device redirection, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
-Their audited AdvancedSettings vtable slots use their exact published ABI signatures, initialize out parameters, and return `E_NOTIMPL`.
-The control does not report success for settings that cannot affect the connection.
+The audit also identified RDM settings that have no IronRDP ActiveX backend: input throttling, authentication policy, device/printer/port redirection, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
+Their audited AdvancedSettings vtable slots use their exact published ABI signatures, initialize out parameters, and return `E_NOTIMPL`; the control does not report success for settings that cannot affect the connection.
 
 The control exposes a standard `IConnectionPointContainer` and an event connection point for the
 published `IMsTscAxEvents` IID `{336D5562-EFA8-482E-8CB3-C5C0FC7A7DB6}`. Lifecycle events are delivered
@@ -298,19 +295,27 @@ COM sink from its background thread. Implemented event DISPIDs are `OnConnecting
 `OnLoginComplete`, `OnDisconnected`, `OnEnterFullScreenMode`, `OnLeaveFullScreenMode`, `OnRequestGoFullScreen`,
 `OnRequestLeaveFullScreen`, `OnFatalError`, `OnAuthenticationWarningDisplayed`,
 `OnAuthenticationWarningDismissed`,
-`OnRemoteDesktopSizeChange`, `OnConnectionBarPullDown`, and `OnConfirmClose`. `IMsRdpClient::RequestClose` raises
+`OnRemoteDesktopSizeChange`, `OnConnectionBarPullDown`, `OnConfirmClose`,
+`OnAutoReconnecting`, `OnAutoReconnecting2`, and `OnAutoReconnected`. `IMsRdpClient::RequestClose` raises
 `OnConfirmClose` synchronously on the creating apartment with its documented `VT_BOOL | VT_BYREF`
 argument. A sink can veto closing; the control then returns `controlCloseWaitForEvents` instead of
 `controlCloseCanProceed`. `OnConnected` follows completed IronRDP connection activation, and
 `OnLoginComplete` follows the server's value-free Save Session Info notification rather than the
 first decoded framebuffer. The connection-health popup follows only those actual lifecycle
 transitions and preserves their ordering: it is shown after `OnConnecting` (`0x01`) and removed
-after `OnConnected` (`0x02`) or `OnDisconnected(long)` (`0x04`). It does not synthesize
-`OnAutoReconnecting(long,long,AutoReconnectContinueState*)` (`0x11`),
-`OnAutoReconnected()` (`0x21`), or
-`OnAutoReconnecting2(long,VARIANT_BOOL,long,long)` (`0x22`). Those events and their public
-automatic (`0`), stop (`1`), and manual (`2`) continuation values remain unavailable until an
-IronRDP worker produces the corresponding real state.
+after `OnConnected` (`0x02`) or `OnDisconnected(long)` (`0x04`). When the server supplied a
+cookie and an active session actually fails, `AdvancedSettings.EnableAutoReconnect` (default
+enabled) and `MaxReconnectAttempts` (default `20`) bound retry attempts. Each real attempt raises
+`OnAutoReconnecting(disconnectReason, attemptCount, AutoReconnectContinueState*)` (`0x11`);
+`OnAutoReconnecting2(disconnectReason, networkAvailable, attemptCount, maximumAttempts)` (`0x22`)
+follows only when the original event permits continuation. IronRDP uses `disconnectReason == 0`
+and `networkAvailable == false` when the transport disappears without a server-provided reason.
+The continuation pointer exposed by `OnAutoReconnecting` controls the pending retry: automatic
+(`0`) continues, while stop (`1`) and manual (`2`) suppress further automatic reconnect attempts.
+A completed retry raises `OnAutoReconnected()` (`0x21`) only after post-reconnect active-session
+traffic confirms the session is usable; a server ARC-status rejection clears the cookie and does
+not raise that success event. Display-size fallback reconnects deliberately start a new session
+without reusing the session-bound ARC cookie. Calling `Disconnect` also stops a pending retry.
 
 Worker-to-apartment events are bounded to 64 pending entries. Frame updates coalesce to the latest
 frame, while lifecycle and terminal state evict only frames or static-channel data. A full queue
@@ -453,19 +458,39 @@ settings objects keep the server loaded until their final `Release`, even if the
 has already been released. The currently mapped members are `SmartSizing`, `EnableCredSspSupport`,
 `KeyboardHookMode`, keyboard type,
 subtype, and functional-key count, secured `StartProgram`/`WorkDir`, both public
-`AudioRedirectionMode` slots, `GrabFocusOnConnect`, `Compress`, `RDPPort`,
+`AudioRedirectionMode` slots, both public `AudioCaptureRedirectionMode` slots,
+`GrabFocusOnConnect`, `Compress`, `RDPPort`,
 `AuthenticationLevel`, and `PublicMode`,
 `RedirectClipboard`, `PerformanceFlags`, and RD Gateway transport selection.
 `StartProgram` and `WorkDir` retain their caller-owned BSTR values and configure IronRDP's next
 Client Info PDU alternate shell and working directory. The keyboard fields configure the next GCC
-Client Core Data block. Audio mode `0` enables the Windows-native RDPSND playback backend; modes
-`1` (play on server) and `2` (disabled) suppress the local RDPSND channel. When requested,
+Client Core Data block. Audio mode `0` enables the Windows-native RDPSND playback backend (CPAL) and
+advertises the `rdpsnd` static channel for server-to-client wave data; modes
+`1` (play on server) and `2` (disabled) both clear local playback and set
+`INFO_NOAUDIOPLAYBACK` (a no-op RDPSND channel may still attach when RDPDR is
+enabled, because Windows often requires both). Mode `1` is **not** yet distinct
+from mode `2` on the wire: IronRDP does not set `INFO_REMOTECONSOLEAUDIO`, so
+hosts that honor “play on server console” may still treat the session as
+no-audio.
+Non-zero `AudioCaptureRedirectionMode` enables the `AUDIO_INPUT` DVC (MS-RDPEAI)
+with the Windows CPAL capture backend and sets `INFO_AUDIOCAPTURE` on Client Info.
+When requested,
 `GrabFocusOnConnect` focuses the ActiveX renderer only after its first remote frame arrives.
 Invalid audio modes and keyboard types return `E_INVALIDARG`.
 `Compress`, `RDPPort`, and `RedirectClipboard` configure the next IronRDP connection. Clipboard
 redirection creates its Windows CLIPRDR listener on the ActiveX creating apartment, where its hidden
 window is serviced by the host message loop; the RDP worker receives only the thread-safe backend
-factory. Disabling it omits the channel. `EnableCredSspSupport` is
+factory. Disabling it omits the channel.
+MS-RDPEWA WebAuthn redirection is controlled through the extended setting `RedirectWebAuthn`
+(default enabled) and the RDP property key `redirectwebauthn`.
+When enabled, the control first registers System32 `webauthn.dll`'s `WebAuthN_Channel` COM listener, which follows the MSTSC path and owns its own UI integration.
+If that listener cannot load, IronRDP registers its native fallback with the ActiveX HWND as the WebAuthn parent window.
+There is no public MSTSC `IMsRdpClientAdvancedSettings` slot for `RedirectWebAuthn`, so hosts should
+use ExtendedSettings or the RDP property rather than a raw AdvancedSettings vtable index.
+Like other redirect toggles, `RedirectWebAuthn` is not part of `IPersistStreamInit` persistence;
+hosts that need a durable value should store it themselves or in an `.rdp` file.
+When a host also lists a file named `webauthn.dll` under `IronRdpDvcPluginPaths`, that duplicate COM plugin is skipped because the WebAuthn setting already registered it.
+`EnableCredSspSupport` is
 applied to the next connection when explicitly set; otherwise the control preserves IronRDP's
 default CredSSP-enabled security negotiation. Smart sizing fits the remote framebuffer to the
 ActiveX bounds while preserving its aspect ratio; when disabled, the renderer retains the
@@ -524,7 +549,9 @@ viewport.
 ### DVC COM plugins
 
 The IronRDP-specific `IMsRdpExtendedSettings::Property` named `IronRdpDvcPluginPaths` configures
-one or more native Windows Dynamic Virtual Channel plugin DLLs, such as a WebAuthn client plugin.
+one or more native Windows Dynamic Virtual Channel plugin DLLs as an advanced escape hatch.
+Prefer native `RedirectWebAuthn` for WebAuthn redirection; keep `webauthn.dll` only when you intentionally
+disable the native channel.
 Set `IRONRDP_ACTIVEX_ENABLE_DVC_PLUGINS=1` in the process environment before creating the control;
 without that explicit opt-in, the property returns `E_NOTIMPL`. The BSTR value is a semicolon-delimited
 list of at most 16 local absolute paths. Each path is canonicalized, must name a distinct existing
@@ -535,6 +562,8 @@ The DVC loader owns each plugin's COM objects on dedicated worker threads and br
 through IronRDP's `drdynvc` implementation. It does not grant remote code execution: the embedding
 host explicitly selects the local DLLs it is prepared to load. A selected plugin that cannot load or
 initialize makes connection setup fail rather than quietly connecting without its requested channel.
+When native WebAuthn redirection is enabled, `webauthn.dll` is filtered out of the plugin list with a
+warning so `WebAuthN_Channel` is not double-registered.
 
 The following IronRDP-specific extended settings configure the next connection and reject writes after
 connection setup begins: `IronRdpEnableTls`, `IronRdpAutoLogon`, `IronRdpDesktopScaleFactor`,
@@ -624,10 +653,16 @@ Delayed rendering remains in the STA-bound native CLIPRDR backend while the snap
 No other clipboard format, conversion, inbound `SetData`, destination enumeration, `GetDataHere`, or data-advisory contract is claimed.
 `GetClipboardData` rejects a nonzero reserved value and reports `OLE_E_NOTRUNNING` before clipboard redirection is active.
 
-`IMsRdpClientNonScriptable5` reports one remote monitor only after an active remote framebuffer is
-available and returns its `(0, 0, width, height)` bounding box. Multi-monitor mode is not
-implemented and enabling it returns `E_NOTIMPL`; the control does not claim that the remote layout
-matches the local display topology.
+`IMsRdpClientNonScriptable5::UseMultimon` is disabled by default and can be changed only while the connection settings are mutable.
+Enabling it validates the current Windows monitor topology, then connection startup snapshots it and normalizes coordinates around the primary monitor.
+The control sends GCC Client Monitor Data and requests Monitor Layout PDUs only when the server confirms `EXTENDED_CLIENT_DATA_SUPPORTED`.
+Invalid or overlapping monitor rectangles, an absent or ambiguous primary monitor, more than 16 monitors, and virtual desktops outside the RDP limits fail with `E_INVALIDARG`.
+The GDI presenter renders the negotiated virtual desktop as one composite framebuffer, so existing single-surface embedding and smart sizing continue to work.
+A matching server Monitor Layout PDU confirms the requested topology, after which `RemoteMonitorCount` and `GetRemoteMonitorsBoundingBox` report it using Windows `RECT`-style exclusive right and bottom coordinates.
+Before a confirmed topology or first framebuffer, `RemoteMonitorCount` returns zero and `GetRemoteMonitorsBoundingBox` returns `E_UNEXPECTED`.
+If the server omits Monitor Layout Data or reports a different layout, these methods report the actual framebuffer as a single monitor after the first frame rather than inferring success from its dimensions.
+`RemoteMonitorLayoutMatchesLocal` re-evaluates the local topology and returns false after host-display changes; reconnect to negotiate the new layout.
+The control currently sends only basic Client Monitor Data and does not advertise per-monitor physical dimensions, orientation, or DPI scaling through Client Monitor Extended Data.
 
 The Windows-only `ironrdp-axhost` tool at `tests\ironrdp-axhost` loads a COM server through its
 `DllGetClassObject` export, so it does not need COM registration. Its default `probe` operation
@@ -705,6 +740,24 @@ serializes credentials, server names, remote error text, or packet data. Run `ir
 --help-agent` for its self-contained command and output contract. `--observe <seconds>` keeps a
 connected session open for bounded renderer observation; `--show` displays that session and defaults
 the observation period to 30 seconds.
+
+### Manual RDPSND playback check
+
+Audio waveform e2e is not automated. After a successful `connect` (or under MsRdpEx with
+`MSRDPEX_AX_BACKEND=ironrdp`):
+
+1. Leave `AudioRedirectionMode` at `0` (default), play a system sound on the remote host, and
+   confirm local speakers hear it.
+2. Set mode `2` (disabled), reconnect, and confirm the same remote sound is silent locally.
+3. Mode `1` (play on server) is host-side only and must not open a local playback stream.
+
+### Manual AUDIO_INPUT capture check
+
+1. Set `AudioCaptureRedirectionMode` to `VARIANT_TRUE` (or non-zero), allow microphone access if
+   Windows prompts, reconnect, and speak into the default input device while a remote app records
+   or shows mic level.
+2. Set the mode back to `VARIANT_FALSE`, reconnect, and confirm the remote session no longer
+   receives client microphone data.
 
 ## Current architectural boundary
 

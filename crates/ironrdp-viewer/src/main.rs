@@ -43,7 +43,11 @@ fn main() -> anyhow::Result<()> {
         u32::from(config.connector().desktop_size.height),
     );
 
+    #[cfg(windows)]
+    let enable_smartcard = config.channels().rdpdr.smartcard;
     let client = RdpClient::new(config, output_event_sender);
+    #[cfg(windows)]
+    let client = attach_windows_rdpdr_backend(client, enable_smartcard)?;
     let input_event_sender = client.input_sender();
 
     let mut app =
@@ -141,6 +145,22 @@ fn run_rpc(cli: ViewerConfig) -> anyhow::Result<()> {
     event_loop_result?;
     server_result?;
     Ok(())
+}
+
+/// Attaches the Windows RDPDR backend when smartcard redirection is enabled.
+///
+/// Drive redirection is not yet exposed on the viewer CLI; smartcard-only sessions use an
+/// empty drive list with WinSCard enabled.
+#[cfg(windows)]
+fn attach_windows_rdpdr_backend(client: RdpClient, enable_smartcard: bool) -> anyhow::Result<RdpClient> {
+    if !enable_smartcard {
+        return Ok(client);
+    }
+
+    let factory = ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(Vec::new())
+        .map_err(|error| anyhow::anyhow!("invalid smartcard-only rdpdr configuration: {error}"))?
+        .with_smartcard(true);
+    Ok(client.with_rdpdr_backend_factory(Box::new(factory)))
 }
 
 fn setup_logging(log_file: Option<&str>) -> anyhow::Result<()> {

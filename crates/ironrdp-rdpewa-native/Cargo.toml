@@ -1,0 +1,29 @@
+[package]
+name = "ironrdp-rdpewa-native"
+version = "0.1.0"
+readme = "README.md"
+description = "Windows WebAuthn backend for IronRDP MS-RDPEWA client"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+
+[target.'cfg(windows)'.dependencies]
+ironrdp-rdpewa = { path = "../ironrdp-rdpewa", version = "0.1" } # public
+tracing = { version = "0.1", features = ["log"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WindowsWebServices",
+    "Win32_System_Com",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[lints]
+workspace = true

@@ -13,7 +13,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["rustls", "dvc-pipe-proxy", "rdpdr"] } # public
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["rustls", "dvc-pipe-proxy", "rdpdr", "smartcard"] } # public
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
@@ -31,13 +31,17 @@ whoami = "2.1"
 ironrdp-rail = { version = "0.1.0", path = "../ironrdp-rail" }
 
 [dev-dependencies]
+ironrdp-connector = { path = "../ironrdp-connector" }
 now-proto-pdu = { version = "0.4", features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+# WebAuthn redirection is Windows-only (webauthn.dll / WebAuthN* APIs).
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["webauthn"] }
 ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.7" }
 
 [lints]
 workspace = true
+
