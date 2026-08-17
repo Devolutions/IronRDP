@@ -1142,11 +1142,31 @@ pub fn rdpeudp_ack_vector(data: &[u8]) {
 
 /// Helper for [`message_decoding_invariants`].
 ///
-/// On every successful `decode`, asserts that `pdu.size()` accurately reports
-/// the encoded length: `pdu.size() == encode_vec(&pdu).len()`. This is the
-/// `Encode` trait's implicit soundness contract; downstream callers rely on
-/// `size()` for buffer sizing (`ensure_size!`, `cast_length!`, etc.) and a lie
-/// here produces buffer overflows or under-allocations in encode paths.
+/// On every successful `decode`, asserts that `Encode::size()` accurately
+/// predicts how many bytes `encode` actually writes. Encodes into a buffer
+/// deliberately larger than `pdu.size()` and compares the reported size
+/// against the encoder's own return value (bytes actually written), not
+/// against the length of a buffer sized FROM `pdu.size()` in the first
+/// place: `ironrdp_core::encode_vec` allocates its buffer as
+/// `vec![0; pdu.size()]` and returns that same buffer unchanged on success,
+/// so comparing `pdu.size()` against `encode_vec(&pdu).len()` (an earlier
+/// version of this assertion) is tautologically true by construction and
+/// catches nothing, regardless of what `encode` actually wrote. Using
+/// `ironrdp_core::encode` with headroom beyond `size()` sidesteps that: the
+/// returned `written` count is the encoder's true output length, so a
+/// `size()` that under- or over-reports is directly observable.
+///
+/// A framing-preservation property (does `decode`'s consumed byte count
+/// match `encode`'s output length) was considered and rejected as the
+/// oracle's invariant: it produces false positives against existing,
+/// reachable-in-production code. `bitmap::rdp6::BitmapStream::decode`
+/// deliberately consumes one fewer byte than its own `size()`/`encode()`
+/// account for when RLE compression is off (a padding byte the type's real
+/// caller, `ironrdp-graphics`'s top-level `decode()`, never checks for), so
+/// decode-consumed length and size()/encode()'s length are two genuinely
+/// different, both-valid properties for this type. The `size()`-vs-`written`
+/// check below is immune to this class of type-specific asymmetry: it never
+/// inspects decode's cursor position at all.
 ///
 /// Distinct from [`pdu_round_trip`]: that oracle silently drops `Err` and
 /// catches panics only. This oracle ASSERTS on the size contract, so a
@@ -1155,10 +1175,8 @@ pub fn rdpeudp_ack_vector(data: &[u8]) {
 /// What this catches (that `pdu_round_trip` does not):
 ///
 /// - `Encode::size()` lies about its own size (returns N but `encode` writes
-///   N+M bytes or fails after writing some bytes), causing buffer
-///   over-allocation or under-allocation in callers.
-/// - Decode-acceptable bytes that the encoder cannot reconstruct to the same
-///   length (lossy decode that loses framing structure).
+///   M != N), causing buffer over-allocation or under-allocation in real
+///   callers that size a buffer from `size()` before encoding into it.
 ///
 /// What this does NOT catch (covered by other oracles):
 ///
@@ -1171,15 +1189,19 @@ macro_rules! decode_size_invariant_one {
         use ironrdp_core::Encode as _;
         let mut cursor = ironrdp_core::ReadCursor::new($data);
         if let Ok(pdu) = ironrdp_core::decode_cursor::<$ty>(&mut cursor) {
-            if let Ok(encoded) = ironrdp_core::encode_vec(&pdu) {
-                let size_reported = pdu.size();
-                let actual_len = encoded.len();
+            let size_reported = pdu.size();
+            // Deliberately oversized: encode_vec's buffer is exactly
+            // `size_reported` bytes, which would mask an over-write as a
+            // panic/error rather than a comparable length. Headroom makes an
+            // over-write directly observable in `written` instead.
+            let mut buf = vec![0u8; size_reported.saturating_add(256)];
+            if let Ok(written) = ironrdp_core::encode(&pdu, &mut buf) {
                 assert!(
-                    size_reported == actual_len,
-                    "{} violates Encode::size() contract: pdu.size() = {}, encode_vec(&pdu).len() = {}",
+                    written == size_reported,
+                    "{} violates Encode::size() contract: pdu.size() = {}, actual bytes written = {}",
                     ::core::any::type_name::<$ty>(),
                     size_reported,
-                    actual_len
+                    written
                 );
             }
         }
@@ -1187,12 +1209,14 @@ macro_rules! decode_size_invariant_one {
 }
 
 /// Message-decoding invariants oracle: for each PDU type, exercise the
-/// `decode -> size() -> encode_vec` pipeline and assert that the type's
-/// reported `size()` matches the actual encoded length.
+/// `decode -> size() -> encode` pipeline and assert that the type's
+/// reported `size()` matches the actual encoded length, encoding into
+/// deliberately oversized buffers so an over-write is observable rather than
+/// masked.
 ///
-/// The property tested is the `Encode` trait soundness contract: on any
+/// The property tested is the `Encode` trait's soundness contract: on any
 /// decoder-accepted input, the decoded PDU's `size()` method must accurately
-/// report the byte length the encoder will produce. Caller code uses `size()`
+/// report the byte length `encode` will produce. Caller code uses `size()`
 /// for buffer sizing (`ensure_size!`, `cast_length!`), so a violation
 /// produces real downstream bugs (under-allocation -> truncated encode,
 /// over-allocation -> wasted memory or buffer-overflow risk depending on
