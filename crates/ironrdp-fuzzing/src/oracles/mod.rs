@@ -1143,9 +1143,11 @@ pub fn rdpeudp_ack_vector(data: &[u8]) {
 
 /// ZGFX decompression oracle.
 ///
-/// ZGFX is the egfx-specific compression scheme defined in MS-RDPEGFX 2.2.4.1.
-/// It is distinct from `ironrdp-bulk`'s MPPC/NCRUSH/XCRUSH (those carry
-/// connection-level RDP traffic; ZGFX wraps individual EGFX PDU payloads).
+/// ZGFX is the egfx-specific compression scheme defined in MS-RDPEGFX
+/// 2.2.5.1-2.2.5.3 (segmentation and encoding) and 3.1.9.1 (RDP 8.0 Bulk
+/// Compression processing rules). It is distinct from `ironrdp-bulk`'s
+/// MPPC/NCRUSH/XCRUSH (those carry connection-level RDP traffic; ZGFX wraps
+/// individual EGFX PDU payloads).
 /// The implementation lives in `ironrdp-graphics::zgfx` and uses a
 /// 2.5 MB sliding-window history.
 ///
