@@ -130,40 +130,25 @@ bitflags! {
 /// RDPEUDP protocol version negotiated via SYNDATAEX.
 ///
 /// MS-RDPEUDP Section 2.2.2.9.
+///
+/// Carries the raw wire value instead of a closed set of variants. MS-RDPEUDP
+/// 1.7 and 3.1.5.1.3 require a responder to negotiate down to a version it
+/// supports when the peer advertises one it does not recognize; a decode that
+/// hard-fails on an unrecognized value makes that MUST clause unsatisfiable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u16)]
-pub enum UdpVersion {
+pub struct UdpVersion(pub u16);
+
+impl UdpVersion {
     /// v1: min retransmit 500ms, min ACK delay 200ms.
     /// Data transfer uses the MS-RDPEUDP wire format.
-    V1 = 0x0001,
+    pub const V1: Self = Self(0x0001);
     /// v2: min retransmit 300ms, min ACK delay 50ms.
     /// Data transfer still uses the MS-RDPEUDP wire format.
-    V2 = 0x0002,
+    pub const V2: Self = Self(0x0002);
     /// v3: data transfer uses the MS-RDPEUDP2 wire format.
     /// The client's SYN carries a cookieHash binding it to the
     /// multitransport request.
-    V3 = 0x0101,
-}
-
-impl UdpVersion {
-    /// Try to parse a version from its wire representation.
-    pub fn from_u16(value: u16) -> Option<Self> {
-        match value {
-            0x0001 => Some(Self::V1),
-            0x0002 => Some(Self::V2),
-            0x0101 => Some(Self::V3),
-            _ => None,
-        }
-    }
-
-    /// Returns the wire representation.
-    pub fn as_u16(self) -> u16 {
-        match self {
-            Self::V1 => 0x0001,
-            Self::V2 => 0x0002,
-            Self::V3 => 0x0101,
-        }
-    }
+    pub const V3: Self = Self(0x0101);
 
     /// Whether this version selects the MS-RDPEUDP2 wire format for data
     /// transfer.
@@ -174,9 +159,10 @@ impl UdpVersion {
     /// [MS-RDPEUDP2]. 1.3.2.2 states it from the other direction, that the
     /// MS-RDPEUDP data transfer messages "MUST be used only when the version
     /// negotiated in the UDP connection initialization phase is version 1 or
-    /// version 2".
+    /// version 2". An unrecognized version is neither, so this correctly
+    /// returns `false` for it as well.
     pub fn uses_v2_wire_format(self) -> bool {
-        matches!(self, Self::V3)
+        self == Self::V3
     }
 }
 
@@ -225,10 +211,7 @@ impl SynDataExPayload {
         let syn_ex_flags_raw = src.read_u16_be();
         let syn_ex_flags = SynExFlags::from_bits_truncate(syn_ex_flags_raw);
 
-        let udp_ver_raw = src.read_u16_be();
-        let udp_ver = UdpVersion::from_u16(udp_ver_raw).ok_or_else(|| {
-            ironrdp_core::invalid_field_err!("RDPUDP_SYNDATAEX_PAYLOAD", "uUdpVer", "unknown protocol version")
-        })?;
+        let udp_ver = UdpVersion(src.read_u16_be());
 
         Ok((syn_ex_flags, udp_ver))
     }
@@ -276,7 +259,7 @@ impl Encode for SynDataExPayload {
         ironrdp_core::ensure_size!(in: dst, size: self.encoded_size());
 
         dst.write_u16_be(self.syn_ex_flags.bits());
-        dst.write_u16_be(self.udp_ver.as_u16());
+        dst.write_u16_be(self.udp_ver.0);
 
         if let Some(hash) = &self.cookie_hash {
             dst.write_slice(hash);

@@ -23,6 +23,9 @@ extend-exclude = ["*.bin", "*.bmp", "package-lock.json"]
 [default.extend-words]
 # "look-alikes" is a legitimate hyphenated word
 alikes = "alikes"
+# Retransmission timeout, the RFC 6298 term used by the RDP-UDP state machine.
+rto = "rto"
+RTO = "RTO"
 # Windows PostScript printer driver name.
 Imagesetter = "Imagesetter"
 # Windows Plug and Play field names use this abbreviation.
@@ -36,6 +39,8 @@ cose = "cose"
 [default.extend-identifiers]
 # COM FORMATETC target-device field.
 ptd = "ptd"
+# Retransmission timeout, the RFC 6298 term used by the RDP-UDP state machine.
+rto = "rto"
 # Windows TRACKMOUSEEVENT flag.
 TME_LEAVE = "TME_LEAVE"
 # WebAuthn COSE algorithm parameter identifiers / locals.

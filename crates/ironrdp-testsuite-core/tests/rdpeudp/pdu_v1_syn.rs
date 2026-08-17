@@ -192,14 +192,19 @@ fn syndataex_roundtrip_v3_with_cookie() {
     assert_eq!(original, decoded);
 }
 
+/// MS-RDPEUDP 1.7 and 3.1.5.1.3 require a responder to negotiate down to a
+/// version it supports when the peer advertises one it does not recognize.
+/// Decoding an unrecognized `uUdpVer` must therefore succeed and hand back
+/// the raw value, not fail the datagram outright.
 #[test]
-fn syndataex_unknown_version() {
+fn syndataex_unknown_version_decodes_to_the_raw_value() {
     let bytes = [
         0x01, 0x00, // VERSION_INFO_VALID
         0xFF, 0xFF, // unknown version
     ];
-    let result: DecodeResult<SynDataExPayload> = decode(&bytes);
-    assert!(result.is_err());
+    let decoded: SynDataExPayload = decode(&bytes).expect("decode");
+    assert_eq!(decoded.udp_ver, UdpVersion(0xFFFF));
+    assert!(!decoded.udp_ver.uses_v2_wire_format());
 }
 
 #[test]
@@ -213,9 +218,21 @@ fn syndataex_insufficient_bytes() {
 
 #[test]
 fn version_wire_values() {
-    assert_eq!(UdpVersion::V1.as_u16(), 0x0001);
-    assert_eq!(UdpVersion::V2.as_u16(), 0x0002);
-    assert_eq!(UdpVersion::V3.as_u16(), 0x0101);
+    assert_eq!(UdpVersion::V1.0, 0x0001);
+    assert_eq!(UdpVersion::V2.0, 0x0002);
+    assert_eq!(UdpVersion::V3.0, 0x0101);
+}
+
+/// The enum this replaced derived `Hash`; downstream `HashMap`/`HashSet` use
+/// keyed on `UdpVersion` must keep working across the representation change.
+#[test]
+fn version_is_still_usable_as_a_hash_key() {
+    let mut supported = std::collections::HashSet::new();
+    supported.insert(UdpVersion::V1);
+    supported.insert(UdpVersion::V3);
+
+    assert!(supported.contains(&UdpVersion::V1));
+    assert!(!supported.contains(&UdpVersion::V2));
 }
 
 /// Only version 3 selects the MS-RDPEUDP2 data transfer.

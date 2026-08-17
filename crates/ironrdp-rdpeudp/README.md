@@ -1,12 +1,17 @@
 # IronRDP RDP-UDP
 
-Wire types for the [MS-RDPEUDP] version 1 handshake: the FEC header, SYN and SYN+ACK payloads, ACK vectors, and the correlation ID payload.
+Reliable UDP transport implemented as described in [MS-RDPEUDP] and
+[MS-RDPEUDP2].
 
-[MS-RDPEUDP] and [MS-RDPEUDP2] use opposite byte orders and number the bits in their diagrams in opposite directions.
-Code and tests that touch both documents need to keep that straight.
+The two documents divide the work. [MS-RDPEUDP] defines the handshake that
+opens a connection and negotiates a protocol version; from version 3 onward
+that handshake leads into the data transfer defined by [MS-RDPEUDP2], which is
+the one this crate implements. Note that the documents take opposite byte
+orders, and number the bits in their diagrams in opposite directions.
 
-This crate does not yet implement a connection state machine or the [MS-RDPEUDP2] data transfer that a negotiated version 3 connection uses.
-Those land in a later crate.
+Sans-I/O: the state machine is driven by datagrams and by a caller-supplied
+instant, and returns the datagrams it wants sent. It performs no I/O and reads
+no clock, so it can be driven by any runtime.
 
 This crate is part of the [IronRDP] project.
 
