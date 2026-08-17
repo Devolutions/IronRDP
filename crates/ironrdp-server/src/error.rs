@@ -14,7 +14,7 @@
 use core::fmt;
 use std::io;
 
-use ironrdp_core::EncodeError;
+use ironrdp_core::{DecodeError, EncodeError};
 
 /// Categorizes the failure modes the server crate exposes through
 /// [`ServerError`].
@@ -26,6 +26,8 @@ use ironrdp_core::EncodeError;
 pub enum ServerErrorKind {
     /// PDU encoding failed.
     Encode(EncodeError),
+    /// PDU decoding failed.
+    Decode(DecodeError),
     /// I/O error during TLS setup, listener setup, or client communication.
     Io(io::Error),
     /// A required virtual channel was missing or a channel send failed.
@@ -46,6 +48,7 @@ impl fmt::Display for ServerErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Encode(_) => write!(f, "encode error"),
+            Self::Decode(_) => write!(f, "decode error"),
             Self::Io(_) => write!(f, "I/O error"),
             Self::Channel => write!(f, "channel error"),
             Self::Unsupported => write!(f, "unsupported"),
@@ -59,6 +62,7 @@ impl core::error::Error for ServerErrorKind {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Encode(e) => Some(e),
+            Self::Decode(e) => Some(e),
             Self::Io(e) => Some(e),
             Self::Channel | Self::Unsupported | Self::Reason(_) | Self::Custom => None,
         }
@@ -80,6 +84,8 @@ pub type ServerResult<T> = Result<T, ServerError>;
 pub trait ServerErrorExt {
     /// Build a [`ServerErrorKind::Encode`] error from an [`EncodeError`].
     fn encode(error: EncodeError) -> Self;
+    /// Build a [`ServerErrorKind::Decode`] error from a [`DecodeError`].
+    fn decode(error: DecodeError) -> Self;
     /// Build a [`ServerErrorKind::Io`] error with a static context and an
     /// [`io::Error`] source.
     fn io(context: &'static str, error: io::Error) -> Self;
@@ -103,6 +109,11 @@ impl ServerErrorExt for ServerError {
     #[track_caller]
     fn encode(error: EncodeError) -> Self {
         Self::new("encode error", ServerErrorKind::Encode(error))
+    }
+
+    #[track_caller]
+    fn decode(error: DecodeError) -> Self {
+        Self::new("decode error", ServerErrorKind::Decode(error))
     }
 
     #[track_caller]
