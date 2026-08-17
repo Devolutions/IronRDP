@@ -115,7 +115,7 @@ impl Encode for ClientCoreData {
         dst.write_u32(self.client_build);
         dst.write_slice(client_name_dst.as_ref());
         dst.write_u16(0); // client name UTF-16 null terminator
-        dst.write_u32(self.keyboard_type.as_u32());
+        dst.write_u32(self.keyboard_type.0);
         dst.write_u32(self.keyboard_subtype);
         dst.write_u32(self.keyboard_functional_keys_count);
         dst.write_slice(ime_file_name_dst.as_ref());
@@ -156,10 +156,7 @@ impl<'de> Decode<'de> for ClientCoreData {
             .trim_end_matches('\u{0}')
             .into();
 
-        let keyboard_type = src
-            .read_u32()
-            .pipe(KeyboardType::from_u32)
-            .ok_or_else(|| invalid_field_err!("keyboardType", "invalid keyboard type"))?;
+        let keyboard_type = src.read_u32().pipe(KeyboardType);
         let keyboard_subtype = src.read_u32();
         let keyboard_functional_keys_count = src.read_u32();
 
@@ -567,26 +564,39 @@ impl SecureAccessSequence {
     }
 }
 
-#[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+/// 2.2.1.3.2 Client Core Data (TS_UD_CS_CORE) `keyboardType` field.
+///
+/// MS-RDPBCGR documents this as a value table that has grown across revisions (the copy in this
+/// section already lists `KOREAN`, a value absent from the older copy in 2.2.7.1.6); Windows'
+/// `GetKeyboardType` additionally documents `0x51` for generic HID keyboards. Represented
+/// permissively rather than as a closed enum so an unrecognized value round-trips instead of
+/// failing the whole Client Core Data parse, matching `RdpVersion` immediately above this field
+/// in the same structure.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-pub enum KeyboardType {
-    IbmPcXt = 1,
-    OlivettiIco = 2,
-    IbmPcAt = 3,
-    IbmEnhanced = 4,
-    Nokia1050 = 5,
-    Nokia9140 = 6,
-    Japanese = 7,
-}
+pub struct KeyboardType(pub u32);
 
 impl KeyboardType {
-    #[expect(
-        clippy::as_conversions,
-        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
-    )]
-    pub fn as_u32(self) -> u32 {
-        self as u32
+    pub const IBM_PC_XT: Self = Self(1);
+    pub const OLIVETTI_ICO: Self = Self(2);
+    pub const IBM_PC_AT: Self = Self(3);
+    pub const IBM_ENHANCED: Self = Self(4);
+    pub const NOKIA_1050: Self = Self(5);
+    pub const NOKIA_9140: Self = Self(6);
+    pub const JAPANESE: Self = Self(7);
+    pub const KOREAN: Self = Self(8);
+}
+
+impl From<u32> for KeyboardType {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<KeyboardType> for u32 {
+    fn from(keyboard_type: KeyboardType) -> Self {
+        keyboard_type.0
     }
 }
 

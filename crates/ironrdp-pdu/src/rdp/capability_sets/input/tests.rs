@@ -20,7 +20,7 @@ const INPUT_BUFFER: [u8; 84] = [
 static INPUT: LazyLock<Input> = LazyLock::new(|| Input {
     input_flags: InputFlags::SCANCODES | InputFlags::UNICODE | InputFlags::MOUSEX,
     keyboard_layout: 0x409,
-    keyboard_type: Some(KeyboardType::IbmEnhanced),
+    keyboard_type: Some(KeyboardType::IBM_ENHANCED),
     keyboard_subtype: 0,
     keyboard_function_key: 12,
     keyboard_ime_filename: String::new(),
