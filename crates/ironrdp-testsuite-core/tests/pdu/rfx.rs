@@ -435,3 +435,45 @@ fn quant_encode_rejects_a_bypassed_value_that_does_not_fit_its_wire_slot() {
 
     encode_vec(&quant).unwrap_err();
 }
+
+/// `validate` exists for callers on the other side of the same gap: code that
+/// receives a struct-literal-built [`Quant`] before it ever reaches
+/// [`Encode::encode`], and needs to reject an out-of-range value before doing
+/// anything with the fields itself (e.g. using one as a pixel-domain shift
+/// amount, where an unchecked value is a shift-overflow panic or a masked,
+/// wrong shift rather than a wire-format error).
+#[test]
+fn quant_validate_rejects_a_bypassed_value_out_of_range() {
+    let quant = Quant {
+        ll3: 6,
+        lh3: 6,
+        hl3: 6,
+        hh3: 6,
+        lh2: 7,
+        hl2: 7,
+        hh2: 8,
+        lh1: 8,
+        hl1: 8,
+        hh1: 255,
+    };
+
+    quant.validate().unwrap_err();
+}
+
+#[test]
+fn quant_validate_accepts_a_bypassed_value_in_range() {
+    let quant = Quant {
+        ll3: 6,
+        lh3: 6,
+        hl3: 6,
+        hh3: 6,
+        lh2: 7,
+        hl2: 7,
+        hh2: 8,
+        lh1: 8,
+        hl1: 8,
+        hh1: 9,
+    };
+
+    quant.validate().unwrap();
+}

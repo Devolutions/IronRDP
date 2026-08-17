@@ -80,6 +80,7 @@ impl RfxEncoder {
         Block::CodecChannel(CodecChannel::Region(region)).encode(&mut cursor)?;
 
         let quant = self.quant.clone();
+        quant.validate()?;
 
         let (encoder, mut data) = UpdateEncoder::new(bitmap, quant.clone(), entropy_algorithm);
         let tiles = encoder.encode(&mut data)?;

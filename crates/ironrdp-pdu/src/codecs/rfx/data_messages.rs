@@ -581,6 +581,17 @@ impl Quant {
 
         Ok(())
     }
+
+    /// Rejects any subband value outside [`Quant::VALID_RANGE`].
+    ///
+    /// `try_new` already runs this check on construction. Use this to validate a
+    /// [`Quant`] built some other way, such as via its public struct-literal fields,
+    /// before using it anywhere the out-of-range case would be worse than an error
+    /// (e.g. as a pixel-domain quantization factor, where it's a shift amount rather
+    /// than a wire field, ahead of any [`Encode::encode`] call).
+    pub fn validate(&self) -> EncodeResult<()> {
+        self.ensure_valid()
+    }
 }
 
 impl Encode for Quant {
