@@ -1479,25 +1479,23 @@ test("writer upgrades a neutral automated review check instead of creating a dup
   assert.equal(update.output.title, "Automated review complete");
 });
 
-test("writer dispatches new or explicitly requested completed classifications", async () => {
-  const writeClassification = async ({ dispatchReview, existing = false, reviewRequested = false }) => {
+test("oversized opt-in dispatches review from a cached classification", async () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  const requestReview = workflowJob(workflow, "request-review");
+  assert.match(requestReview, /needs: \[resolve-pr, classification-gate\]/);
+  assert.match(requestReview, /needs\.resolve-pr\.outputs\.review-requested == 'true'/);
+  assert.match(requestReview, /needs\.classification-gate\.outputs\.available == 'true'/);
+  assert.match(requestReview, /needs\.classification-gate\.outputs\.required == 'false'/);
+  assert.match(requestReview, /dispatchClassificationComplete/);
+});
+
+test("writer dispatches new but not forced completed classifications", async () => {
+  const writeClassification = async (dispatchReview) => {
     let dispatches = 0;
     const github = {
       paginate: { iterator: async function* () { yield { data: [] }; } },
       rest: {
-        checks: {
-          listForRef: async () => ({ data: { check_runs: existing ? [{
-            id: 7,
-            external_id: `classifier-v2:${SHA}`,
-            conclusion: "success",
-            output: {
-              title: "Classification complete",
-              summary: "Validated classification.\n\nironrdp-pr-automation-state: " +
-                "{\"schema_version\":\"classifier-v2\",\"protocol_related\":false,\"automatic_review_eligible\":true}",
-            },
-          }] : [] } }),
-          create: async () => {},
-        },
+        checks: { listForRef: () => {}, create: async () => {} },
         pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
         issues: { get: async () => ({ data: { labels: [] } }) },
         repos: { createDispatchEvent: async () => { dispatches += 1; } },
@@ -1514,16 +1512,12 @@ test("writer dispatches new or explicitly requested completed classifications", 
           machineState: { protocolRelated: false },
         },
       },
-      reviewRequested,
     });
     return dispatches;
   };
 
-  assert.equal(await writeClassification({ dispatchReview: true }), 1);
-  assert.equal(await writeClassification({ dispatchReview: false }), 0);
-  assert.equal(await writeClassification({
-    dispatchReview: true, existing: true, reviewRequested: true,
-  }), 1);
+  assert.equal(await writeClassification(true), 1);
+  assert.equal(await writeClassification(false), 0);
 });
 
 test("writer deduplicates one forced review invocation but publishes a later one", async () => {
