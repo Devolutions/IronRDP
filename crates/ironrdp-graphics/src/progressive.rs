@@ -38,7 +38,7 @@ use alloc::collections::BTreeMap;
 use alloc::collections::btree_map::Entry;
 
 use ironrdp_pdu::codecs::rfx::EntropyAlgorithm;
-use ironrdp_pdu::codecs::rfx::progressive::ComponentCodecQuant;
+use ironrdp_pdu::codecs::rfx::progressive::{ComponentCodecQuant, TILE_FLAG_DIFFERENCE};
 
 use crate::dwt_extrapolate::BandInfo;
 use crate::rlgr::RlgrError;
@@ -807,6 +807,13 @@ pub struct TileState {
     pub use_reduce_extrapolate: bool,
 }
 
+struct FirstPassOptions {
+    quant_idx: [u8; 3],
+    quality: u8,
+    use_reduce_extrapolate: bool,
+    is_difference: bool,
+}
+
 impl TileState {
     /// Create a new tile with zeroed state.
     pub fn new() -> Self {
@@ -836,9 +843,8 @@ impl TileState {
 
     /// Decode a first-pass tile (TILE_SIMPLE or TILE_FIRST).
     ///
-    /// Resets this tile's state and decodes three components from RLGR1 data.
-    /// After this call, `coefficients` hold base-quantized DWT values for
-    /// progressive upgrades. Base dequantization occurs during reconstruction.
+    /// Clears persistent progressive state and decodes three original-tile
+    /// components from RLGR1 data.
     ///
     /// # Arguments
     /// - `component_data`: RLGR1-encoded data for [Y, Cb, Cr]
@@ -858,23 +864,57 @@ impl TileState {
         quality: u8,
         use_reduce_extrapolate: bool,
     ) -> Result<(), RlgrError> {
-        self.pass = 1;
-        self.quality = quality;
-        self.quant_idx = quant_idx;
-        self.base_quant = [*base_quants[0], *base_quants[1], *base_quants[2]];
-        self.use_reduce_extrapolate = use_reduce_extrapolate;
-        self.is_difference = false;
-        self.prog_quant = prog_quants;
+        self.decode_first_with_difference(
+            component_data,
+            base_quants,
+            prog_quants,
+            FirstPassOptions {
+                quant_idx,
+                quality,
+                use_reduce_extrapolate,
+                is_difference: false,
+            },
+        )
+    }
+
+    /// Decode a first pass, retaining the previous DWT coefficients for a
+    /// difference tile.
+    fn decode_first_with_difference(
+        &mut self,
+        component_data: [&[u8]; 3],
+        base_quants: [&ComponentCodecQuant; 3],
+        prog_quants: [ComponentCodecQuant; 3],
+        options: FirstPassOptions,
+    ) -> Result<(), RlgrError> {
+        let reference = options.is_difference.then_some(self.coefficients);
+        self.coefficients = [[0; COEFFICIENTS_PER_COMPONENT]; 3];
+        self.sign = [[SIGN_ZERO; COEFFICIENTS_PER_COMPONENT]; 3];
 
         for c in 0..3 {
             decode_first_pass_to_dwtq(
                 component_data[c],
                 &prog_quants[c],
-                use_reduce_extrapolate,
+                options.use_reduce_extrapolate,
                 &mut self.coefficients[c],
                 &mut self.sign[c],
             )?;
         }
+
+        if let Some(reference) = reference {
+            for (component, reference_component) in self.coefficients.iter_mut().zip(reference) {
+                for (coefficient, reference_coefficient) in component.iter_mut().zip(reference_component) {
+                    *coefficient = coefficient.saturating_add(reference_coefficient);
+                }
+            }
+        }
+
+        self.pass = 1;
+        self.quality = options.quality;
+        self.quant_idx = options.quant_idx;
+        self.base_quant = [*base_quants[0], *base_quants[1], *base_quants[2]];
+        self.use_reduce_extrapolate = options.use_reduce_extrapolate;
+        self.is_difference = options.is_difference;
+        self.prog_quant = prog_quants;
 
         Ok(())
     }
@@ -1054,6 +1094,12 @@ impl SurfaceTiles {
         self.tiles[idx].as_deref()
     }
 
+    /// Get an existing tile at the given grid position.
+    fn get_mut(&mut self, x_idx: u16, y_idx: u16) -> Option<&mut TileState> {
+        let idx = self.tile_index(x_idx, y_idx)?;
+        self.tiles[idx].as_deref_mut()
+    }
+
     /// Reset all tiles (e.g., on context reset or surface resize).
     pub fn reset(&mut self) {
         for tile in &mut self.tiles {
@@ -1108,6 +1154,8 @@ pub enum ProgressiveDecodeError {
     TileOutOfBounds { x_idx: u16, y_idx: u16 },
     /// Region references a quant index beyond the table.
     InvalidQuantIndex { index: usize, table_len: usize },
+    /// A difference tile has no retained coefficients for its tile and context.
+    MissingTileReference { x_idx: u16, y_idx: u16 },
     /// Surface dimensions exceed [`MAX_SURFACE_DIM`] per axis.
     SurfaceTooLarge { width: u16, height: u16 },
 }
@@ -1124,6 +1172,9 @@ impl core::fmt::Display for ProgressiveDecodeError {
             }
             Self::InvalidQuantIndex { index, table_len } => {
                 write!(f, "quant index {index} exceeds table length {table_len}")
+            }
+            Self::MissingTileReference { x_idx, y_idx } => {
+                write!(f, "difference tile ({x_idx}, {y_idx}) has no retained reference")
             }
             Self::SurfaceTooLarge { width, height } => {
                 write!(
@@ -1330,10 +1381,21 @@ fn decode_tile_block(
         ProgressiveTile::Simple(tile) => {
             let x_idx = tile.x_idx;
             let y_idx = tile.y_idx;
+            let is_difference = tile.flags & TILE_FLAG_DIFFERENCE != 0;
 
-            let tile_state = surface
-                .get_or_create(x_idx, y_idx)
-                .ok_or(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx })?;
+            if surface.tile_index(x_idx, y_idx).is_none() {
+                return Err(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx });
+            }
+            let tile_state = if is_difference {
+                surface
+                    .get_mut(x_idx, y_idx)
+                    .filter(|tile_state| tile_state.pass != 0)
+                    .ok_or(ProgressiveDecodeError::MissingTileReference { x_idx, y_idx })?
+            } else {
+                surface
+                    .get_or_create(x_idx, y_idx)
+                    .ok_or(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx })?
+            };
 
             let q_y = usize::from(tile.quant_idx_y);
             let q_cb = usize::from(tile.quant_idx_cb);
@@ -1349,13 +1411,16 @@ fn decode_tile_block(
             // TILE_SIMPLE uses lossless progressive quant (no progressive refinement)
             let prog = ComponentCodecQuant::LOSSLESS;
 
-            tile_state.decode_first(
+            tile_state.decode_first_with_difference(
                 [tile.y_data, tile.cb_data, tile.cr_data],
                 [&quant_vals[q_y], &quant_vals[q_cb], &quant_vals[q_cr]],
                 [prog, prog, prog],
-                [tile.quant_idx_y, tile.quant_idx_cb, tile.quant_idx_cr],
-                0xFF, // full quality
-                use_reduce_extrapolate,
+                FirstPassOptions {
+                    quant_idx: [tile.quant_idx_y, tile.quant_idx_cb, tile.quant_idx_cr],
+                    quality: 0xFF, // full quality
+                    use_reduce_extrapolate,
+                    is_difference,
+                },
             )?;
 
             let mut pixels = vec![0u8; 64 * 64 * 4];
@@ -1367,10 +1432,21 @@ fn decode_tile_block(
         ProgressiveTile::First(tile) => {
             let x_idx = tile.x_idx;
             let y_idx = tile.y_idx;
+            let is_difference = tile.flags & TILE_FLAG_DIFFERENCE != 0;
 
-            let tile_state = surface
-                .get_or_create(x_idx, y_idx)
-                .ok_or(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx })?;
+            if surface.tile_index(x_idx, y_idx).is_none() {
+                return Err(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx });
+            }
+            let tile_state = if is_difference {
+                surface
+                    .get_mut(x_idx, y_idx)
+                    .filter(|tile_state| tile_state.pass != 0)
+                    .ok_or(ProgressiveDecodeError::MissingTileReference { x_idx, y_idx })?
+            } else {
+                surface
+                    .get_or_create(x_idx, y_idx)
+                    .ok_or(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx })?
+            };
 
             let q_y = usize::from(tile.quant_idx_y);
             let q_cb = usize::from(tile.quant_idx_cb);
@@ -1392,13 +1468,16 @@ fn decode_tile_block(
             }
             let pq = &prog_quant_vals[pq_idx];
 
-            tile_state.decode_first(
+            tile_state.decode_first_with_difference(
                 [tile.y_data, tile.cb_data, tile.cr_data],
                 [&quant_vals[q_y], &quant_vals[q_cb], &quant_vals[q_cr]],
                 [pq.y_quant, pq.cb_quant, pq.cr_quant],
-                [tile.quant_idx_y, tile.quant_idx_cb, tile.quant_idx_cr],
-                tile.quality,
-                use_reduce_extrapolate,
+                FirstPassOptions {
+                    quant_idx: [tile.quant_idx_y, tile.quant_idx_cb, tile.quant_idx_cr],
+                    quality: tile.quality,
+                    use_reduce_extrapolate,
+                    is_difference,
+                },
             )?;
 
             let mut pixels = vec![0u8; 64 * 64 * 4];
@@ -2733,5 +2812,178 @@ mod tests {
             max_err <= 64,
             "quantize/dequantize round-trip max error {max_err} exceeds 64"
         );
+    }
+
+    fn encode_full_quality_component(value: i16) -> Vec<u8> {
+        let mut coefficients = [value; COEFFICIENTS_PER_COMPONENT];
+        let mut encoded = vec![0; 8192];
+        let encoded_len = encode_first_pass(
+            &mut coefficients,
+            &mut encoded,
+            &ComponentCodecQuant::LOSSLESS,
+            &ComponentCodecQuant::LOSSLESS,
+            false,
+        )
+        .expect("full-quality component encoding should succeed");
+        encoded.truncate(encoded_len);
+        encoded
+    }
+
+    fn simple_tile_stream(flags: u8, components: [i16; 3], include_context: bool) -> Vec<u8> {
+        use ironrdp_pdu::codecs::rfx::RfxRectangle;
+        use ironrdp_pdu::codecs::rfx::progressive::{
+            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
+            ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileSimple, encode_progressive_stream,
+        };
+
+        let component_data = components.map(encode_full_quality_component);
+        let mut blocks = vec![ProgressiveBlock::Sync(ProgressiveSyncPdu)];
+
+        if include_context {
+            blocks.push(ProgressiveBlock::Context(ProgressiveContextPdu {
+                context_id: 0,
+                tile_size: 0x0040,
+                flags: 0,
+            }));
+        }
+
+        blocks.extend([
+            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+                frame_index: 0,
+                region_count: 1,
+            }),
+            ProgressiveBlock::Region(ProgressiveRegion {
+                tile_size: 0x40,
+                rects: vec![RfxRectangle {
+                    x: 0,
+                    y: 0,
+                    width: 64,
+                    height: 64,
+                }],
+                quant_vals: vec![ComponentCodecQuant::LOSSLESS],
+                quant_prog_vals: vec![],
+                flags: 0,
+                tiles: vec![ProgressiveTile::Simple(TileSimple {
+                    quant_idx_y: 0,
+                    quant_idx_cb: 0,
+                    quant_idx_cr: 0,
+                    x_idx: 0,
+                    y_idx: 0,
+                    flags,
+                    y_data: &component_data[0],
+                    cb_data: &component_data[1],
+                    cr_data: &component_data[2],
+                    tail_data: &[],
+                })],
+            }),
+            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+        ]);
+
+        encode_progressive_stream(&blocks).expect("synthetic progressive stream should encode")
+    }
+
+    #[test]
+    fn difference_tile_adds_to_its_retained_context_reference() {
+        let original_components = [64, -16, 24];
+        let other_context_components = [-48, 8, 40];
+        let difference_components = [7, -3, 5];
+        let mut decoder = ProgressiveDecoder::new();
+
+        let first_pixels = decoder
+            .decode_bitmap(1, 7, 64, 64, &simple_tile_stream(0, original_components, true))
+            .expect("original tile should decode")
+            .pop()
+            .expect("original tile should produce an update")
+            .pixels;
+        let reference = decoder
+            .contexts
+            .get(&(1, 7))
+            .and_then(|context| context.surface.get(0, 0))
+            .expect("original tile state should be retained")
+            .coefficients;
+
+        decoder
+            .decode_bitmap(1, 8, 64, 64, &simple_tile_stream(0, other_context_components, true))
+            .expect("other context tile should decode");
+        let other_reference = decoder
+            .contexts
+            .get(&(1, 8))
+            .and_then(|context| context.surface.get(0, 0))
+            .expect("other context tile state should be retained")
+            .coefficients;
+
+        let difference_data = difference_components.map(encode_full_quality_component);
+        let mut expected_delta = TileState::new();
+        expected_delta
+            .decode_first(
+                [&difference_data[0], &difference_data[1], &difference_data[2]],
+                [&ComponentCodecQuant::LOSSLESS; 3],
+                [ComponentCodecQuant::LOSSLESS; 3],
+                [0; 3],
+                0xFF,
+                false,
+            )
+            .expect("difference payload should decode as a full tile");
+
+        let difference_pixels = decoder
+            .decode_bitmap(
+                1,
+                7,
+                64,
+                64,
+                &simple_tile_stream(TILE_FLAG_DIFFERENCE, difference_components, false),
+            )
+            .expect("difference tile should decode")
+            .pop()
+            .expect("difference tile should produce an update")
+            .pixels;
+        assert_ne!(first_pixels, difference_pixels);
+
+        let updated_tile = decoder
+            .contexts
+            .get(&(1, 7))
+            .and_then(|context| context.surface.get(0, 0))
+            .expect("difference tile state should be retained");
+        assert!(updated_tile.is_difference);
+        for ((updated_component, reference_component), delta_component) in updated_tile
+            .coefficients
+            .iter()
+            .zip(reference.iter())
+            .zip(expected_delta.coefficients.iter())
+        {
+            for ((updated, retained), delta) in updated_component
+                .iter()
+                .zip(reference_component.iter())
+                .zip(delta_component.iter())
+            {
+                assert_eq!(*updated, retained.saturating_add(*delta));
+            }
+        }
+
+        assert_eq!(
+            decoder
+                .contexts
+                .get(&(1, 8))
+                .and_then(|context| context.surface.get(0, 0))
+                .expect("other context tile state should remain retained")
+                .coefficients,
+            other_reference
+        );
+    }
+
+    #[test]
+    fn difference_tile_requires_a_retained_reference() {
+        let mut decoder = ProgressiveDecoder::new();
+
+        assert!(matches!(
+            decoder.decode_bitmap(
+                1,
+                7,
+                64,
+                64,
+                &simple_tile_stream(TILE_FLAG_DIFFERENCE, [7, -3, 5], true),
+            ),
+            Err(ProgressiveDecodeError::MissingTileReference { x_idx: 0, y_idx: 0 })
+        ));
     }
 }
