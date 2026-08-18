@@ -1448,7 +1448,7 @@ fn build_config(
         enable_tls: true,
         enable_credssp: true,
         enable_standard_rdp_security: false,
-        keyboard_type: ironrdp::pdu::gcc::KeyboardType::IbmEnhanced,
+        keyboard_type: ironrdp::pdu::gcc::KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
         keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
         keyboard_functional_keys_count: 12,

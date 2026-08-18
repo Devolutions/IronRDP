@@ -1579,7 +1579,7 @@ impl ConfigBuilder {
             enable_standard_rdp_security,
             keyboard_type: self
                 .keyboard_type
-                .unwrap_or(ironrdp_pdu::gcc::KeyboardType::IbmEnhanced),
+                .unwrap_or(ironrdp_pdu::gcc::KeyboardType::IBM_ENHANCED),
             keyboard_subtype: self.keyboard_subtype.unwrap_or(0),
             keyboard_layout: self.keyboard_layout.unwrap_or(0),
             keyboard_functional_keys_count: self.keyboard_functional_keys_count.unwrap_or(12),

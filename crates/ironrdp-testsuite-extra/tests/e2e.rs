@@ -1034,7 +1034,7 @@ fn default_client_config() -> connector::Config {
             .try_into()
             .unwrap(),
         client_name: "ironrdp".into(),
-        keyboard_type: gcc::KeyboardType::IbmEnhanced,
+        keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
         keyboard_layout: 0,
         keyboard_functional_keys_count: 12,

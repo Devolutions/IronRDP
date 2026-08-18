@@ -44,7 +44,7 @@ fn test_config() -> ironrdp_connector::Config {
         domain: None,
         client_build: 0,
         client_name: "test".into(),
-        keyboard_type: gcc::KeyboardType::IbmEnhanced,
+        keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
         keyboard_layout: 0,
         keyboard_functional_keys_count: 12,
