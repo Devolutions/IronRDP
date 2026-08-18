@@ -322,6 +322,72 @@ async fn connect_rejects_certificate_when_caller_supplies_a_verifier() {
     let _ = server_handle.await;
 }
 
+/// The same proof as `connect_rejects_certificate_when_caller_supplies_a_verifier`,
+/// through `MultitransportBootstrap::connect` instead of `connect_udp`
+/// directly: before this path also accepted a `server_cert_verifier`, a
+/// caller going through the high-level orchestrator had no way to reach
+/// the verification `connect_udp` itself already supported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bootstrap_connect_rejects_certificate_when_caller_supplies_a_verifier() {
+    let server_sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+    let server_addr = server_sock.local_addr().expect("addr");
+    let tunnel_config = test_tunnel_config();
+
+    let server_handle = tokio::spawn({
+        let tunnel_config = tunnel_config.clone();
+        async move {
+            accept_udp(
+                server_sock,
+                UdpAcceptConfig {
+                    tls_config: test_tls_server_config(),
+                    tunnel_config,
+                    connection_config: ConnectionConfig::default(),
+                    accept_timeout: Duration::from_secs(10),
+                },
+            )
+            .await
+        }
+    });
+
+    // Wire bytes for a MultitransportRequestPdu (UdpFecR); see
+    // failed_reconnect_clears_the_transport_from_an_earlier_success for the
+    // layout note. Must match test_tunnel_config()'s request_id/cookie.
+    let request_wire = {
+        let mut wire = vec![0x02, 0x00, 0x00, 0x00]; // BasicSecurityHeader: TRANSPORT_REQ
+        wire.extend_from_slice(&42u32.to_le_bytes()); // requestId
+        wire.extend_from_slice(&1u16.to_le_bytes()); // requestedProtocol = UdpFecR
+        wire.extend_from_slice(&[0x00, 0x00]); // reserved
+        wire.extend_from_slice(&[0xAB; 16]); // securityCookie
+        wire
+    };
+
+    let client_handle = tokio::spawn(async move {
+        let mut bootstrap = MultitransportBootstrap::from_pdu(&request_wire).expect("decode request");
+        let result = bootstrap
+            .connect(
+                server_addr,
+                "localhost".into(),
+                ConnectionConfig::default(),
+                Some(Arc::new(AlwaysRejectVerifier)),
+            )
+            .await;
+        (result, bootstrap.is_connected())
+    });
+
+    let (client_result, is_connected) = client_handle.await.expect("client join");
+    assert!(
+        client_result.is_err(),
+        "the self-signed test certificate must be rejected once a verifier is supplied through the bootstrap"
+    );
+    assert!(
+        !is_connected,
+        "a rejected certificate must not leave a transport behind"
+    );
+
+    // The server side also errors, since the client aborts mid-handshake.
+    let _ = server_handle.await;
+}
+
 /// A failed reconnect must not leave a stale transport from an earlier
 /// successful `connect()` reachable through `is_connected()` /
 /// `take_transport()`: the bootstrap just told the server the connection
@@ -365,7 +431,7 @@ async fn failed_reconnect_clears_the_transport_from_an_earlier_success() {
     };
     let mut bootstrap = MultitransportBootstrap::from_pdu(&request_wire).expect("decode request");
     bootstrap
-        .connect(server_addr, "localhost".into(), ConnectionConfig::default())
+        .connect(server_addr, "localhost".into(), ConnectionConfig::default(), None)
         .await
         .expect("first connect succeeds");
     assert!(bootstrap.is_connected());
@@ -374,7 +440,7 @@ async fn failed_reconnect_clears_the_transport_from_an_earlier_success() {
     // Reconnect against a closed loopback port nothing is listening on.
     let unreachable_addr: core::net::SocketAddr = "127.0.0.1:1".parse().expect("valid loopback address");
     let result = bootstrap
-        .connect(unreachable_addr, "localhost".into(), ConnectionConfig::default())
+        .connect(unreachable_addr, "localhost".into(), ConnectionConfig::default(), None)
         .await;
     assert!(result.is_err(), "reconnect against an unreachable address must fail");
 
