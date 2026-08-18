@@ -1288,6 +1288,31 @@ mod tests {
         simple.encode(&mut WriteCursor::new(&mut buf)).unwrap();
         let decoded = TileSimple::decode(&mut ReadCursor::new(&buf)).unwrap();
         assert!(decoded.is_difference());
+
+        let mut first = TileFirst {
+            quant_idx_y: 0,
+            quant_idx_cb: 0,
+            quant_idx_cr: 0,
+            x_idx: 1,
+            y_idx: 2,
+            flags: 0xFE,
+            quality: 5,
+            y_data: &[1, 2, 3],
+            cb_data: &[4],
+            cr_data: &[5],
+            tail_data: &[],
+        };
+        let mut buf = vec![0u8; first.size()];
+        first.encode(&mut WriteCursor::new(&mut buf)).unwrap();
+        let decoded = TileFirst::decode(&mut ReadCursor::new(&buf)).unwrap();
+        assert_eq!(decoded.flags, 0xFE);
+        assert!(!decoded.is_difference());
+
+        first.flags = 0xFF;
+        let mut buf = vec![0u8; first.size()];
+        first.encode(&mut WriteCursor::new(&mut buf)).unwrap();
+        let decoded = TileFirst::decode(&mut ReadCursor::new(&buf)).unwrap();
+        assert!(decoded.is_difference());
     }
 
     #[test]

@@ -907,6 +907,15 @@ impl TileState {
         quality: u8,
         use_reduce_extrapolate: bool,
     ) -> Result<(), RlgrError> {
+        // The retained coefficients are still base-quantized, so they only mean
+        // anything while the base quantization and the DWT variant hold. A
+        // stream that changes either mid-tile has no defined reference, so drop
+        // it and decode the tile as an original one.
+        let base_quant = [*base_quants[0], *base_quants[1], *base_quants[2]];
+        if self.base_quant != base_quant || self.use_reduce_extrapolate != use_reduce_extrapolate {
+            self.coefficients = [[0; COEFFICIENTS_PER_COMPONENT]; 3];
+        }
+
         self.begin_first_pass(
             base_quants,
             prog_quants,
@@ -2522,6 +2531,57 @@ mod tests {
 
         assert_eq!(difference_tile.coefficients, absolute_tile.coefficients);
         assert_eq!(difference_tile.sign, absolute_tile.sign);
+    }
+
+    #[test]
+    fn difference_tile_drops_an_incompatible_reference() {
+        // The retained coefficients are base-quantized, so they are only a
+        // meaningful reference while the base quantization and the DWT variant
+        // hold. A zero-valued difference must stay a no-op either way.
+        let mut absolute = [0i16; COEFFICIENTS_PER_COMPONENT];
+        absolute[0] = 100;
+        absolute[4032] = 25;
+        let absolute_data = rlgr_encode_component(&absolute);
+        let zero_data = rlgr_encode_component(&[0i16; COEFFICIENTS_PER_COMPONENT]);
+        let prog_quant = ComponentCodecQuant::LOSSLESS;
+
+        for (first, second, extrapolate) in [
+            (uniform_quant(6), uniform_quant(8), false),
+            (uniform_quant(6), uniform_quant(6), true),
+        ] {
+            let mut tile = TileState::new();
+            tile.decode_first([&absolute_data; 3], [&first; 3], [prog_quant; 3], [0; 3], 0xFF, false)
+                .expect("original first-pass decoding should succeed");
+            tile.decode_first_difference(
+                [&zero_data; 3],
+                [&second; 3],
+                [prog_quant; 3],
+                [1; 3],
+                0xFF,
+                extrapolate,
+            )
+            .expect("difference first-pass decoding should succeed");
+
+            let mut reference = TileState::new();
+            reference
+                .decode_first(
+                    [&zero_data; 3],
+                    [&second; 3],
+                    [prog_quant; 3],
+                    [1; 3],
+                    0xFF,
+                    extrapolate,
+                )
+                .expect("reference decoding should succeed");
+
+            let mut actual = vec![0u8; 64 * 64 * 4];
+            let mut expected = vec![0u8; 64 * 64 * 4];
+            tile.reconstruct_to_rgba(&mut actual);
+            reference.reconstruct_to_rgba(&mut expected);
+
+            let differing = actual.iter().zip(expected.iter()).filter(|(a, b)| a != b).count();
+            assert_eq!(differing, 0, "extrapolate {extrapolate}: {differing} bytes differ");
+        }
     }
 
     #[test]
