@@ -14,7 +14,7 @@ categories.workspace = true
 
 [dependencies]
 aes-gcm = "0.10"
-hmac = "0.12"
+hmac = "0.13"
 ironrdp-core = { version = "0.2.1", path = "../ironrdp-core" }
 ironrdp-dvc = { version = "0.8.0", path = "../ironrdp-dvc" } # public
 ironrdp-egfx = { version = "0.3.0", path = "../ironrdp-egfx" }
