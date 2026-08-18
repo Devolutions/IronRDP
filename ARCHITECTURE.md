@@ -74,6 +74,10 @@ PDU encoding and decoding.
 
 _TODO_: clean up the dependencies
 
+#### [`crates/ironrdp-usb`](./crates/ironrdp-usb)
+
+Protocol-independent, sans-I/O USB data structures, descriptor parsing, validation, and transfer semantics.
+
 #### [`crates/ironrdp-graphics`](./crates/ironrdp-graphics)
 
 Image processing primitives.
