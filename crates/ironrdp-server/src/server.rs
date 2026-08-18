@@ -16,6 +16,7 @@ use ironrdp_core::{decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_dvc as dvc;
+use ironrdp_pdu::codecs::rfx::Quant;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
@@ -295,6 +296,11 @@ pub struct RdpServerOptions {
     /// Defaults to `false` (queue-behind, the pre-existing behaviour). Set via
     /// [`RdpServerBuilder::with_preempt_existing_session`](crate::RdpServerBuilder::with_preempt_existing_session).
     pub preempt_existing_session: bool,
+    /// Quantization values the RemoteFX encoder uses once selected. Defaults
+    /// to [`Quant::default`], the same values Windows RDP servers send. Set
+    /// via
+    /// [`RdpServerBuilder::with_remotefx_quant`](crate::RdpServerBuilder::with_remotefx_quant).
+    pub remotefx_quant: Quant,
 }
 
 impl RdpServerOptions {
@@ -2652,6 +2658,7 @@ impl RdpServer {
                             {
                                 for caps in c.caps_data.0.0 {
                                     update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
+                                    update_codecs.set_remotefx_quant(self.opts.remotefx_quant.clone());
                                 }
                             }
                             CodecProperty::ImageRemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(
@@ -2659,6 +2666,7 @@ impl RdpServer {
                             )) if self.opts.has_image_remote_fx() => {
                                 for caps in c.caps_data.0.0 {
                                     update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
+                                    update_codecs.set_remotefx_quant(self.opts.remotefx_quant.clone());
                                 }
                             }
                             #[cfg(feature = "nscodec")]
@@ -3150,6 +3158,7 @@ mod preempt_tests {
                 max_request_size: 8 * 1024 * 1024,
                 honor_client_desktop_size: None,
                 preempt_existing_session: true,
+                remotefx_quant: Quant::default(),
             },
             creds: None,
             display: Arc::new(Mutex::new(Box::new(NoDisplay))),

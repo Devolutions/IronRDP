@@ -39,3 +39,4 @@ mod server_name;
 mod session;
 mod str_types;
 mod svc;
+mod usb;

@@ -3238,6 +3238,7 @@ dependencies = [
  "ironrdp-session",
  "ironrdp-str",
  "ironrdp-svc",
+ "ironrdp-usb",
  "openh264",
  "paste",
  "png",
@@ -3303,6 +3304,10 @@ dependencies = [
  "tokio",
  "url",
 ]
+
+[[package]]
+name = "ironrdp-usb"
+version = "0.1.0"
 
 [[package]]
 name = "ironrdp-viewer"
