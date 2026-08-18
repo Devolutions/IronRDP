@@ -764,6 +764,8 @@ impl GraphicsPipelineClient {
                 target_height = pdu.target_height,
                 "Surface mapped to scaled output"
             );
+            self.handler
+                .on_surface_mapped(pdu.surface_id, pdu.output_origin_x, pdu.output_origin_y);
         } else {
             warn!(
                 surface_id = pdu.surface_id,
@@ -1265,6 +1267,7 @@ mod tests {
     /// `(codec_id, width, height, rgba)` extracted from each update, since
     /// `BitmapUpdate` is not `Clone` and does not need to be.
     type CapturedUpdate = (Codec1Type, u16, u16, Vec<u8>);
+    type SurfaceMapping = (u16, u32, u32);
     type ScaledOutputMapping = (u16, u32, u32, u32, u32);
 
     struct CapturingHandler {
@@ -1294,6 +1297,7 @@ mod tests {
 
     struct ScaledOutputHandler {
         mappings: Arc<Mutex<Vec<ScaledOutputMapping>>>,
+        surface_mappings: Arc<Mutex<Vec<SurfaceMapping>>>,
     }
 
     impl GraphicsPipelineHandler for ScaledOutputHandler {
@@ -1301,7 +1305,12 @@ mod tests {
         fn on_reset_graphics(&mut self, _width: u32, _height: u32) {}
         fn on_surface_created(&mut self, _surface: &Surface) {}
         fn on_surface_deleted(&mut self, _surface_id: u16) {}
-        fn on_surface_mapped(&mut self, _surface_id: u16, _x: u32, _y: u32) {}
+        fn on_surface_mapped(&mut self, surface_id: u16, x: u32, y: u32) {
+            self.surface_mappings
+                .lock()
+                .expect("surface mappings lock")
+                .push((surface_id, x, y));
+        }
         fn on_bitmap_updated(&mut self, _update: &BitmapUpdate) {}
         fn on_frame_complete(&mut self, _frame_id: u32) {}
         fn on_close(&mut self) {}
@@ -1321,9 +1330,11 @@ mod tests {
     #[test]
     fn map_surface_to_scaled_output_dispatches_to_compositor_and_handler() {
         let mappings = Arc::new(Mutex::new(Vec::new()));
+        let surface_mappings = Arc::new(Mutex::new(Vec::new()));
         let mut client = GraphicsPipelineClient::new(
             Box::new(ScaledOutputHandler {
                 mappings: Arc::clone(&mappings),
+                surface_mappings: Arc::clone(&surface_mappings),
             }),
             None,
         );
@@ -1358,6 +1369,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(*mappings.lock().expect("mappings lock"), vec![(1, 3, 4, 4, 4)]);
+        assert_eq!(
+            *surface_mappings.lock().expect("surface mappings lock"),
+            vec![(1, 3, 4)]
+        );
         assert!(client.surfaces[&1].is_mapped);
         assert_eq!(
             (client.surfaces[&1].output_origin_x, client.surfaces[&1].output_origin_y),
