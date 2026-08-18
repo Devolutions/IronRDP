@@ -78,8 +78,8 @@ _TODO_: clean up the dependencies
 
 Protocol-independent USB data structures, descriptor parsing, validation, and transfer semantics.
 
-**Architectural Invariant**: descriptor views borrow caller data, and transfer types are generic over caller-owned buffer and packet storage.
-The crate does not allocate.
+**Architectural Invariant**: the crate does not allocate.
+Descriptor views borrow caller data, and transfer types are generic over caller-owned buffer and packet storage.
 
 **Architectural Invariant**: parsing is limited to byte layouts defined by USB itself.
 RDPEUSB, usbredir, and other transport framing belong in their corresponding protocol crates.
@@ -252,6 +252,7 @@ fields, lock IDs, stream IDs, or protocol-specific flags, it belongs in the back
 be delivered via the extension mechanism.
 
 The extension system works as follows:
+
 - `Extension` is typed as `unknown`; intentionally opaque at this layer.
 - Backends define their own concrete `Extension` types and factory functions.
 - The consumer calls `userInteraction.configBuilder().withExtension(ext)` or
