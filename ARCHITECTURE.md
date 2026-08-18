@@ -119,6 +119,12 @@ AUDIO_INPUT dynamic channel for client microphone capture implemented as describ
 URBDRC dynamic channel state machines, PDU codecs, and USB device backend interfaces implemented as described in MS-RDPEUSB.
 The crate performs no USB I/O; host device access belongs to a backend.
 
+**Architectural Invariant**: the `usb` module translates protocol-independent `ironrdp-usb` operations and descriptor semantics into complete backend-facing `TS_URB` requests, and maps USBD completions back.
+Selecting `TS_URB` forms and applying Windows USBD conventions remain in this crate.
+
+**Architectural Invariant**: the `usb` module is sans-I/O and does not allocate request IDs, track device state, or manage pending-request lifetimes.
+Those responsibilities belong to the layer above the channel implementation.
+
 #### [`crates/ironrdp-rdpecam`](./crates/ironrdp-rdpecam)
 
 Video capture dynamic channel client and backend boundary implemented as described in MS-RDPECAM.
