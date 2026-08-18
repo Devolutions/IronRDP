@@ -120,7 +120,8 @@ AUDIO_INPUT dynamic channel for client microphone capture implemented as describ
 
 RDPEUSB dynamic channel implementation for USB redirection as described in MS-RDPEUSB.
 
-**Architectural Invariant**: the `usb` module translates protocol-independent `ironrdp-usb` operations and descriptor semantics into complete backend-facing `TS_URB` requests, and maps USBD completions back.
+**Architectural Invariant**: the `usb` module translates protocol-independent `ironrdp-usb` operations and descriptor semantics into complete backend-facing RDPEUSB packets.
+The generated packet keeps its `TS_URB` payload, URB function code, transfer envelope, flags, and buffer shape consistent, and maps USBD completions back.
 Selecting `TS_URB` forms and applying Windows USBD conventions remain in this crate.
 
 **Architectural Invariant**: the `usb` module does not allocate request IDs, track device state, or manage pending-request lifetimes.
