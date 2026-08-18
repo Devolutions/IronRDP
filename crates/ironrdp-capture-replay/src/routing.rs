@@ -24,6 +24,9 @@ use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcess
 use crate::{Capture, NegotiatedState, PacketStream, Plaintext, ReplayError, decrypt_tls, recover_negotiated_state};
 
 const MAX_DESKTOP_DIM: u16 = 8192;
+const MAX_EGFX_OUTPUT_DIM: u16 = 32_766;
+// Match the EGFX compositor's budget for full exported RGBA snapshots.
+const MAX_REPLAY_FRAMEBUFFER_BYTES: usize = 256 * 1024 * 1024;
 
 /// Captured connection state used to construct an offline active-stage router.
 #[derive(Clone, Debug)]
@@ -378,7 +381,7 @@ impl ReplayRouter {
                         pixels: self.image.data().to_vec(),
                     })?;
                 }
-                self.drain_egfx_output(message.packet, frame_sink)?;
+                self.drain_egfx_output(message.packet, report, frame_sink)?;
                 Ok((
                     route,
                     outputs
@@ -492,6 +495,7 @@ impl ReplayRouter {
     fn drain_egfx_output<E>(
         &mut self,
         packet: usize,
+        report: &mut ReplayReport,
         frame_sink: &mut impl FnMut(ReplayFrame) -> Result<(), E>,
     ) -> Result<(), E> {
         let channel_ids = self.egfx_dynamic_channels.iter().copied().collect::<Vec<_>>();
@@ -505,7 +509,15 @@ impl ReplayRouter {
             };
 
             if let Some((width, height)) = reset {
-                self.egfx_framebuffer.reset(width, height);
+                if !self.egfx_framebuffer.reset(width, height) {
+                    report.gaps.push(ReplayGap {
+                        packet,
+                        direction: ReplayDirection::Server,
+                        kind: ReplayGapKind::Unsupported,
+                        skipped_bytes: 0,
+                    });
+                    continue;
+                }
             }
             let mut has_output = false;
             for update in &output {
@@ -905,27 +917,38 @@ struct ReplayFramebuffer {
 }
 
 impl ReplayFramebuffer {
-    fn reset(&mut self, width: u32, height: u32) {
+    fn reset(&mut self, width: u32, height: u32) -> bool {
         let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
             self.clear();
-            return;
+            return false;
         };
-        if !valid_desktop_dimensions(width, height) {
+        if width == 0 || height == 0 || width > MAX_EGFX_OUTPUT_DIM || height > MAX_EGFX_OUTPUT_DIM {
             self.clear();
-            return;
+            return false;
         }
         let Some(pixel_count) = usize::from(width).checked_mul(usize::from(height)) else {
             self.clear();
-            return;
+            return false;
         };
         let Some(byte_count) = pixel_count.checked_mul(4) else {
             self.clear();
-            return;
+            return false;
         };
+        if byte_count > MAX_REPLAY_FRAMEBUFFER_BYTES {
+            self.clear();
+            return false;
+        }
 
+        let mut pixels = Vec::new();
+        if pixels.try_reserve_exact(byte_count).is_err() {
+            self.clear();
+            return false;
+        }
+        pixels.resize(byte_count, 0);
         self.width = width;
         self.height = height;
-        self.pixels = vec![0; byte_count];
+        self.pixels = pixels;
+        true
     }
 
     fn apply(&mut self, update: &OutputUpdate) -> bool {
@@ -1360,6 +1383,54 @@ mod tests {
     #[test]
     fn passive_egfx_channel_does_not_start_negotiation() {
         assert!(ReplayEgfxChannel::new().start(43).unwrap().is_empty());
+    }
+
+    #[test]
+    fn replay_framebuffer_accepts_maximum_egfx_dimensions() {
+        let mut framebuffer = ReplayFramebuffer::default();
+        assert!(framebuffer.reset(u32::from(MAX_EGFX_OUTPUT_DIM), 1));
+
+        assert_eq!(framebuffer.width, MAX_EGFX_OUTPUT_DIM);
+        assert_eq!(framebuffer.height, 1);
+        assert_eq!(framebuffer.pixels.len(), usize::from(MAX_EGFX_OUTPUT_DIM) * 4);
+    }
+
+    #[test]
+    fn reports_unbufferable_egfx_output_as_unsupported() {
+        let mut router = ReplayRouter::new(activation()).unwrap();
+        let channel_id = 47;
+        let report = router.route_plaintext(&Plaintext {
+            client: Vec::new(),
+            server: vec![
+                (1, demand_active()),
+                (2, font_map()),
+                (3, static_message(1_005, create(channel_id, ironrdp_egfx::CHANNEL_NAME))),
+                (
+                    4,
+                    static_message(
+                        1_005,
+                        egfx_data(
+                            channel_id,
+                            GfxPdu::ResetGraphics(ResetGraphicsPdu {
+                                width: u32::from(MAX_EGFX_OUTPUT_DIM),
+                                height: u32::from(MAX_EGFX_OUTPUT_DIM),
+                                monitors: Vec::new(),
+                            }),
+                        ),
+                    ),
+                ),
+            ],
+        });
+
+        assert_eq!(
+            report.gaps,
+            [ReplayGap {
+                packet: 4,
+                direction: ReplayDirection::Server,
+                kind: ReplayGapKind::Unsupported,
+                skipped_bytes: 0,
+            }]
+        );
     }
 
     #[test]
