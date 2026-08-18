@@ -590,10 +590,9 @@ enum RunState {
     DeactivationReactivation { desktop_size: DesktopSize },
 }
 
-/// Which transport a connection ended up on after
-/// [`negotiate_and_authenticate`], carrying the framed stream in the shape the
-/// finalize step needs. The three variants exist to preserve the three
-/// pre-existing finalize behaviours exactly.
+/// The framed transport produced by [`PendingConnection::negotiate_and_authenticate`].
+///
+/// Each variant preserves the corresponding finalization behavior.
 enum NegotiatedTransport<S> {
     /// Never upgraded ([`RdpServerSecurity::None`]): finalize without a
     /// stream shutdown, matching the old `BeginResult::Continue` arm.
@@ -604,29 +603,11 @@ enum NegotiatedTransport<S> {
     Offloaded(TokioFramed<S>),
 }
 
-/// A freshly built [`Acceptor`], paired with the exact [`RdpServerSecurity`]
-/// it was constructed from.
+/// An [`Acceptor`] paired with the [`RdpServerSecurity`] used to initialize it.
 ///
-/// Negotiation needs both together: [`Acceptor::new`] takes `security.flag()`
-/// up front, and the TLS-upgrade step later needs the full `security` value
-/// again (for the [`TlsAcceptor`] and, under Hybrid, the CredSSP public key).
-/// Threading `security` and `acceptor` as independent parameters — which an
-/// earlier revision of this refactor did — turns that pairing into a
-/// caller-enforced precondition: nothing stops a future caller from passing
-/// an `Acceptor` built from a *different* `RdpServerSecurity`, and the
-/// failure mode is a panic on a server connection path
-/// (`RdpServerSecurity::None => unreachable!()`, below). The single
-/// constructor here makes the pairing a construction-time guarantee instead:
-/// there is no way to reach [`Self::negotiate_and_authenticate`] with a
-/// mismatched pair, because there is no way to build a `PendingConnection`
-/// without going through [`Self::new`], which ties them together atomically.
-///
-/// Owns a cloned `RdpServerSecurity` rather than borrowing `&self.opts.security`
-/// — `RdpServerSecurity` is a cheap `Clone` (its `TlsAcceptor` is an `Arc`
-/// underneath) — deliberately: a caller in `run_connection_with` needs `&mut
-/// self` (for `attach_channels`) while a live `PendingConnection` is still in
-/// scope, which a borrowed `security` would conflict with for as long as the
-/// pending connection exists.
+/// [`Acceptor::new`] receives only the advertised security flags, while the later TLS and CredSSP steps need the full security configuration.
+/// Keeping both values together prevents negotiation callers from supplying them independently.
+/// The owned security clone also lets negotiation proceed without borrowing the [`RdpServer`].
 struct PendingConnection {
     security: RdpServerSecurity,
     acceptor: Acceptor,
@@ -645,26 +626,16 @@ impl PendingConnection {
         Self { security, acceptor }
     }
 
-    /// Mutable access to the acceptor for the one thing that must happen
-    /// before negotiation: attaching static/dynamic channels. Negotiation
-    /// itself (`negotiate_and_authenticate`) owns the acceptor from here on,
-    /// so this is only available pre-negotiation.
+    /// Returns the acceptor so channels can be attached before negotiation.
     fn acceptor_mut(&mut self) -> &mut Acceptor {
         &mut self.acceptor
     }
 
-    /// Negotiate `stream` and, where the security mode provides it,
-    /// AUTHENTICATE it — everything up to (but not including)
-    /// `accept_finalize`.
+    /// Negotiates `stream` and authenticates it when required, stopping before `accept_finalize`.
     ///
-    /// Consumes `self` rather than taking `&mut self`, so it can be driven
-    /// without holding a mutable borrow of the whole server for the
-    /// duration — a future caller (a preempting connection negotiating
-    /// concurrently with the live one) needs exactly that.
+    /// Consuming `self` lets the operation run without holding a mutable borrow of the server.
     ///
-    /// `Ok(None)` means the TLS handshake failed and was already logged — the
-    /// caller should abandon the connection quietly rather than treat it as a
-    /// connection error (preserving the pre-existing `return Ok(())` behaviour).
+    /// `Ok(None)` means the TLS handshake failed and was already logged.
     async fn negotiate_and_authenticate<S>(
         self,
         stream: S,
@@ -686,11 +657,8 @@ impl PendingConnection {
             // the TLS handshake; everything past it is `complete_security_upgrade`.
             BeginResult::ShouldUpgrade(stream) => match tls {
                 TransportTls::Managed => {
-                    // `RdpServerSecurity::None` can never reach this arm: `Self::new`
-                    // built `acceptor` from THIS `security` via `security.flag()`,
-                    // which is empty only for `None`, and `accept_begin` yields
-                    // `ShouldUpgrade` only when the negotiated flags are non-empty
-                    // -- `None` always yields `Continue` instead (the arm below).
+                    // `Self::new` builds the acceptor from these security flags.
+                    // `None` uses empty flags, for which `accept_begin` returns `Continue`.
                     let tls_acceptor = match security {
                         RdpServerSecurity::Tls(acceptor) => acceptor,
                         RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
@@ -731,28 +699,15 @@ impl PendingConnection {
     }
 }
 
-/// The result of [`PendingConnection::negotiate_and_authenticate`]: the
-/// [`NegotiatedTransport`] it landed on, bundled with the same [`Acceptor`]
-/// that negotiated it (rather than the caller tracking the two as separate
-/// values, which is how this looked before `PendingConnection` existed).
+/// A negotiated transport bundled with the [`Acceptor`] that negotiated it.
 struct NegotiatedConnection<S> {
     transport: NegotiatedTransport<S>,
     acceptor: Acceptor,
 }
 
-/// Advance a stream that is now past the security upgrade: mark the acceptor
-/// accordingly and, under [`RdpServerSecurity::Hybrid`], run the CredSSP
-/// exchange.
+/// Marks the security upgrade complete and performs CredSSP for [`RdpServerSecurity::Hybrid`].
 ///
-/// Generic over the stream so both [`TransportTls`] modes can call this one
-/// definition of the exchange (the two differ only in what the framed stream
-/// wraps) — restoring, not introducing, the single-call-site property the
-/// pre-existing `finalize_after_upgrade` already had for the same two arms
-/// before this refactor split negotiation out of it. The actual reason this
-/// exists as its own function is [`negotiate_and_authenticate`]'s: a future
-/// caller (a preempting connection negotiating without holding `&mut self`)
-/// needs the CredSSP step available from a plain function it can drive
-/// itself, not bundled into a `&mut self` method.
+/// This remains generic so managed and offloaded TLS share one CredSSP implementation.
 async fn complete_security_upgrade<S>(
     security: &RdpServerSecurity,
     framed: &mut TokioFramed<S>,
@@ -1284,15 +1239,9 @@ impl RdpServer {
         self.finalize_negotiated(negotiated).await
     }
 
-    /// Finalize a connection that has already negotiated (and, under Hybrid,
-    /// authenticated) via [`PendingConnection::negotiate_and_authenticate`].
-    /// Dispatches on which [`NegotiatedTransport`] variant it got: `Continued`
-    /// (no security upgrade happened, [`RdpServerSecurity::None`]) goes
-    /// straight to `accept_finalize` with no stream to shut down, while `Tls`
-    /// / `Offloaded` route through [`Self::finalize_and_shutdown`] for the
-    /// extra shutdown step — these three paths are NOT structurally identical
-    /// past this point, only past the handshake `negotiate_and_authenticate`
-    /// itself covers.
+    /// Finalizes a connection produced by [`PendingConnection::negotiate_and_authenticate`].
+    ///
+    /// Plain RDP has no upgraded stream to shut down, while managed and offloaded TLS do.
     async fn finalize_negotiated<S>(&mut self, negotiated: NegotiatedConnection<S>) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
@@ -1316,9 +1265,7 @@ impl RdpServer {
         Ok(())
     }
 
-    /// Finalize an upgraded stream and shut it down afterwards. The
-    /// negotiation and authentication that used to precede this now live in
-    /// [`negotiate_and_authenticate`].
+    /// Finalizes an upgraded stream and shuts it down afterwards.
     async fn finalize_and_shutdown<S>(
         &mut self,
         framed: TokioFramed<S>,
