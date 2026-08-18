@@ -19,10 +19,10 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] }
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", features = ["alloc"] } # public
-ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9" } # public — shared AUDIO_FORMAT
+ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["alloc"] }
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.9" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.10", features = ["alloc"] } # public
+ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.10" } # public — shared AUDIO_FORMAT
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
 tracing = { version = "0.1", features = ["log"] }
 

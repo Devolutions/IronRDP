@@ -6,6 +6,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-v0.8.0...ironrdp-dvc-v0.9.0)] - 2026-08-18
+
+### <!-- 1 -->Features
+
+- Expose generic session configuration and lifecycle APIs ([#1522](https://github.com/Devolutions/IronRDP/issues/1522)) ([57b1366650](https://github.com/Devolutions/IronRDP/commit/57b13666506dc40c15b4c4702d35150beee99133)) 
+
+  ## Summary
+  - expose generic client configuration for connection metadata,
+  compression, shell/work directory, audio, and runtime static-channel
+  factories
+  - add bounded input delivery with independent close cancellation, host
+  clipboard plumbing, lifecycle events, and Display Control resize
+  readiness/fallback handling
+  - update agent, viewer, web, FFI, examples, and tests for the generic
+  APIs
+  
+  ## Stack dependencies
+  This PR is stacked on `copilot/tls-validation-policy` (`b2bbcece`),
+  which already includes the merged runtime static-channel support from
+  `master`. It intentionally contains no TLS implementation/policy,
+  ActiveX/COM, SVC implementation, decompression, or bitmap-recovery
+  changes.
+  
+  ## Validation
+  - `cargo fmt --check --all`
+  - `cargo xtask check tests --no-run -v`
+  - `cargo xtask check lints -v`
+  - `cargo test -p ironrdp-client --lib --features rustls`
+  - `cargo check -p ironrdp-agent -p ironrdp-viewer -p ironrdp-web -p ffi`
+  
+  ---------
+
+- [**breaking**] Add Soft-Sync PDU support ([#1584](https://github.com/Devolutions/IronRDP/issues/1584)) ([bd630842ba](https://github.com/Devolutions/IronRDP/commit/bd630842bacc49cc129e613610482023a0f760db)) 
+
+  Add Soft-Sync codecs and DVC dispatch for tunnel assignments.
+  
+  Keep decoding forward compatible and bound peer-controlled allocations.
+  Reject exchanges before their required multitransport endpoint is ready.
+
+- Create channels with assigned IDs ([#1416](https://github.com/Devolutions/IronRDP/issues/1416)) ([41293c2442](https://github.com/Devolutions/IronRDP/commit/41293c2442dfb2da6b61ca05a0c842706d048fc1)) 
+
+  Reserve the channel ID before constructing its processor so the processor
+  and its dependencies can use the ID during initialization.
+  
+  Add a fallible builder API that preserves construction errors.
+
+- Attach recorded dynamic channels ([#1664](https://github.com/Devolutions/IronRDP/issues/1664)) ([93780feeec](https://github.com/Devolutions/IronRDP/commit/93780feeec1f09e13c8dd4691d5c5da20fae9310)) 
+
+  Attach known channel IDs for offline replay.
+  
+  Reject duplicate IDs and failed startup atomically.
+
+### <!-- 4 -->Bug Fixes
+
+- [**breaking**] Replace DVC wrappers with typed accessors ([#1377](https://github.com/Devolutions/IronRDP/issues/1377)) ([d43ecf9a54](https://github.com/Devolutions/IronRDP/commit/d43ecf9a54363d37e0c485a1e9e73da0d47ae540)) 
+
+  Follow-up to #1368. This is not urgent; review whenever the DVC API
+  direction is worth revisiting.
+  
+  Rework DVC channel access APIs so callers can recover a typed processor
+  together with its dynamic channel id, without exposing internal channel
+  wrapper types.
+  
+  - Add typed borrowed DVC accessors carrying both channel id and
+  processor borrow for `DrdynvcClient`.
+  - Keep dynamic channel wrapper types private.
+  - Align client listener/registration APIs on `DvcClientProcessor`.
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-v0.7.0...ironrdp-dvc-v0.8.0)] - 2026-07-10
 
 ### <!-- 1 -->Features

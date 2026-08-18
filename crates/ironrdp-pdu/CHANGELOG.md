@@ -6,6 +6,811 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.9.0...ironrdp-pdu-v0.10.0)] - 2026-08-18
+
+### <!-- 0 -->Security
+
+- Tolerate unknown security header flags in BasicSecurityHeader ([#1458](https://github.com/Devolutions/IronRDP/issues/1458)) ([a4acab488b](https://github.com/Devolutions/IronRDP/commit/a4acab488b0d549854ebe0e0e922fe7252e84c98)) 
+
+  ## Summary
+  
+  Use `from_bits_truncate()` instead of `from_bits()` when decoding
+  `BasicSecurityHeader` flags. Some servers (e.g., Windows Server 2019
+  with RDS licensing / RD Connection Broker) send security header flag
+  combinations that include bits not defined in the current bitflags enum.
+  The strict `from_bits()` rejected these as invalid, causing connection
+  failure during the `UpgradeLicense` license exchange phase.
+  
+  This matches FreeRDP behavior which masks for known flags without
+  rejecting the PDU when unrecognized bits are present.
+  
+  ## What was tested
+  
+  - Existing unit tests pass (`cargo xtask check tests -v`)
+  - Lints pass (`cargo xtask check lints -v`)
+
+- [**breaking**] Implement multitransport bootstrapping handshake ([#1098](https://github.com/Devolutions/IronRDP/issues/1098)) ([e45fbfe0f5](https://github.com/Devolutions/IronRDP/commit/e45fbfe0f597011706e77fc174ca14e5e9d435b9)) 
+
+  ## Summary
+  
+  Makes the `MultitransportBootstrapping` state functional instead of a
+  no-op
+  pass-through. After licensing the server may send 0, 1, or 2 Initiate
+  Multitransport Request PDUs before capabilities exchange. Each one is
+  surfaced
+  to the application, which establishes UDP transport (RDPEUDP2 + TLS +
+  RDPEMT)
+  or declines, and the connector reports the outcome back to the server.
+  
+  ## API
+  
+  Mirrors the existing `should_perform_X()` pause-point pattern used by
+  TLS
+  upgrade and CredSSP, but uses `complete_X()` / `skip_X()` rather than
+  `mark_X_as_done()` because completion carries result data:
+  
+  - `should_perform_multitransport()`: true while a request awaits an
+  outcome
+  - `multitransport_request()`: the request awaiting an outcome, or `None`
+  - `complete_multitransport(result, output)`: report the outcome, resume
+  - `skip_multitransport(output)`: decline, resume
+  
+  `complete_multitransport` accepts a `MultitransportResult` (a `Success`
+  /
+  `Failure(hresult)` enum) rather than a caller-built response PDU. The
+  connector
+  builds the response internally from the stored request ID.
+  
+  Requests are surfaced one at a time rather than as a batch. There is no
+  end
+  marker for the set, and MS-RDPBCGR 3.2.5.15.1 requires the client to act
+  on a
+  request as soon as it decodes one, so waiting to learn how many are
+  coming is
+  not an option the protocol offers. `should_perform_multitransport()` can
+  therefore come round twice; the caller answers reliable and lossy
+  separately.
+  
+  ## Approach
+  
+  **Routing.** Requests arrive on the negotiated MCS message channel
+  (2.2.15.1) and the Demand Active on the I/O channel, so the channel
+  decides
+  which is which. The message channel also carries NetworkAutoDetect since
+  #1348,
+  so a decode still confirms what arrived there, but the I/O channel is
+  never
+  speculatively decoded as multitransport. A PDU on neither channel is an
+  error.
+  
+  For the decode to be a sound confirmation the request decoder must
+  reject a
+  Demand Active, so this PR also tightens `MultitransportRequestPdu` to
+  require
+  the exact `SEC_TRANSPORT_REQ` security-header flag.
+  
+  **Yielding.** Each request is surfaced the moment it decodes. Responding
+  returns the connector to `MultitransportBootstrapping` to read whatever
+  comes
+  next, which may be a second request or the Demand Active. Nothing is
+  buffered
+  and nothing is replayed: when the request is surfaced the Demand Active
+  has not
+  arrived yet.
+  
+  **Soft-Sync.** The Initiate Multitransport Response is the Soft-Sync
+  signalling path (2.2.15.2), permitted only when both peers advertised
+  `SOFTSYNC_TCP_TO_UDP` in their GCC `MultiTransportChannelData`. The
+  server's
+  block is retained from the GCC exchange and checked against the client's
+  configured flags. One rule covers both paths:
+  
+  - Soft-Sync negotiated: always respond, `S_OK` or `E_ABORT`, including
+  on
+    `skip_multitransport()`, which 3.2.5.15.1 requires. Both the async and
+  blocking drivers skip automatically, so without this every default
+  client
+    leaves a compliant server waiting.
+  - Not negotiated: never respond. The outcome is reported in band on the
+  new
+  transport, and putting anything on the main channel would be the
+  violation.
+  
+  The response goes on the message channel per 2.2.15.2 and 3.2.5.15.2. If
+  Soft-Sync was negotiated but no message channel exists the connector
+  errors
+  rather than falling back to the I/O channel, and that check runs before
+  the
+  pending state is taken, so the caller is left with a connector it can
+  still
+  inspect or decline from.
+  
+  ## Wire behaviour
+  
+  On the wire TCP and UDP negotiation happen in parallel: the UDP
+  transport is
+  established alongside the ongoing TCP handshake, and its completion
+  signals the
+  dynamic-channel layer that subsequent channels may migrate to UDP. The
+  connector's API yield point here is a Rust affordance, not a
+  spec-mandated TCP
+  pause. Thanks to @hardening for the correction.
+  
+  ## Tests
+  
+  Connector state-machine tests in `ironrdp-testsuite-core` drive the
+  public API
+  with the shared `SERVER_DEMAND_ACTIVE` fixture:
+  
+  - a request is surfaced on arrival, without waiting for a following PDU
+    (regression test for the stall);
+  - responding returns to bootstrapping so a second request is read
+  normally;
+  - a third request is rejected per the 2.2.15.1 cap;
+  - a Demand Active on the I/O channel ends bootstrapping;
+  - the response targets the message channel, decoded back off the wire;
+  - a `Failure` result is carried through;
+  - `skip` sends `E_ABORT` under Soft-Sync, and nothing without it;
+  - `complete` emits nothing without Soft-Sync but still resumes;
+  - a failed response leaves the connector in `MultitransportPending`,
+  still able
+    to report or decline, rather than `Consumed`;
+  - `complete` / `skip` outside `MultitransportPending` error;
+  - a Demand Active's user data does not decode as a
+  `MultitransportRequestPdu`
+    (regression test for the decoder tightening above).
+
+- Validate auto-reconnect cookies ([#1509](https://github.com/Devolutions/IronRDP/issues/1509)) ([44f675e244](https://github.com/Devolutions/IronRDP/commit/44f675e244ee76b5311756668ffbbe28e98c7175)) 
+
+  ## Summary
+  - parse and carry `ARC_CS_PRIVATE_PACKET` data through the acceptor
+  - validate returning Enhanced RDP Security cookies with HMAC-MD5 before
+  reconnecting
+  - rotate reconnect randoms per connection and hourly, with runtime
+  cookie updates
+  - restrict cookie authentication to TLS/Hybrid and document the behavior
+  
+  ## Testing
+  - `cargo test -p ironrdp-pdu -p ironrdp-acceptor -p ironrdp-server`
+  - `cargo clippy -p ironrdp-pdu -p ironrdp-acceptor -p ironrdp-server
+  --all-targets -- -D warnings`
+
+- [**breaking**] Support session resume via the auto-reconnect cookie ([#1501](https://github.com/Devolutions/IronRDP/issues/1501)) ([74b3365c1f](https://github.com/Devolutions/IronRDP/commit/74b3365c1f98c0da6feed7507779c67e1b8e6d08)) 
+
+  > **Rebased onto post-#1522 master.** #1509 landed the server half of
+  #1508 while this was open, including the `ClientAutoReconnect`
+  structure. This PR no longer declares it; it extends it, and picks up
+  the parts #1509 did not build.
+  
+  ## What
+  
+  The client half of automatic reconnection. The session layer surfaces
+  the Server Auto-Reconnect Cookie, `ironrdp-pdu` derives and verifies the
+  client's response to it, and the connector sends that response when
+  resuming a session.
+  
+  ## Why
+  
+  A client whose connection drops ungracefully can reattach to its session
+  instead of making the user log on again, provided it returns the cookie
+  the server issued during logon ([MS-RDPBCGR] 1.3.1.5).
+  
+  #1509 built the server side of that: it validates a returning
+  `ARC_CS_PRIVATE_PACKET` and rotates the random. Nothing answers it.
+  `ironrdp-session` decodes the cookie and drops it, `ironrdp-connector`
+  has no way to send one back, and `TODO([#271](https://github.com/Devolutions/IronRDP/issues/271))` still sits in
+  `ironrdp-client`. So `ironrdp-client` cannot resume a session against
+  `ironrdp-server`, and the validation #1509 added has no in-tree
+  counterpart to exercise it.
+  
+  The wire encoding was already there. `ExtendedClientOptionalInfo`
+  carries, encodes and decodes a 28-byte `autoReconnectCookie` and its
+  builder already had a `reconnect_cookie` step; `ServerAutoReconnect`
+  already decoded; #1509 added `ClientAutoReconnect` and its decode.
+  Nothing connected them.
+  
+  ## The three parts
+  
+  **Receive.** `SaveSessionInfo` now also surfaces the cookie, as
+  `ProcessorOutput::AutoReconnectCookie` and
+  `ActiveStageOutput::AutoReconnectCookie`. #1522 added a `SaveSessionInfo
+  { logon_complete }` output on that same handler; the two coexist rather
+  than compete, since both are read off one PDU and neither supersedes the
+  other. The handler emits the logon notification unconditionally and
+  appends the cookie when one is present, and a test pins that surfacing
+  the cookie does not suppress the notification. #1509's server replaces
+  the cookie whenever a client connects and again hourly ([MS-RDPBCGR]
+  3.3.6.2), so this can arrive more than once in a session and the
+  consumer keeps the most recent.
+  
+  **Derive.** `ClientAutoReconnect::from_server_cookie` implements
+  [MS-RDPBCGR] 5.5:
+  
+  > The auto-reconnect random is used to key the HMAC function
+  ([RFC2104]), which uses MD5 as the iterative hash function. The security
+  verifier is derived by applying the HMAC to the client random received
+  in Step 3.
+  >
+  > `SecurityVerifier = HMAC(AutoReconnectRandom, ClientRandom)`
+  >
+  > When Enhanced RDP Security is in effect the client random value is not
+  generated (section 5.3.2). In this case, for the purpose of generating
+  the security verifier, the client random is assumed to be an array of 32
+  zero bytes.
+  
+  IronRDP implements no Standard RDP Security path (there is no Security
+  Exchange PDU), so the zero-client-random case is the only one that
+  arises. As 5.5 notes, that makes the verifier constant for a given
+  cookie, so it proves possession of the cookie and nothing more; session
+  security comes from the outer TLS/CredSSP handshake.
+  
+  @clintcan independently confirmed this construction against real
+  **mstsc** while validating #1509
+  ([comment](https://github.com/Devolutions/IronRDP/pull/1509#issuecomment-5151200681)):
+  a Windows client's `ARC_CS_PRIVATE_PACKET` verifies against
+  `HMAC-MD5(random_bits, [0u8; 32])`. That is the same derivation
+  implemented here, so the two halves interoperate with Microsoft's client
+  and not only with each other.
+  
+  **Send.** `ClientConnector::with_auto_reconnect_cookie` takes the cookie
+  last received and makes the connector put the derived Client
+  Auto-Reconnect Packet ([MS-RDPBCGR] 2.2.4.3) in the Client Info PDU.
+  Absent, that PDU is byte-for-byte what it was.
+  
+  Unlike the server packet, this structure has no enclosing logon-info
+  field header, so it encodes to exactly the 28 bytes the cookie field
+  expects. `to_bytes` writes that layout directly rather than going
+  through `Encode`, so filling a fixed-size field has no error path a
+  caller must handle; a test pins the two to agree.
+  
+  ## One derivation, not two
+  
+  Putting `from_server_cookie` in `ironrdp-pdu` would leave the workspace
+  with two implementations of 5.5, since #1509 added a private HMAC to
+  `ironrdp-server`. So `ClientAutoReconnect` also gains `verify`, and the
+  server routes through it.
+  
+  `verify` keeps the constant-time comparison the server had. The verifier
+  is the whole credential, so a comparison returning early on the first
+  differing byte would let a peer recover it a byte at a time from the
+  timing; the session identifier is not secret and is compared normally.
+  `ironrdp-server` keeps the policy around the check, which cookies are
+  live and whether the security protocol permits auto-reconnect, and drops
+  its `hmac` and `md-5` dependencies. `hmac` moves to `ironrdp-pdu` as
+  `default-features = false`; the crate's full feature powerset still
+  checks clean, including `--no-default-features`.
+  
+  I would rather not have reached into `ironrdp-server` in a
+  `pdu,session,connector` change, but the alternative was shipping the
+  duplicate and filing a follow-up to remove it, which is a worse trade
+  for reviewer time.
+  
+  ## Tests that were not running
+  
+  That move also rehomes the known-answer tests @clintcan contributed on
+  #1509. They went in as an inline `#[cfg(test)]` module in
+  `crates/ironrdp-server/src/server.rs`, and that crate sets `[lib] test =
+  false`, so they have never executed in CI. They now live in
+  `ironrdp-testsuite-core` against the public API, where CI runs them: his
+  HMAC-MD5 reference vector is kept as a second vector alongside a
+  differently-keyed one, plus the cases for a tampered verifier and a
+  mismatched logon ID.
+  
+  Worth flagging separately: `ironrdp-server` is not alone.
+  `ironrdp-agent`, `ironrdp-session` and `ironrdp-web` also set `[lib]
+  test = false` and between them carry 16 files of inline `#[cfg(test)]`
+  modules that CI never runs. That is out of scope here, but I am happy to
+  open an issue if it would be useful.
+  
+  ## Breaking changes
+  
+  `ActiveStageOutput` and `x224::ProcessorOutput` gain a variant, and
+  `ClientConnector` gains a public field, so exhaustive matches and struct
+  literals need updating.
+  
+  Confirmed with `cargo-semver-checks` against the merge-base: those three
+  are the only findings this branch introduces. The others it reports on
+  `master` today (`ShareDataPdu::Compressed` and the `ShareDataCtx` fields
+  from #1518, `ProcessorBuilder.bulk_decompressor` from #1518,
+  `ServerEvent::SetAutoReconnectCookie` from #1509) are present on
+  `master` unchanged. The `ironrdp-pdu` additions are additive.
+  
+  ## Scope
+  
+  This is the library half. `ironrdp-client`, `ironrdp-web` and the FFI
+  bindings gain an arm for the new output but none of them reconnect
+  automatically yet; that is the remaining part of #271, and the existing
+  `TODO([#271](https://github.com/Devolutions/IronRDP/issues/271))` in `ironrdp-client` marks where it goes.
+  
+  I kept receive, derive and send together deliberately. Split up, none of
+  them is usable on its own: without the receive half there is no way to
+  obtain a cookie, and without the send half there is nothing to do with
+  one.
+  
+  ## Tests
+  
+  Thirteen, all in `ironrdp-testsuite-core`.
+  
+  On the packet and the derivation: the `SecurityVerifier` matches two
+  independently computed HMAC-MD5 vectors of 32 zero bytes under different
+  keys, so the tests pin the derivation rather than restating the code;
+  the logon ID carries over from the server cookie; the encoding matches
+  the 2.2.4.3 field layout byte for byte with `cbLen` fixed at `0x1C`;
+  `to_bytes` agrees with `Encode`; it round-trips; and it rejects both a
+  wrong packet length and an unknown version.
+  
+  On verification: a derived answer is accepted, a single flipped byte in
+  the verifier is rejected, a correct verifier under a different logon ID
+  is rejected, and an answer derived from a different random is rejected.
+  
+  On the surfacing path: a Save Session Info PDU framed the way a server
+  sends it, through the real x224 processor, yields an
+  `AutoReconnectCookie` carrying the right logon ID and random bits,
+  alongside #1522's logon notification rather than in place of it; and one
+  without a cookie surfaces no cookie.
+  
+  ## Verification
+  
+  `cargo xtask check fmt/lints/tests/typos/locks` all pass on 1.94.1,
+  including a `fuzz/` build before the lock check.
+  
+  ## Note
+  
+  #1496 also touches the `ClientAutoReconnect` declaration. Whichever of
+  the two lands second needs a one-line rebase on the derive attribute;
+  happy to take that in either order.
+
+### <!-- 1 -->Features
+
+- Add ClearCodec client-side decode dispatch ([#1175](https://github.com/Devolutions/IronRDP/issues/1175)) ([714dce4662](https://github.com/Devolutions/IronRDP/commit/714dce46627e299c57d82f4f6a5c18067a95bffa)) 
+
+  Follow-up to #1174. Supersedes #1195 (the standalone server-helper PR;
+  its 46-line `send_clearcodec_frame()` is included here).
+  
+  Wires ClearCodec into the EGFX client's WireToSurface1 codec dispatch,
+  matching the existing AVC420 and Uncompressed decode patterns.
+
+- Surface ShareDataPdu variant in unexpected-PDU errors ([#1329](https://github.com/Devolutions/IronRDP/issues/1329)) ([df1f7e7faa](https://github.com/Devolutions/IronRDP/commit/df1f7e7faaf068435bfbbe1efcb4a8800ebb3d9f)) 
+
+  ## Summary
+  
+  - Addresses ask 1 of #1232: when the server sends a
+  `ShareControlPdu::Data` wrapping an unexpected `ShareDataPdu`, the three
+  error sites in `headers.rs` and `connection_activation.rs` now drill
+  into the `Data` wrapper and surface the inner variant name instead of
+  reporting only `"Data"`.
+  - For `ServerSetErrorInfo` specifically (the asker's high-value case),
+  the existing `ErrorInfo::description()` is appended so callers can see
+  why the server rejected the session without substring matching on the
+  `Reason` string.
+  - New `pub fn describe_unexpected_share_control_pdu` in `headers.rs`
+  centralizes the formatting; `decode_share_data`, `decode_io_channel`,
+  and `ConnectionActivation::CapabilitiesExchange` all route through it.
+  - Non-`Data` variants continue to use the outer `as_short_name()`, so
+  diagnostics for `ServerDeactivateAll` and `ClientConfirmActive` are
+  preserved verbatim.
+  
+  ## Validation
+  
+  - Three unit tests in `headers::tests` cover the helper: a non-`Data`
+  variant (`ServerDeactivateAll`), a `Data` wrapper around a
+  non-SetErrorInfo inner (`Update(Vec::new())`), and a `Data` wrapper
+  around `ServerSetErrorInfo` carrying
+  `ProtocolIndependentCode::ServerDeniedConnection`.
+  - `cargo xtask check fmt/lints/tests/typos/locks` all pass.
+  
+  ## Notes
+  
+  - Helper is `pub`, not `pub(crate)`: it has to be, since
+  `ironrdp-connector`'s `connection_activation.rs` calls it cross-crate.
+  That adds
+  `ironrdp_pdu::rdp::headers::describe_unexpected_share_control_pdu` to
+  `ironrdp-pdu`'s public surface. Additive and non-breaking, confirmed by
+  `cargo semver-checks --baseline-rev <merge-base>`: no update required
+  for either `ironrdp-pdu` or `ironrdp-connector`.
+  - Ask 2 from #1232 (an optional structured `ConnectorErrorKind` variant
+  for "server rejected at capabilities phase") is intentionally deferred.
+  The asker framed it as optional and the wire-level information is now
+  available in the `Reason` string.
+  - `Refs #1232` rather than `Closes` so the issue stays open while you
+  decide on ask 2.
+
+- Support connection correlation info ([#1582](https://github.com/Devolutions/IronRDP/issues/1582)) ([c4483617ba](https://github.com/Devolutions/IronRDP/commit/c4483617ba05c31182b58c58be66bd41120a076d)) 
+
+  Encode the optional 36-byte X.224 RDP_NEG_CORRELATION_INFO block and
+  reject malformed negotiation records.
+
+- Support Hyper-V connection ordering ([#1505](https://github.com/Devolutions/IronRDP/issues/1505)) ([5c1816244e](https://github.com/Devolutions/IronRDP/commit/5c1816244e83187a04249e9d9c240d096cb78f55)) 
+
+  Hyper-V over RDCleanPath needs PCB → TLS on the proxy, then CredSSP →
+  X.224 on the client. Ordinary RDCleanPath stays X.224-first.
+  
+  Still VERSION_1 with the same DER fields. An explicit VMConnect request
+  carries a Unicode PCB payload in `preconnection_blob` with no X.224; the
+  proxy encodes the binary PCB. Generic PCB requests keep their existing
+  X.224-first behavior.
+  
+  Gateway reference implementation:
+  [Devolutions/devolutions-gateway#1372](https://github.com/Devolutions/devolutions-gateway/pull/1372)
+  
+  Checked locally: Rust builds, formatting, Svelte typecheck, and .NET
+  build. Real nested Hyper-V E2E through Gateway: Native rendered 18
+  frames, Avalonia connected and rendered its first frame, and Web
+  rendered a non-empty 1280×720 canvas.
+  
+  ---------
+
+- Forward negotiated windowing orders ([#1631](https://github.com/Devolutions/IronRDP/issues/1631)) ([0c3fbe78b4](https://github.com/Devolutions/IronRDP/commit/0c3fbe78b4366533b9fcea046b2b53654e003a72)) 
+
+  Preserve Window List support during activation.
+  Forward validated orders through ActiveStage and the raw FFI output.
+  Desktop and web consumers retain their existing behavior.
+
+- Add RemoteApp protocol primitives ([#1636](https://github.com/Devolutions/IronRDP/issues/1636)) ([0161906731](https://github.com/Devolutions/IronRDP/commit/0161906731757356953cdb389a2cd6a42863deb2)) 
+
+  Add portable RAIL wire types and a typed Remote Programs capability set.
+  
+  Validate the RAIL crate's bare `no_std` and allocation-backed
+  configurations in the workspace feature matrix.
+  
+  Keep connection setup and windowing behavior outside this protocol
+  layer.
+
+- Negotiate monitor topology ([#1675](https://github.com/Devolutions/IronRDP/issues/1675)) ([063efcdc30](https://github.com/Devolutions/IronRDP/commit/063efcdc3088d8f44e423cc322077d40bf9aadf2)) 
+
+  Negotiate the client monitor layout from UseMultimon and expose the
+  confirmed remote topology through the ActiveX compatibility interface.
+  
+  Advertise Monitor Layout PDU support whenever Extended Client Data is
+  negotiated, and forward layouts from activation, active sessions, and
+  reactivation so advertised support does not terminate sessions.
+  
+  Keep fallback reporting truthful when servers do not honor the request,
+  while preserving single-monitor resize behavior and blocking
+  multi-monitor resizing.
+  
+  Do not send Client Monitor Extended Data; per-monitor DPI and
+  orientation remain unavailable.
+
+- Measure and report network characteristics ([#1470](https://github.com/Devolutions/IronRDP/issues/1470)) ([224e8db7ce](https://github.com/Devolutions/IronRDP/commit/224e8db7cec2dad39032aac097f550a6600e742c)) 
+
+  ## Summary
+  
+  - The server measures round-trip time and bandwidth from the continuous
+    auto-detect exchange and reports both to the client in a Network
+  Characteristics Result on the MCS message channel ([MS-RDPBCGR]
+  2.2.14.1.5).
+  - Nothing is sent until both are known. A result carrying RTT alone
+  reports part
+  of the picture as though it were the whole, which is what krdp and grd
+  avoid by
+    returning early when they have no bandwidth figure.
+  - The result is paced at one per second on its own clock rather than
+  once per
+  probe, and is withheld unless a client response has arrived since the
+  last one.
+  A client that stops answering stops producing results instead of leaving
+  the
+    last window values advertised indefinitely.
+  - `baseRTT` is the lowest RTT seen over the session, per 2.2.14.1.5's
+  "lowest
+    detected round-trip time". `averageRTT` is the window average, so the
+    difference between them is queueing delay.
+  
+  ## Validation
+  
+  - `cargo xtask check fmt/lints/tests/typos/locks` and `cargo xtask wasm
+  check`
+    all pass.
+  - `cargo semver-checks -p ironrdp-server --baseline-rev master`: no
+  update
+    required.
+  - Tests live in `ironrdp-testsuite-core`. `ironrdp-server` sets
+  `[lib] test = false`, so an inline module would compile and never run.
+  Each new
+  test was checked by planting the corresponding regression and confirming
+  it
+    fails.
+  
+  ## Notes
+  
+  - Supersedes #1471, which added bandwidth as a follow-up. With the gate
+  above,
+  this PR alone could only ever emit the form it now declines to send, so
+  the two
+    are one change.
+  - #1487 has merged, so the earlier dependency note no longer applies.
+
+- Make the RemoteFX quantization table configurable ([#1685](https://github.com/Devolutions/IronRDP/issues/1685)) ([925e7c0f7c](https://github.com/Devolutions/IronRDP/commit/925e7c0f7cb7ae937a92ec93d4cb758289594cc0)) 
+
+  Add Quant::try_new(), a validating constructor that rejects any subband
+  value outside the 6..=15 range, and
+  RdpServerBuilder::with_remotefx_quant(quant: Quant), wiring it through
+  RdpServerOptions to the same capability-negotiation call site #1684
+  touched.
+  
+  Per [MS-RDPRFX] 2.2.2.1.5, each of the 10 TS_RFX_CODEC_QUANT values is a
+  4-bit field, and the legal range is 6 to 15. #1557 reports the quant
+  table is hardcoded to Quant::default(); this gives callers a validated
+  way to set it instead.
+  
+  Builds on #1684, which added the storage this PR wires up. Default
+  behavior is unchanged: with_remotefx_quant is opt-in, and a server that
+  doesn't call it still gets Quant::default(), the same values Windows RDP
+  servers send.
+
+### <!-- 4 -->Bug Fixes
+
+- Tolerate unknown GCC user-data blocks instead of failing ([#1489](https://github.com/Devolutions/IronRDP/issues/1489)) ([629a8024f4](https://github.com/Devolutions/IronRDP/commit/629a8024f4832ed04247ef56597604bbb4b85017)) 
+
+- Scope Font Map leniency ([#1506](https://github.com/Devolutions/IronRDP/issues/1506)) ([e496b7b8ea](https://github.com/Devolutions/IronRDP/commit/e496b7b8eaf60688fc0d507961713c6aabd0e05e)) 
+
+- Key auto-detect optional fields off requestType, not the Option ([#1491](https://github.com/Devolutions/IronRDP/issues/1491)) ([f9cc62fa2c](https://github.com/Devolutions/IronRDP/commit/f9cc62fa2ccb4f211838dd0961c19cdf3b79a38e)) 
+
+  ## Summary
+  
+  MS-RDPBCGR decides which optional fields an auto-detect message carries
+  by its `requestType`. Two of these message types encoded them by
+  inspecting which `Option`s happened to be set instead, so the encoder
+  and the decoder disagreed about the wire.
+  
+  This started as a fix for `BandwidthMeasureStop` alone. Review found the
+  connect-time fallback was still non-compliant, and checking whether the
+  same shape appeared elsewhere in the file turned up
+  `NetworkCharacteristicsResult` with the identical defect and a worse
+  consequence, so both are fixed here rather than one now and one later.
+  
+  ## The two failure modes
+  
+  **Connect-time stop with no payload: encodes to bytes the decoder
+  rejects.**
+  
+  ```rust
+  AutoDetectRequest::BandwidthMeasureStop {
+      sequence_number: 7,
+      request_type: BW_STOP_CONNECT_TIME,
+      payload: None,
+  }
+  ```
+  
+  encodes to ten bytes with `headerLength` 0x06 and no length field.
+  Decoding those bytes
+  fails with `not enough bytes provided to decode: received 0 bytes,
+  expected 2 bytes`,
+  because the decoder reads `payloadLength` back for every
+  `BW_STOP_CONNECT_TIME`.
+  
+  **UDP stop with a payload: silently loses it.**
+  
+  ```rust
+  AutoDetectRequest::BandwidthMeasureStop {
+      sequence_number: 3,
+      request_type: BW_STOP_RELIABLE_UDP,
+      payload: Some(vec![0xAA; 16]),
+  }
+  ```
+  
+  encodes the length and the sixteen bytes, which the decoder never reads
+  back for
+  `BW_STOP_RELIABLE_UDP` or `BW_STOP_LOSSY_UDP`.
+  `AutoDetectReqPdu::decode` does not check
+  for trailing bytes, so the payload is dropped in transit without an
+  error rather than
+  refused.
+  
+  The second is the worse of the two: a round trip that loses data and
+  reports success.
+  
+  ## Network Characteristics Result (2.2.14.1.5)
+  
+  The same defect, found by sweeping the file rather than reported.
+  
+  `0x0840` carries baseRTT and averageRTT, `0x0880` carries bandwidth and
+  averageRTT, `0x08C0` carries all three, and the decoder already read
+  them on that basis. Encoding from the `Option`s meant:
+  
+  - a `0x0840` result with no `base_rtt_ms` wrote a body the decoder
+  cannot read;
+  - a `0x0840` result carrying `bandwidth_kbps` instead wrote that
+  bandwidth into the slot the decoder reads as baseRTT, so the value came
+  back **silently corrupted** rather than rejected;
+  - `headerLength` was always derived from `requestType`, so it could
+  contradict the body it described.
+  
+  Encode and `size()` now consult `requestType` through a shared helper, a
+  value the type does not carry is dropped rather than written, and a
+  missing one that the type requires is an error.
+  
+  ## Fix
+  
+  `Encode` and `size()` now key off `requestType`, matching the decoder.
+  That makes the
+  wire form canonical:
+  
+  - an absent payload on a connect-time stop encodes as a zero length and
+  reads back as an
+    empty one;
+  - a payload on a UDP stop never reaches the wire.
+  
+  Decoding and re-encoding reproduces the same bytes in every case. The
+  types can still
+  express states the protocol cannot, so value-level identity is not
+  achievable, but byte
+  stability is, and that is what a decoder consuming real traffic depends
+  on.
+  
+  No public signatures change; this is a behaviour fix inside the existing
+  `Encode` impl.
+  
+  ## Tests
+  
+  New `pdu/autodetect.rs` in `ironrdp-testsuite-core`:
+  
+  - a connect-time stop with no payload round-trips, and `size()` agrees
+  with `encode()`;
+  - a UDP stop carrying a payload encodes header-only and comes back with
+  `payload: None`,
+    for both the reliable and lossy request types;
+  - a connect-time stop preserves a real payload;
+  - decode-then-encode reproduces identical bytes for both shapes.
+  
+  Three of the four fail against the current encoder and pass with the
+  fix. The fourth is
+  a control that passed before and after.
+  
+  Note the existing `pdu_round_trip` fuzz oracle would not have caught
+  this even with
+  auto-detect added to it, since it discards the result of the re-decode
+  (`let _ =`). That
+  is deliberate in the oracle's design and out of scope here, but it is
+  why this went
+  unnoticed.
+  
+  ## How this was found
+  
+  Writing a test for the connect-time bandwidth measurement in #1465,
+  which needs to answer
+  a connect-time stop. The `None` case was constructed to check the reply
+  path stayed
+  lenient and turned out not to be constructible on the wire at all.
+  
+  ## Verification
+  
+  - `cargo xtask check fmt -v` green
+  - `cargo xtask check lints -v` green
+  - `cargo xtask check tests -v` green
+  - `cargo xtask check typos -v` green
+  - `cargo xtask check locks -v` green
+
+- Harden framing and empty output handling ([#1515](https://github.com/Devolutions/IronRDP/issues/1515)) ([33506e6139](https://github.com/Devolutions/IronRDP/commit/33506e613923dae504f46451231dcee15a6320a2)) 
+
+  Reject Fast-Path and TPKT frames whose declared length is smaller than
+  their header or minimum packet size. Also tolerate the zero-length
+  `totalLength` variation used by empty Update and Pointer output PDUs,
+  while continuing to reject zero-length non-output data PDUs.
+  
+  Adds regression coverage for malformed frame lengths and empty output
+  compatibility.
+
+- Share bulk decompression across output paths ([#1518](https://github.com/Devolutions/IronRDP/issues/1518)) ([6151e21bf5](https://github.com/Devolutions/IronRDP/commit/6151e21bf58b7297e9b4abc2167aa36fc2ba77e4)) 
+
+  Bulk compression state is stream-wide, but Fast-Path and slow-path
+  outputs previously used separate or missing decompression paths. This
+  could corrupt history-dependent server updates or leave negotiated
+  slow-path compression undecodable.
+  
+  This change owns the negotiated bulk decompressor in `ActiveStage` and
+  passes it to both X.224 and Fast-Path processing. It retains Share Data
+  compression metadata through the PDU context, resets decompression
+  history on reactivation, and initializes consumers from the connection's
+  negotiated compression type.
+  
+  Fast-Path now decompresses each fragment before reassembly so
+  compression flags apply at packet boundaries. Failures expose bounded
+  protocol metadata without retaining remote payloads or decoder details.
+  
+  Tests cover Share Data metadata propagation, slow-path decompression
+  behavior, fragmented Fast-Path reassembly and bounded errors, and
+  compressed Fast-Path updates after reactivation.
+  
+  ---------
+
+- Accept a zero-length connect-time bandwidth payload on decode ([#1511](https://github.com/Devolutions/IronRDP/issues/1511)) ([dffad79d61](https://github.com/Devolutions/IronRDP/commit/dffad79d6143f4d7e9b589768ad55fc98a04740c)) 
+
+  ## What
+  
+  A connect-time Bandwidth Measure Stop with `payloadLength` of zero now
+  decodes, as a present-but-empty payload. `Encode` still refuses to emit
+  one.
+  
+  ## Why
+  
+  [MS-RDPBCGR] 2.2.14.1.4 says of `payloadLength`: "It MUST be present
+  (and have a value greater than zero) if the value of the **requestType**
+  field is set to 0x002B." #1491 read that as a rule for both directions
+  and made encode and decode refuse a zero. The encode half is right. The
+  decode half is not.
+  
+  The two directions answer different questions. Encoding asks what we are
+  permitted to put on the wire, and a zero length has no conforming
+  encoding, so refusing is correct. Decoding asks whether we can act on
+  what a peer already sent. Here we can: `sequenceNumber` and
+  `requestType` arrive intact, and those fully determine the Bandwidth
+  Measure Results reply the PDU is asking for. The payload is random
+  measurement filler per the same section, and its length is the only
+  thing the reply reports about it.
+  
+  Rejecting therefore discards a PDU we could have answered without
+  gaining any protection. FreeRDP-based servers, including
+  gnome-remote-desktop, block in `AWAIT_BW_RESULT` until the results
+  arrive, so a server that sends a zero length stalls the whole connection
+  rather than getting a diagnostic.
+  
+  The fix #1491 was actually titled for, keying the optional fields off
+  `requestType` instead of the `Option`, is untouched. Only the added
+  zero-length rejection moves, and only on the receive side.
+  
+  ## Tests
+  
+  `connect_time_stop_with_a_zero_payload_length_is_rejected` becomes
+  `..._is_accepted` and now asserts the decoded value: `payload:
+  Some(vec![])`, present and empty rather than absent, since the wire
+  carried a length field.
+  
+  Added `a_decoded_zero_length_stop_does_not_re_encode`, so the asymmetry
+  is stated as a test rather than only as a comment.
+  
+  `connect_time_stop_without_a_payload_is_refused` is unchanged and still
+  covers the encode side.
+  
+  ## Note
+  
+  This does not break the `pdu_round_trip` oracle in #1492: a failing
+  `encode` after a successful `decode` is already tolerated there, and the
+  re-decode assertion only fires on a successful encode.
+  
+  ## Verification
+  
+  `cargo xtask check fmt/lints/tests/typos/locks` all pass. `cargo
+  semver-checks` reports no update required for `ironrdp-pdu`.
+  
+  ## Unblocks #1465
+  
+  #1465 carries a regression test for a zero-`payloadLength` Stop, which
+  cannot pass until this lands: #1491 made `AutoDetectRequest`'s decoder
+  reject `payloadLength = 0`, so such a PDU is refused before it reaches
+  the connector. Its
+  `connect_time_bandwidth_answers_a_stop_carrying_an_empty_payload` is red
+  today and that red is this dependency, not a defect there.
+  
+  Verified against current `master`: #1465 alone fails that one case out
+  of 1032; #1465 with this applied passes all of them. Merging this first
+  turns #1465 green with no change on its side.
+  
+  ## Rebased
+  
+  Rebased onto `master` on 2026-08-02 so the checks run against the
+  current tree rather than the state before that day's merges. No
+  conflicts, no content change.
+
+- Keep auto-reconnect credential material out of Debug output ([#1496](https://github.com/Devolutions/IronRDP/issues/1496)) ([d0948faa18](https://github.com/Devolutions/IronRDP/commit/d0948faa187da673e9ded44e9e22cfbefc2c7f62)) 
+
+- Batch Fast-Path input events ([#1630](https://github.com/Devolutions/IronRDP/issues/1630)) ([3818b48037](https://github.com/Devolutions/IronRDP/commit/3818b480375ec9411d5319d8e7af161f1d662cbf)) 
+
+  Keep outgoing Fast-Path input frames within the 255-event protocol limit
+  and preserve their order across FFI.
+
+- Parse ClearCodec V-Bar offsets ([#1694](https://github.com/Devolutions/IronRDP/issues/1694)) ([c1db8608af](https://github.com/Devolutions/IronRDP/commit/c1db8608af35e3c1318a50fa812f3259ff69d800)) 
+
+  Decode short V-Bar cache-miss offsets from their specified bit
+  positions.
+
+### <!-- 7 -->Build
+
+- Bump the crypto group across 1 directory with 3 updates ([#1449](https://github.com/Devolutions/IronRDP/issues/1449)) ([e1725e8c8a](https://github.com/Devolutions/IronRDP/commit/e1725e8c8a581b83835647b6ee563a5b3f6c7a1b)) 
+
+
+
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.8.0...ironrdp-pdu-v0.9.0)] - 2026-07-10
 
 ### <!-- 0 -->Security

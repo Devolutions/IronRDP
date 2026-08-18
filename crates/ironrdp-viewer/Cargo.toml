@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-viewer"
-version = "0.1.0"
+version = "0.1.1"
 readme = "README.md"
 description = "Portable RDP viewer (GUI binary) without GPU acceleration"
 edition.workspace = true
@@ -30,8 +30,8 @@ qoiz = ["ironrdp/qoiz"]
 [dependencies]
 ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" } # public
 ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.1" }
-ironrdp = { path = "../ironrdp", version = "0.17", features = ["connector", "cliprdr", "input", "pdu", "client", "client-all", "client-vmconnect"] }
-ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
+ironrdp = { path = "../ironrdp", version = "0.18", features = ["connector", "cliprdr", "input", "pdu", "client", "client-all", "client-vmconnect"] }
+ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.2" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
 ironrdp-rdpfile = { path = "../ironrdp-rdpfile", version = "0.1" }
 
