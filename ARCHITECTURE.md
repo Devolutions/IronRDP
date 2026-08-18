@@ -110,6 +110,16 @@ RDPSND static channel for audio output implemented as described in MS-RDPEA.
 
 AUDIO_INPUT dynamic channel for client microphone capture implemented as described in MS-RDPEAI.
 
+#### [`crates/ironrdp-rdpeusb`](./crates/ironrdp-rdpeusb)
+
+RDPEUSB dynamic channel implementation for USB redirection as described in MS-RDPEUSB.
+
+**Architectural Invariant**: the `usb` module translates protocol-independent `ironrdp-usb` operations and descriptor semantics into complete backend-facing `TS_URB` requests, and maps USBD completions back.
+Selecting `TS_URB` forms and applying Windows USBD conventions remain in this crate.
+
+**Architectural Invariant**: the `usb` module is sans-I/O and does not allocate request IDs, track device state, or manage pending-request lifetimes.
+Those responsibilities belong to the layer above the channel implementation.
+
 #### [`crates/ironrdp-rdpewa`](./crates/ironrdp-rdpewa)
 
 RDPEWA dynamic virtual channel for WebAuthn redirection as described in MS-RDPEWA.
