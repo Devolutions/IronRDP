@@ -56,6 +56,8 @@ async function resolvePr({ github, context, inputs = {} }) {
   const { owner, repo } = context.repo;
   const force = route === "dispatch" && ["true", true].includes(
     inputs.force ?? context.payload.inputs?.force);
+  const oversizedReviewRequested = route === "classification" &&
+    context.payload.action === "labeled" && context.payload.label?.name === OVERSIZED_REVIEW_LABEL;
   let pr;
   try {
     if (route === "classification") {
@@ -106,8 +108,8 @@ async function resolvePr({ github, context, inputs = {} }) {
       association: pr.author_association || null,
     },
     force,
-    reviewRequested: route === "dispatch" && ["true", true].includes(
-      inputs.review ?? context.payload.inputs?.review),
+    reviewRequested: oversizedReviewRequested ||
+      (route === "dispatch" && ["true", true].includes(inputs.review ?? context.payload.inputs?.review)),
     classificationRequested: route === "classification" ||
       (route === "dispatch" && !["true", true].includes(inputs.review ?? context.payload.inputs?.review)),
     reviewRoute: route === "ci" || route === "classification-complete" ||
