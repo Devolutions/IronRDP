@@ -896,8 +896,9 @@ impl TileState {
     /// Arguments match [`TileState::decode_first`].
     ///
     /// # Errors
-    /// Returns `RlgrError` if any component's RLGR decode fails; components
-    /// decoded before the failure stay accumulated.
+    /// Returns `RlgrError` if any component's RLGR decode fails. On error the
+    /// tile keeps its prior state, so a truncated stream cannot corrupt the
+    /// reference the next difference tile is decoded against.
     pub fn decode_first_difference(
         &mut self,
         component_data: [&[u8]; 3],
@@ -912,10 +913,32 @@ impl TileState {
         // stream that changes either mid-tile has no defined reference, so drop
         // it and decode the tile as an original one.
         let base_quant = [*base_quants[0], *base_quants[1], *base_quants[2]];
-        if self.base_quant != base_quant || self.use_reduce_extrapolate != use_reduce_extrapolate {
-            self.coefficients = [[0; COEFFICIENTS_PER_COMPONENT]; 3];
+        let mut coefficients = if self.base_quant == base_quant && self.use_reduce_extrapolate == use_reduce_extrapolate
+        {
+            self.coefficients
+        } else {
+            [[0; COEFFICIENTS_PER_COMPONENT]; 3]
+        };
+        let mut sign = self.sign;
+
+        for c in 0..3 {
+            let mut difference = [0i16; COEFFICIENTS_PER_COMPONENT];
+
+            decode_first_pass_to_dwtq(
+                component_data[c],
+                &prog_quants[c],
+                use_reduce_extrapolate,
+                &mut difference,
+                &mut sign[c],
+            )?;
+
+            for (coefficient, difference) in coefficients[c].iter_mut().zip(difference) {
+                *coefficient = clamp_i16(i32::from(*coefficient) + i32::from(difference));
+            }
         }
 
+        self.coefficients = coefficients;
+        self.sign = sign;
         self.begin_first_pass(
             base_quants,
             prog_quants,
@@ -924,24 +947,6 @@ impl TileState {
             use_reduce_extrapolate,
             true,
         );
-
-        for c in 0..3 {
-            // Decode into scratch so a malformed RLGR stream leaves this
-            // component's retained coefficients intact.
-            let mut difference = [0i16; COEFFICIENTS_PER_COMPONENT];
-
-            decode_first_pass_to_dwtq(
-                component_data[c],
-                &prog_quants[c],
-                use_reduce_extrapolate,
-                &mut difference,
-                &mut self.sign[c],
-            )?;
-
-            for (coefficient, difference) in self.coefficients[c].iter_mut().zip(difference) {
-                *coefficient = clamp_i16(i32::from(*coefficient) + i32::from(difference));
-            }
-        }
 
         Ok(())
     }
@@ -2531,6 +2536,51 @@ mod tests {
 
         assert_eq!(difference_tile.coefficients, absolute_tile.coefficients);
         assert_eq!(difference_tile.sign, absolute_tile.sign);
+    }
+
+    #[test]
+    fn failed_difference_decode_leaves_the_tile_unchanged() {
+        // An empty component stream is trivially reachable on the wire, and it
+        // must not corrupt the reference the next difference tile builds on.
+        let base_quant = uniform_quant(6);
+        let prog_quant = ComponentCodecQuant::LOSSLESS;
+
+        let mut absolute = [0i16; COEFFICIENTS_PER_COMPONENT];
+        absolute[0] = 100;
+        absolute[4032] = 25;
+        let mut difference = [0i16; COEFFICIENTS_PER_COMPONENT];
+        difference[0] = -30;
+
+        let absolute_data = rlgr_encode_component(&absolute);
+        let difference_data = rlgr_encode_component(&difference);
+
+        let mut tile = TileState::new();
+        tile.decode_first(
+            [&absolute_data; 3],
+            [&base_quant; 3],
+            [prog_quant; 3],
+            [0; 3],
+            0xFF,
+            false,
+        )
+        .expect("original first-pass decoding should succeed");
+        let coefficients = tile.coefficients;
+        let sign = tile.sign;
+
+        tile.decode_first_difference(
+            [&difference_data, &difference_data, &[]],
+            [&base_quant; 3],
+            [prog_quant; 3],
+            [0; 3],
+            0xFF,
+            false,
+        )
+        .expect_err("an empty component stream should fail");
+
+        assert!(tile.coefficients == coefficients);
+        assert!(tile.sign == sign);
+        assert!(!tile.is_difference);
+        assert_eq!(tile.pass, 1);
     }
 
     #[test]
