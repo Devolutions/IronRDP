@@ -146,11 +146,11 @@ fn decode_vbar<'a>(src: &mut ReadCursor<'a>, band_height: u16) -> DecodeResult<V
 
     // Both top bits clear: short V-bar cache miss
     // Per MS-RDPEGFX 2.2.4.1.1.2.1.1.3 (SHORT_VBAR_CACHE_MISS):
-    //   bits 13:6 = shortVBarYOn (8 bits): row where Short V-Bar begins
-    //   bits 5:0  = shortVBarYOff (6 bits): row where Short V-Bar ends
+    //   bits 7:0  = shortVBarYOn (8 bits): row where Short V-Bar begins
+    //   bits 13:8 = shortVBarYOff (6 bits): row where Short V-Bar ends
     // Pixel count = shortVBarYOff - shortVBarYOn
-    let y_on = u8::try_from(first_word >> 6).expect("top 2 bits are clear, so shifted value fits in u8");
-    let y_off = u8::try_from(first_word & 0x3F).expect("masked to 6 bits, always fits in u8");
+    let y_on = u8::try_from(first_word & 0xFF).expect("masked to 8 bits, always fits in u8");
+    let y_off = u8::try_from(first_word >> 8).expect("top 2 bits are clear, so shifted value fits in u8");
 
     if y_off < y_on {
         return Err(invalid_field_err!("shortVBarCacheMiss", "shortVBarYOff < shortVBarYOn"));
@@ -210,10 +210,10 @@ mod tests {
 
     #[test]
     fn decode_vbar_short_cache_miss() {
-        // Both top bits clear: y_on=2, y_off=5, pixel_count = y_off - y_on = 3
+        // Both top bits clear: y_on=2 in bits 7:0 and y_off=5 in bits 13:8.
         let y_on: u16 = 2;
         let y_off: u16 = 5;
-        let first_word = (y_on << 6) | y_off;
+        let first_word = (y_off << 8) | y_on;
         let mut data = Vec::new();
         data.extend_from_slice(&first_word.to_le_bytes());
         // 3 pixels * 3 bytes = 9 bytes BGR data
