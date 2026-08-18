@@ -20,10 +20,12 @@
 //! - [`rgba_to_ycbcr`]: ITU-R BT.601 color space conversion
 //!
 //! ## State management
-//! - [`TileState`]: per-tile coefficient and DAS sign storage (~37 KB per tile)
+//! - [`TileState`]: per-codec-context tile coefficient and DAS sign storage
+//!   (~37 KB per tile)
 //! - [`SurfaceTiles`]: lazily-allocated tile grid for a surface
-//! - [`ProgressiveDecoder`]: high-level decoder maintaining per-context state,
-//!   wired into the EGFX `WireToSurface2Pdu` path
+//! - [`ProgressiveDecoder`]: high-level decoder maintaining per-context
+//!   progressive state and surface-scoped sub-band references, wired into the
+//!   EGFX `WireToSurface2Pdu` path
 //!
 //! # Progressive quantization
 //!
@@ -46,6 +48,9 @@ use crate::srl::{self, SrlError};
 
 /// Number of DWT coefficients per component in a 64x64 tile.
 pub const COEFFICIENTS_PER_COMPONENT: usize = 4096;
+
+type DecDwtQ = [[i16; COEFFICIENTS_PER_COMPONENT]; 3];
+type SubBandDiffingTileKey = (u16, u16, u16);
 
 /// Number of subbands in a 3-level DWT decomposition.
 pub const NUM_BANDS: usize = 10;
@@ -788,7 +793,7 @@ impl<'a> RawBitReader<'a> {
 /// Memory per tile: ~37 KB (24 KB coefficients + 12 KB signs + metadata).
 pub struct TileState {
     /// Accumulated base-quantized DWT coefficients (`DecDwtQ`) per component (Y, Cb, Cr).
-    pub coefficients: [[i16; COEFFICIENTS_PER_COMPONENT]; 3],
+    pub coefficients: DecDwtQ,
     /// Tri-state sign tracking per component (DAS array).
     pub sign: [[i8; COEFFICIENTS_PER_COMPONENT]; 3],
     /// Progressive quantization BitPos from the last applied pass.
@@ -811,7 +816,6 @@ struct FirstPassOptions {
     quant_idx: [u8; 3],
     quality: u8,
     use_reduce_extrapolate: bool,
-    is_difference: bool,
 }
 
 impl TileState {
@@ -868,52 +872,54 @@ impl TileState {
             component_data,
             base_quants,
             prog_quants,
+            None,
             FirstPassOptions {
                 quant_idx,
                 quality,
                 use_reduce_extrapolate,
-                is_difference: false,
             },
         )
     }
 
-    /// Decode a first pass, retaining the previous DWT coefficients for a
-    /// difference tile.
+    /// Decode a first pass and add difference-tile deltas to a retained DWT
+    /// reference.
     fn decode_first_with_difference(
         &mut self,
         component_data: [&[u8]; 3],
         base_quants: [&ComponentCodecQuant; 3],
         prog_quants: [ComponentCodecQuant; 3],
+        reference: Option<&DecDwtQ>,
         options: FirstPassOptions,
     ) -> Result<(), RlgrError> {
-        let reference = options.is_difference.then_some(self.coefficients);
-        self.coefficients = [[0; COEFFICIENTS_PER_COMPONENT]; 3];
-        self.sign = [[SIGN_ZERO; COEFFICIENTS_PER_COMPONENT]; 3];
+        let mut coefficients = [[0; COEFFICIENTS_PER_COMPONENT]; 3];
+        let mut sign = [[SIGN_ZERO; COEFFICIENTS_PER_COMPONENT]; 3];
 
         for c in 0..3 {
             decode_first_pass_to_dwtq(
                 component_data[c],
                 &prog_quants[c],
                 options.use_reduce_extrapolate,
-                &mut self.coefficients[c],
-                &mut self.sign[c],
+                &mut coefficients[c],
+                &mut sign[c],
             )?;
         }
 
         if let Some(reference) = reference {
-            for (component, reference_component) in self.coefficients.iter_mut().zip(reference) {
-                for (coefficient, reference_coefficient) in component.iter_mut().zip(reference_component) {
-                    *coefficient = coefficient.saturating_add(reference_coefficient);
+            for (component, reference_component) in coefficients.iter_mut().zip(reference.iter()) {
+                for (coefficient, reference_coefficient) in component.iter_mut().zip(reference_component.iter()) {
+                    *coefficient = coefficient.saturating_add(*reference_coefficient);
                 }
             }
         }
 
+        self.coefficients = coefficients;
+        self.sign = sign;
         self.pass = 1;
         self.quality = options.quality;
         self.quant_idx = options.quant_idx;
         self.base_quant = [*base_quants[0], *base_quants[1], *base_quants[2]];
         self.use_reduce_extrapolate = options.use_reduce_extrapolate;
-        self.is_difference = options.is_difference;
+        self.is_difference = reference.is_some();
         self.prog_quant = prog_quants;
 
         Ok(())
@@ -1094,12 +1100,6 @@ impl SurfaceTiles {
         self.tiles[idx].as_deref()
     }
 
-    /// Get an existing tile at the given grid position.
-    fn get_mut(&mut self, x_idx: u16, y_idx: u16) -> Option<&mut TileState> {
-        let idx = self.tile_index(x_idx, y_idx)?;
-        self.tiles[idx].as_deref_mut()
-    }
-
     /// Reset all tiles (e.g., on context reset or surface resize).
     pub fn reset(&mut self) {
         for tile in &mut self.tiles {
@@ -1154,7 +1154,7 @@ pub enum ProgressiveDecodeError {
     TileOutOfBounds { x_idx: u16, y_idx: u16 },
     /// Region references a quant index beyond the table.
     InvalidQuantIndex { index: usize, table_len: usize },
-    /// A difference tile has no retained coefficients for its tile and context.
+    /// A difference tile has no previously decoded state to use as its reference.
     MissingTileReference { x_idx: u16, y_idx: u16 },
     /// Surface dimensions exceed [`MAX_SURFACE_DIM`] per axis.
     SurfaceTooLarge { width: u16, height: u16 },
@@ -1212,10 +1212,10 @@ struct ProgressiveContext {
 
 /// High-level progressive bitmap decoder for EGFX WireToSurface2 processing.
 ///
-/// Maintains per-context tile state across frames, keyed by
-/// `(surface_id, codec_context_id)`.
+/// Maintains per-context progressive state and surface-scoped sub-band
+/// references across frames.
 /// MS-RDPEGFX section 3.3.1.1 associates each codec context with a surface, so
-/// two surfaces can reuse a codec context ID without sharing tile state.
+/// two surfaces can reuse a codec context ID without sharing progressive state.
 /// Feed it progressive bitmap data from `WireToSurface2Pdu.bitmap_data` and get
 /// back decoded RGBA tiles for compositing.
 ///
@@ -1238,6 +1238,7 @@ struct ProgressiveContext {
 /// ```
 pub struct ProgressiveDecoder {
     contexts: BTreeMap<(u16, u32), ProgressiveContext>,
+    references: BTreeMap<SubBandDiffingTileKey, DecDwtQ>,
 }
 
 impl ProgressiveDecoder {
@@ -1245,6 +1246,7 @@ impl ProgressiveDecoder {
     pub fn new() -> Self {
         Self {
             contexts: BTreeMap::new(),
+            references: BTreeMap::new(),
         }
     }
 
@@ -1297,8 +1299,10 @@ impl ProgressiveDecoder {
                 .ok_or(ProgressiveDecodeError::MissingBlock("CONTEXT"))?,
         };
 
+        let (contexts, references) = (&mut self.contexts, &mut self.references);
+
         // Get or create the context for this (surface_id, codec_context_id).
-        let context = match self.contexts.entry((surface_id, codec_context_id)) {
+        let context = match contexts.entry((surface_id, codec_context_id)) {
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(e) => {
                 let surface = SurfaceTiles::new(surface_width, surface_height, use_reduce_extrapolate)?;
@@ -1311,6 +1315,8 @@ impl ProgressiveDecoder {
         let expected_high = surface_height.div_ceil(64);
         if context.surface.tiles_wide != expected_wide || context.surface.tiles_high != expected_high {
             context.surface = SurfaceTiles::new(surface_width, surface_height, use_reduce_extrapolate)?;
+            // Replacing a surface tile grid invalidates its sub-band references.
+            references.retain(|(reference_surface_id, _, _), _| *reference_surface_id != surface_id);
         }
         context.surface.use_reduce_extrapolate = use_reduce_extrapolate;
 
@@ -1328,7 +1334,9 @@ impl ProgressiveDecoder {
 
             for tile_block in &region.tiles {
                 let tiles = decode_tile_block(
+                    surface_id,
                     &mut context.surface,
+                    references,
                     tile_block,
                     quant_vals,
                     prog_quant_vals,
@@ -1341,7 +1349,7 @@ impl ProgressiveDecoder {
         Ok(decoded_tiles)
     }
 
-    /// Delete a codec context, freeing its tile state.
+    /// Delete a codec context, freeing its progressive tile state.
     ///
     /// Called when the server sends RDPGFX_DELETE_ENCODING_CONTEXT, which
     /// identifies both the surface and codec context.
@@ -1356,11 +1364,14 @@ impl ProgressiveDecoder {
     pub fn delete_surface(&mut self, surface_id: u16) {
         self.contexts
             .retain(|(context_surface_id, _), _| *context_surface_id != surface_id);
+        self.references
+            .retain(|(reference_surface_id, _, _), _| *reference_surface_id != surface_id);
     }
 
     /// Reset all contexts (e.g., on EGFX channel reset).
     pub fn reset(&mut self) {
         self.contexts.clear();
+        self.references.clear();
     }
 }
 
@@ -1369,7 +1380,9 @@ impl ProgressiveDecoder {
     reason = "q_y/q_cb/q_cr are standard component quant index names"
 )]
 fn decode_tile_block(
+    surface_id: u16,
     surface: &mut SurfaceTiles,
+    references: &mut BTreeMap<SubBandDiffingTileKey, DecDwtQ>,
     tile_block: &ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile<'_>,
     quant_vals: &[ComponentCodecQuant],
     prog_quant_vals: &[ironrdp_pdu::codecs::rfx::progressive::ProgressiveCodecQuant],
@@ -1386,16 +1399,19 @@ fn decode_tile_block(
             if surface.tile_index(x_idx, y_idx).is_none() {
                 return Err(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx });
             }
-            let tile_state = if is_difference {
-                surface
-                    .get_mut(x_idx, y_idx)
-                    .filter(|tile_state| tile_state.pass != 0)
-                    .ok_or(ProgressiveDecodeError::MissingTileReference { x_idx, y_idx })?
+            let reference_key = (surface_id, x_idx, y_idx);
+            let reference = if is_difference {
+                Some(
+                    references
+                        .get(&reference_key)
+                        .ok_or(ProgressiveDecodeError::MissingTileReference { x_idx, y_idx })?,
+                )
             } else {
-                surface
-                    .get_or_create(x_idx, y_idx)
-                    .ok_or(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx })?
+                None
             };
+            let tile_state = surface
+                .get_or_create(x_idx, y_idx)
+                .ok_or(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx })?;
 
             let q_y = usize::from(tile.quant_idx_y);
             let q_cb = usize::from(tile.quant_idx_cb);
@@ -1415,13 +1431,14 @@ fn decode_tile_block(
                 [tile.y_data, tile.cb_data, tile.cr_data],
                 [&quant_vals[q_y], &quant_vals[q_cb], &quant_vals[q_cr]],
                 [prog, prog, prog],
+                reference,
                 FirstPassOptions {
                     quant_idx: [tile.quant_idx_y, tile.quant_idx_cb, tile.quant_idx_cr],
                     quality: 0xFF, // full quality
                     use_reduce_extrapolate,
-                    is_difference,
                 },
             )?;
+            references.insert(reference_key, tile_state.coefficients);
 
             let mut pixels = vec![0u8; 64 * 64 * 4];
             tile_state.reconstruct_to_rgba(&mut pixels);
@@ -1437,16 +1454,19 @@ fn decode_tile_block(
             if surface.tile_index(x_idx, y_idx).is_none() {
                 return Err(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx });
             }
-            let tile_state = if is_difference {
-                surface
-                    .get_mut(x_idx, y_idx)
-                    .filter(|tile_state| tile_state.pass != 0)
-                    .ok_or(ProgressiveDecodeError::MissingTileReference { x_idx, y_idx })?
+            let reference_key = (surface_id, x_idx, y_idx);
+            let reference = if is_difference {
+                Some(
+                    references
+                        .get(&reference_key)
+                        .ok_or(ProgressiveDecodeError::MissingTileReference { x_idx, y_idx })?,
+                )
             } else {
-                surface
-                    .get_or_create(x_idx, y_idx)
-                    .ok_or(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx })?
+                None
             };
+            let tile_state = surface
+                .get_or_create(x_idx, y_idx)
+                .ok_or(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx })?;
 
             let q_y = usize::from(tile.quant_idx_y);
             let q_cb = usize::from(tile.quant_idx_cb);
@@ -1472,13 +1492,14 @@ fn decode_tile_block(
                 [tile.y_data, tile.cb_data, tile.cr_data],
                 [&quant_vals[q_y], &quant_vals[q_cb], &quant_vals[q_cr]],
                 [pq.y_quant, pq.cb_quant, pq.cr_quant],
+                reference,
                 FirstPassOptions {
                     quant_idx: [tile.quant_idx_y, tile.quant_idx_cb, tile.quant_idx_cr],
                     quality: tile.quality,
                     use_reduce_extrapolate,
-                    is_difference,
                 },
             )?;
+            references.insert(reference_key, tile_state.coefficients);
 
             let mut pixels = vec![0u8; 64 * 64 * 4];
             tile_state.reconstruct_to_rgba(&mut pixels);
@@ -1514,6 +1535,7 @@ fn decode_tile_block(
                 [pq.y_quant, pq.cb_quant, pq.cr_quant],
                 tile.quality,
             )?;
+            references.insert((surface_id, x_idx, y_idx), tile_state.coefficients);
 
             let mut pixels = vec![0u8; 64 * 64 * 4];
             tile_state.reconstruct_to_rgba(&mut pixels);
@@ -1967,12 +1989,14 @@ mod tests {
     fn decoder_reset_clears_contexts() {
         let mut decoder = ProgressiveDecoder::new();
 
-        let result = decoder.decode_bitmap(1, 1, 640, 480, &minimal_progressive_stream(true));
+        let result = decoder.decode_bitmap(1, 1, 64, 64, &simple_tile_stream(0, [64, -16, 24], true));
         assert!(result.is_ok());
         assert_eq!(decoder.contexts.len(), 1);
+        assert_eq!(decoder.references.len(), 1);
 
         decoder.reset();
         assert!(decoder.contexts.is_empty());
+        assert!(decoder.references.is_empty());
     }
 
     #[test]
@@ -2882,10 +2906,26 @@ mod tests {
         encode_progressive_stream(&blocks).expect("synthetic progressive stream should encode")
     }
 
+    fn decode_full_quality_components(components: [i16; 3]) -> DecDwtQ {
+        let component_data = components.map(encode_full_quality_component);
+        let mut state = TileState::new();
+        state
+            .decode_first(
+                [&component_data[0], &component_data[1], &component_data[2]],
+                [&ComponentCodecQuant::LOSSLESS; 3],
+                [ComponentCodecQuant::LOSSLESS; 3],
+                [0; 3],
+                0xFF,
+                false,
+            )
+            .expect("full-quality components should decode");
+        state.coefficients
+    }
+
     #[test]
-    fn difference_tile_adds_to_its_retained_context_reference() {
+    fn difference_tile_adds_to_its_retained_surface_reference() {
         let original_components = [64, -16, 24];
-        let other_context_components = [-48, 8, 40];
+        let other_surface_components = [-48, 8, 40];
         let difference_components = [7, -3, 5];
         let mut decoder = ProgressiveDecoder::new();
 
@@ -2903,27 +2943,16 @@ mod tests {
             .coefficients;
 
         decoder
-            .decode_bitmap(1, 8, 64, 64, &simple_tile_stream(0, other_context_components, true))
-            .expect("other context tile should decode");
+            .decode_bitmap(2, 8, 64, 64, &simple_tile_stream(0, other_surface_components, true))
+            .expect("other surface tile should decode");
         let other_reference = decoder
             .contexts
-            .get(&(1, 8))
+            .get(&(2, 8))
             .and_then(|context| context.surface.get(0, 0))
-            .expect("other context tile state should be retained")
+            .expect("other surface tile state should be retained")
             .coefficients;
 
-        let difference_data = difference_components.map(encode_full_quality_component);
-        let mut expected_delta = TileState::new();
-        expected_delta
-            .decode_first(
-                [&difference_data[0], &difference_data[1], &difference_data[2]],
-                [&ComponentCodecQuant::LOSSLESS; 3],
-                [ComponentCodecQuant::LOSSLESS; 3],
-                [0; 3],
-                0xFF,
-                false,
-            )
-            .expect("difference payload should decode as a full tile");
+        let expected_delta = decode_full_quality_components(difference_components);
 
         let difference_pixels = decoder
             .decode_bitmap(
@@ -2949,7 +2978,7 @@ mod tests {
             .coefficients
             .iter()
             .zip(reference.iter())
-            .zip(expected_delta.coefficients.iter())
+            .zip(expected_delta.iter())
         {
             for ((updated, retained), delta) in updated_component
                 .iter()
@@ -2963,12 +2992,100 @@ mod tests {
         assert_eq!(
             decoder
                 .contexts
-                .get(&(1, 8))
+                .get(&(2, 8))
                 .and_then(|context| context.surface.get(0, 0))
-                .expect("other context tile state should remain retained")
+                .expect("other surface tile state should remain retained")
                 .coefficients,
             other_reference
         );
+    }
+
+    #[test]
+    fn difference_tile_reference_survives_codec_context_deletion() {
+        let original_components = [64, -16, 24];
+        let difference_components = [7, -3, 5];
+        let mut decoder = ProgressiveDecoder::new();
+
+        decoder
+            .decode_bitmap(1, 7, 64, 64, &simple_tile_stream(0, original_components, true))
+            .expect("original tile should decode");
+        let reference = *decoder
+            .references
+            .get(&(1, 0, 0))
+            .expect("original tile reference should be retained");
+
+        decoder.delete_context(1, 7);
+        assert!(decoder.references.contains_key(&(1, 0, 0)));
+
+        decoder
+            .decode_bitmap(
+                1,
+                8,
+                64,
+                64,
+                &simple_tile_stream(TILE_FLAG_DIFFERENCE, difference_components, true),
+            )
+            .expect("difference tile should decode with the surface reference");
+        let expected_delta = decode_full_quality_components(difference_components);
+        let updated = decoder
+            .contexts
+            .get(&(1, 8))
+            .and_then(|context| context.surface.get(0, 0))
+            .expect("difference tile state should be retained")
+            .coefficients;
+
+        for ((updated_component, reference_component), delta_component) in
+            updated.iter().zip(reference.iter()).zip(expected_delta.iter())
+        {
+            for ((updated, retained), delta) in updated_component
+                .iter()
+                .zip(reference_component.iter())
+                .zip(delta_component.iter())
+            {
+                assert_eq!(*updated, retained.saturating_add(*delta));
+            }
+        }
+
+        assert_eq!(decoder.references.get(&(1, 0, 0)), Some(&updated));
+
+        decoder.delete_surface(1);
+        assert!(!decoder.references.contains_key(&(1, 0, 0)));
+        assert!(matches!(
+            decoder.decode_bitmap(
+                1,
+                9,
+                64,
+                64,
+                &simple_tile_stream(TILE_FLAG_DIFFERENCE, difference_components, true),
+            ),
+            Err(ProgressiveDecodeError::MissingTileReference { x_idx: 0, y_idx: 0 })
+        ));
+    }
+
+    #[test]
+    fn resizing_a_surface_clears_sub_band_references() {
+        let mut decoder = ProgressiveDecoder::new();
+
+        decoder
+            .decode_bitmap(1, 7, 64, 64, &simple_tile_stream(0, [64, -16, 24], true))
+            .expect("original tile should decode");
+        assert!(decoder.references.contains_key(&(1, 0, 0)));
+
+        decoder
+            .decode_bitmap(1, 7, 128, 64, &minimal_progressive_stream(true))
+            .expect("resized surface should decode");
+        assert!(!decoder.references.contains_key(&(1, 0, 0)));
+
+        assert!(matches!(
+            decoder.decode_bitmap(
+                1,
+                7,
+                128,
+                64,
+                &simple_tile_stream(TILE_FLAG_DIFFERENCE, [7, -3, 5], false),
+            ),
+            Err(ProgressiveDecodeError::MissingTileReference { x_idx: 0, y_idx: 0 })
+        ));
     }
 
     #[test]
@@ -2985,5 +3102,102 @@ mod tests {
             ),
             Err(ProgressiveDecodeError::MissingTileReference { x_idx: 0, y_idx: 0 })
         ));
+    }
+
+    #[test]
+    fn failed_difference_tile_keeps_retained_state() {
+        let original_data = [64, -16, 24].map(encode_full_quality_component);
+        let difference_data = [7, -3, 5].map(encode_full_quality_component);
+        let mut state = TileState::new();
+        let base_quants = [&ComponentCodecQuant::LOSSLESS; 3];
+        let prog_quants = [ComponentCodecQuant::LOSSLESS; 3];
+
+        state
+            .decode_first(
+                [&original_data[0], &original_data[1], &original_data[2]],
+                base_quants,
+                prog_quants,
+                [0; 3],
+                0xFF,
+                false,
+            )
+            .expect("original tile should decode");
+
+        let coefficients = state.coefficients;
+        let sign = state.sign;
+        let prog_quant = state.prog_quant;
+        let quant_idx = state.quant_idx;
+        let base_quant = state.base_quant;
+        let pass = state.pass;
+        let is_difference = state.is_difference;
+        let quality = state.quality;
+        let use_reduce_extrapolate = state.use_reduce_extrapolate;
+
+        assert!(
+            state
+                .decode_first_with_difference(
+                    [&difference_data[0], &difference_data[1], &[]],
+                    base_quants,
+                    prog_quants,
+                    Some(&coefficients),
+                    FirstPassOptions {
+                        quant_idx: [0; 3],
+                        quality: 0xFF,
+                        use_reduce_extrapolate: false,
+                    },
+                )
+                .is_err(),
+            "invalid difference payload should fail"
+        );
+
+        assert_eq!(state.coefficients, coefficients);
+        assert_eq!(state.sign, sign);
+        assert_eq!(state.prog_quant, prog_quant);
+        assert_eq!(state.quant_idx, quant_idx);
+        assert_eq!(state.base_quant, base_quant);
+        assert_eq!(state.pass, pass);
+        assert_eq!(state.is_difference, is_difference);
+        assert_eq!(state.quality, quality);
+        assert_eq!(state.use_reduce_extrapolate, use_reduce_extrapolate);
+
+        let mut delta = TileState::new();
+        delta
+            .decode_first(
+                [&difference_data[0], &difference_data[1], &difference_data[2]],
+                base_quants,
+                prog_quants,
+                [0; 3],
+                0xFF,
+                false,
+            )
+            .expect("valid difference payload should decode");
+        state
+            .decode_first_with_difference(
+                [&difference_data[0], &difference_data[1], &difference_data[2]],
+                base_quants,
+                prog_quants,
+                Some(&coefficients),
+                FirstPassOptions {
+                    quant_idx: [0; 3],
+                    quality: 0xFF,
+                    use_reduce_extrapolate: false,
+                },
+            )
+            .expect("difference tile after failed decode should use retained state");
+
+        for ((updated_component, retained_component), delta_component) in state
+            .coefficients
+            .iter()
+            .zip(coefficients.iter())
+            .zip(delta.coefficients.iter())
+        {
+            for ((updated, retained), delta) in updated_component
+                .iter()
+                .zip(retained_component.iter())
+                .zip(delta_component.iter())
+            {
+                assert_eq!(*updated, retained.saturating_add(*delta));
+            }
+        }
     }
 }
