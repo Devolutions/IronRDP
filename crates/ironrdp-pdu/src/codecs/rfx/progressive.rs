@@ -446,6 +446,16 @@ impl Decode<'_> for ProgressiveContextPdu {
 // Tile blocks
 // ---------------------------------------------------------------------------
 
+/// Bit 0 of the tile flags: RFX_TILE_DIFFERENCE.
+///
+/// Indicates that the tile contains the compressed difference of the DWT
+/// coefficients for the same tile between the current frame and the previous
+/// frame, rather than absolute coefficients. Carried by TILE_SIMPLE and
+/// TILE_FIRST blocks; see MS-RDPEGFX sections 2.2.4.2.1.5.3 and 2.2.4.2.1.5.4.
+///
+/// The seven high bits of the flags field are reserved and ignored.
+pub const FLAG_TILE_DIFFERENCE: u8 = 0x01;
+
 /// TILE_SIMPLE: non-progressive full-quality tile (single pass).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -466,6 +476,11 @@ impl TileSimple<'_> {
     const NAME: &'static str = "TileSimple";
     /// Fixed header: 3 quant idx + 2 x_idx + 2 y_idx + 1 flags + 4x2 lengths = 16 bytes.
     const HEADER_SIZE: usize = 3 + 2 + 2 + 1 + 8;
+
+    /// Whether this tile carries coefficient differences instead of absolute values.
+    pub fn is_difference(&self) -> bool {
+        self.flags & FLAG_TILE_DIFFERENCE != 0
+    }
 }
 
 impl Encode for TileSimple<'_> {
@@ -555,6 +570,11 @@ impl TileFirst<'_> {
     const NAME: &'static str = "TileFirst";
     /// Same as TileSimple + 1 byte for quality = 17 bytes.
     const HEADER_SIZE: usize = 3 + 2 + 2 + 1 + 1 + 8;
+
+    /// Whether this tile carries coefficient differences instead of absolute values.
+    pub fn is_difference(&self) -> bool {
+        self.flags & FLAG_TILE_DIFFERENCE != 0
+    }
 }
 
 impl Encode for TileFirst<'_> {
@@ -1184,6 +1204,64 @@ mod tests {
         assert_eq!(decoded.y_data, y_data);
         assert_eq!(decoded.cb_data, cb_data);
         assert_eq!(decoded.cr_data, cr_data);
+    }
+
+    #[test]
+    fn tile_difference_flag_survives_round_trip() {
+        let original = TileSimple {
+            quant_idx_y: 0,
+            quant_idx_cb: 0,
+            quant_idx_cr: 0,
+            x_idx: 1,
+            y_idx: 2,
+            flags: FLAG_TILE_DIFFERENCE,
+            y_data: &[1, 2, 3],
+            cb_data: &[4],
+            cr_data: &[5],
+            tail_data: &[],
+        };
+        let mut buf = vec![0u8; original.size()];
+        original.encode(&mut WriteCursor::new(&mut buf)).unwrap();
+        let decoded = TileSimple::decode(&mut ReadCursor::new(&buf)).unwrap();
+        assert_eq!(decoded.flags, FLAG_TILE_DIFFERENCE);
+        assert!(decoded.is_difference());
+
+        // The seven high bits are reserved and MUST be ignored by the decoder.
+        let mut reserved_bits_set = original.clone();
+        reserved_bits_set.flags = 0xFE;
+        let mut buf = vec![0u8; reserved_bits_set.size()];
+        reserved_bits_set.encode(&mut WriteCursor::new(&mut buf)).unwrap();
+        let decoded = TileSimple::decode(&mut ReadCursor::new(&buf)).unwrap();
+        assert!(!decoded.is_difference());
+    }
+
+    #[test]
+    fn tile_first_difference_flag_survives_round_trip() {
+        let original = TileFirst {
+            quant_idx_y: 0,
+            quant_idx_cb: 0,
+            quant_idx_cr: 0,
+            x_idx: 1,
+            y_idx: 2,
+            flags: FLAG_TILE_DIFFERENCE,
+            quality: 5,
+            y_data: &[1, 2, 3],
+            cb_data: &[4],
+            cr_data: &[5],
+            tail_data: &[],
+        };
+        let mut buf = vec![0u8; original.size()];
+        original.encode(&mut WriteCursor::new(&mut buf)).unwrap();
+        let decoded = TileFirst::decode(&mut ReadCursor::new(&buf)).unwrap();
+        assert_eq!(decoded.flags, FLAG_TILE_DIFFERENCE);
+        assert!(decoded.is_difference());
+
+        let mut absolute = original.clone();
+        absolute.flags = 0;
+        let mut buf = vec![0u8; absolute.size()];
+        absolute.encode(&mut WriteCursor::new(&mut buf)).unwrap();
+        let decoded = TileFirst::decode(&mut ReadCursor::new(&buf)).unwrap();
+        assert!(!decoded.is_difference());
     }
 
     #[test]

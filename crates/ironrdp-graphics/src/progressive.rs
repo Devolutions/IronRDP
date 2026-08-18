@@ -20,7 +20,10 @@
 //! - [`rgba_to_ycbcr`]: ITU-R BT.601 color space conversion
 //!
 //! ## State management
-//! - [`TileState`]: per-tile coefficient and DAS sign storage (~37 KB per tile)
+//! - [`TileState`]: per-tile coefficient and DAS sign storage (~37 KB per tile).
+//!   A first-pass tile whose `RFX_TILE_DIFFERENCE` flag is set carries deltas
+//!   against that storage rather than absolute coefficients, and is decoded
+//!   with [`TileState::decode_first_difference`]
 //! - [`SurfaceTiles`]: lazily-allocated tile grid for a surface
 //! - [`ProgressiveDecoder`]: high-level decoder maintaining per-context state,
 //!   wired into the EGFX `WireToSurface2Pdu` path
@@ -68,6 +71,11 @@ pub const SIGN_NEGATIVE: i8 = -1;
 ///
 /// Performs: RLGR1 decode -> LL3 delta decode -> progressive dequantization
 /// -> sign capture -> base dequantization.
+///
+/// This decodes an original tile, whose coefficients are absolute. A difference
+/// tile must accumulate before base dequantization, so it goes through
+/// [`TileState::decode_first_difference`], which keeps the retained
+/// coefficients in the `DecDwtQ` domain.
 ///
 /// # Arguments
 /// - `data`: RLGR1-encoded coefficient stream
@@ -799,7 +807,8 @@ pub struct TileState {
     pub base_quant: [ComponentCodecQuant; 3],
     /// Progressive pass counter (0 = no data, 1 = first pass complete, 2+ = upgrade).
     pub pass: u16,
-    /// Whether the tile was encoded as a difference tile.
+    /// Whether the most recent first-pass tile carried coefficient differences
+    /// (`RFX_TILE_DIFFERENCE`) rather than absolute values.
     pub is_difference: bool,
     /// Last progressive quality byte (0xFF = full quality).
     pub quality: u8,
@@ -834,11 +843,14 @@ impl TileState {
         }
     }
 
-    /// Decode a first-pass tile (TILE_SIMPLE or TILE_FIRST).
+    /// Decode a first-pass tile (TILE_SIMPLE or TILE_FIRST) carrying absolute
+    /// coefficients, that is one whose `RFX_TILE_DIFFERENCE` flag is clear.
     ///
     /// Resets this tile's state and decodes three components from RLGR1 data.
     /// After this call, `coefficients` hold base-quantized DWT values for
     /// progressive upgrades. Base dequantization occurs during reconstruction.
+    ///
+    /// Use [`TileState::decode_first_difference`] when the flag is set.
     ///
     /// # Arguments
     /// - `component_data`: RLGR1-encoded data for [Y, Cb, Cr]
@@ -858,13 +870,14 @@ impl TileState {
         quality: u8,
         use_reduce_extrapolate: bool,
     ) -> Result<(), RlgrError> {
-        self.pass = 1;
-        self.quality = quality;
-        self.quant_idx = quant_idx;
-        self.base_quant = [*base_quants[0], *base_quants[1], *base_quants[2]];
-        self.use_reduce_extrapolate = use_reduce_extrapolate;
-        self.is_difference = false;
-        self.prog_quant = prog_quants;
+        self.begin_first_pass(
+            base_quants,
+            prog_quants,
+            quant_idx,
+            quality,
+            use_reduce_extrapolate,
+            false,
+        );
 
         for c in 0..3 {
             decode_first_pass_to_dwtq(
@@ -877,6 +890,90 @@ impl TileState {
         }
 
         Ok(())
+    }
+
+    /// Decode a first-pass tile (TILE_SIMPLE or TILE_FIRST) whose
+    /// `RFX_TILE_DIFFERENCE` flag is set.
+    ///
+    /// Such a tile carries the difference of the DWT coefficients for the same
+    /// tile between the current and the previous frame, so the decoded values
+    /// are added to the retained ones rather than replacing them:
+    /// `DecDwtQ = DecDwtQ + DecProgQ * PQF`. See MS-RDPEGFX sections
+    /// 2.2.4.2.1.5.3, 2.2.4.2.1.5.4 and 3.3.8.2.1.1.
+    ///
+    /// Takes the same arguments as [`TileState::decode_first`], and leaves the
+    /// tile in the same shape: the accumulated coefficients stay base-quantized
+    /// and are dequantized during reconstruction, and further upgrade passes
+    /// refine them exactly as they refine an absolute tile.
+    ///
+    /// The DAS sign state describes the incoming differences rather than the
+    /// accumulated result, because it is what the upgrade passes refining this
+    /// very transmission are encoded against.
+    ///
+    /// A tile that has not been decoded yet holds zeroed coefficients, so a
+    /// difference tile arriving as the first tile of a surface reconstructs to
+    /// the same values as an absolute one.
+    ///
+    /// # Errors
+    /// Returns `RlgrError` if any component's RLGR decode fails. Components
+    /// decoded before the failure keep their accumulated values; the failing
+    /// component keeps the values it had.
+    pub fn decode_first_difference(
+        &mut self,
+        component_data: [&[u8]; 3],
+        base_quants: [&ComponentCodecQuant; 3],
+        prog_quants: [ComponentCodecQuant; 3],
+        quant_idx: [u8; 3],
+        quality: u8,
+        use_reduce_extrapolate: bool,
+    ) -> Result<(), RlgrError> {
+        self.begin_first_pass(
+            base_quants,
+            prog_quants,
+            quant_idx,
+            quality,
+            use_reduce_extrapolate,
+            true,
+        );
+
+        for c in 0..3 {
+            // Decoding into a scratch buffer keeps the retained coefficients
+            // intact when the RLGR stream turns out to be malformed.
+            let mut difference = [0i16; COEFFICIENTS_PER_COMPONENT];
+
+            decode_first_pass_to_dwtq(
+                component_data[c],
+                &prog_quants[c],
+                use_reduce_extrapolate,
+                &mut difference,
+                &mut self.sign[c],
+            )?;
+
+            for (coefficient, difference) in self.coefficients[c].iter_mut().zip(difference) {
+                *coefficient = clamp_i16(i32::from(*coefficient) + i32::from(difference));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Record the quantization and quality state a first-pass tile establishes.
+    fn begin_first_pass(
+        &mut self,
+        base_quants: [&ComponentCodecQuant; 3],
+        prog_quants: [ComponentCodecQuant; 3],
+        quant_idx: [u8; 3],
+        quality: u8,
+        use_reduce_extrapolate: bool,
+        is_difference: bool,
+    ) {
+        self.pass = 1;
+        self.quality = quality;
+        self.quant_idx = quant_idx;
+        self.base_quant = [*base_quants[0], *base_quants[1], *base_quants[2]];
+        self.use_reduce_extrapolate = use_reduce_extrapolate;
+        self.is_difference = is_difference;
+        self.prog_quant = prog_quants;
     }
 
     /// Decode an upgrade-pass tile (TILE_UPGRADE).
@@ -1349,14 +1446,30 @@ fn decode_tile_block(
             // TILE_SIMPLE uses lossless progressive quant (no progressive refinement)
             let prog = ComponentCodecQuant::LOSSLESS;
 
-            tile_state.decode_first(
-                [tile.y_data, tile.cb_data, tile.cr_data],
-                [&quant_vals[q_y], &quant_vals[q_cb], &quant_vals[q_cr]],
-                [prog, prog, prog],
-                [tile.quant_idx_y, tile.quant_idx_cb, tile.quant_idx_cr],
-                0xFF, // full quality
-                use_reduce_extrapolate,
-            )?;
+            let component_data = [tile.y_data, tile.cb_data, tile.cr_data];
+            let base_quants = [&quant_vals[q_y], &quant_vals[q_cb], &quant_vals[q_cr]];
+            let quant_idx = [tile.quant_idx_y, tile.quant_idx_cb, tile.quant_idx_cr];
+            let quality = 0xFF; // full quality
+
+            if tile.is_difference() {
+                tile_state.decode_first_difference(
+                    component_data,
+                    base_quants,
+                    [prog, prog, prog],
+                    quant_idx,
+                    quality,
+                    use_reduce_extrapolate,
+                )?;
+            } else {
+                tile_state.decode_first(
+                    component_data,
+                    base_quants,
+                    [prog, prog, prog],
+                    quant_idx,
+                    quality,
+                    use_reduce_extrapolate,
+                )?;
+            }
 
             let mut pixels = vec![0u8; 64 * 64 * 4];
             tile_state.reconstruct_to_rgba(&mut pixels);
@@ -1392,14 +1505,30 @@ fn decode_tile_block(
             }
             let pq = &prog_quant_vals[pq_idx];
 
-            tile_state.decode_first(
-                [tile.y_data, tile.cb_data, tile.cr_data],
-                [&quant_vals[q_y], &quant_vals[q_cb], &quant_vals[q_cr]],
-                [pq.y_quant, pq.cb_quant, pq.cr_quant],
-                [tile.quant_idx_y, tile.quant_idx_cb, tile.quant_idx_cr],
-                tile.quality,
-                use_reduce_extrapolate,
-            )?;
+            let component_data = [tile.y_data, tile.cb_data, tile.cr_data];
+            let base_quants = [&quant_vals[q_y], &quant_vals[q_cb], &quant_vals[q_cr]];
+            let prog_quants = [pq.y_quant, pq.cb_quant, pq.cr_quant];
+            let quant_idx = [tile.quant_idx_y, tile.quant_idx_cb, tile.quant_idx_cr];
+
+            if tile.is_difference() {
+                tile_state.decode_first_difference(
+                    component_data,
+                    base_quants,
+                    prog_quants,
+                    quant_idx,
+                    tile.quality,
+                    use_reduce_extrapolate,
+                )?;
+            } else {
+                tile_state.decode_first(
+                    component_data,
+                    base_quants,
+                    prog_quants,
+                    quant_idx,
+                    tile.quality,
+                    use_reduce_extrapolate,
+                )?;
+            }
 
             let mut pixels = vec![0u8; 64 * 64 * 4];
             tile_state.reconstruct_to_rgba(&mut pixels);
@@ -2124,6 +2253,403 @@ mod tests {
         // dequantization, so the factor-5 and BitPos-1 scales cancel exactly.
         assert_eq!(coefficients[0], 7);
         assert_eq!(coefficients[1], -7);
+    }
+
+    fn uniform_quant(value: u8) -> ComponentCodecQuant {
+        ComponentCodecQuant {
+            ll3: value,
+            hl3: value,
+            lh3: value,
+            hh3: value,
+            hl2: value,
+            lh2: value,
+            hh2: value,
+            hl1: value,
+            lh1: value,
+            hh1: value,
+        }
+    }
+
+    fn rlgr_encode_component(coefficients: &[i16; COEFFICIENTS_PER_COMPONENT]) -> Vec<u8> {
+        let mut encoded = vec![0u8; 16384];
+        let len = crate::rlgr::encode(EntropyAlgorithm::Rlgr1, coefficients, &mut encoded)
+            .expect("RLGR encoding should succeed");
+        encoded.truncate(len);
+        encoded
+    }
+
+    /// Build a stream carrying a single TILE_SIMPLE at (0, 0) with the given flags.
+    fn simple_tile_stream(quant: ComponentCodecQuant, component_data: &[u8], tile_flags: u8) -> Vec<u8> {
+        use ironrdp_pdu::codecs::rfx::RfxRectangle;
+        use ironrdp_pdu::codecs::rfx::progressive::{
+            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
+            ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileSimple, encode_progressive_stream,
+        };
+
+        let region = ProgressiveRegion {
+            tile_size: 0x40,
+            rects: vec![RfxRectangle {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            }],
+            quant_vals: vec![quant],
+            quant_prog_vals: vec![],
+            flags: 0,
+            tiles: vec![ProgressiveTile::Simple(TileSimple {
+                quant_idx_y: 0,
+                quant_idx_cb: 0,
+                quant_idx_cr: 0,
+                x_idx: 0,
+                y_idx: 0,
+                flags: tile_flags,
+                y_data: component_data,
+                cb_data: component_data,
+                cr_data: component_data,
+                tail_data: &[],
+            })],
+        };
+
+        let blocks = vec![
+            ProgressiveBlock::Sync(ProgressiveSyncPdu),
+            ProgressiveBlock::Context(ProgressiveContextPdu {
+                context_id: 0,
+                tile_size: 0x0040,
+                flags: 0,
+            }),
+            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+                frame_index: 0,
+                region_count: 1,
+            }),
+            ProgressiveBlock::Region(region),
+            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+        ];
+
+        encode_progressive_stream(&blocks).expect("progressive stream encoding should succeed")
+    }
+
+    #[test]
+    fn difference_tile_accumulates_into_retained_coefficients() {
+        // MS-RDPRFX 3.1.8.1.7.1: a tile with RFX_TILE_DIFFERENCE set carries
+        // deltas against the coefficients retained for the same tile position.
+        let base_quant = uniform_quant(6);
+        let prog_quant = ComponentCodecQuant::LOSSLESS;
+
+        let mut absolute = [0i16; COEFFICIENTS_PER_COMPONENT];
+        absolute[0] = 100; // HL1
+        absolute[1] = -40; // HL1
+        absolute[4032] = 25; // LL3, delta-coded across the whole subband
+
+        let mut difference = [0i16; COEFFICIENTS_PER_COMPONENT];
+        difference[0] = -30;
+        difference[1] = 15;
+        difference[4032] = 5;
+
+        let absolute_data = rlgr_encode_component(&absolute);
+        let difference_data = rlgr_encode_component(&difference);
+
+        let mut tile = TileState::new();
+        tile.decode_first(
+            [&absolute_data; 3],
+            [&base_quant; 3],
+            [prog_quant; 3],
+            [0; 3],
+            0xFF,
+            false,
+        )
+        .expect("absolute first-pass decoding should succeed");
+
+        assert!(!tile.is_difference);
+        let retained = tile.coefficients;
+        assert_eq!(retained[0][0], 100);
+        assert_eq!(retained[0][1], -40);
+        assert_eq!(retained[0][4032], 25);
+        assert_eq!(retained[0][4095], 25);
+
+        tile.decode_first_difference(
+            [&difference_data; 3],
+            [&base_quant; 3],
+            [prog_quant; 3],
+            [0; 3],
+            0xFF,
+            false,
+        )
+        .expect("difference first-pass decoding should succeed");
+
+        assert!(tile.is_difference);
+        assert_eq!(tile.pass, 1);
+        assert_eq!(tile.coefficients[0][0], 70);
+        assert_eq!(tile.coefficients[0][1], -25);
+        assert_eq!(tile.coefficients[0][4032], 30);
+        assert_eq!(tile.coefficients[0][4095], 30);
+
+        // The whole buffer accumulated, not just the positions checked above.
+        let mut expected = TileState::new();
+        expected
+            .decode_first(
+                [&difference_data; 3],
+                [&base_quant; 3],
+                [prog_quant; 3],
+                [0; 3],
+                0xFF,
+                false,
+            )
+            .expect("reference decoding should succeed");
+
+        for (component, ((accumulated, retained), delta)) in tile
+            .coefficients
+            .iter()
+            .zip(retained.iter())
+            .zip(expected.coefficients.iter())
+            .enumerate()
+        {
+            for (i, ((accumulated, retained), delta)) in
+                accumulated.iter().zip(retained.iter()).zip(delta.iter()).enumerate()
+            {
+                assert_eq!(*accumulated, retained + delta, "component {component}, coefficient {i}");
+            }
+        }
+
+        // The DAS state describes the incoming deltas, which is what the
+        // upgrade passes refining this transmission are encoded against.
+        assert_eq!(tile.sign[0][0], SIGN_NEGATIVE);
+        assert_eq!(tile.sign[0][1], SIGN_POSITIVE);
+    }
+
+    #[test]
+    fn non_difference_tile_replaces_retained_coefficients() {
+        let base_quant = uniform_quant(6);
+        let prog_quant = ComponentCodecQuant::LOSSLESS;
+
+        let mut absolute = [0i16; COEFFICIENTS_PER_COMPONENT];
+        absolute[0] = 100;
+        absolute[1] = -40;
+        absolute[4032] = 25;
+
+        let mut replacement = [0i16; COEFFICIENTS_PER_COMPONENT];
+        replacement[0] = -30;
+        replacement[1] = 15;
+        replacement[4032] = 5;
+
+        let absolute_data = rlgr_encode_component(&absolute);
+        let replacement_data = rlgr_encode_component(&replacement);
+
+        let mut tile = TileState::new();
+        tile.decode_first(
+            [&absolute_data; 3],
+            [&base_quant; 3],
+            [prog_quant; 3],
+            [0; 3],
+            0xFF,
+            false,
+        )
+        .expect("absolute first-pass decoding should succeed");
+        tile.decode_first(
+            [&replacement_data; 3],
+            [&base_quant; 3],
+            [prog_quant; 3],
+            [0; 3],
+            0xFF,
+            false,
+        )
+        .expect("second absolute first-pass decoding should succeed");
+
+        assert!(!tile.is_difference);
+        assert_eq!(tile.coefficients[0][0], -30);
+        assert_eq!(tile.coefficients[0][1], 15);
+        assert_eq!(tile.coefficients[0][4032], 5);
+
+        // Identical to decoding the second tile on its own.
+        let mut fresh = TileState::new();
+        fresh
+            .decode_first(
+                [&replacement_data; 3],
+                [&base_quant; 3],
+                [prog_quant; 3],
+                [0; 3],
+                0xFF,
+                false,
+            )
+            .expect("fresh first-pass decoding should succeed");
+        assert_eq!(tile.coefficients, fresh.coefficients);
+        assert_eq!(tile.sign, fresh.sign);
+    }
+
+    #[test]
+    fn difference_tile_on_untouched_tile_matches_absolute_tile() {
+        // The first tile of a surface has zeroed coefficients, so a difference
+        // tile arriving there reconstructs the same values as an absolute one.
+        let base_quant = uniform_quant(6);
+        let prog_quant = ComponentCodecQuant::LOSSLESS;
+
+        let mut coefficients = [0i16; COEFFICIENTS_PER_COMPONENT];
+        coefficients[0] = 100;
+        coefficients[1] = -40;
+        coefficients[4032] = 25;
+        let data = rlgr_encode_component(&coefficients);
+
+        let mut difference_tile = TileState::new();
+        difference_tile
+            .decode_first_difference([&data; 3], [&base_quant; 3], [prog_quant; 3], [0; 3], 0xFF, false)
+            .expect("difference first-pass decoding should succeed");
+
+        let mut absolute_tile = TileState::new();
+        absolute_tile
+            .decode_first([&data; 3], [&base_quant; 3], [prog_quant; 3], [0; 3], 0xFF, false)
+            .expect("absolute first-pass decoding should succeed");
+
+        assert_eq!(difference_tile.coefficients, absolute_tile.coefficients);
+        assert_eq!(difference_tile.sign, absolute_tile.sign);
+    }
+
+    #[test]
+    fn difference_tile_accumulation_saturates() {
+        let base_quant = uniform_quant(6);
+        let prog_quant = ComponentCodecQuant::LOSSLESS;
+
+        let mut extreme = [0i16; COEFFICIENTS_PER_COMPONENT];
+        extreme[0] = 30000;
+        extreme[1] = -30000;
+        let data = rlgr_encode_component(&extreme);
+
+        let mut tile = TileState::new();
+        tile.decode_first([&data; 3], [&base_quant; 3], [prog_quant; 3], [0; 3], 0xFF, false)
+            .expect("absolute first-pass decoding should succeed");
+        tile.decode_first_difference([&data; 3], [&base_quant; 3], [prog_quant; 3], [0; 3], 0xFF, false)
+            .expect("difference first-pass decoding should succeed");
+
+        assert_eq!(tile.coefficients[0][0], i16::MAX);
+        assert_eq!(tile.coefficients[0][1], i16::MIN);
+    }
+
+    #[test]
+    fn upgrade_pass_refines_accumulated_difference_coefficients() {
+        // An upgrade pass following a difference tile must refine the
+        // accumulated coefficients, not the deltas that produced them.
+        let base_quant = uniform_quant(6);
+        let mut prog_quant = ComponentCodecQuant::LOSSLESS;
+        prog_quant.ll3 = 1;
+
+        let mut absolute = [0i16; COEFFICIENTS_PER_COMPONENT];
+        absolute[4032] = 25;
+        let mut difference = [0i16; COEFFICIENTS_PER_COMPONENT];
+        difference[4032] = 5;
+
+        let absolute_data = rlgr_encode_component(&absolute);
+        let difference_data = rlgr_encode_component(&difference);
+
+        let mut tile = TileState::new();
+        tile.decode_first([&absolute_data; 3], [&base_quant; 3], [prog_quant; 3], [0; 3], 0, false)
+            .expect("absolute first-pass decoding should succeed");
+        tile.decode_first_difference(
+            [&difference_data; 3],
+            [&base_quant; 3],
+            [prog_quant; 3],
+            [0; 3],
+            0,
+            false,
+        )
+        .expect("difference first-pass decoding should succeed");
+
+        // BitPos 1 doubles both passes: (25 + 5) << 1.
+        assert_eq!(tile.coefficients[0][4032], 60);
+
+        // LL3 is always read from the raw stream, so this upgrade needs no SRL
+        // data: 64 one-bits, one per LL3 coefficient, at BitPos 0.
+        let raw_data = [0xFFu8; 8];
+        tile.decode_upgrade([&[]; 3], [&raw_data; 3], [ComponentCodecQuant::LOSSLESS; 3], 0)
+            .expect("upgrade decoding should succeed");
+
+        assert_eq!(tile.pass, 2);
+        assert_eq!(tile.coefficients[0][4032], 61);
+        assert_eq!(tile.coefficients[0][4095], 61);
+    }
+
+    #[test]
+    fn decoder_accumulates_difference_tiles_signalled_on_the_wire() {
+        use ironrdp_pdu::codecs::rfx::progressive::FLAG_TILE_DIFFERENCE;
+
+        let quant = uniform_quant(6);
+
+        let mut absolute = [0i16; COEFFICIENTS_PER_COMPONENT];
+        absolute[0] = 100;
+        absolute[1] = -40;
+        absolute[4032] = 25;
+
+        let mut difference = [0i16; COEFFICIENTS_PER_COMPONENT];
+        difference[0] = -30;
+        difference[1] = 15;
+        difference[4032] = 5;
+
+        let mut summed = [0i16; COEFFICIENTS_PER_COMPONENT];
+        for (summed, (absolute, difference)) in summed.iter_mut().zip(absolute.iter().zip(difference.iter())) {
+            *summed = absolute + difference;
+        }
+
+        let absolute_data = rlgr_encode_component(&absolute);
+        let difference_data = rlgr_encode_component(&difference);
+        let summed_data = rlgr_encode_component(&summed);
+
+        let absolute_stream = simple_tile_stream(quant, &absolute_data, 0);
+        let difference_stream = simple_tile_stream(quant, &difference_data, FLAG_TILE_DIFFERENCE);
+        let replacement_stream = simple_tile_stream(quant, &difference_data, 0);
+        let summed_stream = simple_tile_stream(quant, &summed_data, 0);
+
+        // Absolute tile, then the same payload flagged as a difference.
+        let mut decoder = ProgressiveDecoder::new();
+        decoder
+            .decode_bitmap(1, 0, 64, 64, &absolute_stream)
+            .expect("absolute tile should decode");
+        let accumulated = decoder
+            .decode_bitmap(1, 0, 64, 64, &difference_stream)
+            .expect("difference tile should decode");
+
+        let tile = decoder.contexts[&(1, 0)]
+            .surface
+            .get(0, 0)
+            .expect("the tile should have been created");
+        assert!(tile.is_difference);
+        assert_eq!(tile.coefficients[0][0], 70);
+        assert_eq!(tile.coefficients[0][1], -25);
+        assert_eq!(tile.coefficients[0][4032], 30);
+
+        // Accumulating the delta renders the same image as one absolute tile
+        // carrying the summed coefficients.
+        let mut summed_decoder = ProgressiveDecoder::new();
+        let summed_tiles = summed_decoder
+            .decode_bitmap(1, 0, 64, 64, &summed_stream)
+            .expect("summed tile should decode");
+        assert_eq!(accumulated.len(), 1);
+        assert_eq!(summed_tiles.len(), 1);
+        assert_eq!(accumulated[0].pixels, summed_tiles[0].pixels);
+
+        // Without the flag the same payload replaces, as it always has.
+        let mut replacing_decoder = ProgressiveDecoder::new();
+        replacing_decoder
+            .decode_bitmap(1, 0, 64, 64, &absolute_stream)
+            .expect("absolute tile should decode");
+        let replaced = replacing_decoder
+            .decode_bitmap(1, 0, 64, 64, &replacement_stream)
+            .expect("replacement tile should decode");
+
+        let replaced_tile = replacing_decoder.contexts[&(1, 0)]
+            .surface
+            .get(0, 0)
+            .expect("the tile should have been created");
+        assert!(!replaced_tile.is_difference);
+        assert_eq!(replaced_tile.coefficients[0][0], -30);
+        assert_eq!(replaced_tile.coefficients[0][1], 15);
+        assert_eq!(replaced_tile.coefficients[0][4032], 5);
+
+        let mut standalone_decoder = ProgressiveDecoder::new();
+        let standalone = standalone_decoder
+            .decode_bitmap(1, 0, 64, 64, &replacement_stream)
+            .expect("standalone tile should decode");
+        assert_eq!(replaced[0].pixels, standalone[0].pixels);
+
+        // The flag changes what is rendered, which is the whole point.
+        assert_ne!(accumulated[0].pixels, replaced[0].pixels);
     }
 
     #[test]
