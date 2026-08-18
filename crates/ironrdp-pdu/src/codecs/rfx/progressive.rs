@@ -446,14 +446,8 @@ impl Decode<'_> for ProgressiveContextPdu {
 // Tile blocks
 // ---------------------------------------------------------------------------
 
-/// Bit 0 of the tile flags: RFX_TILE_DIFFERENCE.
-///
-/// Indicates that the tile contains the compressed difference of the DWT
-/// coefficients for the same tile between the current frame and the previous
-/// frame, rather than absolute coefficients. Carried by TILE_SIMPLE and
-/// TILE_FIRST blocks; see MS-RDPEGFX sections 2.2.4.2.1.5.3 and 2.2.4.2.1.5.4.
-///
-/// The seven high bits of the flags field are reserved and ignored.
+/// Bit 0 of the tile flags: the tile carries the difference of the DWT
+/// coefficients against the previous frame (MS-RDPEGFX 2.2.4.2.1.5.3, 2.2.4.2.1.5.4).
 pub const FLAG_TILE_DIFFERENCE: u8 = 0x01;
 
 /// TILE_SIMPLE: non-progressive full-quality tile (single pass).
@@ -1207,64 +1201,6 @@ mod tests {
     }
 
     #[test]
-    fn tile_difference_flag_survives_round_trip() {
-        let original = TileSimple {
-            quant_idx_y: 0,
-            quant_idx_cb: 0,
-            quant_idx_cr: 0,
-            x_idx: 1,
-            y_idx: 2,
-            flags: FLAG_TILE_DIFFERENCE,
-            y_data: &[1, 2, 3],
-            cb_data: &[4],
-            cr_data: &[5],
-            tail_data: &[],
-        };
-        let mut buf = vec![0u8; original.size()];
-        original.encode(&mut WriteCursor::new(&mut buf)).unwrap();
-        let decoded = TileSimple::decode(&mut ReadCursor::new(&buf)).unwrap();
-        assert_eq!(decoded.flags, FLAG_TILE_DIFFERENCE);
-        assert!(decoded.is_difference());
-
-        // The seven high bits are reserved and MUST be ignored by the decoder.
-        let mut reserved_bits_set = original.clone();
-        reserved_bits_set.flags = 0xFE;
-        let mut buf = vec![0u8; reserved_bits_set.size()];
-        reserved_bits_set.encode(&mut WriteCursor::new(&mut buf)).unwrap();
-        let decoded = TileSimple::decode(&mut ReadCursor::new(&buf)).unwrap();
-        assert!(!decoded.is_difference());
-    }
-
-    #[test]
-    fn tile_first_difference_flag_survives_round_trip() {
-        let original = TileFirst {
-            quant_idx_y: 0,
-            quant_idx_cb: 0,
-            quant_idx_cr: 0,
-            x_idx: 1,
-            y_idx: 2,
-            flags: FLAG_TILE_DIFFERENCE,
-            quality: 5,
-            y_data: &[1, 2, 3],
-            cb_data: &[4],
-            cr_data: &[5],
-            tail_data: &[],
-        };
-        let mut buf = vec![0u8; original.size()];
-        original.encode(&mut WriteCursor::new(&mut buf)).unwrap();
-        let decoded = TileFirst::decode(&mut ReadCursor::new(&buf)).unwrap();
-        assert_eq!(decoded.flags, FLAG_TILE_DIFFERENCE);
-        assert!(decoded.is_difference());
-
-        let mut absolute = original.clone();
-        absolute.flags = 0;
-        let mut buf = vec![0u8; absolute.size()];
-        absolute.encode(&mut WriteCursor::new(&mut buf)).unwrap();
-        let decoded = TileFirst::decode(&mut ReadCursor::new(&buf)).unwrap();
-        assert!(!decoded.is_difference());
-    }
-
-    #[test]
     fn tile_first_round_trip() {
         let original = TileFirst {
             quant_idx_y: 0,
@@ -1284,6 +1220,74 @@ mod tests {
         let decoded = TileFirst::decode(&mut ReadCursor::new(&buf)).unwrap();
         assert_eq!(decoded.quality, 0x40);
         assert_eq!(decoded.quant_idx_cb, 1);
+    }
+
+    #[test]
+    fn tile_difference_flag_round_trip() {
+        let simple = TileSimple {
+            quant_idx_y: 0,
+            quant_idx_cb: 0,
+            quant_idx_cr: 0,
+            x_idx: 1,
+            y_idx: 2,
+            flags: FLAG_TILE_DIFFERENCE,
+            y_data: &[1, 2, 3],
+            cb_data: &[4],
+            cr_data: &[5],
+            tail_data: &[],
+        };
+        let mut buf = vec![0u8; simple.size()];
+        simple.encode(&mut WriteCursor::new(&mut buf)).unwrap();
+        let decoded = TileSimple::decode(&mut ReadCursor::new(&buf)).unwrap();
+        assert_eq!(decoded.flags, FLAG_TILE_DIFFERENCE);
+        assert!(decoded.is_difference());
+
+        let first = TileFirst {
+            quant_idx_y: 0,
+            quant_idx_cb: 0,
+            quant_idx_cr: 0,
+            x_idx: 1,
+            y_idx: 2,
+            flags: FLAG_TILE_DIFFERENCE,
+            quality: 5,
+            y_data: &[1, 2, 3],
+            cb_data: &[4],
+            cr_data: &[5],
+            tail_data: &[],
+        };
+        let mut buf = vec![0u8; first.size()];
+        first.encode(&mut WriteCursor::new(&mut buf)).unwrap();
+        let decoded = TileFirst::decode(&mut ReadCursor::new(&buf)).unwrap();
+        assert_eq!(decoded.flags, FLAG_TILE_DIFFERENCE);
+        assert!(decoded.is_difference());
+    }
+
+    #[test]
+    fn tile_reserved_flag_bits_are_not_difference() {
+        // The seven high bits MUST be ignored by the decoder.
+        let mut simple = TileSimple {
+            quant_idx_y: 0,
+            quant_idx_cb: 0,
+            quant_idx_cr: 0,
+            x_idx: 1,
+            y_idx: 2,
+            flags: 0xFE,
+            y_data: &[1, 2, 3],
+            cb_data: &[4],
+            cr_data: &[5],
+            tail_data: &[],
+        };
+        let mut buf = vec![0u8; simple.size()];
+        simple.encode(&mut WriteCursor::new(&mut buf)).unwrap();
+        let decoded = TileSimple::decode(&mut ReadCursor::new(&buf)).unwrap();
+        assert_eq!(decoded.flags, 0xFE);
+        assert!(!decoded.is_difference());
+
+        simple.flags = 0xFF;
+        let mut buf = vec![0u8; simple.size()];
+        simple.encode(&mut WriteCursor::new(&mut buf)).unwrap();
+        let decoded = TileSimple::decode(&mut ReadCursor::new(&buf)).unwrap();
+        assert!(decoded.is_difference());
     }
 
     #[test]
