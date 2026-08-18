@@ -252,7 +252,6 @@ fields, lock IDs, stream IDs, or protocol-specific flags, it belongs in the back
 be delivered via the extension mechanism.
 
 The extension system works as follows:
-
 - `Extension` is typed as `unknown`; intentionally opaque at this layer.
 - Backends define their own concrete `Extension` types and factory functions.
 - The consumer calls `userInteraction.configBuilder().withExtension(ext)` or
