@@ -29,7 +29,7 @@ use core::time::Duration;
 use ironrdp_core::{decode, encode_vec};
 
 use crate::congestion::CongestionControl;
-use crate::error::{RdpeudpError, RdpeudpErrorExt as _};
+use crate::error::{RdpeudpError, RdpeudpErrorExt as _, SendError};
 use crate::loss::LossDetector;
 use crate::pdu::prefix::{decode_with_prefix, encode_with_prefix};
 use crate::pdu::v1_ack::{V1AckVectorElement, V1AckVectorHeader, VectorElementState};
@@ -531,13 +531,30 @@ impl RdpeudpConnection {
     /// The data will be sent in the next `poll_transmit()` call,
     /// subject to congestion window availability.
     ///
-    /// Returns an error if the connection is not established or
-    /// the send buffer is full.
-    pub fn send(&mut self, data: Vec<u8>) -> Result<(), RdpeudpError> {
+    /// Returns an error if the connection is not established or the send
+    /// buffer is full. Either way, the rejected `data` comes back with the
+    /// error: for [`SendBufferFull`], the condition is transient, and a
+    /// caller with somewhere to hold the bytes can retry once
+    /// [`poll_transmit`] drains enough of the backlog for acknowledgements
+    /// to open the window again.
+    ///
+    /// [`SendBufferFull`]: crate::error::RdpeudpErrorKind::SendBufferFull
+    /// [`poll_transmit`]: Self::poll_transmit
+    pub fn send(&mut self, data: Vec<u8>) -> Result<(), SendError> {
         match self.state {
             State::Established => {}
-            State::Closed => return Err(RdpeudpError::connection_closed("send")),
-            _ => return Err(RdpeudpError::invalid_state("send")),
+            State::Closed => {
+                return Err(SendError {
+                    error: RdpeudpError::connection_closed("send"),
+                    data,
+                });
+            }
+            _ => {
+                return Err(SendError {
+                    error: RdpeudpError::invalid_state("send"),
+                    data,
+                });
+            }
         }
 
         let max_payload = self.max_payload();
@@ -552,7 +569,10 @@ impl RdpeudpConnection {
         let max_entries = SEND_BUFFER_WINDOW_MULTIPLE * (1usize << usize::from(self.config.log_window_size));
         let chunks_needed = data.len().div_ceil(max_payload).max(1);
         if self.send_buffer.len() + chunks_needed > max_entries {
-            return Err(RdpeudpError::send_buffer_full("send"));
+            return Err(SendError {
+                error: RdpeudpError::send_buffer_full("send"),
+                data,
+            });
         }
 
         if data.len() <= max_payload {

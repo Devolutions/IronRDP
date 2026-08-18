@@ -17,7 +17,7 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use ironrdp_rdpeudp::pdu::{V1Datagram, V1Flags};
-use ironrdp_rdpeudp::{Event, RdpeudpConnection, RdpeudpError, RdpeudpErrorKind};
+use ironrdp_rdpeudp::{Event, RdpeudpConnection, RdpeudpError, RdpeudpErrorKind, SendError};
 use tokio::net::UdpSocket;
 use tokio::sync::Notify;
 
@@ -60,6 +60,10 @@ pub(crate) struct Driver {
     recv_buf: Vec<u8>,
     /// The only clock in the stack; the state machine has none.
     clock: Clock,
+    /// Data `RdpeudpConnection::send` rejected with `SendBufferFull`, held
+    /// here to retry once the send queue has room again instead of being
+    /// dropped or treated as a fatal error.
+    pending_write: Option<Vec<u8>>,
 }
 
 impl Driver {
@@ -77,6 +81,7 @@ impl Driver {
             connected_signaled: false,
             recv_buf: vec![0u8; RECV_BUF_SIZE],
             clock: Clock::new(),
+            pending_write: None,
         }
     }
 
@@ -110,18 +115,7 @@ impl Driver {
             shared.error.get_or_insert(kind);
         }
 
-        shared.closed = true;
-
-        for waker in [
-            shared.read_waker.take(),
-            shared.write_waker.take(),
-            shared.flush_waker.take(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            waker.wake();
-        }
+        shared.close();
     }
 
     async fn run_to_completion(&mut self) -> Result<(), DriverError> {
@@ -175,18 +169,27 @@ impl Driver {
                     self.drain_events();
                 }
 
-                // Branch 2: TLS layer has data to send
-                _ = WriteDataReady::new(&self.shared) => {
-                    let (data, stream_closed, flush_waker) = {
+                // Branch 2: TLS layer has data to send. Guarded off while a
+                // write is already pending backpressure: pulling more out of
+                // `write_buf` on top of it would let newer bytes reach
+                // `send()` before the older ones still waiting their turn,
+                // corrupting the stream's order.
+                _ = WriteDataReady::new(&self.shared), if self.pending_write.is_none() => {
+                    let (data, stream_closed, flush_waker, room_waker) = {
                         let mut shared = self.shared.lock()
                             .map_err(|_| DriverError::connection_closed("lock shared state"))?;
                         let closed = shared.closed && shared.write_buf.is_empty();
                         let buf = shared.write_buf.split().freeze().to_vec();
                         let flush = shared.flush_waker.take();
-                        (buf, closed, flush)
+                        let room = shared.write_room_waker.take();
+                        (buf, closed, flush, room)
                     };
                     // Wake any pending flush (write_buf has been drained)
                     if let Some(waker) = flush_waker {
+                        waker.wake();
+                    }
+                    // Wake a writer that was blocked on write_buf being full
+                    if let Some(waker) = room_waker {
                         waker.wake();
                     }
                     if stream_closed {
@@ -194,10 +197,7 @@ impl Driver {
                         self.drain_events();
                         return Ok(());
                     }
-                    if !data.is_empty() {
-                        self.conn
-                            .send(data)
-                            .map_err(|error| DriverError::rdpeudp("queue outbound data", error))?;
+                    if !data.is_empty() && self.queue_write(data)? {
                         self.drain_transmits().await?;
                     }
                 }
@@ -211,16 +211,21 @@ impl Driver {
                 }
             }
 
+            // A write that hit backpressure earlier may have room now: an
+            // incoming ACK (branch 1) or a retransmit (branch 3) can both
+            // have just moved entries out of the send buffer via
+            // `drain_transmits`. Self-guards on the connection already
+            // being closed, so this is safe to call unconditionally rather
+            // than threading it through every branch that might free room.
+            self.flush_pending_write().await?;
+
             if self.conn.is_closed() {
                 // Propagate close to the stream side
                 let mut shared = self
                     .shared
                     .lock()
                     .map_err(|_| DriverError::connection_closed("lock shared state"))?;
-                shared.closed = true;
-                if let Some(waker) = shared.read_waker.take() {
-                    waker.wake();
-                }
+                shared.close();
                 return Ok(());
             }
         }
@@ -257,6 +262,49 @@ impl Driver {
         Ok(())
     }
 
+    /// Hand `data` to the connection's send queue, or hold it in
+    /// `pending_write` to retry if the queue is at its backpressure limit.
+    ///
+    /// `SendBufferFull` is not fatal: on a slow or lossy link, sustained
+    /// writes can legitimately fill the bounded send queue while the
+    /// connection is otherwise healthy, and the error kind's own
+    /// documentation says the caller should retry rather than give up.
+    /// Every other rejection stays fatal, unchanged.
+    ///
+    /// Returns whether `data` was actually queued, so the caller knows
+    /// whether a `drain_transmits` is worth running.
+    fn queue_write(&mut self, data: Vec<u8>) -> Result<bool, DriverError> {
+        match self.conn.send(data) {
+            Ok(()) => Ok(true),
+            Err(SendError { error, data }) if matches!(error.kind(), RdpeudpErrorKind::SendBufferFull) => {
+                self.pending_write = Some(data);
+                Ok(false)
+            }
+            Err(SendError { error, .. }) => Err(DriverError::rdpeudp("queue outbound data", error)),
+        }
+    }
+
+    /// Retry a write that hit backpressure last time, now that something
+    /// may have drained the send buffer. A no-op if nothing is pending, or
+    /// if the connection has already closed (retrying into a closed
+    /// connection would surface as a fatal error and turn what should be a
+    /// clean shutdown into one).
+    async fn flush_pending_write(&mut self) -> Result<(), DriverError> {
+        if self.conn.is_closed() {
+            return Ok(());
+        }
+
+        let Some(data) = self.pending_write.take() else {
+            return Ok(());
+        };
+
+        if self.queue_write(data)? {
+            self.drain_transmits().await?;
+        }
+
+        Ok(())
+    }
+
     /// Process all pending events from the connection state machine.
     fn drain_events(&mut self) {
         while let Some(event) = self.conn.poll_event() {
@@ -277,10 +325,7 @@ impl Driver {
                 }
                 Event::ConnectionClosed => {
                     if let Ok(mut shared) = self.shared.lock() {
-                        shared.closed = true;
-                        if let Some(waker) = shared.read_waker.take() {
-                            waker.wake();
-                        }
+                        shared.close();
                     }
                 }
             }
@@ -424,6 +469,50 @@ mod tests {
             ..ConnectionConfig::default()
         }
     }
+
+    /// Build a client `RdpeudpConnection` past the handshake into
+    /// `Established`, entirely in memory (no sockets), for tests that only
+    /// care about data-phase behavior. Mirrors
+    /// `ironrdp-testsuite-core/tests/rdpeudp/connection.rs`'s `establish_pair`;
+    /// duplicated rather than shared because integration test binaries
+    /// aren't importable from another crate's inline unit tests. If the
+    /// handshake sequence changes there, update it here too.
+    fn established_client_connection() -> RdpeudpConnection {
+        let t = ironrdp_rdpeudp::MonotonicInstant::from_millis(0);
+
+        let mut client = RdpeudpConnection::connect(test_connection_config(), t).expect("connect");
+        let syn = client.poll_transmit(t).expect("SYN");
+
+        let syn_dg: V1Datagram = ironrdp_core::decode(&syn.contents).expect("decode SYN");
+        let mut server = RdpeudpConnection::accept(test_connection_config(), &syn_dg, t).expect("accept");
+        let syn_ack = server.poll_transmit(t).expect("SYN+ACK");
+
+        let mut syn_ack_bytes = syn_ack.contents;
+        let handshake_rtt = t.saturating_add(Duration::from_millis(50));
+        client
+            .handle_datagram(&mut syn_ack_bytes, handshake_rtt)
+            .expect("handle SYN+ACK");
+        while client.poll_event().is_some() {}
+
+        assert!(client.is_established(), "test setup: client should be established");
+        client
+    }
+
+    /// Bind two UDP sockets on localhost and connect them to each other, for
+    /// tests that need a `Driver`'s real socket send path to succeed without
+    /// caring what (if anything) is on the other end.
+    async fn connected_socket_pair() -> (UdpSocket, UdpSocket) {
+        let a = UdpSocket::bind("127.0.0.1:0").await.expect("bind a");
+        let b = UdpSocket::bind("127.0.0.1:0").await.expect("bind b");
+        a.connect(b.local_addr().expect("addr b"))
+            .await
+            .expect("connect a to b");
+        b.connect(a.local_addr().expect("addr a"))
+            .await
+            .expect("connect b to a");
+        (a, b)
+    }
+
     use ironrdp_rdpeudp::RdpeudpErrorExt as _;
 
     use super::*;
@@ -646,5 +735,164 @@ mod tests {
         let bytes = vec![0xFFu8; 12];
         let padded = pad_handshake_datagram(bytes.clone());
         assert_eq!(padded, bytes);
+    }
+
+    /// This is the actual defect: `RdpeudpConnection::send` returning
+    /// `SendBufferFull` used to propagate as a fatal `DriverError` via `?`,
+    /// tearing down an otherwise-healthy connection over transient
+    /// backpressure. `queue_write` must hold the data and report it as
+    /// merely not-yet-queued, never as an error, for that one kind.
+    #[tokio::test]
+    async fn queue_write_holds_data_instead_of_erroring_when_the_send_buffer_is_full() {
+        let conn = established_client_connection();
+        let (socket, _peer) = connected_socket_pair().await;
+        let shared = Arc::new(Mutex::new(SharedIo::new()));
+        let notify = Arc::new(Notify::new());
+        let mut driver = Driver::new(socket, conn, shared, notify);
+
+        // test_connection_config's log_window_size is 6 (64 slots); the
+        // bound is 8x that, matching ironrdp-testsuite-core's own
+        // send-buffer-full test. queue_write never calls drain_transmits,
+        // so nothing drains the buffer as it fills.
+        for _ in 0..512 {
+            assert!(
+                driver
+                    .queue_write(vec![0xAAu8; 4])
+                    .expect("queue_write should not error while filling"),
+                "every write under the bound should be queued"
+            );
+        }
+
+        let queued = driver
+            .queue_write(vec![0xBBu8; 4])
+            .expect("SendBufferFull must not surface as a DriverError");
+        assert!(!queued, "the write past the bound should be held, not queued");
+        assert_eq!(
+            driver.pending_write.as_deref(),
+            Some([0xBBu8; 4].as_slice()),
+            "the exact rejected payload should be preserved, not dropped"
+        );
+    }
+
+    /// `flush_pending_write` is a no-op, not an error, when there is nothing
+    /// held.
+    #[tokio::test]
+    async fn flush_pending_write_is_a_no_op_with_nothing_pending() {
+        let conn = established_client_connection();
+        let (socket, _peer) = connected_socket_pair().await;
+        let shared = Arc::new(Mutex::new(SharedIo::new()));
+        let notify = Arc::new(Notify::new());
+        let mut driver = Driver::new(socket, conn, shared, notify);
+
+        driver.flush_pending_write().await.expect("no-op should not error");
+        assert!(driver.pending_write.is_none());
+    }
+
+    /// Once `drain_transmits` moves entries out of the send buffer, a held
+    /// write is retried and actually goes out, closing the loop on the
+    /// backpressure fix rather than leaving data stuck forever.
+    #[tokio::test]
+    async fn flush_pending_write_delivers_once_the_send_buffer_has_room() {
+        let conn = established_client_connection();
+        let (socket, _peer) = connected_socket_pair().await;
+        let shared = Arc::new(Mutex::new(SharedIo::new()));
+        let notify = Arc::new(Notify::new());
+        let mut driver = Driver::new(socket, conn, shared, notify);
+
+        for _ in 0..512 {
+            driver.queue_write(vec![0xAAu8; 4]).expect("queue_write");
+        }
+        let queued = driver.queue_write(vec![0xCCu8; 4]).expect("queue_write");
+        assert!(!queued, "test setup: the buffer should be full");
+        assert!(driver.pending_write.is_some());
+
+        // Only draining what's already queued frees room; nothing else in
+        // this test touches the send buffer.
+        driver.drain_transmits().await.expect("drain_transmits");
+
+        driver.flush_pending_write().await.expect("flush_pending_write");
+        assert!(
+            driver.pending_write.is_none(),
+            "the held write should have been queued and sent once room opened"
+        );
+    }
+
+    /// `flush_pending_write` must not attempt the retry once the connection
+    /// has already closed: `send()` on a closed connection is a fatal error,
+    /// which would turn a clean shutdown into a spurious one.
+    #[tokio::test]
+    async fn flush_pending_write_does_not_error_on_an_already_closed_connection() {
+        let mut conn = established_client_connection();
+        conn.close();
+        assert!(conn.is_closed(), "test setup: connection should be closed");
+
+        let (socket, _peer) = connected_socket_pair().await;
+        let shared = Arc::new(Mutex::new(SharedIo::new()));
+        let notify = Arc::new(Notify::new());
+        let mut driver = Driver::new(socket, conn, shared, notify);
+        driver.pending_write = Some(vec![0xDDu8; 4]);
+
+        driver
+            .flush_pending_write()
+            .await
+            .expect("a closed connection must not turn the flush into an error");
+    }
+
+    /// This is the gap the isolated `queue_write`/`flush_pending_write` tests
+    /// above cannot reach on their own: does the real `select!` loop, driving
+    /// a real connection against a peer that never acks, actually stop
+    /// `write_buf` from growing without bound the way those tests assume?
+    ///
+    /// The peer socket is bound and connected but never read from, so
+    /// nothing ever acknowledges anything: the congestion window never grows
+    /// past its initial allowance, `send_buffer` fills, `pending_write`
+    /// engages and never clears, and branch 2 stops draining `write_buf` for
+    /// the rest of the test. It is deliberately not dropped: a closed peer
+    /// socket can turn a subsequent send into a real `ECONNREFUSED`, which
+    /// would kill the driver with a fatal error instead of sustaining the
+    /// congestion this test needs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sustained_writes_against_an_unresponsive_peer_bound_write_buf() {
+        let conn = established_client_connection();
+        let (socket, unresponsive_peer) = connected_socket_pair().await;
+
+        let shared = Arc::new(Mutex::new(SharedIo::new()));
+        let notify = Arc::new(Notify::new());
+        let driver = Driver::new(socket, conn, Arc::clone(&shared), notify);
+        let driver_handle = tokio::spawn(driver.run());
+
+        let mut stream = crate::stream::RdpeudpStream::new(Arc::clone(&shared));
+
+        // Keep writing well past WRITE_BUF_HIGH_WATER. If the bound holds,
+        // this never completes inside the timeout.
+        let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+            let chunk = vec![0xABu8; 4096];
+            // Comfortably more than WRITE_BUF_HIGH_WATER / chunk.len() (256):
+            // if the bound holds, this never gets close to finishing before
+            // the timeout above fires, since a blocked write just sits
+            // pending. If the bound is broken, this actually would run to
+            // completion instead.
+            for _ in 0..100_000 {
+                tokio::io::AsyncWriteExt::write_all(&mut stream, &chunk)
+                    .await
+                    .expect("write_all");
+            }
+        })
+        .await;
+
+        assert!(
+            outcome.is_err(),
+            "writes should have blocked at the high-water mark well before completing 100,000 chunks"
+        );
+
+        let buf_len = shared.lock().expect("lock").write_buf.len();
+        assert!(
+            buf_len <= crate::stream::WRITE_BUF_HIGH_WATER,
+            "write_buf grew to {buf_len} bytes, past its {}-byte bound",
+            crate::stream::WRITE_BUF_HIGH_WATER
+        );
+
+        driver_handle.abort();
+        drop(unresponsive_peer);
     }
 }
