@@ -1310,13 +1310,11 @@ impl ProgressiveDecoder {
             }
         };
 
-        // If surface dimensions changed, reallocate
+        // If surface dimensions changed, reallocate the codec-context tile grid.
         let expected_wide = surface_width.div_ceil(64);
         let expected_high = surface_height.div_ceil(64);
         if context.surface.tiles_wide != expected_wide || context.surface.tiles_high != expected_high {
             context.surface = SurfaceTiles::new(surface_width, surface_height, use_reduce_extrapolate)?;
-            // Replacing a surface tile grid invalidates its sub-band references.
-            references.retain(|(reference_surface_id, _, _), _| *reference_surface_id != surface_id);
         }
         context.surface.use_reduce_extrapolate = use_reduce_extrapolate;
 
@@ -1368,10 +1366,9 @@ impl ProgressiveDecoder {
             .retain(|(reference_surface_id, _, _), _| *reference_surface_id != surface_id);
     }
 
-    /// Reset all contexts (e.g., on EGFX channel reset).
+    /// Reset codec-context state while retaining surface sub-band references.
     pub fn reset(&mut self) {
         self.contexts.clear();
-        self.references.clear();
     }
 }
 
@@ -1986,17 +1983,34 @@ mod tests {
     }
 
     #[test]
-    fn decoder_reset_clears_contexts() {
+    fn decoder_reset_clears_contexts_but_preserves_sub_band_references() {
         let mut decoder = ProgressiveDecoder::new();
 
         let result = decoder.decode_bitmap(1, 1, 64, 64, &simple_tile_stream(0, [64, -16, 24], true));
         assert!(result.is_ok());
         assert_eq!(decoder.contexts.len(), 1);
         assert_eq!(decoder.references.len(), 1);
+        let reference = *decoder
+            .references
+            .get(&(1, 0, 0))
+            .expect("original tile reference should be retained");
 
         decoder.reset();
         assert!(decoder.contexts.is_empty());
-        assert!(decoder.references.is_empty());
+        assert_eq!(decoder.references.get(&(1, 0, 0)), Some(&reference));
+
+        assert!(
+            decoder
+                .decode_bitmap(
+                    1,
+                    2,
+                    64,
+                    64,
+                    &simple_tile_stream(TILE_FLAG_DIFFERENCE, [7, -3, 5], true),
+                )
+                .is_ok(),
+            "a new codec context should use the retained surface reference"
+        );
     }
 
     #[test]
@@ -3063,29 +3077,53 @@ mod tests {
     }
 
     #[test]
-    fn resizing_a_surface_clears_sub_band_references() {
+    fn resizing_a_surface_preserves_sub_band_references() {
         let mut decoder = ProgressiveDecoder::new();
+        let original_components = [64, -16, 24];
+        let difference_components = [7, -3, 5];
 
         decoder
-            .decode_bitmap(1, 7, 64, 64, &simple_tile_stream(0, [64, -16, 24], true))
+            .decode_bitmap(1, 7, 64, 64, &simple_tile_stream(0, original_components, true))
             .expect("original tile should decode");
-        assert!(decoder.references.contains_key(&(1, 0, 0)));
+        let reference = *decoder
+            .references
+            .get(&(1, 0, 0))
+            .expect("original tile reference should be retained");
 
         decoder
             .decode_bitmap(1, 7, 128, 64, &minimal_progressive_stream(true))
             .expect("resized surface should decode");
-        assert!(!decoder.references.contains_key(&(1, 0, 0)));
+        assert_eq!(decoder.references.get(&(1, 0, 0)), Some(&reference));
 
-        assert!(matches!(
-            decoder.decode_bitmap(
+        decoder
+            .decode_bitmap(
                 1,
                 7,
                 128,
                 64,
-                &simple_tile_stream(TILE_FLAG_DIFFERENCE, [7, -3, 5], false),
-            ),
-            Err(ProgressiveDecodeError::MissingTileReference { x_idx: 0, y_idx: 0 })
-        ));
+                &simple_tile_stream(TILE_FLAG_DIFFERENCE, difference_components, false),
+            )
+            .expect("difference tile should decode after resizing");
+
+        let expected_delta = decode_full_quality_components(difference_components);
+        let updated = decoder
+            .references
+            .get(&(1, 0, 0))
+            .expect("difference tile should update the retained reference");
+        for ((updated_component, reference_component), delta_component) in
+            updated.iter().zip(reference.iter()).zip(expected_delta.iter())
+        {
+            for ((updated_coefficient, reference_coefficient), delta_coefficient) in updated_component
+                .iter()
+                .zip(reference_component.iter())
+                .zip(delta_component.iter())
+            {
+                assert_eq!(
+                    *updated_coefficient,
+                    reference_coefficient.saturating_add(*delta_coefficient)
+                );
+            }
+        }
     }
 
     #[test]
