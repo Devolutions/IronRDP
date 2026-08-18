@@ -1377,6 +1377,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn map_surface_to_scaled_output_ignores_unknown_surface() {
+        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        client
+            .handle_pdu(GfxPdu::MapSurfaceToScaledOutput(MapSurfaceToScaledOutputPdu {
+                surface_id: 1,
+                output_origin_x: 0,
+                output_origin_y: 0,
+                target_width: 2,
+                target_height: 2,
+            }))
+            .unwrap();
+
+        assert!(client.surfaces.is_empty());
+        assert!(client.drain_output().is_empty());
+    }
+
     /// A Planar `WireToSurface1` decodes to the pixels that were encoded, rather
     /// than falling through to the handler as an unsupported codec.
     ///

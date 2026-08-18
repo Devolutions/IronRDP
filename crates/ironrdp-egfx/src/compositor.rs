@@ -521,7 +521,12 @@ impl Compositor {
             right,
             bottom,
         };
-        let data = copy_scaled_region(&surface.data, (source_width, source_height), mapping, &output_rect);
+        let data =
+            if mapping.target_width == u32::from(source_width) && mapping.target_height == u32::from(source_height) {
+                copy_region(&surface.data, source_width, dirty.rect.left, dirty.rect.top, w, h)
+            } else {
+                copy_scaled_region(&surface.data, (source_width, source_height), mapping, &output_rect)
+            };
         self.ready.push(OutputUpdate {
             region: output_rect,
             data,
@@ -638,19 +643,25 @@ fn copy_scaled_region(
     let mut out = vec![0; len];
     let target_left = u32::from(output_rect.left).saturating_sub(mapping.origin.0);
     let target_top = u32::from(output_rect.top).saturating_sub(mapping.origin.1);
+    let source_column_offsets = (0..width)
+        .map(|x| {
+            usize::from(
+                u16::try_from(
+                    (u64::from(target_left) + u64::from(x)) * u64::from(src_width) / u64::from(mapping.target_width),
+                )
+                .unwrap_or(u16::MAX),
+            ) * BYTES_PER_PIXEL
+        })
+        .collect::<Vec<_>>();
 
     for y in 0..height {
         let source_y = u16::try_from(
             (u64::from(target_top) + u64::from(y)) * u64::from(src_height) / u64::from(mapping.target_height),
         )
         .unwrap_or(u16::MAX);
+        let source_row_offset = usize::from(source_y) * usize::from(src_width) * BYTES_PER_PIXEL;
         for x in 0..width {
-            let source_x = u16::try_from(
-                (u64::from(target_left) + u64::from(x)) * u64::from(src_width) / u64::from(mapping.target_width),
-            )
-            .unwrap_or(u16::MAX);
-            let source_offset =
-                (usize::from(source_y) * usize::from(src_width) + usize::from(source_x)) * BYTES_PER_PIXEL;
+            let source_offset = source_row_offset + source_column_offsets[usize::from(x)];
             let target_offset = (usize::from(y) * usize::from(width) + usize::from(x)) * BYTES_PER_PIXEL;
             if source_offset + BYTES_PER_PIXEL <= src.len() {
                 out[target_offset..target_offset + BYTES_PER_PIXEL]
@@ -830,6 +841,17 @@ mod tests {
             &updates[0].data[updates[0].data.len() - BYTES_PER_PIXEL..],
             &[0x10, 0x11, 0x12, 0xFF]
         );
+    }
+
+    #[test]
+    fn zero_scale_mapping_produces_no_output() {
+        let mut c = Compositor::default();
+        c.reset(8, 8);
+        c.create_surface(1, 2, 2);
+        c.map_surface_scaled(1, 0, 0, 0, 2);
+        c.end_frame();
+
+        assert!(c.drain_output().is_empty());
     }
 
     /// Deltas only become drainable after `EndFrame`.
