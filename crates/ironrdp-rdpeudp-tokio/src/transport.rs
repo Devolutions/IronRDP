@@ -146,6 +146,16 @@ impl<T> AbortOnDrop<T> {
     fn take_if_finished(&mut self) -> Option<JoinHandle<T>> {
         if self.is_finished() { self.0.take() } else { None }
     }
+
+    /// Borrow the underlying handle so it can be raced against another
+    /// future in `select!` without taking it back.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the handle has already been taken.
+    fn handle_mut(&mut self) -> &mut JoinHandle<T> {
+        self.0.as_mut().expect("driver handle already taken")
+    }
 }
 
 impl<T> Drop for AbortOnDrop<T> {
@@ -307,6 +317,20 @@ impl core::fmt::Debug for UdpTransport {
     }
 }
 
+/// Turn a driver task's join result into the transport error to report when
+/// the driver ends before signaling `Event::Connected`, shared between
+/// `connect_udp` and `accept_udp_inner`.
+fn driver_exit_during_handshake(
+    context: &'static str,
+    join_result: Result<Result<(), DriverError>, tokio::task::JoinError>,
+) -> UdpTransportError {
+    match join_result {
+        Ok(Ok(())) => UdpTransportError::handshake(context, DriverError::connection_closed(context)),
+        Ok(Err(error)) => UdpTransportError::handshake(context, error),
+        Err(_) => UdpTransportError::driver_panic(context),
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════
 // connect_udp
 // ════════════════════════════════════════════════════════════════════
@@ -364,23 +388,26 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
     // if they fail rather than detaching it.
     let mut driver_handle = AbortOnDrop::new(tokio::spawn(async move { driver.run().await }));
 
-    // Wait for the RDPEUDP2 handshake to complete (Event::Connected)
-    let handshake_result = tokio::time::timeout(config.handshake_timeout, connected_notify.notified()).await;
-
-    if handshake_result.is_err() {
-        return Err(UdpTransportError::handshake_timeout("connect udp"));
+    // Wait for the RDPEUDP2 handshake to complete (Event::Connected), racing
+    // against the driver task exiting early with its real cause and against
+    // the configured timeout. Without the driver race, a driver that dies
+    // right away (a socket error on the first send, say) still sleeps out
+    // the full timeout before this returns, and reports a misleading
+    // HandshakeTimeout instead of the actual failure.
+    tokio::select! {
+        () = connected_notify.notified() => {}
+        join_result = driver_handle.handle_mut() => {
+            return Err(driver_exit_during_handshake("connect udp", join_result));
+        }
+        () = tokio::time::sleep(config.handshake_timeout) => {
+            return Err(UdpTransportError::handshake_timeout("connect udp"));
+        }
     }
 
-    // Check if driver died during handshake
+    // The notify and the driver's exit can race each other on the same
+    // tick; check once more for a driver that died right as it signaled.
     if let Some(driver) = driver_handle.take_if_finished() {
-        return match driver.await {
-            Ok(Ok(())) => Err(UdpTransportError::handshake(
-                "connect udp",
-                DriverError::connection_closed("connect udp"),
-            )),
-            Ok(Err(e)) => Err(UdpTransportError::handshake("connect udp", e)),
-            Err(_) => Err(UdpTransportError::driver_panic("connect udp")),
-        };
+        return Err(driver_exit_during_handshake("connect udp", driver.await));
     }
 
     tracing::debug!("RDPEUDP2 handshake complete, starting TLS");
@@ -544,18 +571,24 @@ async fn accept_udp_inner(socket: UdpSocket, config: UdpAcceptConfig) -> Result<
     // if they fail rather than detaching it.
     let mut driver_handle = AbortOnDrop::new(tokio::spawn(async move { driver.run().await }));
 
-    // Wait for the RDPEUDP2 handshake to complete (ACK received)
-    connected_notify.notified().await;
+    // Wait for the RDPEUDP2 handshake to complete (ACK received), racing
+    // against the driver task exiting early with its real cause. Without
+    // this race, a driver that dies here blocks on a Notify that will never
+    // fire: nothing bounds this wait on its own, so the caller only finds
+    // out once the outer accept_timeout cancels the whole accept_udp call,
+    // and even then gets a generic HandshakeTimeout instead of the actual
+    // failure.
+    tokio::select! {
+        () = connected_notify.notified() => {}
+        join_result = driver_handle.handle_mut() => {
+            return Err(driver_exit_during_handshake("accept udp inner", join_result));
+        }
+    }
 
+    // The notify and the driver's exit can race each other on the same
+    // tick; check once more for a driver that died right as it signaled.
     if let Some(driver) = driver_handle.take_if_finished() {
-        return match driver.await {
-            Ok(Ok(())) => Err(UdpTransportError::handshake(
-                "accept udp inner",
-                DriverError::connection_closed("accept udp inner"),
-            )),
-            Ok(Err(e)) => Err(UdpTransportError::handshake("accept udp inner", e)),
-            Err(_) => Err(UdpTransportError::driver_panic("accept udp inner")),
-        };
+        return Err(driver_exit_during_handshake("accept udp inner", driver.await));
     }
 
     tracing::debug!("RDPEUDP2 server handshake complete, starting TLS accept");
@@ -776,6 +809,93 @@ mod tests {
         assert!(
             !DRIVER_RUNNING.load(Ordering::SeqCst),
             "the driver outlived the transport that owned it"
+        );
+    }
+
+    /// `driver_exit_during_handshake` reports the driver's actual error, not
+    /// a generic outcome, for a task that returned a real `DriverError`.
+    #[test]
+    fn driver_exit_during_handshake_reports_the_real_driver_error() {
+        let driver_error = DriverError::socket(
+            "test",
+            std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused"),
+        );
+        let error = driver_exit_during_handshake("test", Ok(Err(driver_error)));
+
+        assert!(
+            matches!(error.kind(), crate::error::UdpTransportErrorKind::Handshake(_)),
+            "got {error:?}, expected a Handshake error carrying the driver's own cause"
+        );
+    }
+
+    /// A driver task that exits `Ok(())` before signaling `Connected` (the
+    /// peer closed, or the idle timeout fired) is still a handshake failure,
+    /// not a silent success.
+    #[test]
+    fn driver_exit_during_handshake_treats_a_clean_exit_as_a_failure() {
+        let error = driver_exit_during_handshake("test", Ok(Ok(())));
+
+        assert!(
+            matches!(error.kind(), crate::error::UdpTransportErrorKind::Handshake(_)),
+            "got {error:?}, expected a Handshake error for an unexpectedly-clean driver exit"
+        );
+    }
+
+    /// A driver task that panics is reported as `DriverPanic`, not folded
+    /// into the same bucket as a reported error.
+    #[tokio::test]
+    async fn driver_exit_during_handshake_reports_a_panic_distinctly() {
+        let join_result = tokio::spawn(async { panic!("simulated driver panic") }).await;
+        assert!(join_result.is_err(), "the spawned task was supposed to panic");
+
+        let error = driver_exit_during_handshake("test", join_result);
+
+        assert!(
+            matches!(error.kind(), crate::error::UdpTransportErrorKind::DriverPanic),
+            "got {error:?}, expected DriverPanic"
+        );
+    }
+
+    /// This is the actual defect: before racing the driver task's own
+    /// completion alongside the handshake notification, a driver that died
+    /// immediately was only discovered after the full (much longer) timeout
+    /// elapsed, and by then the real cause had already been discarded in
+    /// favor of a generic `HandshakeTimeout`. Reproduces the same
+    /// `select!` shape `connect_udp` and `accept_udp_inner` use, with a
+    /// synthetic driver task standing in for a real one.
+    #[tokio::test]
+    async fn a_driver_that_dies_immediately_is_detected_without_waiting_for_the_timeout() {
+        let mut driver_handle = AbortOnDrop::new(tokio::spawn(async {
+            // Yield once so this genuinely races the other branches instead
+            // of winning by already being complete before the select! polls.
+            tokio::task::yield_now().await;
+            Err(DriverError::socket(
+                "test",
+                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused"),
+            ))
+        }));
+        let never_notified = Notify::new();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                () = never_notified.notified() => unreachable!("nothing ever notifies this"),
+                join_result = driver_handle.handle_mut() => driver_exit_during_handshake("test", join_result),
+                // Stands in for connect_udp's real handshake_timeout / the
+                // outer accept_timeout: long enough that the outer 5-second
+                // timeout below only wins if the driver branch is never
+                // reached at all, which would itself be a test bug, not a
+                // pass.
+                () = tokio::time::sleep(Duration::from_secs(60)) => {
+                    panic!("fell through to the timeout branch instead of detecting the driver's own exit")
+                }
+            }
+        })
+        .await
+        .expect("the driver branch should resolve almost immediately, well inside 5 seconds");
+
+        assert!(
+            matches!(outcome.kind(), crate::error::UdpTransportErrorKind::Handshake(_)),
+            "got {outcome:?}, expected the driver's real error to surface"
         );
     }
 }
