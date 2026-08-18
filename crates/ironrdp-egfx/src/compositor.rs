@@ -49,8 +49,8 @@ const MAX_COMPOSITOR_BYTES: usize = 256 * 1024 * 1024;
 
 /// A rectangular region of the graphics output whose pixels changed within a frame.
 ///
-/// `region` is in output space (after `MapSurfaceToOutput`), using the egfx
-/// exclusive-rectangle convention (`right`/`bottom` are one past the edge).
+/// `region` is in output space (after a surface-to-output mapping), using the
+/// egfx exclusive-rectangle convention (`right`/`bottom` are one past the edge).
 /// `data` is tightly-packed RGBA8888, row-major, exactly
 /// `region.width() * region.height() * 4` bytes.
 #[derive(Debug, Clone)]
@@ -83,8 +83,16 @@ struct Surface {
     height: u16,
     /// RGBA8888, `width * height * 4` bytes.
     data: Vec<u8>,
-    /// Output origin if this surface is mapped (`MapSurfaceToOutput`), else `None`.
-    mapped_origin: Option<(u16, u16)>,
+    /// Output mapping if this surface is visible, else `None`.
+    mapping: Option<OutputMapping>,
+}
+
+/// A surface-to-output mapping, including the scaled output dimensions.
+#[derive(Debug, Clone, Copy)]
+struct OutputMapping {
+    origin: (u32, u32),
+    target_width: u32,
+    target_height: u32,
 }
 
 impl Surface {
@@ -216,7 +224,7 @@ impl Compositor {
                 width,
                 height,
                 data: vec![0; len],
-                mapped_origin: None,
+                mapping: None,
             },
         );
     }
@@ -231,14 +239,32 @@ impl Compositor {
     /// Handle `MapSurfaceToOutput`: record the mapping and make the surface's
     /// current contents visible at `(origin_x, origin_y)`.
     pub(crate) fn map_surface(&mut self, id: u16, origin_x: u32, origin_y: u32) {
-        let origin = (
-            u16::try_from(origin_x).unwrap_or(u16::MAX),
-            u16::try_from(origin_y).unwrap_or(u16::MAX),
-        );
+        let Some((width, height)) = self.surfaces.get(&id).map(|surface| (surface.width, surface.height)) else {
+            return;
+        };
+
+        self.map_surface_scaled(id, origin_x, origin_y, u32::from(width), u32::from(height));
+    }
+
+    /// Handle `MapSurfaceToScaledOutput`: record the scaled mapping and make the
+    /// surface's current contents visible at `(origin_x, origin_y)`.
+    pub(crate) fn map_surface_scaled(
+        &mut self,
+        id: u16,
+        origin_x: u32,
+        origin_y: u32,
+        target_width: u32,
+        target_height: u32,
+    ) {
+        let mapping = OutputMapping {
+            origin: (origin_x, origin_y),
+            target_width,
+            target_height,
+        };
         let Some(surface) = self.surfaces.get_mut(&id) else {
             return;
         };
-        surface.mapped_origin = Some(origin);
+        surface.mapping = Some(mapping);
         let (w, h) = (surface.width, surface.height);
         // The whole surface becomes visible at its new origin.
         self.record_dirty(id, 0, 0, w, h);
@@ -428,30 +454,60 @@ impl Compositor {
 
     /// Copy the pixels for one dirty region into the drainable queue.
     ///
-    /// The region arrives clipped to its surface; what remains is the output-space
-    /// translation, against the mapping in force now rather than at draw time.
+    /// The region arrives clipped to its surface and is mapped against the output
+    /// mapping in force now rather than the one active when it was drawn.
     fn materialize(&mut self, dirty: &DirtyRegion) {
-        let Some((ox, oy)) = self
+        let Some((mapping, source_width, source_height)) = self
             .surfaces
             .get(&dirty.surface_id)
-            .and_then(|surface| surface.mapped_origin)
+            .and_then(|surface| surface.mapping.map(|mapping| (mapping, surface.width, surface.height)))
         else {
             return;
         };
+        if mapping.target_width == 0 || mapping.target_height == 0 {
+            return;
+        }
 
-        // Saturating adds keep the math in u16; the clips then bound both the
-        // output rect and the region copied out of the surface.
-        let left = ox.saturating_add(dirty.rect.left).min(self.output_width);
-        let top = oy.saturating_add(dirty.rect.top).min(self.output_height);
-        let right = ox.saturating_add(dirty.rect.right).min(self.output_width);
-        let bottom = oy.saturating_add(dirty.rect.bottom).min(self.output_height);
+        let mapped_left = scaled_edge(dirty.rect.left, source_width, mapping.target_width);
+        let mapped_top = scaled_edge(dirty.rect.top, source_height, mapping.target_height);
+        let mapped_right = scaled_edge(dirty.rect.right, source_width, mapping.target_width);
+        let mapped_bottom = scaled_edge(dirty.rect.bottom, source_height, mapping.target_height);
+
+        // Saturating adds and output clipping bound the output rectangle before
+        // allocating its RGBA8888 pixels.
+        let left = mapping
+            .origin
+            .0
+            .saturating_add(mapped_left)
+            .min(u32::from(self.output_width));
+        let top = mapping
+            .origin
+            .1
+            .saturating_add(mapped_top)
+            .min(u32::from(self.output_height));
+        let right = mapping
+            .origin
+            .0
+            .saturating_add(mapped_right)
+            .min(u32::from(self.output_width));
+        let bottom = mapping
+            .origin
+            .1
+            .saturating_add(mapped_bottom)
+            .min(u32::from(self.output_height));
         if right <= left || bottom <= top {
             return;
         }
 
+        let left = u16::try_from(left).unwrap_or(u16::MAX);
+        let top = u16::try_from(top).unwrap_or(u16::MAX);
+        let right = u16::try_from(right).unwrap_or(u16::MAX);
+        let bottom = u16::try_from(bottom).unwrap_or(u16::MAX);
         let w = right - left;
         let h = bottom - top;
-        let len = usize::from(w) * usize::from(h) * BYTES_PER_PIXEL;
+        let Some(len) = pixel_data_len(w, h) else {
+            return;
+        };
         if !self.charge(len) {
             return;
         }
@@ -459,14 +515,20 @@ impl Compositor {
             self.release(len);
             return;
         };
-        let data = copy_region(&surface.data, surface.width, dirty.rect.left, dirty.rect.top, w, h);
+        let output_rect = ExclusiveRectangle {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        let data =
+            if mapping.target_width == u32::from(source_width) && mapping.target_height == u32::from(source_height) {
+                copy_region(&surface.data, source_width, dirty.rect.left, dirty.rect.top, w, h)
+            } else {
+                copy_scaled_region(&surface.data, (source_width, source_height), mapping, &output_rect)
+            };
         self.ready.push(OutputUpdate {
-            region: ExclusiveRectangle {
-                left,
-                top,
-                right,
-                bottom,
-            },
+            region: output_rect,
             data,
         });
     }
@@ -523,6 +585,25 @@ fn covers(outer: &ExclusiveRectangle, inner: &ExclusiveRectangle) -> bool {
     outer.left <= inner.left && outer.top <= inner.top && outer.right >= inner.right && outer.bottom >= inner.bottom
 }
 
+/// Return the target-space edge for a source-space edge with nearest-neighbor
+/// scaling. Rounding up means a dirty source rectangle covers every output pixel
+/// that samples from it.
+fn scaled_edge(source_edge: u16, source_length: u16, target_length: u32) -> u32 {
+    if source_length == 0 {
+        return 0;
+    }
+
+    let scaled = (u64::from(source_edge) * u64::from(target_length)).div_ceil(u64::from(source_length));
+    u32::try_from(scaled).unwrap_or(u32::MAX)
+}
+
+/// Return the byte length of a tightly-packed RGBA8888 rectangle.
+fn pixel_data_len(width: u16, height: u16) -> Option<usize> {
+    usize::from(width)
+        .checked_mul(usize::from(height))?
+        .checked_mul(BYTES_PER_PIXEL)
+}
+
 /// Copy a sub-rectangle out of an RGBA8888 canvas into a tightly-packed buffer.
 ///
 /// Rows that fall outside the source (short buffer, out-of-range rect) are padded
@@ -543,6 +624,52 @@ fn copy_region(src: &[u8], src_width: u16, x: u16, y: u16, w: u16, h: u16) -> Ve
             out.resize(out.len() + row_bytes, 0);
         }
     }
+    out
+}
+
+/// Scale a target-space rectangle from a source RGBA8888 canvas using nearest
+/// neighbor sampling.
+fn copy_scaled_region(
+    src: &[u8],
+    (src_width, src_height): (u16, u16),
+    mapping: OutputMapping,
+    output_rect: &ExclusiveRectangle,
+) -> Vec<u8> {
+    let width = output_rect.right.saturating_sub(output_rect.left);
+    let height = output_rect.bottom.saturating_sub(output_rect.top);
+    let Some(len) = pixel_data_len(width, height) else {
+        return Vec::new();
+    };
+    let mut out = vec![0; len];
+    let target_left = u32::from(output_rect.left).saturating_sub(mapping.origin.0);
+    let target_top = u32::from(output_rect.top).saturating_sub(mapping.origin.1);
+    let source_column_offsets = (0..width)
+        .map(|x| {
+            usize::from(
+                u16::try_from(
+                    (u64::from(target_left) + u64::from(x)) * u64::from(src_width) / u64::from(mapping.target_width),
+                )
+                .unwrap_or(u16::MAX),
+            ) * BYTES_PER_PIXEL
+        })
+        .collect::<Vec<_>>();
+
+    for y in 0..height {
+        let source_y = u16::try_from(
+            (u64::from(target_top) + u64::from(y)) * u64::from(src_height) / u64::from(mapping.target_height),
+        )
+        .unwrap_or(u16::MAX);
+        let source_row_offset = usize::from(source_y) * usize::from(src_width) * BYTES_PER_PIXEL;
+        for x in 0..width {
+            let source_offset = source_row_offset + source_column_offsets[usize::from(x)];
+            let target_offset = (usize::from(y) * usize::from(width) + usize::from(x)) * BYTES_PER_PIXEL;
+            if source_offset + BYTES_PER_PIXEL <= src.len() {
+                out[target_offset..target_offset + BYTES_PER_PIXEL]
+                    .copy_from_slice(&src[source_offset..source_offset + BYTES_PER_PIXEL]);
+            }
+        }
+    }
+
     out
 }
 
@@ -631,6 +758,100 @@ mod tests {
         );
         assert_eq!(u.data.len(), 4 * 2 * BYTES_PER_PIXEL);
         assert_eq!(&u.data[0..4], &[0x11, 0x22, 0x33, 0xFF]);
+    }
+
+    #[test]
+    fn scaled_surface_materializes_nearest_neighbor_pixels_and_dirty_bounds() {
+        let mut c = Compositor::default();
+        c.reset(10, 10);
+        c.create_surface(1, 2, 2);
+        c.apply_bitmap(
+            1,
+            &rect(0, 0, 2, 2),
+            &[
+                0x10, 0x11, 0x12, 0xFF, 0x20, 0x21, 0x22, 0xFF, 0x30, 0x31, 0x32, 0xFF, 0x40, 0x41, 0x42, 0xFF,
+            ],
+        );
+        c.end_frame();
+
+        c.map_surface_scaled(1, 4, 3, 3, 3);
+        c.end_frame();
+        let updates = c.drain_output();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].region, rect(4, 3, 7, 6));
+        assert_eq!(
+            updates[0].data,
+            [
+                0x10, 0x11, 0x12, 0xFF, 0x10, 0x11, 0x12, 0xFF, 0x20, 0x21, 0x22, 0xFF, 0x10, 0x11, 0x12, 0xFF, 0x10,
+                0x11, 0x12, 0xFF, 0x20, 0x21, 0x22, 0xFF, 0x30, 0x31, 0x32, 0xFF, 0x30, 0x31, 0x32, 0xFF, 0x40, 0x41,
+                0x42, 0xFF,
+            ]
+        );
+
+        c.solid_fill(
+            1,
+            &Color {
+                b: 0x53,
+                g: 0x52,
+                r: 0x51,
+                xa: 0,
+            },
+            &[rect(1, 1, 2, 2)],
+        );
+        c.end_frame();
+        let updates = c.drain_output();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].region, rect(6, 5, 7, 6));
+        assert_eq!(updates[0].data, [0x51, 0x52, 0x53, 0xFF]);
+    }
+
+    #[test]
+    fn scaled_mapping_clips_without_discarding_other_output() {
+        let mut c = Compositor::default();
+        c.reset(8, 8);
+        c.create_surface(1, 2, 2);
+        c.create_surface(2, 1, 1);
+        c.map_surface(2, 0, 0);
+        c.end_frame();
+        c.map_surface_scaled(1, 6, 5, 3, 3);
+        c.end_frame();
+
+        let updates = c.drain_output();
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].region, rect(0, 0, 1, 1));
+        assert_eq!(updates[1].region, rect(6, 5, 8, 8));
+    }
+
+    #[test]
+    fn oversized_scaled_mapping_preserves_the_wire_scale_factor() {
+        let mut c = Compositor::default();
+        c.reset(u32::from(u16::MAX), 1);
+        c.create_surface(1, 2, 1);
+        c.apply_bitmap(1, &rect(0, 0, 2, 1), &[0x10, 0x11, 0x12, 0xFF, 0x20, 0x21, 0x22, 0xFF]);
+        c.end_frame();
+
+        c.map_surface_scaled(1, 0, 0, u32::MAX, 1);
+        c.end_frame();
+        let updates = c.drain_output();
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].region, rect(0, 0, u16::MAX, 1));
+        assert_eq!(&updates[0].data[0..4], &[0x10, 0x11, 0x12, 0xFF]);
+        assert_eq!(
+            &updates[0].data[updates[0].data.len() - BYTES_PER_PIXEL..],
+            &[0x10, 0x11, 0x12, 0xFF]
+        );
+    }
+
+    #[test]
+    fn zero_scale_mapping_produces_no_output() {
+        let mut c = Compositor::default();
+        c.reset(8, 8);
+        c.create_surface(1, 2, 2);
+        c.map_surface_scaled(1, 0, 0, 0, 2);
+        c.end_frame();
+
+        assert!(c.drain_output().is_empty());
     }
 
     /// Deltas only become drainable after `EndFrame`.
