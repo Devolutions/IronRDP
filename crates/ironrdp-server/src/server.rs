@@ -16,6 +16,7 @@ use ironrdp_core::{decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_dvc as dvc;
+use ironrdp_pdu::codecs::rfx::Quant;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
@@ -1772,6 +1773,7 @@ impl RdpServer {
                             {
                                 for caps in c.caps_data.0.0 {
                                     update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
+                                    update_codecs.set_remotefx_quant(Quant::default());
                                 }
                             }
                             CodecProperty::ImageRemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(
@@ -1779,6 +1781,7 @@ impl RdpServer {
                             )) if self.opts.has_image_remote_fx() => {
                                 for caps in c.caps_data.0.0 {
                                     update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
+                                    update_codecs.set_remotefx_quant(Quant::default());
                                 }
                             }
                             #[cfg(feature = "nscodec")]
