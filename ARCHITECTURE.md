@@ -76,7 +76,13 @@ _TODO_: clean up the dependencies
 
 #### [`crates/ironrdp-usb`](./crates/ironrdp-usb)
 
-Protocol-independent, sans-I/O USB data structures, descriptor parsing, validation, and transfer semantics.
+Protocol-independent USB data structures, descriptor parsing, validation, and transfer semantics.
+
+**Architectural Invariant**: descriptor views borrow caller data, and transfer types are generic over caller-owned buffer and packet storage.
+The crate does not allocate.
+
+**Architectural Invariant**: parsing is limited to byte layouts defined by USB itself.
+RDPEUSB, usbredir, and other transport framing belong in their corresponding protocol crates.
 
 #### [`crates/ironrdp-graphics`](./crates/ironrdp-graphics)
 
@@ -117,7 +123,7 @@ RDPEUSB dynamic channel implementation for USB redirection as described in MS-RD
 **Architectural Invariant**: the `usb` module translates protocol-independent `ironrdp-usb` operations and descriptor semantics into complete backend-facing `TS_URB` requests, and maps USBD completions back.
 Selecting `TS_URB` forms and applying Windows USBD conventions remain in this crate.
 
-**Architectural Invariant**: the `usb` module is sans-I/O and does not allocate request IDs, track device state, or manage pending-request lifetimes.
+**Architectural Invariant**: the `usb` module does not allocate request IDs, track device state, or manage pending-request lifetimes.
 Those responsibilities belong to the layer above the channel implementation.
 
 #### [`crates/ironrdp-rdpewa`](./crates/ironrdp-rdpewa)
