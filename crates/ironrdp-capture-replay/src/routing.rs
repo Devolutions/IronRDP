@@ -1,7 +1,7 @@
 use core::any::TypeId;
 use core::convert::Infallible;
 use core::mem;
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -10,6 +10,7 @@ use ironrdp_dvc::pdu::DrdynvcServerPdu;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler, Surface};
 use ironrdp_egfx::compositor::OutputUpdate;
+use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
 use ironrdp_egfx::pdu::{CapabilitySet, GfxPdu};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::rdp::ClientInfoPdu;
@@ -389,7 +390,9 @@ impl ReplayRouter {
                 report.gaps.push(ReplayGap {
                     packet: message.packet,
                     direction: ReplayDirection::Server,
-                    kind: if route == ReplayRoute::StaticChannel {
+                    kind: if route == ReplayRoute::StaticChannel && self.take_unsupported_egfx_codec() {
+                        ReplayGapKind::Unsupported
+                    } else if route == ReplayRoute::StaticChannel {
                         ReplayGapKind::StaticChannel
                     } else {
                         ReplayGapKind::Session
@@ -518,6 +521,20 @@ impl ReplayRouter {
             }
         }
         Ok(())
+    }
+
+    fn take_unsupported_egfx_codec(&mut self) -> bool {
+        let channel_ids = self.egfx_dynamic_channels.iter().copied().collect::<Vec<_>>();
+        channel_ids.into_iter().any(|channel_id| {
+            self.stage
+                .get_svc_processor_mut::<DrdynvcClient>()
+                .and_then(|drdynvc| {
+                    drdynvc
+                        .get_dvc_by_channel_id_mut::<ReplayEgfxChannel>(channel_id)
+                        .map(|mut channel| channel.processor_mut().take_unsupported_codec())
+                })
+                .unwrap_or(false)
+        })
     }
 }
 
@@ -770,6 +787,7 @@ struct ReplayGraphicsOutput {
     width: AtomicU32,
     height: AtomicU32,
     reset_generation: AtomicUsize,
+    unsupported_avc420: AtomicBool,
 }
 
 struct ReplayGraphicsHandler {
@@ -812,12 +830,18 @@ impl ReplayEgfxChannel {
             width: AtomicU32::new(0),
             height: AtomicU32::new(0),
             reset_generation: AtomicUsize::new(0),
+            unsupported_avc420: AtomicBool::new(false),
         });
         let handler = ReplayGraphicsHandler {
             output: Arc::clone(&output),
         };
         Self {
-            client: GraphicsPipelineClient::new(Box::new(handler), None),
+            client: GraphicsPipelineClient::new(
+                Box::new(handler),
+                Some(Box::new(UnsupportedH264Decoder {
+                    unsupported: Arc::clone(&output),
+                })),
+            ),
             output,
             observed_reset_generation: 0,
         }
@@ -833,6 +857,21 @@ impl ReplayEgfxChannel {
             )
         });
         (reset, self.client.drain_output())
+    }
+
+    fn take_unsupported_codec(&mut self) -> bool {
+        self.output.unsupported_avc420.swap(false, Ordering::SeqCst)
+    }
+}
+
+struct UnsupportedH264Decoder {
+    unsupported: Arc<ReplayGraphicsOutput>,
+}
+
+impl H264Decoder for UnsupportedH264Decoder {
+    fn decode(&mut self, _data: &[u8]) -> DecoderResult<DecodedFrame> {
+        self.unsupported.unsupported_avc420.store(true, Ordering::SeqCst);
+        Err(DecoderError::msg("AVC420 replay is unsupported"))
     }
 }
 
@@ -949,9 +988,9 @@ mod tests {
     use ironrdp_core::encode_vec;
     use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcDataPdu};
     use ironrdp_egfx::pdu::{
-        CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitySet as EgfxCapabilitySet, Codec1Type, CreateSurfacePdu,
-        EndFramePdu, MapSurfaceToOutputPdu, PixelFormat as EgfxPixelFormat, ResetGraphicsPdu, StartFramePdu, Timestamp,
-        WireToSurface1Pdu,
+        Avc420Region, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitySet as EgfxCapabilitySet, Codec1Type,
+        CreateSurfacePdu, EndFramePdu, MapSurfaceToOutputPdu, PixelFormat as EgfxPixelFormat, ResetGraphicsPdu,
+        StartFramePdu, Timestamp, WireToSurface1Pdu, encode_avc420_bitmap_stream,
     };
     use ironrdp_graphics::zgfx::wrap_uncompressed;
     use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
@@ -1321,6 +1360,80 @@ mod tests {
     #[test]
     fn passive_egfx_channel_does_not_start_negotiation() {
         assert!(ReplayEgfxChannel::new().start(43).unwrap().is_empty());
+    }
+
+    #[test]
+    fn reports_avc420_as_an_unsupported_replay_gap() {
+        let mut router = ReplayRouter::new(activation()).unwrap();
+        let channel_id = 47;
+        let report = router.route_plaintext(&Plaintext {
+            client: Vec::new(),
+            server: vec![
+                (1, demand_active()),
+                (2, font_map()),
+                (3, static_message(1_005, create(channel_id, ironrdp_egfx::CHANNEL_NAME))),
+                (
+                    4,
+                    static_message(
+                        1_005,
+                        egfx_data(
+                            channel_id,
+                            GfxPdu::ResetGraphics(ResetGraphicsPdu {
+                                width: 1,
+                                height: 1,
+                                monitors: Vec::new(),
+                            }),
+                        ),
+                    ),
+                ),
+                (
+                    5,
+                    static_message(
+                        1_005,
+                        egfx_data(
+                            channel_id,
+                            GfxPdu::CreateSurface(CreateSurfacePdu {
+                                surface_id: 7,
+                                width: 1,
+                                height: 1,
+                                pixel_format: EgfxPixelFormat::XRgb,
+                            }),
+                        ),
+                    ),
+                ),
+                (
+                    6,
+                    static_message(
+                        1_005,
+                        egfx_data(
+                            channel_id,
+                            GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                                surface_id: 7,
+                                codec_id: Codec1Type::Avc420,
+                                pixel_format: EgfxPixelFormat::XRgb,
+                                destination_rectangle: ExclusiveRectangle {
+                                    left: 0,
+                                    top: 0,
+                                    right: 1,
+                                    bottom: 1,
+                                },
+                                bitmap_data: encode_avc420_bitmap_stream(&[Avc420Region::full_frame(1, 1, 22)], &[]),
+                            }),
+                        ),
+                    ),
+                ),
+            ],
+        });
+
+        assert_eq!(
+            report.gaps,
+            [ReplayGap {
+                packet: 6,
+                direction: ReplayDirection::Server,
+                kind: ReplayGapKind::Unsupported,
+                skipped_bytes: 0,
+            }]
+        );
     }
 
     #[test]
