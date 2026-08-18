@@ -206,8 +206,23 @@ impl Processor {
         frame: &[u8],
         bulk_decompressor: &mut Option<BulkCompressor>,
     ) -> SessionResult<Vec<ProcessorOutput>> {
-        let data_ctx: SendDataIndicationCtx<'_> =
-            ironrdp_pdu::mcs::decode_send_data_indication(frame).map_err(SessionError::decode)?;
+        let data_ctx: SendDataIndicationCtx<'_> = match ironrdp_pdu::mcs::decode_send_data_indication(frame) {
+            Ok(data_ctx) => data_ctx,
+            Err(error) => {
+                // Some servers (xrdp) end the session with a plain MCS Disconnect Provider Ultimatum.
+                if let Ok(X224(McsMessage::DisconnectProviderUltimatum(ultimatum))) =
+                    decode::<X224<McsMessage<'_>>>(frame)
+                {
+                    debug!(reason = ?ultimatum.reason, "Received Disconnect Provider Ultimatum, session will be closed");
+
+                    return Ok(vec![ProcessorOutput::Disconnect(DisconnectDescription::McsDisconnect(
+                        ultimatum.reason,
+                    ))]);
+                }
+
+                return Err(SessionError::decode(error));
+            }
+        };
         let channel_id = data_ctx.channel_id;
 
         if channel_id == self.io_channel_id {
@@ -550,6 +565,26 @@ mod tests {
         };
 
         assert!(!is_logon_complete(&session_info));
+    }
+
+    #[test]
+    fn processor_gracefully_disconnects_on_provider_ultimatum() {
+        let frame = encode_vec(&X224(McsMessage::DisconnectProviderUltimatum(
+            DisconnectProviderUltimatum::from_reason(DisconnectReason::ProviderInitiated),
+        )))
+        .expect("encode disconnect provider ultimatum");
+        let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, None, 0);
+
+        let outputs = processor
+            .process(&frame, &mut None)
+            .expect("disconnect provider ultimatum should not be a protocol error");
+
+        assert!(matches!(
+            outputs.as_slice(),
+            [ProcessorOutput::Disconnect(DisconnectDescription::McsDisconnect(
+                DisconnectReason::ProviderInitiated
+            ))]
+        ));
     }
 
     #[test]
