@@ -6,6 +6,7 @@
 
 const INITIAL_KP: u8 = 8;
 const MAX_KP: u8 = 80;
+// This conservative malformed-stream bound includes LL3 entries, although LL3 is raw-coded.
 const MAX_ZERO_RUN: usize = 4096;
 
 /// Errors encountered while decoding or encoding an SRL stream.

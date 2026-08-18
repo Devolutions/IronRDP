@@ -165,16 +165,17 @@ pub fn decode_upgrade_pass(
     assert!(sign.len() >= COEFFICIENTS_PER_COMPONENT);
 
     let bands = get_band_layout(use_reduce_extrapolate);
-    let has_srl_values = bands.iter().enumerate().any(|(band_idx, band)| {
+    let zero_counts: [usize; NUM_BANDS] = core::array::from_fn(|band_idx| band_zero_count(sign, &bands[band_idx]));
+    let has_srl_values = bands.iter().enumerate().any(|(band_idx, _)| {
         let num_bits = prev_prog_quant
             .for_band(band_idx)
             .saturating_sub(curr_prog_quant.for_band(band_idx));
-        band_idx != NUM_BANDS - 1 && num_bits != 0 && band_zero_count(sign, band) != 0
+        band_idx != NUM_BANDS - 1 && num_bits != 0 && zero_counts[band_idx] != 0
     });
     let mut srl_decoder = has_srl_values.then(|| srl::SrlDecoder::new(srl_data)).transpose()?;
     let mut srl_values = Vec::with_capacity(NUM_BANDS);
 
-    for (band_idx, band) in bands.iter().enumerate() {
+    for (band_idx, _) in bands.iter().enumerate() {
         let prev_bit_pos = prev_prog_quant.for_band(band_idx);
         let curr_bit_pos = curr_prog_quant.for_band(band_idx);
 
@@ -191,7 +192,7 @@ pub fn decode_upgrade_pass(
             continue;
         }
 
-        let zero_count = band_zero_count(sign, band);
+        let zero_count = zero_counts[band_idx];
         let values = match srl_decoder.as_mut() {
             Some(decoder) => decoder.decode(zero_count, num_bits)?,
             None => Vec::new(),
@@ -881,6 +882,7 @@ impl TileState {
     /// Decode an upgrade-pass tile (TILE_UPGRADE).
     ///
     /// Accumulates refinement data into existing coefficients.
+    /// On error, leaves the tile at its prior upgrade state.
     ///
     /// # Arguments
     /// - `srl_data`: SRL-encoded streams for [Y, Cb, Cr]
@@ -895,6 +897,8 @@ impl TileState {
         quality: u8,
     ) -> Result<(), SrlError> {
         let prev_prog_quant = self.prog_quant;
+        let mut coefficients = self.coefficients;
+        let mut sign = self.sign;
 
         for c in 0..3 {
             decode_upgrade_pass(
@@ -903,11 +907,13 @@ impl TileState {
                 &prev_prog_quant[c],
                 &prog_quants[c],
                 self.use_reduce_extrapolate,
-                &mut self.coefficients[c],
-                &mut self.sign[c],
+                &mut coefficients[c],
+                &mut sign[c],
             )?;
         }
 
+        self.coefficients = coefficients;
+        self.sign = sign;
         self.prog_quant = prog_quants;
         self.quality = quality;
         self.pass = self.pass.saturating_add(1);
@@ -1778,6 +1784,37 @@ mod tests {
             ),
             Err(SrlError::Truncated)
         );
+    }
+
+    #[test]
+    fn tile_upgrade_keeps_all_components_on_srl_error() {
+        let mut tile = TileState::new();
+        let mut prev_prog_quant = ComponentCodecQuant::LOSSLESS;
+        prev_prog_quant.hl1 = 4;
+        tile.prog_quant = [prev_prog_quant; 3];
+        tile.pass = 1;
+        tile.quality = 50;
+        tile.sign[0][0] = SIGN_ZERO;
+        tile.sign[1][0] = SIGN_ZERO;
+
+        let coefficients = tile.coefficients;
+        let sign = tile.sign;
+
+        assert_eq!(
+            tile.decode_upgrade(
+                [&[0x90, 0x00], &[0x80, 0x00], &[]],
+                [&[], &[], &[]],
+                [ComponentCodecQuant::LOSSLESS; 3],
+                75,
+            ),
+            Err(SrlError::Truncated)
+        );
+
+        assert_eq!(tile.coefficients, coefficients);
+        assert_eq!(tile.sign, sign);
+        assert_eq!(tile.prog_quant, [prev_prog_quant; 3]);
+        assert_eq!(tile.pass, 1);
+        assert_eq!(tile.quality, 50);
     }
 
     #[test]
