@@ -202,8 +202,8 @@ fn avc444v2_sender_preserves_codec_and_lc_wire_shape() {
 
     let stream1_data = [0x00, 0x00, 0x00, 0x01, 0x67];
     let stream2_data = [0x00, 0x00, 0x00, 0x01, 0x68];
-    let stream1_regions = [Avc420Region::full_frame(64, 64, 22)];
-    let stream2_regions = [Avc420Region::full_frame(64, 64, 24)];
+    let stream1_regions = [Avc420Region::new(0, 0, 32, 32, 22, 78)];
+    let stream2_regions = [Avc420Region::new(16, 8, 64, 48, 24, 76)];
     let cases = [
         (
             Encoding::LUMA_AND_CHROMA,
@@ -244,11 +244,15 @@ fn avc444v2_sender_preserves_codec_and_lc_wire_shape() {
         let stream = Avc444BitmapStream::decode(&mut cursor).expect("decode AVC444v2 bitmap stream");
         assert_eq!(stream.encoding, encoding);
         assert_eq!(stream.stream2.is_some(), encoding == Encoding::LUMA_AND_CHROMA);
-        assert_eq!(wire.destination_rectangle.right, 64);
-        assert_eq!(wire.destination_rectangle.bottom, 64);
-        assert_eq!(stream.stream1.rectangles[0], wire.destination_rectangle);
+        let expected_right = if encoding == Encoding::LUMA_AND_CHROMA { 64 } else { 32 };
+        let expected_bottom = if encoding == Encoding::LUMA_AND_CHROMA { 48 } else { 32 };
+        assert_eq!(wire.destination_rectangle.right, expected_right);
+        assert_eq!(wire.destination_rectangle.bottom, expected_bottom);
+        assert_eq!(stream.stream1.rectangles[0].right, 32);
+        assert_eq!(stream.stream1.rectangles[0].bottom, 32);
         if let Some(stream2) = stream.stream2 {
-            assert_eq!(stream2.rectangles[0], wire.destination_rectangle);
+            assert_eq!(stream2.rectangles[0].right, 64);
+            assert_eq!(stream2.rectangles[0].bottom, 48);
         }
     }
 }

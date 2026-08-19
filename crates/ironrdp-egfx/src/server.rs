@@ -1496,7 +1496,11 @@ impl GraphicsPipelineServer {
         };
 
         let encoded_stream = encode_avc444_bitmap_stream(&avc444_stream);
-        let target_rect = Self::compute_dest_rect(stream1_regions, surface.width, surface.height);
+        let target_rect = if let Some(stream2_regions) = stream2_regions {
+            Self::compute_dest_rect_for_streams(stream1_regions, stream2_regions, surface.width, surface.height)
+        } else {
+            Self::compute_dest_rect(stream1_regions, surface.width, surface.height)
+        };
 
         self.output_queue
             .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
@@ -1512,6 +1516,23 @@ impl GraphicsPipelineServer {
         self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
 
         Some(frame_id)
+    }
+
+    fn compute_dest_rect_for_streams(
+        stream1_regions: &[Avc420Region],
+        stream2_regions: &[Avc420Region],
+        default_width: u16,
+        default_height: u16,
+    ) -> ExclusiveRectangle {
+        let stream1 = Self::compute_dest_rect(stream1_regions, default_width, default_height);
+        let stream2 = Self::compute_dest_rect(stream2_regions, default_width, default_height);
+
+        ExclusiveRectangle {
+            left: stream1.left.min(stream2.left),
+            top: stream1.top.min(stream2.top),
+            right: stream1.right.max(stream2.right),
+            bottom: stream1.bottom.max(stream2.bottom),
+        }
     }
 
     /// Queue a pre-encoded RDP6 Planar bitmap stream for transmission via EGFX.
