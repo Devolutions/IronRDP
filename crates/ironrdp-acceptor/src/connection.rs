@@ -2,8 +2,8 @@ use core::any::TypeId;
 use core::mem;
 
 use ironrdp_connector::{
-    ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State, Written, encode_x224_packet,
-    general_err, reason_err,
+    ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, MonotonicInstant, Sequence, State, Written,
+    encode_x224_packet, general_err, reason_err,
 };
 use ironrdp_core::{WriteBuf, decode};
 use ironrdp_pdu as pdu;
@@ -287,7 +287,8 @@ impl Acceptor {
     /// Panics if state is not [AcceptorState::SecurityUpgrade].
     pub fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.reached_security_upgrade().is_some());
-        self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
+        self.step(&[], None, &mut WriteBuf::new())
+            .expect("transition to next state");
         debug_assert!(self.reached_security_upgrade().is_none());
     }
 
@@ -300,7 +301,9 @@ impl Acceptor {
     /// Panics if state is not [AcceptorState::Credssp].
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
-        let res = self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
+        let res = self
+            .step(&[], None, &mut WriteBuf::new())
+            .expect("transition to next state");
         debug_assert!(!self.should_perform_credssp());
         assert_eq!(res, Written::Nothing);
     }
@@ -458,7 +461,12 @@ impl Sequence for Acceptor {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
+    fn step(
+        &mut self,
+        input: &[u8],
+        received_at: Option<MonotonicInstant>,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
         let prev_state = mem::take(&mut self.state);
 
         let (written, next_state) = match prev_state {
@@ -724,7 +732,7 @@ impl Sequence for Acceptor {
                 channels,
                 mut connection,
             } => {
-                let written = connection.step(input, output)?;
+                let written = connection.step(input, received_at, output)?;
                 let state = if connection.is_done() {
                     AcceptorState::RdpSecurityCommencement {
                         protocol,
@@ -964,7 +972,7 @@ impl Sequence for Acceptor {
                 channels,
                 client_capabilities,
             } => {
-                let written = finalization.step(input, output)?;
+                let written = finalization.step(input, received_at, output)?;
 
                 let state = if finalization.is_done() {
                     AcceptorState::Accepted {
