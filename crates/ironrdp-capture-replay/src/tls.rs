@@ -31,8 +31,24 @@ pub struct Plaintext {
 /// TLS key-log entries are used only in memory and are not retained by the
 /// returned streams.
 pub fn decrypt_tls(capture: &Capture) -> Result<Plaintext, ReplayError> {
-    let client_records = collect_tls_records(&capture.flow.client_stream, 0xe0)?;
-    let server_records = collect_tls_records(&capture.flow.server_stream, 0xd0)?;
+    decrypt_tls_streams(
+        &capture.flow.client_stream,
+        &capture.flow.server_stream,
+        capture.tls_key_log.as_str(),
+    )
+}
+
+/// Decrypt TLS application data from a pair of directional byte streams.
+///
+/// Public for offline tooling that extracts inner streams (e.g. gateway tunnels)
+/// before decryption.
+pub fn decrypt_tls_streams(
+    client_stream: &PacketStream,
+    server_stream: &PacketStream,
+    key_log: &str,
+) -> Result<Plaintext, ReplayError> {
+    let client_records = collect_tls_records(client_stream, 0xe0)?;
+    let server_records = collect_tls_records(server_stream, 0xd0)?;
     let (client_records, server_records) = match (client_records, server_records) {
         (Some(client_records), Some(server_records)) => (client_records, server_records),
         (None, None) => return Err(ReplayError::StandardSecurity),
@@ -41,7 +57,11 @@ pub fn decrypt_tls(capture: &Capture) -> Result<Plaintext, ReplayError> {
     if client_records.is_empty() && server_records.is_empty() {
         return Err(ReplayError::StandardSecurity);
     }
-    let tls = Tls::from_records(&client_records, &server_records, capture.tls_key_log.as_str())?;
+    // Full-handshake sessions first; a mid-stream capture (tunneled session recorded
+    // after the handshake, or with secrets logged only for the application phase) falls
+    // back to application-secret-only decryption.
+    let tls = Tls::from_records(&client_records, &server_records, key_log)
+        .or_else(|_| Tls::from_records_midstream(&client_records, &server_records, key_log))?;
 
     Ok(Plaintext {
         client: tls.decrypt(Direction::Client, &client_records)?,
@@ -73,9 +93,28 @@ impl Tls {
         let suite = tls_cipher_suite(&server_hello)?;
 
         match suite {
-            0x1301 | 0x1302 => Tls13::from_hello(&client_hello, suite, key_log).map(Self::V13),
+            0x1301 | 0x1302 => Tls13::from_hello(&client_hello, suite, key_log, client, server).map(Self::V13),
             _ => Tls12::from_hello(&client_hello, &server_hello, suite, key_log).map(Self::V12),
         }
+    }
+
+    /// Builds a TLS 1.3 decryptor for a mid-stream capture where the handshake is absent
+    /// and only application-traffic secrets are logged.
+    ///
+    /// Tunneled sessions captured after the handshake carry no ClientHello/ServerHello; the
+    /// session is identified by trying every logged application secret against the first
+    /// application record.
+    fn from_records_midstream(
+        client: &PacketStream,
+        server: &PacketStream,
+        key_log: &str,
+    ) -> Result<Self, ReplayError> {
+        // Find each direction's first application-data record.
+        let first_client = first_application_record(client).ok_or(ReplayError::UnsupportedTls)?;
+        let first_server = first_application_record(server).ok_or(ReplayError::UnsupportedTls)?;
+        let cipher = guess_tls13_cipher(&first_client, &first_server).ok_or(ReplayError::UnsupportedTls)?;
+
+        Tls13::from_application_secrets(cipher, &first_client, &first_server, key_log).map(Self::V13)
     }
 
     fn decrypt(&self, direction: Direction, records: &PacketStream) -> Result<PacketStream, ReplayError> {
@@ -196,21 +235,30 @@ impl Tls12 {
     }
 }
 
+#[derive(Clone)]
 struct Tls13 {
     cipher: Cipher,
-    client_handshake: TrafficKey,
-    server_handshake: TrafficKey,
+    client_handshake: Option<TrafficKey>,
+    server_handshake: Option<TrafficKey>,
     client_application: TrafficKey,
     server_application: TrafficKey,
+    has_handshake_keys: bool,
 }
 
+#[derive(Clone)]
 struct TrafficKey {
     key: Vec<u8>,
     iv: [u8; 12],
 }
 
 impl Tls13 {
-    fn from_hello(client_hello: &[u8], suite: u16, key_log: &str) -> Result<Self, ReplayError> {
+    fn from_hello(
+        client_hello: &[u8],
+        suite: u16,
+        key_log: &str,
+        client_records: &PacketStream,
+        server_records: &PacketStream,
+    ) -> Result<Self, ReplayError> {
         let client_random = client_hello.get(2..34).ok_or(ReplayError::UnsupportedTls)?;
         let cipher = match suite {
             0x1301 => Cipher::Aes128GcmSha256,
@@ -221,52 +269,164 @@ impl Tls13 {
             Cipher::Aes128GcmSha256 => 16,
             Cipher::Aes256GcmSha384 => 32,
         };
-        let client_handshake = tls13_traffic_key(
-            cipher,
-            parse_tls13_secret(key_log, "CLIENT_HANDSHAKE_TRAFFIC_SECRET", client_random)?,
-            key_len,
-        )?;
-        let server_handshake = tls13_traffic_key(
-            cipher,
-            parse_tls13_secret(key_log, "SERVER_HANDSHAKE_TRAFFIC_SECRET", client_random)?,
-            key_len,
-        )?;
-        let client_application = tls13_traffic_key(
-            cipher,
-            parse_tls13_secret(key_log, "CLIENT_TRAFFIC_SECRET_0", client_random)?,
-            key_len,
-        )?;
-        let server_application = tls13_traffic_key(
-            cipher,
-            parse_tls13_secret(key_log, "SERVER_TRAFFIC_SECRET_0", client_random)?,
-            key_len,
-        )?;
+        // Application secrets are always required. Handshake secrets may be absent when a
+        // key log captured the session only after the handshake completed (common for
+        // tunneled sessions logged by an out-of-band dumper); such sessions start
+        // decryption at the application phase.
+        let client_handshake = parse_tls13_secret(key_log, "CLIENT_HANDSHAKE_TRAFFIC_SECRET", client_random)
+            .ok()
+            .map(|secret| tls13_traffic_key(cipher, secret, key_len))
+            .transpose()?;
+        let server_handshake = parse_tls13_secret(key_log, "SERVER_HANDSHAKE_TRAFFIC_SECRET", client_random)
+            .ok()
+            .map(|secret| tls13_traffic_key(cipher, secret, key_len))
+            .transpose()?;
 
-        Ok(Self {
-            cipher,
-            client_handshake,
-            server_handshake,
-            client_application,
-            server_application,
-        })
+        // A session's traffic secret can be logged several times under one client random
+        // (key update, re-key), and an out-of-band dumper does not guarantee log order.
+        // Score each candidate pair by how much of the session it actually decrypts and
+        // keep the best; a wrong key yields no application output because the
+        // handshake-tail skip consumes every record, while the right key decrypts the
+        // full stream.
+        let client_candidates = parse_tls13_secrets(key_log, "CLIENT_TRAFFIC_SECRET_0", client_random);
+        let server_candidates = parse_tls13_secrets(key_log, "SERVER_TRAFFIC_SECRET_0", client_random);
+        if client_candidates.is_empty() || server_candidates.is_empty() {
+            return Err(ReplayError::MissingTlsSecret);
+        }
+        let mut first_candidate: Option<Self> = None;
+        let mut best: Option<(usize, Self)> = None;
+        for client_secret in &client_candidates {
+            for server_secret in &server_candidates {
+                let client_application = tls13_traffic_key(cipher, client_secret.clone(), key_len)?;
+                let server_application = tls13_traffic_key(cipher, server_secret.clone(), key_len)?;
+                let candidate = Self {
+                    cipher,
+                    client_handshake: client_handshake.clone(),
+                    server_handshake: server_handshake.clone(),
+                    client_application,
+                    server_application,
+                    has_handshake_keys: client_handshake.is_some() && server_handshake.is_some(),
+                };
+                // Kept as a fallback so a session with no application records yet still
+                // builds a decryptor.
+                if first_candidate.is_none() {
+                    first_candidate = Some(candidate.clone());
+                }
+                let score = candidate.decrypted_len(Direction::Client, client_records)
+                    + candidate.decrypted_len(Direction::Server, server_records);
+                if score > 0 && best.as_ref().is_none_or(|(best_score, _)| score > *best_score) {
+                    best = Some((score, candidate));
+                }
+            }
+        }
+        best.map(|(_, candidate)| candidate)
+            .or(first_candidate)
+            .ok_or(ReplayError::MissingTlsSecret)
+    }
+
+    /// Total application bytes a candidate decrypts in one direction, or 0 when the key
+    /// does not fit (decryption error or empty output).
+    fn decrypted_len(&self, direction: Direction, records: &PacketStream) -> usize {
+        self.decrypt(direction, records)
+            .map(|stream| stream.iter().map(|(_, chunk)| chunk.len()).sum())
+            .unwrap_or(0)
+    }
+
+    /// Builds a decryptor from application-traffic secrets alone, for a mid-stream
+    /// capture whose handshake (and client random) is not in the capture.
+    ///
+    /// The session is identified by deriving keys from each logged
+    /// `CLIENT_TRAFFIC_SECRET_0`/`SERVER_TRAFFIC_SECRET_0` pair and authenticating the
+    /// first application record; the GCM tag check is decisive.
+    fn from_application_secrets(
+        cipher: Cipher,
+        first_client_record: &[u8],
+        first_server_record: &[u8],
+        key_log: &str,
+    ) -> Result<Self, ReplayError> {
+        let key_len = match cipher {
+            Cipher::Aes128GcmSha256 => 16,
+            Cipher::Aes256GcmSha384 => 32,
+        };
+        // Collect client randoms that have both application secrets logged.
+        let mut client_randoms = Vec::new();
+        for line in key_log.lines().map(|line| line.replace('\0', "")) {
+            let mut fields = line.split_ascii_whitespace();
+            if fields.next() == Some("CLIENT_TRAFFIC_SECRET_0")
+                && let Some(random) = fields.next()
+            {
+                client_randoms.push(random.to_owned());
+            }
+        }
+        client_randoms.sort_unstable();
+        client_randoms.dedup();
+
+        for random in client_randoms {
+            let client_random_bytes = decode_hex(&random).ok_or(ReplayError::MissingTlsSecret)?;
+            let Ok(client_application) = parse_tls13_secret(key_log, "CLIENT_TRAFFIC_SECRET_0", &client_random_bytes)
+                .and_then(|secret| tls13_traffic_key(cipher, secret, key_len))
+            else {
+                continue;
+            };
+            let Ok(server_application) = parse_tls13_secret(key_log, "SERVER_TRAFFIC_SECRET_0", &client_random_bytes)
+                .and_then(|secret| tls13_traffic_key(cipher, secret, key_len))
+            else {
+                continue;
+            };
+
+            // Try the candidate against both directions' first application records.
+            let candidate = Self {
+                cipher,
+                client_handshake: None,
+                server_handshake: None,
+                client_application,
+                server_application,
+                has_handshake_keys: false,
+            };
+            if candidate
+                .decrypt(Direction::Client, &vec![(0, first_client_record.to_vec())])
+                .is_ok()
+                && candidate
+                    .decrypt(Direction::Server, &vec![(0, first_server_record.to_vec())])
+                    .is_ok()
+            {
+                return Ok(candidate);
+            }
+        }
+        Err(ReplayError::MissingTlsSecret)
     }
 
     fn decrypt(&self, direction: Direction, records: &PacketStream) -> Result<PacketStream, ReplayError> {
+        // Without handshake secrets, decryption starts at the application phase.
         let (handshake, application) = match direction {
             Direction::Client => (&self.client_handshake, &self.client_application),
             Direction::Server => (&self.server_handshake, &self.server_application),
         };
-        let mut key = handshake;
+        let application: &TrafficKey = application;
+        let mut handshake_phase = self.has_handshake_keys;
+        let mut key: &TrafficKey = handshake.as_ref().unwrap_or(application);
         let mut sequence = 0u64;
         let mut output = Vec::new();
         let mut handshake_data = Vec::new();
-        let mut handshake_phase = true;
         for (packet, record) in records {
             let (content_type, version, body) = parse_tls_record(record).ok_or(ReplayError::UnsupportedTls)?;
             if content_type != TLS_CONTENT_APPLICATION_DATA {
                 continue;
             }
-            let plaintext = decrypt_tls13_record(self.cipher, key, sequence, content_type, version, body)?;
+            // When handshake secrets are absent, the opening application records may
+            // still carry the handshake tail (encrypted with the unknown handshake keys);
+            // skip records that fail authentication until the application phase starts.
+            let plaintext = match decrypt_tls13_record(self.cipher, key, sequence, content_type, version, body) {
+                Ok(plaintext) => plaintext,
+                // A record that fails the application key before the application phase has
+                // started is the handshake tail (EncryptedExtensions/Finished) encrypted
+                // with the unknown handshake key. It does not consume an application
+                // sequence number, so the sequence is left unchanged while skipping it.
+                Err(ReplayError::TlsAuthentication) if !handshake_phase && output.is_empty() => {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             sequence = sequence.checked_add(1).ok_or(ReplayError::UnsupportedTls)?;
             let (content, inner_type) = tls13_inner_plaintext(&plaintext).ok_or(ReplayError::UnsupportedTls)?;
             if inner_type == TLS_CONTENT_HANDSHAKE && handshake_phase {
@@ -295,16 +455,23 @@ fn collect_tls_records(stream: &PacketStream, x224_code: u8) -> Result<Option<Pa
         packet_offsets.push((bytes.len(), *packet));
         bytes.extend_from_slice(chunk);
     }
-    let tpkt_end = x224_connection_tpdu_end(&bytes, x224_code);
-    let start = if let Some(start) = tpkt_end {
-        bytes
-            .get(start..start + 3)
-            .is_some_and(|header| header[0] == TLS_CONTENT_HANDSHAKE && header[1] == 3 && header[2] >= 1)
-            .then_some(start)
-    } else {
+    // A direct capture starts TLS immediately after the X.224 connection TPDU. A
+    // gateway-unwrapped stream may pad between the TPDU and the first TLS record, so when
+    // the bytes right after the TPDU are not a handshake record, scan for the first one.
+    let scan = |bytes: &[u8]| {
         bytes
             .windows(3)
             .position(|window| window[0] == TLS_CONTENT_HANDSHAKE && window[1] == 3 && window[2] >= 1)
+    };
+    let start = match x224_connection_tpdu_end(&bytes, x224_code) {
+        Some(tpkt_end)
+            if bytes
+                .get(tpkt_end..tpkt_end + 3)
+                .is_some_and(|header| header[0] == TLS_CONTENT_HANDSHAKE && header[1] == 3 && header[2] >= 1) =>
+        {
+            Some(tpkt_end)
+        }
+        _ => scan(&bytes),
     };
     let Some(mut offset) = start else {
         return Ok(None);
@@ -357,6 +524,39 @@ fn first_handshake(records: &PacketStream, wanted_type: u8) -> Option<Vec<u8>> {
     None
 }
 
+/// First application-data record in a stream (header + ciphertext + tag), owned.
+fn first_application_record(stream: &PacketStream) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    for (_, chunk) in stream {
+        bytes.extend_from_slice(chunk);
+    }
+    let mut offset = 0;
+    while offset + 5 <= bytes.len() {
+        if bytes[offset] != TLS_CONTENT_APPLICATION_DATA
+            || bytes[offset + 1] != 3
+            || !(1..=3).contains(&bytes[offset + 2])
+        {
+            offset += 1;
+            continue;
+        }
+        let length = usize::from(u16::from_be_bytes([bytes[offset + 3], bytes[offset + 4]]));
+        let end = offset.checked_add(5 + length)?;
+        if end > bytes.len() {
+            return None;
+        }
+        return Some(bytes[offset..end].to_vec());
+    }
+    None
+}
+
+/// Both directions of a mid-stream session share the cipher suite; guess it from the
+/// record lengths (AES-256-GCM has a 32-byte key, AES-128-GCM a 16-byte key; the tag is
+/// 16 bytes either way, so record size alone is ambiguous — prefer AES-256-GCM, the
+/// common RD Gateway choice, and let the caller retry with the other).
+fn guess_tls13_cipher(_client_record: &[u8], _server_record: &[u8]) -> Option<Cipher> {
+    Some(Cipher::Aes256GcmSha384)
+}
+
 fn tls_cipher_suite(server_hello: &[u8]) -> Result<u16, ReplayError> {
     let session_len = usize::from(*server_hello.get(34).ok_or(ReplayError::UnsupportedTls)?);
     let suite_offset = 35usize.checked_add(session_len).ok_or(ReplayError::UnsupportedTls)?;
@@ -370,9 +570,10 @@ fn tls_cipher_suite(server_hello: &[u8]) -> Result<u16, ReplayError> {
 
 fn parse_master_secret(key_log: &str, client_random: &[u8]) -> Option<Vec<u8>> {
     let client_random = hex(client_random);
-    key_log.lines().find_map(|line| {
+    // Same NUL tolerance as parse_tls13_secret for interleaved out-of-band logs.
+    key_log.lines().map(|line| line.replace('\0', "")).find_map(|line| {
         let mut fields = line.split_ascii_whitespace();
-        (fields.next()? == "CLIENT_RANDOM" && fields.next()? == client_random)
+        (fields.next()? == "CLIENT_RANDOM" && fields.next()?.eq_ignore_ascii_case(&client_random))
             .then(|| decode_hex(fields.next()?))
             .flatten()
             .filter(|secret| secret.len() == 48)
@@ -380,15 +581,34 @@ fn parse_master_secret(key_log: &str, client_random: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn parse_tls13_secret(key_log: &str, label: &str, client_random: &[u8]) -> Result<Vec<u8>, ReplayError> {
+    parse_tls13_secrets(key_log, label, client_random)
+        .into_iter()
+        .next()
+        .ok_or(ReplayError::MissingTlsSecret)
+}
+
+/// Collect every logged value of `label` for `client_random`.
+///
+/// An out-of-band LSA dumper can log a session's traffic secret more than once (for
+/// example across a TLS key update, or when a connection is re-keyed), leaving several
+/// distinct values under one client random. Callers must try each candidate and keep the
+/// one that authenticates the captured records rather than trusting the first.
+fn parse_tls13_secrets(key_log: &str, label: &str, client_random: &[u8]) -> Vec<Vec<u8>> {
     let client_random = hex(client_random);
+    // Out-of-band key dumpers (for example an LSA SChannel logger writing from several
+    // sessions at once) interleave NUL bytes into the log; drop them before parsing.
     key_log
         .lines()
-        .find_map(|line| {
+        .map(|line| line.replace('\0', ""))
+        .filter_map(|line| {
             let mut fields = line.split_ascii_whitespace();
-            (fields.next()? == label && fields.next()? == client_random).then(|| decode_hex(fields.next()?))
+            // Key logs are mixed-case across dumpers (Wireshark lowercases, some LSA
+            // dumpers uppercase); match the client random case-insensitively.
+            (fields.next()? == label && fields.next()?.eq_ignore_ascii_case(&client_random))
+                .then(|| decode_hex(fields.next()?))
+                .flatten()
         })
-        .flatten()
-        .ok_or(ReplayError::MissingTlsSecret)
+        .collect()
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -647,6 +867,7 @@ mod tests {
                 server_stream: vec![(4, server_records.into_iter().flat_map(|(_, record)| record).collect())],
             },
             tls_key_log: TlsKeyLog::new(key_log),
+            gateway_alternates: Vec::new(),
         };
 
         let plaintext = decrypt_tls(&capture).unwrap();
@@ -679,6 +900,7 @@ mod tests {
                 server_stream: vec![(2, x224_connection(0xd0))],
             },
             tls_key_log: TlsKeyLog::new(String::new()),
+            gateway_alternates: Vec::new(),
         };
 
         assert!(matches!(decrypt_tls(&capture), Err(ReplayError::StandardSecurity)));
@@ -705,12 +927,25 @@ mod tests {
         .map(|(label, secret)| format!("{label} {} {}", hex(&client_random), hex(&secret)))
         .collect::<Vec<_>>()
         .join("\n");
-        let tls = Tls13::from_hello(&hello(1, client_random, None), 0x1301, &key_log).unwrap();
+        let tls = Tls13::from_hello(
+            &hello(1, client_random, None),
+            0x1301,
+            &key_log,
+            &Vec::new(),
+            &Vec::new(),
+        )
+        .unwrap();
         let finished = [20, 0, 0, 0];
         let client = vec![
             (
                 1,
-                encrypt_tls13_record(tls.cipher, &tls.client_handshake, 0, &finished, TLS_CONTENT_HANDSHAKE),
+                encrypt_tls13_record(
+                    tls.cipher,
+                    tls.client_handshake.as_ref().expect("handshake key"),
+                    0,
+                    &finished,
+                    TLS_CONTENT_HANDSHAKE,
+                ),
             ),
             (
                 2,
@@ -726,7 +961,13 @@ mod tests {
         let server = vec![
             (
                 3,
-                encrypt_tls13_record(tls.cipher, &tls.server_handshake, 0, &finished, TLS_CONTENT_HANDSHAKE),
+                encrypt_tls13_record(
+                    tls.cipher,
+                    tls.server_handshake.as_ref().expect("handshake key"),
+                    0,
+                    &finished,
+                    TLS_CONTENT_HANDSHAKE,
+                ),
             ),
             (
                 4,
@@ -849,5 +1090,62 @@ mod tests {
         record.extend(length.to_be_bytes());
         record.extend(body);
         record
+    }
+
+    #[test]
+    fn decrypts_tunneled_gateway_session() {
+        let client_random = [1; 32];
+        let master = [2; 48];
+        let key_log = format!("CLIENT_RANDOM {} {}", hex(&client_random), hex(&master));
+        let client_hello = hello(1, client_random, None);
+        let server_hello = hello(2, [3; 32], Some(0x009c));
+        let tls = Tls12::from_hello(&client_hello, &server_hello, 0x009c, &key_log).unwrap();
+
+        // Tunneled RDP stream: X.224 connection, then TLS handshake and data.
+        let mut inner_client = x224_connection(0xe0);
+        inner_client.extend(handshake_record(1, &client_hello));
+        inner_client.extend(change_cipher_spec());
+        inner_client.extend(encrypt_tls12_record(&tls, Direction::Client, 0, b"client"));
+        let mut inner_server = x224_connection(0xd0);
+        inner_server.extend(handshake_record(2, &server_hello));
+        inner_server.extend(change_cipher_spec());
+        inner_server.extend(encrypt_tls12_record(&tls, Direction::Server, 0, b"server"));
+
+        // Wrap each stream in MS-TSGU data packets carried by WebSocket frames.
+        let mut outer_client = b"RDG_OUT_DATA /remoteDesktopGateway/ HTTP/1.1\r\n\r\n".to_vec();
+        outer_client.extend(gateway_frame(&inner_client, Some([5, 6, 7, 8])));
+        let mut outer_server = b"HTTP/1.1 101 Switching Protocols\r\n\r\n".to_vec();
+        outer_server.extend(gateway_frame(&inner_server, None));
+        let outer = Plaintext {
+            client: vec![(1, outer_client)],
+            server: vec![(2, outer_server)],
+        };
+
+        let tunneled = crate::gateway::extract_tunneled_rdp(&outer).unwrap();
+        let plaintext = decrypt_tls_streams(&tunneled.client, &tunneled.server, &key_log).unwrap();
+
+        assert_eq!(plaintext.client, vec![(1, b"client".to_vec())]);
+        assert_eq!(plaintext.server, vec![(2, b"server".to_vec())]);
+    }
+
+    fn gateway_frame(data: &[u8], mask: Option<[u8; 4]>) -> Vec<u8> {
+        let packet_length = u32::try_from(10 + data.len()).unwrap();
+        let mut packet = Vec::new();
+        packet.extend(0x0Au16.to_le_bytes());
+        packet.extend(0u16.to_le_bytes());
+        packet.extend(packet_length.to_le_bytes());
+        packet.extend(u16::try_from(data.len()).unwrap().to_le_bytes());
+        packet.extend(data);
+
+        let mut frame = vec![0x82];
+        frame.push((u8::from(mask.is_some()) << 7) | u8::try_from(packet.len()).unwrap());
+        match mask {
+            Some(mask) => {
+                frame.extend(mask);
+                frame.extend(packet.iter().enumerate().map(|(index, byte)| byte ^ mask[index % 4]));
+            }
+            None => frame.extend(packet),
+        }
+        frame
     }
 }

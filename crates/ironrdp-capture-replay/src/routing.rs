@@ -21,7 +21,10 @@ use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcessor};
 
-use crate::{Capture, NegotiatedState, PacketStream, Plaintext, ReplayError, decrypt_tls, recover_negotiated_state};
+use crate::tls::decrypt_tls_streams;
+use crate::{
+    Capture, NegotiatedState, PacketStream, Plaintext, ReplayError, gateway, gateway_rpch, recover_negotiated_state,
+};
 
 const MAX_DESKTOP_DIM: u16 = 8192;
 const MAX_EGFX_OUTPUT_DIM: u16 = 32_766;
@@ -557,12 +560,64 @@ pub fn replay_capture(capture: &Capture) -> Result<ReplayReport, ReplayError> {
 }
 
 pub(crate) fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter, Plaintext), ReplayError> {
-    let plaintext = decrypt_tls(capture)?;
+    // Decrypt the selected gateway-port flow plus every alternate; a direct RDP capture
+    // has no gateway flow and yields its single TLS session, while a gateway capture
+    // yields one (WebSocket) or two (RPCH IN/OUT) tunnel flows.
+    let mut decrypted = Vec::new();
+    for flow in core::iter::once(&capture.flow).chain(capture.gateway_alternates.iter()) {
+        if let Ok(plaintext) =
+            decrypt_tls_streams(&flow.client_stream, &flow.server_stream, capture.tls_key_log.as_str())
+        {
+            decrypted.push(plaintext);
+        }
+    }
+    let plaintext = recover_rdp_stream(capture, decrypted)?;
     let router = ReplayRouter::new(CapturedActivation {
         state: recover_negotiated_state(&plaintext)?,
         compression_type: captured_compression_type(&plaintext),
     })?;
     Ok((router, plaintext))
+}
+
+/// Reduce the decrypted gateway-port flows to the inner RDP stream.
+fn recover_rdp_stream(capture: &Capture, decrypted: Vec<Plaintext>) -> Result<Plaintext, ReplayError> {
+    // A WebSocket MS-TSGU tunnel carries both directions on one flow.
+    if let Some(outer) = decrypted.iter().find(|p| gateway::is_gateway_tunnel(p)) {
+        return unwrap_gateway_tunnel(outer, capture);
+    }
+    // The legacy RPCH transport splits the tunnel across an IN and an OUT channel.
+    let input = decrypted
+        .iter()
+        .find(|p| gateway_rpch::rpch_channel(p) == Some(gateway_rpch::RpchChannel::In));
+    let output = decrypted
+        .iter()
+        .find(|p| gateway_rpch::rpch_channel(p) == Some(gateway_rpch::RpchChannel::Out));
+    if let (Some(input), Some(output)) = (input, output) {
+        let tunneled = gateway_rpch::extract_tunneled_rdp(input, output)?;
+        let inner =
+            decrypt_tls_streams(&tunneled.client, &tunneled.server, capture.tls_key_log.as_str()).map_err(|error| {
+                if matches!(error, ReplayError::MissingTlsSecret) {
+                    ReplayError::MissingTunneledTlsSecret
+                } else {
+                    error
+                }
+            })?;
+        return Ok(inner);
+    }
+    // No gateway tunnel: the single decrypted flow is the RDP session itself.
+    decrypted.into_iter().next().ok_or(ReplayError::MissingRdpState)
+}
+
+/// Unwrap the MS-TSGU tunnel and decrypt the recovered inner RDP session.
+fn unwrap_gateway_tunnel(outer: &Plaintext, capture: &Capture) -> Result<Plaintext, ReplayError> {
+    let tunneled = gateway::extract_tunneled_rdp(outer)?;
+    decrypt_tls_streams(&tunneled.client, &tunneled.server, capture.tls_key_log.as_str()).map_err(|error| {
+        if matches!(error, ReplayError::MissingTlsSecret) {
+            ReplayError::MissingTunneledTlsSecret
+        } else {
+            error
+        }
+    })
 }
 
 fn captured_compression_type(plaintext: &Plaintext) -> Option<CompressionType> {
@@ -599,6 +654,26 @@ fn valid_desktop_dimensions(width: u16, height: u16) -> bool {
     width != 0 && height != 0 && width <= MAX_DESKTOP_DIM && height <= MAX_DESKTOP_DIM
 }
 
+/// Offset of the first RDP data frame, skipping any leading authentication preamble.
+///
+/// RDP data over the channel begins with an X.224 data TPDU (TPKT `03 00` wrapping
+/// `02 f0 80`). A CredSSP exchange (DER `30 ...`) precedes it on TLS-secured streams; DER
+/// bytes can otherwise be misread as FastPath framing. Returns 0 when the stream already
+/// starts with RDP data or when no data frame is found.
+fn rdp_data_start(bytes: &[u8]) -> usize {
+    let mut offset = 0;
+    while offset + 7 <= bytes.len() {
+        if bytes[offset] == 3 && bytes[offset + 1] == 0 && bytes[offset + 4..offset + 7] == [2, 0xf0, 0x80] {
+            let length = usize::from(u16::from_be_bytes([bytes[offset + 2], bytes[offset + 3]]));
+            if length >= 7 && offset + length <= bytes.len() {
+                return offset;
+            }
+        }
+        offset += 1;
+    }
+    0
+}
+
 fn framed_stream(stream: &PacketStream, direction: ReplayDirection, gaps: &mut Vec<ReplayGap>) -> Vec<CapturedPdu> {
     let mut bytes = Vec::new();
     let mut boundaries = Vec::with_capacity(stream.len());
@@ -612,7 +687,20 @@ fn framed_stream(stream: &PacketStream, direction: ReplayDirection, gaps: &mut V
             .map_or(0, |(_, packet)| *packet)
     };
     let mut messages = Vec::new();
-    let mut offset = 0;
+    // A TLS-secured stream carries the CredSSP authentication exchange (DER, not RDP
+    // framing) before the RDP data. `find_size` would misread the DER as FastPath, so the
+    // preamble is skipped up to the first X.224 data TPDU, matching how the negotiation
+    // recovery locates the connect sequence.
+    let preamble = rdp_data_start(&bytes);
+    if preamble > 0 {
+        gaps.push(ReplayGap {
+            packet: packet_at(0),
+            direction,
+            kind: ReplayGapKind::Framing,
+            skipped_bytes: preamble,
+        });
+    }
+    let mut offset = preamble;
     let mut unframed = false;
     while offset < bytes.len() {
         match find_size(&bytes[offset..]) {

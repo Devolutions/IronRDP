@@ -343,11 +343,9 @@ pub enum Transport {
 
     /// Connect via an RDS gateway (MS-TSGU / MSTSGU).
     ///
-    /// The target RDP server is derived from [`Config::destination`]; the gateway
-    /// only needs its own endpoint and credentials.
-    ///
-    /// NOTE: the destination port is currently not forwarded to the gateway.
-    /// If `ironrdp-mstsgu` hardcodes port 3389, open a follow-up issue.
+    /// The target RDP server host and port are taken from [`Config::destination`] and
+    /// forwarded in the MS-TSGU channel-create packet. The gateway only needs its own
+    /// endpoint and credentials.
     #[cfg(feature = "gateway")]
     Gateway(GatewayConfig),
 
@@ -392,6 +390,11 @@ pub enum TransportKind {
     Gateway {
         /// Gateway endpoint address (e.g., `"rdg.contoso.com:443"`).
         endpoint: String,
+        /// When `true` (`GatewayUsageMethod::Detect`), try a direct TCP connection first and fall
+        /// back to the gateway only if that fails.
+        prefer_direct: bool,
+        /// Gateway transport protocol (WebSocket by default, or legacy RPC-over-HTTP).
+        transport: GatewayTransport,
     },
 
     /// Connect via an RDCleanPath proxy (WebSocket-based).
@@ -421,6 +424,29 @@ pub struct GatewayConfig {
     pub username: String,
     /// Gateway password.
     pub password: String,
+    /// When `true` (`GatewayUsageMethod::Detect`), try direct TCP first and fall back to the
+    /// gateway on connection failure.
+    pub prefer_direct: bool,
+    /// Smart-card credentials for gateway authentication via Kerberos PKINIT.
+    ///
+    /// When set, the gateway HTTP layer authenticates with the Negotiate scheme using the
+    /// smart card instead of the password. Requires the `gateway-smartcard` feature.
+    pub smart_card: Option<ironrdp_mstsgu::GwSmartCardCredentials>,
+    /// Gateway transport protocol: modern WebSocket (default) or legacy RPC-over-HTTP.
+    ///
+    /// Use `Rpc` for gateways that do not support the WebSocket upgrade.
+    pub transport: GatewayTransport,
+}
+
+/// The MS-TSGU transport used to reach the RD Gateway.
+#[cfg(feature = "gateway")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GatewayTransport {
+    /// WebSocket upgrade, or dual-channel HTTP when the gateway declines the upgrade.
+    #[default]
+    WebSocket,
+    /// Legacy RPC-over-HTTP (MS-RPCH v2).
+    Rpc,
 }
 
 // ── Destination ───────────────────────────────────────────────────────────────
@@ -633,6 +659,8 @@ pub struct ConfigBuilder {
     platform: Option<ironrdp_pdu::rdp::capability_sets::MajorPlatformType>,
     gateway_username: Option<String>,
     gateway_password: Option<String>,
+    #[cfg(feature = "gateway")]
+    gateway_smart_card: Option<ironrdp_mstsgu::GwSmartCardCredentials>,
 
     // Optional (defaulted at build time).
     domain: Option<String>,
@@ -744,6 +772,18 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_gateway_password(mut self, password: impl Into<String>) -> Self {
         self.gateway_password = Some(password.into());
+        self
+    }
+
+    /// Use smart-card credentials (Kerberos PKINIT) for RD Gateway authentication.
+    ///
+    /// Requires the `gateway-smartcard` feature. The gateway username/password are still
+    /// required by [`build`](Self::build) today; the smart card takes precedence during
+    /// HTTP authentication.
+    #[cfg(feature = "gateway")]
+    #[must_use]
+    pub fn with_gateway_smart_card(mut self, credentials: ironrdp_mstsgu::GwSmartCardCredentials) -> Self {
+        self.gateway_smart_card = Some(credentials);
         self
     }
 
@@ -1096,13 +1136,27 @@ impl ConfigBuilder {
                 self.properties.set_rdcleanpath_url(url.to_string());
             }
             #[cfg(feature = "gateway")]
-            TransportKind::Gateway { endpoint } => {
+            TransportKind::Gateway {
+                endpoint,
+                prefer_direct,
+                transport,
+            } => {
                 self.properties.clear_rdcleanpath();
                 #[cfg(windows)]
                 self.properties.clear_named_pipe();
                 self.properties.set_gateway_hostname(endpoint.clone());
-                self.properties
-                    .set_gateway_usage_method(ironrdp_cfg::GatewayUsageMethod::UseAlways);
+                self.properties.set_gateway_usage_method(if *prefer_direct {
+                    ironrdp_cfg::GatewayUsageMethod::Detect
+                } else {
+                    ironrdp_cfg::GatewayUsageMethod::UseAlways
+                });
+                self.properties.insert(
+                    "ironrdp_gateway_transport",
+                    match transport {
+                        GatewayTransport::WebSocket => 0,
+                        GatewayTransport::Rpc => 1,
+                    },
+                );
             }
             #[cfg(windows)]
             TransportKind::NamedPipe { path } => {
@@ -1121,8 +1175,8 @@ impl ConfigBuilder {
     /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
     ///
     /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
-    /// embedder (error if disabled). Works over Direct and RDCleanPath. RDS Gateway is rejected
-    /// until it can propagate the VMConnect target port.
+    /// embedder (error if disabled). Works over Direct, RDCleanPath, and RDS Gateway (the
+    /// destination port, typically 2179, is forwarded in the MS-TSGU channel-create packet).
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
@@ -1364,9 +1418,53 @@ impl ConfigBuilder {
         self
     }
 
+    /// Read the gateway transport protocol from the IronRDP-specific property
+    /// (`ironrdp_gateway_transport`: 0 = WebSocket, 1 = RPC-over-HTTP).
+    #[cfg(feature = "gateway")]
+    fn gateway_transport_from_property(ps: &PropertySet) -> GatewayTransport {
+        match ps.get::<i64>("ironrdp_gateway_transport") {
+            Some(1) => GatewayTransport::Rpc,
+            _ => GatewayTransport::WebSocket,
+        }
+    }
+
+    /// Resolve gateway HTTP auth credentials from explicit gateway fields and
+    /// `gatewaycredentialssource` (default: share RDP server credentials).
+    #[cfg(feature = "gateway")]
+    fn resolved_gateway_credentials(&self) -> (Option<&str>, Option<&str>) {
+        use ironrdp_cfg::{GatewayCredentialsSource, PropertySetExt as _};
+
+        let source = self
+            .properties
+            .gateway_credentials_source()
+            .ok()
+            .flatten()
+            .unwrap_or(GatewayCredentialsSource::UseServerCredentials);
+
+        let explicit_user = self.gateway_username.as_deref();
+        let explicit_pass = self.gateway_password.as_deref();
+        let server_user = self.username.as_deref();
+        let server_pass = self.password.as_deref();
+
+        match source {
+            GatewayCredentialsSource::UseUserCredentials => (explicit_user, explicit_pass),
+            GatewayCredentialsSource::UseServerCredentials | GatewayCredentialsSource::UseLogonCredentials => {
+                (explicit_user.or(server_user), explicit_pass.or(server_pass))
+            }
+            // Profile / Prompt / SmartCard are not implemented as credential providers yet.
+            // Prefer explicit gateway credentials when present; otherwise fall back to RDP creds
+            // so existing Always/Detect setups keep working.
+            GatewayCredentialsSource::UseProfile
+            | GatewayCredentialsSource::Prompt
+            | GatewayCredentialsSource::SmartCard => (explicit_user.or(server_user), explicit_pass.or(server_pass)),
+        }
+    }
+
     /// List the required fields that still need a value before [`build`](Self::build) can succeed.
     ///
     /// Gateway credentials are only required when a gateway transport is selected.
+    /// With `gatewaycredentialssource:i:0` (UseServerCredentials), the RDP username/password
+    /// satisfy the gateway credential requirement.
     pub fn missing(&self) -> Vec<MissingField> {
         let mut missing = Vec::new();
         if self.destination.is_none() {
@@ -1380,10 +1478,12 @@ impl ConfigBuilder {
         }
         #[cfg(feature = "gateway")]
         if matches!(self.transport, TransportKind::Gateway { .. }) {
-            if self.gateway_username.is_none() {
+            let (gw_user, gw_pass) = self.resolved_gateway_credentials();
+            if gw_user.is_none() && self.gateway_smart_card.is_none() {
                 missing.push(MissingField::GatewayUsername);
             }
-            if self.gateway_password.is_none() {
+            // Smart-card gateway authentication replaces the password with Kerberos PKINIT.
+            if gw_pass.is_none() && self.gateway_smart_card.is_none() {
                 missing.push(MissingField::GatewayPassword);
             }
         }
@@ -1412,11 +1512,25 @@ impl ConfigBuilder {
         clippy::missing_panics_doc,
         reason = "a panic here would be a bug (secrets are guaranteed present by missing()), not documented behavior"
     )]
-    // `mut` is only required when the vmconnect default-port path mutates destination/properties.
-    #[cfg_attr(not(feature = "vmconnect"), expect(unused_mut))]
+    // `mut` is required when gateway credential materialization and/or vmconnect default-port paths run.
+    #[cfg_attr(not(any(feature = "vmconnect", feature = "gateway")), expect(unused_mut))]
     pub fn build(mut self) -> anyhow::Result<Config> {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
         use ironrdp_pdu::rdp::client_info::TimezoneInfo;
+
+        #[cfg(feature = "gateway")]
+        {
+            // Materialize UseServerCredentials / fallbacks before the missing() check.
+            let (gw_user, gw_pass) = self.resolved_gateway_credentials();
+            let gw_user = gw_user.map(str::to_owned);
+            let gw_pass = gw_pass.map(str::to_owned);
+            if self.gateway_username.is_none() {
+                self.gateway_username = gw_user;
+            }
+            if self.gateway_password.is_none() {
+                self.gateway_password = gw_pass;
+            }
+        }
 
         let missing = self.missing();
         if !missing.is_empty() {
@@ -1479,11 +1593,30 @@ impl ConfigBuilder {
         let transport = match self.transport {
             TransportKind::Direct => Transport::Direct,
             #[cfg(feature = "gateway")]
-            TransportKind::Gateway { endpoint } => Transport::Gateway(GatewayConfig {
+            TransportKind::Gateway {
                 endpoint,
-                username: self.gateway_username.unwrap(),
-                password: self.gateway_password.unwrap(),
-            }),
+                prefer_direct,
+                transport,
+            } => {
+                // Smart-card credentials authenticate without a password (Kerberos PKINIT).
+                let smart_card = self.gateway_smart_card;
+                Transport::Gateway(GatewayConfig {
+                    endpoint,
+                    username: if smart_card.is_some() {
+                        self.gateway_username.unwrap_or_default()
+                    } else {
+                        self.gateway_username.unwrap()
+                    },
+                    password: if smart_card.is_some() {
+                        self.gateway_password.unwrap_or_default()
+                    } else {
+                        self.gateway_password.unwrap()
+                    },
+                    prefer_direct,
+                    smart_card,
+                    transport,
+                })
+            }
             TransportKind::RDCleanPath { url } => Transport::RDCleanPath(RDCleanPathConfig {
                 url,
                 auth_token: self.rdcleanpath_token.unwrap(),
@@ -1499,10 +1632,6 @@ impl ConfigBuilder {
             }
             if !self.enable_credssp.unwrap_or(true) {
                 anyhow::bail!("vmconnect requires CredSSP");
-            }
-            #[cfg(feature = "gateway")]
-            if matches!(transport, Transport::Gateway(_)) {
-                anyhow::bail!("vmconnect cannot be used over an RDS gateway until the target port is propagated");
             }
         }
 
@@ -1804,23 +1933,27 @@ impl ConfigBuilder {
 
                 let select_gateway_transport = match gateway_usage {
                     // Explicit gateway use.
-                    GatewayUsageMethod::UseAlways => true,
+                    GatewayUsageMethod::UseAlways => Some(false),
 
-                    // Approximation of Windows "try direct, then gateway" behavior.
-                    GatewayUsageMethod::Detect => gateway_hostname.is_some(),
+                    // Try direct first; fall back to gateway when a hostname is configured.
+                    GatewayUsageMethod::Detect if gateway_hostname.is_some() => Some(true),
+                    GatewayUsageMethod::Detect => None,
 
-                    // IronRDP does not currently resolve MSTSC/client/GPO default gateway policy.
-                    GatewayUsageMethod::UseDefaultSettings => false,
+                    // No GPO profile store yet: treat default settings like Detect.
+                    GatewayUsageMethod::UseDefaultSettings if gateway_hostname.is_some() => Some(true),
+                    GatewayUsageMethod::UseDefaultSettings => None,
 
                     // Explicit no-gateway modes.
-                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => false,
+                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => None,
                 };
 
-                if select_gateway_transport {
+                if let Some(prefer_direct) = select_gateway_transport {
                     let endpoint = gateway_hostname.context("missing Gateway hostname")?;
 
                     self.transport = TransportKind::Gateway {
                         endpoint: endpoint.to_owned(),
+                        prefer_direct,
+                        transport: Self::gateway_transport_from_property(ps),
                     };
 
                     if let Some(user) = ps.gateway_username() {
@@ -1849,17 +1982,21 @@ impl ConfigBuilder {
                 let gateway_hostname = ps.gateway_hostname();
 
                 let select_gateway_transport = match gateway_usage {
-                    GatewayUsageMethod::UseAlways => true,
-                    GatewayUsageMethod::Detect => gateway_hostname.is_some(),
-                    GatewayUsageMethod::UseDefaultSettings => false,
-                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => false,
+                    GatewayUsageMethod::UseAlways => Some(false),
+                    GatewayUsageMethod::Detect if gateway_hostname.is_some() => Some(true),
+                    GatewayUsageMethod::Detect => None,
+                    GatewayUsageMethod::UseDefaultSettings if gateway_hostname.is_some() => Some(true),
+                    GatewayUsageMethod::UseDefaultSettings => None,
+                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => None,
                 };
 
-                if select_gateway_transport {
+                if let Some(prefer_direct) = select_gateway_transport {
                     let endpoint = gateway_hostname.context("missing Gateway hostname")?;
 
                     self.transport = TransportKind::Gateway {
                         endpoint: endpoint.to_owned(),
+                        prefer_direct,
+                        transport: Self::gateway_transport_from_property(ps),
                     };
 
                     if let Some(user) = ps.gateway_username() {

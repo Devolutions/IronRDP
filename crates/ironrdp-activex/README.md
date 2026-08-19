@@ -499,12 +499,13 @@ after either setting changes. `RedirectDirectX` reports disabled and rejects att
 `ClientProtocolSpec` return `E_NOTIMPL` because IronRDP has no equivalent automatic-detection or
 client-protocol policy; their getter outputs are initialized before failure. Gateway settings are wired
 to IronRDP's MS-TSGU gateway transport. `GatewayUsageMethod` accepts direct,
-explicit-gateway, and detect modes; detect selects an explicitly configured gateway eagerly because
-IronRDP cannot yet retry through a gateway after a direct connection fails. Gateway credentials can
-use the RDP credentials or configured gateway user credentials. Profile, prompt, smart-card,
-logged-on-user, and system-default gateway-policy modes return `E_NOTIMPL` rather than silently
-changing authentication or routing behavior. Every remaining setting is an explicit
-`TODO(activex)` stub and returns `E_NOTIMPL`; it must not be treated as enabled.
+explicit-gateway, detect, and default-settings modes; detect and default-settings try a direct TCP
+connection first and fall back to the configured MS-TSGU gateway on failure when a hostname is set.
+Gateway credentials can use the RDP credentials, configured gateway user credentials, or logged-on
+user identity (`USERDOMAIN`/`USERNAME`) with an explicit password. True Windows SSO without a
+password is not available yet. Profile, prompt, and smart-card gateway credential sources return
+`E_NOTIMPL` rather than silently changing authentication behavior. Every remaining setting is an
+explicit `TODO(activex)` stub and returns `E_NOTIMPL`; it must not be treated as enabled.
 `EnableMouse` now gates renderer mouse movement, buttons, and wheel forwarding while retaining
 keyboard forwarding.
 `IMsRdpDriveCollection` exposes Windows logical volumes with initially unselected `IMsRdpDrive::RedirectionState` values.

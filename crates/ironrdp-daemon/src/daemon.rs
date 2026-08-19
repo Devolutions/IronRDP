@@ -1549,7 +1549,7 @@ async fn consume_output(
             }
             RdpOutputEvent::ConnectionFailure(error) => {
                 guard.state = ConnState::Failed;
-                guard.error = Some(format!("{error}"));
+                guard.error = Some(format!("{error:#}"));
                 let rail_changed = guard.rail.fail_pending_launches();
                 error!(%error, "Session connection failed");
                 rail_changed

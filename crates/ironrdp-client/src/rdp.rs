@@ -616,41 +616,81 @@ impl RdpClient {
                 },
 
                 #[cfg(feature = "gateway")]
-                Transport::Gateway(gw) => match Box::pin(cancelable_operation(
-                    connect_gateway(
-                        &self.config,
-                        gw,
-                        &self.input_event_sender,
-                        cliprdr_factory,
-                        rdpdr_factory,
-                        reconnect_cookie,
-                    ),
-                    &mut self.close_receiver,
-                ))
-                .await
-                {
-                    Some(Ok(result)) => result,
-                    Some(Err(error)) => {
-                        if self
-                            .try_auto_reconnect(
-                                auto_reconnect_policy,
-                                &mut reconnect_attempt,
-                                auto_reconnect_cookie.as_ref(),
-                            )
-                            .await
+                Transport::Gateway(gw) => {
+                    let connect_result = if gw.prefer_direct {
+                        // Detect: try direct first, then fall back to the gateway on failure.
+                        match Box::pin(cancelable_operation(
+                            connect_direct(
+                                &self.config,
+                                &self.input_event_sender,
+                                cliprdr_factory,
+                                rdpdr_factory,
+                                reconnect_cookie,
+                            ),
+                            &mut self.close_receiver,
+                        ))
+                        .await
                         {
-                            continue;
+                            Some(Ok(result)) => Some(Ok(result)),
+                            Some(Err(direct_error)) => {
+                                info!(
+                                    error = %direct_error,
+                                    "Direct connection failed; falling back to RD Gateway"
+                                );
+                                Box::pin(cancelable_operation(
+                                    connect_gateway(
+                                        &self.config,
+                                        gw,
+                                        &self.input_event_sender,
+                                        cliprdr_factory,
+                                        rdpdr_factory,
+                                        reconnect_cookie,
+                                    ),
+                                    &mut self.close_receiver,
+                                ))
+                                .await
+                            }
+                            None => None,
                         }
-                        if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
+                    } else {
+                        Box::pin(cancelable_operation(
+                            connect_gateway(
+                                &self.config,
+                                gw,
+                                &self.input_event_sender,
+                                cliprdr_factory,
+                                rdpdr_factory,
+                                reconnect_cookie,
+                            ),
+                            &mut self.close_receiver,
+                        ))
+                        .await
+                    };
+
+                    match connect_result {
+                        Some(Ok(result)) => result,
+                        Some(Err(error)) => {
+                            if self
+                                .try_auto_reconnect(
+                                    auto_reconnect_policy,
+                                    &mut reconnect_attempt,
+                                    auto_reconnect_cookie.as_ref(),
+                                )
+                                .await
+                            {
+                                continue;
+                            }
+                            if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
+                                self.emit_user_initiated_termination();
+                            }
+                            break;
+                        }
+                        None => {
                             self.emit_user_initiated_termination();
+                            break;
                         }
-                        break;
                     }
-                    None => {
-                        self.emit_user_initiated_termination();
-                        break;
-                    }
-                },
+                }
 
                 Transport::RDCleanPath(rdcp) => match Box::pin(cancelable_operation(
                     connect_rdcleanpath_transport(
@@ -1447,26 +1487,82 @@ async fn connect_gateway(
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     use ironrdp_mstsgu::GwConnectTarget;
 
-    // VMConnect needs destination port 2179; GwConnectTarget does not carry it yet (TODO below).
-    #[cfg(feature = "vmconnect")]
-    if config.vm_id().is_some() {
-        return Err(ironrdp_connector::general_err!(
-            "vmconnect cannot be used over an RDS gateway until the target port is propagated"
-        ));
-    }
-
-    // Build the GwConnectTarget.  `server` is the RDP target derived from `config.destination`.
-    // TODO: preserve the destination port; ironrdp-mstsgu may currently hard-code 3389.
+    // Target resource host/port come from Config::destination and are forwarded in the
+    // MS-TSGU channel-create packet (enables non-3389 RDP and VMConnect port 2179).
     let gw_target = GwConnectTarget {
         gw_endpoint: gw.endpoint.clone(),
         gw_user: gw.username.clone(),
         gw_pass: gw.password.clone(),
         server: config.destination.name().to_owned(),
+        server_port: config.destination.port(),
+        smart_card: gw.smart_card.clone().map(Box::new),
     };
 
-    let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect(&gw_target, &config.connector.client_name)
-        .await
-        .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
+    // Apply the same TLS certificate policy used for direct RDP to the gateway HTTPS leg.
+    // The RPCH transport does not negotiate tunnel policy (device redirection), so it
+    // only carries the byte stream.
+    let (gw_stream, client_addr, policy) = match gw.transport {
+        crate::config::GatewayTransport::WebSocket => {
+            let (stream, addr) = ironrdp_mstsgu::GwClient::connect_with_certificate_validation(
+                &gw_target,
+                &config.connector.client_name,
+                config.certificate_validation(),
+                config.certificate_validation_callback().cloned(),
+            )
+            .await
+            .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
+            let policy = stream.tunnel_policy();
+            let boxed: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(stream);
+            (boxed, addr, policy)
+        }
+        crate::config::GatewayTransport::Rpc => {
+            let (stream, addr) = ironrdp_mstsgu::GwClient::connect_rpch(
+                &gw_target,
+                &config.connector.client_name,
+                config.certificate_validation(),
+                config.certificate_validation_callback().cloned(),
+            )
+            .await
+            .map_err(|e| ironrdp_connector::custom_err!("GW RPC connect", e))?;
+            let boxed: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(stream);
+            (boxed, addr, ironrdp_mstsgu::GwTunnelPolicy::default())
+        }
+    };
+
+    // The gateway may restrict device redirection for this session ([MS-TSGU] 2.2.5.3.7);
+    // gate the affected channel factories on the advertised policy.
+    if let Some(flags) = policy.redir_flags {
+        if flags.all_disabled() {
+            info!("RD Gateway policy disables all device redirection");
+        }
+    }
+    #[cfg(feature = "clipboard")]
+    let cliprdr_factory: CliprdrFactoryRef<'_> = match policy
+        .redir_flags
+        .map(|flags| flags.clipboard_disabled())
+        .unwrap_or(false)
+    {
+        true => {
+            warn!("RD Gateway policy disables clipboard redirection");
+            None
+        }
+        false => cliprdr_factory,
+    };
+    #[cfg(feature = "rdpdr")]
+    let rdpdr_factory: RdpdrFactoryRef<'_> = match policy
+        .redir_flags
+        .map(|flags| flags.drives_disabled() || flags.all_disabled())
+        .unwrap_or(false)
+    {
+        true => {
+            warn!("RD Gateway policy disables drive redirection");
+            None
+        }
+        false => rdpdr_factory,
+    };
+
+    #[cfg(feature = "vmconnect")]
+    let pcb_deadline = tokio::time::Instant::now() + ironrdp_vmconnect::PCB_TRANSMIT_DEADLINE;
 
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
@@ -1478,6 +1574,10 @@ async fn connect_gateway(
         rdpdr_factory,
         auto_reconnect_cookie,
     )?;
+    #[cfg(feature = "vmconnect")]
+    if config.vm_id().is_some() {
+        return vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await;
+    }
     security_upgrade_and_finalize(framed, connector, config).await
 }
 
@@ -3079,12 +3179,12 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "clipboard")]
+    #[cfg(all(feature = "rdpdr", feature = "clipboard"))]
     fn no_cliprdr_factory() -> CliprdrFactoryRef<'static> {
         None
     }
 
-    #[cfg(not(feature = "clipboard"))]
+    #[cfg(all(feature = "rdpdr", not(feature = "clipboard")))]
     fn no_cliprdr_factory() -> CliprdrFactoryRef<'static> {
         core::marker::PhantomData
     }

@@ -26,7 +26,9 @@ ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-rdpfile = { path = "../ironrdp-rdpfile", version = "0.1" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" }
+ironrdp-gwforward = { path = "../ironrdp-gwforward", version = "0.0" }
 ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.1" }
+ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "rt"] }
