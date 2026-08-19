@@ -296,6 +296,10 @@ Provides test case generators and oracles for use with fuzzing.
 
 Offline direct-TCP RDP capture analysis that routes recovered plaintext and exports payload-free replay diagnostics with rendered framebuffer snapshots.
 
+#### [`crates/ironrdp-gwforward`](./crates/ironrdp-gwforward)
+
+Generic TCP forwarding and SOCKS5 proxying over an MS-TSGU RD Gateway tunnel, built on `ironrdp-mstsgu`. Exposes local port-forward and SOCKS5 listeners that relay arbitrary TCP byte streams to internal hosts through the gateway.
+
 #### [`fuzz`](./fuzz)
 
 Fuzz targets for code in core tier.

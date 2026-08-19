@@ -2814,6 +2814,7 @@ enum ActiveXTransport {
         endpoint: String,
         username: String,
         password: String,
+        prefer_direct: bool,
     },
     RDCleanPath(RDCleanPathConfig),
 }
@@ -2827,6 +2828,7 @@ fn active_x_transport_from_client_transport(
             endpoint: gateway.endpoint.clone(),
             username: gateway.username.clone(),
             password: gateway.password.clone(),
+            prefer_direct: gateway.prefer_direct,
         }),
         Transport::RDCleanPath(rdcleanpath) => Ok(ActiveXTransport::RDCleanPath(rdcleanpath.clone())),
         // Named-pipe RDP (e.g. Windows Sandbox) is agent/desktop-client only.
@@ -2880,22 +2882,200 @@ fn domain_qualified_username(domain: &str, username: &str) -> String {
     }
 }
 
-fn active_x_transport(settings: &Settings, compatibility: &CompatibilitySettings) -> Result<ActiveXTransport> {
+/// Best-effort Windows logon identity for `GatewayCredentialsSource::UseLogonCredentials`.
+///
+/// True SSO (default-credentials SSPI without a password) is not available yet; callers must still
+/// supply a password via gateway or server credentials. The username falls back to
+/// `USERDOMAIN`/`USERNAME` when gateway user fields are empty.
+fn windows_logon_username() -> String {
+    let user = std::env::var("USERNAME").unwrap_or_default();
+    let domain = std::env::var("USERDOMAIN").unwrap_or_default();
+    domain_qualified_username(&domain, &user)
+}
+
+/// Interactive CredUI for `GatewayCredentialsSource::Prompt`.
+///
+/// Prefers already-configured gateway username/password when both are non-empty so hosts and tests
+/// can supply credentials without showing UI.
+fn prompt_for_gateway_credentials(
+    parent: HWND,
+    gateway_hostname: &str,
+    initial_username: &str,
+    initial_password: &str,
+) -> Result<(String, String)> {
+    if !initial_username.trim().is_empty() && !initial_password.is_empty() {
+        return Ok((initial_username.to_owned(), initial_password.to_owned()));
+    }
+    if parent.0.is_null() {
+        return Err(Error::new(
+            E_INVALIDARG,
+            "gateway Prompt requires credentials or an interactive host window",
+        ));
+    }
+
+    let target = HSTRING::from(format!("IronRDP Gateway:{gateway_hostname}"));
+    let message = HSTRING::from(format!("Enter RD Gateway credentials for {gateway_hostname}"));
+    let caption = HSTRING::from("IronRDP Remote Desktop Gateway");
+    let mut username = credential_prompt_buffer(initial_username, CREDUI_MAX_USERNAME_LENGTH);
+    let mut password = credential_prompt_buffer(initial_password, CREDUI_MAX_PASSWORD_LENGTH);
+    let mut save = windows_core::BOOL(0);
+    let prompt = CREDUI_INFOW {
+        cbSize: size_of::<CREDUI_INFOW>() as u32,
+        hwndParent: parent,
+        pszMessageText: PCWSTR(message.as_ptr()),
+        pszCaptionText: PCWSTR(caption.as_ptr()),
+        hbmBanner: Default::default(),
+    };
+    let result = unsafe {
+        CredUIPromptForCredentialsW(
+            Some(&prompt),
+            PCWSTR(target.as_ptr()),
+            None,
+            0,
+            &mut username,
+            &mut password,
+            Some(&mut save),
+            CREDUI_FLAGS_GENERIC_CREDENTIALS | CREDUI_FLAGS_ALWAYS_SHOW_UI | CREDUI_FLAGS_DO_NOT_PERSIST,
+        )
+    };
+
+    if result == ERROR_CANCELLED {
+        username.fill(0);
+        password.fill(0);
+        return Err(Error::new(E_FAIL, "gateway credential prompt was cancelled"));
+    }
+    if result.0 != 0 {
+        username.fill(0);
+        password.fill(0);
+        return Err(Error::new(
+            E_FAIL,
+            format!("gateway credential prompt failed with Win32 error {}", result.0),
+        ));
+    }
+
+    let prompted_username = String::from_utf16_lossy(
+        &username[..username
+            .iter()
+            .position(|character| *character == 0)
+            .unwrap_or(username.len())],
+    );
+    let prompted_password = String::from_utf16_lossy(
+        &password[..password
+            .iter()
+            .position(|character| *character == 0)
+            .unwrap_or(password.len())],
+    );
+    username.fill(0);
+    password.fill(0);
+
+    if prompted_username.trim().is_empty() || prompted_password.is_empty() {
+        return Err(Error::new(
+            E_INVALIDARG,
+            "gateway credential prompt returned empty credentials",
+        ));
+    }
+
+    Ok((prompted_username, prompted_password))
+}
+
+/// Saved Windows Credential Manager entry for `GatewayCredentialsSource::UseProfile`.
+///
+/// Reads the generic credential registered under `TERMSRV/<gateway host>`, which is where
+/// mstsc persists gateway credentials saved by the user.
+#[cfg(windows)]
+fn profile_gateway_credentials(gateway_hostname: &str) -> Result<(String, String)> {
+    use windows::Win32::Security::Credentials::{CRED_TYPE_GENERIC, CREDENTIALW, CredFree, CredReadW};
+
+    // Strip any port suffix (watching for bracketed IPv6) to form the TERMSRV target name.
+    let host = if let Some(rest) = gateway_hostname.strip_prefix('[') {
+        rest.split_once(']').map(|(host, _)| host).unwrap_or(gateway_hostname)
+    } else {
+        gateway_hostname
+            .split_once(':')
+            .map(|(host, _)| host)
+            .unwrap_or(gateway_hostname)
+    };
+    let target = HSTRING::from(format!("TERMSRV/{host}"));
+
+    let mut credential: *mut CREDENTIALW = ptr::null_mut();
+    let read = unsafe { CredReadW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, None, &mut credential) };
+    if read.is_err() || credential.is_null() {
+        return Err(Error::new(
+            E_INVALIDARG,
+            format!("no saved Windows credentials for gateway {host}; save them or choose another credential source"),
+        ));
+    }
+
+    struct CredGuard(*mut CREDENTIALW);
+    impl Drop for CredGuard {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CredFree(self.0.cast()) };
+            }
+        }
+    }
+    let credential = CredGuard(credential);
+
+    let username = unsafe { credential.0.as_ref().map(|cred| cred.UserName) }
+        .filter(|name| !name.is_null())
+        .map(|name| unsafe { name.to_string().unwrap_or_default() })
+        .unwrap_or_default();
+    let (blob, blob_size) = unsafe {
+        credential
+            .0
+            .as_ref()
+            .map(|cred| (cred.CredentialBlob, cred.CredentialBlobSize))
+            .unwrap_or((ptr::null_mut(), 0))
+    };
+    if username.trim().is_empty() || blob.is_null() || blob_size == 0 {
+        return Err(Error::new(
+            E_INVALIDARG,
+            format!("saved Windows credentials for gateway {host} are incomplete"),
+        ));
+    }
+
+    // The credential blob holds the password as UTF-16 bytes; its alignment is not
+    // guaranteed by the API type, so copy through a byte slice first.
+    let blob_len = usize::try_from(blob_size).unwrap_or(0);
+    let blob_bytes = unsafe { slice::from_raw_parts(blob.cast::<u8>(), blob_len) };
+    let password_utf16: Vec<u16> = blob_bytes
+        .chunks_exact(2)
+        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+        .collect();
+    let password = String::from_utf16_lossy(
+        &password_utf16[..password_utf16
+            .iter()
+            .position(|character| *character == 0)
+            .unwrap_or(password_utf16.len())],
+    );
+
+    if password.is_empty() {
+        return Err(Error::new(
+            E_INVALIDARG,
+            format!("saved Windows credentials for gateway {host} have an empty password"),
+        ));
+    }
+
+    Ok((username, password))
+}
+
+fn active_x_transport(
+    settings: &Settings,
+    compatibility: &CompatibilitySettings,
+    credential_parent: HWND,
+) -> Result<ActiveXTransport> {
     let usage_method = GatewayUsageMethod::try_from(i64::from(compatibility.gateway_usage_method))
         .map_err(|error| Error::new(E_INVALIDARG, error.to_string()))?;
-    let use_gateway = match usage_method {
-        GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => false,
-        GatewayUsageMethod::UseAlways => true,
-        // IronRDP has no direct-then-gateway fallback. Match its .rdp behavior by selecting an
-        // explicitly supplied gateway eagerly for Detect mode.
-        GatewayUsageMethod::Detect => !compatibility.gateway_hostname.is_empty(),
-        GatewayUsageMethod::UseDefaultSettings => {
-            return Err(Error::from_hresult(E_NOTIMPL));
-        }
+    let prefer_direct = match usage_method {
+        GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => return Ok(ActiveXTransport::Direct),
+        GatewayUsageMethod::UseAlways => false,
+        // Try direct first when a gateway hostname is configured; fall back on connect failure.
+        GatewayUsageMethod::Detect if !compatibility.gateway_hostname.is_empty() => true,
+        GatewayUsageMethod::Detect => return Ok(ActiveXTransport::Direct),
+        // No group-policy profile store yet: treat default settings like Detect.
+        GatewayUsageMethod::UseDefaultSettings if !compatibility.gateway_hostname.is_empty() => true,
+        GatewayUsageMethod::UseDefaultSettings => return Ok(ActiveXTransport::Direct),
     };
-    if !use_gateway {
-        return Ok(ActiveXTransport::Direct);
-    }
 
     if compatibility.gateway_hostname.trim().is_empty() {
         return Err(Error::new(
@@ -2918,10 +3098,64 @@ fn active_x_transport(settings: &Settings, compatibility: &CompatibilitySettings
             domain_qualified_username(&compatibility.gateway_domain, &compatibility.gateway_username),
             compatibility.gateway_password.clone(),
         ),
-        GatewayCredentialsSource::UseProfile
-        | GatewayCredentialsSource::Prompt
-        | GatewayCredentialsSource::SmartCard
-        | GatewayCredentialsSource::UseLogonCredentials => return Err(Error::from_hresult(E_NOTIMPL)),
+        GatewayCredentialsSource::UseLogonCredentials => {
+            let username = {
+                let gw_user = domain_qualified_username(&compatibility.gateway_domain, &compatibility.gateway_username);
+                if gw_user.trim().is_empty() {
+                    windows_logon_username()
+                } else {
+                    gw_user
+                }
+            };
+            let password = if !compatibility.gateway_password.is_empty() {
+                compatibility.gateway_password.clone()
+            } else {
+                settings.password.clone().unwrap_or_default()
+            };
+            if password.is_empty() {
+                return Err(Error::new(
+                    E_NOTIMPL,
+                    "UseLogonCredentials requires a password until native Windows SSO is supported",
+                ));
+            }
+            (username, password)
+        }
+        GatewayCredentialsSource::UseProfile => {
+            // Explicitly configured gateway credentials win; otherwise read the profile
+            // credential mstsc saves under TERMSRV/<gateway host>.
+            let gw_user = domain_qualified_username(&compatibility.gateway_domain, &compatibility.gateway_username);
+            if !gw_user.trim().is_empty() && !compatibility.gateway_password.is_empty() {
+                (gw_user, compatibility.gateway_password.clone())
+            } else {
+                #[cfg(windows)]
+                {
+                    profile_gateway_credentials(&compatibility.gateway_hostname)?
+                }
+                #[cfg(not(windows))]
+                {
+                    return Err(Error::new(
+                        E_NOTIMPL,
+                        "gateway profile credentials require the Windows Credential Manager",
+                    ));
+                }
+            }
+        }
+        GatewayCredentialsSource::Prompt => {
+            let initial_username =
+                domain_qualified_username(&compatibility.gateway_domain, &compatibility.gateway_username);
+            prompt_for_gateway_credentials(
+                credential_parent,
+                &compatibility.gateway_hostname,
+                &initial_username,
+                &compatibility.gateway_password,
+            )?
+        }
+        GatewayCredentialsSource::SmartCard => {
+            return Err(Error::new(
+                E_NOTIMPL,
+                "smart-card gateway credentials are not supported",
+            ));
+        }
     };
     if username.trim().is_empty() || password.is_empty() {
         return Err(Error::new(
@@ -2934,6 +3168,7 @@ fn active_x_transport(settings: &Settings, compatibility: &CompatibilitySettings
         endpoint: compatibility.gateway_hostname.clone(),
         username,
         password,
+        prefer_direct,
     })
 }
 
@@ -8632,7 +8867,11 @@ impl Control {
                     compatibility.gateway_username = gateway.username.clone();
                     compatibility.gateway_password = gateway.password.clone();
                     compatibility.gateway_domain.clear();
-                    compatibility.gateway_usage_method = GatewayUsageMethod::UseAlways.as_i64() as u32;
+                    compatibility.gateway_usage_method = if gateway.prefer_direct {
+                        GatewayUsageMethod::Detect.as_i64() as u32
+                    } else {
+                        GatewayUsageMethod::UseAlways.as_i64() as u32
+                    };
                     compatibility.gateway_creds_source = GatewayCredentialsSource::UseUserCredentials.as_i64() as u32;
                 }
                 Transport::RDCleanPath(_) => {
@@ -8867,7 +9106,14 @@ impl Control {
             Some(transport) => transport,
             None => match self.rdcleanpath_transport()? {
                 Some(transport) => transport,
-                None => active_x_transport(&settings, &compatibility)?,
+                None => {
+                    let parent = if self.credential_parent.get().0.is_null() {
+                        self.activex_window.get()
+                    } else {
+                        self.credential_parent.get()
+                    };
+                    active_x_transport(&settings, &compatibility, parent)?
+                }
             },
         };
         let performance_flags = compatibility.performance_flags;
@@ -9119,8 +9365,13 @@ impl Control {
                 endpoint,
                 username,
                 password,
+                prefer_direct,
             } => builder
-                .with_transport(TransportKind::Gateway { endpoint })
+                .with_transport(TransportKind::Gateway {
+                    endpoint,
+                    prefer_direct,
+                    transport: Default::default(),
+                })
                 .with_gateway_username(username)
                 .with_gateway_password(password),
             ActiveXTransport::RDCleanPath(rdcleanpath) => builder
@@ -15525,7 +15776,7 @@ mod tests {
 
     #[test]
     fn gateway_transport_maps_only_honored_public_modes() {
-        let settings = Settings {
+        let mut settings = Settings {
             domain: "RDP".to_owned(),
             username: "server-user".to_owned(),
             password: Some("server-password".to_owned()),
@@ -15537,24 +15788,37 @@ mod tests {
             ..CompatibilitySettings::default()
         };
 
+        let no_parent = HWND(ptr::null_mut());
         let ActiveXTransport::Gateway {
             endpoint,
             username,
             password,
-        } = active_x_transport(&settings, &compatibility).expect("explicit gateway is supported")
+            prefer_direct,
+        } = active_x_transport(&settings, &compatibility, no_parent).expect("explicit gateway is supported")
         else {
             panic!("expected gateway transport");
         };
         assert_eq!(endpoint, "gateway.example.test:443");
         assert_eq!(username, "RDP\\server-user");
         assert_eq!(password, "server-password");
+        assert!(!prefer_direct);
+
+        compatibility.gateway_usage_method = GatewayUsageMethod::Detect.as_i64() as u32;
+        let ActiveXTransport::Gateway {
+            prefer_direct: detect_prefer_direct,
+            ..
+        } = active_x_transport(&settings, &compatibility, no_parent).expect("detect with hostname selects gateway")
+        else {
+            panic!("expected gateway transport");
+        };
+        assert!(detect_prefer_direct);
 
         compatibility.gateway_creds_source = GatewayCredentialsSource::UseUserCredentials.as_i64() as u32;
         compatibility.gateway_domain = "GATEWAY".to_owned();
         compatibility.gateway_username = "gateway-user".to_owned();
         compatibility.gateway_password = "gateway-password".to_owned();
         let ActiveXTransport::Gateway { username, password, .. } =
-            active_x_transport(&settings, &compatibility).expect("gateway user credentials are supported")
+            active_x_transport(&settings, &compatibility, no_parent).expect("gateway user credentials are supported")
         else {
             panic!("expected gateway transport");
         };
@@ -15562,19 +15826,65 @@ mod tests {
         assert_eq!(password, "gateway-password");
 
         compatibility.gateway_usage_method = GatewayUsageMethod::UseDefaultSettings.as_i64() as u32;
-        let system_policy_error = match active_x_transport(&settings, &compatibility) {
-            Ok(_) => panic!("system policy must not be silently approximated"),
-            Err(error) => error,
+        let ActiveXTransport::Gateway {
+            prefer_direct: default_prefer_direct,
+            ..
+        } = active_x_transport(&settings, &compatibility, no_parent)
+            .expect("default settings with hostname select gateway like Detect")
+        else {
+            panic!("expected gateway transport");
         };
-        assert_eq!(system_policy_error.code(), E_NOTIMPL);
+        assert!(default_prefer_direct);
 
         compatibility.gateway_usage_method = GatewayUsageMethod::UseAlways.as_i64() as u32;
-        compatibility.gateway_creds_source = GatewayCredentialsSource::Prompt.as_i64() as u32;
-        let prompt_error = match active_x_transport(&settings, &compatibility) {
-            Ok(_) => panic!("gateway prompting is not implemented"),
+        compatibility.gateway_creds_source = GatewayCredentialsSource::UseLogonCredentials.as_i64() as u32;
+        compatibility.gateway_domain.clear();
+        compatibility.gateway_username.clear();
+        compatibility.gateway_password = "logon-password".to_owned();
+        let ActiveXTransport::Gateway {
+            username: logon_user,
+            password: logon_password,
+            ..
+        } = active_x_transport(&settings, &compatibility, no_parent)
+            .expect("UseLogonCredentials accepts an explicit password")
+        else {
+            panic!("expected gateway transport");
+        };
+        assert!(!logon_user.is_empty());
+        assert_eq!(logon_password, "logon-password");
+
+        compatibility.gateway_password.clear();
+        settings.password = None;
+        let logon_sso_error = match active_x_transport(&settings, &compatibility, no_parent) {
+            Ok(_) => panic!("passwordless UseLogonCredentials SSO is not implemented"),
             Err(error) => error,
         };
-        assert_eq!(prompt_error.code(), E_NOTIMPL);
+        assert_eq!(logon_sso_error.code(), E_NOTIMPL);
+
+        settings.password = Some("server-password".to_owned());
+        compatibility.gateway_creds_source = GatewayCredentialsSource::Prompt.as_i64() as u32;
+        compatibility.gateway_domain = "GATEWAY".to_owned();
+        compatibility.gateway_username = "prompt-user".to_owned();
+        compatibility.gateway_password = "prompt-password".to_owned();
+        let ActiveXTransport::Gateway {
+            username: prompt_user,
+            password: prompt_password,
+            ..
+        } = active_x_transport(&settings, &compatibility, no_parent)
+            .expect("Prompt accepts prefilled gateway credentials without UI")
+        else {
+            panic!("expected gateway transport");
+        };
+        assert_eq!(prompt_user, "GATEWAY\\prompt-user");
+        assert_eq!(prompt_password, "prompt-password");
+
+        compatibility.gateway_username.clear();
+        compatibility.gateway_password.clear();
+        let prompt_empty_error = match active_x_transport(&settings, &compatibility, no_parent) {
+            Ok(_) => panic!("empty Prompt without a host window must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(prompt_empty_error.code(), E_INVALIDARG);
     }
 
     #[test]

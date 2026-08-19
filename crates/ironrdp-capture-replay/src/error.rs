@@ -26,6 +26,11 @@ pub enum ReplayError {
     /// The capture lacks the key-log entry required to decrypt its TLS session.
     #[error("capture does not include an NSS TLS secret for the negotiated session")]
     MissingTlsSecret,
+    /// The capture lacks the key-log entry for the gateway-tunneled TLS session.
+    #[error(
+        "capture does not include an NSS TLS secret for the gateway-tunneled session; exports only embed secrets for flows Wireshark sees, so supply the original key log with --keylog"
+    )]
+    MissingTunneledTlsSecret,
     /// TLS record authentication failed.
     #[error("capture TLS authentication failed")]
     TlsAuthentication,
@@ -53,4 +58,7 @@ pub enum ReplayError {
     /// A captured dynamic channel could not be attached.
     #[error("captured dynamic channel could not be attached")]
     DynamicChannelAttachment,
+    /// The gateway tunnel framing is incomplete or malformed.
+    #[error("capture gateway tunnel framing is invalid: {0}")]
+    GatewayFraming(String),
 }

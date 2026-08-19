@@ -55,6 +55,9 @@ enum Command {
     DaemonStart(DaemonArgs),
     /// Open an RDP session from a .rdp file and/or CLI overrides.
     Connect(ConnectArgs),
+    /// Forward TCP through an RD Gateway tunnel without an RDP session: a fixed local
+    /// port forward (SSH `-L`-style) or a SOCKS5 proxy a generic program can use.
+    GwForward(GwForwardArgs),
     /// Tear down the current RDP session (the daemon keeps running).
     Disconnect,
     /// Report the current session status.
@@ -491,6 +494,21 @@ struct ConnectArgs {
     /// RDP account domain. Overrides the .rdp file.
     #[arg(short, long)]
     domain: Option<String>,
+    /// RD Gateway server address (host[:port]). Enables the gateway for this session.
+    /// Overrides the .rdp file.
+    #[arg(long, env = "RDG_HOSTNAME")]
+    gateway: Option<String>,
+    /// RD Gateway user name. Defaults to the RDP username when unset, matching mstsc's
+    /// shared-credential behavior (`gatewaycredentialssource:i:0`).
+    #[arg(long, env = "RDG_USERNAME")]
+    gateway_username: Option<String>,
+    /// RD Gateway password. Defaults to the RDP password when unset.
+    #[arg(long, env = "RDG_PASSWORD", hide_env_values = true)]
+    gateway_password: Option<String>,
+    /// RD Gateway transport protocol: `websocket` (default, modern) or `rpc`
+    /// (legacy RPC-over-HTTP). Use `rpc` for gateways without WebSocket support.
+    #[arg(long, value_name = "websocket|rpc")]
+    gateway_transport: Option<String>,
     /// Tracing filter directive applied to this session's log capture (e.g.
     /// `ironrdp_connector=trace`), layered on top of the default `debug` level. Use it to raise
     /// verbosity up-front when troubleshooting a connection.
@@ -506,6 +524,43 @@ struct ConnectArgs {
     #[cfg(windows)]
     #[arg(long, value_name = "PIPE", conflicts_with = "server")]
     sandbox_pipe: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct GwForwardArgs {
+    /// Local listen address (host:port) for the forwarder / proxy.
+    #[arg(long, default_value = "127.0.0.1:1080")]
+    listen: String,
+    /// SOCKS5 proxy mode: each client CONNECT names its own destination. Omit for a
+    /// fixed port forward to `--target`.
+    #[arg(long)]
+    socks5: bool,
+    /// Fixed forward target (host:port) for non-SOCKS5 mode.
+    #[arg(long, value_name = "HOST:PORT")]
+    target: Option<String>,
+    /// RD Gateway server address (host[:port]). Enables the gateway tunnel.
+    #[arg(long, env = "RDG_HOSTNAME")]
+    gateway: Option<String>,
+    /// RD Gateway user name. Defaults to the RDP username when unset, matching mstsc's
+    /// shared-credential behavior.
+    #[arg(long, env = "RDG_USERNAME")]
+    gateway_username: Option<String>,
+    /// RD Gateway password. Defaults to the RDP password when unset.
+    #[arg(long, env = "RDG_PASSWORD", hide_env_values = true)]
+    gateway_password: Option<String>,
+    /// RDP account user name, used as the default gateway username.
+    #[arg(short, long, env = "RDP_USERNAME")]
+    username: Option<String>,
+    /// RDP account password, used as the default gateway password.
+    #[arg(short, long, env = "RDP_PASSWORD", hide_env_values = true)]
+    password: Option<String>,
+    /// RD Gateway transport protocol: `websocket` (default) or `rpc`.
+    #[arg(long, value_name = "websocket|rpc")]
+    gateway_transport: Option<String>,
+    /// Skip TLS certificate and hostname validation for the gateway. Use only for an
+    /// explicitly authorized test endpoint.
+    #[arg(long)]
+    skip_certificate_check: bool,
 }
 
 #[derive(Args, Debug)]
@@ -835,6 +890,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             return Ok(());
         }
         Command::Connect(args) => build_connect_request(args)?,
+        Command::GwForward(args) => {
+            return run_gw_forward(args).await;
+        }
         #[cfg(windows)]
         Command::Sandbox(args) => {
             return run_sandbox_command(args);
@@ -1048,6 +1106,32 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
         properties.set_domain(domain);
     }
 
+    // RD Gateway: enable the gateway transport and share the RDP credentials with it by
+    // default, the same shared-credential behavior as mstsc (`gatewaycredentialssource:i:0`).
+    // Explicit RDG_USERNAME / RDG_PASSWORD (or --gateway-username / --gateway-password) win.
+    if let Some(gateway) = args.gateway {
+        properties.set_gateway_hostname(gateway);
+        properties.set_gateway_usage_method(ironrdp_cfg::GatewayUsageMethod::UseAlways);
+        let gateway_username = args
+            .gateway_username
+            .or_else(|| properties.username().map(str::to_owned))
+            .context("gateway username: set RDG_USERNAME or RDP_USERNAME")?;
+        let gateway_password = args
+            .gateway_password
+            .or_else(|| properties.clear_text_password().map(str::to_owned))
+            .context("gateway password: set RDG_PASSWORD or RDP_PASSWORD")?;
+        properties.set_gateway_username(gateway_username);
+        properties.set_gateway_password(gateway_password);
+        if let Some(transport) = &args.gateway_transport {
+            let value = match transport.as_str() {
+                "websocket" | "ws" => 0,
+                "rpc" | "rpch" => 1,
+                other => anyhow::bail!("invalid --gateway-transport {other:?}: expected websocket or rpc"),
+            };
+            properties.insert("ironrdp_gateway_transport", value);
+        }
+    }
+
     #[cfg(windows)]
     {
         // Sandbox defaults are the base; explicit .rdp / --prop / named flags win on conflict.
@@ -1123,6 +1207,75 @@ fn run_sandbox_command(args: SandboxArgs) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+/// Forward TCP through an RD Gateway tunnel without an RDP session: a fixed local port
+/// forward, or a SOCKS5 proxy that opens a tunnel per requested destination.
+async fn run_gw_forward(args: GwForwardArgs) -> anyhow::Result<()> {
+    use ironrdp_gwforward::{GatewayTransport, GatewayTunnelConfig, run_port_forward, run_socks5};
+
+    let gateway = args
+        .gateway
+        .context("gateway endpoint: set RDG_HOSTNAME or pass --gateway")?;
+    // Reuse the RDP credentials for the gateway by default (mstsc shared-credential
+    // behavior); explicit RDG_USERNAME / RDG_PASSWORD win.
+    let username = args
+        .gateway_username
+        .or(args.username)
+        .context("gateway username: set RDG_USERNAME or RDP_USERNAME")?;
+    let password = args
+        .gateway_password
+        .or(args.password)
+        .context("gateway password: set RDG_PASSWORD or RDP_PASSWORD")?;
+    let transport = match args.gateway_transport.as_deref() {
+        None | Some("websocket" | "ws") => GatewayTransport::WebSocket,
+        Some("rpc" | "rpch") => GatewayTransport::Rpc,
+        Some(other) => anyhow::bail!("invalid --gateway-transport {other:?}: expected websocket or rpc"),
+    };
+    let certificate_validation = if args.skip_certificate_check {
+        ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate
+    } else {
+        ironrdp_tls::CertificateValidation::Strict
+    };
+    let config = GatewayTunnelConfig {
+        gateway_endpoint: gateway,
+        username,
+        password,
+        transport,
+        client_name: "ironrdp-agent".to_owned(),
+        certificate_validation,
+    };
+
+    if args.socks5 {
+        println!(
+            "socks5 proxy listening on {} (RD Gateway {})",
+            args.listen, config.gateway_endpoint
+        );
+        run_socks5(config, &args.listen).await?;
+    } else {
+        let target = args
+            .target
+            .context("fixed forward requires --target HOST:PORT (or use --socks5)")?;
+        let (host, port) = parse_host_port(&target)?;
+        println!(
+            "forwarding {} to {}:{} via RD Gateway {}",
+            args.listen, host, port, config.gateway_endpoint
+        );
+        run_port_forward(config, &args.listen, &host, port).await?;
+    }
+    Ok(())
+}
+
+/// Parse a `host:port` target, defaulting to port 3389.
+fn parse_host_port(target: &str) -> anyhow::Result<(String, u16)> {
+    let (host, port) = match target.rsplit_once(':') {
+        Some((host, port)) => (host, port.parse::<u16>().context("invalid target port")?),
+        None => (target, 3389),
+    };
+    if host.is_empty() {
+        anyhow::bail!("target host is empty");
+    }
+    Ok((host.to_owned(), port))
 }
 
 async fn run_rail(endpoint: &Endpoint, args: RailArgs) -> anyhow::Result<()> {
@@ -2187,6 +2340,9 @@ mod tests {
             ("server", "RDP_HOSTNAME"),
             ("username", "RDP_USERNAME"),
             ("password", "RDP_PASSWORD"),
+            ("gateway", "RDG_HOSTNAME"),
+            ("gateway_username", "RDG_USERNAME"),
+            ("gateway_password", "RDG_PASSWORD"),
         ] {
             let environment = connect
                 .get_arguments()
@@ -2199,6 +2355,77 @@ mod tests {
     #[test]
     fn shell_is_not_an_agent_command() {
         assert!(Cli::try_parse_from(["ironrdp-agent", "now", "shell"]).is_err());
+    }
+
+    #[test]
+    fn connect_gateway_shares_rdp_credentials_by_default() {
+        use super::{Request, build_connect_request};
+        use ironrdp_cfg::PropertySetExt as _;
+
+        let cli = Cli::try_parse_from([
+            "ironrdp-agent",
+            "connect",
+            "--server",
+            "rdp.contoso.com",
+            "--username",
+            "alice",
+            "--password",
+            "secret",
+            "--gateway",
+            "rdg.contoso.com",
+        ])
+        .expect("valid connect arguments");
+        let Some(Command::Connect(args)) = cli.command else {
+            panic!("expected connect command");
+        };
+
+        let Request::Connect { properties, .. } = build_connect_request(args).expect("connect request") else {
+            panic!("expected connect request");
+        };
+        // The gateway is enabled and inherits the RDP credentials when no
+        // RDG_USERNAME / RDG_PASSWORD is provided.
+        assert_eq!(properties.gateway_hostname(), Some("rdg.contoso.com"));
+        assert_eq!(properties.gateway_username(), Some("alice"));
+        assert_eq!(
+            properties.gateway_password().map(str::to_owned).as_deref(),
+            Some("secret")
+        );
+    }
+
+    #[test]
+    fn connect_gateway_prefers_explicit_gateway_credentials() {
+        use super::{Request, build_connect_request};
+        use ironrdp_cfg::PropertySetExt as _;
+
+        let cli = Cli::try_parse_from([
+            "ironrdp-agent",
+            "connect",
+            "--server",
+            "rdp.contoso.com",
+            "--username",
+            "alice",
+            "--password",
+            "secret",
+            "--gateway",
+            "rdg.contoso.com",
+            "--gateway-username",
+            "gw-alice",
+            "--gateway-password",
+            "gw-secret",
+        ])
+        .expect("valid connect arguments");
+        let Some(Command::Connect(args)) = cli.command else {
+            panic!("expected connect command");
+        };
+
+        let Request::Connect { properties, .. } = build_connect_request(args).expect("connect request") else {
+            panic!("expected connect request");
+        };
+        assert_eq!(properties.gateway_username(), Some("gw-alice"));
+        assert_eq!(
+            properties.gateway_password().map(str::to_owned).as_deref(),
+            Some("gw-secret")
+        );
     }
 
     #[test]

@@ -41,8 +41,26 @@ pub struct Flow {
 pub struct Capture {
     /// Direct TCP RDP flow selected from the pcapng input.
     pub flow: Flow,
+    /// Other TLS flows to the same gateway port, tried when the primary flow is not an
+    /// RD Gateway tunnel (a KDC-proxy connection shares the gateway's port 443).
+    pub gateway_alternates: Vec<Flow>,
     /// NSS-compatible TLS key-log entries embedded in the capture.
     pub tls_key_log: TlsKeyLog,
+}
+
+impl Capture {
+    /// Merge additional NSS key-log entries, e.g. from an external key log file.
+    ///
+    /// Captures exported through Wireshark's filtered "Inject TLS Secrets" flow
+    /// only embed secrets for flows Wireshark can see; a tunneled session such
+    /// as RDP inside an RD Gateway WebSocket is invisible to it, so its secrets
+    /// must come from the original key log.
+    pub fn add_tls_key_log(&mut self, key_log: &str) {
+        self.tls_key_log.0.push_str(key_log);
+        if !key_log.ends_with('\n') {
+            self.tls_key_log.0.push('\n');
+        }
+    }
 }
 
 impl core::fmt::Debug for Capture {
@@ -152,9 +170,114 @@ pub fn read_capture(path: &Path) -> Result<Capture, ReplayError> {
         return Err(ReplayError::UnsupportedTransport);
     }
 
+    let flows = assemble_flows(segments);
+    let (flow, alternates) = select_flow(flows)?;
     Ok(Capture {
-        flow: assemble_flow(segments)?,
+        flow,
+        gateway_alternates: alternates,
         tls_key_log: TlsKeyLog::new(tls_key_log),
+    })
+}
+
+/// Select the replayable flow: a direct RDP connection when present, otherwise
+/// the TLS session to a gateway on TCP port 443. Other gateway-port flows are
+/// returned as alternates for gateway-tunnel detection.
+fn select_flow(flows: Vec<Option<Flow>>) -> Result<(Flow, Vec<Flow>), ReplayError> {
+    let mut missing_tcp_flow = false;
+    let mut gateway: Option<Flow> = None;
+    let mut alternates = Vec::new();
+    for flow in flows {
+        let Some(flow) = flow else {
+            missing_tcp_flow = true;
+            continue;
+        };
+        if has_x224_connection_initiation(&flow.client_stream, &flow.server_stream) {
+            return Ok((flow, Vec::new()));
+        }
+        if flow.server.port == 443 {
+            match gateway {
+                None => gateway = Some(flow),
+                Some(_) => alternates.push(flow),
+            }
+        }
+    }
+
+    if let Some(flow) = gateway {
+        return Ok((flow, alternates));
+    }
+
+    Err(if missing_tcp_flow {
+        ReplayError::MissingTcpFlow
+    } else {
+        ReplayError::UnsupportedTransport
+    })
+}
+
+fn assemble_flows(segments: Vec<Segment>) -> Vec<Option<Flow>> {
+    let mut segments = segments;
+    segments.retain(|segment| !segment.data.is_empty() || segment.syn || segment.fin || segment.rst);
+    segments
+        .iter()
+        .enumerate()
+        .filter(|(_, segment)| segment.syn && !segment.ack)
+        .map(|(start, syn)| assemble_flow_at(&segments, start, syn))
+        .collect()
+}
+
+fn assemble_flow_at(segments: &[Segment], start: usize, syn: &Segment) -> Option<Flow> {
+    let client = syn.source.clone();
+    let server = syn.destination.clone();
+    let mut client_segments = Vec::new();
+    let mut server_segments = Vec::new();
+    let mut client_closed = false;
+    let mut server_closed = false;
+
+    for segment in segments.iter().skip(start) {
+        if segment.syn
+            && !segment.ack
+            && segment.packet != syn.packet
+            && segment.source == client
+            && segment.destination == server
+        {
+            break;
+        }
+        if segment.source == client && segment.destination == server {
+            if !client_closed {
+                client_segments.push(segment.clone());
+                client_closed |= segment.fin;
+            }
+        } else if segment.source == server && segment.destination == client {
+            if !server_closed {
+                server_segments.push(segment.clone());
+                server_closed |= segment.fin;
+            }
+        } else {
+            continue;
+        }
+        if segment.rst || (client_closed && server_closed) {
+            break;
+        }
+    }
+
+    let client_origin = syn.sequence.wrapping_add(1);
+    let server_origin = server_segments
+        .iter()
+        .find(|segment| segment.syn)
+        .map(|segment| segment.sequence.wrapping_add(1))
+        .or_else(|| {
+            server_segments
+                .iter()
+                .find(|segment| !segment.data.is_empty())
+                .map(|segment| segment.sequence)
+        })
+        .unwrap_or(0);
+    let client_stream = reassemble(client_segments, client_origin).ok()?;
+    let server_stream = reassemble(server_segments, server_origin).ok()?;
+    Some(Flow {
+        client,
+        server,
+        client_stream,
+        server_stream,
     })
 }
 
@@ -240,85 +363,6 @@ fn parse_tcp_packet(packet: usize, bytes: &[u8]) -> Option<Segment> {
         fin: flags & 0x01 != 0,
         rst: flags & 0x04 != 0,
         data: tcp[header_len..].to_vec(),
-    })
-}
-
-fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
-    segments.retain(|segment| !segment.data.is_empty() || segment.syn || segment.fin || segment.rst);
-    let mut missing_tcp_flow = false;
-    for (start, syn) in segments
-        .iter()
-        .enumerate()
-        .filter(|(_, segment)| segment.syn && !segment.ack)
-    {
-        let client = syn.source.clone();
-        let server = syn.destination.clone();
-        let mut client_segments = Vec::new();
-        let mut server_segments = Vec::new();
-        let mut client_closed = false;
-        let mut server_closed = false;
-
-        for segment in segments.iter().skip(start) {
-            if segment.syn
-                && !segment.ack
-                && segment.packet != syn.packet
-                && segment.source == client
-                && segment.destination == server
-            {
-                break;
-            }
-            if segment.source == client && segment.destination == server {
-                if !client_closed {
-                    client_segments.push(segment.clone());
-                    client_closed |= segment.fin;
-                }
-            } else if segment.source == server && segment.destination == client {
-                if !server_closed {
-                    server_segments.push(segment.clone());
-                    server_closed |= segment.fin;
-                }
-            } else {
-                continue;
-            }
-            if segment.rst || (client_closed && server_closed) {
-                break;
-            }
-        }
-
-        let client_origin = syn.sequence.wrapping_add(1);
-        let server_origin = server_segments
-            .iter()
-            .find(|segment| segment.syn)
-            .map(|segment| segment.sequence.wrapping_add(1))
-            .or_else(|| {
-                server_segments
-                    .iter()
-                    .find(|segment| !segment.data.is_empty())
-                    .map(|segment| segment.sequence)
-            })
-            .unwrap_or(0);
-        let Ok(client_stream) = reassemble(client_segments, client_origin) else {
-            missing_tcp_flow = true;
-            continue;
-        };
-        let Ok(server_stream) = reassemble(server_segments, server_origin) else {
-            missing_tcp_flow = true;
-            continue;
-        };
-        if has_x224_connection_initiation(&client_stream, &server_stream) {
-            return Ok(Flow {
-                client,
-                server,
-                client_stream,
-                server_stream,
-            });
-        }
-    }
-
-    Err(if missing_tcp_flow {
-        ReplayError::MissingTcpFlow
-    } else {
-        ReplayError::UnsupportedTransport
     })
 }
 
@@ -525,7 +569,7 @@ mod tests {
         let first_server = endpoint(2);
         let second_client = endpoint(3);
         let second_server = endpoint(4);
-        let flow = assemble_flow(vec![
+        let (flow, _) = select_flow(assemble_flows(vec![
             segment_between(first_client.clone(), first_server.clone(), 100, 1, true, false, &[]),
             segment_between(first_client.clone(), first_server.clone(), 101, 2, false, true, b"bad"),
             segment_between(first_client, first_server, 101, 3, false, true, b"XX"),
@@ -540,7 +584,7 @@ mod tests {
                 &connection_request(),
             ),
             segment_between(second_server, second_client, 300, 6, false, true, &connection_confirm()),
-        ])
+        ]))
         .unwrap();
 
         assert_eq!(flow.client.port, 3);
@@ -552,7 +596,7 @@ mod tests {
         let client = endpoint(1);
         let server = endpoint(2);
         let request = connection_request();
-        let error = assemble_flow(vec![
+        let error = select_flow(assemble_flows(vec![
             segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
             segment_between(client.clone(), server.clone(), 101, 2, false, true, &request[..8]),
             segment_between(
@@ -564,7 +608,7 @@ mod tests {
                 true,
                 &request[8..],
             ),
-        ])
+        ]))
         .unwrap_err();
 
         assert!(matches!(error, ReplayError::MissingTcpFlow));
@@ -574,7 +618,7 @@ mod tests {
     fn separates_connections_that_reuse_a_tcp_tuple() {
         let client = endpoint(1);
         let server = endpoint(2);
-        let flow = assemble_flow(vec![
+        let (flow, _) = select_flow(assemble_flows(vec![
             segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
             segment_between(client.clone(), server.clone(), 101, 2, false, true, b"old"),
             segment_between(server.clone(), client.clone(), 300, 3, false, true, b"old"),
@@ -589,7 +633,7 @@ mod tests {
                 &connection_request(),
             ),
             segment_between(server, client, 700, 6, false, true, &connection_confirm()),
-        ])
+        ]))
         .unwrap();
 
         assert_eq!(flow.client_stream[0].0, 5);
@@ -622,7 +666,7 @@ mod tests {
             &[],
         );
         server_fin.fin = true;
-        let flow = assemble_flow(vec![
+        let (flow, _) = select_flow(assemble_flows(vec![
             segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
             segment_between(client.clone(), server.clone(), 101, 2, false, true, &request),
             client_fin,
@@ -637,7 +681,7 @@ mod tests {
                 b"firstsecond",
             ),
             server_fin,
-        ])
+        ]))
         .unwrap();
 
         assert_eq!(
