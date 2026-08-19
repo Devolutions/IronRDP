@@ -100,6 +100,9 @@ struct GwConn {
 
 pub struct GwClient {
     work: tokio::task::JoinHandle<Result<(), Error>>,
+    /// Set once the work task has completed; its `JoinHandle` must not be polled again
+    /// (tokio panics if a completed `JoinHandle` is polled).
+    work_done: bool,
     rx: tokio::sync::mpsc::Receiver<Bytes>,
     rx_bufs: Vec<Bytes>,
     tx: PollSender<Bytes>,
@@ -217,8 +220,17 @@ impl GwClient {
                         gw.ws_sink.send(Message::Binary(Bytes::copy_from_slice(&wsbuf[..pos]))).await.map_err(|e| custom_err!("ws send", e))?;
                     },
                     next = gw.ws_stream.next() => {
-                        let tmp = next.ok_or_else(|| Error::new("WS Stream Dead", GwErrorKind::Connect))?;
-                        let msg = tmp.map_err(|e| custom_err!("Stream", e))?.into_data();
+                        let msg = match next {
+                            // A clean close or an exhausted stream ends the work task with
+                            // `Ok`, so readers observe end-of-stream rather than an error.
+                            None => return Ok(()),
+                            Some(Ok(msg)) => msg,
+                            Some(Err(e)) => return Err(custom_err!("Stream", e)),
+                        };
+                        if matches!(msg, Message::Close(_)) {
+                            return Ok(());
+                        }
+                        let msg = msg.into_data();
                         let mut cur = ReadCursor::new(&msg);
                         let hdr = PktHdr::decode(&mut cur).map_err(|e| custom_err!("Header Decode", e))?;
 
@@ -254,6 +266,7 @@ impl GwClient {
 
         Ok(GwClient {
             work,
+            work_done: false,
             rx: in_rx,
             rx_bufs: vec![],
             tx: PollSender::new(out_tx),
@@ -389,11 +402,21 @@ impl AsyncRead for GwClient {
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         // Propagate error or premature exit (?)
-        match self.work.poll_unpin(cx) {
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e))),
-            Poll::Ready(Ok(Err(e))) => return Poll::Ready(Err(io::Error::other(e))),
-            Poll::Ready(_) => return Poll::Ready(Err(io::Error::other("Premature Work Task end?"))),
-            _ => (),
+        if !self.work_done {
+            match self.work.poll_unpin(cx) {
+                Poll::Ready(Err(e)) => {
+                    self.work_done = true;
+                    return Poll::Ready(Err(io::Error::other(e)));
+                }
+                Poll::Ready(Ok(Err(e))) => {
+                    self.work_done = true;
+                    return Poll::Ready(Err(io::Error::other(e)));
+                }
+                Poll::Ready(Ok(Ok(()))) => {
+                    self.work_done = true;
+                }
+                Poll::Pending => (),
+            }
         }
 
         // Get new bufs
@@ -416,7 +439,17 @@ impl AsyncRead for GwClient {
             !rx_buf.is_empty()
         });
 
-        if n > 0 { Poll::Ready(Ok(())) } else { Poll::Pending }
+        if n > 0 {
+            return Poll::Ready(Ok(()));
+        }
+        if self.work_done {
+            // The work task ended and no data is buffered: the gateway stream is closed.
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "gateway tunnel closed",
+            )));
+        }
+        Poll::Pending
     }
 }
 
@@ -427,11 +460,21 @@ impl AsyncWrite for GwClient {
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
         // Propagate error or premature exit (?)
-        match self.work.poll_unpin(cx) {
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e))),
-            Poll::Ready(Ok(Err(e))) => return Poll::Ready(Err(io::Error::other(e))),
-            Poll::Ready(_) => return Poll::Ready(Err(io::Error::other("Premature Work Task end?"))),
-            Poll::Pending => (),
+        if !self.work_done {
+            match self.work.poll_unpin(cx) {
+                Poll::Ready(Err(e)) => {
+                    self.work_done = true;
+                    return Poll::Ready(Err(io::Error::other(e)));
+                }
+                Poll::Ready(Ok(Err(e))) => {
+                    self.work_done = true;
+                    return Poll::Ready(Err(io::Error::other(e)));
+                }
+                Poll::Ready(Ok(Ok(()))) => {
+                    self.work_done = true;
+                }
+                Poll::Pending => (),
+            }
         }
 
         match self.tx.poll_reserve(cx) {
