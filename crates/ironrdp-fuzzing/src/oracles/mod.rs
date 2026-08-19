@@ -577,6 +577,40 @@ pub fn cliprdr_channel_process(input: &[u8]) {
     let _ = cliprdr.process(input);
 }
 
+/// The URBDRC (MS-RDPEUSB / USB redirection) client→server PDUs a server
+/// decodes off the wire. `UrbdrcClientControlPdu` is the main-channel family;
+/// `UrbdrcClientDevicePdu<Raw>` is the per-device family, which carries the URB
+/// completions, IO-control completions and interface-info results.
+///
+/// Decoding `UrbdrcClientDevicePdu<Raw>` only slurps each URB *result* body into
+/// `Raw` — the operation-specific reinterpretation of those length-prefixed
+/// payloads (`SELECT_CONFIGURATION` / `SELECT_INTERFACE` / interface-info / isoch
+/// results, the historical home of unchecked-read panics) happens later in the
+/// stateful server handlers via `into_expected`, so `<Raw>` alone never reaches
+/// them. Those result decoders are all public, so we also drive them directly on
+/// the raw input to keep the whole bounds-checked decode surface fuzzed.
+pub fn rdpeusb_decode(data: &[u8]) {
+    use ironrdp_core::{ReadCursor, decode};
+    use ironrdp_rdpeusb::pdu::completion::ts_urb_result::{
+        Raw, TsUrbGetCurrFrameNumResult, TsUrbIsochTransferResult, TsUrbSelectConfigResult, TsUrbSelectInterfaceResult,
+        TsUsbdInterfaceInfoResult, TsUsbdPipeInfoResult,
+    };
+    use ironrdp_rdpeusb::pdu::{UrbdrcClientControlPdu, UrbdrcClientDevicePdu};
+
+    // Top-level client→server PDU families, off the two DVC channels.
+    let _ = decode::<UrbdrcClientControlPdu>(data);
+    let _ = decode::<UrbdrcClientDevicePdu<Raw>>(data);
+
+    // The length-prefixed URB / interface-info *result* payload decoders the
+    // per-device family reinterprets `Raw` into once correlated with a request.
+    let _ = TsUrbSelectConfigResult::decode(&mut ReadCursor::new(data));
+    let _ = TsUrbSelectInterfaceResult::decode(&mut ReadCursor::new(data));
+    let _ = TsUrbGetCurrFrameNumResult::decode(&mut ReadCursor::new(data));
+    let _ = TsUrbIsochTransferResult::decode(&mut ReadCursor::new(data));
+    let _ = decode::<TsUsbdInterfaceInfoResult>(data);
+    let _ = decode::<TsUsbdPipeInfoResult>(data);
+}
+
 /// Minimal backend for fuzzing that enables file transfer capabilities
 /// so the fuzzer can exercise lock, file list, and file contents paths.
 #[derive(Debug)]
