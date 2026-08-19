@@ -149,6 +149,46 @@ fn test_server_not_ready_before_capabilities() {
 }
 
 #[test]
+fn avc420_sender_preserves_exclusive_metadata_and_destination_rectangles() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    server
+        .process(0, &encode_pdu(&client_caps_pdu))
+        .expect("process capabilities");
+    let surface_id = server.create_surface(64, 64).expect("create surface");
+    server.drain_output();
+
+    let data = [0x00, 0x00, 0x00, 0x01, 0x67];
+    let regions = [Avc420Region::new(4, 6, 20, 22, 22, 78)];
+    server
+        .send_avc420_frame(surface_id, &data, &regions, 42)
+        .expect("queue AVC420 frame");
+
+    let output = server.drain_output();
+    let mut decompressor = Decompressor::new();
+    let encoded = encode_vec(output[1].as_ref()).expect("encode DVC message");
+    let mut decoded = Vec::new();
+    decompressor
+        .decompress(&encoded, &mut decoded)
+        .expect("decompress WireToSurface1");
+    let mut cursor = ReadCursor::new(&decoded);
+    let GfxPdu::WireToSurface1(wire) = GfxPdu::decode(&mut cursor).expect("decode WireToSurface1") else {
+        panic!("expected WireToSurface1");
+    };
+    assert_eq!(wire.destination_rectangle.left, 4);
+    assert_eq!(wire.destination_rectangle.top, 6);
+    assert_eq!(wire.destination_rectangle.right, 20);
+    assert_eq!(wire.destination_rectangle.bottom, 22);
+
+    let mut cursor = ReadCursor::new(&wire.bitmap_data);
+    let stream = ironrdp_egfx::pdu::Avc420BitmapStream::decode(&mut cursor).expect("decode AVC420 bitmap stream");
+    assert_eq!(stream.rectangles[0], wire.destination_rectangle);
+}
+
+#[test]
 fn avc444v2_sender_preserves_codec_and_lc_wire_shape() {
     let handler = Box::new(TestHandler::new());
     let mut server = GraphicsPipelineServer::new(handler);
@@ -204,6 +244,12 @@ fn avc444v2_sender_preserves_codec_and_lc_wire_shape() {
         let stream = Avc444BitmapStream::decode(&mut cursor).expect("decode AVC444v2 bitmap stream");
         assert_eq!(stream.encoding, encoding);
         assert_eq!(stream.stream2.is_some(), encoding == Encoding::LUMA_AND_CHROMA);
+        assert_eq!(wire.destination_rectangle.right, 64);
+        assert_eq!(wire.destination_rectangle.bottom, 64);
+        assert_eq!(stream.stream1.rectangles[0], wire.destination_rectangle);
+        if let Some(stream2) = stream.stream2 {
+            assert_eq!(stream2.rectangles[0], wire.destination_rectangle);
+        }
     }
 }
 
