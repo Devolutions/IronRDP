@@ -397,6 +397,12 @@ pub struct ProgressiveContextPdu {
 /// Bit 0 of context flags: use reduce-extrapolate DWT.
 pub const FLAG_DWT_REDUCE_EXTRAPOLATE: u8 = 0x01;
 
+/// RFX_TILE_DIFFERENCE in TILE_SIMPLE and TILE_FIRST flags.
+///
+/// The tile payload contains DWT coefficient deltas from the retained reference
+/// for the same tile instead of original coefficients.
+pub const TILE_FLAG_DIFFERENCE: u8 = 0x01;
+
 impl ProgressiveContextPdu {
     const NAME: &'static str = "ProgressiveContext";
     const FIXED_PART_SIZE: usize = 1 /* ctxId */ + 2 /* tileSize */ + 1 /* flags */;
@@ -1170,7 +1176,7 @@ mod tests {
             quant_idx_cr: 0,
             x_idx: 3,
             y_idx: 7,
-            flags: 0,
+            flags: TILE_FLAG_DIFFERENCE,
             y_data,
             cb_data,
             cr_data,
@@ -1184,6 +1190,7 @@ mod tests {
         assert_eq!(decoded.y_data, y_data);
         assert_eq!(decoded.cb_data, cb_data);
         assert_eq!(decoded.cr_data, cr_data);
+        assert_eq!(decoded.flags, TILE_FLAG_DIFFERENCE);
     }
 
     #[test]
@@ -1194,7 +1201,7 @@ mod tests {
             quant_idx_cr: 0,
             x_idx: 0,
             y_idx: 0,
-            flags: 0,
+            flags: TILE_FLAG_DIFFERENCE,
             quality: 0x40,
             y_data: &[10, 20],
             cb_data: &[30],
@@ -1206,6 +1213,7 @@ mod tests {
         let decoded = TileFirst::decode(&mut ReadCursor::new(&buf)).unwrap();
         assert_eq!(decoded.quality, 0x40);
         assert_eq!(decoded.quant_idx_cb, 1);
+        assert_eq!(decoded.flags, TILE_FLAG_DIFFERENCE);
     }
 
     #[test]
