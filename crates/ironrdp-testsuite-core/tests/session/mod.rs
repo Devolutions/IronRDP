@@ -1,6 +1,11 @@
 mod autodetect;
 mod connection_activation;
 mod fast_path;
+
+// Pulled in from the crate itself: `ironrdp-session` sets `test = false`, so its
+// inline unit tests only run when compiled as part of this test suite.
+#[path = "../../../ironrdp-session/src/qoiz.rs"]
+mod qoiz;
 mod rfx;
 mod save_session_info;
 

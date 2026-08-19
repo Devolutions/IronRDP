@@ -16,6 +16,7 @@ test = false
 # Added here because it includes/link to some files from other crates
 __bench = ["dep:visibility"]
 openh264-bundled = ["ironrdp-egfx/openh264-bundled", "dep:openh264"]
+qoiz-zstd = ["ironrdp-session/qoiz-zstd", "ironrdp-server/qoiz-zstd", "dep:zstd-safe"]
 
 [[test]]
 name = "integration_tests_core"
@@ -31,6 +32,8 @@ ironrdp-pdu.path = "../ironrdp-pdu"
 paste = "1"
 openh264 = { version = "0.9", optional = true, default-features = false, features = ["source"] }
 visibility = { version = "0.1", optional = true }
+zrip = { version = "0.8", default-features = false, features = ["std", "frame", "ldm"] }
+zstd-safe = { version = "7.2", optional = true, features = ["std"] }
 
 [dev-dependencies]
 anyhow = "1"
@@ -60,8 +63,8 @@ ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", features = ["std"] }
 ironrdp-rdpeusb.path = "../ironrdp-rdpeusb"
 ironrdp-usb.path = "../ironrdp-usb"
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", features = ["__test"] }
-ironrdp-server.path = "../ironrdp-server"
-ironrdp-session = { path = "../ironrdp-session", features = ["qoi"] }
+ironrdp-server = { path = "../ironrdp-server", features = ["qoiz"] }
+ironrdp-session = { path = "../ironrdp-session", features = ["qoi", "qoiz"] }
 ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpfile.path = "../ironrdp-rdpfile"
