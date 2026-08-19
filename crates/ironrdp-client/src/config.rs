@@ -343,11 +343,9 @@ pub enum Transport {
 
     /// Connect via an RDS gateway (MS-TSGU / MSTSGU).
     ///
-    /// The target RDP server is derived from [`Config::destination`]; the gateway
-    /// only needs its own endpoint and credentials.
-    ///
-    /// NOTE: the destination port is currently not forwarded to the gateway.
-    /// If `ironrdp-mstsgu` hardcodes port 3389, open a follow-up issue.
+    /// The target RDP server host and port are taken from [`Config::destination`] and
+    /// forwarded in the MS-TSGU channel-create packet. The gateway only needs its own
+    /// endpoint and credentials.
     #[cfg(feature = "gateway")]
     Gateway(GatewayConfig),
 
@@ -1121,8 +1119,8 @@ impl ConfigBuilder {
     /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
     ///
     /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
-    /// embedder (error if disabled). Works over Direct and RDCleanPath. RDS Gateway is rejected
-    /// until it can propagate the VMConnect target port.
+    /// embedder (error if disabled). Works over Direct, RDCleanPath, and RDS Gateway (the
+    /// destination port, typically 2179, is forwarded in the MS-TSGU channel-create packet).
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
@@ -1499,10 +1497,6 @@ impl ConfigBuilder {
             }
             if !self.enable_credssp.unwrap_or(true) {
                 anyhow::bail!("vmconnect requires CredSSP");
-            }
-            #[cfg(feature = "gateway")]
-            if matches!(transport, Transport::Gateway(_)) {
-                anyhow::bail!("vmconnect cannot be used over an RDS gateway until the target port is propagated");
             }
         }
 

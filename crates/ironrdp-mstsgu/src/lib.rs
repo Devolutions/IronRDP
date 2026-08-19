@@ -42,6 +42,10 @@ pub struct GwConnectTarget {
     pub gw_pass: String,
 
     pub server: String,
+    /// Target resource port as presented to the gateway (HTTP_CHANNEL_PACKET `port`).
+    ///
+    /// Common values are `3389` for ordinary RDP and `2179` for Hyper-V VMConnect.
+    pub server_port: u16,
 }
 
 type Error = ironrdp_error::Error<GwErrorKind>;
@@ -377,7 +381,7 @@ impl GwConn {
     async fn channel(&mut self) -> Result<ChannelResp, Error> {
         let req = ChannelPkt {
             resources: vec![self.target.server.clone()],
-            port: 3389,
+            port: self.target.server_port,
             protocol: 3,
         };
         self.send_packet(&req).await?;

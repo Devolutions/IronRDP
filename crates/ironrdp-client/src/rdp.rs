@@ -1447,21 +1447,14 @@ async fn connect_gateway(
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     use ironrdp_mstsgu::GwConnectTarget;
 
-    // VMConnect needs destination port 2179; GwConnectTarget does not carry it yet (TODO below).
-    #[cfg(feature = "vmconnect")]
-    if config.vm_id().is_some() {
-        return Err(ironrdp_connector::general_err!(
-            "vmconnect cannot be used over an RDS gateway until the target port is propagated"
-        ));
-    }
-
-    // Build the GwConnectTarget.  `server` is the RDP target derived from `config.destination`.
-    // TODO: preserve the destination port; ironrdp-mstsgu may currently hard-code 3389.
+    // Target resource host/port come from Config::destination and are forwarded in the
+    // MS-TSGU channel-create packet (enables non-3389 RDP and VMConnect port 2179).
     let gw_target = GwConnectTarget {
         gw_endpoint: gw.endpoint.clone(),
         gw_user: gw.username.clone(),
         gw_pass: gw.password.clone(),
         server: config.destination.name().to_owned(),
+        server_port: config.destination.port(),
     };
 
     let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect(&gw_target, &config.connector.client_name)
