@@ -74,14 +74,54 @@ pub enum PostConnectionAction {
     Stop,
 }
 
-/// Hooks for connection lifecycle events in [`RdpServer::run`].
+/// Per-connection metadata captured during connection setup, made available to
+/// [`ConnectionHandler::on_connection_info`] once the connection is established.
+///
+/// These are GCC Client Core Data fields (MS-RDPBCGR 2.2.1.3.2) that the acceptor
+/// captures but has no use for itself; embedders that want to act on them (for
+/// example, selecting a server-side keyboard layout matching the client) can do
+/// so here without reaching into the acceptor's internals.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ConnectionInfo {
+    /// See [`ironrdp_acceptor::AcceptorResult::keyboard_layout`].
+    pub keyboard_layout: u32,
+    /// See [`ironrdp_acceptor::AcceptorResult::keyboard_type`].
+    pub keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+    /// See [`ironrdp_acceptor::AcceptorResult::ime_file_name`].
+    pub ime_file_name: String,
+}
+
+impl ConnectionInfo {
+    /// Builds a `ConnectionInfo` directly, for downstream `ConnectionHandler` implementations
+    /// that want to exercise [`ConnectionHandler::on_connection_info`] in their own unit tests
+    /// without going through a live connection. `#[non_exhaustive]` blocks struct-literal
+    /// construction outside this crate, so a constructor is the only way to do that.
+    pub fn new(keyboard_layout: u32, keyboard_type: ironrdp_pdu::gcc::KeyboardType, ime_file_name: String) -> Self {
+        Self {
+            keyboard_layout,
+            keyboard_type,
+            ime_file_name,
+        }
+    }
+}
+
+/// Hooks for connection lifecycle events.
 ///
 /// Implement this trait to add pre-accept filtering (rate limiting,
-/// IP allowlists) and post-disconnect logic (cleanup, session validity
-/// checks, metrics).
+/// IP allowlists), post-disconnect logic (cleanup, session validity
+/// checks, metrics), and to observe per-connection metadata once a
+/// connection is established.
 ///
 /// All methods have default implementations that accept all connections
 /// and continue unconditionally.
+///
+/// [`Self::on_accept`] and [`Self::on_disconnected`] are called only from
+/// [`RdpServer::run`]'s own accept loop. [`Self::on_connection_info`] is
+/// called from every code path that completes connection setup, including
+/// [`RdpServer::run_connection`] and [`RdpServer::run_connection_with`], so it
+/// is the hook to use for embedders (such as those with their own
+/// multi-transport accept loop) that do not call `run`.
 pub trait ConnectionHandler: Send {
     /// Called after `accept()` returns but before `run_connection()`.
     ///
@@ -89,6 +129,12 @@ pub trait ConnectionHandler: Send {
     fn on_accept(&mut self, peer: SocketAddr) -> bool {
         let _ = peer;
         true
+    }
+
+    /// Called once per connection, after credential and auto-reconnect
+    /// validation succeed and before the session loop starts.
+    fn on_connection_info(&mut self, info: &ConnectionInfo) {
+        let _ = info;
     }
 
     /// Called after `run_connection()` completes (successfully or with error).
@@ -1699,6 +1745,16 @@ impl RdpServer {
             } else {
                 debug!("Skipping credential validation (no credentials in AcceptorResult)");
             }
+        }
+
+        if !result.reactivation
+            && let Some(ref mut handler) = self.connection_handler
+        {
+            handler.on_connection_info(&ConnectionInfo {
+                keyboard_layout: result.keyboard_layout,
+                keyboard_type: result.keyboard_type,
+                ime_file_name: result.ime_file_name.clone(),
+            });
         }
 
         if !result.input_events.is_empty() {
