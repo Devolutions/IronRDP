@@ -14,6 +14,17 @@ use std::sync::{Arc, Mutex};
 use bytes::BytesMut;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+/// How many undelivered bytes may pile up in `SharedIo::write_buf` before
+/// `AsyncWrite::poll_write` stops accepting more.
+///
+/// Nothing else bounds it. `RdpeudpConnection::send`'s own `SendBufferFull`
+/// only rejects one call's worth of bytes; without this, a caller that keeps
+/// writing through that rejection (the pattern `queue_write`'s retry loop is
+/// built for) has nowhere for `write_buf` to stop growing, for as long as
+/// congestion or an unresponsive peer keeps the send buffer full. Mirrors
+/// `driver::READ_BUF_HIGH_WATER`'s reasoning on the other direction.
+pub(crate) const WRITE_BUF_HIGH_WATER: usize = 1 << 20;
+
 // ════════════════════════════════════════════════════════════════════
 // SharedIo
 // ════════════════════════════════════════════════════════════════════
@@ -54,6 +65,15 @@ pub(crate) struct SharedIo {
     /// and would sit throttled until some unrelated timer happened to fire.
     pub(crate) read_drained_waker: Option<Waker>,
 
+    /// Waker registered by `poll_write` when `write_buf` is at or over
+    /// `WRITE_BUF_HIGH_WATER`. Fired by the driver once it drains `write_buf`
+    /// into `conn.send()`.
+    ///
+    /// Without it a writer blocked on a full `write_buf` has no way to learn
+    /// the driver made room, and would stay pending until some unrelated
+    /// wake happened to reach it.
+    pub(crate) write_room_waker: Option<Waker>,
+
     /// Fatal error from the driver (propagated to reads/writes).
     pub(crate) error: Option<io::ErrorKind>,
 
@@ -70,8 +90,39 @@ impl SharedIo {
             write_waker: None,
             flush_waker: None,
             read_drained_waker: None,
+            write_room_waker: None,
             error: None,
             closed: false,
+        }
+    }
+
+    /// Mark the connection closed and wake every task that might be
+    /// blocked on this state, so a close is never missed by a task that
+    /// was mid-`Pending` when it happened.
+    ///
+    /// The five call sites that used to set `closed = true` directly each
+    /// hand-picked which wakers to fire, and drifted out of sync with each
+    /// other: two never woke `flush_waker` (a `poll_flush` in flight when
+    /// the connection self-closed, cleanly or via `Event::ConnectionClosed`,
+    /// hung forever), and two never woke `read_drained_waker` (the driver
+    /// itself, throttled on its own full `read_buf`, would never notice an
+    /// externally-initiated shutdown). Centralizing the wake list here means
+    /// a waker added for one reason automatically gets covered everywhere
+    /// closing can happen, rather than needing five separate updates found
+    /// by tracing each call site's `Future` by hand.
+    pub(crate) fn close(&mut self) {
+        self.closed = true;
+        for waker in [
+            self.read_waker.take(),
+            self.write_waker.take(),
+            self.flush_waker.take(),
+            self.read_drained_waker.take(),
+            self.write_room_waker.take(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            waker.wake();
         }
     }
 }
@@ -131,7 +182,7 @@ impl AsyncRead for RdpeudpStream {
 }
 
 impl AsyncWrite for RdpeudpStream {
-    fn poll_write(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         let mut shared = self
             .shared
             .lock()
@@ -143,6 +194,14 @@ impl AsyncWrite for RdpeudpStream {
 
         if shared.closed {
             return Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "connection closed")));
+        }
+
+        if shared.write_buf.len() >= WRITE_BUF_HIGH_WATER {
+            // The driver isn't keeping up (or the peer isn't acking): stop
+            // accepting more instead of letting write_buf grow without
+            // bound. The driver wakes this once it drains write_buf.
+            shared.write_room_waker = Some(cx.waker().clone());
+            return Poll::Pending;
         }
 
         shared.write_buf.extend_from_slice(buf);
@@ -182,11 +241,7 @@ impl AsyncWrite for RdpeudpStream {
             .lock()
             .map_err(|_| io::Error::other("shared lock poisoned"))?;
 
-        shared.closed = true;
-
-        if let Some(waker) = shared.write_waker.take() {
-            waker.wake();
-        }
+        shared.close();
 
         Poll::Ready(Ok(()))
     }
@@ -352,5 +407,102 @@ mod tests {
             assert!(result.is_err());
             assert_eq!(result.unwrap_err().kind(), io::ErrorKind::ConnectionReset);
         });
+    }
+
+    /// This is the actual defect: without a bound, `write_buf` had nothing
+    /// stopping it from growing without limit once `SendBufferFull` stopped
+    /// being fatal and became a retried condition instead. `poll_write` must
+    /// refuse once `write_buf` is full, the same way the read side already
+    /// stops pulling off the socket once `read_buf` is full.
+    #[test]
+    fn poll_write_blocks_once_write_buf_is_full() {
+        let shared = Arc::new(Mutex::new(SharedIo::new()));
+        {
+            let mut s = shared.lock().expect("lock");
+            s.write_buf.extend_from_slice(&vec![0u8; WRITE_BUF_HIGH_WATER]);
+        }
+
+        let mut stream = RdpeudpStream::new(Arc::clone(&shared));
+
+        let test_waker = TestWaker::new();
+        let waker = Waker::from(Arc::clone(&test_waker));
+        let mut cx = Context::from_waker(&waker);
+
+        let result = Pin::new(&mut stream).poll_write(&mut cx, b"one more byte");
+        assert!(result.is_pending(), "poll_write should block at the high-water mark");
+
+        let s = shared.lock().expect("lock");
+        assert_eq!(
+            s.write_buf.len(),
+            WRITE_BUF_HIGH_WATER,
+            "the blocked write must not have been appended"
+        );
+        assert!(!test_waker.was_woken(), "not woken yet, nothing has drained write_buf");
+    }
+
+    /// The driver wakes a blocked writer once it drains `write_buf`, the
+    /// same relationship `read_drained_waker` has on the read side.
+    #[test]
+    fn write_room_waker_fires_once_write_buf_drains() {
+        let shared = Arc::new(Mutex::new(SharedIo::new()));
+        {
+            let mut s = shared.lock().expect("lock");
+            s.write_buf.extend_from_slice(&vec![0u8; WRITE_BUF_HIGH_WATER]);
+        }
+
+        let mut stream = RdpeudpStream::new(Arc::clone(&shared));
+
+        let test_waker = TestWaker::new();
+        let waker = Waker::from(Arc::clone(&test_waker));
+        let mut cx = Context::from_waker(&waker);
+
+        let result = Pin::new(&mut stream).poll_write(&mut cx, b"blocked");
+        assert!(result.is_pending());
+
+        // The driver drains write_buf (mirrors what branch 2 does) and wakes
+        // the blocked writer, the same way it already does for flush_waker.
+        {
+            let mut s = shared.lock().expect("lock");
+            s.write_buf.clear();
+            if let Some(w) = s.write_room_waker.take() {
+                w.wake();
+            }
+        }
+
+        assert!(test_waker.was_woken());
+    }
+
+    /// This is the second defect the same review round found: the five call
+    /// sites that used to set `closed = true` directly had each hand-picked
+    /// which wakers to fire, and two of them never woke `flush_waker` (a
+    /// `poll_flush` in flight would have hung on a clean self-close) while
+    /// two others never woke `read_drained_waker` (the driver itself,
+    /// throttled on its own full `read_buf`, would never have noticed an
+    /// externally-initiated shutdown). `close()` must wake every one of
+    /// them, unconditionally, so no call site can drift out of sync again.
+    #[test]
+    fn close_wakes_every_registered_waker() {
+        let mut shared = SharedIo::new();
+
+        let read_waker = TestWaker::new();
+        let write_waker = TestWaker::new();
+        let flush_waker = TestWaker::new();
+        let read_drained_waker = TestWaker::new();
+        let write_room_waker = TestWaker::new();
+
+        shared.read_waker = Some(Waker::from(Arc::clone(&read_waker)));
+        shared.write_waker = Some(Waker::from(Arc::clone(&write_waker)));
+        shared.flush_waker = Some(Waker::from(Arc::clone(&flush_waker)));
+        shared.read_drained_waker = Some(Waker::from(Arc::clone(&read_drained_waker)));
+        shared.write_room_waker = Some(Waker::from(Arc::clone(&write_room_waker)));
+
+        shared.close();
+
+        assert!(shared.closed);
+        assert!(read_waker.was_woken(), "read_waker not woken");
+        assert!(write_waker.was_woken(), "write_waker not woken");
+        assert!(flush_waker.was_woken(), "flush_waker not woken");
+        assert!(read_drained_waker.was_woken(), "read_drained_waker not woken");
+        assert!(write_room_waker.was_woken(), "write_room_waker not woken");
     }
 }

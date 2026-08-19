@@ -8,6 +8,9 @@
 
 use core::fmt;
 
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
 use ironrdp_core::{DecodeError, EncodeError};
 
 use crate::pdu::PrefixError;
@@ -119,5 +122,32 @@ impl RdpeudpErrorExt for RdpeudpError {
     #[track_caller]
     fn invalid_packet(context: &'static str, reason: &'static str) -> Self {
         Self::new(context, RdpeudpErrorKind::InvalidPacket { reason })
+    }
+}
+
+/// The payload [`RdpeudpConnection::send`] could not accept, handed back so
+/// the caller can decide what to do with it: retry once capacity opens for
+/// the transient [`SendBufferFull`] kind, or discard it for a terminal one.
+/// Every kind returns the data, not only `SendBufferFull`, so the caller
+/// never has to guess which rejections are recoverable from the type alone.
+///
+/// [`RdpeudpConnection::send`]: crate::RdpeudpConnection::send
+/// [`SendBufferFull`]: RdpeudpErrorKind::SendBufferFull
+#[derive(Debug)]
+pub struct SendError {
+    pub error: RdpeudpError,
+    pub data: Vec<u8>,
+}
+
+impl fmt::Display for SendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.error, f)
+    }
+}
+
+#[cfg(feature = "std")]
+impl core::error::Error for SendError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(&self.error)
     }
 }

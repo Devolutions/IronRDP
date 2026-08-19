@@ -245,13 +245,7 @@ impl UdpTransport {
                 .shared
                 .lock()
                 .map_err(|_| UdpTransportError::driver_panic("shutdown"))?;
-            shared.closed = true;
-            if let Some(waker) = shared.read_waker.take() {
-                waker.wake();
-            }
-            if let Some(waker) = shared.write_waker.take() {
-                waker.wake();
-            }
+            shared.close();
         }
 
         // Wait for the pump task (should now get EOF and exit)
