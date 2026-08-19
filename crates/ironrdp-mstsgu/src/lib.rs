@@ -100,6 +100,9 @@ struct GwConn {
 
 pub struct GwClient {
     work: tokio::task::JoinHandle<Result<(), Error>>,
+    /// Set once the work task has completed; its `JoinHandle` must not be polled again
+    /// (tokio panics if a completed `JoinHandle` is polled).
+    work_done: bool,
     rx: tokio::sync::mpsc::Receiver<Bytes>,
     rx_bufs: Vec<Bytes>,
     tx: PollSender<Bytes>,
@@ -254,6 +257,7 @@ impl GwClient {
 
         Ok(GwClient {
             work,
+            work_done: false,
             rx: in_rx,
             rx_bufs: vec![],
             tx: PollSender::new(out_tx),
@@ -389,11 +393,21 @@ impl AsyncRead for GwClient {
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         // Propagate error or premature exit (?)
-        match self.work.poll_unpin(cx) {
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e))),
-            Poll::Ready(Ok(Err(e))) => return Poll::Ready(Err(io::Error::other(e))),
-            Poll::Ready(_) => return Poll::Ready(Err(io::Error::other("Premature Work Task end?"))),
-            _ => (),
+        if !self.work_done {
+            match self.work.poll_unpin(cx) {
+                Poll::Ready(Err(e)) => {
+                    self.work_done = true;
+                    return Poll::Ready(Err(io::Error::other(e)));
+                }
+                Poll::Ready(Ok(Err(e))) => {
+                    self.work_done = true;
+                    return Poll::Ready(Err(io::Error::other(e)));
+                }
+                Poll::Ready(Ok(Ok(()))) => {
+                    self.work_done = true;
+                }
+                Poll::Pending => (),
+            }
         }
 
         // Get new bufs
@@ -416,7 +430,17 @@ impl AsyncRead for GwClient {
             !rx_buf.is_empty()
         });
 
-        if n > 0 { Poll::Ready(Ok(())) } else { Poll::Pending }
+        if n > 0 {
+            return Poll::Ready(Ok(()));
+        }
+        if self.work_done {
+            // The work task ended and no data is buffered: the gateway stream is closed.
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "gateway tunnel closed",
+            )));
+        }
+        Poll::Pending
     }
 }
 
@@ -427,11 +451,21 @@ impl AsyncWrite for GwClient {
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
         // Propagate error or premature exit (?)
-        match self.work.poll_unpin(cx) {
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e))),
-            Poll::Ready(Ok(Err(e))) => return Poll::Ready(Err(io::Error::other(e))),
-            Poll::Ready(_) => return Poll::Ready(Err(io::Error::other("Premature Work Task end?"))),
-            Poll::Pending => (),
+        if !self.work_done {
+            match self.work.poll_unpin(cx) {
+                Poll::Ready(Err(e)) => {
+                    self.work_done = true;
+                    return Poll::Ready(Err(io::Error::other(e)));
+                }
+                Poll::Ready(Ok(Err(e))) => {
+                    self.work_done = true;
+                    return Poll::Ready(Err(io::Error::other(e)));
+                }
+                Poll::Ready(Ok(Ok(()))) => {
+                    self.work_done = true;
+                }
+                Poll::Pending => (),
+            }
         }
 
         match self.tx.poll_reserve(cx) {
