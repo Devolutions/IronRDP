@@ -14,6 +14,7 @@
 //! connection flow.
 
 use core::net::SocketAddr;
+use std::sync::Arc;
 
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
 use ironrdp_rdpemt::{RdpemtError, RdpemtErrorExt as _, TunnelConfig};
@@ -39,7 +40,9 @@ use crate::transport::{UdpTransport, UdpTransportConfig, connect_udp};
 /// let mut bootstrap = MultitransportBootstrap::new(request);
 ///
 /// // Attempt the UDP connection
-/// let _ = bootstrap.connect(server_addr, "server.example.com".into(), Default::default()).await;
+/// let _ = bootstrap
+///     .connect(server_addr, "server.example.com".into(), Default::default(), None)
+///     .await;
 ///
 /// // Always send the response back on TCP (S_OK or E_ABORT)
 /// let response_bytes = bootstrap.response_pdu().expect("response available after connect");
@@ -85,6 +88,13 @@ impl MultitransportBootstrap {
     /// On success, stores the transport and prepares an `S_OK` response.
     /// On failure, prepares an `E_ABORT` response and returns the error.
     ///
+    /// `server_cert_verifier` is forwarded to the underlying [`connect_udp`]
+    /// call the same way `connection_config` is: `None` preserves the
+    /// historic no-verification behavior, `Some(verifier)` opts into real
+    /// TLS certificate validation. Without threading it through here, a
+    /// caller going through this orchestrator had no way to reach the
+    /// verification `connect_udp` itself already supports.
+    ///
     /// After calling this, use [`response_pdu()`] to get the bytes to
     /// send back to the server on the TCP connection.
     ///
@@ -94,6 +104,7 @@ impl MultitransportBootstrap {
         server_addr: SocketAddr,
         server_name: String,
         connection_config: ConnectionConfig,
+        server_cert_verifier: Option<Arc<dyn tokio_rustls::rustls::client::danger::ServerCertVerifier>>,
     ) -> Result<(), UdpTransportError> {
         // This driver only implements the reliable transport (RDPEUDP2 + TLS).
         // UdpFecL (lossy RDPEUDP + DTLS) is a distinct wire protocol this crate
@@ -114,6 +125,7 @@ impl MultitransportBootstrap {
         };
         let mut config = UdpTransportConfig::new(server_addr, server_name, tunnel_config);
         config.connection_config = connection_config;
+        config.server_cert_verifier = server_cert_verifier;
 
         match connect_udp(config).await {
             Ok(transport) => {
@@ -226,7 +238,7 @@ mod tests {
         let unreachable_addr: SocketAddr = "127.0.0.1:1".parse().expect("valid loopback address");
 
         let result = bootstrap
-            .connect(unreachable_addr, "localhost".into(), ConnectionConfig::default())
+            .connect(unreachable_addr, "localhost".into(), ConnectionConfig::default(), None)
             .await;
 
         // Checking the specific error kind (not just is_err()) is the point:
