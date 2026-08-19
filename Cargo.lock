@@ -3082,6 +3082,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-str",
+ "ironrdp-usb",
 ]
 
 [[package]]
