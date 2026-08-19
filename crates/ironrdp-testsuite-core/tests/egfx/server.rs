@@ -1,8 +1,8 @@
 use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::pdu::{
-    Avc420Region, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
-    CapabilitySet, Codec1Type, GfxPdu, PixelFormat,
+    Avc420Region, Avc444BitmapStream, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags,
+    CapabilitiesV81Flags, CapabilitySet, Codec1Type, Encoding, GfxPdu, PixelFormat,
 };
 use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer, QoeMetrics, Surface};
 use ironrdp_graphics::zgfx::Decompressor;
@@ -146,6 +146,143 @@ fn test_server_not_ready_before_capabilities() {
 
     let result = server.send_avc420_frame(0, &h264_data, &regions, 0);
     assert!(result.is_none());
+}
+
+#[test]
+fn avc444v2_sender_preserves_codec_and_lc_wire_shape() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    server.process(0, &payload).expect("process capabilities");
+    let surface_id = server.create_surface(64, 64).expect("create surface");
+    server.drain_output();
+
+    let stream1_data = [0x00, 0x00, 0x00, 0x01, 0x67];
+    let stream2_data = [0x00, 0x00, 0x00, 0x01, 0x68];
+    let stream1_regions = [Avc420Region::full_frame(64, 64, 22)];
+    let stream2_regions = [Avc420Region::full_frame(64, 64, 24)];
+    let cases = [
+        (
+            Encoding::LUMA_AND_CHROMA,
+            Some(stream2_data.as_slice()),
+            Some(stream2_regions.as_slice()),
+        ),
+        (Encoding::LUMA, None, None),
+        (Encoding::CHROMA, None, None),
+    ];
+
+    for (encoding, second_data, second_regions) in cases {
+        server
+            .send_avc444v2_frame(
+                surface_id,
+                encoding,
+                &stream1_data,
+                &stream1_regions,
+                second_data,
+                second_regions,
+                42,
+            )
+            .expect("queue AVC444v2 frame");
+
+        let output = server.drain_output();
+        let mut decompressor = Decompressor::new();
+        let encoded = encode_vec(output[1].as_ref()).expect("encode DVC message");
+        let mut decoded = Vec::new();
+        decompressor
+            .decompress(&encoded, &mut decoded)
+            .expect("decompress WireToSurface1");
+        let mut cursor = ReadCursor::new(&decoded);
+        let GfxPdu::WireToSurface1(wire) = GfxPdu::decode(&mut cursor).expect("decode WireToSurface1") else {
+            panic!("expected WireToSurface1");
+        };
+        assert_eq!(wire.codec_id, Codec1Type::Avc444v2);
+
+        let mut cursor = ReadCursor::new(&wire.bitmap_data);
+        let stream = Avc444BitmapStream::decode(&mut cursor).expect("decode AVC444v2 bitmap stream");
+        assert_eq!(stream.encoding, encoding);
+        assert_eq!(stream.stream2.is_some(), encoding == Encoding::LUMA_AND_CHROMA);
+    }
+}
+
+#[test]
+fn avc444_sender_preserves_existing_codec_and_stream_selection() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    server.process(0, &payload).expect("process capabilities");
+    let surface_id = server.create_surface(64, 64).expect("create surface");
+    server.drain_output();
+
+    let luma_data = [0x00, 0x00, 0x00, 0x01, 0x67];
+    let chroma_data = [0x00, 0x00, 0x00, 0x01, 0x68];
+    let luma_regions = [Avc420Region::full_frame(64, 64, 22)];
+    let chroma_regions = [Avc420Region::full_frame(64, 64, 24)];
+    for (expected_encoding, second_data, second_regions) in [
+        (Encoding::LUMA, None, None),
+        (
+            Encoding::LUMA_AND_CHROMA,
+            Some(chroma_data.as_slice()),
+            Some(chroma_regions.as_slice()),
+        ),
+    ] {
+        server
+            .send_avc444_frame(surface_id, &luma_data, &luma_regions, second_data, second_regions, 42)
+            .expect("queue AVC444 frame");
+
+        let output = server.drain_output();
+        let mut decompressor = Decompressor::new();
+        let encoded = encode_vec(output[1].as_ref()).expect("encode DVC message");
+        let mut decoded = Vec::new();
+        decompressor
+            .decompress(&encoded, &mut decoded)
+            .expect("decompress WireToSurface1");
+        let mut cursor = ReadCursor::new(&decoded);
+        let GfxPdu::WireToSurface1(wire) = GfxPdu::decode(&mut cursor).expect("decode WireToSurface1") else {
+            panic!("expected WireToSurface1");
+        };
+        assert_eq!(wire.codec_id, Codec1Type::Avc444);
+
+        let mut cursor = ReadCursor::new(&wire.bitmap_data);
+        let stream = Avc444BitmapStream::decode(&mut cursor).expect("decode AVC444 bitmap stream");
+        assert_eq!(stream.encoding, expected_encoding);
+        assert_eq!(stream.stream2.is_some(), expected_encoding == Encoding::LUMA_AND_CHROMA);
+    }
+}
+
+#[test]
+fn avc444v2_sender_rejects_invalid_stream_shapes_without_queueing() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    server.process(0, &payload).expect("process capabilities");
+    let surface_id = server.create_surface(64, 64).expect("create surface");
+    server.drain_output();
+
+    let data = [0x00, 0x00, 0x00, 0x01, 0x67];
+    let regions = [Avc420Region::full_frame(64, 64, 22)];
+    for (encoding, second_data, second_regions) in [
+        (Encoding::LUMA_AND_CHROMA, None, None),
+        (Encoding::LUMA, Some(data.as_slice()), Some(regions.as_slice())),
+        (Encoding::CHROMA, Some(data.as_slice()), Some(regions.as_slice())),
+        (Encoding::from_bits_retain(3), None, None),
+    ] {
+        assert!(
+            server
+                .send_avc444v2_frame(surface_id, encoding, &data, &regions, second_data, second_regions, 42,)
+                .is_none()
+        );
+        assert!(!server.has_pending_output());
+        assert_eq!(server.frames_in_flight(), 0);
+    }
 }
 
 // ============================================================================
