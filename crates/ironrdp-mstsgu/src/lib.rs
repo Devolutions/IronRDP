@@ -220,8 +220,17 @@ impl GwClient {
                         gw.ws_sink.send(Message::Binary(Bytes::copy_from_slice(&wsbuf[..pos]))).await.map_err(|e| custom_err!("ws send", e))?;
                     },
                     next = gw.ws_stream.next() => {
-                        let tmp = next.ok_or_else(|| Error::new("WS Stream Dead", GwErrorKind::Connect))?;
-                        let msg = tmp.map_err(|e| custom_err!("Stream", e))?.into_data();
+                        let msg = match next {
+                            // A clean close or an exhausted stream ends the work task with
+                            // `Ok`, so readers observe end-of-stream rather than an error.
+                            None => return Ok(()),
+                            Some(Ok(msg)) => msg,
+                            Some(Err(e)) => return Err(custom_err!("Stream", e)),
+                        };
+                        if matches!(msg, Message::Close(_)) {
+                            return Ok(());
+                        }
+                        let msg = msg.into_data();
                         let mut cur = ReadCursor::new(&msg);
                         let hdr = PktHdr::decode(&mut cur).map_err(|e| custom_err!("Header Decode", e))?;
 
