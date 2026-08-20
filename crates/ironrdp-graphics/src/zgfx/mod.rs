@@ -32,19 +32,39 @@ pub(crate) const HISTORY_SIZE: usize = 2_500_000;
 /// some ceiling or a small hostile segment can exhaust memory. Left unbounded, a
 /// fuzz input reached a 1.5 GB peak.
 ///
-/// MS-RDPEGFX does not supply a number to use here. Section 3.1.9.1.2.1 says a
-/// compressor turns to the multipart format "typically because the uncompressed
-/// byte count exceeds 65,535", which describes when an encoder chooses to split
-/// rather than any limit a decoder may impose: nothing forbids a conforming
-/// single segment from decompressing past that. Treating 65,535 as a hard bound
-/// rejects real traffic, including output from this crate's own compressor,
-/// which emits single segments well beyond it.
+/// MS-RDPEGFX 3.1.9.1.2 ("RDP 8.0 compressor limits") does supply a number: a
+/// compliant compressor MUST NOT produce any single segment representing more
+/// than 65,535 uncompressed bytes, whether sent as SINGLE or as one part of a
+/// MULTIPART stream. This crate's own compressor honors that bound: `wrapper.rs`
+/// panics if asked to wrap a compressed segment past it, and
+/// `compress_and_wrap_egfx`, the only production caller, falls back to
+/// uncompressed rather than risk exceeding it.
 ///
-/// 64 MiB is therefore chosen to sit far above any plausible frame while still
-/// bounding the damage, so it can only fire on an attack. Same footing as the
-/// compositor's total-byte budget: an explicit implementation limit, documented
-/// as ours rather than dressed up as a spec requirement.
+/// So 65,535 bounds every segment a conforming peer will ever send. 64 MiB is
+/// still used here, not that number, because this ceiling exists to catch
+/// non-conforming or hostile input, not to police conforming input: a decoder
+/// that hard-rejects at exactly the compressor-side limit has no margin for a
+/// peer implementation with a minor, benign spec deviation. 64 MiB sits far
+/// above any plausible frame while still bounding the damage, so it can only
+/// fire on an attack. Same footing as the compositor's total-byte budget: an
+/// explicit implementation limit, documented as ours rather than dressed up as
+/// a spec requirement.
 pub(crate) const MAX_DECOMPRESSED_PER_SEGMENT: usize = 64 * 1024 * 1024;
+
+/// Ceiling on the total decompressed output of a single multipart ZGFX message.
+///
+/// Each segment is already bounded by [`MAX_DECOMPRESSED_PER_SEGMENT`], but
+/// summing enough small segments could otherwise drive the aggregate up to
+/// whatever the declared `uncompressedSize` field claims, and that field is a
+/// 32-bit value fully controlled by the sender (up to roughly 4.29 GiB). A
+/// multipart message built from dozens of small segments, each just under the
+/// per-segment ceiling, can exhaust memory long before `uncompressedSize` is
+/// reached.
+///
+/// 256 MiB, same footing as `MAX_COMPOSITOR_BYTES` in ironrdp-egfx's
+/// `compositor.rs`: a fixed implementation budget a hostile sender cannot
+/// inflate by lying about its own declared total.
+pub(crate) const MAX_DECOMPRESSED_TOTAL: usize = 256 * 1024 * 1024;
 
 pub struct Decompressor {
     history: FixedCircularBuffer,
@@ -79,6 +99,17 @@ impl Decompressor {
                         return Err(ZgfxError::MultipartTotalExceedsDeclared {
                             written: bytes_written,
                             declared: uncompressed_size,
+                        });
+                    }
+
+                    // Separate from the check above: uncompressed_size is attacker-controlled,
+                    // so a hostile sender can set it arbitrarily high and still pass that check.
+                    // This bounds the actual aggregate allocation regardless of what the sender
+                    // declares.
+                    if bytes_written > MAX_DECOMPRESSED_TOTAL {
+                        return Err(ZgfxError::MultipartTotalExceedsBudget {
+                            written: bytes_written,
+                            budget: MAX_DECOMPRESSED_TOTAL,
                         });
                     }
                 }
@@ -117,10 +148,15 @@ impl Decompressor {
 
         let mut bits = BitSlice::from_slice(encoded_data);
 
-        // The value of the last byte indicates the number of unused bits in the final byte.
+        // The low 3 bits of the last byte indicate the number of unused bits in the final
+        // byte (0-7); MS-RDPEGFX 3.1.9.1.2.4 reserves the five high-order bits. Mask them
+        // off rather than reading the whole byte, or a sender that leaves them non-zero
+        // (nothing in the spec requires zeroing a reserved field) makes this look like a
+        // huge trailing-bit count and silently truncates real token data instead of
+        // decoding it.
         // Use checked arithmetic so attacker-controlled trailing-bit counts that exceed the
         // available bit budget surface as a typed error rather than an unsigned underflow panic.
-        let trailing_unused = usize::from(*encoded_data.last().expect("encoded_data is not empty"));
+        let trailing_unused = usize::from(*encoded_data.last().expect("encoded_data is not empty") & 0x07);
         let bit_count = 8usize
             .checked_mul(encoded_data.len() - 1)
             .and_then(|n| n.checked_sub(trailing_unused))
@@ -606,6 +642,7 @@ static TOKEN_TABLE: LazyLock<[Token; 40]> = LazyLock::new(|| {
     ]
 });
 
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum ZgfxError {
     IOError(io::Error),
@@ -638,6 +675,10 @@ pub enum ZgfxError {
     MultipartTotalExceedsDeclared {
         written: usize,
         declared: usize,
+    },
+    MultipartTotalExceedsBudget {
+        written: usize,
+        budget: usize,
     },
 }
 
@@ -694,6 +735,12 @@ impl core::fmt::Display for ZgfxError {
                     "multipart decompressed bytes {written} exceed the declared uncompressedSize {declared}"
                 )
             }
+            Self::MultipartTotalExceedsBudget { written, budget } => {
+                write!(
+                    f,
+                    "multipart decompressed bytes {written} exceed the {budget} byte total budget"
+                )
+            }
         }
     }
 }
@@ -714,6 +761,7 @@ impl core::error::Error for ZgfxError {
             Self::LengthTokenSizeTooLarge(_) => None,
             Self::SegmentDecompressedSizeExceedsLimit { .. } => None,
             Self::MultipartTotalExceedsDeclared { .. } => None,
+            Self::MultipartTotalExceedsBudget { .. } => None,
         }
     }
 }
@@ -763,6 +811,22 @@ mod tests {
     #[test]
     fn zgfx_decompresses_only_one_literal() {
         let buffer = [0b1100_1000, 0x03];
+        let expected = vec![0x01];
+
+        let mut zgfx = Decompressor::new();
+        let mut decompressed = Vec::with_capacity(expected.len());
+        zgfx.decompress_segment(buffer.as_ref(), &mut decompressed).unwrap();
+        assert_eq!(decompressed, expected);
+    }
+
+    /// MS-RDPEGFX 3.1.9.1.2.4 reserves the five high-order bits of the trailer byte;
+    /// only the low 3 bits are the unused-bit count. Same trailer as
+    /// `zgfx_decompresses_only_one_literal` (3 unused bits) with the reserved bits set
+    /// to a nonzero pattern, which must decode identically rather than being read as a
+    /// much larger unused-bit count.
+    #[test]
+    fn zgfx_ignores_reserved_bits_in_trailer_byte() {
+        let buffer = [0b1100_1000, 0x03 | 0b1010_0000];
         let expected = vec![0x01];
 
         let mut zgfx = Decompressor::new();
@@ -905,5 +969,50 @@ mod tests {
         let mut decompressed = Vec::with_capacity(expected.len());
         zgfx.decompress_segment(buffer.as_ref(), &mut decompressed).unwrap();
         assert_eq!(decompressed, expected);
+    }
+
+    /// MAX_DECOMPRESSED_PER_SEGMENT alone does not bound a multipart message: each
+    /// segment here is comfortably under that per-segment ceiling, but five of them
+    /// sum past MAX_DECOMPRESSED_TOTAL while staying under the declared
+    /// uncompressedSize, so the pre-existing MultipartTotalExceedsDeclared check alone
+    /// would let the full allocation happen before erroring. Uses real LZ compression
+    /// of a repetitive buffer to keep the wire input small (a few hundred KB) while
+    /// still exercising the real decompress path against real segment sizes, rather
+    /// than faking bytes_written.
+    #[test]
+    fn multipart_total_exceeds_budget_before_declared_size_is_reached() {
+        let per_segment_decompressed = 60 * 1024 * 1024; // 60 MiB, under the 64 MiB per-segment cap
+        let raw = vec![0xABu8; per_segment_decompressed];
+
+        let mut compressor = Compressor::new();
+        let compressed = compressor.compress(&raw).unwrap();
+
+        // 5 segments * 60 MiB = 300 MiB, over the 256 MiB budget, under the declared size.
+        let segment_count: u16 = 5;
+        let per_segment_decompressed_u32 = u32::try_from(per_segment_decompressed).unwrap();
+        let total_declared: u32 = per_segment_decompressed_u32 * u32::from(segment_count) + 1000;
+
+        let mut buffer = vec![0xE1u8]; // MULTIPART descriptor
+        buffer.extend_from_slice(&segment_count.to_le_bytes());
+        buffer.extend_from_slice(&total_declared.to_le_bytes());
+        for _ in 0..segment_count {
+            let seg_size = u32::try_from(compressed.len() + 1).unwrap(); // +1 for the header byte
+            buffer.extend_from_slice(&seg_size.to_le_bytes());
+            buffer.push(0x24); // type 4 + PACKET_COMPRESSED
+            buffer.extend_from_slice(&compressed);
+        }
+
+        let mut zgfx = Decompressor::new();
+        let mut output = Vec::new();
+        let err = zgfx.decompress(&buffer, &mut output).unwrap_err();
+
+        assert!(
+            matches!(err, ZgfxError::MultipartTotalExceedsBudget { .. }),
+            "expected MultipartTotalExceedsBudget, got {err:?}"
+        );
+        // The budget check fires partway through segment 5 (4 * 60 MiB = 240 MiB is
+        // still under budget; adding the 5th pushes to 300 MiB), so output holds at
+        // most 5 segments' worth, not the full declared 300 MiB + 1000.
+        assert!(output.len() <= per_segment_decompressed * 5);
     }
 }
