@@ -17,19 +17,19 @@ fn response_head(status: &str, content_length: usize) -> Vec<u8> {
 
 /// Build an MS-TSGU packet wrapping `data` as an `HTTP_DATA_PACKET` payload.
 fn tsgu_data_packet(data: &[u8]) -> Vec<u8> {
-    let length = u32::try_from(DATA_PACKET_HEADER + data.len()).unwrap();
+    let length = u32::try_from(DATA_PACKET_HEADER + data.len()).expect("data packet length fits u32");
     let mut packet = Vec::new();
     packet.extend(0x0Au16.to_le_bytes());
     packet.extend(0u16.to_le_bytes());
     packet.extend(length.to_le_bytes());
-    packet.extend(u16::try_from(data.len()).unwrap().to_le_bytes());
+    packet.extend(u16::try_from(data.len()).expect("data length fits u16").to_le_bytes());
     packet.extend(data);
     packet
 }
 
 /// Build a non-data MS-TSGU packet (e.g. tunnel channel control).
 fn tsgu_control_packet(packet_type: u16, body: &[u8]) -> Vec<u8> {
-    let length = u32::try_from(8 + body.len()).unwrap();
+    let length = u32::try_from(8 + body.len()).expect("control packet length fits u32");
     let mut packet = Vec::new();
     packet.extend(packet_type.to_le_bytes());
     packet.extend(0u16.to_le_bytes());
@@ -43,13 +43,21 @@ fn websocket_frame(fin: bool, opcode: u8, payload: &[u8], mask: Option<[u8; 4]>)
     let mut frame = vec![(u8::from(fin) << 7) | opcode];
     let mask_bit = u8::from(mask.is_some()) << 7;
     if payload.len() < 126 {
-        frame.push(mask_bit | u8::try_from(payload.len()).unwrap());
+        frame.push(mask_bit | u8::try_from(payload.len()).expect("short payload length fits u8"));
     } else if u16::try_from(payload.len()).is_ok() {
         frame.push(mask_bit | 126);
-        frame.extend(u16::try_from(payload.len()).unwrap().to_be_bytes());
+        frame.extend(
+            u16::try_from(payload.len())
+                .expect("medium payload length fits u16")
+                .to_be_bytes(),
+        );
     } else {
         frame.push(mask_bit | 127);
-        frame.extend(u64::try_from(payload.len()).unwrap().to_be_bytes());
+        frame.extend(
+            u64::try_from(payload.len())
+                .expect("payload length fits u64")
+                .to_be_bytes(),
+        );
     }
     match mask {
         Some(mask) => {

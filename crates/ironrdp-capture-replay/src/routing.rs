@@ -574,10 +574,10 @@ pub(crate) fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter,
         let tunneled = gateway::extract_tunneled_rdp(outer)?;
         decrypt_tls_streams(&tunneled.client, &tunneled.server, capture.tls_key_log.as_str())?
     } else {
-        decrypted
-            .into_iter()
-            .next()
-            .ok_or(decrypt_error.unwrap_or(ReplayError::MissingRdpState))?
+        match decrypted.into_iter().next() {
+            Some(plaintext) => plaintext,
+            None => return Err(decrypt_error.unwrap_or(ReplayError::MissingRdpState)),
+        }
     };
     let router = ReplayRouter::new(CapturedActivation {
         state: recover_negotiated_state(&plaintext)?,
