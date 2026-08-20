@@ -197,7 +197,11 @@ impl GwClient {
                             },
                             PktTy::Data => {
                                 let p = HttpDataPkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
-                                in_tx.send(Bytes::from(p.data.to_vec())).await.map_err(|e| custom_err!("in_tx dead", e))?;
+                                if in_tx.send(Bytes::from(p.data.to_vec())).await.is_err() {
+                                    // Reader gone or shutdown closed the inbound channel.
+                                    gw.io.close().await?;
+                                    return Ok(());
+                                }
                             },
                             PktTy::ServiceMessage => {
                                 let msg = ServiceMessagePkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
@@ -481,9 +485,11 @@ impl AsyncWrite for GwClient {
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Result<(), io::Error>> {
-        // Closing the sender ends the outbound queue; the work task then closes the
-        // WebSocket so a local write-side EOF can finish.
+        // Closing the outbound sender ends the write queue. Closing the inbound
+        // receiver unblocks a worker parked on `in_tx.send` when the caller is not
+        // reading, so the work task can close the WebSocket and finish.
         self.tx.close();
+        self.rx.close();
         if self.work_done {
             return Poll::Ready(Ok(()));
         }
