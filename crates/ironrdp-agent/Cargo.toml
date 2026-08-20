@@ -38,7 +38,7 @@ clap = { version = "4.6", features = ["derive", "cargo", "env"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ironrdp-gwforward = { path = "../ironrdp-gwforward", version = "0.0" }
+ironrdp-tunnel = { path = "../ironrdp-tunnel", version = "0.0" }
 
 [target.'cfg(windows)'.dependencies]
 # Windows Sandbox control plane: gRPC/HTTP2 over a per-user named pipe.

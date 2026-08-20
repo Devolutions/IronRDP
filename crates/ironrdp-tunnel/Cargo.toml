@@ -1,5 +1,5 @@
 [package]
-name = "ironrdp-gwforward"
+name = "ironrdp-tunnel"
 version = "0.0.0"
 publish = false
 readme = "README.md"

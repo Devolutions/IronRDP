@@ -34,7 +34,7 @@ impl Default for GatewayTunnelConfig {
             gateway_endpoint: String::new(),
             username: String::new(),
             password: String::new(),
-            client_name: "ironrdp-gwforward".to_owned(),
+            client_name: "ironrdp-tunnel".to_owned(),
         }
     }
 }

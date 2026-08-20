@@ -1,9 +1,11 @@
-# ironrdp-gwforward
+# ironrdp-tunnel
 
 Generic TCP forwarding and SOCKS5 proxying over a Microsoft RD Gateway.
 
 The RD Gateway tunneling protocol ([MS-TSGU]) relays a TCP byte stream to any reachable target host and port; it is not limited to RDP.
 This crate builds on [`ironrdp-mstsgu`] to expose that capability to ordinary, non-RDP programs.
+
+This crate is unpublished (`publish = false`).
 
 ## What it provides
 
@@ -26,7 +28,7 @@ This crate uses the modern WebSocket MS-TSGU path exposed by `ironrdp-mstsgu`.
 ## Example
 
 ```rust,ignore
-use ironrdp_gwforward::{GatewayTunnelConfig, run_socks5};
+use ironrdp_tunnel::{GatewayTunnelConfig, run_socks5};
 
 let config = GatewayTunnelConfig {
     gateway_endpoint: "rdg.contoso.com:443".into(),

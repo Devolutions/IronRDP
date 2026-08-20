@@ -2557,11 +2557,11 @@ dependencies = [
  "http",
  "ironrdp-cfg",
  "ironrdp-daemon",
- "ironrdp-gwforward",
  "ironrdp-input",
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
  "ironrdp-rpc",
+ "ironrdp-tunnel",
  "md-5 0.10.6",
  "serde",
  "serde_json",
@@ -2907,16 +2907,6 @@ dependencies = [
  "num-traits",
  "wide 0.7.33",
  "yuv",
-]
-
-[[package]]
-name = "ironrdp-gwforward"
-version = "0.0.0"
-dependencies = [
- "ironrdp-error 0.2.0",
- "ironrdp-mstsgu",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -3354,6 +3344,16 @@ dependencies = [
  "reqwest",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "ironrdp-tunnel"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-error 0.2.0",
+ "ironrdp-mstsgu",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

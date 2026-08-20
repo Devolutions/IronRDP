@@ -1166,7 +1166,7 @@ fn run_sandbox_command(args: SandboxArgs) -> anyhow::Result<()> {
 /// Forward TCP through an RD Gateway tunnel without an RDP session: a fixed local port
 /// forward, or a SOCKS5 proxy that opens a tunnel per requested destination.
 async fn run_gw_forward(args: GwForwardArgs) -> anyhow::Result<()> {
-    use ironrdp_gwforward::{GatewayTunnelConfig, run_port_forward, run_socks5};
+    use ironrdp_tunnel::{GatewayTunnelConfig, run_port_forward, run_socks5};
 
     let gateway = args
         .gateway
