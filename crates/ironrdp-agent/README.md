@@ -14,6 +14,7 @@ The `ironrdp-agent` binary is the CLI for the persistent daemon support:
   `--socks5` serves SOCKS5 CONNECT (no auth); `--target HOST:PORT` is an SSH `-L`-style fixed forward.
   Credentials come from `--username`/`--password` or `RDG_USERNAME`/`RDG_PASSWORD`, falling back to
   `RDP_USERNAME`/`RDP_PASSWORD`.
+  The listener defaults to `127.0.0.1`; do not expose unauthenticated SOCKS5 to untrusted networks.
 - **CLI** (`ironrdp-agent <op> …`): a short-lived invocation that opens the IPC endpoint, sends a
   single request, prints the response, and exits.
 

@@ -33,6 +33,7 @@ pub(crate) struct SocksTarget {
 ///
 /// Greeting failures have already sent `05 FF` and must not be followed by a CONNECT
 /// reply. Request failures carry the RFC 1928 reply code to send before closing.
+#[derive(Debug)]
 pub(crate) enum NegotiateFailure {
     Greeting(anyhow::Error),
     Request { error: anyhow::Error, reply: u8 },
@@ -179,4 +180,104 @@ where
 {
     stream.read_exact(buf).await.context("read socks5")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn rejects_greeting_without_no_auth_method() {
+        let (mut client, mut server) = duplex(8);
+        let client_task = async {
+            client.write_all(&[VERSION, 1, 0x02]).await.unwrap();
+            let mut reply = [0u8; 2];
+            client.read_exact(&mut reply).await.unwrap();
+            assert_eq!(reply, [VERSION, METHOD_NO_ACCEPTABLE]);
+        };
+
+        let (_, result) = tokio::join!(client_task, negotiate(&mut server));
+        assert!(matches!(result, Err(NegotiateFailure::Greeting(_))));
+    }
+
+    #[tokio::test]
+    async fn accepts_ipv6_connect() {
+        let target = negotiate_request(&[
+            VERSION,
+            CMD_CONNECT,
+            RSV,
+            ATYP_IPV6,
+            0x20,
+            0x01,
+            0x0d,
+            0xb8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0x01,
+            0xbb,
+        ])
+        .await
+        .unwrap();
+
+        assert_eq!(
+            target,
+            SocksTarget {
+                host: "2001:db8::1".to_owned(),
+                port: 443,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_command() {
+        let error = negotiate_request(&[VERSION, 0x02]).await.unwrap_err();
+
+        assert_request_reply(error, REP_COMMAND_NOT_SUPPORTED);
+    }
+
+    #[tokio::test]
+    async fn rejects_nonzero_reserved_byte() {
+        let error = negotiate_request(&[VERSION, CMD_CONNECT, 1]).await.unwrap_err();
+
+        assert_request_reply(error, REP_GENERAL_FAILURE);
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_address_type() {
+        let error = negotiate_request(&[VERSION, CMD_CONNECT, RSV, 0xff]).await.unwrap_err();
+
+        assert_request_reply(error, REP_ADDRESS_NOT_SUPPORTED);
+    }
+
+    async fn negotiate_request(request: &[u8]) -> Result<SocksTarget, NegotiateFailure> {
+        let (mut client, mut server) = duplex(64);
+        let client_task = async {
+            client.write_all(&[VERSION, 1, METHOD_NO_AUTH]).await.unwrap();
+            let mut reply = [0u8; 2];
+            client.read_exact(&mut reply).await.unwrap();
+            assert_eq!(reply, [VERSION, METHOD_NO_AUTH]);
+            client.write_all(request).await.unwrap();
+        };
+
+        let (_, result) = tokio::join!(client_task, negotiate(&mut server));
+        result
+    }
+
+    fn assert_request_reply(error: NegotiateFailure, expected_reply: u8) {
+        match error {
+            NegotiateFailure::Greeting(_) => panic!("expected request failure"),
+            NegotiateFailure::Request { reply, .. } => assert_eq!(reply, expected_reply),
+        }
+    }
 }

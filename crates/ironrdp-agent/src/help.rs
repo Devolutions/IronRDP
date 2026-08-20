@@ -81,6 +81,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  SSH `-L`-style fixed forward. Credentials come from
                                  `--username`/`--password` or `RDG_USERNAME`/`RDG_PASSWORD`,
                                  falling back to `RDP_USERNAME`/`RDP_PASSWORD`.
+                                 The listener defaults to `127.0.0.1`; do not expose unauthenticated SOCKS5 to untrusted networks.
 - `disconnect`                   Tear down the current session (daemon keeps running).
 - `status`                       Report connection state, destination, last frame size, and whether
                                  credentials are preloaded (`credentials loaded: true|false`). Query
