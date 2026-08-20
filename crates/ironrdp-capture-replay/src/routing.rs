@@ -572,7 +572,13 @@ pub(crate) fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter,
     }
     let plaintext = if let Some(outer) = decrypted.iter().find(|plaintext| gateway::is_gateway_tunnel(plaintext)) {
         let tunneled = gateway::extract_tunneled_rdp(outer)?;
-        decrypt_tls_streams(&tunneled.client, &tunneled.server, capture.tls_key_log.as_str())?
+        decrypt_tls_streams(&tunneled.client, &tunneled.server, capture.tls_key_log.as_str()).map_err(|error| {
+            if matches!(error, ReplayError::MissingTlsSecret) {
+                ReplayError::MissingTunneledTlsSecret
+            } else {
+                error
+            }
+        })?
     } else {
         match decrypted.into_iter().next() {
             Some(plaintext) => plaintext,

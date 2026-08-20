@@ -26,6 +26,11 @@ pub enum ReplayError {
     /// The capture lacks the key-log entry required to decrypt its TLS session.
     #[error("capture does not include an NSS TLS secret for the negotiated session")]
     MissingTlsSecret,
+    /// The capture lacks the key-log entry for the gateway-tunneled TLS session.
+    #[error(
+        "capture does not include an NSS TLS secret for the gateway-tunneled session; supply the original key log with --keylog or Capture::add_tls_key_log"
+    )]
+    MissingTunneledTlsSecret,
     /// TLS record authentication failed.
     #[error("capture TLS authentication failed")]
     TlsAuthentication,
