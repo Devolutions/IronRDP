@@ -1153,8 +1153,12 @@ pub fn rdpeudp_ack_vector(data: &[u8]) {
 ///   exercises the wrapper on arbitrary byte distributions, including
 ///   inputs that do not parse as `Avc444BitmapStream`.
 /// - Decode-chain path 1: try `Avc444BitmapStream::decode(data)`; on success
-///   call `avc_to_annex_b(stream.stream1.data)`. Stream 1 is the luma stream
-///   (or the combined luma-and-chroma stream when `encoding == LUMA_AND_CHROMA`).
+///   call `avc_to_annex_b(stream.stream1.data)`. Stream 1 is always the luma
+///   stream; per MS-RDPEGFX 2.2.4.5, even when `encoding == LUMA_AND_CHROMA`
+///   it decodes as the first of two disjoint `Avc420BitmapStream` byte
+///   ranges, not combined with chroma. The two views stay separate until
+///   YUV444 reconstruction runs downstream (section 3.3.8.3.2), outside this
+///   oracle's scope.
 /// - Decode-chain path 2: when `stream.stream2.is_some()`, also call
 ///   `avc_to_annex_b(stream2.data)`. Stream 2 carries the auxiliary chroma
 ///   data per the tagged-encoding split.
