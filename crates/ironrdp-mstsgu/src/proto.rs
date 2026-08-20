@@ -599,3 +599,23 @@ impl Encode for KeepalivePkt {
         PktHdr::default().size()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_pkt_encodes_requested_port() {
+        let pkt = ChannelPkt {
+            resources: vec!["rdp.example.com".to_owned()],
+            port: 2179,
+            protocol: 3,
+        };
+        let mut buf = vec![0; pkt.size()];
+        let mut dst = WriteCursor::new(&mut buf);
+        pkt.encode(&mut dst).expect("encode");
+
+        // HTTP_PACKET_HEADER is 8 bytes; the next two bytes are resources/alt_names counts.
+        assert_eq!(&buf[10..12], &2179u16.to_le_bytes());
+    }
+}

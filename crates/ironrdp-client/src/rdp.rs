@@ -1447,16 +1447,8 @@ async fn connect_gateway(
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     use ironrdp_mstsgu::GwConnectTarget;
 
-    // VMConnect needs destination port 2179; GwConnectTarget does not carry it yet (TODO below).
-    #[cfg(feature = "vmconnect")]
-    if config.vm_id().is_some() {
-        return Err(ironrdp_connector::general_err!(
-            "vmconnect cannot be used over an RDS gateway until the target port is propagated"
-        ));
-    }
-
-    // Build the GwConnectTarget.  `server` is the RDP target derived from `config.destination`.
-    // TODO: preserve the destination port; ironrdp-mstsgu may currently hard-code 3389.
+    // Target resource host/port come from Config::destination and are forwarded in the
+    // MS-TSGU channel-create packet (enables non-3389 RDP and VMConnect port 2179).
     let gw_target = GwConnectTarget {
         gw_endpoint: gw.endpoint.clone(),
         gw_user: gw.username.clone(),
@@ -1464,9 +1456,13 @@ async fn connect_gateway(
         server: config.destination.name().to_owned(),
     };
 
-    let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect(&gw_target, &config.connector.client_name)
-        .await
-        .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
+    let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect_with_port(
+        &gw_target,
+        &config.connector.client_name,
+        config.destination.port(),
+    )
+    .await
+    .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
 
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
@@ -1478,6 +1474,13 @@ async fn connect_gateway(
         rdpdr_factory,
         auto_reconnect_cookie,
     )?;
+    #[cfg(feature = "vmconnect")]
+    if config.vm_id().is_some() {
+        // The Hyper-V TCP connection is created by the gateway during channel-create, so
+        // the MS-RDPEPS PCB deadline starts once that channel is established.
+        let pcb_deadline = tokio::time::Instant::now() + ironrdp_vmconnect::PCB_TRANSMIT_DEADLINE;
+        return vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await;
+    }
     security_upgrade_and_finalize(framed, connector, config).await
 }
 
