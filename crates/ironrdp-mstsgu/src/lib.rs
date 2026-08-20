@@ -308,6 +308,13 @@ async fn websocket_upgrade_with_auth(
             .map_err(|e| custom_err!("WS Upgrade Send error", e))?;
 
         if resp.status() == http::StatusCode::SWITCHING_PROTOCOLS {
+            if let Some(mut auth) = http_auth.take() {
+                let challenges: Vec<String> = www_authenticate_values(resp.headers())
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect();
+                run_http_auth(move || auth.finish_www_authenticate(challenges.iter().map(String::as_str))).await?;
+            }
             return Ok(());
         }
 
@@ -328,17 +335,25 @@ async fn websocket_upgrade_with_auth(
             .await
             .map_err(|e| custom_err!("drain websocket upgrade auth body", e))?;
 
-        let challenge_refs: Vec<&str> = challenges.iter().map(String::as_str).collect();
-        let step = if let Some(auth) = http_auth.as_mut() {
-            auth.step_www_authenticate(challenge_refs)?
-        } else {
-            let (auth, step) = GatewayHttpAuth::from_challenges(
-                &target.gw_user,
-                &target.gw_pass,
-                Some(spn.to_owned()),
-                &challenge_refs,
-            )?;
+        let user = target.gw_user.clone();
+        let pass = target.gw_pass.clone();
+        let target_name = spn.to_owned();
+        let step = if let Some(mut auth) = http_auth.take() {
+            let (auth, step) = run_http_auth(move || {
+                let refs: Vec<&str> = challenges.iter().map(String::as_str).collect();
+                let step = auth.step_www_authenticate(refs)?;
+                Ok((auth, step))
+            })
+            .await?;
             http_auth = Some(auth);
+            step
+        } else {
+            let (auth, step) = run_http_auth(move || {
+                let refs: Vec<&str> = challenges.iter().map(String::as_str).collect();
+                GatewayHttpAuth::from_challenges(&user, &pass, Some(target_name), &refs)
+            })
+            .await?;
+            http_auth = auth;
             step
         };
 
@@ -358,6 +373,16 @@ async fn websocket_upgrade_with_auth(
         "websocket upgrade auth rounds exceeded",
         GwErrorKind::Connect,
     ))
+}
+
+async fn run_http_auth<T, F>(f: F) -> Result<T, Error>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, Error> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| Error::custom("http auth task", e))?
 }
 
 fn build_ws_upgrade_request(

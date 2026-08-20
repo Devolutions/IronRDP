@@ -2,8 +2,7 @@
 //!
 //! Corporate RD Gateways typically challenge with Negotiate and/or NTLM rather than Basic.
 //! Negotiate prefers Kerberos (via KDC / `SSPI_KDC_URL`) and falls back to NTLM inside SPNEGO.
-//! Pure NTLM is used when the server only offers the NTLM scheme, and for MS-TSGU extended-auth
-//! SSPI NTLM blobs after the handshake.
+//! Pure NTLM is used when the server only offers the NTLM scheme.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -50,13 +49,6 @@ pub struct GatewayHttpAuth {
     complete: bool,
 }
 
-/// Client-side NTLM state for MS-TSGU `HTTP_EXTENDED_AUTH_PACKET` SSPI NTLM blobs.
-pub struct NtlmHttpAuth {
-    ntlm: Ntlm,
-    credentials_handle: Option<AuthIdentityBuffers>,
-    complete: bool,
-}
-
 impl GatewayHttpAuth {
     pub fn scheme(&self) -> &'static str {
         self.scheme
@@ -70,14 +62,14 @@ impl GatewayHttpAuth {
         password: &str,
         target_name: Option<String>,
         challenges: &[&str],
-    ) -> Result<(Self, AuthStep), Error> {
+    ) -> Result<(Option<Self>, AuthStep), Error> {
         let mut saw_negotiate = false;
         let mut saw_ntlm = false;
         let mut saw_basic = false;
         let mut negotiate_token: Option<Vec<u8>> = None;
         let mut ntlm_token: Option<Vec<u8>> = None;
 
-        for value in challenges {
+        for value in iter_auth_challenges(challenges.iter().copied()) {
             if let Some(rest) = split_auth_challenge(value, "Negotiate") {
                 saw_negotiate = true;
                 if rest.is_empty() {
@@ -117,7 +109,7 @@ impl GatewayHttpAuth {
             match auth.initialize(input) {
                 Ok(token) => {
                     let header = auth.format_authorization(&token);
-                    return Ok((auth, AuthStep::Continue(header)));
+                    return Ok((Some(auth), AuthStep::Continue(header)));
                 }
                 Err(error) if saw_ntlm => {
                     log::debug!("Negotiate failed ({error}); falling back to NTLM");
@@ -131,13 +123,11 @@ impl GatewayHttpAuth {
             let input = ntlm_token.as_deref().filter(|t| !t.is_empty());
             let token = auth.initialize(input)?;
             let header = auth.format_authorization(&token);
-            return Ok((auth, AuthStep::Continue(header)));
+            return Ok((Some(auth), AuthStep::Continue(header)));
         }
 
         if saw_basic {
-            // Dummy backend is not used when falling back to Basic.
-            let auth = Self::new_ntlm(username, password, target_name)?;
-            return Ok((auth, AuthStep::TryBasic));
+            return Ok((None, AuthStep::TryBasic));
         }
 
         Err(Error::new(
@@ -213,7 +203,7 @@ impl GatewayHttpAuth {
         let mut saw_basic = false;
         let mut token: Option<Vec<u8>> = None;
 
-        for value in challenges {
+        for value in iter_auth_challenges(challenges) {
             let preferred = match self.scheme {
                 "Negotiate" => split_auth_challenge(value, "Negotiate"),
                 _ => split_auth_challenge(value, "NTLM").or_else(|| split_auth_challenge(value, "Negotiate")),
@@ -252,6 +242,46 @@ impl GatewayHttpAuth {
                 GwErrorKind::UnsupportedFeature,
             )),
         }
+    }
+
+    /// Consume a final `WWW-Authenticate` token on a successful upgrade (RFC 4559).
+    ///
+    /// Missing tokens are accepted: NTLM upgrades typically omit them, and some
+    /// Negotiate servers do not send an AP-REP. A present token must complete SSPI.
+    pub(crate) fn finish_www_authenticate<'a, I>(&mut self, challenges: I) -> Result<(), Error>
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        if self.complete {
+            return Ok(());
+        }
+
+        let mut token: Option<Vec<u8>> = None;
+        for value in iter_auth_challenges(challenges) {
+            let rest = match self.scheme {
+                "Negotiate" => split_auth_challenge(value, "Negotiate"),
+                _ => split_auth_challenge(value, "NTLM").or_else(|| split_auth_challenge(value, "Negotiate")),
+            };
+            if let Some(rest) = rest.filter(|rest| !rest.is_empty()) {
+                token = Some(
+                    STANDARD
+                        .decode(rest.as_bytes())
+                        .map_err(|e| Error::custom("decode auth challenge", e))?,
+                );
+            }
+        }
+
+        if let Some(raw) = token {
+            let _ = self.initialize(Some(&raw))?;
+            if !self.complete {
+                return Err(Error::new(
+                    "websocket upgrade mutual auth incomplete",
+                    GwErrorKind::Connect,
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     fn format_authorization(&self, token: &[u8]) -> String {
@@ -326,66 +356,6 @@ impl GatewayHttpAuth {
     }
 }
 
-impl NtlmHttpAuth {
-    pub fn new(username: &str, password: &str) -> Result<Self, Error> {
-        let identity = auth_identity(username, password)?;
-        let mut ntlm = Ntlm::new();
-        let credentials_handle = ntlm
-            .acquire_credentials_handle()
-            .with_credential_use(CredentialUse::Outbound)
-            .with_auth_data(&identity)
-            .execute(&mut ntlm)
-            .map_err(|e| Error::custom("acquire ntlm credentials", e))?
-            .credentials_handle;
-
-        Ok(Self {
-            ntlm,
-            credentials_handle,
-            complete: false,
-        })
-    }
-
-    /// Produce the next NTLM token for extended-auth packet exchange.
-    ///
-    /// Returns `(token, complete)`.
-    pub fn step_token(&mut self, input: Option<&[u8]>) -> Result<(Vec<u8>, bool), Error> {
-        let mut input_token = [SecurityBuffer::new(
-            input.map(<[u8]>::to_vec).unwrap_or_default(),
-            BufferType::Token,
-        )];
-        let mut output_token = [SecurityBuffer::new(Vec::with_capacity(1024), BufferType::Token)];
-
-        let mut builder = self
-            .ntlm
-            .initialize_security_context()
-            .with_credentials_handle(&mut self.credentials_handle)
-            .with_context_requirements(default_context_flags())
-            .with_target_data_representation(DataRepresentation::Native)
-            .with_input(&mut input_token)
-            .with_output(&mut output_token);
-
-        let InitializeSecurityContextResult { status, .. } = self
-            .ntlm
-            .initialize_security_context_impl(&mut builder)
-            .map_err(|e| Error::custom("ntlm initialize security context", e))?
-            .resolve_to_result()
-            .map_err(|e| Error::custom("ntlm initialize security context", e))?;
-
-        match status {
-            SecurityStatus::Ok => {
-                self.complete = true;
-            }
-            SecurityStatus::ContinueNeeded => {}
-            other => {
-                return Err(Error::new("ntlm security status", GwErrorKind::Connect)
-                    .with_source(std::io::Error::other(format!("unexpected ntlm status: {other:?}"))));
-            }
-        }
-
-        Ok((core::mem::take(&mut output_token[0].buffer), self.complete))
-    }
-}
-
 /// Build a Basic authorization header value.
 pub fn basic_authorization(username: &str, password: &str) -> String {
     let token = STANDARD.encode(format!("{username}:{password}"));
@@ -414,6 +384,44 @@ fn default_context_flags() -> ClientRequestFlags {
         | ClientRequestFlags::CONFIDENTIALITY
         | ClientRequestFlags::INTEGRITY
         | ClientRequestFlags::MUTUAL_AUTH
+}
+
+fn iter_auth_challenges<'a, I>(values: I) -> impl Iterator<Item = &'a str>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    values.into_iter().flat_map(split_challenge_list)
+}
+
+/// Split a list-valued `WWW-Authenticate` field into individual challenges.
+///
+/// Commas inside quoted auth-param values are not separators.
+fn split_challenge_list(value: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut in_quotes = false;
+    let mut escaped = false;
+    for (i, ch) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_quotes => escaped = true,
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                if let Some(piece) = value.get(start..i).map(str::trim).filter(|piece| !piece.is_empty()) {
+                    out.push(piece);
+                }
+                start = i + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if let Some(piece) = value.get(start..).map(str::trim).filter(|piece| !piece.is_empty()) {
+        out.push(piece);
+    }
+    out
 }
 
 /// Case-insensitive scheme match; returns the remainder after the scheme (may be empty).
