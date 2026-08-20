@@ -45,12 +45,14 @@ pub const PTYPE_RESPONSE: u8 = 2;
 /// `fault` PDU type ([C706] 12.6.4.9).
 pub const PTYPE_FAULT: u8 = 3;
 
+// This fragment foundation assumes the conventional first presentation context.
+// A later bind codec will negotiate and supply the context identifier.
 const RPC_CONTEXT_ID: u16 = 0;
 
 /// Conventional DCE/RPC fragment maximum used for the initial bind.
 pub const DEFAULT_FRAGMENT_SIZE: u16 = 0x10b8;
 
-/// Maximum complete fragments the stream may buffer before the caller drains them.
+/// Maximum-sized fragment equivalents the stream may buffer before the caller drains them.
 pub const MAX_PENDING_RPC_FRAGMENTS: usize = 16;
 
 /// Errors reported by the DCE/RPC common-header and fragment codecs.
@@ -154,7 +156,7 @@ impl fmt::Display for RpcPduError {
 
 impl core::error::Error for RpcPduError {}
 
-/// A DCE/RPC syntax version.
+/// A DCE/RPC syntax version staged for a later bind codec.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RpcSyntaxVersion {
     major: u16,
@@ -459,7 +461,8 @@ pub struct RpcResponseReassembler {
     call_id: Option<u32>,
     cancel_count: u8,
     reserved: u8,
-    alloc_hints: Vec<(usize, u32)>,
+    maximum_claimed_stub_end: usize,
+    maximum_claimed_stub_hint: u32,
     stub: Vec<u8>,
 }
 
@@ -471,7 +474,8 @@ impl RpcResponseReassembler {
             call_id: None,
             cancel_count: 0,
             reserved: 0,
-            alloc_hints: Vec::new(),
+            maximum_claimed_stub_end: 0,
+            maximum_claimed_stub_hint: 0,
             stub: Vec::new(),
         }
     }
@@ -492,12 +496,6 @@ impl RpcResponseReassembler {
             _ => {}
         }
 
-        if self.call_id.is_none() {
-            self.call_id = Some(response.call_id);
-            self.cancel_count = response.cancel_count;
-            self.reserved = response.reserved;
-        }
-
         let stub_offset = self.stub.len();
         let stub_length = stub_offset
             .checked_add(response.stub.len())
@@ -508,8 +506,28 @@ impl RpcResponseReassembler {
                 maximum: self.maximum_stub_size,
             });
         }
-        if response.alloc_hint != 0 {
-            self.alloc_hints.push((stub_offset, response.alloc_hint));
+        let claimed_stub_end = if response.alloc_hint == 0 {
+            0
+        } else {
+            stub_offset
+                .checked_add(usize::try_from(response.alloc_hint).map_err(|_| RpcPduError::LengthOverflow)?)
+                .ok_or(RpcPduError::LengthOverflow)?
+        };
+        if claimed_stub_end > self.maximum_stub_size {
+            return Err(RpcPduError::ResponseStubTooLarge {
+                actual: claimed_stub_end,
+                maximum: self.maximum_stub_size,
+            });
+        }
+
+        if self.call_id.is_none() {
+            self.call_id = Some(response.call_id);
+            self.reserved = response.reserved;
+        }
+        self.cancel_count = response.cancel_count;
+        if claimed_stub_end > self.maximum_claimed_stub_end {
+            self.maximum_claimed_stub_end = claimed_stub_end;
+            self.maximum_claimed_stub_hint = response.alloc_hint;
         }
         self.stub.extend_from_slice(response.stub);
 
@@ -518,14 +536,8 @@ impl RpcResponseReassembler {
         }
 
         let total_length = self.stub.len();
-        let invalid_alloc_hint =
-            self.alloc_hints
-                .iter()
-                .find_map(|(offset, alloc_hint)| match usize::try_from(*alloc_hint) {
-                    Ok(hint) if hint <= total_length - *offset => None,
-                    _ => Some(*alloc_hint),
-                });
-        if let Some(alloc_hint) = invalid_alloc_hint {
+        if total_length < self.maximum_claimed_stub_end {
+            let alloc_hint = self.maximum_claimed_stub_hint;
             self.reset();
             return Err(RpcPduError::InvalidAllocHint {
                 alloc_hint,
@@ -547,7 +559,8 @@ impl RpcResponseReassembler {
         self.call_id = None;
         self.cancel_count = 0;
         self.reserved = 0;
-        self.alloc_hints.clear();
+        self.maximum_claimed_stub_end = 0;
+        self.maximum_claimed_stub_hint = 0;
         self.stub.clear();
     }
 }
@@ -556,11 +569,16 @@ impl RpcResponseReassembler {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RpcFault<'a> {
     pub call_id: u32,
+    pub pfc_flags: u8,
     pub alloc_hint: u32,
     pub cancel_count: u8,
     pub reserved: u8,
     pub status: u32,
     pub reserved2: u32,
+    /// Trailing fault data, which MS-RPCE clients must ignore.
+    ///
+    /// When `reserved & 1 != 0`, it contains extended error information whose
+    /// length is derived from `alloc_hint`.
     pub stub: &'a [u8],
 }
 
@@ -583,7 +601,7 @@ pub fn encode_rpc_response_fragment(response: RpcResponse<'_>) -> Result<Vec<u8>
     body.extend_from_slice(&response.alloc_hint.to_le_bytes());
     body.extend_from_slice(&RPC_CONTEXT_ID.to_le_bytes());
     body.push(response.cancel_count);
-    body.push(response.reserved);
+    body.push(0); // reserved
     body.extend_from_slice(response.stub);
     encode_unprotected_pdu_with_flags(PTYPE_RESPONSE, response.pfc_flags, response.call_id, body)
 }
@@ -596,7 +614,7 @@ pub fn encode_rpc_fault(fault: RpcFault<'_>) -> Result<Vec<u8>, RpcPduError> {
     body.push(fault.cancel_count);
     body.push(fault.reserved);
     body.extend_from_slice(&fault.status.to_le_bytes());
-    body.extend_from_slice(&fault.reserved2.to_le_bytes());
+    body.extend_from_slice(&0u32.to_le_bytes()); // reserved2
     body.extend_from_slice(fault.stub);
     encode_unprotected_pdu(PTYPE_FAULT, fault.call_id, body)
 }
@@ -629,6 +647,7 @@ pub fn decode_rpc_fault(source: &[u8], maximum_fragment_size: u16) -> Result<Rpc
 
     Ok(RpcFault {
         call_id: header.call_id(),
+        pfc_flags: header.pfc_flags(),
         alloc_hint: read_u32(fault_header, 0)?,
         cancel_count: fault_header[6],
         reserved: fault_header[7],

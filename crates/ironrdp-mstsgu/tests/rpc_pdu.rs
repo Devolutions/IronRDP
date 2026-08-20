@@ -119,6 +119,7 @@ fn response_and_fault_vectors_round_trip_metadata_and_stubs() {
 
     let fault = RpcFault {
         call_id: 0x0102_0304,
+        pfc_flags: PFC_FIRST_FRAG | PFC_LAST_FRAG,
         alloc_hint: 2,
         cancel_count: 0,
         reserved: 0,
@@ -126,11 +127,17 @@ fn response_and_fault_vectors_round_trip_metadata_and_stubs() {
         reserved2: 1,
         stub: &[0x12, 0x34],
     };
-    let encoded = encode_rpc_fault(fault).expect("valid fault");
+    let mut encoded = encode_rpc_fault(fault).expect("valid fault");
     assert_eq!(encoded[2], PTYPE_FAULT);
+    assert_eq!(&encoded[RPC_COMMON_HEADER_SIZE + 12..][..4], &0u32.to_le_bytes());
+    encoded[3] |= 0x04;
+    encoded[RPC_COMMON_HEADER_SIZE + 12..][..4].copy_from_slice(&fault.reserved2.to_le_bytes());
     assert_eq!(
         decode_rpc_fault(&encoded, DEFAULT_FRAGMENT_SIZE).expect("valid fault"),
-        fault
+        RpcFault {
+            pfc_flags: PFC_FIRST_FRAG | PFC_LAST_FRAG | 0x04,
+            ..fault
+        }
     );
 }
 
@@ -162,6 +169,7 @@ fn rpc_decoders_reject_unsupported_fragments_auth_and_untrusted_lengths() {
 
     let fault = encode_rpc_fault(RpcFault {
         call_id: 1,
+        pfc_flags: PFC_FIRST_FRAG | PFC_LAST_FRAG,
         alloc_hint: 0,
         cancel_count: 0,
         reserved: 0,
@@ -310,6 +318,9 @@ fn response_reassembly_round_trips_through_the_pdu_stream() {
         stub: &[1, 2],
     })
     .expect("first fragment");
+    assert_eq!(first[RPC_COMMON_HEADER_SIZE + 7], 0);
+    let mut first = first;
+    first[RPC_COMMON_HEADER_SIZE + 7] = 2;
     let last = encode_rpc_response_fragment(RpcResponse {
         call_id: 9,
         pfc_flags: PFC_LAST_FRAG,
@@ -337,7 +348,7 @@ fn response_reassembly_round_trips_through_the_pdu_stream() {
         reassembler.push(last),
         Ok(Some(RpcReassembledResponse {
             call_id: 9,
-            cancel_count: 1,
+            cancel_count: 0,
             reserved: 2,
             stub: vec![1, 2, 3, 4, 5],
         }))
@@ -346,7 +357,7 @@ fn response_reassembly_round_trips_through_the_pdu_stream() {
 
 #[test]
 fn response_reassembler_rejects_call_id_mismatch_and_invalid_alloc_hint() {
-    let mut reassembler = RpcResponseReassembler::new(8);
+    let mut reassembler = RpcResponseReassembler::new(10);
     reassembler
         .push(RpcResponse {
             call_id: 7,
@@ -369,7 +380,7 @@ fn response_reassembler_rejects_call_id_mismatch_and_invalid_alloc_hint() {
         Err(RpcPduError::ResponseFragmentCallId { expected: 7, actual: 8 })
     );
 
-    let mut reassembler = RpcResponseReassembler::new(8);
+    let mut reassembler = RpcResponseReassembler::new(10);
     reassembler
         .push(RpcResponse {
             call_id: 7,
@@ -393,5 +404,68 @@ fn response_reassembler_rejects_call_id_mismatch_and_invalid_alloc_hint() {
             alloc_hint: 9,
             stub_length: 3
         })
+    );
+}
+
+#[test]
+fn response_reassembler_bounds_hints_and_recovers_from_an_oversized_first_fragment() {
+    let mut reassembler = RpcResponseReassembler::new(5);
+    assert_eq!(
+        reassembler.push(RpcResponse {
+            call_id: 7,
+            pfc_flags: PFC_FIRST_FRAG,
+            alloc_hint: 6,
+            cancel_count: 0,
+            reserved: 0,
+            stub: &[],
+        }),
+        Err(RpcPduError::ResponseStubTooLarge { actual: 6, maximum: 5 })
+    );
+    assert_eq!(
+        reassembler.push(RpcResponse {
+            call_id: 8,
+            pfc_flags: PFC_FIRST_FRAG | PFC_LAST_FRAG,
+            alloc_hint: 1,
+            cancel_count: 0,
+            reserved: 0,
+            stub: &[1],
+        }),
+        Ok(Some(RpcReassembledResponse {
+            call_id: 8,
+            cancel_count: 0,
+            reserved: 0,
+            stub: vec![1],
+        }))
+    );
+
+    let mut reassembler = RpcResponseReassembler::new(1);
+    for fragment_index in 0..MAX_PENDING_RPC_FRAGMENTS * 2 {
+        assert_eq!(
+            reassembler.push(RpcResponse {
+                call_id: 9,
+                pfc_flags: if fragment_index == 0 { PFC_FIRST_FRAG } else { 0 },
+                alloc_hint: 1,
+                cancel_count: 0,
+                reserved: 0,
+                stub: &[],
+            }),
+            Ok(None)
+        );
+    }
+    assert_eq!(
+        reassembler.push(RpcResponse {
+            call_id: 9,
+            pfc_flags: PFC_LAST_FRAG,
+            alloc_hint: 1,
+            cancel_count: 0,
+            reserved: 0,
+            stub: &[1],
+        }),
+        Ok(Some(RpcReassembledResponse {
+            call_id: 9,
+            cancel_count: 0,
+            reserved: 0,
+            stub: vec![1],
+        }))
     );
 }
