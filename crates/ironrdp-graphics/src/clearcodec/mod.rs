@@ -5,6 +5,7 @@
 //! efficiently encode text, UI elements, and icons.
 
 mod glyph_cache;
+mod nscodec;
 mod vbar_cache;
 
 pub use self::glyph_cache::{GLYPH_CACHE_SIZE, GlyphCache, GlyphEntry};
@@ -208,7 +209,7 @@ impl ClearCodecDecoder {
         if !composite.subcodec_data.is_empty() {
             let subcodecs = decode_subcodec_layer(composite.subcodec_data)?;
             for sub in &subcodecs {
-                self.decode_subcodec_region(sub, output, width)?;
+                Self::decode_subcodec_region(sub, output, width)?;
             }
         }
 
@@ -269,10 +270,7 @@ impl ClearCodecDecoder {
         }
     }
 
-    // NsCodec variant will use decoder state in Phase A7
-    #[expect(clippy::unused_self)]
     fn decode_subcodec_region(
-        &self,
         sub: &ironrdp_pdu::codecs::clearcodec::Subcodec<'_>,
         output: &mut [u8],
         surface_width: u16,
@@ -362,7 +360,15 @@ impl ClearCodecDecoder {
                 }
             }
             SubcodecId::NsCodec => {
-                // Not yet implemented; encoder avoids generating NSCodec tiles.
+                let pixels = nscodec::decode(sub.bitmap_data, sub.width, sub.height)?;
+                let w = usize::from(sub.width);
+                let h = usize::from(sub.height);
+
+                for row in 0..h {
+                    let src_start = row * w * 4;
+                    let dst_start = ((usize::from(sub.y_start) + row) * sw + usize::from(sub.x_start)) * 4;
+                    output[dst_start..dst_start + w * 4].copy_from_slice(&pixels[src_start..src_start + w * 4]);
+                }
             }
         }
 
@@ -667,6 +673,50 @@ mod tests {
         assert_eq!(&pixels[0..4], &[0x00, 0x00, 0xFF, 0xFF]);
         // Pixel 1: blue (BGR: 0xFF, 0x00, 0x00)
         assert_eq!(&pixels[4..8], &[0xFF, 0x00, 0x00, 0xFF]);
+    }
+
+    #[test]
+    fn nscodec_subcodec_blits_positioned_region() {
+        let mut decoder = ClearCodecDecoder::new();
+        let mut nscodec_data = Vec::new();
+        for _ in 0..4 {
+            nscodec_data.extend_from_slice(&4u32.to_le_bytes());
+        }
+        nscodec_data.extend_from_slice(&[1, 0, 0, 0]); // CLL=1, no chroma subsampling
+        nscodec_data.extend_from_slice(&[100, 60, 90, 80]); // Y
+        nscodec_data.extend_from_slice(&[10, 0, 20, 246]); // Co
+        nscodec_data.extend_from_slice(&[0, 20, 246, 0]); // Cg
+        nscodec_data.extend_from_slice(&[0xFF, 0x80, 0x40, 0x00]); // A
+
+        let mut subcodec_data = Vec::new();
+        subcodec_data.extend_from_slice(&1u16.to_le_bytes()); // x_start
+        subcodec_data.extend_from_slice(&2u16.to_le_bytes()); // y_start
+        subcodec_data.extend_from_slice(&2u16.to_le_bytes()); // width
+        subcodec_data.extend_from_slice(&2u16.to_le_bytes()); // height
+        subcodec_data.extend_from_slice(
+            &u32::try_from(nscodec_data.len())
+                .expect("test data length fits")
+                .to_le_bytes(),
+        );
+        subcodec_data.push(0x01); // SubcodecId::NsCodec
+        subcodec_data.extend_from_slice(&nscodec_data);
+
+        let mut stream = vec![0, 0]; // flags, sequence number
+        stream.extend_from_slice(&0u32.to_le_bytes()); // residual
+        stream.extend_from_slice(&0u32.to_le_bytes()); // bands
+        stream.extend_from_slice(
+            &u32::try_from(subcodec_data.len())
+                .expect("test data length fits")
+                .to_le_bytes(),
+        );
+        stream.extend_from_slice(&subcodec_data);
+
+        let pixels = decoder.decode(&stream, 5, 5).unwrap();
+        let mut expected = vec![0; 5 * 5 * 4];
+        expected[(2 * 5 + 1) * 4..(2 * 5 + 3) * 4].copy_from_slice(&[90, 100, 110, 0xFF, 40, 80, 40, 0x80]);
+        expected[(3 * 5 + 1) * 4..(3 * 5 + 3) * 4].copy_from_slice(&[80, 80, 120, 0x40, 90, 80, 70, 0]);
+
+        assert_eq!(pixels, expected);
     }
 
     #[test]
