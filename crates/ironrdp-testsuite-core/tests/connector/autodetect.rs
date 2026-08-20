@@ -431,6 +431,79 @@ fn connect_time_bandwidth_measured_window_reports_every_payload() {
     );
 }
 
+/// Continuous detection is not this phase's business. Its Starts and Stops belong
+/// to a different procedure in [MS-RDPBCGR] 3.2.5.14, answered on a multitransport
+/// channel, and the 0x0629 Stop needs a sequence-number correlation this phase
+/// does not track. A continuous Start must therefore not open a connect-time
+/// window, and a continuous Stop must not be answered as though it had.
+///
+/// The header size follows the same split: 2.2.14.1.4 sets `headerLength` to 0x08
+/// only for the 0x002B Stop and 0x06 otherwise, so counting a continuous Stop with
+/// the connect-time addend would be wrong on top of replying to it at all.
+#[test]
+fn continuous_bandwidth_measure_requests_are_not_answered_as_connect_time() {
+    let mut connector = connect_time_autodetect_connector();
+    let mut output = WriteBuf::new();
+
+    for request in [
+        AutoDetectRequest::bw_start_continuous(0x6666),
+        AutoDetectRequest::bw_payload(0x6666, vec![0u8; 1024]),
+        AutoDetectRequest::bw_stop_continuous(0x6666),
+    ] {
+        output.clear();
+        let written = connector
+            .step(
+                &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&AutoDetectReqPdu::new(request)).unwrap()),
+                Some(MonotonicInstant::from_millis(3_000)),
+                &mut output,
+            )
+            .unwrap();
+
+        assert_eq!(
+            written,
+            Written::Nothing,
+            "a continuous-detection request produces no connect-time reply"
+        );
+    }
+
+    assert!(
+        matches!(connector.state, ClientConnectorState::ConnectTimeAutoDetection { .. }),
+        "the connector keeps listening after ignoring continuous-detection requests"
+    );
+}
+
+/// A connect-time Stop arriving after a continuous Start has no window to close,
+/// because the continuous Start did not open one. It is still answered, since the
+/// server blocks without a reply, but with the untimed floor rather than a figure
+/// derived from a window that was never opened.
+#[test]
+fn connect_time_stop_after_a_continuous_start_reports_the_floor() {
+    let mut connector = connect_time_autodetect_connector();
+    let mut output = WriteBuf::new();
+
+    for (request, at) in [
+        (AutoDetectRequest::bw_start_continuous(0x7777), 4_000),
+        (AutoDetectRequest::bw_payload(0x7777, vec![0u8; 2048]), 4_100),
+        (AutoDetectRequest::bw_stop_connect_time(0x7777, vec![0u8; 512]), 4_250),
+    ] {
+        output.clear();
+        connector
+            .step(
+                &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&AutoDetectReqPdu::new(request)).unwrap()),
+                Some(MonotonicInstant::from_millis(at)),
+                &mut output,
+            )
+            .unwrap();
+    }
+
+    let results = decode_bandwidth_results(&output);
+    assert_eq!(results.0, 1, "no connect-time window was ever opened");
+    assert_eq!(
+        results.1, 520,
+        "only the Stop is counted, with its 8 header bytes, and the ignored Payload is not"
+    );
+}
+
 #[test]
 fn connect_time_bandwidth_second_start_discards_the_first_window() {
     let mut connector = connect_time_autodetect_connector();
