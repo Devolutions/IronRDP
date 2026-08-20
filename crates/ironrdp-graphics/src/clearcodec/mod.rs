@@ -63,19 +63,25 @@ impl ClearCodecDecoder {
 
         let w = usize::from(width);
         let h = usize::from(height);
+        // width/height are decode() parameters supplied by the caller, not read from
+        // src, so an overflow here has no stream position: the None case decode.rs
+        // documents for "an integer conversion".
         let pixel_count = w
             .checked_mul(h)
-            .ok_or_else(|| invalid_field_err!("dimensions", "width * height overflow", in: src))?;
+            .ok_or_else(|| invalid_field_err!("dimensions", "width * height overflow"))?;
 
         // Handle glyph hit: return cached pixel data
         if stream.is_glyph_hit() {
             let glyph_index = stream
                 .glyph_index
                 .ok_or_else(|| invalid_field_err!("flags", "GLYPH_HIT without GLYPH_INDEX", in: src))?;
+            // A cache-state failure, not a stream-position failure (decode.rs's None
+            // case): src has already advanced past the whole bitmap stream by this
+            // point, so a position here would just report the end of the header.
             let entry = self
                 .glyph_cache
                 .get(glyph_index)
-                .ok_or_else(|| invalid_field_err!("glyphIndex", "glyph cache miss on hit", in: src))?;
+                .ok_or_else(|| invalid_field_err!("glyphIndex", "glyph cache miss on hit"))?;
             // MS-RDPEGFX 4.1.1.5 stores a glyph as a dimensionless linear pixel stream, so the
             // destination rectangle supplies the shape and any rectangle of the same area is
             // valid (a glyph cached at 2x8 may be hit as 4x4). Only the pixel count has to
@@ -105,10 +111,12 @@ impl ClearCodecDecoder {
         // rejects implausible tile shapes regardless of total area.
         const MAX_DECODE_DIM: u16 = 8192;
         if width > MAX_DECODE_DIM || height > MAX_DECODE_DIM {
+            // Same caller-supplied-dimension reasoning as the overflow check above:
+            // width/height are decode() parameters, not read from src.
             return Err(invalid_field_err!(
                 "dimensions",
                 "width or height exceeds 8192-pixel decoder limit"
-            , in: src));
+            ));
         }
 
         // Decode composite payload

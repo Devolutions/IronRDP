@@ -46,8 +46,9 @@ impl Decode<'_> for TunnelPdu {
         let byte0 = src.remaining()[0];
         let action_raw = byte0 & 0x0F;
 
-        let action = TunnelAction::from_u8(action_raw)
-            .ok_or_else(|| ironrdp_core::DecodeError::unexpected_message_type("TunnelPdu", action_raw))?;
+        let action = TunnelAction::from_u8(action_raw).ok_or_else(|| {
+            ironrdp_core::DecodeError::unexpected_message_type("TunnelPdu", action_raw, Some(src.pos()))
+        })?;
 
         match action {
             TunnelAction::CreateRequest => TunnelCreateRequest::decode(src).map(TunnelPdu::CreateRequest),
