@@ -12,7 +12,9 @@ This crate builds on [`ironrdp-mstsgu`] to expose that capability to ordinary, n
 - **SOCKS5 proxy** ([`run_socks5`]) — a local SOCKS5 server (CONNECT, no auth).
   Any SOCKS5-capable client (for example `curl --socks5`) names its destination per connection and is tunnelled there through the gateway.
 
-Each inbound connection opens an independent WebSocket gateway tunnel and relays bytes bidirectionally with `tokio::io::copy_bidirectional`.
+Each inbound connection opens an independent WebSocket gateway tunnel and relays bytes bidirectionally.
+Local-to-gateway writes are capped at 8182 bytes so they fit in one MS-TSGU data packet.
+A local half-close is not forwarded: `GwClient::poll_shutdown` is a no-op on master.
 
 ## Contract
 

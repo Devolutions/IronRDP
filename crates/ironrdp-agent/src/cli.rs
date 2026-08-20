@@ -17,8 +17,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use clap::{Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
-use ironrdp_cfg::{PropertySetExt as _, TargetAddr};
+use clap::{ArgGroup, Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
+use ironrdp_cfg::{PropertySetExt as _, TargetAddr, TargetHost};
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
@@ -512,15 +512,17 @@ struct ConnectArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(group(ArgGroup::new("forward_mode").required(true).args(["socks5", "target"])))]
 struct GwForwardArgs {
     /// Local listen address (host:port) for the forwarder / proxy.
     #[arg(long, default_value = "127.0.0.1:1080")]
     listen: String,
-    /// SOCKS5 proxy mode: each client CONNECT names its own destination. Omit for a
-    /// fixed port forward to `--target`.
+    /// SOCKS5 proxy mode: each client CONNECT names its own destination. Conflicts
+    /// with `--target`.
     #[arg(long)]
     socks5: bool,
-    /// Fixed forward target (host:port) for non-SOCKS5 mode.
+    /// Fixed forward target (host:port). Conflicts with `--socks5`. IPv6 must be
+    /// bracketed (`[2001:db8::1]:22`).
     #[arg(long, value_name = "HOST:PORT")]
     target: Option<String>,
     /// RD Gateway server address (host[:port]). Enables the gateway tunnel.
@@ -1206,16 +1208,21 @@ async fn run_gw_forward(args: GwForwardArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Parse a `host:port` target, defaulting to port 3389.
+/// Parse a required `HOST:PORT` target.
+///
+/// Reuses [`TargetAddr`] so bare IPv6 is not split on the last colon and bracketed
+/// IPv6 is accepted. The host passed to the gateway is unbracketed.
 fn parse_host_port(target: &str) -> anyhow::Result<(String, u16)> {
-    let (host, port) = match target.rsplit_once(':') {
-        Some((host, port)) => (host, port.parse::<u16>().context("invalid target port")?),
-        None => (target, 3389),
+    let addr = TargetAddr::from_str(target).context("invalid target address")?;
+    let port = addr.port.context("target requires an explicit port (HOST:PORT)")?;
+    let host = match addr.host {
+        TargetHost::Ip(ip) => ip.to_string(),
+        TargetHost::Domain(host) => host,
     };
     if host.is_empty() {
         anyhow::bail!("target host is empty");
     }
-    Ok((host.to_owned(), port))
+    Ok((host, port))
 }
 
 async fn run_rail(endpoint: &Endpoint, args: RailArgs) -> anyhow::Result<()> {

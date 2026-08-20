@@ -9,6 +9,8 @@
 //!
 //! Each inbound connection opens an independent gateway tunnel via
 //! [`ironrdp_mstsgu::GwClient`] and relays bytes bidirectionally.
+//!
+//! [MS-TSGU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/
 
 mod error;
 mod forward;
