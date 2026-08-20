@@ -7,6 +7,8 @@ mod macros;
 #[doc(hidden)]
 pub mod http_auth;
 mod proto;
+#[expect(dead_code)]
+mod rpc_transport;
 mod udp;
 
 use core::fmt;
