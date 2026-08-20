@@ -27,7 +27,7 @@ const SEND_TO_SERVER_OPNUM: u16 = 9;
 
 /// Which RPCH channel a decrypted flow carries, keyed by its HTTP method.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RpchChannel {
+enum RpchChannel {
     /// `RPC_IN_DATA`: client-to-server tunnel data (`TsProxySendToServer`).
     In,
     /// `RPC_OUT_DATA`: server-to-client tunnel data (the receive pipe).
@@ -35,7 +35,7 @@ pub enum RpchChannel {
 }
 
 /// Classify a decrypted RPCH flow, or `None` when it is not an RPCH tunnel.
-pub fn rpch_channel(plaintext: &Plaintext) -> Option<RpchChannel> {
+fn rpch_channel(plaintext: &Plaintext) -> Option<RpchChannel> {
     let client = flatten(&plaintext.client);
     if client.starts_with(b"RPC_IN_DATA ") {
         Some(RpchChannel::In)
@@ -43,23 +43,6 @@ pub fn rpch_channel(plaintext: &Plaintext) -> Option<RpchChannel> {
         Some(RpchChannel::Out)
     } else {
         None
-    }
-}
-
-/// Pair IN and OUT channel flows, or `None` when no RPCH tunnel is present.
-///
-/// A single IN or OUT HTTP flow is not a complete tunnel. Channel matching for
-/// extraction tries every IN/OUT combination; this helper only reports whether
-/// both channel types exist.
-pub fn pair_rpch_channels(flows: &[Plaintext]) -> Result<Option<(&Plaintext, &Plaintext)>, ReplayError> {
-    let input = flows.iter().find(|flow| rpch_channel(flow) == Some(RpchChannel::In));
-    let output = flows.iter().find(|flow| rpch_channel(flow) == Some(RpchChannel::Out));
-    match (input, output) {
-        (Some(input), Some(output)) => Ok(Some((input, output))),
-        (None, None) => Ok(None),
-        _ => Err(ReplayError::GatewayFraming(
-            "incomplete RPC-over-HTTP tunnel".to_owned(),
-        )),
     }
 }
 
@@ -213,31 +196,45 @@ struct Fragment<'a> {
 /// auth_len - 8 - auth_pad_len`, where `auth_pad_len` is read from the security trailer
 /// itself ([MS-RPCE] 2.2.2.10 and 2.2.2.11). `alloc_hint` cannot be used here: on a
 /// continuation fragment it advertises the *remaining* stub, not this fragment's share.
-fn fragments(mut bytes: &[u8], header_size: usize) -> impl Iterator<Item = Fragment<'_>> {
+fn fragments(mut bytes: &[u8], header_size: usize) -> Result<Vec<Fragment<'_>>, ReplayError> {
     let mut offset = 0;
-    core::iter::from_fn(move || {
-        let header = bytes.get(..COMMON_HEADER)?;
+    let mut fragments = Vec::new();
+    while !bytes.is_empty() {
+        let header = bytes
+            .get(..COMMON_HEADER)
+            .ok_or_else(|| ReplayError::GatewayFraming("truncated DCE/RPC header".to_owned()))?;
         if header[0] != 5 {
-            return None;
+            return Err(ReplayError::GatewayFraming("invalid DCE/RPC version".to_owned()));
         }
         let ptype = header[2];
         let flags = header[3];
         let fragment_length = usize::from(u16::from_le_bytes([header[8], header[9]]));
         if !(COMMON_HEADER..=MAX_FRAGMENT).contains(&fragment_length) {
-            return None;
+            return Err(ReplayError::GatewayFraming(
+                "invalid DCE/RPC fragment length".to_owned(),
+            ));
         }
         let auth_length = usize::from(u16::from_le_bytes([header[10], header[11]]));
         let call_id = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
-        let pdu = bytes.get(..fragment_length)?;
+        let pdu = bytes
+            .get(..fragment_length)
+            .ok_or_else(|| ReplayError::GatewayFraming("truncated DCE/RPC fragment".to_owned()))?;
         let fragment_offset = offset;
         bytes = &bytes[fragment_length..];
         offset += fragment_length;
         // Security trailer layout: auth type, auth level, auth pad length, reserved,
         // context id. The pad length precedes the trailer, so it shrinks the stub.
         let stub_end = if auth_length > 0 {
-            let sec_trailer = fragment_length.checked_sub(auth_length + 8)?;
-            let auth_pad_len = usize::from(*pdu.get(sec_trailer + 2)?);
-            sec_trailer.checked_sub(auth_pad_len)?
+            let sec_trailer = fragment_length
+                .checked_sub(auth_length + 8)
+                .ok_or_else(|| ReplayError::GatewayFraming("invalid DCE/RPC authentication trailer".to_owned()))?;
+            let auth_pad_len =
+                usize::from(*pdu.get(sec_trailer + 2).ok_or_else(|| {
+                    ReplayError::GatewayFraming("truncated DCE/RPC authentication trailer".to_owned())
+                })?);
+            sec_trailer
+                .checked_sub(auth_pad_len)
+                .ok_or_else(|| ReplayError::GatewayFraming("invalid DCE/RPC authentication padding".to_owned()))?
         } else {
             fragment_length
         };
@@ -256,22 +253,23 @@ fn fragments(mut bytes: &[u8], header_size: usize) -> impl Iterator<Item = Fragm
         } else {
             u16::MAX
         };
-        Some(Fragment {
+        fragments.push(Fragment {
             ptype,
             flags,
             call_id,
             opnum,
             stub,
             offset: fragment_offset,
-        })
-    })
+        });
+    }
+    Ok(fragments)
 }
 
 /// Reassemble DCE/RPC request fragments that share a call id into complete PDUs.
-fn request_pdus(bytes: &[u8], packet_offsets: &[(usize, usize)], body_start: usize) -> Vec<Pdu> {
+fn request_pdus(bytes: &[u8], packet_offsets: &[(usize, usize)], body_start: usize) -> Result<Vec<Pdu>, ReplayError> {
     let mut complete = Vec::new();
     let mut pending: Option<Pdu> = None;
-    for fragment in fragments(bytes, REQUEST_HEADER) {
+    for fragment in fragments(bytes, REQUEST_HEADER)? {
         let first = fragment.flags & PFC_FIRST_FRAG != 0;
         let last = fragment.flags & PFC_LAST_FRAG != 0;
         match pending.as_mut() {
@@ -294,7 +292,7 @@ fn request_pdus(bytes: &[u8], packet_offsets: &[(usize, usize)], body_start: usi
             }
         }
     }
-    complete
+    Ok(complete)
 }
 
 /// Recover the client-to-server RDP stream from IN-channel `TsProxySendToServer`
@@ -305,7 +303,7 @@ fn client_rdp_bytes(
     body_start: usize,
 ) -> Result<PacketStream, ReplayError> {
     let mut output = Vec::new();
-    for pdu in request_pdus(body, packet_offsets, body_start) {
+    for pdu in request_pdus(body, packet_offsets, body_start)? {
         if pdu.ptype != PTYPE_REQUEST || pdu.opnum != SEND_TO_SERVER_OPNUM {
             continue;
         }
@@ -364,7 +362,7 @@ fn server_rdp_bytes(
     // session lifetime; PFC_LAST_FRAG closes the pipe and the stub is the HRESULT
     // ([MS-TSGU] 3.2.6.2.2). Other interleaved responses use their own call ids.
     let mut receive_pipe_call = None;
-    for fragment in fragments(body, RESPONSE_HEADER) {
+    for fragment in fragments(body, RESPONSE_HEADER)? {
         if fragment.ptype != PTYPE_RESPONSE {
             continue;
         }

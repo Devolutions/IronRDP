@@ -3,10 +3,7 @@
     reason = "integration tests link the library crate and do not use its direct dependencies"
 )]
 
-use ironrdp_capture_replay::{
-    Plaintext, ReplayError, RpchChannel, extract_rpch_from_flows, extract_rpch_tunneled_rdp, pair_rpch_channels,
-    rpch_channel,
-};
+use ironrdp_capture_replay::{Plaintext, ReplayError, extract_rpch_from_flows, extract_rpch_tunneled_rdp};
 
 const COMMON_HEADER: usize = 16;
 const RESPONSE_HEADER: usize = COMMON_HEADER + 8;
@@ -57,6 +54,16 @@ fn response_pdu(call_id: u32, stub: &[u8]) -> Vec<u8> {
     response_pdu_with_flags(call_id, stub, PFC_FIRST_FRAG)
 }
 
+fn authenticated_response_pdu(call_id: u32, stub: &[u8]) -> Vec<u8> {
+    let mut pdu = response_pdu(call_id, stub);
+    pdu.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]); // Security trailer.
+    pdu.push(0); // Authentication token.
+    let fragment_length = u16::try_from(pdu.len()).expect("fragment length fits u16");
+    pdu[8..10].copy_from_slice(&fragment_length.to_le_bytes());
+    pdu[10..12].copy_from_slice(&1u16.to_le_bytes());
+    pdu
+}
+
 fn encode_u32(value: usize, big_endian: bool) -> [u8; 4] {
     let value = u32::try_from(value).expect("length fits u32");
     if big_endian {
@@ -103,54 +110,6 @@ fn out_channel(body: Vec<u8>) -> Plaintext {
 }
 
 #[test]
-fn detects_rpch_in_and_out_channels() {
-    let input = in_channel(Vec::new());
-    let output = out_channel(Vec::new());
-
-    assert_eq!(rpch_channel(&input), Some(RpchChannel::In));
-    assert_eq!(rpch_channel(&output), Some(RpchChannel::Out));
-    assert_eq!(
-        rpch_channel(&Plaintext {
-            client: vec![(1, b"RDG_OUT_DATA /remoteDesktopGateway/ HTTP/1.1\r\n\r\n".to_vec())],
-            server: Vec::new(),
-        }),
-        None
-    );
-}
-
-#[test]
-fn pairs_in_and_out_channels() {
-    let input = in_channel(Vec::new());
-    let output = out_channel(Vec::new());
-    let flows = [input, output];
-
-    let pair = pair_rpch_channels(&flows).unwrap().unwrap();
-
-    assert_eq!(rpch_channel(pair.0), Some(RpchChannel::In));
-    assert_eq!(rpch_channel(pair.1), Some(RpchChannel::Out));
-}
-
-#[test]
-fn rejects_a_single_rpch_channel() {
-    let input = in_channel(Vec::new());
-
-    assert!(matches!(
-        pair_rpch_channels(&[input]),
-        Err(ReplayError::GatewayFraming(_))
-    ));
-}
-
-#[test]
-fn ignores_non_rpch_flows_when_pairing() {
-    let other = Plaintext {
-        client: vec![(1, b"GET /kdcproxy HTTP/1.1\r\n\r\n".to_vec())],
-        server: Vec::new(),
-    };
-
-    assert_eq!(pair_rpch_channels(&[other]).unwrap(), None);
-}
-
-#[test]
 fn extracts_send_to_server_and_receive_pipe_payloads() {
     let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
     let cc = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0];
@@ -161,6 +120,33 @@ fn extracts_send_to_server_and_receive_pipe_payloads() {
 
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
     assert_eq!(inner.server, vec![(2, cc.to_vec())]);
+}
+
+#[test]
+fn handles_dce_rpc_authentication_trailers() {
+    let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
+    let cc = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0];
+    let input = in_channel(request_pdu(7, SEND_TO_SERVER_OPNUM, &send_to_server_stub(&[&rdp])));
+    let output = out_channel(authenticated_response_pdu(6, &cc));
+
+    let inner = extract_rpch_tunneled_rdp(&input, &output).unwrap();
+
+    assert_eq!(inner.server, vec![(2, cc.to_vec())]);
+}
+
+#[test]
+fn rejects_invalid_dce_rpc_authentication_padding() {
+    let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
+    let cc = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0];
+    let input = in_channel(request_pdu(7, SEND_TO_SERVER_OPNUM, &send_to_server_stub(&[&rdp])));
+    let mut response = response_pdu(6, &cc);
+    response[10..12].copy_from_slice(&1u16.to_le_bytes());
+    response[23] = 22; // The authentication padding is longer than the fragment prefix.
+
+    assert!(matches!(
+        extract_rpch_tunneled_rdp(&input, &out_channel(response)),
+        Err(ReplayError::GatewayFraming(message)) if message == "invalid DCE/RPC authentication padding"
+    ));
 }
 
 #[test]
