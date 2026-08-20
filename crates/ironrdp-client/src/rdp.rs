@@ -1454,12 +1454,15 @@ async fn connect_gateway(
         gw_user: gw.username.clone(),
         gw_pass: gw.password.clone(),
         server: config.destination.name().to_owned(),
-        server_port: config.destination.port(),
     };
 
-    let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect(&gw_target, &config.connector.client_name)
-        .await
-        .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
+    let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect_with_port(
+        &gw_target,
+        &config.connector.client_name,
+        config.destination.port(),
+    )
+    .await
+    .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
 
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
@@ -1471,6 +1474,13 @@ async fn connect_gateway(
         rdpdr_factory,
         auto_reconnect_cookie,
     )?;
+    #[cfg(feature = "vmconnect")]
+    if config.vm_id().is_some() {
+        // The Hyper-V TCP connection is created by the gateway during channel-create, so
+        // the MS-RDPEPS PCB deadline starts once that channel is established.
+        let pcb_deadline = tokio::time::Instant::now() + ironrdp_vmconnect::PCB_TRANSMIT_DEADLINE;
+        return vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await;
+    }
     security_upgrade_and_finalize(framed, connector, config).await
 }
 

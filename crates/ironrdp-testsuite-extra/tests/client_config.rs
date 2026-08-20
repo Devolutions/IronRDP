@@ -181,6 +181,7 @@ fn vmconnect_accepts_rds_gateway() {
     );
 
     assert!(matches!(config.transport(), Transport::Gateway(_)));
+    assert_eq!(config.destination().port(), 2179);
 }
 
 #[test]

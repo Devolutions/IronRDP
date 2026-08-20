@@ -42,10 +42,6 @@ pub struct GwConnectTarget {
     pub gw_pass: String,
 
     pub server: String,
-    /// Target resource port as presented to the gateway (HTTP_CHANNEL_PACKET `port`).
-    ///
-    /// Common values are `3389` for ordinary RDP and `2179` for Hyper-V VMConnect.
-    pub server_port: u16,
 }
 
 type Error = ironrdp_error::Error<GwErrorKind>;
@@ -98,6 +94,10 @@ impl core::error::Error for GwErrorKind {}
 struct GwConn {
     client_name: String,
     target: GwConnectTarget,
+    /// Target resource port presented in HTTP_CHANNEL_PACKET (`port`).
+    ///
+    /// Common values are `3389` for ordinary RDP and `2179` for Hyper-V VMConnect.
+    server_port: u16,
     ws_sink: SplitSink<WebSocketStream<TlsStream<TcpStream>>, Message>,
     ws_stream: SplitStream<WebSocketStream<TlsStream<TcpStream>>>,
 }
@@ -119,9 +119,22 @@ impl Drop for GwClient {
 }
 
 impl GwClient {
+    /// Open an MS-TSGU tunnel, presenting port `3389` to the gateway.
+    ///
+    /// Use [`Self::connect_with_port`] when the target resource is not on the ordinary RDP port
+    /// (for example Hyper-V VMConnect on `2179`).
     pub async fn connect(
         target: &GwConnectTarget,
         client_name: &str,
+    ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        Self::connect_with_port(target, client_name, 3389).await
+    }
+
+    /// Open an MS-TSGU tunnel, presenting `server_port` as HTTP_CHANNEL_PACKET `port`.
+    pub async fn connect_with_port(
+        target: &GwConnectTarget,
+        client_name: &str,
+        server_port: u16,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
         let gw_host = target
             .gw_endpoint
@@ -179,7 +192,7 @@ impl GwClient {
         let _ = tx.send(()); // TODO: Not needed since it doesnt keep alive conn?
         let stream = jh.await.map_err(|e| custom_err!("WS join", e))?.io.into_inner();
 
-        Self::connect_ws(target.clone(), client_name, stream)
+        Self::connect_ws(target.clone(), client_name, server_port, stream)
             .await
             .map(|x| (x, client_addr))
     }
@@ -187,6 +200,7 @@ impl GwClient {
     async fn connect_ws(
         target: GwConnectTarget,
         client_name: &str,
+        server_port: u16,
         tls_stream: TlsStream<TcpStream>,
     ) -> Result<GwClient, Error> {
         let ws_stream: WebSocketStream<_> = WebSocketStream::from_raw_socket(tls_stream, Role::Client, None).await;
@@ -194,6 +208,7 @@ impl GwClient {
         let mut gw = GwConn {
             client_name: client_name.to_owned(),
             target,
+            server_port,
             ws_sink,
             ws_stream,
         };
@@ -381,7 +396,7 @@ impl GwConn {
     async fn channel(&mut self) -> Result<ChannelResp, Error> {
         let req = ChannelPkt {
             resources: vec![self.target.server.clone()],
-            port: self.target.server_port,
+            port: self.server_port,
             protocol: 3,
         };
         self.send_packet(&req).await?;

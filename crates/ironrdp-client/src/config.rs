@@ -1120,7 +1120,8 @@ impl ConfigBuilder {
     ///
     /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
     /// embedder (error if disabled). Works over Direct, RDCleanPath, and RDS Gateway (the
-    /// destination port, typically 2179, is forwarded in the MS-TSGU channel-create packet).
+    /// destination port, typically 2179, is forwarded in the MS-TSGU channel-create packet,
+    /// then the VMConnect PCB / `connect_front` handshake runs on the tunneled stream).
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
