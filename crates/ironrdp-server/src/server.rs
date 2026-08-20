@@ -1148,6 +1148,23 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
+        let result = self.run_connection_inner(stream, tls).await;
+
+        // The static channels belong to the connection that negotiated them,
+        // and their backends own real resources: an rdpsnd handler is stopped
+        // through `Drop`, so an audio backend keeps capturing until the set is
+        // replaced. `run` cleared the set itself, which left embedders driving
+        // connections through this method with the previous session's backends
+        // still live until the next client attached new ones.
+        self.static_channels = StaticChannelSet::new();
+
+        result
+    }
+
+    async fn run_connection_inner<S>(&mut self, stream: S, tls: TransportTls) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    {
         // Per-connection state must start fresh: if the previous client
         // disconnected while it had sent `SuppressOutput { None }` (e.g.,
         // closed the mstsc window while minimized so the matching resume
@@ -1327,8 +1344,6 @@ impl RdpServer {
                         if let Err(ref error) = result {
                             error!(?error, "Connection error");
                         }
-
-                        self.static_channels = StaticChannelSet::new();
 
                         if let Some(ref mut handler) = self.connection_handler {
                             let action = handler.on_disconnected(
@@ -2328,5 +2343,63 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
         Self {
             writer: Rc::new(Mutex::new(writer)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_core::impl_as_any;
+    use ironrdp_pdu::gcc::ChannelName;
+    use ironrdp_svc::{SvcMessage, SvcServerProcessor};
+
+    use super::*;
+
+    /// A channel backend that owns a resource, released on drop the way
+    /// `RdpsndServer` stops its handler.
+    #[derive(Debug)]
+    struct ResourceChannel(Arc<AtomicBool>);
+
+    impl Drop for ResourceChannel {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    impl_as_any!(ResourceChannel);
+
+    impl SvcProcessor for ResourceChannel {
+        fn channel_name(&self) -> ChannelName {
+            ChannelName::from_static(b"testchan")
+        }
+
+        fn process(&mut self, _payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl SvcServerProcessor for ResourceChannel {}
+
+    #[tokio::test]
+    async fn run_connection_releases_the_static_channels() {
+        let mut server = RdpServer::builder()
+            .with_addr(([127, 0, 0, 1], 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+
+        let released = Arc::new(AtomicBool::new(false));
+        server.static_channels.insert(ResourceChannel(Arc::clone(&released)));
+
+        // A stream that is already at EOF: the connection ends early, which
+        // is the path an embedder's accept loop sees when a client vanishes.
+        let (client, server_side) = tokio::io::duplex(64);
+        drop(client);
+        let _ = server.run_connection(server_side).await;
+
+        assert!(
+            released.load(Ordering::Relaxed),
+            "the channel backends of a finished connection must be released, not held until the next client"
+        );
     }
 }
