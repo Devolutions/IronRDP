@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use ironrdp_pdu::codecs::rfx::Quant;
-use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, server_codecs_capabilities};
+use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, EntropyBits, server_codecs_capabilities};
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use tokio_rustls::TlsAcceptor;
 
@@ -50,6 +50,7 @@ pub struct BuilderDone {
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
     remotefx_quant: Quant,
+    remotefx_entropy_coder: Option<EntropyBits>,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -154,6 +155,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 honor_client_desktop_size: None,
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
+                remotefx_entropy_coder: None,
             },
         }
     }
@@ -179,6 +181,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 honor_client_desktop_size: None,
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
+                remotefx_entropy_coder: None,
             },
         }
     }
@@ -349,6 +352,23 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// State a preferred RemoteFX entropy coder (RLGR1 or RLGR3). If the
+    /// client's advertised TS_RFX_ICAP array includes it, the server uses
+    /// it; otherwise the server falls back to whichever coder the client
+    /// offered first.
+    ///
+    /// `None` (the default) always uses whichever coder the client offered
+    /// first: [MS-RDPRFX] 3.1.5.1 has the server arbitrarily pick one
+    /// supported TS_RFX_ICAP element rather than rank the array as a
+    /// preference order. Has no effect unless the client and server
+    /// negotiate RemoteFX.
+    ///
+    /// [MS-RDPRFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/
+    pub fn with_remotefx_entropy_coder(mut self, coder: Option<EntropyBits>) -> Self {
+        self.state.remotefx_entropy_coder = coder;
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         let mut server = RdpServer::new(
             RdpServerOptions {
@@ -358,6 +378,7 @@ impl RdpServerBuilder<BuilderDone> {
                 max_request_size: self.state.max_request_size,
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
                 remotefx_quant: self.state.remotefx_quant,
+                remotefx_entropy_coder: self.state.remotefx_entropy_coder,
             },
             self.state.handler,
             self.state.display,

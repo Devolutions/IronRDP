@@ -20,7 +20,9 @@ use ironrdp_pdu::codecs::rfx::Quant;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
-use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, GeneralExtraFlags};
+use ironrdp_pdu::rdp::capability_sets::{
+    BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, EntropyBits, GeneralExtraFlags,
+};
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
@@ -299,6 +301,17 @@ pub struct RdpServerOptions {
     /// via
     /// [`RdpServerBuilder::with_remotefx_quant`](crate::RdpServerBuilder::with_remotefx_quant).
     pub remotefx_quant: Quant,
+    /// Preferred RemoteFX entropy coder. If the client's advertised
+    /// TS_RFX_ICAP array includes it, the server uses it; otherwise the
+    /// server falls back to whichever coder the client offered first.
+    /// `None` (the default) always uses whichever coder is offered first,
+    /// since [MS-RDPRFX] 3.1.5.1 has the server arbitrarily pick one
+    /// supported TS_RFX_ICAP element rather than rank the array as a
+    /// preference order. Set via
+    /// [`RdpServerBuilder::with_remotefx_entropy_coder`](crate::RdpServerBuilder::with_remotefx_entropy_coder).
+    ///
+    /// [MS-RDPRFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/
+    pub remotefx_entropy_coder: Option<EntropyBits>,
 }
 
 impl RdpServerOptions {
@@ -349,6 +362,28 @@ impl RdpServerOptions {
             .iter()
             .any(|codec| matches!(codec.property, CodecProperty::NsCodec(_)))
     }
+}
+
+/// Picks a RemoteFX entropy coder out of the client's advertised TS_RFX_ICAP
+/// array. Returns `preferred` if the client offered it, otherwise the first
+/// coder the client offered. Returns `None` if `offered` is empty.
+pub fn pick_remotefx_entropy_coder(
+    preferred: Option<EntropyBits>,
+    offered: impl Iterator<Item = EntropyBits>,
+) -> Option<EntropyBits> {
+    let mut first = None;
+
+    for entropy_bits in offered {
+        if first.is_none() {
+            first = Some(entropy_bits);
+        }
+
+        if preferred == Some(entropy_bits) {
+            return Some(entropy_bits);
+        }
+    }
+
+    first
 }
 
 #[derive(Clone)]
@@ -1826,22 +1861,24 @@ impl RdpServer {
                             // implementation of the video mode. which allows to
                             // skip sending Header for each image.
                             //
-                            // We should distinguish parameters for both modes,
-                            // and somehow choose the "best", instead of picking
-                            // the last parsed here.
+                            // We should distinguish parameters for both modes.
                             CodecProperty::RemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(c))
                                 if self.opts.has_remote_fx() =>
                             {
-                                for caps in c.caps_data.0.0 {
-                                    update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
+                                let offered = c.caps_data.0.0.iter().map(|caps| caps.entropy_bits);
+                                let preferred = self.opts.remotefx_entropy_coder;
+                                if let Some(entropy_bits) = pick_remotefx_entropy_coder(preferred, offered) {
+                                    update_codecs.set_remotefx(Some((entropy_bits, codec.id)));
                                     update_codecs.set_remotefx_quant(self.opts.remotefx_quant.clone());
                                 }
                             }
                             CodecProperty::ImageRemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(
                                 c,
                             )) if self.opts.has_image_remote_fx() => {
-                                for caps in c.caps_data.0.0 {
-                                    update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
+                                let offered = c.caps_data.0.0.iter().map(|caps| caps.entropy_bits);
+                                let preferred = self.opts.remotefx_entropy_coder;
+                                if let Some(entropy_bits) = pick_remotefx_entropy_coder(preferred, offered) {
+                                    update_codecs.set_remotefx(Some((entropy_bits, codec.id)));
                                     update_codecs.set_remotefx_quant(self.opts.remotefx_quant.clone());
                                 }
                             }
