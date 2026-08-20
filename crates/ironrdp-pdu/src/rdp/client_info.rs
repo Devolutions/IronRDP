@@ -377,7 +377,7 @@ impl ClientAutoReconnect {
     }
 
     fn keyed_hmac(cookie: &crate::rdp::session_info::ServerAutoReconnect) -> hmac::Hmac<md5::Md5> {
-        use hmac::Mac as _;
+        use hmac::{KeyInit as _, Mac as _};
 
         let mut mac = hmac::Hmac::<md5::Md5>::new_from_slice(&cookie.random_bits)
             .expect("HMAC accepts a key of any length, so a 16-byte key cannot fail");
