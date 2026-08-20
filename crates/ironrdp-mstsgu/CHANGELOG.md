@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - HTTP multi-leg authentication for the WebSocket upgrade: Negotiate SPNEGO (Kerberos with NTLM fallback via KDC discovery / `SSPI_KDC_URL`), pure NTLM when only NTLM is advertised, and Basic fallback.
+- RDG-UDP PDU encode/decode helpers (`CONNECT_PKT`, `DATA_PKT`, `DISC_PKT`, and `UDP_CORRELATION_INFO`) without opening a live DTLS side channel.
 
 ## [[0.0.1](https://github.com/Devolutions/IronRDP/releases/tag/ironrdp-mstsgu-v0.0.1)] - 2026-07-10
 

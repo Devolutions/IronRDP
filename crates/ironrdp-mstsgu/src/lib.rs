@@ -7,6 +7,12 @@ mod macros;
 #[doc(hidden)]
 pub mod http_auth;
 mod proto;
+mod udp;
+
+pub use self::udp::{
+    AaSynData, AaSynDataResp, ConnectPkt, ConnectPktResp, DataPkt, DiscPkt, GwUdpOffer, UdpCorrelationInfo,
+    UdpPacketHeader, UdpPktType, encode_connect_request, fragment_connect_pkt,
+};
 
 use core::fmt;
 use core::fmt::Display;
@@ -33,8 +39,8 @@ use tokio_util::sync::PollSender;
 
 use self::http_auth::{AuthStep, GatewayHttpAuth, basic_authorization, www_authenticate_values};
 use self::proto::{
-    ChannelPkt, ChannelResp, DataPkt, HandshakeReqPkt, HandshakeRespPkt, HttpCapsTy, KeepalivePkt, PktHdr, PktTy,
-    TunnelAuthPkt, TunnelAuthRespPkt, TunnelReqPkt, TunnelRespPkt,
+    ChannelPkt, ChannelResp, DataPkt as HttpDataPkt, HandshakeReqPkt, HandshakeRespPkt, HttpCapsTy, KeepalivePkt,
+    PktHdr, PktTy, TunnelAuthPkt, TunnelAuthRespPkt, TunnelReqPkt, TunnelRespPkt,
 };
 
 #[derive(Clone, Debug)]
@@ -244,7 +250,7 @@ impl GwClient {
                                 continue;
                             },
                             PktTy::Data => {
-                                let p = DataPkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
+                                let p = HttpDataPkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
                                 in_tx.send(Bytes::from(p.data.to_vec())).await.map_err(|e| custom_err!("in_tx dead", e))?;
                             },
                             x => {
@@ -254,7 +260,7 @@ impl GwClient {
                     },
                     next = out_rx.recv() => {
                         let next = next.ok_or_else(|| Error::new("WS Sink Dead", GwErrorKind::Connect))?;
-                        let pkt = DataPkt { data: &next };
+                        let pkt = HttpDataPkt { data: &next };
 
                         let pos = {
                             let mut cur = WriteCursor::new(&mut wsbuf);
