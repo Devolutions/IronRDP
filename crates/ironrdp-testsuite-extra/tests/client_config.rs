@@ -80,6 +80,21 @@ fn gateway_is_enabled_with_usage_method_one_and_file_credentials() {
     assert_eq!(gw.endpoint, "gw.example.com:443");
     assert_eq!(gw.username, "gw-user");
     assert_eq!(gw.password, "gw-pass");
+    assert!(!gw.prefer_direct);
+}
+
+#[test]
+fn gateway_detect_prefers_direct_when_hostname_is_set() {
+    let config = parse_config_from_rdp(
+        "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\ngatewayhostname:s:gw.example.com:443\ngatewayusagemethod:i:2\ngatewayusername:s:gw-user\nGatewayPassword:s:gw-pass\n",
+        &[],
+    );
+
+    let Transport::Gateway(gw) = config.transport() else {
+        panic!("gateway should be configured");
+    };
+    assert_eq!(gw.endpoint, "gw.example.com:443");
+    assert!(gw.prefer_direct);
 }
 
 #[test]

@@ -9120,7 +9120,10 @@ impl Control {
                 username,
                 password,
             } => builder
-                .with_transport(TransportKind::Gateway { endpoint })
+                .with_transport(TransportKind::Gateway {
+                    endpoint,
+                    prefer_direct: false,
+                })
                 .with_gateway_username(username)
                 .with_gateway_password(password),
             ActiveXTransport::RDCleanPath(rdcleanpath) => builder

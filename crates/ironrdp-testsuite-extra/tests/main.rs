@@ -7,6 +7,7 @@ mod capture_helpers;
 mod client_config;
 mod dvc_pipe_proxy;
 mod e2e;
+mod gateway_detect;
 mod rdpeudp_tokio;
 mod vmconnect;
 mod volume;
