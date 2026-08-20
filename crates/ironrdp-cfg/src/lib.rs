@@ -68,7 +68,7 @@ pub enum GatewayUsageMethod {
     /// Windows semantics are "try direct, use gateway if direct fails".
     ///
     /// IronRDP implements that two-step fallback when a gateway hostname and
-    /// credentials are configured: the client attempts a direct TCP connection
+    /// credentials are configured: the client attempts a direct RDP connection
     /// first, then opens an MS-TSGU tunnel on failure.
     ///
     /// RDC UI: bypass-local is selected.

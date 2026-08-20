@@ -618,8 +618,8 @@ impl RdpClient {
                 #[cfg(feature = "gateway")]
                 Transport::Gateway(gw) => {
                     let connect_result = if gw.prefer_direct {
-                        // Detect: try direct first, then fall back to the gateway on failure.
-                        match Box::pin(cancelable_operation(
+                        connect_preferring_direct(
+                            &mut self.close_receiver,
                             connect_direct(
                                 &self.config,
                                 &self.input_event_sender,
@@ -627,31 +627,18 @@ impl RdpClient {
                                 rdpdr_factory,
                                 reconnect_cookie,
                             ),
-                            &mut self.close_receiver,
-                        ))
+                            || {
+                                connect_gateway(
+                                    &self.config,
+                                    gw,
+                                    &self.input_event_sender,
+                                    cliprdr_factory,
+                                    rdpdr_factory,
+                                    reconnect_cookie,
+                                )
+                            },
+                        )
                         .await
-                        {
-                            Some(Ok(result)) => Some(Ok(result)),
-                            Some(Err(direct_error)) => {
-                                info!(
-                                    error = %direct_error,
-                                    "Direct connection failed; falling back to RD Gateway"
-                                );
-                                Box::pin(cancelable_operation(
-                                    connect_gateway(
-                                        &self.config,
-                                        gw,
-                                        &self.input_event_sender,
-                                        cliprdr_factory,
-                                        rdpdr_factory,
-                                        reconnect_cookie,
-                                    ),
-                                    &mut self.close_receiver,
-                                ))
-                                .await
-                            }
-                            None => None,
-                        }
                     } else {
                         Box::pin(cancelable_operation(
                             connect_gateway(
@@ -959,6 +946,33 @@ async fn cancelable_operation<T>(
         biased;
         _ = close_receiver.changed() => None,
         result = operation => Some(result),
+    }
+}
+
+/// Detect-mode connection: try a direct RDP connection, then the gateway.
+///
+/// Returns `None` if the session is cancelled before a connection result is
+/// produced. A cancelled direct attempt does not start the gateway.
+#[doc(hidden)]
+pub async fn connect_preferring_direct<T, E, GFut>(
+    close_receiver: &mut watch::Receiver<bool>,
+    connect_direct: impl Future<Output = Result<T, E>>,
+    connect_gateway: impl FnOnce() -> GFut,
+) -> Option<Result<T, E>>
+where
+    E: core::fmt::Display,
+    GFut: Future<Output = Result<T, E>>,
+{
+    match Box::pin(cancelable_operation(connect_direct, close_receiver)).await {
+        Some(Ok(result)) => Some(Ok(result)),
+        Some(Err(direct_error)) => {
+            info!(
+                error = %direct_error,
+                "Direct connection failed; falling back to RD Gateway"
+            );
+            Box::pin(cancelable_operation(connect_gateway(), close_receiver)).await
+        }
+        None => None,
     }
 }
 

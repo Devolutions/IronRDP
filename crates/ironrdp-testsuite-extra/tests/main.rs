@@ -6,6 +6,7 @@ mod async_framed;
 mod capture_helpers;
 mod client_config;
 mod dvc_pipe_proxy;
+mod gateway_detect;
 mod e2e;
 mod rdpeudp_tokio;
 mod vmconnect;
