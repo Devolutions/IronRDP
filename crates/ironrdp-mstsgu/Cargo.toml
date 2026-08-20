@@ -30,9 +30,6 @@ default = []
 rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
 native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls"]
 
-[dev-dependencies]
-ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["std"] }
-
 [dependencies]
 base64 = "0.22"
 bitflags = "2.11"

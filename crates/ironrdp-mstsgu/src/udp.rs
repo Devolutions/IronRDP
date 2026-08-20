@@ -6,9 +6,13 @@
 //! [MS-TSGU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
 
 use ironrdp_core::{
-    Decode, Encode, ReadCursor, WriteCursor, cast_int, ensure_fixed_part_size, ensure_size, other_err,
-    unsupported_value_err,
+    Decode, Encode, ReadCursor, WriteCursor, cast_int, ensure_fixed_part_size, ensure_size, unsupported_value_err,
 };
+
+/// Maximum CONNECT_PKT fragment payload ([MS-TSGU] 3.8.3 `MAX_CONNECT_REQ_FRAGMENT_SIZE`).
+///
+/// [MS-TSGU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
+pub const MAX_CONNECT_REQ_FRAGMENT_SIZE: usize = 1000;
 
 /// Parameters from [`HTTP_CHANNEL_RESPONSE`][channel-resp] that enable a future RDG-UDP side channel.
 ///
@@ -201,6 +205,8 @@ pub struct ConnectPkt {
 }
 
 impl ConnectPkt {
+    const FIXED_BODY_SIZE: usize = 2 /* usPortNumber */ + 2 /* cbAuthnCookieLen */ + AaSynData::FIXED_PART_SIZE;
+
     /// Build a connect request from a main-channel UDP offer and target resource port.
     pub fn from_offer(offer: &GwUdpOffer, target_port: u16, syn_data: AaSynData) -> Self {
         Self {
@@ -233,11 +239,7 @@ impl Encode for ConnectPkt {
     }
 
     fn size(&self) -> usize {
-        UdpPacketHeader::FIXED_PART_SIZE
-            + 2 /* usPortNumber */
-            + 2 /* cbAuthnCookieLen */
-            + AaSynData::FIXED_PART_SIZE
-            + self.authn_cookie.len()
+        UdpPacketHeader::FIXED_PART_SIZE + Self::FIXED_BODY_SIZE + self.authn_cookie.len()
     }
 }
 
@@ -251,11 +253,25 @@ impl Decode<'_> for ConnectPkt {
                 format!("0x{:x}", hdr.pkt_id),
             ));
         }
-        ensure_size!(in: src, size: 4);
+        let body_len = usize::from(hdr.pkt_len);
+        ensure_size!(in: src, size: body_len);
+        if body_len < Self::FIXED_BODY_SIZE {
+            return Err(unsupported_value_err(
+                "CONNECT_PKT::pkt_len",
+                "pkt_len",
+                format!("{body_len}"),
+            ));
+        }
         let target_port = src.read_u16();
         let cookie_len = usize::from(src.read_u16());
+        if body_len != Self::FIXED_BODY_SIZE + cookie_len {
+            return Err(unsupported_value_err(
+                "CONNECT_PKT::pkt_len",
+                "pkt_len",
+                format!("{body_len}"),
+            ));
+        }
         let syn_data = AaSynData::decode(src)?;
-        ensure_size!(in: src, size: cookie_len);
         let authn_cookie = src.read_slice(cookie_len).to_vec();
         Ok(Self {
             target_port,
@@ -273,6 +289,10 @@ pub struct ConnectPktResp {
     pub syn_response: AaSynDataResp,
     /// Connection result (HRESULT-style `i64` on the wire as 8 little-endian bytes).
     pub result: i64,
+}
+
+impl ConnectPktResp {
+    const BODY_SIZE: usize = AaSynDataResp::FIXED_PART_SIZE + 8 /* result */;
 }
 
 impl Encode for ConnectPktResp {
@@ -294,7 +314,7 @@ impl Encode for ConnectPktResp {
     }
 
     fn size(&self) -> usize {
-        UdpPacketHeader::FIXED_PART_SIZE + AaSynDataResp::FIXED_PART_SIZE + 8 /* result */
+        UdpPacketHeader::FIXED_PART_SIZE + Self::BODY_SIZE
     }
 }
 
@@ -306,6 +326,13 @@ impl Decode<'_> for ConnectPktResp {
                 "CONNECT_PKT_RESP::pkt_id",
                 "pkt_id",
                 format!("0x{:x}", hdr.pkt_id),
+            ));
+        }
+        if usize::from(hdr.pkt_len) != Self::BODY_SIZE {
+            return Err(unsupported_value_err(
+                "CONNECT_PKT_RESP::pkt_len",
+                "pkt_len",
+                format!("{}", hdr.pkt_len),
             ));
         }
         let syn_response = AaSynDataResp::decode(src)?;
@@ -371,12 +398,16 @@ pub struct DiscPkt {
     pub reason: i64,
 }
 
+impl DiscPkt {
+    const BODY_SIZE: usize = 8 /* discReason */;
+}
+
 impl Encode for DiscPkt {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         let hdr = UdpPacketHeader {
             pkt_id: UdpPktType::Disconnect.as_u16(),
-            pkt_len: cast_int!("disconnect pkt body length", 8 /* discReason */)?,
+            pkt_len: cast_int!("disconnect pkt body length", Self::BODY_SIZE)?,
         };
         hdr.encode(dst)?;
         dst.write_i64(self.reason);
@@ -388,7 +419,7 @@ impl Encode for DiscPkt {
     }
 
     fn size(&self) -> usize {
-        UdpPacketHeader::FIXED_PART_SIZE + 8 /* discReason */
+        UdpPacketHeader::FIXED_PART_SIZE + Self::BODY_SIZE
     }
 }
 
@@ -402,7 +433,14 @@ impl Decode<'_> for DiscPkt {
                 format!("0x{:x}", hdr.pkt_id),
             ));
         }
-        ensure_size!(in: src, size: 8);
+        if usize::from(hdr.pkt_len) != Self::BODY_SIZE {
+            return Err(unsupported_value_err(
+                "DISC_PKT::pkt_len",
+                "pkt_len",
+                format!("{}", hdr.pkt_len),
+            ));
+        }
+        ensure_size!(in: src, size: Self::BODY_SIZE);
         Ok(Self { reason: src.read_i64() })
     }
 }
@@ -481,29 +519,24 @@ impl Decode<'_> for UdpCorrelationInfo {
     }
 }
 
-/// Split a connect request into fragment packets ([2.2.11.10]) when needed for MTU.
+/// Split a complete `CONNECT_PKT` into fragment packets ([2.2.11.10] / [3.8.3]).
+///
+/// [MS-TSGU] 3.8.3 sets `reqLen` to `hdr.pktLen + sizeof(UDP_PACKET_HEADER)` and splits that
+/// full request buffer into `MAX_CONNECT_REQ_FRAGMENT_SIZE` (1000-byte) payloads.
 ///
 /// [2.2.11.10]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
-pub fn fragment_connect_pkt(
-    connect: &ConnectPkt,
-    max_fragment_payload: usize,
-) -> ironrdp_core::EncodeResult<Vec<Vec<u8>>> {
-    if max_fragment_payload == 0 {
-        return Err(other_err("udp fragment", "max fragment payload must be non-zero"));
-    }
-
+/// [3.8.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
+pub fn fragment_connect_pkt(connect: &ConnectPkt) -> ironrdp_core::EncodeResult<Vec<Vec<u8>>> {
     let mut full = vec![0u8; connect.size()];
     {
         let mut cur = WriteCursor::new(&mut full);
         connect.encode(&mut cur)?;
     }
-    // Fragments carry CONNECT_PKT bytes after the UDP header of the full packet.
-    let payload = &full[UdpPacketHeader::FIXED_PART_SIZE..];
-    let total = payload.len().div_ceil(max_fragment_payload);
+    let total = full.len().div_ceil(MAX_CONNECT_REQ_FRAGMENT_SIZE);
     let total_u16: u16 = cast_int!("udp fragment count", total)?;
 
     let mut out = Vec::with_capacity(total);
-    for (idx, chunk) in payload.chunks(max_fragment_payload).enumerate() {
+    for (idx, chunk) in full.chunks(MAX_CONNECT_REQ_FRAGMENT_SIZE).enumerate() {
         let frag_id: u16 = cast_int!("udp fragment id", idx)?;
         let chunk_len: u16 = cast_int!("udp fragment length", chunk.len())?;
         let body_len = 2 /* usFragmentID */ + 2 /* usNoOfFragments */ + 2 /* cbFragmentLength */ + chunk.len();

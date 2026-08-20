@@ -10,8 +10,8 @@ mod proto;
 mod udp;
 
 pub use self::udp::{
-    AaSynData, AaSynDataResp, ConnectPkt, ConnectPktResp, DataPkt, DiscPkt, GwUdpOffer, UdpCorrelationInfo,
-    UdpPacketHeader, UdpPktType, encode_connect_request, fragment_connect_pkt,
+    AaSynData, AaSynDataResp, ConnectPkt, ConnectPktResp, DataPkt, DiscPkt, GwUdpOffer, MAX_CONNECT_REQ_FRAGMENT_SIZE,
+    UdpCorrelationInfo, UdpPacketHeader, UdpPktType, encode_connect_request, fragment_connect_pkt,
 };
 
 use core::fmt;
