@@ -41,6 +41,9 @@ pub struct Flow {
 pub struct Capture {
     /// Direct TCP RDP flow selected from the pcapng input.
     pub flow: Flow,
+    /// Other TLS flows to TCP port 443, tried when the primary flow is not an
+    /// RD Gateway WebSocket tunnel (a KDC-proxy connection shares that port).
+    pub gateway_alternates: Vec<Flow>,
     /// NSS-compatible TLS key-log entries embedded in the capture.
     pub tls_key_log: TlsKeyLog,
 }
@@ -152,8 +155,10 @@ pub fn read_capture(path: &Path) -> Result<Capture, ReplayError> {
         return Err(ReplayError::UnsupportedTransport);
     }
 
+    let (flow, gateway_alternates) = assemble_flow(segments)?;
     Ok(Capture {
-        flow: assemble_flow(segments)?,
+        flow,
+        gateway_alternates,
         tls_key_log: TlsKeyLog::new(tls_key_log),
     })
 }
@@ -243,10 +248,10 @@ fn parse_tcp_packet(packet: usize, bytes: &[u8]) -> Option<Segment> {
     })
 }
 
-fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
+fn assemble_flow(mut segments: Vec<Segment>) -> Result<(Flow, Vec<Flow>), ReplayError> {
     segments.retain(|segment| !segment.data.is_empty() || segment.syn || segment.fin || segment.rst);
     let mut missing_tcp_flow = false;
-    let mut gateway = None;
+    let mut gateways = Vec::new();
     for (start, syn) in segments
         .iter()
         .enumerate()
@@ -307,15 +312,18 @@ fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
             continue;
         };
         if has_x224_connection_initiation(&client_stream, &server_stream) {
-            return Ok(Flow {
-                client,
-                server,
-                client_stream,
-                server_stream,
-            });
+            return Ok((
+                Flow {
+                    client,
+                    server,
+                    client_stream,
+                    server_stream,
+                },
+                Vec::new(),
+            ));
         }
-        if server.port == 443 && gateway.is_none() {
-            gateway = Some(Flow {
+        if server.port == 443 {
+            gateways.push(Flow {
                 client,
                 server,
                 client_stream,
@@ -324,8 +332,9 @@ fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
         }
     }
 
-    if let Some(flow) = gateway {
-        return Ok(flow);
+    let mut gateways = gateways.into_iter();
+    if let Some(flow) = gateways.next() {
+        return Ok((flow, gateways.collect()));
     }
 
     Err(if missing_tcp_flow {
@@ -536,7 +545,7 @@ mod tests {
     fn selects_a_gateway_port_flow_without_x224() {
         let client = endpoint(1);
         let server = endpoint(443);
-        let flow = assemble_flow(vec![
+        let (flow, alternates) = assemble_flow(vec![
             segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
             segment_between(client.clone(), server.clone(), 101, 2, false, true, b"CLIENT"),
             segment_between(server, client, 200, 3, false, true, b"SERVER"),
@@ -544,6 +553,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(flow.server.port, 443);
+        assert!(alternates.is_empty());
         assert_eq!(flatten(&flow.client_stream), b"CLIENT");
         assert_eq!(flatten(&flow.server_stream), b"SERVER");
     }
@@ -554,7 +564,7 @@ mod tests {
         let gateway_server = endpoint(443);
         let rdp_client = endpoint(3);
         let rdp_server = endpoint(4);
-        let flow = assemble_flow(vec![
+        let (flow, alternates) = assemble_flow(vec![
             segment_between(gateway_client.clone(), gateway_server.clone(), 100, 1, true, false, &[]),
             segment_between(
                 gateway_client.clone(),
@@ -582,6 +592,38 @@ mod tests {
 
         assert_eq!(flow.client.port, 3);
         assert_eq!(flow.server.port, 4);
+        assert!(alternates.is_empty());
+    }
+
+    #[test]
+    fn keeps_later_gateway_port_flows_as_alternates() {
+        let first_client = endpoint(1);
+        let first_server = endpoint(443);
+        let second_client = endpoint(2);
+        let second_server = endpoint(443);
+        let (flow, alternates) = assemble_flow(vec![
+            segment_between(first_client.clone(), first_server.clone(), 100, 1, true, false, &[]),
+            segment_between(first_client.clone(), first_server.clone(), 101, 2, false, true, b"KDC"),
+            segment_between(first_server, first_client, 200, 3, false, true, b"KDC"),
+            segment_between(second_client.clone(), second_server.clone(), 300, 4, true, false, &[]),
+            segment_between(
+                second_client.clone(),
+                second_server.clone(),
+                301,
+                5,
+                false,
+                true,
+                b"RDG",
+            ),
+            segment_between(second_server, second_client, 400, 6, false, true, b"RDG"),
+        ])
+        .unwrap();
+
+        assert_eq!(flow.client.port, 1);
+        assert_eq!(flatten(&flow.client_stream), b"KDC");
+        assert_eq!(alternates.len(), 1);
+        assert_eq!(alternates[0].client.port, 2);
+        assert_eq!(flatten(&alternates[0].client_stream), b"RDG");
     }
 
     #[test]
@@ -590,7 +632,7 @@ mod tests {
         let first_server = endpoint(2);
         let second_client = endpoint(3);
         let second_server = endpoint(4);
-        let flow = assemble_flow(vec![
+        let (flow, _) = assemble_flow(vec![
             segment_between(first_client.clone(), first_server.clone(), 100, 1, true, false, &[]),
             segment_between(first_client.clone(), first_server.clone(), 101, 2, false, true, b"bad"),
             segment_between(first_client, first_server, 101, 3, false, true, b"XX"),
@@ -639,7 +681,7 @@ mod tests {
     fn separates_connections_that_reuse_a_tcp_tuple() {
         let client = endpoint(1);
         let server = endpoint(2);
-        let flow = assemble_flow(vec![
+        let (flow, _) = assemble_flow(vec![
             segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
             segment_between(client.clone(), server.clone(), 101, 2, false, true, b"old"),
             segment_between(server.clone(), client.clone(), 300, 3, false, true, b"old"),
@@ -687,7 +729,7 @@ mod tests {
             &[],
         );
         server_fin.fin = true;
-        let flow = assemble_flow(vec![
+        let (flow, _) = assemble_flow(vec![
             segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
             segment_between(client.clone(), server.clone(), 101, 2, false, true, &request),
             client_fin,

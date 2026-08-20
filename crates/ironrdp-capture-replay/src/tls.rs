@@ -661,6 +661,7 @@ mod tests {
                 client_stream: vec![(1, client_records.into_iter().flat_map(|(_, record)| record).collect())],
                 server_stream: vec![(4, server_records.into_iter().flat_map(|(_, record)| record).collect())],
             },
+            gateway_alternates: Vec::new(),
             tls_key_log: TlsKeyLog::new(key_log),
         };
 
@@ -693,6 +694,7 @@ mod tests {
                 client_stream: vec![(1, x224_connection(0xe0))],
                 server_stream: vec![(2, x224_connection(0xd0))],
             },
+            gateway_alternates: Vec::new(),
             tls_key_log: TlsKeyLog::new(String::new()),
         };
 

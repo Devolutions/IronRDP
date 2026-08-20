@@ -77,7 +77,7 @@ fn websocket_payloads(stream: &PacketStream, masked: bool) -> Result<PacketStrea
     let mut message_packet = 0usize;
     while offset < bytes.len() {
         let Some(frame) = parse_websocket_frame(&bytes[offset..], masked) else {
-            break;
+            return Err(ReplayError::GatewayFraming("truncated websocket frame".to_owned()));
         };
         let packet_index = packet_offsets.partition_point(|(chunk_offset, _)| *chunk_offset <= offset) - 1;
         offset += frame.encoded_len;
@@ -101,6 +101,9 @@ fn websocket_payloads(stream: &PacketStream, masked: bool) -> Result<PacketStrea
         }
     }
 
+    if !message.is_empty() {
+        return Err(ReplayError::GatewayFraming("truncated websocket message".to_owned()));
+    }
     Ok(frames)
 }
 
@@ -179,7 +182,8 @@ fn data_packets(frames: &PacketStream) -> Result<PacketStream, ReplayError> {
     let mut pending = Vec::new();
     for (packet, frame) in frames {
         pending.extend_from_slice(frame);
-        while let Some(header) = pending.get(..8) {
+        let mut offset = 0;
+        while let Some(header) = pending.get(offset..offset + 8) {
             let length = usize::try_from(u32::from_le_bytes(
                 header[4..8].try_into().expect("header length slice"),
             ))
@@ -187,15 +191,13 @@ fn data_packets(frames: &PacketStream) -> Result<PacketStream, ReplayError> {
             if !(8..=MAX_WEBSOCKET_PAYLOAD).contains(&length) {
                 return Err(ReplayError::GatewayFraming("packet length is invalid".to_owned()));
             }
-            if pending.len() < length {
+            if pending.len() - offset < length {
                 break;
             }
-            let packet_bytes = pending[..length].to_vec();
-            pending.drain(..length);
-
+            let packet_bytes = &pending[offset..offset + length];
             let packet_type = u16::from_le_bytes(packet_bytes[..2].try_into().expect("packet type slice"));
             if packet_type == 0x0A {
-                // HTTP_DATA_PACKET ([MS-TSGU] 2.2.10.10).
+                // HTTP_DATA_PACKET ([MS-TSGU] 2.2.10.6).
                 let data = packet_bytes
                     .get(DATA_PACKET_HEADER..)
                     .ok_or_else(|| ReplayError::GatewayFraming("truncated data packet".to_owned()))?;
@@ -209,9 +211,14 @@ fn data_packets(frames: &PacketStream) -> Result<PacketStream, ReplayError> {
                 }
                 output.push((*packet, data.to_vec()));
             }
+            offset += length;
         }
+        pending.drain(..offset);
     }
 
+    if !pending.is_empty() {
+        return Err(ReplayError::GatewayFraming("truncated gateway packet".to_owned()));
+    }
     if output.is_empty() {
         return Err(ReplayError::MissingRdpState);
     }

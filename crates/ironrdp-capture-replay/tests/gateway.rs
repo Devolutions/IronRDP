@@ -187,5 +187,46 @@ fn rejects_truncated_data_packet() {
     packet.truncate(packet.len() - 1);
     let plaintext = tunneled_capture(client_frame(&packet), server_frame(&tsgu_data_packet(&[1])));
 
-    assert!(extract_tunneled_rdp(&plaintext).is_err());
+    assert!(matches!(
+        extract_tunneled_rdp(&plaintext),
+        Err(ReplayError::GatewayFraming(_))
+    ));
+}
+
+#[test]
+fn rejects_trailing_truncated_websocket_bytes() {
+    let rdp = [1, 2, 3];
+    let mut body = client_frame(&tsgu_data_packet(&rdp));
+    body.push(0x82);
+    let plaintext = tunneled_capture(body, server_frame(&tsgu_data_packet(&rdp)));
+
+    assert!(matches!(
+        extract_tunneled_rdp(&plaintext),
+        Err(ReplayError::GatewayFraming(_))
+    ));
+}
+
+#[test]
+fn rejects_an_unfinished_websocket_message() {
+    let packet = tsgu_data_packet(&[1, 2, 3]);
+    let body = websocket_frame(false, 0x2, &packet, Some([9, 9, 9, 9]));
+    let plaintext = tunneled_capture(body, server_frame(&tsgu_data_packet(&[1])));
+
+    assert!(matches!(
+        extract_tunneled_rdp(&plaintext),
+        Err(ReplayError::GatewayFraming(_))
+    ));
+}
+
+#[test]
+fn rejects_a_truncated_packet_after_a_valid_data_packet() {
+    let rdp = [1, 2, 3];
+    let mut payload = tsgu_data_packet(&rdp);
+    payload.extend(&tsgu_data_packet(&[4, 5, 6])[..8]);
+    let plaintext = tunneled_capture(client_frame(&payload), server_frame(&tsgu_data_packet(&rdp)));
+
+    assert!(matches!(
+        extract_tunneled_rdp(&plaintext),
+        Err(ReplayError::GatewayFraming(_))
+    ));
 }
