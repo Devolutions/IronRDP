@@ -66,5 +66,7 @@ fn gateway_code_label_known_and_unknown() {
     assert_eq!(gateway_code_label(0), Some("ERROR_SUCCESS"));
     assert_eq!(gateway_code_label(0x8007_59DA), Some("E_PROXY_RAP_ACCESSDENIED"));
     assert_eq!(gateway_code_label(0x0000_59DA), Some("E_PROXY_RAP_ACCESSDENIED"));
+    assert_eq!(gateway_code_label(0x0000_59DD), Some("E_PROXY_TS_CONNECTFAILED"));
+    assert_eq!(gateway_code_label(0x8007_59DD), Some("E_PROXY_TS_CONNECTFAILED"));
     assert_eq!(gateway_code_label(0xDEAD_BEEF), None);
 }

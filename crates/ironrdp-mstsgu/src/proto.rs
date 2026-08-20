@@ -31,6 +31,7 @@ pub(crate) enum PktTy {
     ChannelCreate = 0x08,
     ChannelResp = 0x09,
     ChannelClose = 0x10,
+    ChannelCloseResponse = 0x11,
     Data = 0x0A,
     ServiceMessage = 0x0B,
     ReauthMessage = 0x0C,
@@ -66,6 +67,7 @@ impl TryFrom<u16> for PktTy {
             0x0C => PktTy::ReauthMessage,
             0x0D => PktTy::Keepalive,
             0x10 => PktTy::ChannelClose,
+            0x11 => PktTy::ChannelCloseResponse,
             _ => return Err(()),
         };
         Ok(mapped)
@@ -706,20 +708,24 @@ pub struct ChannelClosePkt {
     pub status_code: u32,
 }
 
-impl Encode for ChannelClosePkt {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+impl ChannelClosePkt {
+    pub(crate) fn encode_as(&self, ty: PktTy, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         let hdr = PktHdr {
-            ty: PktTy::ChannelClose,
+            ty,
             length: cast_int!("packet length", self.size())?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
-
         dst.write_u32(self.status_code);
-
         Ok(())
+    }
+}
+
+impl Encode for ChannelClosePkt {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        self.encode_as(PktTy::ChannelClose, dst)
     }
 
     fn name(&self) -> &'static str {
@@ -753,7 +759,7 @@ pub fn gateway_code_label(code: u32) -> Option<&'static str> {
         0x0000_59D8 | 0x8007_59D8 => "E_PROXY_INTERNALERROR",
         0x0000_59DA | 0x8007_59DA => "E_PROXY_RAP_ACCESSDENIED",
         0x0000_59DB | 0x8007_59DB => "E_PROXY_NAP_ACCESSDENIED",
-        0x0000_59DD => "E_PROXY_TS_CONNECTFAILED",
+        0x0000_59DD | 0x8007_59DD => "E_PROXY_TS_CONNECTFAILED",
         0x0000_59DF | 0x8007_59DF => "E_PROXY_ALREADYDISCONNECTED",
         0x0000_59E6 => "E_PROXY_MAXCONNECTIONSREACHED",
         0x0000_59E8 => "E_PROXY_NOTSUPPORTED",

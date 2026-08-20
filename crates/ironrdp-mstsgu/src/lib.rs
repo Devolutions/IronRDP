@@ -265,11 +265,24 @@ impl GwClient {
                                     msg.reauth_tunnel_context
                                 );
                             },
-                            PktTy::ChannelClose => {
+                            PktTy::ChannelClose | PktTy::ChannelCloseResponse => {
                                 let close = ChannelClosePkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
                                 match gateway_code_label(close.status_code) {
                                     Some(label) => warn!("RD Gateway closed the channel ({label})"),
                                     None => warn!("RD Gateway closed the channel (0x{:08x})", close.status_code),
+                                }
+                                if hdr.ty == PktTy::ChannelClose {
+                                    let pos = {
+                                        let mut wcur = WriteCursor::new(&mut wsbuf);
+                                        ChannelClosePkt { status_code: 0 }
+                                            .encode_as(PktTy::ChannelCloseResponse, &mut wcur)
+                                            .map_err(|e| custom_err!("PktEncode", e))?;
+                                        wcur.pos()
+                                    };
+                                    gw.ws_sink
+                                        .send(Message::Binary(Bytes::copy_from_slice(&wsbuf[..pos])))
+                                        .await
+                                        .map_err(|e| custom_err!("ws send", e))?;
                                 }
                                 return Ok(());
                             },
