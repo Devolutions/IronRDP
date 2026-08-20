@@ -4,7 +4,8 @@
 )]
 
 use ironrdp_capture_replay::{
-    Plaintext, ReplayError, RpchChannel, extract_rpch_tunneled_rdp, pair_rpch_channels, rpch_channel,
+    Plaintext, ReplayError, RpchChannel, extract_rpch_from_flows, extract_rpch_tunneled_rdp, pair_rpch_channels,
+    rpch_channel,
 };
 
 const COMMON_HEADER: usize = 16;
@@ -42,9 +43,9 @@ fn request_pdu(call_id: u32, opnum: u16, stub: &[u8]) -> Vec<u8> {
     request_pdu_with_flags(call_id, opnum, stub, PFC_FIRST_FRAG | PFC_LAST_FRAG)
 }
 
-fn response_pdu(call_id: u32, stub: &[u8]) -> Vec<u8> {
+fn response_pdu_with_flags(call_id: u32, stub: &[u8], flags: u8) -> Vec<u8> {
     let fragment_length = RESPONSE_HEADER + stub.len();
-    let mut pdu = common_header(PTYPE_RESPONSE, PFC_FIRST_FRAG | PFC_LAST_FRAG, call_id, fragment_length);
+    let mut pdu = common_header(PTYPE_RESPONSE, flags, call_id, fragment_length);
     pdu.extend_from_slice(&u32::try_from(stub.len()).expect("stub length fits u32").to_le_bytes());
     pdu.extend_from_slice(&0u16.to_le_bytes());
     pdu.extend_from_slice(&[0, 0]);
@@ -52,26 +53,35 @@ fn response_pdu(call_id: u32, stub: &[u8]) -> Vec<u8> {
     pdu
 }
 
-fn send_to_server_stub(buffers: &[&[u8]]) -> Vec<u8> {
+fn response_pdu(call_id: u32, stub: &[u8]) -> Vec<u8> {
+    response_pdu_with_flags(call_id, stub, PFC_FIRST_FRAG)
+}
+
+fn encode_u32(value: usize, big_endian: bool) -> [u8; 4] {
+    let value = u32::try_from(value).expect("length fits u32");
+    if big_endian {
+        value.to_be_bytes()
+    } else {
+        value.to_le_bytes()
+    }
+}
+
+fn send_to_server_stub_with_endian(buffers: &[&[u8]], big_endian: bool) -> Vec<u8> {
     let mut stub = vec![0u8; 20];
     let total: usize = buffers.iter().map(|buffer| buffer.len()).sum::<usize>() + 4 * buffers.len();
-    stub.extend_from_slice(&u32::try_from(total).expect("total length fits u32").to_le_bytes());
-    stub.extend_from_slice(
-        &u32::try_from(buffers.len())
-            .expect("buffer count fits u32")
-            .to_le_bytes(),
-    );
+    stub.extend_from_slice(&encode_u32(total, big_endian));
+    stub.extend_from_slice(&encode_u32(buffers.len(), big_endian));
     for buffer in buffers {
-        stub.extend_from_slice(
-            &u32::try_from(buffer.len())
-                .expect("buffer length fits u32")
-                .to_le_bytes(),
-        );
+        stub.extend_from_slice(&encode_u32(buffer.len(), big_endian));
     }
     for buffer in buffers {
         stub.extend_from_slice(buffer);
     }
     stub
+}
+
+fn send_to_server_stub(buffers: &[&[u8]]) -> Vec<u8> {
+    send_to_server_stub_with_endian(buffers, true)
 }
 
 fn in_channel(body: Vec<u8>) -> Plaintext {
@@ -149,8 +159,8 @@ fn extracts_send_to_server_and_receive_pipe_payloads() {
 
     let inner = extract_rpch_tunneled_rdp(&input, &output).unwrap();
 
-    assert_eq!(inner.client, vec![(7, rdp.to_vec())]);
-    assert_eq!(inner.server, vec![(6, cc.to_vec())]);
+    assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+    assert_eq!(inner.server, vec![(2, cc.to_vec())]);
 }
 
 #[test]
@@ -167,8 +177,8 @@ fn skips_non_data_requests_and_control_responses() {
 
     let inner = extract_rpch_tunneled_rdp(&in_channel(client_body), &out_channel(server_body)).unwrap();
 
-    assert_eq!(inner.client, vec![(2, rdp.to_vec())]);
-    assert_eq!(inner.server, vec![(6, cc.to_vec()), (6, data.to_vec())]);
+    assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+    assert_eq!(inner.server, vec![(2, cc.to_vec()), (2, data.to_vec())]);
 }
 
 #[test]
@@ -192,7 +202,7 @@ fn strips_authentication_round_trips() {
     let inner = extract_rpch_tunneled_rdp(&input, &output).unwrap();
 
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
-    assert_eq!(inner.server, vec![(1, vec![0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0])]);
+    assert_eq!(inner.server, vec![(2, vec![0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0])]);
 }
 
 #[test]
@@ -211,7 +221,7 @@ fn reassembles_fragmented_send_to_server_stubs() {
 
     let inner = extract_rpch_tunneled_rdp(&in_channel(body), &out_channel(response_pdu(6, &cc))).unwrap();
 
-    assert_eq!(inner.client, vec![(4, rdp.to_vec())]);
+    assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
 }
 
 #[test]
@@ -223,4 +233,89 @@ fn rejects_a_tunnel_without_rdp_payloads() {
         extract_rpch_tunneled_rdp(&input, &output),
         Err(ReplayError::MissingRdpState)
     ));
+}
+
+#[test]
+fn preserves_source_packet_numbers() {
+    let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
+    let cc = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0];
+    let mut client = b"RPC_IN_DATA /rpc/rpcproxy.dll?x HTTP/1.1\r\nContent-Length: 1073741824\r\n\r\n".to_vec();
+    client.extend(request_pdu(7, SEND_TO_SERVER_OPNUM, &send_to_server_stub(&[&rdp])));
+    let mut server = b"HTTP/1.1 200 OK\r\n\r\n".to_vec();
+    server.extend(response_pdu(6, &cc));
+    let input = Plaintext {
+        client: vec![(10, client)],
+        server: Vec::new(),
+    };
+    let output = Plaintext {
+        client: vec![(11, b"RPC_OUT_DATA /rpc/rpcproxy.dll?x HTTP/1.1\r\n\r\n".to_vec())],
+        server: vec![(20, server)],
+    };
+
+    let inner = extract_rpch_tunneled_rdp(&input, &output).unwrap();
+
+    assert_eq!(inner.client, vec![(10, rdp.to_vec())]);
+    assert_eq!(inner.server, vec![(20, cc.to_vec())]);
+}
+
+#[test]
+fn accepts_little_endian_send_to_server_lengths() {
+    let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
+    let cc = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0];
+    let input = in_channel(request_pdu(
+        7,
+        SEND_TO_SERVER_OPNUM,
+        &send_to_server_stub_with_endian(&[&rdp], false),
+    ));
+
+    let inner = extract_rpch_tunneled_rdp(&input, &out_channel(response_pdu(6, &cc))).unwrap();
+
+    assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+}
+
+#[test]
+fn extracts_receive_pipe_without_last_frag() {
+    let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
+    let cc = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0];
+    let data = [0x03, 0x00, 0x00, 0x20, 0x02, 0xf0];
+    let mut server_body = response_pdu_with_flags(6, &cc, PFC_FIRST_FRAG);
+    server_body.extend(response_pdu_with_flags(6, &data, 0));
+
+    let inner = extract_rpch_tunneled_rdp(
+        &in_channel(request_pdu(2, SEND_TO_SERVER_OPNUM, &send_to_server_stub(&[&rdp]))),
+        &out_channel(server_body),
+    )
+    .unwrap();
+
+    assert_eq!(inner.server, vec![(2, cc.to_vec()), (2, data.to_vec())]);
+}
+
+#[test]
+fn skips_receive_pipe_final_return_code() {
+    let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
+    let cc = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0];
+    let mut server_body = response_pdu(6, &cc);
+    server_body.extend(response_pdu_with_flags(6, &0u32.to_le_bytes(), PFC_LAST_FRAG));
+
+    let inner = extract_rpch_tunneled_rdp(
+        &in_channel(request_pdu(2, SEND_TO_SERVER_OPNUM, &send_to_server_stub(&[&rdp]))),
+        &out_channel(server_body),
+    )
+    .unwrap();
+
+    assert_eq!(inner.server, vec![(2, cc.to_vec())]);
+}
+
+#[test]
+fn pairs_a_later_in_channel_when_the_first_has_no_rdp() {
+    let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
+    let cc = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0];
+    let dead_in = in_channel(request_pdu(1, 1, &[0u8; 32]));
+    let live_in = in_channel(request_pdu(2, SEND_TO_SERVER_OPNUM, &send_to_server_stub(&[&rdp])));
+    let output = out_channel(response_pdu(6, &cc));
+
+    let inner = extract_rpch_from_flows(&[dead_in, live_in, output]).unwrap().unwrap();
+
+    assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+    assert_eq!(inner.server, vec![(2, cc.to_vec())]);
 }

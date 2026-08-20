@@ -15,7 +15,9 @@ mod transport;
 
 pub use error::ReplayError;
 pub use gateway::{extract_tunneled_rdp, is_gateway_tunnel};
-pub use gateway_rpch::{RpchChannel, extract_rpch_tunneled_rdp, pair_rpch_channels, rpch_channel};
+pub use gateway_rpch::{
+    RpchChannel, extract_rpch_from_flows, extract_rpch_tunneled_rdp, pair_rpch_channels, rpch_channel,
+};
 pub use negotiation::{NegotiatedState, StaticChannel, recover_negotiated_state};
 pub use output::{ExportError, ExportOptions, ExportSummary, export_capture};
 pub use routing::{
