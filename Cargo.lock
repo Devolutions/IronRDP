@@ -2931,6 +2931,7 @@ dependencies = [
  "ironrdp-error 0.2.0",
  "ironrdp-tls",
  "log",
+ "sspi",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",

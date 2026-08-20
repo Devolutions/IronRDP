@@ -4,6 +4,7 @@
 #[macro_use]
 mod macros;
 
+mod http_auth;
 mod proto;
 
 use core::fmt;
@@ -13,10 +14,9 @@ use core::task::Poll;
 use core::time::Duration;
 use std::io;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{FutureExt as _, SinkExt as _, StreamExt as _};
+use http_body_util::BodyExt as _;
 use hyper::body::Bytes;
 use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor};
 use ironrdp_tls::TlsStream;
@@ -30,6 +30,7 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::{Message, http};
 use tokio_util::sync::PollSender;
 
+use self::http_auth::{AuthStep, GatewayHttpAuth, basic_authorization, www_authenticate_values};
 use self::proto::{
     ChannelPkt, ChannelResp, DataPkt, HandshakeReqPkt, HandshakeRespPkt, HttpCapsTy, KeepalivePkt, PktHdr, PktTy,
     TunnelAuthPkt, TunnelAuthRespPkt, TunnelReqPkt, TunnelRespPkt,
@@ -153,19 +154,8 @@ impl GwClient {
             .await
             .map_err(|e| custom_err!("TLS connect", e))?;
 
-        let auth_val: String = STANDARD.encode(format!("{}:{}", target.gw_user, target.gw_pass));
-        let req = http::Request::builder()
-            .method("RDG_OUT_DATA")
-            .header(hyper::header::HOST, gw_host)
-            .header("Rdg-Connection-Id", format!("{{{}}}", uuid::Uuid::new_v4()))
-            .uri("/remoteDesktopGateway/")
-            .header(hyper::header::AUTHORIZATION, format!("Basic {auth_val}"))
-            .header(hyper::header::CONNECTION, "Upgrade")
-            .header(hyper::header::UPGRADE, "websocket")
-            .header(hyper::header::SEC_WEBSOCKET_VERSION, "13")
-            .header(hyper::header::SEC_WEBSOCKET_KEY, generate_key())
-            .body(http_body_util::Empty::<Bytes>::new())
-            .map_err(|e| custom_err!("failed to build request", e))?;
+        let connection_id = format!("{{{}}}", uuid::Uuid::new_v4());
+        let spn = format!("HTTP/{gw_host}");
 
         let stream = hyper_util::rt::tokio::TokioIo::new(stream);
         let (mut sender, mut conn) = hyper::client::conn::http1::handshake(stream)
@@ -180,14 +170,7 @@ impl GwClient {
             }
             conn.into_parts()
         });
-        let resp = sender
-            .send_request(req)
-            .await
-            .map_err(|e| custom_err!("WS Upgrade Send error", e))?;
-
-        if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-            return Err(Error::new("WS Upgrade", GwErrorKind::Connect));
-        }
+        websocket_upgrade_with_auth(&mut sender, gw_host, &connection_id, target, &spn).await?;
 
         let _ = tx.send(()); // TODO: Not needed since it doesnt keep alive conn?
         let stream = jh.await.map_err(|e| custom_err!("WS join", e))?.io.into_inner();
@@ -291,6 +274,112 @@ impl GwClient {
             tx: PollSender::new(out_tx),
         })
     }
+}
+
+/// Challenge-first WebSocket upgrade: omit Authorization until 401, then Negotiate/NTLM/Basic.
+async fn websocket_upgrade_with_auth(
+    sender: &mut hyper::client::conn::http1::SendRequest<http_body_util::Empty<Bytes>>,
+    gw_host: &str,
+    connection_id: &str,
+    target: &GwConnectTarget,
+    spn: &str,
+) -> Result<(), Error> {
+    let mut http_auth: Option<GatewayHttpAuth> = None;
+    let mut authorization: Option<String> = None;
+    let mut use_basic = false;
+    const MAX_AUTH_ROUNDS: usize = 8;
+
+    for _ in 0..MAX_AUTH_ROUNDS {
+        let req = build_ws_upgrade_request(
+            gw_host,
+            connection_id,
+            if use_basic {
+                Some(basic_authorization(&target.gw_user, &target.gw_pass))
+            } else {
+                authorization.clone()
+            }
+            .as_deref(),
+        )?;
+
+        let resp = sender
+            .send_request(req)
+            .await
+            .map_err(|e| custom_err!("WS Upgrade Send error", e))?;
+
+        if resp.status() == http::StatusCode::SWITCHING_PROTOCOLS {
+            return Ok(());
+        }
+
+        if resp.status() != http::StatusCode::UNAUTHORIZED {
+            return Err(Error::new("WS Upgrade", GwErrorKind::Connect));
+        }
+
+        if use_basic {
+            return Err(Error::new("websocket upgrade basic auth", GwErrorKind::Connect));
+        }
+
+        let challenges: Vec<String> = www_authenticate_values(resp.headers())
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        resp.into_body()
+            .collect()
+            .await
+            .map_err(|e| custom_err!("drain websocket upgrade auth body", e))?;
+
+        let challenge_refs: Vec<&str> = challenges.iter().map(String::as_str).collect();
+        let step = if let Some(auth) = http_auth.as_mut() {
+            auth.step_www_authenticate(challenge_refs)?
+        } else {
+            let (auth, step) = GatewayHttpAuth::from_challenges(
+                &target.gw_user,
+                &target.gw_pass,
+                Some(spn.to_owned()),
+                &challenge_refs,
+            )?;
+            http_auth = Some(auth);
+            step
+        };
+
+        match step {
+            AuthStep::Continue(next) => authorization = Some(next),
+            AuthStep::TryBasic => use_basic = true,
+            AuthStep::Complete => {
+                return Err(Error::new(
+                    "websocket upgrade auth complete without switching protocols",
+                    GwErrorKind::Connect,
+                ));
+            }
+        }
+    }
+
+    Err(Error::new(
+        "websocket upgrade auth rounds exceeded",
+        GwErrorKind::Connect,
+    ))
+}
+
+fn build_ws_upgrade_request(
+    gw_host: &str,
+    connection_id: &str,
+    authorization: Option<&str>,
+) -> Result<http::Request<http_body_util::Empty<Bytes>>, Error> {
+    let mut req = http::Request::builder()
+        .method("RDG_OUT_DATA")
+        .header(hyper::header::HOST, gw_host)
+        .header("Rdg-Connection-Id", connection_id)
+        .uri("/remoteDesktopGateway/")
+        .header(hyper::header::CONNECTION, "Upgrade")
+        .header(hyper::header::UPGRADE, "websocket")
+        .header(hyper::header::SEC_WEBSOCKET_VERSION, "13")
+        .header(hyper::header::SEC_WEBSOCKET_KEY, generate_key());
+
+    if let Some(authorization) = authorization {
+        req = req.header(hyper::header::AUTHORIZATION, authorization);
+    }
+
+    req.body(http_body_util::Empty::<Bytes>::new())
+        .map_err(|e| custom_err!("failed to build request", e))
 }
 
 impl GwConn {
