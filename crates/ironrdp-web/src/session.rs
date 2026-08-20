@@ -1448,7 +1448,7 @@ fn build_config(
         enable_tls: true,
         enable_credssp: true,
         enable_standard_rdp_security: false,
-        keyboard_type: ironrdp::pdu::gcc::KeyboardType::IbmEnhanced,
+        keyboard_type: ironrdp::pdu::gcc::KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
         keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
         keyboard_functional_keys_count: 12,
@@ -1866,7 +1866,7 @@ where
                 debug_assert!(connector.next_pdu_hint().is_some());
 
                 buf.clear();
-                let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
+                let written = connector.step(x224_connection_response.as_bytes(), None, &mut buf)?;
                 debug_assert!(written.is_nothing());
 
                 let should_upgrade = ironrdp_futures::skip_connect_begin(connector);

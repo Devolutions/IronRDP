@@ -343,11 +343,9 @@ pub enum Transport {
 
     /// Connect via an RDS gateway (MS-TSGU / MSTSGU).
     ///
-    /// The target RDP server is derived from [`Config::destination`]; the gateway
-    /// only needs its own endpoint and credentials.
-    ///
-    /// NOTE: the destination port is currently not forwarded to the gateway.
-    /// If `ironrdp-mstsgu` hardcodes port 3389, open a follow-up issue.
+    /// The target RDP server host and port are taken from [`Config::destination`] and
+    /// forwarded in the MS-TSGU channel-create packet. The gateway only needs its own
+    /// endpoint and credentials.
     #[cfg(feature = "gateway")]
     Gateway(GatewayConfig),
 
@@ -392,6 +390,9 @@ pub enum TransportKind {
     Gateway {
         /// Gateway endpoint address (e.g., `"rdg.contoso.com:443"`).
         endpoint: String,
+        /// When `true` (`GatewayUsageMethod::Detect`), try a direct TCP connection first and fall
+        /// back to the gateway only if that fails.
+        prefer_direct: bool,
     },
 
     /// Connect via an RDCleanPath proxy (WebSocket-based).
@@ -421,6 +422,9 @@ pub struct GatewayConfig {
     pub username: String,
     /// Gateway password.
     pub password: String,
+    /// When `true` (`GatewayUsageMethod::Detect`), try direct TCP first and fall back to the
+    /// gateway on connection failure.
+    pub prefer_direct: bool,
 }
 
 // ── Destination ───────────────────────────────────────────────────────────────
@@ -1096,13 +1100,19 @@ impl ConfigBuilder {
                 self.properties.set_rdcleanpath_url(url.to_string());
             }
             #[cfg(feature = "gateway")]
-            TransportKind::Gateway { endpoint } => {
+            TransportKind::Gateway {
+                endpoint,
+                prefer_direct,
+            } => {
                 self.properties.clear_rdcleanpath();
                 #[cfg(windows)]
                 self.properties.clear_named_pipe();
                 self.properties.set_gateway_hostname(endpoint.clone());
-                self.properties
-                    .set_gateway_usage_method(ironrdp_cfg::GatewayUsageMethod::UseAlways);
+                self.properties.set_gateway_usage_method(if *prefer_direct {
+                    ironrdp_cfg::GatewayUsageMethod::Detect
+                } else {
+                    ironrdp_cfg::GatewayUsageMethod::UseAlways
+                });
             }
             #[cfg(windows)]
             TransportKind::NamedPipe { path } => {
@@ -1121,8 +1131,9 @@ impl ConfigBuilder {
     /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
     ///
     /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
-    /// embedder (error if disabled). Works over Direct and RDCleanPath. RDS Gateway is rejected
-    /// until it can propagate the VMConnect target port.
+    /// embedder (error if disabled). Works over Direct, RDCleanPath, and RDS Gateway (the
+    /// destination port, typically 2179, is forwarded in the MS-TSGU channel-create packet,
+    /// then the VMConnect PCB / `connect_front` handshake runs on the tunneled stream).
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         self.vm_id = Some(vm_id.into());
@@ -1479,10 +1490,14 @@ impl ConfigBuilder {
         let transport = match self.transport {
             TransportKind::Direct => Transport::Direct,
             #[cfg(feature = "gateway")]
-            TransportKind::Gateway { endpoint } => Transport::Gateway(GatewayConfig {
+            TransportKind::Gateway {
+                endpoint,
+                prefer_direct,
+            } => Transport::Gateway(GatewayConfig {
                 endpoint,
                 username: self.gateway_username.unwrap(),
                 password: self.gateway_password.unwrap(),
+                prefer_direct,
             }),
             TransportKind::RDCleanPath { url } => Transport::RDCleanPath(RDCleanPathConfig {
                 url,
@@ -1499,10 +1514,6 @@ impl ConfigBuilder {
             }
             if !self.enable_credssp.unwrap_or(true) {
                 anyhow::bail!("vmconnect requires CredSSP");
-            }
-            #[cfg(feature = "gateway")]
-            if matches!(transport, Transport::Gateway(_)) {
-                anyhow::bail!("vmconnect cannot be used over an RDS gateway until the target port is propagated");
             }
         }
 
@@ -1579,7 +1590,7 @@ impl ConfigBuilder {
             enable_standard_rdp_security,
             keyboard_type: self
                 .keyboard_type
-                .unwrap_or(ironrdp_pdu::gcc::KeyboardType::IbmEnhanced),
+                .unwrap_or(ironrdp_pdu::gcc::KeyboardType::IBM_ENHANCED),
             keyboard_subtype: self.keyboard_subtype.unwrap_or(0),
             keyboard_layout: self.keyboard_layout.unwrap_or(0),
             keyboard_functional_keys_count: self.keyboard_functional_keys_count.unwrap_or(12),
@@ -1804,23 +1815,25 @@ impl ConfigBuilder {
 
                 let select_gateway_transport = match gateway_usage {
                     // Explicit gateway use.
-                    GatewayUsageMethod::UseAlways => true,
+                    GatewayUsageMethod::UseAlways => Some(false),
 
-                    // Approximation of Windows "try direct, then gateway" behavior.
-                    GatewayUsageMethod::Detect => gateway_hostname.is_some(),
+                    // Try direct first; fall back to gateway when a hostname is configured.
+                    GatewayUsageMethod::Detect if gateway_hostname.is_some() => Some(true),
+                    GatewayUsageMethod::Detect => None,
 
                     // IronRDP does not currently resolve MSTSC/client/GPO default gateway policy.
-                    GatewayUsageMethod::UseDefaultSettings => false,
+                    GatewayUsageMethod::UseDefaultSettings => None,
 
                     // Explicit no-gateway modes.
-                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => false,
+                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => None,
                 };
 
-                if select_gateway_transport {
+                if let Some(prefer_direct) = select_gateway_transport {
                     let endpoint = gateway_hostname.context("missing Gateway hostname")?;
 
                     self.transport = TransportKind::Gateway {
                         endpoint: endpoint.to_owned(),
+                        prefer_direct,
                     };
 
                     if let Some(user) = ps.gateway_username() {
@@ -1849,17 +1862,19 @@ impl ConfigBuilder {
                 let gateway_hostname = ps.gateway_hostname();
 
                 let select_gateway_transport = match gateway_usage {
-                    GatewayUsageMethod::UseAlways => true,
-                    GatewayUsageMethod::Detect => gateway_hostname.is_some(),
-                    GatewayUsageMethod::UseDefaultSettings => false,
-                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => false,
+                    GatewayUsageMethod::UseAlways => Some(false),
+                    GatewayUsageMethod::Detect if gateway_hostname.is_some() => Some(true),
+                    GatewayUsageMethod::Detect => None,
+                    GatewayUsageMethod::UseDefaultSettings => None,
+                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => None,
                 };
 
-                if select_gateway_transport {
+                if let Some(prefer_direct) = select_gateway_transport {
                     let endpoint = gateway_hostname.context("missing Gateway hostname")?;
 
                     self.transport = TransportKind::Gateway {
                         endpoint: endpoint.to_owned(),
+                        prefer_direct,
                     };
 
                     if let Some(user) = ps.gateway_username() {

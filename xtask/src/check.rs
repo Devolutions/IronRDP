@@ -241,6 +241,11 @@ pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
         "{CARGO} test -p ironrdp-tls --test native_tls --features native-tls --locked --no-run"
     )
     .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls --locked --no-run"
+    )
+    .run()?;
     println!("All good!");
     Ok(())
 }
@@ -251,6 +256,11 @@ pub fn tests_run(sh: &Shell) -> anyhow::Result<()> {
     cmd!(
         sh,
         "{CARGO} test -p ironrdp-tls --test native_tls --features native-tls --locked"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls --locked"
     )
     .run()?;
     println!("All good!");

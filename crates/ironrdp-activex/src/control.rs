@@ -1294,7 +1294,7 @@ impl Default for CompatibilitySettings {
             warn_about_sending_credentials: false,
             warn_about_clipboard_redirection: false,
             performance_flags: PerformanceFlags::default(),
-            keyboard_type: KeyboardType::IbmEnhanced,
+            keyboard_type: KeyboardType::IBM_ENHANCED,
             keyboard_subtype: 0,
             keyboard_functional_keys_count: 12,
             keyboard_layout: 0,
@@ -2504,16 +2504,13 @@ unsafe extern "system" fn advanced_get_rdp_port(this: *mut c_void, value: *mut i
 }
 
 fn keyboard_type_from_raw(value: i32) -> Result<KeyboardType> {
-    match value {
-        1 => Ok(KeyboardType::IbmPcXt),
-        2 => Ok(KeyboardType::OlivettiIco),
-        3 => Ok(KeyboardType::IbmPcAt),
-        4 => Ok(KeyboardType::IbmEnhanced),
-        5 => Ok(KeyboardType::Nokia1050),
-        6 => Ok(KeyboardType::Nokia9140),
-        7 => Ok(KeyboardType::Japanese),
-        _ => Err(Error::from_hresult(E_INVALIDARG)),
-    }
+    // The wire field is an unsigned 32-bit value with a growing set of assigned meanings
+    // (MS-RDPBCGR 2.2.1.3.2 now documents up to KOREAN=8, and Windows' own GetKeyboardType
+    // additionally returns 0x51 for generic HID keyboards); only a negative COM input, which can
+    // never be a valid keyboardType, is rejected.
+    u32::try_from(value)
+        .map(KeyboardType)
+        .map_err(|_| Error::from_hresult(E_INVALIDARG))
 }
 
 unsafe extern "system" fn advanced_put_keyboard_type(this: *mut c_void, value: i32) -> HRESULT {
@@ -2528,7 +2525,7 @@ unsafe extern "system" fn advanced_put_keyboard_type(this: *mut c_void, value: i
 
 unsafe extern "system" fn advanced_get_keyboard_type(this: *mut c_void, out: *mut i32) -> HRESULT {
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
-    let value = match i32::try_from(object.settings.borrow().keyboard_type.as_u32()) {
+    let value = match i32::try_from(object.settings.borrow().keyboard_type.0) {
         Ok(value) => value,
         Err(_) => return E_FAIL,
     };
@@ -9123,7 +9120,10 @@ impl Control {
                 username,
                 password,
             } => builder
-                .with_transport(TransportKind::Gateway { endpoint })
+                .with_transport(TransportKind::Gateway {
+                    endpoint,
+                    prefer_direct: false,
+                })
                 .with_gateway_username(username)
                 .with_gateway_password(password),
             ActiveXTransport::RDCleanPath(rdcleanpath) => builder
@@ -15947,7 +15947,12 @@ mod tests {
         let mut keyboard_type = 0;
         assert_eq!(unsafe { advanced_get_keyboard_type(this, &mut keyboard_type) }, S_OK);
         assert_eq!(keyboard_type, 7);
-        assert_eq!(unsafe { advanced_put_keyboard_type(this, 8) }, E_INVALIDARG);
+        // Korean (8, MS-RDPBCGR 2.2.1.3.2) and other values the closed enum used to reject are
+        // now accepted and round-trip faithfully; only a negative COM input is invalid.
+        assert_eq!(unsafe { advanced_put_keyboard_type(this, 8) }, S_OK);
+        assert_eq!(unsafe { advanced_get_keyboard_type(this, &mut keyboard_type) }, S_OK);
+        assert_eq!(keyboard_type, 8);
+        assert_eq!(unsafe { advanced_put_keyboard_type(this, -1) }, E_INVALIDARG);
 
         assert_eq!(unsafe { advanced_put_keyboard_subtype(this, 42) }, S_OK);
         let mut keyboard_subtype = 0;

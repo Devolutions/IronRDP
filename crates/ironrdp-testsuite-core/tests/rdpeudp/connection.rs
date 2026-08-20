@@ -220,7 +220,10 @@ fn send_before_established_returns_error() {
     let mut conn = RdpeudpConnection::connect(default_config(100), t).expect("connect");
 
     let result = conn.send(vec![0xAA; 100]);
-    assert!(matches!(result.unwrap_err().kind(), RdpeudpErrorKind::InvalidState));
+    assert!(matches!(
+        result.unwrap_err().error.kind(),
+        RdpeudpErrorKind::InvalidState
+    ));
 }
 
 /// `send` must eventually refuse more data rather than growing the buffer
@@ -236,7 +239,11 @@ fn send_returns_send_buffer_full_once_the_bound_is_reached() {
     }
 
     let result = client.send(vec![0xAA; 4]);
-    assert!(matches!(result.unwrap_err().kind(), RdpeudpErrorKind::SendBufferFull));
+    let error = result.unwrap_err();
+    assert!(matches!(error.error.kind(), RdpeudpErrorKind::SendBufferFull));
+    // The rejected payload comes back rather than being silently dropped, so
+    // a caller with somewhere to hold it can retry once capacity opens.
+    assert_eq!(error.data, vec![0xAA; 4]);
 }
 
 /// `log_window_size` shifts a `u16` and a `usize` elsewhere in the state
@@ -426,7 +433,10 @@ fn send_after_close_returns_error() {
     client.close();
 
     let result = client.send(vec![0x42]);
-    assert!(matches!(result.unwrap_err().kind(), RdpeudpErrorKind::ConnectionClosed));
+    assert!(matches!(
+        result.unwrap_err().error.kind(),
+        RdpeudpErrorKind::ConnectionClosed
+    ));
 }
 
 #[test]

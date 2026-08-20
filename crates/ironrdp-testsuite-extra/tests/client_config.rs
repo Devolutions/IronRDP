@@ -80,6 +80,21 @@ fn gateway_is_enabled_with_usage_method_one_and_file_credentials() {
     assert_eq!(gw.endpoint, "gw.example.com:443");
     assert_eq!(gw.username, "gw-user");
     assert_eq!(gw.password, "gw-pass");
+    assert!(!gw.prefer_direct);
+}
+
+#[test]
+fn gateway_detect_prefers_direct_when_hostname_is_set() {
+    let config = parse_config_from_rdp(
+        "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\ngatewayhostname:s:gw.example.com:443\ngatewayusagemethod:i:2\ngatewayusername:s:gw-user\nGatewayPassword:s:gw-pass\n",
+        &[],
+    );
+
+    let Transport::Gateway(gw) = config.transport() else {
+        panic!("gateway should be configured");
+    };
+    assert_eq!(gw.endpoint, "gw.example.com:443");
+    assert!(gw.prefer_direct);
 }
 
 #[test]
@@ -163,8 +178,10 @@ fn vmconnect_basic_flag_selects_basic_mode() {
 }
 
 #[test]
-fn vmconnect_rejects_rds_gateway() {
-    let err = parse_config_from_rdp_result(
+fn vmconnect_accepts_rds_gateway() {
+    // The gateway channel-create now forwards the destination port, so
+    // VMConnect (port 2179) can be tunneled through an RD Gateway.
+    let config = parse_config_from_rdp(
         "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
         &[
             "--vmconnect",
@@ -176,10 +193,10 @@ fn vmconnect_rejects_rds_gateway() {
             "--gw-pass",
             "gw-pass",
         ],
-    )
-    .expect_err("vmconnect + RDS gateway must fail");
+    );
 
-    assert!(err.to_string().contains("gateway"), "unexpected error: {err:#}");
+    assert!(matches!(config.transport(), Transport::Gateway(_)));
+    assert_eq!(config.destination().port(), 2179);
 }
 
 #[test]

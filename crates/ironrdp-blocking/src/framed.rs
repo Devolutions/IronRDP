@@ -1,12 +1,17 @@
 use std::io::{self, Read, Write};
 
 use bytes::{Bytes, BytesMut};
+use ironrdp_connector::MonotonicInstant;
 use ironrdp_pdu::PduHint;
 use tracing::debug;
 
 pub struct Framed<S> {
     stream: S,
     buf: BytesMut,
+    /// When the most recent socket read completed. A PDU served from `buf`
+    /// arrived at the read that filled it, not when the caller drained it.
+    /// `None` until the first read.
+    last_read_at: Option<MonotonicInstant>,
 }
 
 impl<S> Framed<S> {
@@ -15,7 +20,11 @@ impl<S> Framed<S> {
     }
 
     pub fn new_with_leftover(stream: S, leftover: BytesMut) -> Self {
-        Self { stream, buf: leftover }
+        Self {
+            stream,
+            buf: leftover,
+            last_read_at: None,
+        }
     }
 
     pub fn into_inner(self) -> (S, BytesMut) {
@@ -34,6 +43,11 @@ impl<S> Framed<S> {
 
     pub fn get_inner_mut(&mut self) -> (&mut S, &mut BytesMut) {
         (&mut self.stream, &mut self.buf)
+    }
+
+    /// When the bytes currently buffered last arrived from the socket.
+    pub fn last_read_at(&self) -> Option<MonotonicInstant> {
+        self.last_read_at
     }
 
     pub fn peek(&self) -> &[u8] {
@@ -118,6 +132,7 @@ where
 
         let mut read_bytes = [0u8; 1024];
         let len = self.stream.read(&mut read_bytes)?;
+        self.last_read_at = Some(monotonic_now());
         self.buf.extend_from_slice(&read_bytes[..len]);
 
         Ok(len)
@@ -132,4 +147,11 @@ where
     pub fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         self.stream.write_all(buf)
     }
+}
+
+/// Reads the driver-owned monotonic clock. Epoch is the first call; only
+/// differences are meaningful.
+fn monotonic_now() -> MonotonicInstant {
+    static EPOCH: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
+    MonotonicInstant::from_millis(u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX))
 }

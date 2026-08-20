@@ -616,41 +616,68 @@ impl RdpClient {
                 },
 
                 #[cfg(feature = "gateway")]
-                Transport::Gateway(gw) => match Box::pin(cancelable_operation(
-                    connect_gateway(
-                        &self.config,
-                        gw,
-                        &self.input_event_sender,
-                        cliprdr_factory,
-                        rdpdr_factory,
-                        reconnect_cookie,
-                    ),
-                    &mut self.close_receiver,
-                ))
-                .await
-                {
-                    Some(Ok(result)) => result,
-                    Some(Err(error)) => {
-                        if self
-                            .try_auto_reconnect(
-                                auto_reconnect_policy,
-                                &mut reconnect_attempt,
-                                auto_reconnect_cookie.as_ref(),
-                            )
-                            .await
-                        {
-                            continue;
+                Transport::Gateway(gw) => {
+                    let connect_result = if gw.prefer_direct {
+                        connect_preferring_direct(
+                            &mut self.close_receiver,
+                            connect_direct(
+                                &self.config,
+                                &self.input_event_sender,
+                                cliprdr_factory,
+                                rdpdr_factory,
+                                reconnect_cookie,
+                            ),
+                            || {
+                                connect_gateway(
+                                    &self.config,
+                                    gw,
+                                    &self.input_event_sender,
+                                    cliprdr_factory,
+                                    rdpdr_factory,
+                                    reconnect_cookie,
+                                )
+                            },
+                        )
+                        .await
+                    } else {
+                        Box::pin(cancelable_operation(
+                            connect_gateway(
+                                &self.config,
+                                gw,
+                                &self.input_event_sender,
+                                cliprdr_factory,
+                                rdpdr_factory,
+                                reconnect_cookie,
+                            ),
+                            &mut self.close_receiver,
+                        ))
+                        .await
+                    };
+
+                    match connect_result {
+                        Some(Ok(result)) => result,
+                        Some(Err(error)) => {
+                            if self
+                                .try_auto_reconnect(
+                                    auto_reconnect_policy,
+                                    &mut reconnect_attempt,
+                                    auto_reconnect_cookie.as_ref(),
+                                )
+                                .await
+                            {
+                                continue;
+                            }
+                            if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
+                                self.emit_user_initiated_termination();
+                            }
+                            break;
                         }
-                        if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
+                        None => {
                             self.emit_user_initiated_termination();
+                            break;
                         }
-                        break;
                     }
-                    None => {
-                        self.emit_user_initiated_termination();
-                        break;
-                    }
-                },
+                }
 
                 Transport::RDCleanPath(rdcp) => match Box::pin(cancelable_operation(
                     connect_rdcleanpath_transport(
@@ -919,6 +946,33 @@ async fn cancelable_operation<T>(
         biased;
         _ = close_receiver.changed() => None,
         result = operation => Some(result),
+    }
+}
+
+/// Detect-mode connection: try a direct RDP connection, then the gateway.
+///
+/// Returns `None` if the session is cancelled before a connection result is
+/// produced. A cancelled direct attempt does not start the gateway.
+#[doc(hidden)]
+pub async fn connect_preferring_direct<T, E, GFut>(
+    close_receiver: &mut watch::Receiver<bool>,
+    connect_direct: impl Future<Output = Result<T, E>>,
+    connect_gateway: impl FnOnce() -> GFut,
+) -> Option<Result<T, E>>
+where
+    E: core::fmt::Display,
+    GFut: Future<Output = Result<T, E>>,
+{
+    match Box::pin(cancelable_operation(connect_direct, close_receiver)).await {
+        Some(Ok(result)) => Some(Ok(result)),
+        Some(Err(direct_error)) => {
+            info!(
+                error = %direct_error,
+                "Direct connection failed; falling back to RD Gateway"
+            );
+            Box::pin(cancelable_operation(connect_gateway(), close_receiver)).await
+        }
+        None => None,
     }
 }
 
@@ -1447,16 +1501,8 @@ async fn connect_gateway(
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     use ironrdp_mstsgu::GwConnectTarget;
 
-    // VMConnect needs destination port 2179; GwConnectTarget does not carry it yet (TODO below).
-    #[cfg(feature = "vmconnect")]
-    if config.vm_id().is_some() {
-        return Err(ironrdp_connector::general_err!(
-            "vmconnect cannot be used over an RDS gateway until the target port is propagated"
-        ));
-    }
-
-    // Build the GwConnectTarget.  `server` is the RDP target derived from `config.destination`.
-    // TODO: preserve the destination port; ironrdp-mstsgu may currently hard-code 3389.
+    // Target resource host/port come from Config::destination and are forwarded in the
+    // MS-TSGU channel-create packet (enables non-3389 RDP and VMConnect port 2179).
     let gw_target = GwConnectTarget {
         gw_endpoint: gw.endpoint.clone(),
         gw_user: gw.username.clone(),
@@ -1464,9 +1510,13 @@ async fn connect_gateway(
         server: config.destination.name().to_owned(),
     };
 
-    let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect(&gw_target, &config.connector.client_name)
-        .await
-        .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
+    let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect_with_port(
+        &gw_target,
+        &config.connector.client_name,
+        config.destination.port(),
+    )
+    .await
+    .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
 
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
@@ -1478,6 +1528,13 @@ async fn connect_gateway(
         rdpdr_factory,
         auto_reconnect_cookie,
     )?;
+    #[cfg(feature = "vmconnect")]
+    if config.vm_id().is_some() {
+        // The Hyper-V TCP connection is created by the gateway during channel-create, so
+        // the MS-RDPEPS PCB deadline starts once that channel is established.
+        let pcb_deadline = tokio::time::Instant::now() + ironrdp_vmconnect::PCB_TRANSMIT_DEADLINE;
+        return vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await;
+    }
     security_upgrade_and_finalize(framed, connector, config).await
 }
 
@@ -1896,7 +1953,7 @@ where
                 debug_assert!(connector.next_pdu_hint().is_some());
 
                 buf.clear();
-                let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
+                let written = connector.step(x224_connection_response.as_bytes(), None, &mut buf)?;
                 debug_assert!(written.is_nothing());
 
                 let should_upgrade = ironrdp_tokio::skip_connect_begin(connector);

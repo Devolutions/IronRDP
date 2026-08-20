@@ -42,13 +42,13 @@ pub enum KeyboardType {
 impl KeyboardType {
     fn into_pdu(self) -> ironrdp::pdu::gcc::KeyboardType {
         match self {
-            KeyboardType::IbmEnhanced => ironrdp::pdu::gcc::KeyboardType::IbmEnhanced,
-            KeyboardType::IbmPcAt => ironrdp::pdu::gcc::KeyboardType::IbmPcAt,
-            KeyboardType::IbmPcXt => ironrdp::pdu::gcc::KeyboardType::IbmPcXt,
-            KeyboardType::OlivettiIco => ironrdp::pdu::gcc::KeyboardType::OlivettiIco,
-            KeyboardType::Nokia1050 => ironrdp::pdu::gcc::KeyboardType::Nokia1050,
-            KeyboardType::Nokia9140 => ironrdp::pdu::gcc::KeyboardType::Nokia9140,
-            KeyboardType::Japanese => ironrdp::pdu::gcc::KeyboardType::Japanese,
+            KeyboardType::IbmEnhanced => ironrdp::pdu::gcc::KeyboardType::IBM_ENHANCED,
+            KeyboardType::IbmPcAt => ironrdp::pdu::gcc::KeyboardType::IBM_PC_AT,
+            KeyboardType::IbmPcXt => ironrdp::pdu::gcc::KeyboardType::IBM_PC_XT,
+            KeyboardType::OlivettiIco => ironrdp::pdu::gcc::KeyboardType::OLIVETTI_ICO,
+            KeyboardType::Nokia1050 => ironrdp::pdu::gcc::KeyboardType::NOKIA_1050,
+            KeyboardType::Nokia9140 => ironrdp::pdu::gcc::KeyboardType::NOKIA_9140,
+            KeyboardType::Japanese => ironrdp::pdu::gcc::KeyboardType::JAPANESE,
         }
     }
 }
@@ -447,7 +447,10 @@ fn apply_cli_to_builder(
             builder = builder.with_rdcleanpath_token(token);
         }
     } else if let Some(endpoint) = args.gw_endpoint {
-        builder = builder.with_transport(TransportKind::Gateway { endpoint });
+        builder = builder.with_transport(TransportKind::Gateway {
+            endpoint,
+            prefer_direct: false,
+        });
 
         if let Some(username) = args.gw_user {
             builder = builder.with_gateway_username(username);

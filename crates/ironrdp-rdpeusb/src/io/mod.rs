@@ -57,6 +57,15 @@ pub struct DeviceText {
     pub description: String,
 }
 
+/// Wrapper for the completion of RDPEUSB request.
+#[derive(Debug)]
+pub enum CompletionData {
+    IoControl(IoControlCompletionResult),
+    InternalIoControl(IoControlCompletionResult),
+    TransferIn(TransferInCompletionResult),
+    TransferOut(TransferOutCompletionResult),
+}
+
 /// Completion of an I/O control request.
 ///
 /// This completes either an [`IoControlPacket`] or an [`InternalIoControlPacket`]. The request ID

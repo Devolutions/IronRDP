@@ -42,7 +42,7 @@ fn test_config() -> ironrdp_connector::Config {
         domain: None,
         client_build: 0,
         client_name: "test".into(),
-        keyboard_type: gcc::KeyboardType::IbmEnhanced,
+        keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
         keyboard_layout: 0,
         keyboard_functional_keys_count: 12,
@@ -107,7 +107,7 @@ fn demand_active_static_channel_chunk_size(chunk_size: Option<u32>) -> usize {
     let mut output = WriteBuf::new();
     let frame = encode_server_share_control(ShareControlPdu::ServerDemandActive(demand_active));
     sequence
-        .step(&frame, &mut output)
+        .step(&frame, None, &mut output)
         .expect("demand active should be accepted");
 
     match sequence.connection_activation_state() {
@@ -154,7 +154,7 @@ fn deactivate_all_during_capabilities_exchange_stays_in_same_state() {
     let frame = encode_server_share_control(ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll));
     let mut output = WriteBuf::new();
 
-    let written = seq.step(&frame, &mut output).unwrap();
+    let written = seq.step(&frame, None, &mut output).unwrap();
 
     assert_eq!(written, Written::Nothing);
     assert!(
@@ -177,7 +177,7 @@ fn client_connector_stays_in_capabilities_exchange_on_deactivate_all() {
     let frame = encode_server_share_control(ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll));
     let mut output = WriteBuf::new();
 
-    let written = connector.step(&frame, &mut output).unwrap();
+    let written = connector.step(&frame, None, &mut output).unwrap();
 
     assert_eq!(written, Written::Nothing);
     assert!(
@@ -207,7 +207,7 @@ fn set_error_info_during_capabilities_exchange_surfaces_the_disconnect_reason() 
     let mut output = WriteBuf::new();
 
     let err = seq
-        .step(&frame, &mut output)
+        .step(&frame, None, &mut output)
         .expect_err("a Set Error Info PDU during capabilities exchange must end the sequence with an error");
 
     let message = err.to_string();
@@ -240,7 +240,7 @@ fn none_error_info_during_capabilities_exchange_is_skipped() {
     let frame = encode_server_share_control(none_error_info);
     let mut output = WriteBuf::new();
 
-    let written = seq.step(&frame, &mut output).unwrap();
+    let written = seq.step(&frame, None, &mut output).unwrap();
 
     assert_eq!(written, Written::Nothing);
     assert!(
@@ -260,13 +260,13 @@ fn demand_active_after_deactivate_all_transitions_to_connection_finalization() {
 
     // First: feed DeactivateAll
     let deactivate_frame = encode_server_share_control(ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll));
-    let written = seq.step(&deactivate_frame, &mut output).unwrap();
+    let written = seq.step(&deactivate_frame, None, &mut output).unwrap();
     assert_eq!(written, Written::Nothing);
 
     // Then: feed ServerDemandActive
     let demand_active_frame =
         encode_server_share_control(ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()));
-    let written = seq.step(&demand_active_frame, &mut output).unwrap();
+    let written = seq.step(&demand_active_frame, None, &mut output).unwrap();
 
     assert!(written != Written::Nothing, "should have written ClientConfirmActive");
     assert!(
@@ -287,7 +287,7 @@ fn demand_active_captures_server_input_flags() {
     let mut output = WriteBuf::new();
 
     let frame = encode_server_share_control(ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()));
-    seq.step(&frame, &mut output).unwrap();
+    seq.step(&frame, None, &mut output).unwrap();
 
     match seq.connection_activation_state() {
         ConnectionActivationState::ConnectionFinalization { input_flags, .. } => {
@@ -316,7 +316,7 @@ fn demand_active_without_input_capability_yields_empty_input_flags() {
         .retain(|c| !matches!(c, CapabilitySet::Input(_)));
 
     let frame = encode_server_share_control(ShareControlPdu::ServerDemandActive(demand_active));
-    seq.step(&frame, &mut output).unwrap();
+    seq.step(&frame, None, &mut output).unwrap();
 
     match seq.connection_activation_state() {
         ConnectionActivationState::ConnectionFinalization { input_flags, .. } => {
@@ -394,7 +394,7 @@ fn multitransport_request_is_surfaced_without_waiting_for_another_pdu() {
     );
     let mut output = WriteBuf::new();
 
-    connector.step(&frame, &mut output).unwrap();
+    connector.step(&frame, None, &mut output).unwrap();
 
     assert!(
         connector.should_perform_multitransport(),
@@ -416,7 +416,7 @@ fn responding_returns_to_bootstrapping_for_the_next_request() {
             &multitransport_request(request_id, RequestedProtocol::UdpFecR),
             MESSAGE_CHANNEL_ID,
         );
-        connector.step(&frame, &mut output).unwrap();
+        connector.step(&frame, None, &mut output).unwrap();
         assert!(connector.should_perform_multitransport());
         assert_eq!(connector.multitransport_request().unwrap().request_id, request_id);
 
@@ -445,7 +445,7 @@ fn third_multitransport_request_is_rejected() {
             &multitransport_request(request_id, RequestedProtocol::UdpFecR),
             MESSAGE_CHANNEL_ID,
         );
-        connector.step(&frame, &mut output).unwrap();
+        connector.step(&frame, None, &mut output).unwrap();
         connector
             .complete_multitransport(MultitransportResult::Success, &mut output)
             .unwrap();
@@ -455,7 +455,7 @@ fn third_multitransport_request_is_rejected() {
         &multitransport_request(3, RequestedProtocol::UdpFecR),
         MESSAGE_CHANNEL_ID,
     );
-    assert!(connector.step(&frame, &mut output).is_err());
+    assert!(connector.step(&frame, None, &mut output).is_err());
 }
 
 #[test]
@@ -466,7 +466,7 @@ fn demand_active_on_the_io_channel_ends_bootstrapping() {
     let frame = encode_server_share_control(ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()));
     let mut output = WriteBuf::new();
 
-    connector.step(&frame, &mut output).unwrap();
+    connector.step(&frame, None, &mut output).unwrap();
 
     assert!(
         matches!(connector.state, ClientConnectorState::ConnectionFinalization { .. }),

@@ -461,6 +461,9 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
+ "ironrdp-rdpemt",
+ "ironrdp-rdpeudp",
+ "ironrdp-rdpeusb",
  "ironrdp-rdpsnd",
  "ironrdp-svc",
 ]
@@ -518,6 +521,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpemt"
+version = "0.1.0"
+dependencies = [
+ "arbitrary",
+ "ironrdp-core",
+ "ironrdp-error",
+ "subtle",
+]
+
+[[package]]
+name = "ironrdp-rdpeudp"
+version = "0.1.0"
+dependencies = [
+ "arbitrary",
+ "bitflags",
+ "ironrdp-core",
+ "ironrdp-error",
+]
+
+[[package]]
+name = "ironrdp-rdpeusb"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-str",
+ "ironrdp-usb",
+]
+
+[[package]]
 name = "ironrdp-rdpsnd"
 version = "0.9.0"
 dependencies = [
@@ -529,6 +563,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-str"
+version = "0.1.1"
+dependencies = [
+ "bytemuck",
+ "ironrdp-core",
+]
+
+[[package]]
 name = "ironrdp-svc"
 version = "0.8.0"
 dependencies = [
@@ -536,6 +578,10 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
 ]
+
+[[package]]
+name = "ironrdp-usb"
+version = "0.1.0"
 
 [[package]]
 name = "jobserver"

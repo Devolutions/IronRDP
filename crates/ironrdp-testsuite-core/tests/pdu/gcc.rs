@@ -306,6 +306,28 @@ fn to_buffer_correctly_serializes_client_core_data_without_optional_fields() {
 }
 
 #[test]
+fn client_core_data_decode_reencode_round_trip_for_keyboard_types_outside_original_closed_enum() {
+    // keyboardType occupies CLIENT_CORE_DATA_BUFFER[52..56]. MS-RDPBCGR documents keyboardType
+    // twice: 2.2.1.3.2 (Client Core Data) lists values 1-8 including KOREAN, while 2.2.7.1.6
+    // (Input Capability Set), the table the original closed enum was built from, stops at 7 and
+    // omits KOREAN entirely. 0x51 is in neither table; it is Windows' GetKeyboardType generic-HID
+    // value, not a spec-named constant.
+    for keyboard_type in [KeyboardType::KOREAN, KeyboardType(0x51)] {
+        let mut buffer = CLIENT_CORE_DATA_BUFFER;
+        buffer[52..56].copy_from_slice(&u32::from(keyboard_type).to_le_bytes());
+
+        let mut expected = CLIENT_CORE_DATA_WITHOUT_OPTIONAL_FIELDS.clone();
+        expected.keyboard_type = keyboard_type;
+
+        let decoded: ClientCoreData = decode(buffer.as_slice()).unwrap();
+        assert_eq!(expected, decoded);
+
+        let reencoded = encode_vec(&decoded).unwrap();
+        assert_eq!(buffer.as_slice(), reencoded.as_slice());
+    }
+}
+
+#[test]
 fn to_buffer_correctly_serializes_client_core_data_without_few_optional_fields() {
     let core_data = CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL.clone();
     let expected_buffer = CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL_BUFFER;

@@ -577,6 +577,40 @@ pub fn cliprdr_channel_process(input: &[u8]) {
     let _ = cliprdr.process(input);
 }
 
+/// The URBDRC (MS-RDPEUSB / USB redirection) client→server PDUs a server
+/// decodes off the wire. `UrbdrcClientControlPdu` is the main-channel family;
+/// `UrbdrcClientDevicePdu<Raw>` is the per-device family, which carries the URB
+/// completions, IO-control completions and interface-info results.
+///
+/// Decoding `UrbdrcClientDevicePdu<Raw>` only slurps each URB *result* body into
+/// `Raw` — the operation-specific reinterpretation of those length-prefixed
+/// payloads (`SELECT_CONFIGURATION` / `SELECT_INTERFACE` / interface-info / isoch
+/// results, the historical home of unchecked-read panics) happens later in the
+/// stateful server handlers via `into_expected`, so `<Raw>` alone never reaches
+/// them. Those result decoders are all public, so we also drive them directly on
+/// the raw input to keep the whole bounds-checked decode surface fuzzed.
+pub fn rdpeusb_decode(data: &[u8]) {
+    use ironrdp_core::{ReadCursor, decode};
+    use ironrdp_rdpeusb::pdu::completion::ts_urb_result::{
+        Raw, TsUrbGetCurrFrameNumResult, TsUrbIsochTransferResult, TsUrbSelectConfigResult, TsUrbSelectInterfaceResult,
+        TsUsbdInterfaceInfoResult, TsUsbdPipeInfoResult,
+    };
+    use ironrdp_rdpeusb::pdu::{UrbdrcClientControlPdu, UrbdrcClientDevicePdu};
+
+    // Top-level client→server PDU families, off the two DVC channels.
+    let _ = decode::<UrbdrcClientControlPdu>(data);
+    let _ = decode::<UrbdrcClientDevicePdu<Raw>>(data);
+
+    // The length-prefixed URB / interface-info *result* payload decoders the
+    // per-device family reinterprets `Raw` into once correlated with a request.
+    let _ = TsUrbSelectConfigResult::decode(&mut ReadCursor::new(data));
+    let _ = TsUrbSelectInterfaceResult::decode(&mut ReadCursor::new(data));
+    let _ = TsUrbGetCurrFrameNumResult::decode(&mut ReadCursor::new(data));
+    let _ = TsUrbIsochTransferResult::decode(&mut ReadCursor::new(data));
+    let _ = decode::<TsUsbdInterfaceInfoResult>(data);
+    let _ = decode::<TsUsbdPipeInfoResult>(data);
+}
+
 /// Minimal backend for fuzzing that enables file transfer capabilities
 /// so the fuzzer can exercise lock, file list, and file contents paths.
 #[derive(Debug)]
@@ -611,5 +645,497 @@ impl ironrdp_cliprdr::backend::CliprdrBackend for NoopCliprdrFuzzBackend {
     // Fixed clock so fuzz runs are reproducible regardless of wall-clock timing
     fn now_ms(&self) -> u64 {
         0
+    }
+}
+
+// RDP-UDP transport oracles.
+//
+// The transport splits into three layers that fail in different ways, so the
+// oracles are layered to match rather than pointing one decode target at all of
+// it. From cheapest to most stateful:
+//
+//   1. `rdpeudp_pdu_decode` / `rdpemt_pdu_decode`: hostile bytes into every
+//      wire structure. Crash-only, and the baseline the others build on.
+//   2. `rdpeudp_pdu_round_trip` / `rdpemt_pdu_round_trip`: structure-aware.
+//      These assert re-decode equality and, unlike the crash-only targets,
+//      that `size()` agrees with what `encode` actually wrote. A size that
+//      under-reports is how a decoder gets handed a truncated buffer.
+//   3. `rdpeudp_prefix_transform`, `rdpeudp_ack_vector`,
+//      `rdpeudp_connection`, `rdpemt_tunnel`: the pieces with state or
+//      attacker-influenced allocation, where a crash-only oracle is blind.
+
+/// Decodes hostile bytes as each RDP-UDP wire structure.
+///
+/// The first byte selects the structure so libFuzzer builds a per-structure
+/// corpus rather than averaging one coverage signal across all of them.
+pub fn rdpeudp_pdu_decode(data: &[u8]) {
+    use ironrdp_core::decode;
+    use ironrdp_rdpeudp::pdu::{
+        AckOfAcksPayload, AckPayload, AckVectorPayload, CorrelationIdPayload, DataHeader, DelayAckInfoPayload,
+        FecHeader, OverheadSizePayload, SynDataExPayload, SynDataPayload, V1AckOfAcksHeader, V1AckVectorHeader,
+        V1Datagram, V2Header, V2Packet,
+    };
+
+    let Some((selector, payload)) = data.split_first() else {
+        return;
+    };
+
+    match selector % 15 {
+        0 => drop(decode::<V1Datagram>(payload)),
+        1 => drop(decode::<FecHeader>(payload)),
+        2 => drop(decode::<V1AckVectorHeader>(payload)),
+        3 => drop(decode::<V1AckOfAcksHeader>(payload)),
+        4 => drop(decode::<SynDataPayload>(payload)),
+        5 => drop(decode::<SynDataExPayload>(payload)),
+        6 => drop(decode::<CorrelationIdPayload>(payload)),
+        7 => drop(decode::<V2Packet>(payload)),
+        8 => drop(decode::<V2Header>(payload)),
+        9 => drop(decode::<AckPayload>(payload)),
+        10 => drop(decode::<AckVectorPayload>(payload)),
+        11 => drop(decode::<AckOfAcksPayload>(payload)),
+        12 => drop(decode::<DelayAckInfoPayload>(payload)),
+        13 => drop(decode::<OverheadSizePayload>(payload)),
+        _ => drop(decode::<DataHeader>(payload)),
+    }
+}
+
+/// Decodes hostile bytes as each multitransport wire structure.
+pub fn rdpemt_pdu_decode(data: &[u8]) {
+    use ironrdp_core::decode;
+    use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
+    use ironrdp_rdpemt::pdu::{
+        TunnelCreateRequest, TunnelCreateResponse, TunnelData, TunnelHeader, TunnelPdu, TunnelSubHeader,
+    };
+
+    let Some((selector, payload)) = data.split_first() else {
+        return;
+    };
+
+    match selector % 8 {
+        0 => drop(decode::<TunnelPdu>(payload)),
+        1 => drop(decode::<TunnelHeader>(payload)),
+        2 => drop(decode::<TunnelSubHeader>(payload)),
+        3 => drop(decode::<TunnelCreateRequest>(payload)),
+        4 => drop(decode::<TunnelCreateResponse>(payload)),
+        5 => drop(decode::<TunnelData>(payload)),
+        6 => drop(decode::<MultitransportRequestPdu>(payload)),
+        _ => drop(decode::<MultitransportResponsePdu>(payload)),
+    }
+}
+
+/// Round-trips structure-aware RDP-UDP PDUs and checks `size()` against the
+/// bytes `encode` actually wrote.
+///
+/// The size check is the part a decode-only oracle cannot reach. `encode_vec`
+/// allocates from `size()`, so a `size()` that over-reports leaves trailing
+/// zeros that re-decode happens to tolerate, and one that under-reports would
+/// have panicked inside the cursor long before any decoder saw it.
+pub fn rdpeudp_pdu_round_trip(data: &[u8]) {
+    use arbitrary::{Arbitrary as _, Unstructured};
+    use ironrdp_core::{decode, encode_vec};
+    use ironrdp_rdpeudp::pdu::{V1Datagram, V2Packet};
+
+    fn check<T>(pdu: &T)
+    where
+        T: ironrdp_core::Encode + core::fmt::Debug + PartialEq + for<'a> ironrdp_core::Decode<'a>,
+    {
+        let Ok(encoded) = encode_vec(pdu) else {
+            return;
+        };
+
+        assert_eq!(
+            pdu.size(),
+            encoded.len(),
+            "size() disagrees with the encoded length for {pdu:?}"
+        );
+
+        // Re-decoding our own bytes must succeed, and re-encoding the result
+        // must reproduce them exactly.
+        //
+        // The comparison is on bytes rather than values on purpose. The v1 and
+        // v2 encoders derive the payload-gating flags from which `Option`
+        // fields are populated, so an `Arbitrary` value that sets a flag
+        // without the payload it gates is normalised on the way out. That is
+        // the encoder behaving correctly. What must not happen is the wire
+        // form changing on a second pass, which is what silent corruption
+        // would look like from a peer.
+        match decode::<T>(&encoded) {
+            Ok(reparsed) => match encode_vec(&reparsed) {
+                Ok(re_encoded) => assert_eq!(
+                    encoded, re_encoded,
+                    "re-encoding a decoded {pdu:?} produced different bytes"
+                ),
+                Err(e) => panic!("re-encoding a value we just decoded failed: {e}"),
+            },
+            Err(e) => panic!("re-decoding our own encoding failed: {e}"),
+        }
+    }
+
+    let mut unstructured = Unstructured::new(data);
+    let Ok(select_v2) = bool::arbitrary(&mut unstructured) else {
+        return;
+    };
+
+    if select_v2 {
+        if let Ok(packet) = V2Packet::arbitrary(&mut unstructured) {
+            check(&packet);
+        }
+    } else if let Ok(datagram) = V1Datagram::arbitrary(&mut unstructured) {
+        check(&datagram);
+    }
+}
+
+/// Round-trips structure-aware multitransport PDUs with the same size check.
+pub fn rdpemt_pdu_round_trip(data: &[u8]) {
+    use arbitrary::{Arbitrary as _, Unstructured};
+    use ironrdp_core::{decode, encode_vec};
+    use ironrdp_rdpemt::pdu::TunnelPdu;
+
+    let mut unstructured = Unstructured::new(data);
+    let Ok(pdu) = TunnelPdu::arbitrary(&mut unstructured) else {
+        return;
+    };
+
+    // `TunnelPdu` decodes as a union but each variant owns its encoder, so the
+    // size check happens per variant.
+    let encoded = match &pdu {
+        TunnelPdu::CreateRequest(inner) => encode_and_check(inner),
+        TunnelPdu::CreateResponse(inner) => encode_and_check(inner),
+        TunnelPdu::Data(inner) => encode_and_check(inner),
+    };
+
+    let Some(encoded) = encoded else {
+        return;
+    };
+
+    match decode::<TunnelPdu>(&encoded) {
+        Ok(reparsed) => {
+            let re_encoded = match &reparsed {
+                TunnelPdu::CreateRequest(inner) => encode_vec(inner),
+                TunnelPdu::CreateResponse(inner) => encode_vec(inner),
+                TunnelPdu::Data(inner) => encode_vec(inner),
+            };
+            match re_encoded {
+                Ok(bytes) => assert_eq!(encoded, bytes, "re-encoding a decoded {pdu:?} produced different bytes"),
+                Err(e) => panic!("re-encoding a value we just decoded failed: {e}"),
+            }
+        }
+        Err(e) => panic!("re-decoding our own encoding failed: {e}"),
+    }
+}
+
+/// Encodes a PDU and asserts `size()` matches what was written.
+fn encode_and_check<T: ironrdp_core::Encode + core::fmt::Debug>(pdu: &T) -> Option<Vec<u8>> {
+    let encoded = ironrdp_core::encode_vec(pdu).ok()?;
+    assert_eq!(
+        pdu.size(),
+        encoded.len(),
+        "size() disagrees with the encoded length for {pdu:?}"
+    );
+    Some(encoded)
+}
+
+/// Exercises the RDP-UDP2 packet-prefix transform.
+///
+/// The transform prepends a prefix byte and then swaps it with byte 7, in
+/// place, padding short packets first. It is the one place in the transport
+/// that mutates a caller's buffer, it runs on every datagram in both
+/// directions, and its edge cases are all at lengths near the swap offset.
+/// Feeding it arbitrary lengths is the cheapest way to find an index that
+/// escapes the buffer.
+pub fn rdpeudp_prefix_transform(data: &[u8]) {
+    use ironrdp_rdpeudp::pdu::{decode_with_prefix, encode_with_prefix};
+
+    // Receive direction: hostile bytes straight off the wire.
+    let mut wire = data.to_vec();
+    let _ = decode_with_prefix(&mut wire);
+
+    // Send direction, then back again. Whatever the encoder produces the
+    // decoder must accept, and must hand back the bytes that went in.
+    let mut encoded = Vec::new();
+    if let Ok(written) = encode_with_prefix(data, false, &mut encoded) {
+        let mut round_trip = encoded[..written].to_vec();
+        match decode_with_prefix(&mut round_trip) {
+            Ok((_prefix, body)) => {
+                if data.is_empty() {
+                    // The prefix byte carries Short_Packet_Length, and 3.1.1.1.5.2
+                    // reads zero as "not a short packet" rather than as a length.
+                    // An empty packet is therefore the one input the transform
+                    // cannot round-trip: it comes back as the seven padding bytes.
+                    // RDP-UDP2 never emits one, because the v2 header alone is two
+                    // bytes, so this is a property of the encoding rather than a
+                    // defect. It is asserted so that a change which makes empty
+                    // packets representable does not pass unnoticed.
+                    assert_eq!(body, &[0u8; 7], "empty packet did not decode as padding");
+                } else {
+                    assert_eq!(
+                        body,
+                        data,
+                        "prefix transform did not round-trip a {}-byte packet",
+                        data.len()
+                    );
+                }
+            }
+            Err(e) => panic!("decoder rejected our own prefix encoding: {e}"),
+        }
+    }
+}
+
+/// Drives the RDP-UDP connection state machine through an arbitrary sequence
+/// of wire events and clock advances.
+///
+/// This is the oracle a decode target cannot stand in for. The transport keeps
+/// send and receive windows, a retransmission timer, congestion state and a
+/// handshake state machine, and the interesting failures are orderings rather
+/// than single malformed datagrams: an ACK for a sequence never sent, a
+/// retransmit timer firing after close, a window that advances past its own
+/// base. Each step feeds one datagram or moves the clock, and the loop asserts
+/// the invariants that must survive whatever order the fuzzer picks.
+pub fn rdpeudp_connection(data: &[u8]) {
+    use arbitrary::{Arbitrary as _, Unstructured};
+    use ironrdp_core::encode_vec;
+    use ironrdp_rdpeudp::pdu::{V1Datagram, V2Packet};
+    use ironrdp_rdpeudp::{ConnectionConfig, MonotonicInstant, RdpeudpConnection};
+
+    #[derive(Debug, arbitrary::Arbitrary)]
+    enum Step {
+        /// Feed a structurally valid v1 datagram.
+        HandleV1(V1Datagram),
+        /// Feed a structurally valid v2 packet.
+        HandleV2(V2Packet),
+        /// Feed raw bytes, which is what a hostile peer actually sends.
+        HandleRaw(Vec<u8>),
+        /// Move the clock forward and let timers fire.
+        Advance(u16),
+        /// Queue application data.
+        Send(Vec<u8>),
+        /// Close locally.
+        Close,
+    }
+
+    let mut unstructured = Unstructured::new(data);
+    let Ok(steps) = Vec::<Step>::arbitrary(&mut unstructured) else {
+        return;
+    };
+
+    let config = ConnectionConfig {
+        // A version 3 SYN carries this, so `connect` requires it. The value
+        // is arbitrary here: the fuzzer drives the peer side, not the
+        // multitransport request the hash would really come from.
+        cookie_hash: Some([0u8; 32]),
+        ..ConnectionConfig::default()
+    };
+    let mut now = MonotonicInstant::from_millis(0);
+    let Ok(mut conn) = RdpeudpConnection::connect(config, now) else {
+        return;
+    };
+
+    let mut was_closed = false;
+
+    for step in steps {
+        let mut advanced = false;
+
+        match step {
+            Step::HandleV1(datagram) => {
+                if let Ok(mut bytes) = encode_vec(&datagram) {
+                    let _ = conn.handle_datagram(&mut bytes, now);
+                }
+            }
+            Step::HandleV2(packet) => {
+                if let Ok(mut bytes) = encode_vec(&packet) {
+                    let _ = conn.handle_datagram(&mut bytes, now);
+                }
+            }
+            Step::HandleRaw(mut bytes) => {
+                let _ = conn.handle_datagram(&mut bytes, now);
+            }
+            Step::Advance(millis) => {
+                now = now + core::time::Duration::from_millis(u64::from(millis));
+                conn.handle_timeout(now);
+                advanced = true;
+            }
+            Step::Send(payload) => {
+                let _ = conn.send(payload);
+            }
+            Step::Close => conn.close(),
+        }
+
+        // Close is terminal. A connection that reopens itself would let a peer
+        // resurrect a session the application already tore down.
+        if was_closed {
+            assert!(conn.is_closed(), "a closed connection became open again");
+            assert!(!conn.is_established(), "a closed connection reported established");
+        }
+        was_closed |= conn.is_closed();
+
+        // Draining must terminate. A generator that yields forever is a hang,
+        // which libFuzzer reports only as a timeout with no useful stack, so
+        // bound it here and fail loudly instead.
+        let mut transmits = 0u32;
+        while conn.poll_transmit(now).is_some() {
+            transmits += 1;
+            assert!(transmits < 10_000, "poll_transmit did not drain");
+        }
+
+        let mut events = 0u32;
+        while conn.poll_event().is_some() {
+            events += 1;
+            assert!(events < 10_000, "poll_event did not drain");
+        }
+
+        // `handle_timeout` must retire or re-arm every timer it fired. If one
+        // is still due at the same instant afterwards, the driver's
+        // `sleep_until` returns immediately, calls `handle_timeout` again, and
+        // the loop spins at full CPU for as long as the connection lives. The
+        // check is only meaningful right after a clock advance, because
+        // between advances a timer legitimately stays due until the driver
+        // gets to it.
+        if advanced {
+            if let Some(deadline) = conn.poll_timeout() {
+                assert!(
+                    deadline > now,
+                    "handle_timeout left a timer due at {deadline:?} with now={now:?}, which spins the driver"
+                );
+            }
+        }
+    }
+}
+
+/// Drives the multitransport tunnel state machine from both sides.
+///
+/// The tunnel validates a request ID and a security cookie before it will
+/// carry data, so the failure this targets is a sequence that reaches the
+/// established state without presenting the right cookie.
+pub fn rdpemt_tunnel(data: &[u8]) {
+    use arbitrary::{Arbitrary as _, Unstructured};
+    use ironrdp_core::encode_vec;
+    use ironrdp_rdpemt::pdu::{SECURITY_COOKIE_LEN, TunnelPdu};
+    use ironrdp_rdpemt::{RdpemtTunnel, Side, TunnelConfig};
+
+    #[derive(Debug, arbitrary::Arbitrary)]
+    enum Step {
+        HandlePdu(TunnelPdu),
+        HandleRaw(Vec<u8>),
+        SendData(Vec<u8>),
+    }
+
+    #[derive(Debug, arbitrary::Arbitrary)]
+    struct Session {
+        server_side: bool,
+        request_id: u32,
+        security_cookie: [u8; SECURITY_COOKIE_LEN],
+        steps: Vec<Step>,
+    }
+
+    let mut unstructured = Unstructured::new(data);
+    let Ok(session) = Session::arbitrary(&mut unstructured) else {
+        return;
+    };
+
+    let config = TunnelConfig {
+        request_id: session.request_id,
+        security_cookie: session.security_cookie,
+    };
+    let mut tunnel = if session.server_side {
+        RdpemtTunnel::server(config)
+    } else {
+        RdpemtTunnel::client(config)
+    };
+
+    let expected_side = if session.server_side {
+        Side::Server
+    } else {
+        Side::Client
+    };
+
+    for step in session.steps {
+        match step {
+            Step::HandlePdu(pdu) => {
+                // Encode through the owning variant: `TunnelPdu` decodes as a
+                // union but does not itself implement `Encode`.
+                let bytes = match &pdu {
+                    TunnelPdu::CreateRequest(inner) => encode_vec(inner),
+                    TunnelPdu::CreateResponse(inner) => encode_vec(inner),
+                    TunnelPdu::Data(inner) => encode_vec(inner),
+                };
+                if let Ok(bytes) = bytes {
+                    let _ = tunnel.handle_pdu(&bytes);
+                }
+            }
+            Step::HandleRaw(bytes) => {
+                let _ = tunnel.handle_pdu(&bytes);
+            }
+            Step::SendData(payload) => {
+                let _ = tunnel.send_data(&payload);
+            }
+        }
+
+        // A tunnel never changes which end of the connection it is.
+        assert_eq!(tunnel.side(), expected_side, "tunnel changed sides");
+
+        // Established and failed are mutually exclusive; a tunnel that is both
+        // would carry data over a handshake that was rejected.
+        assert!(
+            !(tunnel.is_established() && tunnel.is_failed()),
+            "tunnel reported established and failed at once"
+        );
+
+        let mut pdus = 0u32;
+        while tunnel.poll_pdu().is_some() {
+            pdus += 1;
+            assert!(pdus < 10_000, "poll_pdu did not drain");
+        }
+
+        let mut events = 0u32;
+        while tunnel.poll_event().is_some() {
+            events += 1;
+            assert!(events < 10_000, "poll_event did not drain");
+        }
+    }
+}
+
+/// Bounds the allocation an ACK vector can induce.
+///
+/// `V1AckVectorHeader` and `AckVectorPayload` are governed by different specs
+/// with different caps. [MS-RDPEUDP] 2.2.2.7 caps the v1 header at 2048
+/// elements, run-length coded, so a short datagram can describe a very long
+/// run. [MS-RDPEUDP2] 2.2.1.2.6's `AckVectorPayload` is tighter:
+/// `codedAckVecSize` is a 7-bit field, masked to `0x7F` on decode, so
+/// `ACK_VECTOR_MAX_ENTRIES` (127) is the real ceiling there, not 2048. The
+/// crash-only decode target only notices if either allocation aborts the
+/// process; this one asserts each decoder honours its own cap before it
+/// allocates, which is the difference between rejecting a hostile datagram
+/// and being killed by the OOM killer.
+pub fn rdpeudp_ack_vector(data: &[u8]) {
+    use ironrdp_core::{Encode as _, decode, encode_vec};
+    use ironrdp_rdpeudp::pdu::v2_ack::ACK_VECTOR_MAX_ENTRIES;
+    use ironrdp_rdpeudp::pdu::{AckVectorPayload, V1AckVectorHeader};
+
+    /// The v1 cap from MS-RDPEUDP 2.2.2.7. `V1AckVectorHeader` is the only
+    /// structure this bound actually governs; `AckVectorPayload` uses
+    /// `ACK_VECTOR_MAX_ENTRIES` instead, see the function doc comment.
+    const MAX_V1_ACK_VECTOR: usize = 2048;
+
+    if let Ok(payload) = decode::<AckVectorPayload>(data) {
+        assert!(
+            payload.entries.len() <= ACK_VECTOR_MAX_ENTRIES,
+            "decoded {} ACK vector entries, above the {ACK_VECTOR_MAX_ENTRIES}-entry cap",
+            payload.entries.len()
+        );
+
+        // Re-encoding must not disagree about the length either: an encoder
+        // that writes more than `size()` promised would overrun a caller's
+        // buffer rather than return an error.
+        if let Ok(encoded) = encode_vec(&payload) {
+            assert_eq!(payload.size(), encoded.len(), "ACK vector size() disagrees with encode");
+        }
+    }
+
+    if let Ok(header) = decode::<V1AckVectorHeader>(data) {
+        assert!(
+            header.elements.len() <= MAX_V1_ACK_VECTOR,
+            "decoded {} v1 ACK vector elements, above the 2048 cap",
+            header.elements.len()
+        );
     }
 }
