@@ -25,6 +25,10 @@ required-features = ["native-tls"]
 name = "udp"
 path = "tests/udp.rs"
 
+[[test]]
+name = "http_control"
+path = "tests/http_control.rs"
+
 [features]
 default = []
 rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
