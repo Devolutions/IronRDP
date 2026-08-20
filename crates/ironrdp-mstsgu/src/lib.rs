@@ -4,7 +4,8 @@
 #[macro_use]
 mod macros;
 
-mod http_auth;
+#[doc(hidden)]
+pub mod http_auth;
 mod proto;
 
 use core::fmt;

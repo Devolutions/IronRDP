@@ -14,6 +14,12 @@ categories.workspace = true
 
 [lib]
 doctest = false
+test = false
+
+[[test]]
+name = "http_auth"
+path = "tests/http_auth.rs"
+required-features = ["native-tls"]
 
 [features]
 default = []

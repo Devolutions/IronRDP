@@ -18,7 +18,7 @@ use crate::{Error, GwErrorExt as _, GwErrorKind};
 
 /// Result of consuming one HTTP auth challenge/response.
 #[derive(Debug)]
-pub(crate) enum AuthStep {
+pub enum AuthStep {
     /// Send another request with this `Authorization` header value.
     Continue(String),
     /// Authentication finished (caller should inspect the final HTTP status).
@@ -41,7 +41,7 @@ enum AuthBackend {
 }
 
 /// Multi-leg HTTP auth state for `Authorization: NTLM …` / `Negotiate …`.
-pub(crate) struct GatewayHttpAuth {
+pub struct GatewayHttpAuth {
     backend: AuthBackend,
     /// Scheme used in the Authorization header (`NTLM` or `Negotiate`).
     scheme: &'static str,
@@ -51,17 +51,21 @@ pub(crate) struct GatewayHttpAuth {
 }
 
 /// Client-side NTLM state for MS-TSGU `HTTP_EXTENDED_AUTH_PACKET` SSPI NTLM blobs.
-pub(crate) struct NtlmHttpAuth {
+pub struct NtlmHttpAuth {
     ntlm: Ntlm,
     credentials_handle: Option<AuthIdentityBuffers>,
     complete: bool,
 }
 
 impl GatewayHttpAuth {
+    pub fn scheme(&self) -> &'static str {
+        self.scheme
+    }
+
     /// Build auth state from a first-round `WWW-Authenticate` challenge set.
     ///
     /// Prefers Negotiate (Kerberos → NTLM SPNEGO) when advertised, otherwise pure NTLM.
-    pub(crate) fn from_challenges(
+    pub fn from_challenges(
         username: &str,
         password: &str,
         target_name: Option<String>,
@@ -322,12 +326,8 @@ impl GatewayHttpAuth {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "kept for post-handshake SSPI NTLM extended auth")
-)]
 impl NtlmHttpAuth {
-    pub(crate) fn new(username: &str, password: &str) -> Result<Self, Error> {
+    pub fn new(username: &str, password: &str) -> Result<Self, Error> {
         let identity = auth_identity(username, password)?;
         let mut ntlm = Ntlm::new();
         let credentials_handle = ntlm
@@ -348,7 +348,7 @@ impl NtlmHttpAuth {
     /// Produce the next NTLM token for extended-auth packet exchange.
     ///
     /// Returns `(token, complete)`.
-    pub(crate) fn step_token(&mut self, input: Option<&[u8]>) -> Result<(Vec<u8>, bool), Error> {
+    pub fn step_token(&mut self, input: Option<&[u8]>) -> Result<(Vec<u8>, bool), Error> {
         let mut input_token = [SecurityBuffer::new(
             input.map(<[u8]>::to_vec).unwrap_or_default(),
             BufferType::Token,
@@ -387,7 +387,7 @@ impl NtlmHttpAuth {
 }
 
 /// Build a Basic authorization header value.
-pub(crate) fn basic_authorization(username: &str, password: &str) -> String {
+pub fn basic_authorization(username: &str, password: &str) -> String {
     let token = STANDARD.encode(format!("{username}:{password}"));
     format!("Basic {token}")
 }
@@ -417,7 +417,7 @@ fn default_context_flags() -> ClientRequestFlags {
 }
 
 /// Case-insensitive scheme match; returns the remainder after the scheme (may be empty).
-fn split_auth_challenge<'a>(header_value: &'a str, scheme: &str) -> Option<&'a str> {
+pub fn split_auth_challenge<'a>(header_value: &'a str, scheme: &str) -> Option<&'a str> {
     let header_value = header_value.trim();
     let scheme_len = scheme.len();
     if header_value.len() < scheme_len {
@@ -444,83 +444,4 @@ pub(crate) fn www_authenticate_values(headers: &hyper::HeaderMap) -> Vec<&str> {
         .iter()
         .filter_map(|v| v.to_str().ok())
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn split_auth_challenge_parses_schemes() {
-        assert_eq!(split_auth_challenge("NTLM TlRMTVNTUA==", "NTLM"), Some("TlRMTVNTUA=="));
-        assert_eq!(split_auth_challenge("ntlm", "NTLM"), Some(""));
-        assert_eq!(split_auth_challenge("Negotiate abc", "Negotiate"), Some("abc"));
-        assert_eq!(
-            split_auth_challenge("Basic realm=\"rdg\"", "Basic"),
-            Some("realm=\"rdg\"")
-        );
-        assert_eq!(split_auth_challenge("Digest qop=auth", "NTLM"), None);
-    }
-
-    #[test]
-    fn basic_authorization_format() {
-        let value = basic_authorization("user", "pass");
-        assert_eq!(value, "Basic dXNlcjpwYXNz");
-    }
-
-    #[test]
-    fn negotiate_type1_from_challenge() {
-        let (auth, step) = GatewayHttpAuth::from_challenges(
-            r"CONTOSO\alice",
-            "secret",
-            Some("HTTP/rdg.contoso.com".to_owned()),
-            &["Negotiate"],
-        )
-        .expect("negotiate init");
-        assert_eq!(auth.scheme, "Negotiate");
-        match step {
-            AuthStep::Continue(header) => {
-                assert!(header.starts_with("Negotiate "));
-                assert!(header.len() > "Negotiate ".len());
-            }
-            other => panic!("expected Continue, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn ntlm_type1_from_challenge() {
-        let (auth, step) =
-            GatewayHttpAuth::from_challenges(r"CONTOSO\alice", "secret", None, &["NTLM"]).expect("ntlm init");
-        assert_eq!(auth.scheme, "NTLM");
-        match step {
-            AuthStep::Continue(header) => {
-                assert!(header.starts_with("NTLM "));
-                assert!(header.len() > "NTLM ".len());
-            }
-            other => panic!("expected Continue, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn try_basic_when_only_basic_offered() {
-        let (_auth, step) =
-            GatewayHttpAuth::from_challenges("alice", "secret", None, &["Basic realm=\"RDG\""]).expect("basic");
-        assert!(matches!(step, AuthStep::TryBasic));
-    }
-
-    #[test]
-    fn extended_auth_ntlm_type1_non_empty() {
-        let mut auth = NtlmHttpAuth::new(r"CONTOSO\alice", "secret").expect("ntlm init");
-        let (token, complete) = auth.step_token(None).expect("type1");
-        assert!(!token.is_empty());
-        assert!(!complete);
-    }
-
-    #[test]
-    fn prefer_negotiate_over_ntlm() {
-        let (auth, _) =
-            GatewayHttpAuth::from_challenges("alice", "secret", None, &["NTLM", "Negotiate", "Basic realm=\"x\""])
-                .expect("init");
-        assert_eq!(auth.scheme, "Negotiate");
-    }
 }
