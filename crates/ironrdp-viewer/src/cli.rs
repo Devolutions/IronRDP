@@ -447,7 +447,10 @@ fn apply_cli_to_builder(
             builder = builder.with_rdcleanpath_token(token);
         }
     } else if let Some(endpoint) = args.gw_endpoint {
-        builder = builder.with_transport(TransportKind::Gateway { endpoint });
+        builder = builder.with_transport(TransportKind::Gateway {
+            endpoint,
+            prefer_direct: false,
+        });
 
         if let Some(username) = args.gw_user {
             builder = builder.with_gateway_username(username);

@@ -616,41 +616,81 @@ impl RdpClient {
                 },
 
                 #[cfg(feature = "gateway")]
-                Transport::Gateway(gw) => match Box::pin(cancelable_operation(
-                    connect_gateway(
-                        &self.config,
-                        gw,
-                        &self.input_event_sender,
-                        cliprdr_factory,
-                        rdpdr_factory,
-                        reconnect_cookie,
-                    ),
-                    &mut self.close_receiver,
-                ))
-                .await
-                {
-                    Some(Ok(result)) => result,
-                    Some(Err(error)) => {
-                        if self
-                            .try_auto_reconnect(
-                                auto_reconnect_policy,
-                                &mut reconnect_attempt,
-                                auto_reconnect_cookie.as_ref(),
-                            )
-                            .await
+                Transport::Gateway(gw) => {
+                    let connect_result = if gw.prefer_direct {
+                        // Detect: try direct first, then fall back to the gateway on failure.
+                        match Box::pin(cancelable_operation(
+                            connect_direct(
+                                &self.config,
+                                &self.input_event_sender,
+                                cliprdr_factory,
+                                rdpdr_factory,
+                                reconnect_cookie,
+                            ),
+                            &mut self.close_receiver,
+                        ))
+                        .await
                         {
-                            continue;
+                            Some(Ok(result)) => Some(Ok(result)),
+                            Some(Err(direct_error)) => {
+                                info!(
+                                    error = %direct_error,
+                                    "Direct connection failed; falling back to RD Gateway"
+                                );
+                                Box::pin(cancelable_operation(
+                                    connect_gateway(
+                                        &self.config,
+                                        gw,
+                                        &self.input_event_sender,
+                                        cliprdr_factory,
+                                        rdpdr_factory,
+                                        reconnect_cookie,
+                                    ),
+                                    &mut self.close_receiver,
+                                ))
+                                .await
+                            }
+                            None => None,
                         }
-                        if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
+                    } else {
+                        Box::pin(cancelable_operation(
+                            connect_gateway(
+                                &self.config,
+                                gw,
+                                &self.input_event_sender,
+                                cliprdr_factory,
+                                rdpdr_factory,
+                                reconnect_cookie,
+                            ),
+                            &mut self.close_receiver,
+                        ))
+                        .await
+                    };
+
+                    match connect_result {
+                        Some(Ok(result)) => result,
+                        Some(Err(error)) => {
+                            if self
+                                .try_auto_reconnect(
+                                    auto_reconnect_policy,
+                                    &mut reconnect_attempt,
+                                    auto_reconnect_cookie.as_ref(),
+                                )
+                                .await
+                            {
+                                continue;
+                            }
+                            if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
+                                self.emit_user_initiated_termination();
+                            }
+                            break;
+                        }
+                        None => {
                             self.emit_user_initiated_termination();
+                            break;
                         }
-                        break;
                     }
-                    None => {
-                        self.emit_user_initiated_termination();
-                        break;
-                    }
-                },
+                }
 
                 Transport::RDCleanPath(rdcp) => match Box::pin(cancelable_operation(
                     connect_rdcleanpath_transport(
