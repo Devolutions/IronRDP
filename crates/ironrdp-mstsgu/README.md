@@ -5,6 +5,7 @@
 This crate
 - implements an MVP state needed to connect through Microsoft RD Gateway,
 - only supports the HTTPS protocol with WebSocket (and not the legacy HTTP or HTTP-RPC transports),
+- provides internal raw RPCH HTTP framing codecs, but no live RPC-over-HTTP gateway transport,
 - decodes HTTP control packets (`HTTP_SERVICE_MESSAGE`, `HTTP_REAUTH_MESSAGE`, and `HTTP_CLOSE_PACKET`) without performing mid-session reauthentication,
 - does not implement reconnection, Detect, or a live UDP/DTLS side channel,
 - authenticates the WebSocket upgrade with HTTP Negotiate (Kerberos then NTLM), NTLM, or Basic fallback,
