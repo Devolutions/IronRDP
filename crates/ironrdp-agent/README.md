@@ -9,6 +9,11 @@ The `ironrdp-agent` binary is the CLI for the persistent daemon support:
   [`ironrdp-client`] engine and one RDP session. It stays alive across many CLI invocations and
   serves requests over a local IPC transport (a Unix domain socket on Unix, a named pipe on
   Windows).
+- **Gateway forward** (`ironrdp-agent gw-forward`): a foreground listener that relays TCP through
+  an RD Gateway without an RDP session or the daemon.
+  `--socks5` serves SOCKS5 CONNECT (no auth); `--target HOST:PORT` is an SSH `-L`-style fixed forward.
+  Credentials come from `--username`/`--password` or `RDG_USERNAME`/`RDG_PASSWORD`, falling back to
+  `RDP_USERNAME`/`RDP_PASSWORD`.
 - **CLI** (`ironrdp-agent <op> …`): a short-lived invocation that opens the IPC endpoint, sends a
   single request, prints the response, and exits.
 

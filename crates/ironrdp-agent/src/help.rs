@@ -3,10 +3,12 @@
 /// Structured guide printed by `ironrdp-agent --help-agent`.
 pub(crate) const AGENT_GUIDE: &str = r#"# ironrdp-agent
 
-A CLI-driven, daemon-backed RDP client. One binary plays two roles:
+A CLI-driven, daemon-backed RDP client. One binary plays three roles:
 
 - DAEMON: `ironrdp-agent daemon-start` runs a long-lived foreground process that owns the RDP
   engine and one RDP session. Background it yourself (e.g. `ironrdp-agent daemon-start &`).
+- GATEWAY: `ironrdp-agent gw-forward` runs in the foreground and relays TCP through an RD Gateway
+  without an RDP session. It does not use the daemon or IPC.
 - CLI: every other subcommand opens the local IPC endpoint, sends one request, prints the
   response, and exits.
 

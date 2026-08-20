@@ -4,9 +4,8 @@
 //! no-auth method negotiation, CONNECT to an IPv4 address, an IPv6 address, or a
 //! domain name, and a success/failure reply. UDP ASSOCIATE and BIND are not supported.
 
+use anyhow::Context as _;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
-
-use crate::error::{ForwardError, ForwardErrorKind, Result};
 
 const VERSION: u8 = 0x05;
 const METHOD_NO_AUTH: u8 = 0x00;
@@ -35,15 +34,15 @@ pub(crate) struct SocksTarget {
 /// Greeting failures have already sent `05 FF` and must not be followed by a CONNECT
 /// reply. Request failures carry the RFC 1928 reply code to send before closing.
 pub(crate) enum NegotiateFailure {
-    Greeting(ForwardError),
-    Request { error: ForwardError, reply: u8 },
+    Greeting(anyhow::Error),
+    Request { error: anyhow::Error, reply: u8 },
 }
 
 /// Run the SOCKS5 negotiation and read the CONNECT request.
 ///
 /// On success, returns the requested target; the caller opens the tunnel and then calls
 /// [`write_reply`] to report the outcome before relaying bytes.
-pub(crate) async fn negotiate<S>(stream: &mut S) -> core::result::Result<SocksTarget, NegotiateFailure>
+pub(crate) async fn negotiate<S>(stream: &mut S) -> Result<SocksTarget, NegotiateFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -53,25 +52,19 @@ where
 
 /// Write the SOCKS5 reply for a CONNECT attempt and flush it so the client can begin
 /// relaying immediately.
-pub(crate) async fn write_reply<S>(stream: &mut S, rep: u8) -> Result<()>
+pub(crate) async fn write_reply<S>(stream: &mut S, rep: u8) -> anyhow::Result<()>
 where
     S: AsyncWrite + Unpin,
 {
     // BND.ADDR/BND.PORT are reported as 0.0.0.0:0; clients ignore them for CONNECT.
     let reply = [VERSION, rep, RSV, ATYP_IPV4, 0, 0, 0, 0, 0, 0];
-    stream
-        .write_all(&reply)
-        .await
-        .map_err(|e| ForwardError::new("write socks5 reply", ForwardErrorKind::Io).with_source(e))?;
-    stream
-        .flush()
-        .await
-        .map_err(|e| ForwardError::new("flush socks5 reply", ForwardErrorKind::Io).with_source(e))?;
+    stream.write_all(&reply).await.context("write socks5 reply")?;
+    stream.flush().await.context("flush socks5 reply")?;
     Ok(())
 }
 
 /// Write a CONNECT failure reply, then yield the original error.
-pub(crate) async fn reject_request<S>(stream: &mut S, error: ForwardError, reply: u8) -> ForwardError
+pub(crate) async fn reject_request<S>(stream: &mut S, error: anyhow::Error, reply: u8) -> anyhow::Error
 where
     S: AsyncWrite + Unpin,
 {
@@ -79,13 +72,13 @@ where
     error
 }
 
-async fn read_greeting<S>(stream: &mut S) -> Result<()>
+async fn read_greeting<S>(stream: &mut S) -> anyhow::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let version = read_u8(stream).await?;
     if version != VERSION {
-        return Err(ForwardError::new("socks5 version", ForwardErrorKind::Socks5));
+        anyhow::bail!("socks5 version");
     }
     let method_count = usize::from(read_u8(stream).await?);
     let mut methods = vec![0u8; method_count];
@@ -100,22 +93,16 @@ where
     stream
         .write_all(&[VERSION, chosen])
         .await
-        .map_err(|e| ForwardError::new("write socks5 greeting", ForwardErrorKind::Io).with_source(e))?;
-    stream
-        .flush()
-        .await
-        .map_err(|e| ForwardError::new("flush socks5 greeting", ForwardErrorKind::Io).with_source(e))?;
+        .context("write socks5 greeting")?;
+    stream.flush().await.context("flush socks5 greeting")?;
 
     if !offers_no_auth {
-        return Err(ForwardError::new(
-            "client offers no no-auth method",
-            ForwardErrorKind::Socks5,
-        ));
+        anyhow::bail!("client offers no no-auth method");
     }
     Ok(())
 }
 
-async fn read_connect_request<S>(stream: &mut S) -> core::result::Result<SocksTarget, NegotiateFailure>
+async fn read_connect_request<S>(stream: &mut S) -> Result<SocksTarget, NegotiateFailure>
 where
     S: AsyncRead + Unpin,
 {
@@ -165,19 +152,19 @@ where
 
 fn request_err(context: &'static str, reply: u8) -> NegotiateFailure {
     NegotiateFailure::Request {
-        error: ForwardError::new(context, ForwardErrorKind::Socks5),
+        error: anyhow::anyhow!(context),
         reply,
     }
 }
 
-fn request_io(error: ForwardError) -> NegotiateFailure {
+fn request_io(error: anyhow::Error) -> NegotiateFailure {
     NegotiateFailure::Request {
         error,
         reply: REP_GENERAL_FAILURE,
     }
 }
 
-async fn read_u8<S>(stream: &mut S) -> Result<u8>
+async fn read_u8<S>(stream: &mut S) -> anyhow::Result<u8>
 where
     S: AsyncRead + Unpin,
 {
@@ -186,13 +173,10 @@ where
     Ok(byte[0])
 }
 
-async fn read_exact<S>(stream: &mut S, buf: &mut [u8]) -> Result<()>
+async fn read_exact<S>(stream: &mut S, buf: &mut [u8]) -> anyhow::Result<()>
 where
     S: AsyncRead + Unpin,
 {
-    stream
-        .read_exact(buf)
-        .await
-        .map_err(|e| ForwardError::new("read socks5", ForwardErrorKind::Socks5).with_source(e))?;
+    stream.read_exact(buf).await.context("read socks5")?;
     Ok(())
 }
