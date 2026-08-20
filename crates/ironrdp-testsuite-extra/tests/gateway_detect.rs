@@ -10,14 +10,10 @@ async fn prefer_direct_success_skips_gateway() {
     let gateway_called = Arc::new(AtomicBool::new(false));
     let gateway_called_flag = Arc::clone(&gateway_called);
 
-    let result = connect_preferring_direct(
-        &mut rx,
-        async { Ok::<_, &'static str>("direct") },
-        move || {
-            gateway_called_flag.store(true, Ordering::SeqCst);
-            async { Ok("gateway") }
-        },
-    )
+    let result = connect_preferring_direct(&mut rx, async { Ok::<_, &'static str>("direct") }, move || {
+        gateway_called_flag.store(true, Ordering::SeqCst);
+        async { Ok("gateway") }
+    })
     .await;
 
     assert_eq!(result, Some(Ok("direct")));
@@ -30,14 +26,10 @@ async fn prefer_direct_failure_invokes_gateway() {
     let gateway_called = Arc::new(AtomicBool::new(false));
     let gateway_called_flag = Arc::clone(&gateway_called);
 
-    let result = connect_preferring_direct(
-        &mut rx,
-        async { Err::<&'static str, _>("direct failed") },
-        move || {
-            gateway_called_flag.store(true, Ordering::SeqCst);
-            async { Ok("gateway") }
-        },
-    )
+    let result = connect_preferring_direct(&mut rx, async { Err::<&'static str, _>("direct failed") }, move || {
+        gateway_called_flag.store(true, Ordering::SeqCst);
+        async { Ok("gateway") }
+    })
     .await;
 
     assert_eq!(result, Some(Ok("gateway")));
@@ -81,17 +73,13 @@ async fn prefer_direct_cancel_during_gateway_stops_connection() {
     let gateway_started_flag = Arc::clone(&gateway_started);
 
     let connect = tokio::spawn(async move {
-        connect_preferring_direct(
-            &mut rx,
-            async { Err::<&'static str, _>("direct failed") },
-            move || {
-                let gateway_started_flag = Arc::clone(&gateway_started_flag);
-                async move {
-                    gateway_started_flag.notify_one();
-                    core::future::pending::<Result<&'static str, &'static str>>().await
-                }
-            },
-        )
+        connect_preferring_direct(&mut rx, async { Err::<&'static str, _>("direct failed") }, move || {
+            let gateway_started_flag = Arc::clone(&gateway_started_flag);
+            async move {
+                gateway_started_flag.notify_one();
+                core::future::pending::<Result<&'static str, &'static str>>().await
+            }
+        })
         .await
     });
 
