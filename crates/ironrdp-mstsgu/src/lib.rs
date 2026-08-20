@@ -9,11 +9,6 @@ pub mod http_auth;
 mod proto;
 mod udp;
 
-pub use self::udp::{
-    AaSynData, AaSynDataResp, ConnectPkt, ConnectPktResp, DataPkt, DiscPkt, GwUdpOffer, MAX_CONNECT_REQ_FRAGMENT_SIZE,
-    UdpCorrelationInfo, UdpPacketHeader, UdpPktType, encode_connect_request, fragment_connect_pkt,
-};
-
 use core::fmt;
 use core::fmt::Display;
 use core::pin::Pin;
@@ -38,9 +33,15 @@ use tokio_tungstenite::tungstenite::{Message, http};
 use tokio_util::sync::PollSender;
 
 use self::http_auth::{AuthStep, GatewayHttpAuth, basic_authorization, www_authenticate_values};
+#[doc(hidden)]
+pub use self::proto::{ChannelClosePkt, ReauthMessagePkt, ServiceMessagePkt, gateway_code_label};
 use self::proto::{
     ChannelPkt, ChannelResp, DataPkt as HttpDataPkt, HandshakeReqPkt, HandshakeRespPkt, HttpCapsTy, KeepalivePkt,
     PktHdr, PktTy, TunnelAuthPkt, TunnelAuthRespPkt, TunnelReqPkt, TunnelRespPkt,
+};
+pub use self::udp::{
+    AaSynData, AaSynDataResp, ConnectPkt, ConnectPktResp, DataPkt, DiscPkt, GwUdpOffer, MAX_CONNECT_REQ_FRAGMENT_SIZE,
+    UdpCorrelationInfo, UdpPacketHeader, UdpPktType, encode_connect_request, fragment_connect_pkt,
 };
 
 #[derive(Clone, Debug)]
@@ -252,6 +253,25 @@ impl GwClient {
                             PktTy::Data => {
                                 let p = HttpDataPkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
                                 in_tx.send(Bytes::from(p.data.to_vec())).await.map_err(|e| custom_err!("in_tx dead", e))?;
+                            },
+                            PktTy::ServiceMessage => {
+                                let msg = ServiceMessagePkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
+                                warn!("RD Gateway service message: {}", msg.message);
+                            },
+                            PktTy::ReauthMessage => {
+                                let msg = ReauthMessagePkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
+                                warn!(
+                                    "RD Gateway requested reauthentication (context 0x{:016x}); mid-session reauth is not performed",
+                                    msg.reauth_tunnel_context
+                                );
+                            },
+                            PktTy::ChannelClose => {
+                                let close = ChannelClosePkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
+                                match gateway_code_label(close.status_code) {
+                                    Some(label) => warn!("RD Gateway closed the channel ({label})"),
+                                    None => warn!("RD Gateway closed the channel (0x{:08x})", close.status_code),
+                                }
+                                return Ok(());
                             },
                             x => {
                                 warn!("Unhandled gw packet type {x:?}");
