@@ -1,5 +1,5 @@
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use ironrdp_client::rdp::connect_preferring_direct;
 use tokio::sync::{Notify, watch};
