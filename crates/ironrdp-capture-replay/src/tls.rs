@@ -1,6 +1,6 @@
 use aes_gcm::aead::{AeadInPlace as _, KeyInit as _};
 use aes_gcm::{Aes128Gcm, Aes256Gcm, Nonce, Tag};
-use hmac::{Hmac, KeyInit as _, Mac};
+use hmac::{Hmac, KeyInit as _, Mac as _};
 use sha2::{Sha256, Sha384};
 
 use crate::transport::x224_connection_tpdu_end;
