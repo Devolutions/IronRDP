@@ -1,0 +1,27 @@
+[package]
+name = "ironrdp-gwforward"
+version = "0.0.0"
+publish = false
+readme = "README.md"
+description = "Generic TCP forwarding and SOCKS5 proxying over an MS-TSGU RD Gateway tunnel"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[dependencies]
+ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.0.1", features = ["rustls"] }
+tokio = { version = "1.52", features = ["macros", "rt", "net", "io-util", "time"] } # public
+tracing = "0.1"
+
+[lints]
+workspace = true

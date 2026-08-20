@@ -73,6 +73,12 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  them, except NamedPipe TLS/CredSSP stay forced off. Prefer
                                  `--sandbox-id` over `--sandbox-pipe`; the pipe escape hatch needs
                                  `-u`/`-p` (guest password from `sandbox config`).
+- `gw-forward --gateway HOST[:PORT] (--socks5 | --target HOST:PORT) [--listen ADDR]`
+                                 Forward TCP through an RD Gateway without an RDP session.
+                                 `--socks5` serves SOCKS5 CONNECT (no auth); `--target` is an
+                                 SSH `-L`-style fixed forward. Credentials come from
+                                 `--username`/`--password` or `RDG_USERNAME`/`RDG_PASSWORD`,
+                                 falling back to `RDP_USERNAME`/`RDP_PASSWORD`.
 - `disconnect`                   Tear down the current session (daemon keeps running).
 - `status`                       Report connection state, destination, last frame size, and whether
                                  credentials are preloaded (`credentials loaded: true|false`). Query
