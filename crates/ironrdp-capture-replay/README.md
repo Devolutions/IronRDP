@@ -3,6 +3,12 @@
 `ironrdp-capture-replay` replays supported direct-TCP RDP captures offline and exports framebuffer snapshots without writing TLS secrets, decrypted payloads, or raw capture data.
 It is an internal analysis tool built on the replay routing pipeline.
 
+RD Gateway (MS-TSGU) WebSocket captures are supported after the outer HTTPS session is already decrypted from the capture's embedded TLS key log.
+When that plaintext starts with an `RDG_OUT_DATA /remoteDesktopGateway/` upgrade, the WebSocket frames and `HTTP_DATA_PACKET` wrappers are removed and the recovered inner stream is replayed like a direct capture.
+RPC-over-HTTP (`RPC_IN_DATA` / `RPC_OUT_DATA`) tunnels are not unwrapped.
+External key-log files and resumed or mid-stream TLS decryption are out of scope.
+Unwrap runs only after TLS plaintext is already available.
+
 ## Exporting frames
 
 Run the CLI with a pcapng capture that contains the TLS key-log material required by the replay pipeline.

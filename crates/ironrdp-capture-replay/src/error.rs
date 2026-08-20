@@ -53,4 +53,7 @@ pub enum ReplayError {
     /// A captured dynamic channel could not be attached.
     #[error("captured dynamic channel could not be attached")]
     DynamicChannelAttachment,
+    /// The gateway tunnel framing is incomplete or malformed.
+    #[error("capture gateway tunnel framing is invalid: {0}")]
+    GatewayFraming(String),
 }

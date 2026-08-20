@@ -31,8 +31,23 @@ pub struct Plaintext {
 /// TLS key-log entries are used only in memory and are not retained by the
 /// returned streams.
 pub fn decrypt_tls(capture: &Capture) -> Result<Plaintext, ReplayError> {
-    let client_records = collect_tls_records(&capture.flow.client_stream, 0xe0)?;
-    let server_records = collect_tls_records(&capture.flow.server_stream, 0xd0)?;
+    decrypt_tls_streams(
+        &capture.flow.client_stream,
+        &capture.flow.server_stream,
+        capture.tls_key_log.as_str(),
+    )
+}
+
+/// Decrypt TLS application data from a pair of directional byte streams.
+///
+/// Used after gateway unwrap, when the inner RDP session is itself TLS.
+pub(crate) fn decrypt_tls_streams(
+    client_stream: &PacketStream,
+    server_stream: &PacketStream,
+    key_log: &str,
+) -> Result<Plaintext, ReplayError> {
+    let client_records = collect_tls_records(client_stream, 0xe0)?;
+    let server_records = collect_tls_records(server_stream, 0xd0)?;
     let (client_records, server_records) = match (client_records, server_records) {
         (Some(client_records), Some(server_records)) => (client_records, server_records),
         (None, None) => return Err(ReplayError::StandardSecurity),
@@ -41,7 +56,7 @@ pub fn decrypt_tls(capture: &Capture) -> Result<Plaintext, ReplayError> {
     if client_records.is_empty() && server_records.is_empty() {
         return Err(ReplayError::StandardSecurity);
     }
-    let tls = Tls::from_records(&client_records, &server_records, capture.tls_key_log.as_str())?;
+    let tls = Tls::from_records(&client_records, &server_records, key_log)?;
 
     Ok(Plaintext {
         client: tls.decrypt(Direction::Client, &client_records)?,

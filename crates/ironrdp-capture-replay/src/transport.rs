@@ -246,6 +246,7 @@ fn parse_tcp_packet(packet: usize, bytes: &[u8]) -> Option<Segment> {
 fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
     segments.retain(|segment| !segment.data.is_empty() || segment.syn || segment.fin || segment.rst);
     let mut missing_tcp_flow = false;
+    let mut gateway = None;
     for (start, syn) in segments
         .iter()
         .enumerate()
@@ -313,6 +314,18 @@ fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
                 server_stream,
             });
         }
+        if server.port == 443 && gateway.is_none() {
+            gateway = Some(Flow {
+                client,
+                server,
+                client_stream,
+                server_stream,
+            });
+        }
+    }
+
+    if let Some(flow) = gateway {
+        return Ok(flow);
     }
 
     Err(if missing_tcp_flow {
@@ -517,6 +530,58 @@ mod tests {
         request.extend([1, 0, 8, 0, 3, 0, 0, 0]);
 
         assert_eq!(x224_connection_tpdu_end(&request, 0xe0), Some(47));
+    }
+
+    #[test]
+    fn selects_a_gateway_port_flow_without_x224() {
+        let client = endpoint(1);
+        let server = endpoint(443);
+        let flow = assemble_flow(vec![
+            segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
+            segment_between(client.clone(), server.clone(), 101, 2, false, true, b"CLIENT"),
+            segment_between(server, client, 200, 3, false, true, b"SERVER"),
+        ])
+        .unwrap();
+
+        assert_eq!(flow.server.port, 443);
+        assert_eq!(flatten(&flow.client_stream), b"CLIENT");
+        assert_eq!(flatten(&flow.server_stream), b"SERVER");
+    }
+
+    #[test]
+    fn prefers_an_x224_flow_over_a_gateway_port_flow() {
+        let gateway_client = endpoint(1);
+        let gateway_server = endpoint(443);
+        let rdp_client = endpoint(3);
+        let rdp_server = endpoint(4);
+        let flow = assemble_flow(vec![
+            segment_between(gateway_client.clone(), gateway_server.clone(), 100, 1, true, false, &[]),
+            segment_between(
+                gateway_client.clone(),
+                gateway_server.clone(),
+                101,
+                2,
+                false,
+                true,
+                b"HTTPS",
+            ),
+            segment_between(gateway_server, gateway_client, 200, 3, false, true, b"HTTPS"),
+            segment_between(rdp_client.clone(), rdp_server.clone(), 300, 4, true, false, &[]),
+            segment_between(
+                rdp_client.clone(),
+                rdp_server.clone(),
+                301,
+                5,
+                false,
+                true,
+                &connection_request(),
+            ),
+            segment_between(rdp_server, rdp_client, 400, 6, false, true, &connection_confirm()),
+        ])
+        .unwrap();
+
+        assert_eq!(flow.client.port, 3);
+        assert_eq!(flow.server.port, 4);
     }
 
     #[test]

@@ -21,7 +21,8 @@ use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcessor};
 
-use crate::{Capture, NegotiatedState, PacketStream, Plaintext, ReplayError, decrypt_tls, recover_negotiated_state};
+use crate::tls::{decrypt_tls, decrypt_tls_streams};
+use crate::{Capture, NegotiatedState, PacketStream, Plaintext, ReplayError, gateway, recover_negotiated_state};
 
 const MAX_DESKTOP_DIM: u16 = 8192;
 const MAX_EGFX_OUTPUT_DIM: u16 = 32_766;
@@ -557,7 +558,11 @@ pub fn replay_capture(capture: &Capture) -> Result<ReplayReport, ReplayError> {
 }
 
 pub(crate) fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter, Plaintext), ReplayError> {
-    let plaintext = decrypt_tls(capture)?;
+    let mut plaintext = decrypt_tls(capture)?;
+    if gateway::is_gateway_tunnel(&plaintext) {
+        let tunneled = gateway::extract_tunneled_rdp(&plaintext)?;
+        plaintext = decrypt_tls_streams(&tunneled.client, &tunneled.server, capture.tls_key_log.as_str())?;
+    }
     let router = ReplayRouter::new(CapturedActivation {
         state: recover_negotiated_state(&plaintext)?,
         compression_type: captured_compression_type(&plaintext),
