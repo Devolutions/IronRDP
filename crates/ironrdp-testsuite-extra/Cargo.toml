@@ -50,7 +50,6 @@ ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
 ironrdp-graphics.path = "../ironrdp-graphics"
 ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-input.path = "../ironrdp-input"
-ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rail.path = "../ironrdp-rail"
 ironrdp-rdpdr.path = "../ironrdp-rdpdr"
@@ -87,18 +86,6 @@ ironrdp-error = { path = "../ironrdp-error" }
 
 [target.'cfg(windows)'.dev-dependencies]
 ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"
-windows = { version = "0.62", features = [
-    "Wdk_Foundation",
-    "Wdk_Storage_FileSystem",
-    "Wdk_System_SystemServices",
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Security_Authorization",
-    "Win32_Security_Credentials",
-    "Win32_Storage_FileSystem",
-    "Win32_System_IO",
-    "Win32_System_Threading",
-] }
 
 [lints]
 workspace = true

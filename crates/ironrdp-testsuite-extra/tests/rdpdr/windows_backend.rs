@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ironrdp_core as _;
-use ironrdp_pdu as _;
 use ironrdp_rdpdr::RdpdrBackend;
 use ironrdp_rdpdr::pdu::efs::{
     AnyIoCtlCode, CreateDisposition, CreateOptions, DecodedDeviceControlRequest, DesiredAccess, DeviceCloseRequest,
@@ -19,7 +18,6 @@ use ironrdp_rdpdr::pdu::efs::{
 use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackend, WindowsRdpdrBackendFactory};
 use ironrdp_svc::SvcMessage;
 use tracing as _;
-use windows as _;
 
 const MAX_STATIC_IO_SIZE: usize = 1_024 * 1_024;
 
