@@ -16,7 +16,7 @@ use core::time::Duration;
 use std::collections::VecDeque;
 use std::io;
 
-use ironrdp::pdu::X224_HINT;
+use ironrdp::pdu::{PduHint, X224_HINT};
 use ironrdp_async::bytes::BytesMut;
 use ironrdp_async::{Framed, FramedRead, StreamWrapper};
 
@@ -100,6 +100,27 @@ fn tpkt(payload: &[u8]) -> Vec<u8> {
     frame
 }
 
+#[derive(Debug)]
+struct ZeroSizeHint;
+
+impl PduHint for ZeroSizeHint {
+    fn find_size(&self, _bytes: &[u8]) -> ironrdp::core::DecodeResult<Option<(bool, usize)>> {
+        Ok(Some((true, 0)))
+    }
+}
+
+#[test]
+fn zero_size_hint_fails_before_reading() {
+    let mut framed = Framed::<ChunkedStream>::new(ChunkedStream::new([tpkt(&[0xAA; 8])]));
+
+    let error = block_on(framed.read_by_hint(&ZeroSizeHint)).expect_err("zero PDU size must fail");
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    let (stream, leftover) = framed.into_inner();
+    assert_eq!(stream.chunks.len(), 1, "the stream must not be read");
+    assert!(leftover.is_empty());
+}
+
 #[test]
 fn each_socket_read_advances_the_arrival_time() {
     // One frame per read, so each PDU is stamped by the read that carried it.
@@ -145,14 +166,16 @@ fn leftover_carried_into_a_new_framed_keeps_its_arrival_time() {
     // around bytes the previous one had already read. Those bytes arrived at that earlier read,
     // and the rebuilt `Framed` has to keep saying so: a PDU decoded out of them did not arrive
     // when the new `Framed` was built.
+    let carried_frame = tpkt(&[0xDD; 8]);
     let mut chunk = tpkt(&[0xAA; 8]);
-    chunk.extend_from_slice(&tpkt(&[0xDD; 8]));
+    chunk.extend_from_slice(&carried_frame);
     let mut framed = Framed::<ChunkedStream>::new(ChunkedStream::new([chunk]));
 
     let (_, read_at) = block_on(framed.read_by_hint(&X224_HINT)).expect("first frame");
 
     let (stream, leftover) = framed.into_inner();
     assert!(!leftover.is_empty(), "the second frame is still buffered");
+    assert_eq!(leftover.as_bytes(), carried_frame);
 
     std::thread::sleep(Duration::from_millis(10));
 

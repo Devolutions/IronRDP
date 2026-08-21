@@ -314,12 +314,6 @@ public partial class ClientConnector: IDisposable
                 throw new ObjectDisposedException("ClientConnector");
             }
             nuint inputLength = (nuint)input.Length;
-            Raw.MonotonicInstant* receivedAtRaw;
-            receivedAtRaw = receivedAt.AsFFI();
-            if (receivedAtRaw == null)
-            {
-                throw new ObjectDisposedException("MonotonicInstant");
-            }
             Raw.WriteBuf* writeBufRaw;
             writeBufRaw = writeBuf.AsFFI();
             if (writeBufRaw == null)
@@ -328,7 +322,7 @@ public partial class ClientConnector: IDisposable
             }
             fixed (byte* inputPtr = input)
             {
-                Raw.ConnectorFfiResultBoxWrittenBoxIronRdpError result = Raw.ClientConnector.Step(_inner, inputPtr, inputLength, receivedAtRaw, writeBufRaw);
+                Raw.ConnectorFfiResultBoxWrittenBoxIronRdpError result = Raw.ClientConnector.Step(_inner, inputPtr, inputLength, receivedAt.Milliseconds, writeBufRaw);
                 if (!result.isOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));

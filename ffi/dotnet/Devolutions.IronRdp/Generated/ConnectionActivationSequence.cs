@@ -115,12 +115,6 @@ public partial class ConnectionActivationSequence: IDisposable
                 throw new ObjectDisposedException("ConnectionActivationSequence");
             }
             nuint pduLength = (nuint)pdu.Length;
-            Raw.MonotonicInstant* receivedAtRaw;
-            receivedAtRaw = receivedAt.AsFFI();
-            if (receivedAtRaw == null)
-            {
-                throw new ObjectDisposedException("MonotonicInstant");
-            }
             Raw.WriteBuf* bufRaw;
             bufRaw = buf.AsFFI();
             if (bufRaw == null)
@@ -129,7 +123,7 @@ public partial class ConnectionActivationSequence: IDisposable
             }
             fixed (byte* pduPtr = pdu)
             {
-                Raw.ConnectorActivationFfiResultBoxWrittenBoxIronRdpError result = Raw.ConnectionActivationSequence.Step(_inner, pduPtr, pduLength, receivedAtRaw, bufRaw);
+                Raw.ConnectorActivationFfiResultBoxWrittenBoxIronRdpError result = Raw.ConnectionActivationSequence.Step(_inner, pduPtr, pduLength, receivedAt.Milliseconds, bufRaw);
                 if (!result.isOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));

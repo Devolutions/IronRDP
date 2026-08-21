@@ -24,6 +24,26 @@ public class FramedTimestampTests
     private const ulong MinObservedGapMs = 30;
 
     [Fact]
+    public void MonotonicInstantIsANonOwningValue()
+    {
+        Assert.True(typeof(MonotonicInstant).IsValueType);
+        Assert.False(typeof(IDisposable).IsAssignableFrom(typeof(MonotonicInstant)));
+        Assert.Null(typeof(MonotonicInstant).GetConstructor(new[] { typeof(ulong) }));
+        Assert.Equal(sizeof(ulong), System.Runtime.InteropServices.Marshal.SizeOf<MonotonicInstant>());
+    }
+
+    [Fact]
+    public async Task ZeroSizeHintFailsBeforeReading()
+    {
+        var stream = new ScriptedStream(PduA);
+        var framed = new Framed<ScriptedStream>(stream);
+
+        await Assert.ThrowsAsync<InvalidDataException>(async () => await framed.ReadByHint(new FixedSizeHint(0)));
+
+        Assert.Equal(0, stream.ReadCount);
+    }
+
+    [Fact]
     public async Task TwoPdusFromOneReadShareTheirArrivalTime()
     {
         var stream = new ScriptedStream(Concat(PduA, PduB));
@@ -124,10 +144,10 @@ public class FramedTimestampTests
         }
 
         Assert.Equal(1, stream.ReadCount);
-        Assert.NotNull(recording.ReceivedAt);
-        Assert.NotNull(recording.StepEnteredAt);
-        AssertSameInstant(readAt, recording.ReceivedAt!);
-        Assert.True(recording.StepEnteredAt!.MillisSince(recording.ReceivedAt!) >= MinObservedGapMs);
+        Assert.True(recording.ReceivedAt.HasValue);
+        Assert.True(recording.StepEnteredAt.HasValue);
+        AssertSameInstant(readAt, recording.ReceivedAt.Value);
+        Assert.True(recording.StepEnteredAt.Value.MillisSince(recording.ReceivedAt.Value) >= MinObservedGapMs);
     }
 
     private static void AssertSameInstant(MonotonicInstant left, MonotonicInstant right)

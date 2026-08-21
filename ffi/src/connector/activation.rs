@@ -8,7 +8,6 @@ pub mod ffi {
     use crate::error::IncorrectEnumTypeError;
     use crate::error::ffi::IronRdpError;
     use crate::pdu::ffi::WriteBuf;
-    use crate::time::ffi::MonotonicInstant;
 
     #[diplomat::opaque]
     pub struct ConnectionActivationSequence(
@@ -34,10 +33,11 @@ pub mod ffi {
         pub fn step(
             &mut self,
             pdu: &[u8],
-            received_at: &MonotonicInstant,
+            received_at: u64,
             buf: &mut WriteBuf,
         ) -> Result<Box<Written>, Box<IronRdpError>> {
-            let res = self.0.step(pdu, received_at.0, &mut buf.0).map(Written).map(Box::new)?;
+            let received_at = ironrdp::connector::MonotonicInstant::from_millis(received_at);
+            let res = self.0.step(pdu, received_at, &mut buf.0).map(Written).map(Box::new)?;
             Ok(res)
         }
 

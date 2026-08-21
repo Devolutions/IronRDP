@@ -44,6 +44,11 @@ impl Leftover {
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
+
+    /// Returns the buffered bytes without exposing mutation.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 impl<S> Framed<S> {
@@ -97,6 +102,10 @@ where
     /// Accumulates at least `length` bytes and returns exactly `length` bytes along with when
     /// they arrived, keeping the leftover in the internal buffer.
     pub(crate) fn read_exact(&mut self, length: usize) -> io::Result<(BytesMut, MonotonicInstant)> {
+        if length == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "zero PDU size"));
+        }
+
         loop {
             // The `last_read_at` invariant makes this `Some` for any non-empty buffer, so a
             // complete frame is never held back waiting for a timestamp that will not come.

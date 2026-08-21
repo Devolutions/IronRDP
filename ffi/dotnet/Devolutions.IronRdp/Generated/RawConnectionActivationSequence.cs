@@ -30,7 +30,7 @@ public partial struct ConnectionActivationSequence
     /// here instead would time how long the caller took to get around to this call.
     /// </remarks>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_step", ExactSpelling = true)]
-    public static unsafe extern ConnectorActivationFfiResultBoxWrittenBoxIronRdpError Step(ConnectionActivationSequence* self, byte* pdu, nuint pduSz, MonotonicInstant* receivedAt, WriteBuf* buf);
+    public static unsafe extern ConnectorActivationFfiResultBoxWrittenBoxIronRdpError Step(ConnectionActivationSequence* self, byte* pdu, nuint pduSz, ulong receivedAt, WriteBuf* buf);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_step_no_input", ExactSpelling = true)]
     public static unsafe extern ConnectorActivationFfiResultBoxWrittenBoxIronRdpError StepNoInput(ConnectionActivationSequence* self, WriteBuf* buf);

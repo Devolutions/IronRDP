@@ -23,7 +23,6 @@ pub mod ffi {
     use crate::error::ValueConsumedError;
     use crate::error::ffi::{IronRdpError, IronRdpErrorKind};
     use crate::pdu::ffi::WriteBuf;
-    use crate::time::ffi::MonotonicInstant;
 
     #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
@@ -197,13 +196,14 @@ pub mod ffi {
         pub fn step(
             &mut self,
             input: &[u8],
-            received_at: &MonotonicInstant,
+            received_at: u64,
             write_buf: &mut WriteBuf,
         ) -> Result<Box<Written>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            let written = connector.step(input, received_at.0, &mut write_buf.0)?;
+            let received_at = ironrdp::connector::MonotonicInstant::from_millis(received_at);
+            let written = connector.step(input, received_at, &mut write_buf.0)?;
             Ok(Box::new(Written(written)))
         }
 

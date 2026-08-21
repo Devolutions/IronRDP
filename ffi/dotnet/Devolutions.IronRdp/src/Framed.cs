@@ -45,9 +45,6 @@ public class Framed<TS> where TS : Stream
     /// <remarks>
     /// INVARIANT: this is set whenever <c>_buffer</c> is non-empty, which is what lets the read
     /// methods return an arrival time without a null check the caller could get wrong.
-    /// <br/>
-    /// The same instance is handed to every PDU that came out of that read, so callers must not
-    /// dispose it.
     /// </remarks>
     private MonotonicInstant? _lastReadAt;
 
@@ -109,11 +106,15 @@ public class Framed<TS> where TS : Stream
     /// </summary>
     /// <param name="size">The number of bytes to read.</param>
     /// <returns>
-    /// The bytes read, and when the read that completed them finished. The instant is shared with
-    /// every other PDU from that same read, so do not dispose it.
+    /// The bytes read, and when the read that completed them finished.
     /// </returns>
     public async Task<(byte[], MonotonicInstant)> ReadExact(nuint size)
     {
+        if (size == 0)
+        {
+            throw new InvalidDataException("zero PDU size");
+        }
+
         while (true)
         {
             if (_lastReadAt is { } readAt && _buffer.Count >= (int)size)
@@ -177,8 +178,7 @@ public class Framed<TS> where TS : Stream
     /// </summary>
     /// <param name="pduHint">The PduHint object used to determine the size of the data to read.</param>
     /// <returns>
-    /// The PDU bytes, and when the read that completed them finished. The instant is shared with
-    /// every other PDU from that same read, so do not dispose it.
+    /// The PDU bytes, and when the read that completed them finished.
     /// </returns>
     public async Task<(byte[], MonotonicInstant)> ReadByHint(PduHint pduHint)
     {
@@ -205,8 +205,7 @@ public class Framed<TS> where TS : Stream
     /// </summary>
     /// <param name="customHint">A custom hint object implementing IPduHint interface.</param>
     /// <returns>
-    /// The PDU bytes, and when the read that completed them finished. The instant is shared with
-    /// every other PDU from that same read, so do not dispose it.
+    /// The PDU bytes, and when the read that completed them finished.
     /// </returns>
     public async Task<(byte[], MonotonicInstant)> ReadByHint(IPduHint customHint)
     {
