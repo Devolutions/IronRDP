@@ -3166,18 +3166,19 @@ dependencies = [
 name = "ironrdp-server"
 version = "0.13.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "bytes",
  "ironrdp-acceptor",
  "ironrdp-ainput",
  "ironrdp-async",
  "ironrdp-cliprdr",
+ "ironrdp-connector",
  "ironrdp-core 0.2.1",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-echo",
  "ironrdp-egfx",
+ "ironrdp-error 0.2.0",
  "ironrdp-graphics",
  "ironrdp-nscodec",
  "ironrdp-pdu",
