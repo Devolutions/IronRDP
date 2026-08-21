@@ -373,6 +373,13 @@ impl Acceptor {
         self.credentials_handled = true;
     }
 
+    fn credentials_for_result(&mut self) -> Option<Credentials> {
+        self.received_credentials
+            .take()
+            .filter(|received| received.origin == CredentialOrigin::ClientInfo)
+            .map(|received| received.credentials)
+    }
+
     /// Encode the protocol-defined access-denied response for a rejected
     /// credential or capability-exchange hook.
     pub fn encode_access_denied(&self, output: &mut WriteBuf) -> ConnectorResult<usize> {
@@ -428,7 +435,7 @@ impl Acceptor {
                 ime_file_name: self.ime_file_name.clone(),
                 multitransport_flags: self.multitransport_flags,
                 reactivation: self.reactivation,
-                credentials: self.received_credentials.take().map(|received| received.credentials),
+                credentials: self.credentials_for_result(),
                 auto_reconnect: self.received_auto_reconnect.take(),
             }),
             previous_state => {
@@ -1099,6 +1106,50 @@ impl Sequence for Acceptor {
 
         self.state = next_state;
         Ok(written)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn credentials(username: &str) -> Credentials {
+        Credentials {
+            username: username.to_owned(),
+            password: "secret".to_owned(),
+            domain: None,
+        }
+    }
+
+    #[test]
+    fn acceptor_result_exposes_only_client_info_credentials() {
+        let mut acceptor = Acceptor::new(
+            SecurityProtocol::SSL,
+            DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            Vec::new(),
+            None,
+        );
+
+        acceptor.received_credentials = Some(ReceivedCredentials {
+            credentials: credentials("nla-user"),
+            origin: CredentialOrigin::CredSspDelegated,
+        });
+        assert!(acceptor.credentials_for_result().is_none());
+
+        acceptor.received_credentials = Some(ReceivedCredentials {
+            credentials: credentials("tls-user"),
+            origin: CredentialOrigin::ClientInfo,
+        });
+        assert_eq!(
+            acceptor
+                .credentials_for_result()
+                .expect("ClientInfo credentials should remain available")
+                .username,
+            "tls-user"
+        );
     }
 }
 
