@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-#[cfg(any(feature = "native-tls", test))]
+#[cfg(feature = "native-tls")]
 use tokio_native_tls as _;
 
 #[cfg(feature = "rustls-no-provider")]
