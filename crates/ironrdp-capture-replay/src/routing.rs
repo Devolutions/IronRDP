@@ -22,7 +22,9 @@ use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcessor};
 
 use crate::tls::decrypt_tls_streams;
-use crate::{Capture, NegotiatedState, PacketStream, Plaintext, ReplayError, gateway, recover_negotiated_state};
+use crate::{
+    Capture, NegotiatedState, PacketStream, Plaintext, ReplayError, gateway, gateway_rpch, recover_negotiated_state,
+};
 
 const MAX_DESKTOP_DIM: u16 = 8192;
 const MAX_EGFX_OUTPUT_DIM: u16 = 32_766;
@@ -572,13 +574,9 @@ pub(crate) fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter,
     }
     let plaintext = if let Some(outer) = decrypted.iter().find(|plaintext| gateway::is_gateway_tunnel(plaintext)) {
         let tunneled = gateway::extract_tunneled_rdp(outer)?;
-        decrypt_tls_streams(&tunneled.client, &tunneled.server, capture.tls_key_log.as_str()).map_err(|error| {
-            if matches!(error, ReplayError::MissingTlsSecret) {
-                ReplayError::MissingTunneledTlsSecret
-            } else {
-                error
-            }
-        })?
+        decrypt_tunneled_rdp(&tunneled, capture)?
+    } else if let Some(tunneled) = gateway_rpch::extract_rpch_from_flows(&decrypted)? {
+        decrypt_tunneled_rdp(&tunneled, capture)?
     } else {
         match decrypted.into_iter().next() {
             Some(plaintext) => plaintext,
@@ -590,6 +588,16 @@ pub(crate) fn prepare_replay_capture(capture: &Capture) -> Result<(ReplayRouter,
         compression_type: captured_compression_type(&plaintext),
     })?;
     Ok((router, plaintext))
+}
+
+fn decrypt_tunneled_rdp(tunneled: &Plaintext, capture: &Capture) -> Result<Plaintext, ReplayError> {
+    decrypt_tls_streams(&tunneled.client, &tunneled.server, capture.tls_key_log.as_str()).map_err(|error| {
+        if matches!(error, ReplayError::MissingTlsSecret) {
+            ReplayError::MissingTunneledTlsSecret
+        } else {
+            error
+        }
+    })
 }
 
 fn captured_compression_type(plaintext: &Plaintext) -> Option<CompressionType> {
