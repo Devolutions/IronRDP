@@ -4445,6 +4445,12 @@ impl RdpServer {
                 return Err(ServerError::reason("auto-reconnect validation", "cookie rejected"));
             }
 
+            if self.connection_binder.is_some() {
+                warn!("Auto-reconnect cannot restore a credential-bound connection safely");
+                send_access_denied(result.io_channel_id, result.user_channel_id, writer).await?;
+                bail!("auto-reconnect is unsupported with a connection binder");
+            }
+
             debug!("Auto-reconnect cookie validation accepted");
             true
         } else {
