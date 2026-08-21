@@ -33,11 +33,14 @@ path = "tests/main.rs"
 harness = true
 
 [dev-dependencies]
+aes-gcm = "0.10"
 anyhow = "1.0"
 async-trait = "0.1"
+hmac = "0.12"
 ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo"] }
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-bulk.path = "../ironrdp-bulk"
+ironrdp-capture-replay.path = "../ironrdp-capture-replay"
 ironrdp-client.path = "../ironrdp-client"
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-dvc.path = "../ironrdp-dvc"
@@ -57,6 +60,7 @@ ironrdp-tls.path = "../ironrdp-tls"
 ironrdp-vmconnect.path = "../ironrdp-vmconnect"
 rcgen = "0.14"
 semver = "1.0"
+sha2 = "0.10"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["sync", "time", "net", "rt", "rt-multi-thread", "macros", "io-util"] }
