@@ -2,6 +2,7 @@
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
 pub mod backend;
+pub mod loop_detector;
 pub mod pdu;
 
 use std::collections::HashMap;
