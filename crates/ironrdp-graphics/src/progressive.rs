@@ -646,13 +646,13 @@ fn band_zero_count(sign: &[i8], band: &BandInfo) -> usize {
     sign[start..end].iter().filter(|&&s| s == SIGN_ZERO).count()
 }
 
-/// Clamp i32 to u8 range (0-255).
+/// Clamp to u8 range (0-255).
 #[expect(
     clippy::as_conversions,
     clippy::cast_sign_loss,
     reason = "value is clamped to 0..255 before cast"
 )]
-fn clamp_u8(value: i32) -> u8 {
+fn clamp_u8(value: i64) -> u8 {
     value.clamp(0, 255) as u8
 }
 
@@ -1003,11 +1003,16 @@ impl TileState {
             crate::dwt::decode(&mut cr_buf, &mut dwt_temp);
         }
 
-        // YCbCr to RGBA conversion
+        // YCbCr to RGBA conversion.
+        //
+        // The coefficients come off the wire, so a malformed stream can drive
+        // them to the full i16 range, where the fixed-point products overflow
+        // i32. Widening keeps the arithmetic exact for every input a tile can
+        // hold, and `clamp_u8` still bounds the result.
         for i in 0..64 * 64 {
-            let y = i32::from(y_buf[i]) + 128;
-            let cb = i32::from(cb_buf[i]);
-            let cr = i32::from(cr_buf[i]);
+            let y = i64::from(y_buf[i]) + 128;
+            let cb = i64::from(cb_buf[i]);
+            let cr = i64::from(cr_buf[i]);
 
             // ITU-R BT.601 YCbCr to RGB conversion
             let r = y + ((cr * 91881 + 32768) >> 16);
@@ -2312,6 +2317,23 @@ mod tests {
                 assert!(difference.abs() <= 2, "expected {expected:?}, got {:?}", &actual[..3]);
             }
             assert_eq!(actual[3], 0xFF);
+        }
+    }
+
+    #[test]
+    fn reconstruct_handles_out_of_range_coefficients() {
+        // Tile coefficients come off the wire and can reach the full i16 range,
+        // where the fixed-point YCbCr products overflowed i32.
+        let mut tile = TileState::new();
+        let mut pixels = vec![0u8; 64 * 64 * 4];
+
+        for value in [i16::MIN, -20000, 20000, i16::MAX] {
+            tile.coefficients = [[value; COEFFICIENTS_PER_COMPONENT]; 3];
+            tile.reconstruct_to_rgba(&mut pixels);
+
+            for pixel in pixels.chunks_exact(4) {
+                assert_eq!(pixel[3], 0xFF);
+            }
         }
     }
 
