@@ -418,20 +418,20 @@ impl Encode for TunnelAuthPkt {
 
 /// [2.2.5.3.5] `HTTP_TUNNEL_AUTH_RESPONSE_FIELDS_PRESENT_FLAGS`.
 ///
-/// [2.2.5.3.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
+/// [2.2.5.3.5]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=42
 const HTTP_TUNNEL_AUTH_RESPONSE_FIELD_REDIR_FLAGS: u16 = 0x1;
 const HTTP_TUNNEL_AUTH_RESPONSE_FIELD_IDLE_TIMEOUT: u16 = 0x2;
 const HTTP_TUNNEL_AUTH_RESPONSE_FIELD_SOH_RESPONSE: u16 = 0x4;
 
 /// [2.2.10.16] `HTTP_TUNNEL_AUTH_RESPONSE` structure and [2.2.10.17] optional fields.
 ///
-/// [2.2.10.16]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
-/// [2.2.10.17]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
+/// [2.2.10.16]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=70
+/// [2.2.10.17]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=70
 #[derive(Debug, Default)]
 pub(crate) struct TunnelAuthRespPkt {
     pub(crate) error_code: u32,
-    pub(crate) fields_present: u16,
-    pub(crate) _reserved: u16,
+    fields_present: u16,
+    _reserved: u16,
     pub(crate) redirection_flags: Option<u32>,
     pub(crate) idle_timeout_minutes: Option<u32>,
     pub(crate) soh_response: Option<Vec<u8>>,
@@ -439,62 +439,6 @@ pub(crate) struct TunnelAuthRespPkt {
 
 impl TunnelAuthRespPkt {
     const FIXED_PART_SIZE: usize = 4 /* error_code */ + 2 /* fields_present */ + 2 /* _reserved */;
-}
-
-impl Encode for TunnelAuthRespPkt {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
-        ensure_size!(in: dst, size: self.size());
-
-        let hdr = PktHdr {
-            ty: PktTy::TunnelAuthResponse,
-            length: cast_int!("packet length", self.size())?,
-            ..PktHdr::default()
-        };
-        hdr.encode(dst)?;
-
-        dst.write_u32(self.error_code);
-        let mut fields_present = 0;
-        if self.redirection_flags.is_some() {
-            fields_present |= HTTP_TUNNEL_AUTH_RESPONSE_FIELD_REDIR_FLAGS;
-        }
-        if self.idle_timeout_minutes.is_some() {
-            fields_present |= HTTP_TUNNEL_AUTH_RESPONSE_FIELD_IDLE_TIMEOUT;
-        }
-        if self.soh_response.is_some() {
-            fields_present |= HTTP_TUNNEL_AUTH_RESPONSE_FIELD_SOH_RESPONSE;
-        }
-        dst.write_u16(fields_present);
-        dst.write_u16(self._reserved);
-
-        if let Some(redirection_flags) = self.redirection_flags {
-            dst.write_u32(redirection_flags);
-        }
-        if let Some(idle_timeout_minutes) = self.idle_timeout_minutes {
-            dst.write_u32(idle_timeout_minutes);
-        }
-        if let Some(soh_response) = &self.soh_response {
-            let soh_response_len: u16 = cast_int!("SoH response length", soh_response.len())?;
-            dst.write_u16(soh_response_len);
-            dst.write_slice(soh_response);
-        }
-
-        Ok(())
-    }
-
-    fn name(&self) -> &'static str {
-        "HTTP_TUNNEL_AUTH_RESPONSE"
-    }
-
-    fn size(&self) -> usize {
-        PktHdr::FIXED_PART_SIZE
-            + Self::FIXED_PART_SIZE
-            + self.redirection_flags.map_or(0, |_| 4 /* redirFlags */)
-            + self.idle_timeout_minutes.map_or(0, |_| 4 /* idleTimeout */)
-            + self
-                .soh_response
-                .as_ref()
-                .map_or(0, |response| 2 /* cbLen */ + response.len())
-    }
 }
 
 impl Decode<'_> for TunnelAuthRespPkt {

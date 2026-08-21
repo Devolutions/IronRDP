@@ -51,7 +51,7 @@ pub struct GwConnectTarget {
 ///
 /// IronRDP exposes these values but does not enforce device redirection restrictions or client-side idle timeouts.
 ///
-/// [MS-TSGU 2.2.10.17]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
+/// [MS-TSGU 2.2.10.17]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=70
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GwTunnelPolicy {
     /// Device redirection flags supplied by the gateway, if any.

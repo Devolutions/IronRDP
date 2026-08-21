@@ -4,43 +4,23 @@
 #[allow(dead_code, unreachable_pub, unfulfilled_lint_expectations)]
 mod proto;
 
-use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, ReadCursor};
 use ironrdp_mstsgu::GwTunnelPolicy;
 use proto::TunnelAuthRespPkt;
 
-fn encode_to_vec(payload: &impl Encode) -> Vec<u8> {
-    let mut buf = vec![0; payload.size()];
-    let mut cursor = WriteCursor::new(&mut buf);
-    payload.encode(&mut cursor).expect("encode");
-    assert_eq!(cursor.pos(), payload.size());
-    buf
-}
-
 #[test]
-fn tunnel_auth_response_roundtrip_preserves_optional_policy_fields() {
-    let response = TunnelAuthRespPkt {
-        redirection_flags: Some(0x4000_0008),
-        idle_timeout_minutes: Some(15),
-        soh_response: Some(vec![0x01, 0x02, 0x03]),
-        ..TunnelAuthRespPkt::default()
-    };
+fn tunnel_auth_response_decodes_optional_policy_fields() {
+    let bytes = [
+        0x00, 0x00, 0x00, 0x00, // errorCode
+        0x07, 0x00, // fieldsPresent
+        0x00, 0x00, // reserved
+        0x08, 0x00, 0x00, 0x40, // redirFlags
+        0x0f, 0x00, 0x00, 0x00, // idleTimeout
+        0x03, 0x00, // SoHResponse cbLen
+        0x01, 0x02, 0x03, // SoHResponse
+    ];
 
-    let bytes = encode_to_vec(&response);
-    assert_eq!(&bytes[..2], &0x07u16.to_le_bytes());
-    assert_eq!(&bytes[12..14], &0x07u16.to_le_bytes());
-    assert_eq!(
-        bytes.len(),
-        8 /* HTTP_PACKET_HEADER */
-            + 4 /* errorCode */
-            + 2 /* fieldsPresent */
-            + 2 /* reserved */
-            + 4 /* redirFlags */
-            + 4 /* idleTimeout */
-            + 2 /* cbLen */
-            + 3 /* SoHResponse */
-    );
-
-    let mut cursor = ReadCursor::new(&bytes[8..]);
+    let mut cursor = ReadCursor::new(&bytes);
     let decoded = TunnelAuthRespPkt::decode(&mut cursor).expect("decode");
     assert!(cursor.eof());
     assert_eq!(decoded.redirection_flags, Some(0x4000_0008));
