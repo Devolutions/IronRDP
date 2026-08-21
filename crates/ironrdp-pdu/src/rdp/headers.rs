@@ -326,8 +326,15 @@ impl<'de> Decode<'de> for ShareControlHeader {
         };
 
         if pdu_type == ShareControlPduType::DataPdu {
+            // Note this is the *re-encoded* size, not the bytes that were on the wire. The two
+            // diverge for a header-only Server Font Map: `ShareDataPdu::from_type` substitutes
+            // `FontPdu::default()` on an empty cursor, so the re-encoded size counts an 8-byte
+            // body that was never sent, and a conformant server declaring 18 was measured
+            // against 26. That is why an honest header-only Font Map was rejected, and it is
+            // the reason the exception below is keyed on the PDU type rather than on arithmetic.
             let header_length = header.size();
 
+            // An empty Update/Pointer PDU is a legitimate no-op carrying a zero length.
             let is_empty_output_pdu = matches!(
                 &header.share_control_pdu,
                 ShareControlPdu::Data(ShareDataHeader {
@@ -336,15 +343,26 @@ impl<'de> Decode<'de> for ShareControlHeader {
                 }) if data.is_empty()
             );
 
-            if header_length != total_length && !(total_length == 0 && is_empty_output_pdu) {
-                if total_length < header_length {
-                    return Err(not_enough_bytes_err!(total_length, header_length));
-                }
+            // VirtualBox's VRDP declares only the two headers of a Server Font Map (18) and
+            // never counts the 8-byte body that follows, so it under-declares by exactly the
+            // body it did send. Narrowed to this PDU type rather than allowed for Data PDUs at
+            // large, so a malformed non-output PDU declaring 1..17 is still rejected.
+            let is_font_map = matches!(
+                &header.share_control_pdu,
+                ShareControlPdu::Data(ShareDataHeader {
+                    share_data_pdu: ShareDataPdu::FontMap(_),
+                    ..
+                })
+            );
 
-                // Some Windows versions append padding that is not part of the inner unit.
+            if total_length > header_length {
+                // Over-declared: some Windows versions append padding past the inner unit.
+                // Unchanged, and still bounded by `ensure_size!`.
                 let padding = total_length - header_length;
                 ensure_size!(in: src, size: padding);
                 read_padding!(src, padding);
+            } else if total_length < header_length && !is_font_map && !is_empty_output_pdu {
+                return Err(not_enough_bytes_err!(total_length, header_length));
             }
         }
 
@@ -947,6 +965,29 @@ mod tests {
             error.kind(),
             ironrdp_core::DecodeErrorKind::NotEnoughBytes {
                 received: 0,
+                expected: 18
+            }
+        ));
+    }
+
+    /// The under-declaration carve-out must not extend past the Server Font Map case.
+    ///
+    /// A `ShutdownDenied` PDU is header-only, so 18 bytes were read; declaring 17 is neither
+    /// self-consistent with the wire nor the VRDP Font Map, and MS-RDPBCGR 3.2.5.2 asks for it
+    /// to be rejected. Guards the exact example raised in review — "a header-only PDU declared
+    /// with 1–17 bytes" — which an earlier revision of this check accepted.
+    #[test]
+    fn reject_under_declared_non_output_data_pdu() {
+        let mut encoded = zero_length_empty_data_pdu(0x25);
+        encoded[0] = 17;
+
+        let error = decode::<ShareControlHeader>(&encoded)
+            .expect_err("an under-declared length is only tolerated for a Server Font Map");
+
+        assert!(matches!(
+            error.kind(),
+            ironrdp_core::DecodeErrorKind::NotEnoughBytes {
+                received: 17,
                 expected: 18
             }
         ));
