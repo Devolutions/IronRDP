@@ -3178,6 +3178,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-echo",
  "ironrdp-egfx",
+ "ironrdp-error 0.2.0",
  "ironrdp-graphics",
  "ironrdp-nscodec",
  "ironrdp-pdu",

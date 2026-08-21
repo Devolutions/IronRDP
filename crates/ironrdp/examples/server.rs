@@ -429,5 +429,5 @@ async fn run(
         domain: None,
     }));
 
-    server.run().await
+    Ok(server.run().await?)
 }
