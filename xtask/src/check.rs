@@ -236,6 +236,7 @@ pub fn install(sh: &Shell) -> anyhow::Result<()> {
 pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("TESTS-COMPILE");
     cmd!(sh, "{CARGO} test --workspace --locked --no-run").run()?;
+    cmd!(sh, "{CARGO} test -p xtask --bin xtask --locked --no-run").run()?;
     cmd!(
         sh,
         "{CARGO} test -p ironrdp-testsuite-extra --test integration_tests_extra --no-default-features --features native-tls --locked --no-run"
@@ -248,6 +249,7 @@ pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
 pub fn tests_run(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("TESTS-RUN");
     cmd!(sh, "{CARGO} test --workspace --locked").run()?;
+    cmd!(sh, "{CARGO} test -p xtask --bin xtask --locked").run()?;
     cmd!(
         sh,
         "{CARGO} test -p ironrdp-testsuite-extra --test integration_tests_extra --no-default-features --features native-tls --locked"

@@ -15,6 +15,7 @@ mod fuzz;
 mod pr;
 mod prelude;
 mod section;
+mod test_targets;
 mod wasm;
 mod web;
 
@@ -64,6 +65,7 @@ fn main() -> anyhow::Result<()> {
         Action::CheckLocks => check::lock_files(&sh)?,
         Action::CheckDependencies => check::dependencies(&sh)?,
         Action::CheckTestSettings { base, head } => check::test_settings(&sh, &base, &head)?,
+        Action::CheckTestTargets => test_targets::check(&sh)?,
         Action::CheckTests { no_run } => {
             if no_run {
                 check::tests_compile(&sh)?;
@@ -92,6 +94,7 @@ fn main() -> anyhow::Result<()> {
         Action::Ci => {
             check::fmt(&sh)?;
             check::typos(&sh)?;
+            test_targets::check(&sh)?;
             check::tests_compile(&sh)?;
             check::tests_run(&sh)?;
             check::lints(&sh)?;

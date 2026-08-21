@@ -49,6 +49,16 @@ jobs:
         if: github.event_name == 'pull_request'
         run: cargo xtask check test-settings --base 'HEAD^1' --head 'HEAD' -v
 
+  test-targets:
+    name: Check test targets
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check centralized integration tests
+        run: cargo xtask check test-targets -v
+
   typos:
     name: Check typos
     runs-on: ubuntu-latest
@@ -266,7 +276,7 @@ jobs:
   success:
     name: Success
     if: ${{ always() }}
-    needs: [formatting, test-settings, typos, checks, fuzz, web, ffi, feature-matrix-setup, feature-matrix]
+    needs: [formatting, test-settings, test-targets, typos, checks, fuzz, web, ffi, feature-matrix-setup, feature-matrix]
     runs-on: ubuntu-latest
 
     steps:
