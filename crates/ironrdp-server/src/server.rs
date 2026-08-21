@@ -40,7 +40,7 @@ use tokio::task;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, trace, warn};
 
-use crate::autodetect::{AutoDetectManager, RttSnapshot};
+use crate::autodetect::{AutoDetectManager, AutoDetectOutcome, RttSnapshot};
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
@@ -2097,23 +2097,12 @@ impl RdpServer {
         match decode::<rdp::autodetect::AutoDetectRspPdu>(data.user_data.as_ref()) {
             Ok(pdu) => {
                 if let Some(ref mut ad) = self.autodetect {
-                    // `handle_response` reports a matched RTT sample via its return value but
-                    // only updates bandwidth internally (see its own doc comment), so a fresh
-                    // bandwidth figure is detected by comparing before and after rather than
-                    // from the call's result. That also keeps a stray or unmatched bandwidth
-                    // response (which leaves the internal value unchanged) from being
-                    // mislabeled as a new measurement below.
-                    let bandwidth_before = ad.bandwidth_kbps();
-                    let rtt_result = ad.handle_response(&pdu.response, monotonic_now_ms());
-                    let bandwidth_after = ad.bandwidth_kbps();
-
-                    match rtt_result {
-                        Some(rtt_ms) => {
+                    match ad.handle_response(&pdu.response, monotonic_now_ms()) {
+                        AutoDetectOutcome::Rtt(rtt_ms) => {
                             self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
                             debug!(rtt_ms, seq = pdu.response.sequence_number(), "RTT measured");
                         }
-                        None if bandwidth_after.is_some() && bandwidth_after != bandwidth_before => {
-                            let bandwidth_kbps = bandwidth_after.expect("checked Some above");
+                        AutoDetectOutcome::Bandwidth(Some(bandwidth_kbps)) => {
                             self.autodetect_bandwidth.store(bandwidth_kbps, Ordering::Relaxed);
                             debug!(
                                 bandwidth_kbps,
@@ -2121,7 +2110,17 @@ impl RdpServer {
                                 "Bandwidth measured"
                             );
                         }
-                        None => {
+                        AutoDetectOutcome::Bandwidth(None) => {
+                            // The manager just cleared its own figure rather than keep
+                            // reporting a stale one (see `handle_response`'s doc comment);
+                            // mirror that here so the exposed handle does not disagree.
+                            self.autodetect_bandwidth.store(u32::MAX, Ordering::Relaxed);
+                            trace!(
+                                seq = pdu.response.sequence_number(),
+                                "Bandwidth measurement completed without a usable figure"
+                            );
+                        }
+                        AutoDetectOutcome::Unmatched => {
                             trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
                         }
                     }
