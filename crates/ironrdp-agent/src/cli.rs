@@ -2162,15 +2162,12 @@ mod tests {
     #[cfg(windows)]
     use std::path::PathBuf;
 
-    use clap::{CommandFactory as _, Parser as _};
+    use clap::Parser as _;
 
     use super::Command;
     #[cfg(windows)]
     use super::SandboxCommand;
-    use super::{
-        Backend, Cli, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, build_now_execution,
-        endpoint_from_arg,
-    };
+    use super::{Backend, Cli, CommonExecutionArgs, NowExecutionKind, build_now_execution, endpoint_from_arg};
 
     #[test]
     fn backend_endpoint_selection_is_distinct_and_overridable() {
@@ -2213,14 +2210,6 @@ mod tests {
         assert_eq!(args.rdpdr_drives[0].root_path(), PathBuf::from(r"C:\"));
         assert_eq!(args.rdpdr_drives[1].display_name(), "Data");
         assert_eq!(args.rdpdr_drives[1].root_path(), PathBuf::from(r"D:\"));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn daemon_rdpdr_drive_flags_reject_invalid_definitions() {
-        for drive in ["C:\\", "=C:\\", "Data=", "too-long=C:\\", "Data/C:\\"] {
-            assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--rdpdr-drive", drive]).is_err());
-        }
     }
 
     #[cfg(windows)]
@@ -2268,52 +2257,6 @@ mod tests {
             panic!("expected daemon-start command");
         };
         assert!(args.smartcard);
-    }
-
-    #[test]
-    fn daemon_start_rejects_superseded_certificate_flag() {
-        assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--ignore-certificates"]).is_err());
-    }
-
-    #[test]
-    fn connection_flags_use_process_local_environment_defaults() {
-        let command = Cli::command();
-        let connect = command
-            .get_subcommands()
-            .find(|command| command.get_name() == "connect")
-            .expect("connect subcommand must be registered");
-
-        for (argument, variable) in [
-            ("server", "RDP_HOSTNAME"),
-            ("username", "RDP_USERNAME"),
-            ("password", "RDP_PASSWORD"),
-        ] {
-            let environment = connect
-                .get_arguments()
-                .find(|candidate| candidate.get_id() == argument)
-                .and_then(clap::Arg::get_env);
-            assert_eq!(environment, Some(variable.as_ref()));
-        }
-    }
-
-    #[test]
-    fn shell_is_not_an_agent_command() {
-        assert!(Cli::try_parse_from(["ironrdp-agent", "now", "shell"]).is_err());
-    }
-
-    #[test]
-    fn unicode_text_rejects_empty_and_oversized_requests() {
-        assert!(Cli::try_parse_from(["ironrdp-agent", "type-unicode", "--text", ""]).is_err());
-        assert!(
-            Cli::try_parse_from([
-                "ironrdp-agent",
-                "type-unicode",
-                "--text",
-                &"x".repeat(MAX_UNICODE_TEXT_CHARS + 1),
-            ])
-            .is_err()
-        );
-        assert!(Cli::try_parse_from(["ironrdp-agent", "type-unicode", "--text", "test"]).is_ok());
     }
 
     #[test]

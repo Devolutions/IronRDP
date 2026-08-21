@@ -24,6 +24,7 @@ harness = true
 [dev-dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+clap = { version = "4.6", features = ["derive", "cargo", "env"] }
 ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo"] }
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-agent.path = "../ironrdp-agent"

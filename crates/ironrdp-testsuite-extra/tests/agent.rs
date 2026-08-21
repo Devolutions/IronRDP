@@ -1,4 +1,5 @@
-//! Codec round-trip tests for the shared RPC protocol and daemon NOW endpoint.
+//! Codec round-trip tests for the shared RPC protocol and daemon NOW endpoint, plus CLI
+//! argument-parsing tests for the public [`ironrdp_agent::cli::Cli`] surface.
 //!
 //! These exercise the reusable protocol and daemon support. They live here, in the shared test
 //! suite, rather than inside the owning crates themselves, per
@@ -6,15 +7,17 @@
 
 use core::fmt::Debug;
 
+use clap::{CommandFactory as _, Parser as _};
+use ironrdp_agent::cli::Cli;
 use ironrdp_core::{Decode, DecodeOwned, Encode, decode, decode_owned, encode_vec};
 use ironrdp_daemon::now::{DVC_CHANNEL_NAME, INITIAL_ENDPOINT_TIMEOUT, NowEndpoint, RECONNECT_ENDPOINT_TIMEOUT};
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rpc::ipc::{
-    AgentError, AgentErrorCategory, ConnState, KeyFilter, NowCapabilities, NowDiagnostics, NowExecutionKind,
-    NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload,
-    PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason,
-    RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo,
+    AgentError, AgentErrorCategory, ConnState, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowCapabilities, NowDiagnostics,
+    NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo,
+    OperationState, Payload, PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind,
+    RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo,
 };
 use ironrdp_rpc::wire;
 
@@ -378,6 +381,60 @@ fn remote_exit_codes_follow_the_cli_contract() {
     assert_eq!(ironrdp_agent::cli::remote_exit_status(255), 255);
     assert_eq!(ironrdp_agent::cli::remote_exit_status(256), 255);
     assert_eq!(ironrdp_agent::cli::remote_exit_status(u32::MAX), 255);
+}
+
+#[cfg(windows)]
+#[test]
+fn daemon_rdpdr_drive_flags_reject_invalid_definitions() {
+    for drive in ["C:\\", "=C:\\", "Data=", "too-long=C:\\", "Data/C:\\"] {
+        assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--rdpdr-drive", drive]).is_err());
+    }
+}
+
+#[test]
+fn daemon_start_rejects_superseded_certificate_flag() {
+    assert!(Cli::try_parse_from(["ironrdp-agent", "daemon-start", "--ignore-certificates"]).is_err());
+}
+
+#[test]
+fn connection_flags_use_process_local_environment_defaults() {
+    let command = Cli::command();
+    let connect = command
+        .get_subcommands()
+        .find(|command| command.get_name() == "connect")
+        .expect("connect subcommand must be registered");
+
+    for (argument, variable) in [
+        ("server", "RDP_HOSTNAME"),
+        ("username", "RDP_USERNAME"),
+        ("password", "RDP_PASSWORD"),
+    ] {
+        let environment = connect
+            .get_arguments()
+            .find(|candidate| candidate.get_id() == argument)
+            .and_then(clap::Arg::get_env);
+        assert_eq!(environment, Some(variable.as_ref()));
+    }
+}
+
+#[test]
+fn shell_is_not_an_agent_command() {
+    assert!(Cli::try_parse_from(["ironrdp-agent", "now", "shell"]).is_err());
+}
+
+#[test]
+fn unicode_text_rejects_empty_and_oversized_requests() {
+    assert!(Cli::try_parse_from(["ironrdp-agent", "type-unicode", "--text", ""]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "ironrdp-agent",
+            "type-unicode",
+            "--text",
+            &"x".repeat(MAX_UNICODE_TEXT_CHARS + 1),
+        ])
+        .is_err()
+    );
+    assert!(Cli::try_parse_from(["ironrdp-agent", "type-unicode", "--text", "test"]).is_ok());
 }
 
 #[test]
