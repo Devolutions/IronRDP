@@ -209,8 +209,8 @@ impl core::error::Error for CredentialValidationError {
 ///
 /// Called during connection setup when the acceptor surfaces credentials from
 /// either `ClientInfoPdu` or CredSSP delegated TSPasswordCreds. Use the
-/// [`CredentialOrigin`] argument to distinguish unauthenticated ClientInfo
-/// credentials from CredSSP-delegated credentials authenticated by the exchange.
+/// [`CredentialValidator::validate_received`] hook to distinguish unauthenticated
+/// ClientInfo credentials from CredSSP-delegated credentials authenticated by the exchange.
 ///
 /// Implement this trait to validate or authorize credentials against external systems
 /// (PAM, LDAP, database, etc.). ClientInfo credentials require authentication;
@@ -221,7 +221,7 @@ impl core::error::Error for CredentialValidationError {
 /// # Example
 ///
 /// ```ignore
-/// use ironrdp_server::{CredentialDecision, CredentialOrigin, CredentialValidationError, CredentialValidator, Credentials};
+/// use ironrdp_server::{CredentialDecision, CredentialValidationError, CredentialValidator, Credentials};
 ///
 /// struct StaticValidator {
 ///     expected_user: String,
@@ -233,7 +233,6 @@ impl core::error::Error for CredentialValidationError {
 ///     async fn validate(
 ///         &self,
 ///         creds: &Credentials,
-///         _origin: CredentialOrigin,
 ///     ) -> Result<CredentialDecision, CredentialValidationError> {
 ///         if creds.username == self.expected_user && creds.password == self.expected_password {
 ///             Ok(CredentialDecision::Accept)
@@ -256,11 +255,21 @@ pub trait CredentialValidator: Send + Sync {
     /// database driver) should offload the work, for example with
     /// `tokio::task::spawn_blocking`, so the returned future does not stall the
     /// caller's executor. Native-async backends can simply `.await`.
-    async fn validate(
+    async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError>;
+
+    /// Validate credentials with their transport/authentication provenance.
+    ///
+    /// Existing validators remain source-compatible through the default
+    /// implementation. Validators that need different ClientInfo and CredSSP
+    /// policies can override this method.
+    async fn validate_received(
         &self,
         credentials: &Credentials,
         origin: CredentialOrigin,
-    ) -> Result<CredentialDecision, CredentialValidationError>;
+    ) -> Result<CredentialDecision, CredentialValidationError> {
+        let _ = origin;
+        self.validate(credentials).await
+    }
 }
 
 /// Display/input objects bound after the server authenticates a client.
@@ -429,11 +438,7 @@ impl ExactMatchCredentialValidator {
 
 #[async_trait::async_trait]
 impl CredentialValidator for ExactMatchCredentialValidator {
-    async fn validate(
-        &self,
-        credentials: &Credentials,
-        _origin: CredentialOrigin,
-    ) -> Result<CredentialDecision, CredentialValidationError> {
+    async fn validate(&self, credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError> {
         if credentials == &self.expected {
             Ok(CredentialDecision::Accept)
         } else {
@@ -2473,7 +2478,7 @@ async fn resolve_authenticated_credentials(
     if let Some(received) = received_credentials {
         let creds = &received.credentials;
         if let Some(validator) = credential_validator {
-            match validator.validate(creds, received.origin).await {
+            match validator.validate_received(creds, received.origin).await {
                 Ok(CredentialDecision::Accept) => {
                     debug!("Credential validation accepted");
                     Ok(Some(creds))
@@ -2688,11 +2693,7 @@ mod credential_binding_tests {
 
     #[async_trait::async_trait]
     impl CredentialValidator for FailingValidator {
-        async fn validate(
-            &self,
-            _credentials: &Credentials,
-            _origin: CredentialOrigin,
-        ) -> Result<CredentialDecision, CredentialValidationError> {
+        async fn validate(&self, _credentials: &Credentials) -> Result<CredentialDecision, CredentialValidationError> {
             Err(CredentialValidationError::new(std::io::Error::other(
                 "backend unavailable",
             )))
