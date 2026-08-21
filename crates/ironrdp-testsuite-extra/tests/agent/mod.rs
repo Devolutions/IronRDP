@@ -9,6 +9,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use super::workspace_binary;
+
 use core::fmt::Debug;
 
 mod ipc;
@@ -35,44 +37,7 @@ fn agent_binary() -> &'static Path {
     static AGENT_BINARY: OnceLock<PathBuf> = OnceLock::new();
 
     AGENT_BINARY
-        .get_or_init(|| {
-            let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .and_then(Path::parent)
-                .expect("testsuite must be in the workspace")
-                .to_owned();
-            let status = Command::new(env!("CARGO"))
-                .current_dir(&workspace_root)
-                .args([
-                    "build",
-                    "--quiet",
-                    "--package",
-                    "ironrdp-agent",
-                    "--bin",
-                    "ironrdp-agent",
-                ])
-                .status()
-                .expect("build agent binary");
-            assert!(status.success(), "build agent binary");
-
-            let mut binary = std::env::var_os("CARGO_TARGET_DIR")
-                .map(PathBuf::from)
-                .map(|path| {
-                    if path.is_absolute() {
-                        path
-                    } else {
-                        workspace_root.join(path)
-                    }
-                })
-                .unwrap_or_else(|| workspace_root.join("target"));
-            if let Some(target) = std::env::var_os("CARGO_BUILD_TARGET") {
-                binary.push(target);
-            }
-            binary.push("debug");
-            binary.push(format!("ironrdp-agent{}", std::env::consts::EXE_SUFFIX));
-            assert!(binary.is_file(), "agent binary does not exist: {}", binary.display());
-            binary
-        })
+        .get_or_init(|| workspace_binary("ironrdp-agent", "ironrdp-agent"))
         .as_path()
 }
 
