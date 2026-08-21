@@ -1,7 +1,11 @@
 name: CI
 
-# Fork policy: ordinary CI is opt-in to avoid duplicating upstream runs.
 on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 env:
