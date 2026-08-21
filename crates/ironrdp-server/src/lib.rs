@@ -32,12 +32,13 @@ pub use gfx::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle
 pub use handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
-pub use ironrdp_acceptor::Acceptor;
+pub use ironrdp_acceptor::{Acceptor, CredentialOrigin, ReceivedCredentials};
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 pub use server::{
-    AutoReconnectCookieHandle, ConnectionHandler, ConnectionInfo, CredentialDecision, CredentialValidationError,
-    CredentialValidator, Credentials, ExactMatchCredentialValidator, PostConnectionAction, RdpServer, RdpServerOptions,
-    RdpServerSecurity, ServerEvent, ServerEventSender, StaticChannelFactory, TransportTls, pick_remotefx_entropy_coder,
+    AutoReconnectCookieHandle, BoundConnection, ConnectionBinder, ConnectionHandler, ConnectionInfo,
+    CredentialDecision, CredentialValidationError, CredentialValidator, Credentials, ExactMatchCredentialValidator,
+    PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity, ServerEvent, ServerEventSender,
+    StaticChannelFactory, TransportTls, pick_remotefx_entropy_coder,
 };
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 

@@ -2,7 +2,9 @@ use core::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ironrdp_server::{CredentialDecision, CredentialValidationError, CredentialValidator, Credentials};
+use ironrdp_server::{
+    CredentialDecision, CredentialOrigin, CredentialValidationError, CredentialValidator, Credentials,
+};
 
 fn fixed_creds() -> Credentials {
     Credentials {
@@ -45,6 +47,26 @@ impl CredentialValidator for AlwaysBackendError {
     }
 }
 
+struct CredSspOnly;
+#[async_trait]
+impl CredentialValidator for CredSspOnly {
+    async fn validate(&self, _: &Credentials) -> Result<CredentialDecision, CredentialValidationError> {
+        Ok(CredentialDecision::Reject)
+    }
+
+    async fn validate_received(
+        &self,
+        _: &Credentials,
+        origin: CredentialOrigin,
+    ) -> Result<CredentialDecision, CredentialValidationError> {
+        Ok(if origin == CredentialOrigin::CredSspDelegated {
+            CredentialDecision::Accept
+        } else {
+            CredentialDecision::Reject
+        })
+    }
+}
+
 #[tokio::test]
 async fn validator_accept_returns_accept() {
     let v = AlwaysAccept;
@@ -71,4 +93,21 @@ async fn validator_can_be_held_behind_arc_dyn() {
     // Exercises the Send + Sync + 'static bounds the trait promises through Arc<dyn _>.
     let v: Arc<dyn CredentialValidator> = Arc::new(AlwaysAccept);
     assert_eq!(v.validate(&fixed_creds()).await.unwrap(), CredentialDecision::Accept);
+}
+
+#[tokio::test]
+async fn validator_can_override_origin_aware_policy() {
+    let v = CredSspOnly;
+    assert_eq!(
+        v.validate_received(&fixed_creds(), CredentialOrigin::ClientInfo)
+            .await
+            .unwrap(),
+        CredentialDecision::Reject
+    );
+    assert_eq!(
+        v.validate_received(&fixed_creds(), CredentialOrigin::CredSspDelegated)
+            .await
+            .unwrap(),
+        CredentialDecision::Accept
+    );
 }

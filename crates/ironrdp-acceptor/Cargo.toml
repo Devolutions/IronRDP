@@ -22,6 +22,7 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.10" } # public
 ironrdp-async = { path = "../ironrdp-async", version = "0.10" } # public
+async-trait = "0.1"
 tracing = { version = "0.1", features = ["log"] }
 
 [lints]
