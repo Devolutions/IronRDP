@@ -2,7 +2,7 @@
 use core::fmt::Display;
 
 use ironrdp::cliprdr::backend::ClipboardError;
-use ironrdp::connector::ConnectorError;
+use ironrdp::connector::{ConnectorError, SequenceError};
 use ironrdp::session::SessionError;
 #[cfg(target_os = "windows")]
 use ironrdp_cliprdr_native::WinCliprdrError;
@@ -39,10 +39,27 @@ impl From<IronRdpErrorKind> for Box<ffi::IronRdpError> {
 impl From<ConnectorError> for Box<ffi::IronRdpError> {
     fn from(value: ConnectorError) -> Self {
         let kind = match value.kind() {
-            ironrdp::connector::ConnectorErrorKind::Encode(_) => IronRdpErrorKind::EncodeError,
-            ironrdp::connector::ConnectorErrorKind::Decode(_) => IronRdpErrorKind::DecodeError,
+            ironrdp::connector::ConnectorErrorKind::Sequence(seq_err) => match seq_err.kind() {
+                ironrdp::connector::SequenceErrorKind::Encode(_) => IronRdpErrorKind::EncodeError,
+                ironrdp::connector::SequenceErrorKind::Decode(_) => IronRdpErrorKind::DecodeError,
+                _ => IronRdpErrorKind::Generic,
+            },
             ironrdp::connector::ConnectorErrorKind::Credssp(_) => IronRdpErrorKind::CredsspError,
             ironrdp::connector::ConnectorErrorKind::AccessDenied => IronRdpErrorKind::AccessDenied,
+            _ => IronRdpErrorKind::Generic,
+        };
+        let repr = value.report().with_locations().to_string();
+        make_ffi_error(repr, kind)
+    }
+}
+
+// A bare `SequenceError` can reach the FFI boundary directly (e.g. from a `Sequence::step` call
+// driven straight through the FFI surface, without first being mapped to `ConnectorError`).
+impl From<SequenceError> for Box<ffi::IronRdpError> {
+    fn from(value: SequenceError) -> Self {
+        let kind = match value.kind() {
+            ironrdp::connector::SequenceErrorKind::Encode(_) => IronRdpErrorKind::EncodeError,
+            ironrdp::connector::SequenceErrorKind::Decode(_) => IronRdpErrorKind::DecodeError,
             _ => IronRdpErrorKind::Generic,
         };
         let repr = value.report().with_locations().to_string();

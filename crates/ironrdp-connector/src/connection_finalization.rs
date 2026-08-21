@@ -8,7 +8,7 @@ use ironrdp_pdu::rdp::{finalization_messages, server_error_info};
 use tracing::{debug, warn};
 
 use crate::{
-    ConnectorError, ConnectorErrorExt as _, ConnectorResult, MonotonicInstant, Sequence, State, Written, general_err,
+    MonotonicInstant, Sequence, SequenceError, SequenceErrorExt as _, SequenceResult, State, Written, general_err,
     reason_err,
 };
 
@@ -93,7 +93,7 @@ impl Sequence for ConnectionFinalizationSequence {
         input: &[u8],
         _received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
+    ) -> SequenceResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             ConnectionFinalizationState::Consumed => {
                 return Err(general_err!(
@@ -115,7 +115,7 @@ impl Sequence for ConnectionFinalizationSequence {
                     message,
                     output,
                 )
-                .map_err(ConnectorError::encode)?;
+                .map_err(SequenceError::encode)?;
 
                 (
                     Written::from_size(written)?,
@@ -139,7 +139,7 @@ impl Sequence for ConnectionFinalizationSequence {
                     message,
                     output,
                 )
-                .map_err(ConnectorError::encode)?;
+                .map_err(SequenceError::encode)?;
 
                 (
                     Written::from_size(written)?,
@@ -163,7 +163,7 @@ impl Sequence for ConnectionFinalizationSequence {
                     message,
                     output,
                 )
-                .map_err(ConnectorError::encode)?;
+                .map_err(SequenceError::encode)?;
 
                 (Written::from_size(written)?, ConnectionFinalizationState::SendFontList)
             }
@@ -180,7 +180,7 @@ impl Sequence for ConnectionFinalizationSequence {
                     message,
                     output,
                 )
-                .map_err(ConnectorError::encode)?;
+                .map_err(SequenceError::encode)?;
 
                 (
                     Written::from_size(written)?,
@@ -189,8 +189,8 @@ impl Sequence for ConnectionFinalizationSequence {
             }
 
             ConnectionFinalizationState::WaitForResponse => {
-                let ctx = ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(ConnectorError::decode)?;
-                let ctx = ironrdp_pdu::rdp::headers::decode_share_data(ctx).map_err(ConnectorError::decode)?;
+                let ctx = ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(SequenceError::decode)?;
+                let ctx = ironrdp_pdu::rdp::headers::decode_share_data(ctx).map_err(SequenceError::decode)?;
 
                 debug!(message = ?ctx.pdu, "Received");
 

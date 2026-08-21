@@ -2191,7 +2191,7 @@ mod tests {
         let mut wait = Box::pin(daemon.rail_wait(Some(1), 1_000));
         output_tx
             .send(ironrdp_client::rdp::RdpOutputEvent::ConnectionFailure(
-                ironrdp_connector::general_err!("test connection failure"),
+                ironrdp_connector::map_sequence_error(ironrdp_connector::general_err!("test connection failure")),
             ))
             .await
             .expect("send connection failure");

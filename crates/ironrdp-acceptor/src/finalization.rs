@@ -1,5 +1,5 @@
 use ironrdp_connector::{
-    ConnectorError, ConnectorErrorExt as _, ConnectorResult, MonotonicInstant, Sequence, State, Written,
+    MonotonicInstant, Sequence, SequenceError, SequenceErrorExt as _, SequenceResult, State, Written,
 };
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp;
@@ -85,7 +85,7 @@ impl Sequence for FinalizationSequence {
         input: &[u8],
         _received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
+    ) -> SequenceResult<Written> {
         let (written, next_state) = match core::mem::take(&mut self.state) {
             FinalizationState::WaitSynchronize => {
                 let synchronize = decode_share_control(input);
@@ -230,12 +230,12 @@ fn create_font_map() -> rdp::headers::ShareDataPdu {
     rdp::headers::ShareDataPdu::FontMap(rdp::finalization_messages::FontPdu::default())
 }
 
-fn decode_share_control(input: &[u8]) -> ConnectorResult<rdp::headers::ShareControlHeader> {
+fn decode_share_control(input: &[u8]) -> SequenceResult<rdp::headers::ShareControlHeader> {
     let data_request = ironrdp_core::decode::<X224<ironrdp_pdu::mcs::SendDataRequest<'_>>>(input)
-        .map_err(ConnectorError::decode)
+        .map_err(SequenceError::decode)
         .map(|p| p.0)?;
     let share_control = ironrdp_core::decode::<rdp::headers::ShareControlHeader>(data_request.user_data.as_ref())
-        .map_err(ConnectorError::decode)?;
+        .map_err(SequenceError::decode)?;
     Ok(share_control)
 }
 

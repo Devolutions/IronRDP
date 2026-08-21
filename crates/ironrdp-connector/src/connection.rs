@@ -18,8 +18,8 @@ use crate::connection_activation::{
 };
 use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
-    Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize, MonotonicInstant,
-    NegotiationFailure, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
+    Config, DesktopSize, MonotonicInstant, NegotiationFailure, Sequence, SequenceError, SequenceErrorExt as _,
+    SequenceResult, State, Written, encode_x224_packet, general_err, reason_err,
 };
 
 /// Maximum number of `Initiate Multitransport Request` PDUs the server is
@@ -383,7 +383,7 @@ impl ClientConnector {
         &mut self,
         security_protocol: nego::SecurityProtocol,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
+    ) -> SequenceResult<Written> {
         if !matches!(self.state, ClientConnectorState::ConnectionInitiationSendRequest) {
             return Err(reason_err!("Initiation", "connection initiation has already started"));
         }
@@ -400,7 +400,7 @@ impl ClientConnector {
         self.encode_connection_request(security_protocol, output)
     }
 
-    fn enabled_security_protocols(&self) -> ConnectorResult<nego::SecurityProtocol> {
+    fn enabled_security_protocols(&self) -> SequenceResult<nego::SecurityProtocol> {
         let mut security_protocol = nego::SecurityProtocol::empty();
 
         if self.config.enable_tls {
@@ -432,7 +432,7 @@ impl ClientConnector {
         &mut self,
         security_protocol: nego::SecurityProtocol,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
+    ) -> SequenceResult<Written> {
         let connection_request = nego::ConnectionRequest {
             nego_data: self.config.request_data.clone().or_else(|| {
                 self.config
@@ -447,7 +447,7 @@ impl ClientConnector {
 
         debug!(message = ?connection_request, "Send");
 
-        let written = ironrdp_core::encode_buf(&X224(connection_request), output).map_err(ConnectorError::encode)?;
+        let written = ironrdp_core::encode_buf(&X224(connection_request), output).map_err(SequenceError::encode)?;
         self.state = ClientConnectorState::ConnectionInitiationWaitConfirm {
             requested_protocol: security_protocol,
         };
@@ -631,7 +631,7 @@ impl ClientConnector {
         &mut self,
         result: MultitransportResult,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
+    ) -> SequenceResult<Written> {
         self.respond_to_multitransport("complete_multitransport", result, output)
     }
 
@@ -644,7 +644,7 @@ impl ClientConnector {
     ///
     /// Returns an error if the connector is not in `MultitransportPending`
     /// state.
-    pub fn skip_multitransport(&mut self, output: &mut WriteBuf) -> ConnectorResult<Written> {
+    pub fn skip_multitransport(&mut self, output: &mut WriteBuf) -> SequenceResult<Written> {
         self.respond_to_multitransport(
             "skip_multitransport",
             MultitransportResult::Failure(rdp::multitransport::MultitransportResponsePdu::E_ABORT),
@@ -669,7 +669,7 @@ impl ClientConnector {
     ///
     /// Borrows rather than consuming, so the caller can resolve this while the
     /// connector is still in a state it can act on.
-    fn multitransport_response_channel(&self, result: &MultitransportResult) -> ConnectorResult<Option<u16>> {
+    fn multitransport_response_channel(&self, result: &MultitransportResult) -> SequenceResult<Option<u16>> {
         let ClientConnectorState::MultitransportPending {
             message_channel_id,
             soft_sync,
@@ -711,7 +711,7 @@ impl ClientConnector {
         caller: &str,
         result: MultitransportResult,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
+    ) -> SequenceResult<Written> {
         // The state is read, never taken. Everything this needs is a scalar, so
         // nothing has to be moved out of `self.state`, and the transition at the
         // end is the only mutation. That makes state preservation structural: an
@@ -779,7 +779,7 @@ impl ClientConnector {
         message_channel_id: u16,
         user_channel_id: u16,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
+    ) -> SequenceResult<Written> {
         use ironrdp_pdu::rdp::autodetect::{
             AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu, BW_RESULTS_CONNECT_TIME, BW_START_CONNECT_TIME,
             BW_STOP_CONNECT_TIME,
@@ -939,7 +939,7 @@ fn advance_licensing_exchange(
     input: &[u8],
     received_at: Option<MonotonicInstant>,
     output: &mut WriteBuf,
-) -> ConnectorResult<(Written, ClientConnectorState)> {
+) -> SequenceResult<(Written, ClientConnectorState)> {
     let written = license_exchange.step(input, received_at, output)?;
 
     let next_state = if license_exchange.state.is_terminal() {
@@ -1008,7 +1008,7 @@ impl Sequence for ClientConnector {
         input: &[u8],
         received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
+    ) -> SequenceResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             // Invalid state
             ClientConnectorState::Consumed => {
@@ -1025,7 +1025,7 @@ impl Sequence for ClientConnector {
             }
             ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
                 let connection_confirm = decode::<X224<nego::ConnectionConfirm>>(input)
-                    .map_err(ConnectorError::decode)
+                    .map_err(SequenceError::decode)
                     .map(|p| p.0)?;
 
                 debug!(message = ?connection_confirm, "Received");
@@ -1034,9 +1034,9 @@ impl Sequence for ClientConnector {
                     nego::ConnectionConfirm::Response { flags, protocol } => (flags, protocol),
                     nego::ConnectionConfirm::Failure { code } => {
                         error!(?code, "Received connection failure code");
-                        return Err(ConnectorError::new(
+                        return Err(SequenceError::negotiation(
                             "negotiation failure",
-                            ConnectorErrorKind::Negotiation(NegotiationFailure::from(code)),
+                            NegotiationFailure::from(code),
                         ));
                     }
                 };
@@ -1106,7 +1106,7 @@ impl Sequence for ClientConnector {
                 )?;
 
                 let connect_initial =
-                    mcs::ConnectInitial::with_gcc_blocks(client_gcc_blocks).map_err(ConnectorError::decode)?;
+                    mcs::ConnectInitial::with_gcc_blocks(client_gcc_blocks).map_err(SequenceError::decode)?;
 
                 debug!(message = ?connect_initial, "Send");
 
@@ -1119,10 +1119,10 @@ impl Sequence for ClientConnector {
             }
             ClientConnectorState::BasicSettingsExchangeWaitResponse { connect_initial } => {
                 let x224_payload = decode::<X224<crate::x224::X224Data<'_>>>(input)
-                    .map_err(ConnectorError::decode)
+                    .map_err(SequenceError::decode)
                     .map(|p| p.0)?;
                 let connect_response =
-                    decode::<mcs::ConnectResponse>(x224_payload.data.as_ref()).map_err(ConnectorError::decode)?;
+                    decode::<mcs::ConnectResponse>(x224_payload.data.as_ref()).map_err(SequenceError::decode)?;
 
                 debug!(message = ?connect_response, "Received");
 
@@ -1379,11 +1379,11 @@ impl Sequence for ClientConnector {
                 message_channel_id,
                 requests_seen,
             } => {
-                let ctx = mcs::decode_send_data_indication(input).map_err(ConnectorError::decode)?;
+                let ctx = mcs::decode_send_data_indication(input).map_err(SequenceError::decode)?;
 
                 if Some(ctx.channel_id) == message_channel_id {
                     let pdu = decode::<rdp::multitransport::MultitransportRequestPdu>(ctx.user_data)
-                        .map_err(ConnectorError::decode)?;
+                        .map_err(SequenceError::decode)?;
 
                     if requests_seen >= MAX_MULTITRANSPORT_REQUESTS {
                         return Err(reason_err!(
@@ -1552,8 +1552,8 @@ pub fn encode_send_data_request<T: Encode>(
     channel_id: u16,
     user_msg: &T,
     buf: &mut WriteBuf,
-) -> ConnectorResult<usize> {
-    let user_data = encode_vec(user_msg).map_err(ConnectorError::encode)?;
+) -> SequenceResult<usize> {
+    let user_data = encode_vec(user_msg).map_err(SequenceError::encode)?;
 
     let pdu = mcs::SendDataRequest {
         initiator_id,
@@ -1561,7 +1561,7 @@ pub fn encode_send_data_request<T: Encode>(
         user_data: Cow::Owned(user_data),
     };
 
-    let written = ironrdp_core::encode_buf(&X224(pdu), buf).map_err(ConnectorError::encode)?;
+    let written = ironrdp_core::encode_buf(&X224(pdu), buf).map_err(SequenceError::encode)?;
 
     Ok(written)
 }
@@ -1572,7 +1572,7 @@ fn create_gcc_blocks<'a>(
     selected_protocol: nego::SecurityProtocol,
     extended_client_data_supported: bool,
     static_channels: impl Iterator<Item = &'a StaticVirtualChannel>,
-) -> ConnectorResult<gcc::ClientGccBlocks> {
+) -> SequenceResult<gcc::ClientGccBlocks> {
     use ironrdp_pdu::gcc::{
         ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientGccBlocks, ClientNetworkData,
         ClientSecurityData, ColorDepth, EncryptionMethod, HighColorDepth, MonitorOrientation, RdpVersion,

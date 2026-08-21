@@ -9,6 +9,7 @@ pub mod connection_activation;
 mod connection_finalization;
 pub mod credssp;
 mod license_exchange;
+mod sequence_error;
 mod server_name;
 
 use core::any::Any;
@@ -30,8 +31,14 @@ pub use self::connection::{
 };
 pub use self::connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 pub use self::license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
+pub use self::sequence_error::{SequenceError, SequenceErrorExt, SequenceErrorKind, SequenceResult, SequenceResultExt};
 pub use self::server_name::ServerName;
 pub use crate::license_exchange::LicenseCache;
+/// Re-exported so `connect_*`/`accept_*` boundary functions across
+/// `ironrdp-async`, `ironrdp-blocking`, and `ironrdp-acceptor` can call
+/// `.map_err_as::<ConnectorErrorKind>()` without a direct `ironrdp-error`
+/// dependency. See the [`ironrdp_error::ErrorMapping`] impl on [`ConnectorErrorKind`] below.
+pub use ironrdp_error::ResultExt;
 
 /// Provides user-friendly error messages for RDP negotiation failures
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -334,10 +341,10 @@ pub enum Written {
 
 impl Written {
     #[inline]
-    pub fn from_size(value: usize) -> ConnectorResult<Self> {
+    pub fn from_size(value: usize) -> SequenceResult<Self> {
         core::num::NonZeroUsize::new(value)
             .map(Self::Size)
-            .ok_or_else(|| ConnectorError::general("invalid written length (can't be zero)"))
+            .ok_or_else(|| SequenceError::general("invalid written length (can't be zero)"))
     }
 
     #[inline]
@@ -397,9 +404,9 @@ pub trait Sequence: Send {
         input: &[u8],
         received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written>;
+    ) -> SequenceResult<Written>;
 
-    fn step_no_input(&mut self, output: &mut WriteBuf) -> ConnectorResult<Written> {
+    fn step_no_input(&mut self, output: &mut WriteBuf) -> SequenceResult<Written> {
         self.step(&[], None, output)
     }
 }
@@ -408,30 +415,28 @@ ironrdp_core::assert_obj_safe!(Sequence);
 
 pub type ConnectorResult<T> = Result<T, ConnectorError>;
 
+/// Nested top-level connect-flow union.
+///
+/// Every in-workspace [`Sequence`] impl and its helpers return [`SequenceError`],
+/// an sspi-free error type. `ConnectorError` is the coarser error type used at
+/// connect boundaries (e.g. `connect_begin`/`connect_finalize`), nesting the
+/// `SequenceError` produced while driving a sequence alongside the two other
+/// connect-flow concerns that a `Sequence` impl never needs to know about:
+/// CredSSP (which carries `sspi::Error`) and access-denied responses.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum ConnectorErrorKind {
-    Encode(ironrdp_core::EncodeError),
-    Decode(ironrdp_core::DecodeError),
+    Sequence(SequenceError),
     Credssp(sspi::Error),
-    Reason(String),
     AccessDenied,
-    General,
-    Custom,
-    Negotiation(NegotiationFailure),
 }
 
 impl fmt::Display for ConnectorErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self {
-            ConnectorErrorKind::Encode(_) => write!(f, "encode error"),
-            ConnectorErrorKind::Decode(_) => write!(f, "decode error"),
+            ConnectorErrorKind::Sequence(_) => write!(f, "sequence error"),
             ConnectorErrorKind::Credssp(_) => write!(f, "CredSSP"),
-            ConnectorErrorKind::Reason(description) => write!(f, "reason: {description}"),
             ConnectorErrorKind::AccessDenied => write!(f, "access denied"),
-            ConnectorErrorKind::General => write!(f, "general error"),
-            ConnectorErrorKind::Custom => write!(f, "custom error"),
-            ConnectorErrorKind::Negotiation(failure) => write!(f, "negotiation failure: {failure}"),
         }
     }
 }
@@ -439,58 +444,40 @@ impl fmt::Display for ConnectorErrorKind {
 impl core::error::Error for ConnectorErrorKind {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match &self {
-            ConnectorErrorKind::Encode(e) => Some(e),
-            ConnectorErrorKind::Decode(e) => Some(e),
+            ConnectorErrorKind::Sequence(e) => Some(e),
             ConnectorErrorKind::Credssp(e) => Some(e),
-            ConnectorErrorKind::Reason(_) => None,
             ConnectorErrorKind::AccessDenied => None,
-            ConnectorErrorKind::Custom => None,
-            ConnectorErrorKind::General => None,
-            ConnectorErrorKind::Negotiation(failure) => Some(failure),
         }
     }
 }
 
 pub type ConnectorError = ironrdp_error::Error<ConnectorErrorKind>;
 
-pub trait ConnectorErrorExt {
-    fn encode(error: ironrdp_core::EncodeError) -> Self;
-    fn decode(error: ironrdp_core::DecodeError) -> Self;
-    fn general(context: &'static str) -> Self;
-    fn reason(context: &'static str, reason: impl Into<String>) -> Self;
-    fn custom<E>(context: &'static str, e: E) -> Self
-    where
-        E: core::error::Error + Sync + Send + 'static;
+/// Canonical `SequenceError -> ConnectorError` conversion.
+///
+/// `ConnectorError` and `SequenceError` are both `ironrdp_error::Error<_>`
+/// instantiations, so orphan rules forbid a direct `impl From<SequenceError>
+/// for ConnectorError` (neither `ConnectorError`'s nor `SequenceError`'s head
+/// type is local to this crate — `ironrdp_error::Error` is). `ErrorMapping` is
+/// `ironrdp-error`'s sanctioned mechanism for this instead: call sites use
+/// `.map_err_as::<ConnectorErrorKind>()` immediately before the `?` that
+/// performs the actual boundary crossing, at each `connect_*`/`accept_*`
+/// function (see `ironrdp-async`, `ironrdp-blocking`, `ironrdp-acceptor`).
+impl ironrdp_error::ErrorMapping<SequenceErrorKind> for ConnectorErrorKind {
+    #[track_caller]
+    fn map_error(error: SequenceError) -> ConnectorError {
+        ConnectorError::new("sequence error", ConnectorErrorKind::Sequence(error))
+    }
 }
 
-impl ConnectorErrorExt for ConnectorError {
-    #[track_caller]
-    fn encode(error: ironrdp_core::EncodeError) -> Self {
-        Self::new("encode error", ConnectorErrorKind::Encode(error))
-    }
-
-    #[track_caller]
-    fn decode(error: ironrdp_core::DecodeError) -> Self {
-        Self::new("decode error", ConnectorErrorKind::Decode(error))
-    }
-
-    #[track_caller]
-    fn general(context: &'static str) -> Self {
-        Self::new(context, ConnectorErrorKind::General)
-    }
-
-    #[track_caller]
-    fn reason(context: &'static str, reason: impl Into<String>) -> Self {
-        Self::new(context, ConnectorErrorKind::Reason(reason.into()))
-    }
-
-    #[track_caller]
-    fn custom<E>(context: &'static str, e: E) -> Self
-    where
-        E: core::error::Error + Sync + Send + 'static,
-    {
-        Self::new(context, ConnectorErrorKind::Custom).with_source(e)
-    }
+/// Maps a bare [`SequenceError`] value to a [`ConnectorError`].
+///
+/// Companion to [`ResultExt::map_err_as`] for call sites that need to convert an already-produced
+/// `SequenceError` value directly, rather than mapping it while it flows through a `?`-propagated
+/// `Result`. This comes up when a `SequenceError` must be reported out-of-band (e.g. sent through a
+/// channel as a [`ConnectorError`]) instead of being returned from the current function.
+pub fn map_sequence_error(error: SequenceError) -> ConnectorError {
+    <ConnectorErrorKind as ironrdp_error::ErrorMapping<SequenceErrorKind>>::map_error(error)
 }
 
 pub trait ConnectorResultExt {
@@ -518,17 +505,17 @@ impl<T> ConnectorResultExt for ConnectorResult<T> {
     }
 }
 
-pub fn encode_x224_packet<T>(x224_msg: &T, buf: &mut WriteBuf) -> ConnectorResult<usize>
+pub fn encode_x224_packet<T>(x224_msg: &T, buf: &mut WriteBuf) -> SequenceResult<usize>
 where
     T: Encode,
 {
-    let x224_msg_buf = encode_vec(x224_msg).map_err(ConnectorError::encode)?;
+    let x224_msg_buf = encode_vec(x224_msg).map_err(SequenceError::encode)?;
 
     let pdu = x224::X224Data {
         data: std::borrow::Cow::Owned(x224_msg_buf),
     };
 
-    let written = encode_buf(&X224(pdu), buf).map_err(ConnectorError::encode)?;
+    let written = encode_buf(&X224(pdu), buf).map_err(SequenceError::encode)?;
 
     Ok(written)
 }
