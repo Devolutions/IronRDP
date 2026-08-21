@@ -38,7 +38,7 @@ pub use ironrdp_error::ResultExt;
 /// stable.
 pub use ironrdp_sequence::{
     DesktopSize, MonotonicInstant, NegotiationFailure, Sequence, SequenceError, SequenceErrorExt, SequenceErrorKind,
-    SequenceResult, SequenceResultExt, ServerName, State, Written, state_downcast, state_is,
+    SequenceResult, SequenceResultExt, ServerName, State, StepInput, Written, state_downcast, state_is,
 };
 /// Permanent facade re-export of the macros previously defined directly in this
 /// crate; see [`ironrdp_sequence`] for their definitions.

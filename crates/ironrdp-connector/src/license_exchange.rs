@@ -12,7 +12,7 @@ use tracing::{debug, error, info, trace};
 
 use super::{SequenceError, SequenceErrorExt as _, custom_err, general_err};
 use crate::{
-    ConnectorResult, MonotonicInstant, Sequence, SequenceResult, SequenceResultExt as _, State, Written,
+    ConnectorResult, Sequence, SequenceResult, SequenceResultExt as _, State, StepInput, Written,
     encode_send_data_request,
 };
 
@@ -120,12 +120,8 @@ impl Sequence for LicenseExchangeSequence {
         &self.state
     }
 
-    fn step(
-        &mut self,
-        input: &[u8],
-        _received_at: Option<MonotonicInstant>,
-        output: &mut WriteBuf,
-    ) -> SequenceResult<Written> {
+    fn step_input(&mut self, input: StepInput<'_>, output: &mut WriteBuf) -> SequenceResult<Written> {
+        let input = input.pdu();
         let (written, next_state) = match mem::take(&mut self.state) {
             LicenseExchangeState::Consumed => {
                 return Err(general_err!(

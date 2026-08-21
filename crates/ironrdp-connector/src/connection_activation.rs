@@ -7,8 +7,8 @@ use ironrdp_pdu::rdp::capability_sets::{
 use tracing::{debug, warn};
 
 use crate::{
-    Config, ConnectionFinalizationSequence, DesktopSize, MonotonicInstant, Sequence, SequenceError,
-    SequenceErrorExt as _, SequenceResult, State, Written, general_err, reason_err,
+    Config, ConnectionFinalizationSequence, DesktopSize, Sequence, SequenceError, SequenceErrorExt as _,
+    SequenceResult, State, StepInput, Written, general_err, reason_err,
 };
 
 /// Represents the Capability Exchange and Connection Finalization phases
@@ -125,12 +125,7 @@ impl Sequence for ConnectionActivationSequence {
         &self.state
     }
 
-    fn step(
-        &mut self,
-        input: &[u8],
-        received_at: Option<MonotonicInstant>,
-        output: &mut ironrdp_core::WriteBuf,
-    ) -> SequenceResult<Written> {
+    fn step_input(&mut self, input: StepInput<'_>, output: &mut ironrdp_core::WriteBuf) -> SequenceResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             ConnectionActivationState::Consumed | ConnectionActivationState::Finalized { .. } => {
                 return Err(general_err!(
@@ -141,7 +136,7 @@ impl Sequence for ConnectionActivationSequence {
                 debug!("Capabilities Exchange");
 
                 let send_data_indication_ctx =
-                    ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(SequenceError::decode)?;
+                    ironrdp_pdu::mcs::decode_send_data_indication(input.pdu()).map_err(SequenceError::decode)?;
                 let share_control_ctx =
                     rdp::headers::decode_share_control(send_data_indication_ctx).map_err(SequenceError::decode)?;
 
@@ -328,7 +323,7 @@ impl Sequence for ConnectionActivationSequence {
             } => {
                 debug!("Connection Finalization");
 
-                let written = connection_finalization.step(input, received_at, output)?;
+                let written = connection_finalization.step_input(input, output)?;
 
                 let next_state = if !connection_finalization.state.is_terminal() {
                     ConnectionActivationState::ConnectionFinalization {

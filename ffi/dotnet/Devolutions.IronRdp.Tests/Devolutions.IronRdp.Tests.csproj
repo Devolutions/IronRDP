@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- The test host targets net8.0, but only a newer runtime may be installed. -->
+    <RollForward>LatestMajor</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Devolutions.IronRdp/Devolutions.IronRdp.csproj" />
+
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <!--
+  The referenced project packs the native library instead of copying it, so bring it next to the
+  test assembly here. Build it first with `cargo xtask ffi build`.
+  -->
+  <PropertyGroup>
+    <NativeLibDir>../../../dependencies/runtimes</NativeLibDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(NativeLibDir)/win-x64/native/DevolutionsIronRdp.dll"
+          Condition="Exists('$(NativeLibDir)/win-x64/native/DevolutionsIronRdp.dll')"
+          Link="DevolutionsIronRdp.dll"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(NativeLibDir)/linux-x64/native/libDevolutionsIronRdp.so"
+          Condition="Exists('$(NativeLibDir)/linux-x64/native/libDevolutionsIronRdp.so')"
+          Link="libDevolutionsIronRdp.so"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(NativeLibDir)/osx-x64/native/libDevolutionsIronRdp.dylib"
+          Condition="Exists('$(NativeLibDir)/osx-x64/native/libDevolutionsIronRdp.dylib')"
+          Link="libDevolutionsIronRdp.dylib"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(NativeLibDir)/osx-arm64/native/libDevolutionsIronRdp.dylib"
+          Condition="Exists('$(NativeLibDir)/osx-arm64/native/libDevolutionsIronRdp.dylib')"
+          Link="libDevolutionsIronRdp.dylib"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

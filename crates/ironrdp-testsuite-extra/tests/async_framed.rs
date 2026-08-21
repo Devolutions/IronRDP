@@ -1,10 +1,10 @@
 //! Arrival-time stamping on [`Framed`].
 //!
 //! The connect-time bandwidth measurement in `ironrdp-connector` is only as
-//! honest as `Framed::last_read_at`, and nothing else pins that down: the
-//! connector tests drive `Sequence::step` with hand-picked instants, so a
-//! regression that stopped stamping reads would leave them green while every
-//! measured window silently collapsed to the unmeasurable floor.
+//! honest as the instant `Framed` hands to `Sequence::step`, and nothing else
+//! pins that down: the connector tests drive `step` with hand-picked instants,
+//! so a regression that stopped stamping reads would leave them green while
+//! every measured window silently collapsed to the unmeasurable floor.
 //!
 //! These live here rather than inline in `ironrdp-async` because that crate
 //! sets `[lib] test = false`, so an inline `#[cfg(test)]` module would compile
@@ -16,6 +16,7 @@ use core::time::Duration;
 use std::collections::VecDeque;
 use std::io;
 
+use ironrdp::pdu::X224_HINT;
 use ironrdp_async::bytes::BytesMut;
 use ironrdp_async::{Framed, FramedRead, StreamWrapper};
 
@@ -104,16 +105,8 @@ fn each_socket_read_advances_the_arrival_time() {
     // One frame per read, so each PDU is stamped by the read that carried it.
     let mut framed = Framed::<ChunkedStream>::new(ChunkedStream::new([tpkt(&[0xAA; 8]), tpkt(&[0xBB; 8])]));
 
-    assert!(
-        framed.last_read_at().is_none(),
-        "an unread Framed has observed no arrival"
-    );
-
-    block_on(framed.read_pdu()).expect("first frame");
-    let first = framed.last_read_at().expect("host build observes time");
-
-    block_on(framed.read_pdu()).expect("second frame");
-    let second = framed.last_read_at().expect("host build observes time");
+    let (_, first) = block_on(framed.read_by_hint(&X224_HINT)).expect("first frame");
+    let (_, second) = block_on(framed.read_by_hint(&X224_HINT)).expect("second frame");
 
     assert!(
         second.duration_since(first) >= Duration::from_millis(2),
@@ -130,8 +123,7 @@ fn pdus_sharing_a_socket_read_share_its_arrival_time() {
     chunk.extend_from_slice(&tpkt(&[0xBB; 8]));
     let mut framed = Framed::<ChunkedStream>::new(ChunkedStream::new([chunk]));
 
-    block_on(framed.read_pdu()).expect("first frame");
-    let first = framed.last_read_at().expect("host build observes time");
+    let (_, first) = block_on(framed.read_by_hint(&X224_HINT)).expect("first frame");
 
     // Wait before draining the second one. `MonotonicInstant` counts whole
     // milliseconds, so without this the two drains would be indistinguishable
@@ -139,8 +131,7 @@ fn pdus_sharing_a_socket_read_share_its_arrival_time() {
     // rather than on the read.
     std::thread::sleep(Duration::from_millis(10));
 
-    block_on(framed.read_pdu()).expect("second frame");
-    let second = framed.last_read_at().expect("host build observes time");
+    let (_, second) = block_on(framed.read_by_hint(&X224_HINT)).expect("second frame");
 
     assert_eq!(
         first, second,
@@ -149,18 +140,27 @@ fn pdus_sharing_a_socket_read_share_its_arrival_time() {
 }
 
 #[test]
-fn leftover_carried_into_a_new_framed_has_no_arrival_time() {
-    // `ironrdp-tokio`'s split/unsplit helpers rebuild a `Framed` around bytes
-    // that were read by the previous one. Those bytes did arrive, but not on
-    // this `Framed`, and it has no way to know when: reporting an arrival here
-    // would be inventing one.
-    let leftover = BytesMut::from(&*tpkt(&[0xDD; 8]));
-    let mut framed = Framed::<ChunkedStream>::new_with_leftover(ChunkedStream::new([]), leftover);
+fn leftover_carried_into_a_new_framed_keeps_its_arrival_time() {
+    // `ironrdp-tokio`'s split/unsplit helpers and the client's TLS upgrade rebuild a `Framed`
+    // around bytes the previous one had already read. Those bytes arrived at that earlier read,
+    // and the rebuilt `Framed` has to keep saying so: a PDU decoded out of them did not arrive
+    // when the new `Framed` was built.
+    let mut chunk = tpkt(&[0xAA; 8]);
+    chunk.extend_from_slice(&tpkt(&[0xDD; 8]));
+    let mut framed = Framed::<ChunkedStream>::new(ChunkedStream::new([chunk]));
 
-    block_on(framed.read_pdu()).expect("frame served entirely from leftover");
+    let (_, read_at) = block_on(framed.read_by_hint(&X224_HINT)).expect("first frame");
 
-    assert!(
-        framed.last_read_at().is_none(),
-        "a frame served from leftover was never read by this Framed, so it has no arrival time"
+    let (stream, leftover) = framed.into_inner();
+    assert!(!leftover.is_empty(), "the second frame is still buffered");
+
+    std::thread::sleep(Duration::from_millis(10));
+
+    let mut framed = Framed::<ChunkedStream>::new_with_leftover(stream, leftover);
+    let (_, carried_read_at) = block_on(framed.read_by_hint(&X224_HINT)).expect("frame served from leftover");
+
+    assert_eq!(
+        read_at, carried_read_at,
+        "a frame carried over as leftover still arrived at the read that produced it"
     );
 }

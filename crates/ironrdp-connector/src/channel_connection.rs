@@ -7,8 +7,7 @@ use ironrdp_pdu::{PduHint, mcs};
 use tracing::{debug, warn};
 
 use crate::{
-    MonotonicInstant, Sequence, SequenceError, SequenceErrorExt as _, SequenceResult, State, Written, general_err,
-    reason_err,
+    Sequence, SequenceError, SequenceErrorExt as _, SequenceResult, State, StepInput, Written, general_err, reason_err,
 };
 
 #[derive(Default, Debug)]
@@ -95,12 +94,8 @@ impl Sequence for ChannelConnectionSequence {
         }
     }
 
-    fn step(
-        &mut self,
-        input: &[u8],
-        _received_at: Option<MonotonicInstant>,
-        output: &mut WriteBuf,
-    ) -> SequenceResult<Written> {
+    fn step_input(&mut self, input: StepInput<'_>, output: &mut WriteBuf) -> SequenceResult<Written> {
+        let input = input.pdu();
         let (written, next_state) = match mem::take(&mut self.state) {
             ChannelConnectionState::Consumed => {
                 return Err(general_err!(

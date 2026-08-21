@@ -95,11 +95,18 @@ public partial class ConnectionActivationSequence: IDisposable
         }
     }
 
+    /// <summary>
+    /// Advances the sequence with a PDU that arrived at `received_at`.
+    /// </summary>
+    /// <remarks>
+    /// `received_at` must be read as soon as the read producing `pdu` completed. Stamping it
+    /// here instead would time how long the caller took to get around to this call.
+    /// </remarks>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>Written</c> allocated on Rust side.
     /// </returns>
-    public Written Step(byte[] pduHint, WriteBuf buf)
+    public Written Step(byte[] pdu, MonotonicInstant receivedAt, WriteBuf buf)
     {
         unsafe
         {
@@ -107,16 +114,22 @@ public partial class ConnectionActivationSequence: IDisposable
             {
                 throw new ObjectDisposedException("ConnectionActivationSequence");
             }
-            nuint pduHintLength = (nuint)pduHint.Length;
+            nuint pduLength = (nuint)pdu.Length;
+            Raw.MonotonicInstant* receivedAtRaw;
+            receivedAtRaw = receivedAt.AsFFI();
+            if (receivedAtRaw == null)
+            {
+                throw new ObjectDisposedException("MonotonicInstant");
+            }
             Raw.WriteBuf* bufRaw;
             bufRaw = buf.AsFFI();
             if (bufRaw == null)
             {
                 throw new ObjectDisposedException("WriteBuf");
             }
-            fixed (byte* pduHintPtr = pduHint)
+            fixed (byte* pduPtr = pdu)
             {
-                Raw.ConnectorActivationFfiResultBoxWrittenBoxIronRdpError result = Raw.ConnectionActivationSequence.Step(_inner, pduHintPtr, pduHintLength, bufRaw);
+                Raw.ConnectorActivationFfiResultBoxWrittenBoxIronRdpError result = Raw.ConnectionActivationSequence.Step(_inner, pduPtr, pduLength, receivedAtRaw, bufRaw);
                 if (!result.isOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));

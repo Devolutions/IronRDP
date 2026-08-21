@@ -171,7 +171,7 @@ public static class RDCleanPathConnection
         await framed.Write(reqBytesArray);
 
         System.Diagnostics.Debug.WriteLine("Waiting for RDCleanPath response...");
-        var respBytes = await framed.ReadByHint(new RDCleanPathHint());
+        var (respBytes, respReceivedAt) = await framed.ReadByHint(new RDCleanPathHint());
         var rdCleanPathResp = RDCleanPathPdu.FromDer(respBytes);
 
         var resultType = rdCleanPathResp.GetType();
@@ -197,7 +197,10 @@ public static class RDCleanPathConnection
                 x224Response.Fill(x224ResponseBytes);
 
                 writeBuf.Clear();
-                connector.Step(x224ResponseBytes, writeBuf);
+
+                // The X.224 response was carried inside the RDCleanPath PDU we just read, so it
+                // arrived when that read completed.
+                connector.Step(x224ResponseBytes, respReceivedAt, writeBuf);
             }
 
             var certChain = rdCleanPathResp.GetServerCertChain();

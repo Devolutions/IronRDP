@@ -294,11 +294,18 @@ public partial class ClientConnector: IDisposable
         }
     }
 
+    /// <summary>
+    /// Advances the sequence with a PDU that arrived at `received_at`.
+    /// </summary>
+    /// <remarks>
+    /// `received_at` must be read as soon as the read producing `input` completed. Stamping
+    /// it here instead would time how long the caller took to get around to this call.
+    /// </remarks>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>Written</c> allocated on Rust side.
     /// </returns>
-    public Written Step(byte[] input, WriteBuf writeBuf)
+    public Written Step(byte[] input, MonotonicInstant receivedAt, WriteBuf writeBuf)
     {
         unsafe
         {
@@ -307,6 +314,12 @@ public partial class ClientConnector: IDisposable
                 throw new ObjectDisposedException("ClientConnector");
             }
             nuint inputLength = (nuint)input.Length;
+            Raw.MonotonicInstant* receivedAtRaw;
+            receivedAtRaw = receivedAt.AsFFI();
+            if (receivedAtRaw == null)
+            {
+                throw new ObjectDisposedException("MonotonicInstant");
+            }
             Raw.WriteBuf* writeBufRaw;
             writeBufRaw = writeBuf.AsFFI();
             if (writeBufRaw == null)
@@ -315,7 +328,7 @@ public partial class ClientConnector: IDisposable
             }
             fixed (byte* inputPtr = input)
             {
-                Raw.ConnectorFfiResultBoxWrittenBoxIronRdpError result = Raw.ClientConnector.Step(_inner, inputPtr, inputLength, writeBufRaw);
+                Raw.ConnectorFfiResultBoxWrittenBoxIronRdpError result = Raw.ClientConnector.Step(_inner, inputPtr, inputLength, receivedAtRaw, writeBufRaw);
                 if (!result.isOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));

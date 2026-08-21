@@ -2,7 +2,7 @@ use core::any::TypeId;
 use core::mem;
 
 use ironrdp_connector::{
-    DesktopSize, MonotonicInstant, Sequence, SequenceError, SequenceErrorExt as _, SequenceResult, State, Written,
+    DesktopSize, Sequence, SequenceError, SequenceErrorExt as _, SequenceResult, State, StepInput, Written,
     encode_x224_packet, general_err, reason_err,
 };
 use ironrdp_core::{WriteBuf, decode};
@@ -305,7 +305,7 @@ impl Acceptor {
     /// Panics if state is not [AcceptorState::SecurityUpgrade].
     pub fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.reached_security_upgrade().is_some());
-        self.step(&[], None, &mut WriteBuf::new())
+        self.step_no_input(&mut WriteBuf::new())
             .expect("transition to next state");
         debug_assert!(self.reached_security_upgrade().is_none());
     }
@@ -320,7 +320,7 @@ impl Acceptor {
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
         let res = self
-            .step(&[], None, &mut WriteBuf::new())
+            .step_no_input(&mut WriteBuf::new())
             .expect("transition to next state");
         debug_assert!(!self.should_perform_credssp());
         assert_eq!(res, Written::Nothing);
@@ -481,17 +481,12 @@ impl Sequence for Acceptor {
         &self.state
     }
 
-    fn step(
-        &mut self,
-        input: &[u8],
-        received_at: Option<MonotonicInstant>,
-        output: &mut WriteBuf,
-    ) -> SequenceResult<Written> {
+    fn step_input(&mut self, input: StepInput<'_>, output: &mut WriteBuf) -> SequenceResult<Written> {
         let prev_state = mem::take(&mut self.state);
 
         let (written, next_state) = match prev_state {
             AcceptorState::InitiationWaitRequest => {
-                let connection_request = decode::<X224<nego::ConnectionRequest>>(input)
+                let connection_request = decode::<X224<nego::ConnectionRequest>>(input.pdu())
                     .map_err(SequenceError::decode)
                     .map(|p| p.0)?;
 
@@ -595,7 +590,7 @@ impl Sequence for Acceptor {
                 requested_protocol,
                 protocol,
             } => {
-                let x224_payload = decode::<X224<pdu::x224::X224Data<'_>>>(input)
+                let x224_payload = decode::<X224<pdu::x224::X224Data<'_>>>(input.pdu())
                     .map_err(SequenceError::decode)
                     .map(|p| p.0)?;
                 let settings_initial =
@@ -754,7 +749,7 @@ impl Sequence for Acceptor {
                 channels,
                 mut connection,
             } => {
-                let written = connection.step(input, received_at, output)?;
+                let written = connection.step_input(input, output)?;
                 let state = if connection.is_done() {
                     AcceptorState::RdpSecurityCommencement {
                         protocol,
@@ -792,7 +787,7 @@ impl Sequence for Acceptor {
                 early_capability,
                 channels,
             } => {
-                let data: X224<mcs::SendDataRequest<'_>> = decode(input).map_err(SequenceError::decode)?;
+                let data: X224<mcs::SendDataRequest<'_>> = decode(input.pdu()).map_err(SequenceError::decode)?;
                 let data = data.0;
                 let client_info: rdp::ClientInfoPdu = decode(data.user_data.as_ref()).map_err(SequenceError::decode)?;
 
@@ -927,7 +922,7 @@ impl Sequence for Acceptor {
             }
 
             AcceptorState::CapabilitiesWaitConfirm { ref channels } => {
-                let message = decode::<X224<mcs::McsMessage<'_>>>(input)
+                let message = decode::<X224<mcs::McsMessage<'_>>>(input.pdu())
                     .map_err(SequenceError::decode)
                     .map(|p| p.0);
                 let message = match message {
@@ -993,7 +988,7 @@ impl Sequence for Acceptor {
                 channels,
                 client_capabilities,
             } => {
-                let written = finalization.step(input, received_at, output)?;
+                let written = finalization.step_input(input, output)?;
 
                 let state = if finalization.is_done() {
                     AcceptorState::Accepted {

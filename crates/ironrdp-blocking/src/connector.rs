@@ -195,7 +195,7 @@ where
             "Wait for PDU"
         );
 
-        let pdu = framed
+        let (pdu, _) = framed
             .read_by_hint(next_pdu_hint)
             .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))
             .map_err_as::<ConnectorErrorKind>()?;
@@ -231,13 +231,13 @@ where
             "Wait for PDU"
         );
 
-        let pdu = framed
+        let (pdu, received_at) = framed
             .read_by_hint(next_pdu_hint)
             .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
         trace!(length = pdu.len(), "PDU received");
 
-        connector.step(&pdu, framed.last_read_at(), buf)?
+        connector.step(&pdu, received_at, buf)?
     } else {
         connector.step_no_input(buf)?
     };

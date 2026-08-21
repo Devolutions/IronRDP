@@ -27,6 +27,9 @@ const USER_CHANNEL_ID: u16 = 1002;
 const IO_CHANNEL_ID: u16 = 1003;
 const MESSAGE_CHANNEL_ID: u16 = 1004;
 
+/// Stands in for the arrival time a driver would report, in tests that are not about timing.
+const TEST_INSTANT: MonotonicInstant = MonotonicInstant::from_millis(0);
+
 fn test_config() -> ironrdp_connector::Config {
     ironrdp_connector::Config {
         desktop_size: DesktopSize {
@@ -105,7 +108,7 @@ fn connect_time_autodetect_request_is_answered_and_phase_continues() {
     let frame = server_send_data_indication(MESSAGE_CHANNEL_ID, user_data);
 
     let mut output = WriteBuf::new();
-    let written = connector.step(&frame, None, &mut output).unwrap();
+    let written = connector.step(&frame, TEST_INSTANT, &mut output).unwrap();
 
     assert!(written.size().is_some(), "an RTT request must produce a response frame");
     assert!(
@@ -128,7 +131,7 @@ fn unrelated_message_channel_pdu_is_ignored_and_phase_continues() {
     let frame = server_send_data_indication(MESSAGE_CHANNEL_ID, user_data);
 
     let mut output = WriteBuf::new();
-    let written = connector.step(&frame, None, &mut output).unwrap();
+    let written = connector.step(&frame, TEST_INSTANT, &mut output).unwrap();
 
     assert_eq!(
         written,
@@ -167,7 +170,7 @@ fn first_licensing_pdu_leaves_autodetect_for_the_licensing_path() {
     let frame = server_send_data_indication(IO_CHANNEL_ID, user_data);
 
     let mut output = WriteBuf::new();
-    connector.step(&frame, None, &mut output).unwrap();
+    connector.step(&frame, TEST_INSTANT, &mut output).unwrap();
 
     assert!(
         matches!(
@@ -194,7 +197,7 @@ fn connect_time_bandwidth_measure_stop_is_answered_and_phase_continues() {
     let frame = server_send_data_indication(MESSAGE_CHANNEL_ID, user_data);
 
     let mut output = WriteBuf::new();
-    let written = connector.step(&frame, None, &mut output).unwrap();
+    let written = connector.step(&frame, TEST_INSTANT, &mut output).unwrap();
 
     assert!(
         written.size().is_some(),
@@ -228,6 +231,9 @@ fn decode_bandwidth_results(output: &WriteBuf) -> (u32, u32) {
 /// A Stop with no preceding Start has nothing to have measured. It is still
 /// answered, because the server blocks without a reply, but the interval reported
 /// is the unmeasurable floor rather than an invented figure.
+///
+/// This is the only untimed window left: every input frame now carries an arrival
+/// time, so a window that was opened was necessarily timed.
 #[test]
 fn connect_time_bandwidth_stop_without_start_reports_the_floor() {
     let mut connector = connect_time_autodetect_connector();
@@ -241,7 +247,7 @@ fn connect_time_bandwidth_stop_without_start_reports_the_floor() {
     let written = connector
         .step(
             &server_send_data_indication(MESSAGE_CHANNEL_ID, stop),
-            Some(MonotonicInstant::from_millis(9_999)),
+            MonotonicInstant::from_millis(9_999),
             &mut output,
         )
         .unwrap();
@@ -267,7 +273,7 @@ fn connect_time_bandwidth_coalesced_into_one_read_reports_the_floor() {
 
     // One instant for all three, which is what `Framed` hands down when a single
     // read filled the buffer that all three PDUs were then extracted from.
-    let arrival = Some(MonotonicInstant::from_millis(7_000));
+    let arrival = MonotonicInstant::from_millis(7_000);
 
     for request in [
         AutoDetectRequest::bw_start_connect_time(0x3333),
@@ -305,97 +311,6 @@ fn connect_time_bandwidth_coalesced_into_one_read_reports_the_floor() {
     );
 }
 
-/// A window can open on one driver and close on another, for example when a
-/// `Framed` is rebuilt with leftover bytes between the Start and this Stop: the
-/// rebuilt `Framed` starts with no arrival time of its own, so the Stop reports
-/// `None` even though the Start that opened the window reported `Some`. Nothing
-/// upstream of this function stops that from happening, so it is reachable even
-/// though it did not use to be exercised by a test.
-///
-/// The window's accumulated bytes are dropped in that case: reporting them
-/// against `timeDelta = UNMEASURABLE_INTERVAL_MS` would pair a byte count that
-/// arrived over the window's real duration with a floor timer that understates
-/// it, inflating the reported bandwidth the same way an uncounted header would.
-#[test]
-fn connect_time_bandwidth_stop_with_no_arrival_time_drops_the_open_window() {
-    let mut connector = connect_time_autodetect_connector();
-    let mut output = WriteBuf::new();
-
-    let arrival = Some(MonotonicInstant::from_millis(9_000));
-
-    for request in [
-        AutoDetectRequest::bw_start_connect_time(0x7777),
-        AutoDetectRequest::bw_payload(0x7777, vec![0u8; 2048]),
-    ] {
-        output.clear();
-        connector
-            .step(
-                &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&AutoDetectReqPdu::new(request)).unwrap()),
-                arrival,
-                &mut output,
-            )
-            .unwrap();
-    }
-
-    output.clear();
-    let stop = encode_vec(&AutoDetectReqPdu::new(AutoDetectRequest::bw_stop_connect_time(
-        0x7777,
-        vec![0u8; 512],
-    )))
-    .unwrap();
-    connector
-        .step(
-            &server_send_data_indication(MESSAGE_CHANNEL_ID, stop),
-            None,
-            &mut output,
-        )
-        .unwrap();
-
-    let results = decode_bandwidth_results(&output);
-    assert_eq!(results.0, 1, "an unmeasured window still floors to 1 ms");
-    assert_eq!(
-        results.1, 520,
-        "the 2048-byte Payload is dropped along with the window; only the Stop's own 512 bytes plus its 8-byte header remain"
-    );
-}
-
-/// A driver with no clock reports no arrival time for this step, so no window is
-/// ever opened and there is nothing to accumulate into. The FFI driver is in this
-/// position for the whole connection; the wasm32 driver only for the single
-/// x224_connection_response step.
-///
-/// The server still blocks without a reply, so one is sent, but it claims no more
-/// than this Stop's own payload. Counting the Payload messages here would pair a
-/// full byte count with a `timeDelta` the client never measured, which yields a
-/// bandwidth figure that grows with however much the server chose to send.
-#[test]
-fn connect_time_bandwidth_without_a_clock_reports_the_stop_payload_alone() {
-    let mut connector = connect_time_autodetect_connector();
-    let mut output = WriteBuf::new();
-
-    for request in [
-        AutoDetectRequest::bw_start_connect_time(0x5555),
-        AutoDetectRequest::bw_payload(0x5555, vec![0u8; 1024]),
-        AutoDetectRequest::bw_stop_connect_time(0x5555, vec![0u8; 512]),
-    ] {
-        output.clear();
-        connector
-            .step(
-                &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&AutoDetectReqPdu::new(request)).unwrap()),
-                None,
-                &mut output,
-            )
-            .unwrap();
-    }
-
-    let results = decode_bandwidth_results(&output);
-    assert_eq!(results.0, 1, "a driver with no clock measured no interval");
-    assert_eq!(
-        results.1, 520,
-        "the 1024-byte Payload is not counted, since no window was open; the Stop's own 512 bytes plus its 8-byte header are"
-    );
-}
-
 /// Payload messages accumulate across a timed window, and the total they reach is
 /// what the Stop reports. This is the path the floor case deliberately skips, so it
 /// needs its own coverage: without it, nothing would catch an accumulator that had
@@ -417,7 +332,7 @@ fn connect_time_bandwidth_measured_window_reports_every_payload() {
         connector
             .step(
                 &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&AutoDetectReqPdu::new(request)).unwrap()),
-                Some(MonotonicInstant::from_millis(arrival)),
+                MonotonicInstant::from_millis(arrival),
                 &mut output,
             )
             .unwrap();
@@ -454,7 +369,7 @@ fn continuous_bandwidth_measure_requests_are_not_answered_as_connect_time() {
         let written = connector
             .step(
                 &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&AutoDetectReqPdu::new(request)).unwrap()),
-                Some(MonotonicInstant::from_millis(3_000)),
+                MonotonicInstant::from_millis(3_000),
                 &mut output,
             )
             .unwrap();
@@ -490,7 +405,7 @@ fn connect_time_stop_after_a_continuous_start_reports_the_floor() {
         connector
             .step(
                 &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&AutoDetectReqPdu::new(request)).unwrap()),
-                Some(MonotonicInstant::from_millis(at)),
+                MonotonicInstant::from_millis(at),
                 &mut output,
             )
             .unwrap();
@@ -524,7 +439,7 @@ fn connect_time_bandwidth_second_start_discards_the_first_window() {
         connector
             .step(
                 &server_send_data_indication(MESSAGE_CHANNEL_ID, encode_vec(&AutoDetectReqPdu::new(request)).unwrap()),
-                Some(MonotonicInstant::from_millis(arrival)),
+                MonotonicInstant::from_millis(arrival),
                 &mut output,
             )
             .unwrap();

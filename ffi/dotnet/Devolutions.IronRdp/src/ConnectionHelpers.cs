@@ -75,7 +75,7 @@ internal static class ConnectionHelpers
                 break;
             }
 
-            var pdu = await framed.ReadByHint(pduHint);
+            var (pdu, _) = await framed.ReadByHint(pduHint);
             var decoded = credsspSequence.DecodeServerMessage(pdu);
 
             // Don't remove, DecodeServerMessage is generated, and it can return null

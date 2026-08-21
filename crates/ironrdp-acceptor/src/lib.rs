@@ -200,7 +200,7 @@ where
                 "Wait for PDU"
             );
 
-            let pdu = framed
+            let (pdu, _) = framed
                 .read_by_hint(next_pdu_hint)
                 .await
                 .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))

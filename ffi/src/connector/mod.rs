@@ -23,18 +23,7 @@ pub mod ffi {
     use crate::error::ValueConsumedError;
     use crate::error::ffi::{IronRdpError, IronRdpErrorKind};
     use crate::pdu::ffi::WriteBuf;
-
-    /// Reads a monotonic clock for `Sequence::step`'s `received_at`. Epoch is the
-    /// first call; only differences are meaningful. This binding targets native
-    /// .NET hosts only, never `wasm32-unknown-unknown`, so `std::time::Instant`
-    /// is sufficient here (compare `ironrdp-blocking`'s identical helper, which
-    /// makes the same assumption for the same reason).
-    fn monotonic_now() -> ironrdp::connector::MonotonicInstant {
-        static EPOCH: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
-        ironrdp::connector::MonotonicInstant::from_millis(
-            u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX),
-        )
-    }
+    use crate::time::ffi::MonotonicInstant;
 
     #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
@@ -201,16 +190,20 @@ pub mod ffi {
             ironrdp_vmconnect::ensure_selected_credssp(&connector.state).map_err(Into::into)
         }
 
-        pub fn step(&mut self, input: &[u8], write_buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {
+        /// Advances the sequence with a PDU that arrived at `received_at`.
+        ///
+        /// `received_at` must be read as soon as the read producing `input` completed. Stamping
+        /// it here instead would time how long the caller took to get around to this call.
+        pub fn step(
+            &mut self,
+            input: &[u8],
+            received_at: &MonotonicInstant,
+            write_buf: &mut WriteBuf,
+        ) -> Result<Box<Written>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            // The FFI surface has no parameter through which the .NET caller could pass
-            // when it read `input`, so this stamps on entry to the call instead. That is
-            // at least as accurate as the other drivers' `last_read_at`, which is also a
-            // post-read stamp taken right after the read completes rather than exactly
-            // when the first byte arrived.
-            let written = connector.step(input, Some(monotonic_now()), &mut write_buf.0)?;
+            let written = connector.step(input, received_at.0, &mut write_buf.0)?;
             Ok(Box::new(Written(written)))
         }
 

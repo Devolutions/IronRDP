@@ -1760,7 +1760,7 @@ where
     }
 
     {
-        let rdcleanpath_res = framed
+        let (rdcleanpath_res, received_at) = framed
             .read_by_hint(&RDCLEANPATH_HINT)
             .await
             .context("read RDCleanPath request")?;
@@ -1866,7 +1866,9 @@ where
                 debug_assert!(connector.next_pdu_hint().is_some());
 
                 buf.clear();
-                let written = connector.step(x224_connection_response.as_bytes(), None, &mut buf)?;
+                // The X.224 response travelled inside the RDCleanPath PDU read above, so it
+                // arrived when that read completed, not now.
+                let written = connector.step(x224_connection_response.as_bytes(), received_at, &mut buf)?;
                 debug_assert!(written.is_nothing());
 
                 let should_upgrade = ironrdp_futures::skip_connect_begin(connector);
