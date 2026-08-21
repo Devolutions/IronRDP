@@ -342,7 +342,7 @@ impl TsUrbHeader {
     pub(super) fn encode_with_size(&self, dst: &mut WriteCursor<'_>, ts_urb_size: usize) -> EncodeResult<()> {
         let ts_urb_size = ts_urb_size
             .try_into()
-            .map_err(|_| invalid_field_err!("TS_URB_HEADER::Size", "too large: exceeded 2-byte size field"))?;
+            .map_err(|_| invalid_field_err!("TS_URB_HEADER::Size", "too large: exceeded 2-byte size field", in: dst))?;
 
         Self {
             ts_urb_size,
@@ -382,7 +382,7 @@ impl Decode<'_> for TsUrbHeader {
         ensure_fixed_part_size!(in: src);
         let size = src.read_u16();
         if usize::from(size) < Self::FIXED_PART_SIZE {
-            return Err(invalid_field_err!("TS_URB_HEADER::Size", "is smaller than 8"));
+            return Err(invalid_field_err!("TS_URB_HEADER::Size", "is smaller than 8", in: src));
         }
 
         let func = UrbFunction::from(src.read_u16());
@@ -398,7 +398,7 @@ impl Decode<'_> for TsUrbHeader {
             return Err(invalid_field_err!(
                 "TS_URB_HEADER::NoAck",
                 "this bit can only be set when URB Function is an isochronous transfer"
-            ));
+            , in: src));
         }
 
         Ok(Self {
@@ -552,7 +552,8 @@ impl Decode<'_> for TsUsbdInterfaceInfo {
         let length @ 12.. = src.read_u16() else {
             return Err(invalid_field_err!(
                 "TS_USBD_INTERFACE_INFORMATION::Length",
-                "is less than min reqd value of 12"
+                "is less than min reqd value of 12",
+                in: src,
             ));
         };
 
@@ -569,7 +570,8 @@ impl Decode<'_> for TsUsbdInterfaceInfo {
         if number_of_pipes != number_of_pipes_expected.into() {
             return Err(invalid_field_err!(
                 "TS_USBD_INTERFACE_INFORMATION::NumberOfPipesExpected",
-                "is not equal to TS_USBD_INTERFACE_INFORMATION::NumberOfPipes"
+                "is not equal to TS_USBD_INTERFACE_INFORMATION::NumberOfPipes",
+                in: src,
             ));
         }
 
@@ -578,7 +580,8 @@ impl Decode<'_> for TsUsbdInterfaceInfo {
             let Some(length_suggested_size) = length_suggested_size else {
                 return Err(invalid_field_err!(
                     "TS_USBD_INTERFACE_INFORMATION::Length",
-                    "is too small"
+                    "is too small",
+                    in: src,
                 ));
             };
 
@@ -587,7 +590,8 @@ impl Decode<'_> for TsUsbdInterfaceInfo {
             {
                 return Err(invalid_field_err!(
                     "TS_USBD_INTERFACE_INFORMATION::NumberOfPipes",
-                    "does not reflect number of pipes suggested by TS_USBD_INTERFACE_INFORMATION::Length"
+                    "does not reflect number of pipes suggested by TS_USBD_INTERFACE_INFORMATION::Length",
+                    in: src,
                 ));
             }
         }

@@ -67,7 +67,8 @@ impl TpktHeader {
         if usize::from(packet_length) < 7 {
             return Err(invalid_field_err!(
                 "packetLength",
-                "length is smaller than the minimum TPKT size"
+                "length is smaller than the minimum TPKT size",
+                in: src
             ));
         }
 

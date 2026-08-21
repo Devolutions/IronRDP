@@ -413,6 +413,7 @@ fn nego_request_unexpected_rdp_msg_type() {
             context: "Client X.224 Connection Request",
             kind: UnexpectedMessageType {
                 got: 3,
+                offset: None,
             },
             source: None,
         }
@@ -447,6 +448,7 @@ fn nego_confirm_unexpected_rdp_msg_type() {
             context: "Server X.224 Connection Confirm",
             kind: UnexpectedMessageType {
                 got: 175,
+                offset: None,
             },
             source: None,
         }
@@ -510,6 +512,9 @@ fn cookie_without_cr_lf_error_decode() {
             kind: NotEnoughBytes {
                 received: 1,
                 expected: 2,
+                offset: Some(
+                    20,
+                ),
             },
             source: None,
         }
