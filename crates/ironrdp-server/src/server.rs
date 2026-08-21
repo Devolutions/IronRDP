@@ -12,8 +12,8 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result, bail};
 use ironrdp_acceptor::{
-    Acceptor, AcceptorResult, BeginResult, ConnectorError, ConnectorErrorExt as _, CredentialOrigin,
-    CredentialsHandler, DesktopSize, ReceivedCredentials,
+    Acceptor, AcceptorResult, BeginResult, ConnectionSetupHandler, ConnectorError, ConnectorErrorExt as _,
+    CredentialOrigin, DesktopSize, ReceivedCredentials,
 };
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
@@ -6264,7 +6264,7 @@ mod cliprdr_error_tests {
 }
 
 #[async_trait::async_trait(?Send)]
-impl CredentialsHandler for RdpServer {
+impl ConnectionSetupHandler for RdpServer {
     async fn handle_credentials(
         &mut self,
         credentials: Option<ReceivedCredentials>,
