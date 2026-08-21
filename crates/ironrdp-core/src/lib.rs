@@ -19,7 +19,6 @@ mod into_owned;
 #[cfg(feature = "alloc")]
 mod non_empty;
 mod padding;
-mod time;
 #[cfg(feature = "alloc")]
 mod write_buf;
 
@@ -49,6 +48,5 @@ pub use self::into_owned::IntoOwned;
 #[cfg(feature = "alloc")]
 pub use self::non_empty::NonEmpty;
 pub use self::padding::{read_padding, write_padding};
-pub use self::time::MonotonicInstant;
 #[cfg(feature = "alloc")]
 pub use self::write_buf::WriteBuf;

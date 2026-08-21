@@ -11,6 +11,13 @@
 //! `std::time::Instant` is deliberately not used here. `Instant::now` panics
 //! on `wasm32-unknown-unknown`, which some drivers using this type compile
 //! for, and this crate is `no_std` besides.
+//!
+//! This type has no dependency on the rest of the crate (in particular, none
+//! on the `state-machine` feature's [`Sequence`](crate::Sequence) trait and
+//! its `ironrdp-pdu` dependency), so it stays available even when
+//! `state-machine` is disabled. `ironrdp-connector` and `ironrdp-rdpeudp` both
+//! re-export it as a permanent facade so existing callers are unaffected by
+//! this crate's introduction.
 
 use core::ops::Add;
 use core::time::Duration;

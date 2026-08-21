@@ -2726,6 +2726,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-error 0.2.0",
  "ironrdp-pdu",
+ "ironrdp-sequence",
  "ironrdp-svc",
  "picky",
  "picky-asn1-der",
@@ -3061,6 +3062,7 @@ dependencies = [
  "bitflags 2.13.1",
  "ironrdp-core 0.2.1",
  "ironrdp-error 0.2.0",
+ "ironrdp-sequence",
 ]
 
 [[package]]
@@ -3160,6 +3162,15 @@ dependencies = [
  "tracing",
  "whoami",
  "windows",
+]
+
+[[package]]
+name = "ironrdp-sequence"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core 0.2.1",
+ "ironrdp-error 0.2.0",
+ "ironrdp-pdu",
 ]
 
 [[package]]

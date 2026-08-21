@@ -1,0 +1,47 @@
+[package]
+name = "ironrdp-sequence"
+version = "0.1.0"
+readme = "README.md"
+description = "Sans-I/O state-machine contract shared by RDP connect/accept sequences"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[features]
+# Matches `ironrdp-core`/`ironrdp-pdu`: `no_std` unless a consumer asks for `std`.
+default = []
+# Enables `ServerName`, which stores a heap-allocated string. `MonotonicInstant`
+# and `DesktopSize` need no allocation and stay available without this feature.
+alloc = []
+std = ["alloc", "ironrdp-core?/std", "ironrdp-error?/std", "ironrdp-pdu?/std"]
+# Gates the `Sequence` trait, `State`, `Written`, `SequenceError`, and the
+# `general_err!`/`reason_err!`/`custom_err!` macros, all of which need
+# `ironrdp-pdu` (for `PduHint` and negotiation failure codes) plus
+# `ironrdp-core`/`ironrdp-error`. Default-disabled and separate from
+# `MonotonicInstant`/`DesktopSize` (always available, dependency-free) so a
+# consumer that only needs the clock type -- e.g. `ironrdp-rdpeudp` -- is not
+# forced to pull in `ironrdp-pdu`'s much larger dependency tree (`der-parser`,
+# `x509-cert`, `pkcs1`, ...).
+state-machine = [
+  "ironrdp-core/alloc",
+  "ironrdp-error/alloc",
+  "dep:ironrdp-pdu",
+  "alloc",
+]
+
+[dependencies]
+ironrdp-core = { path = "../ironrdp-core", version = "0.2", optional = true } # public when `state-machine` is on
+ironrdp-error = { path = "../ironrdp-error", version = "0.2", optional = true } # public when `state-machine` is on
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", optional = true } # public when `state-machine` is on
+
+[lints]
+workspace = true

@@ -89,7 +89,14 @@ pub fn dependencies(sh: &Shell) -> anyhow::Result<()> {
     // Each pair `(package, banned)` asserts that `package` has no transitive
     // (non-dev) edge to `banned`, ensuring consumers can depend on the
     // former without pulling in the latter’s graph.
-    const FORBIDDEN: &[(&str, &str)] = &[("ironrdp-session", "ironrdp-connector"), ("ironrdp-session", "sspi")];
+    const FORBIDDEN: &[(&str, &str)] = &[
+        ("ironrdp-session", "ironrdp-connector"),
+        ("ironrdp-session", "sspi"),
+        // `ironrdp-rdpeudp` depends on `ironrdp-sequence` only for the dependency-free
+        // `MonotonicInstant` type; it must never gain a transitive edge to `ironrdp-pdu`'s
+        // much larger dependency tree just for that.
+        ("ironrdp-rdpeudp", "ironrdp-pdu"),
+    ];
 
     let mut violations = Vec::new();
 
