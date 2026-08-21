@@ -11,15 +11,10 @@ repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
-autotests = false
 
 [lib]
 doctest = false
 test = false
-
-[[test]]
-name = "integration_tests_mstsgu"
-path = "tests/main.rs"
 
 [[test]]
 name = "rpch_http"
