@@ -17,6 +17,12 @@ If a requested change conflicts with intent, stop and surface the conflict for h
 Committed text (code, comments, docs, commit messages) and PR titles and descriptions never refer to work stages, decision identifiers, agent roles, sessions or planning documents.
 State rationale, not history.
 
+## Generated changelogs
+
+Do not create, edit, or update `crates/*/CHANGELOG.md` during feature or fix work.
+Crate changelogs are generated and updated exclusively in release-plz release PRs.
+Crate changelogs are not normal hand-maintained documentation.
+
 ## Rust
 
 `cargo xtask ci -v` runs the CI checks locally.
