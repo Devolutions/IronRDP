@@ -47,6 +47,7 @@ pub struct BuilderDone {
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     display_suppressed: Option<Arc<AtomicBool>>,
     autodetect_rtt: Option<Arc<AtomicU32>>,
+    autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
     remotefx_quant: Quant,
@@ -152,6 +153,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 gfx_factory: None,
                 display_suppressed: None,
                 autodetect_rtt: None,
+                autodetect_baseline_rtt: None,
                 honor_client_desktop_size: None,
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
@@ -178,6 +180,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 gfx_factory: None,
                 display_suppressed: None,
                 autodetect_rtt: None,
+                autodetect_baseline_rtt: None,
                 honor_client_desktop_size: None,
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
@@ -323,6 +326,20 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Inject a shared session-lifetime baseline RTT handle (milliseconds,
+    /// `u32::MAX` until the first measurement; see
+    /// [`RdpServer::autodetect_baseline_rtt_handle`] for what distinguishes
+    /// this from [`Self::with_autodetect_rtt_handle`]). The server writes the
+    /// latest baseline to the same instance the backend reads. When not
+    /// called, the server allocates its own (still readable via
+    /// [`RdpServer::autodetect_baseline_rtt_handle`]). The value stays
+    /// `u32::MAX` unless auto-detect is enabled via
+    /// [`RdpServer::enable_autodetect`].
+    pub fn with_autodetect_baseline_rtt_handle(mut self, handle: Arc<AtomicU32>) -> Self {
+        self.state.autodetect_baseline_rtt = Some(handle);
+        self
+    }
+
     /// Provision the Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`) handed to the client during logon.
     ///
@@ -390,6 +407,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.gfx_factory,
             self.state.display_suppressed,
             self.state.autodetect_rtt,
+            self.state.autodetect_baseline_rtt,
         );
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);

@@ -576,6 +576,16 @@ pub struct RdpServer {
     /// RTT for flow control.
     autodetect_rtt: Arc<AtomicU32>,
 
+    /// Session-lifetime lowest RTT in milliseconds (`baseRTT` per MS-RDPBCGR
+    /// 2.2.14.1.5), or `u32::MAX` until the first measurement. Unlike
+    /// [`Self::autodetect_rtt`], this never rises: it is the floor over the
+    /// whole session, not a sliding-window figure, which is what makes
+    /// `averageRTT - baseRTT` a queueing-delay signal rather than two
+    /// unrelated latency numbers. Updated at the same point as
+    /// [`Self::autodetect_rtt`]. Exposed via
+    /// [`Self::autodetect_baseline_rtt_handle`].
+    autodetect_baseline_rtt: Arc<AtomicU32>,
+
     /// Optional Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`). When `Some`, the server validates a returning
     /// `ARC_CS_PRIVATE_PACKET`, replaces its random after every connection, and
@@ -693,6 +703,7 @@ impl RdpServer {
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
         display_suppressed: Option<Arc<AtomicBool>>,
         autodetect_rtt: Option<Arc<AtomicU32>>,
+        autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -729,6 +740,11 @@ impl RdpServer {
             autodetect_rtt: {
                 // Reset to the sentinel: an injected handle must not expose a stale value before the first measurement.
                 let handle = autodetect_rtt.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
+                handle.store(u32::MAX, Ordering::Relaxed);
+                handle
+            },
+            autodetect_baseline_rtt: {
+                let handle = autodetect_baseline_rtt.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
                 handle.store(u32::MAX, Ordering::Relaxed);
                 handle
             },
@@ -974,6 +990,19 @@ impl RdpServer {
     /// [`RdpServerBuilder::with_autodetect_rtt_handle`](crate::RdpServerBuilder::with_autodetect_rtt_handle).
     pub fn autodetect_rtt_handle(&self) -> Arc<AtomicU32> {
         Arc::clone(&self.autodetect_rtt)
+    }
+
+    /// Returns a handle to the session-lifetime lowest RTT in milliseconds
+    /// (`baseRTT` per MS-RDPBCGR 2.2.14.1.5; `u32::MAX` until the first
+    /// measurement, and while auto-detect is disabled). Unlike
+    /// [`Self::autodetect_rtt_handle`], this figure never rises: pair it with
+    /// that handle's average to derive queueing delay
+    /// (`averageRTT - baseRTT`), which `autodetect_rtt_handle` alone cannot
+    /// give since its figure is a sliding-window value that rises as low
+    /// samples age out. Inject a shared instance at construction with
+    /// [`RdpServerBuilder::with_autodetect_baseline_rtt_handle`](crate::RdpServerBuilder::with_autodetect_baseline_rtt_handle).
+    pub fn autodetect_baseline_rtt_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.autodetect_baseline_rtt)
     }
 
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
@@ -2072,7 +2101,19 @@ impl RdpServer {
                 if let Some(ref mut ad) = self.autodetect {
                     if let Some(rtt_ms) = ad.handle_response(&pdu.response, monotonic_now_ms()) {
                         self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
-                        debug!(rtt_ms, seq = pdu.response.sequence_number(), "RTT measured");
+                        // A matched RTT sample always updates the session-lifetime low in the
+                        // same call (see `handle_response`'s RttResponse arm), so it is available
+                        // unconditionally here, not just on a new low.
+                        let baseline_rtt_ms = ad
+                            .baseline_rtt_ms()
+                            .expect("handle_response just recorded a sample above");
+                        self.autodetect_baseline_rtt.store(baseline_rtt_ms, Ordering::Relaxed);
+                        debug!(
+                            rtt_ms,
+                            baseline_rtt_ms,
+                            seq = pdu.response.sequence_number(),
+                            "RTT measured"
+                        );
                     } else {
                         trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
                     }
