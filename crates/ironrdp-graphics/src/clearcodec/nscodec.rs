@@ -5,7 +5,13 @@
 
 use ironrdp_core::{DecodeResult, invalid_field_err};
 
-const HEADER_SIZE: usize = 20;
+const HEADER_SIZE: usize = 4 /* LumaPlaneByteCount */
+    + 4 /* OrangeChromaPlaneByteCount */
+    + 4 /* GreenChromaPlaneByteCount */
+    + 4 /* AlphaPlaneByteCount */
+    + 1 /* ColorLossLevel */
+    + 1 /* ChromaSubsamplingLevel */
+    + 2 /* Reserved */;
 const RLE_END_DATA_SIZE: usize = 4;
 
 /// Decode an NSCodec compressed bitmap stream into top-down BGRA pixels.
@@ -287,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn decodes_24bpp_bgra_without_channel_swap() {
+    fn decodes_no_alpha_bgra_without_channel_swap() {
         let data = stream(&[100], &[10], &[0], &[], 1, false);
         assert_eq!(decode(&data, 1, 1).unwrap(), [90, 100, 110, 0xFF]);
     }

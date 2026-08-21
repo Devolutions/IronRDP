@@ -283,6 +283,16 @@ impl ClearCodecDecoder {
         if x_end > sw || y_end > sh {
             return Err(invalid_field_err!("subcodec", "region exceeds surface bounds"));
         }
+        let max_bitmap_data_len = usize::from(sub.width)
+            .checked_mul(usize::from(sub.height))
+            .and_then(|len| len.checked_mul(3))
+            .ok_or_else(|| invalid_field_err!("bitmapDataByteCount", "subcodec dimensions overflow"))?;
+        if sub.bitmap_data.len() > max_bitmap_data_len {
+            return Err(invalid_field_err!(
+                "bitmapDataByteCount",
+                "subcodec data exceeds region limit"
+            ));
+        }
 
         match sub.codec_id {
             SubcodecId::Raw => {
@@ -679,20 +689,20 @@ mod tests {
     fn nscodec_subcodec_blits_positioned_region() {
         let mut decoder = ClearCodecDecoder::new();
         let mut nscodec_data = Vec::new();
-        for _ in 0..4 {
-            nscodec_data.extend_from_slice(&4u32.to_le_bytes());
-        }
+        nscodec_data.extend_from_slice(&10u32.to_le_bytes()); // Y
+        nscodec_data.extend_from_slice(&10u32.to_le_bytes()); // Co
+        nscodec_data.extend_from_slice(&7u32.to_le_bytes()); // Cg
+        nscodec_data.extend_from_slice(&0u32.to_le_bytes()); // alpha omitted
         nscodec_data.extend_from_slice(&[1, 0, 0, 0]); // CLL=1, no chroma subsampling
-        nscodec_data.extend_from_slice(&[100, 60, 90, 80]); // Y
-        nscodec_data.extend_from_slice(&[10, 0, 20, 246]); // Co
-        nscodec_data.extend_from_slice(&[0, 20, 246, 0]); // Cg
-        nscodec_data.extend_from_slice(&[0xFF, 0x80, 0x40, 0x00]); // A
+        nscodec_data.extend_from_slice(&[100, 100, 8, 80, 80, 4, 80, 80, 80, 80]); // Y RLE
+        nscodec_data.extend_from_slice(&[10, 10, 8, 246, 246, 4, 246, 246, 246, 246]); // Co RLE
+        nscodec_data.extend_from_slice(&[0, 0, 14, 0, 0, 0, 0]); // Cg RLE
 
         let mut subcodec_data = Vec::new();
         subcodec_data.extend_from_slice(&1u16.to_le_bytes()); // x_start
         subcodec_data.extend_from_slice(&2u16.to_le_bytes()); // y_start
-        subcodec_data.extend_from_slice(&2u16.to_le_bytes()); // width
-        subcodec_data.extend_from_slice(&2u16.to_le_bytes()); // height
+        subcodec_data.extend_from_slice(&5u16.to_le_bytes()); // width
+        subcodec_data.extend_from_slice(&4u16.to_le_bytes()); // height
         subcodec_data.extend_from_slice(
             &u32::try_from(nscodec_data.len())
                 .expect("test data length fits")
@@ -711,12 +721,45 @@ mod tests {
         );
         stream.extend_from_slice(&subcodec_data);
 
-        let pixels = decoder.decode(&stream, 5, 5).unwrap();
-        let mut expected = vec![0; 5 * 5 * 4];
-        expected[(2 * 5 + 1) * 4..(2 * 5 + 3) * 4].copy_from_slice(&[90, 100, 110, 0xFF, 40, 80, 40, 0x80]);
-        expected[(3 * 5 + 1) * 4..(3 * 5 + 3) * 4].copy_from_slice(&[80, 80, 120, 0x40, 90, 80, 70, 0]);
+        let pixels = decoder.decode(&stream, 7, 7).unwrap();
+        let mut expected = vec![0; 7 * 7 * 4];
+        for row in 0..4 {
+            let pixel = if row < 2 {
+                [90, 100, 110, 0xFF]
+            } else {
+                [90, 80, 70, 0xFF]
+            };
+            for col in 0..5 {
+                let offset = ((row + 2) * 7 + col + 1) * 4;
+                expected[offset..offset + 4].copy_from_slice(&pixel);
+            }
+        }
 
         assert_eq!(pixels, expected);
+    }
+
+    #[test]
+    fn rejects_oversized_subcodec_data() {
+        let mut subcodec_data = Vec::new();
+        subcodec_data.extend_from_slice(&0u16.to_le_bytes()); // x_start
+        subcodec_data.extend_from_slice(&0u16.to_le_bytes()); // y_start
+        subcodec_data.extend_from_slice(&1u16.to_le_bytes()); // width
+        subcodec_data.extend_from_slice(&1u16.to_le_bytes()); // height
+        subcodec_data.extend_from_slice(&4u32.to_le_bytes()); // bitmap data exceeds 3 * width * height
+        subcodec_data.push(0x01); // SubcodecId::NsCodec
+        subcodec_data.extend_from_slice(&[0; 4]);
+
+        let mut stream = vec![0, 0]; // flags, sequence number
+        stream.extend_from_slice(&0u32.to_le_bytes()); // residual
+        stream.extend_from_slice(&0u32.to_le_bytes()); // bands
+        stream.extend_from_slice(
+            &u32::try_from(subcodec_data.len())
+                .expect("test data length fits")
+                .to_le_bytes(),
+        );
+        stream.extend_from_slice(&subcodec_data);
+
+        assert!(ClearCodecDecoder::new().decode(&stream, 1, 1).is_err());
     }
 
     #[test]
