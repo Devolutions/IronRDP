@@ -29,6 +29,10 @@ path = "tests/udp.rs"
 name = "http_control"
 path = "tests/http_control.rs"
 
+[[test]]
+name = "rpc_pdu"
+path = "tests/rpc_pdu.rs"
+
 [features]
 default = []
 rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
