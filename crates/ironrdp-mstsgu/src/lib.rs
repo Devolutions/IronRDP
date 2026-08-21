@@ -8,6 +8,8 @@ mod macros;
 pub mod http_auth;
 mod packet_io;
 mod proto;
+#[doc(hidden)]
+pub mod rpc;
 mod udp;
 
 use core::fmt;

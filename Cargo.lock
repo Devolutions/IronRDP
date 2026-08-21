@@ -2558,6 +2558,7 @@ dependencies = [
  "ironrdp-cfg",
  "ironrdp-daemon",
  "ironrdp-input",
+ "ironrdp-mstsgu",
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
  "ironrdp-rpc",

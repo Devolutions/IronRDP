@@ -41,8 +41,8 @@ pub struct Flow {
 pub struct Capture {
     /// Direct TCP RDP flow selected from the pcapng input.
     pub flow: Flow,
-    /// Other TLS flows to TCP port 443, tried when the primary flow is not an
-    /// RD Gateway WebSocket tunnel (a KDC-proxy connection shares that port).
+    /// Other TLS flows to TCP port 443, tried when the primary flow is not a
+    /// complete RD Gateway tunnel (one WebSocket flow, or paired RPCH IN+OUT).
     pub gateway_alternates: Vec<Flow>,
     /// NSS-compatible TLS key-log entries embedded in the capture.
     pub tls_key_log: TlsKeyLog,
