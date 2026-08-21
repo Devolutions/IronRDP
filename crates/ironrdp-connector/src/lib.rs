@@ -434,7 +434,7 @@ pub enum ConnectorErrorKind {
 impl fmt::Display for ConnectorErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self {
-            ConnectorErrorKind::Sequence(_) => write!(f, "sequence error"),
+            ConnectorErrorKind::Sequence(error) => error.fmt(f),
             ConnectorErrorKind::Credssp(_) => write!(f, "CredSSP"),
             ConnectorErrorKind::AccessDenied => write!(f, "access denied"),
         }
