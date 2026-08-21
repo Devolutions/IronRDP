@@ -155,6 +155,23 @@ fn bandwidth_measure_transacts_and_enables_netchar() {
     }
 }
 
+#[test]
+fn bandwidth_kbps_reflects_the_last_completed_measurement() {
+    let mut mgr = AutoDetectManager::new();
+    assert!(mgr.bandwidth_kbps().is_none(), "nothing measured yet");
+
+    let bw_seq = drive_bandwidth_start_and_stop(&mut mgr);
+    let results = AutoDetectResponse::BandwidthMeasureResults {
+        sequence_number: bw_seq,
+        response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+        time_delta_ms: 10,
+        byte_count: 100_000,
+    };
+    assert!(mgr.handle_response(&results, 20).is_none());
+
+    assert_eq!(mgr.bandwidth_kbps(), Some(80_000), "byte_count * 8 / time_delta_ms");
+}
+
 /// A second call to `build_bandwidth_measure` after Stop has been sent, while
 /// the client's Bandwidth Measure Results is still outstanding, must not
 /// start a new transaction. `drive_bandwidth_start_and_stop` already pins
@@ -333,6 +350,48 @@ fn with_autodetect_rtt_handle_round_trips_the_same_arc() {
     // The Arc is shared: mutating the original is visible through the server's handle.
     handle.store(42, Ordering::Relaxed);
     assert_eq!(server.autodetect_rtt_handle().load(Ordering::Relaxed), 42);
+}
+
+#[test]
+fn autodetect_bandwidth_handle_defaults_to_sentinel() {
+    use core::net::{Ipv4Addr, SocketAddr};
+    use core::sync::atomic::Ordering;
+
+    use ironrdp_server::RdpServer;
+
+    let server = RdpServer::builder()
+        .with_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .build();
+
+    assert_eq!(server.autodetect_bandwidth_handle().load(Ordering::Relaxed), u32::MAX);
+}
+
+#[test]
+fn with_autodetect_bandwidth_handle_round_trips_the_same_arc() {
+    use core::net::{Ipv4Addr, SocketAddr};
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    use ironrdp_server::RdpServer;
+
+    let handle = Arc::new(AtomicU32::new(42));
+    let server = RdpServer::builder()
+        .with_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .with_autodetect_bandwidth_handle(Arc::clone(&handle))
+        .build();
+
+    assert!(Arc::ptr_eq(&handle, &server.autodetect_bandwidth_handle()));
+    // The server resets an injected handle to the sentinel at construction.
+    assert_eq!(server.autodetect_bandwidth_handle().load(Ordering::Relaxed), u32::MAX);
+    // The Arc is shared: mutating the original is visible through the server's handle.
+    handle.store(42, Ordering::Relaxed);
+    assert_eq!(server.autodetect_bandwidth_handle().load(Ordering::Relaxed), 42);
 }
 
 #[test]

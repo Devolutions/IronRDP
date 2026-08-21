@@ -317,6 +317,17 @@ impl AutoDetectManager {
         self.pending_probes.len()
     }
 
+    /// Most recently measured bandwidth in kilobits per second, or `None` if
+    /// no bandwidth measurement has completed yet. Unlike
+    /// [`Self::build_netchar_result`], this is not gated on freshness or
+    /// pacing: it reports the last completed figure even if a subsequent
+    /// failed measurement or an idle client has left it unrefreshed for a
+    /// while, the same relationship [`Self::snapshot`] has to RTT. Staleness
+    /// is the caller's to judge.
+    pub fn bandwidth_kbps(&self) -> Option<u32> {
+        self.bandwidth_kbps
+    }
+
     /// Discard probes older than `max_age_ms` to prevent unbounded growth.
     ///
     /// `now_ms` is on the same clock passed to
