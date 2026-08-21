@@ -8,7 +8,6 @@ type Error = ironrdp_error::Error<GwErrorKind>;
 
 #[derive(Debug)]
 enum GwErrorKind {
-    Connect,
     PacketEof,
     Custom,
     Encode,
@@ -33,7 +32,6 @@ impl GwErrorExt for Error {
 impl fmt::Display for GwErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Connect => "connection error",
             Self::PacketEof => "packet EOF",
             Self::Custom => "custom",
             Self::Encode => "encode",
@@ -51,7 +49,7 @@ macro_rules! custom_err {
 #[path = "../src/rpc_transport.rs"]
 mod rpc_transport;
 
-use rpc_transport::{RpchInRequest, RpchRequestHead, drain_body, read_rpch_response_head, write_rpch_request_head};
+use rpc_transport::{RpchRequestHead, drain_body, read_rpch_response_head, write_rpch_request_head};
 
 #[tokio::test]
 async fn request_head_contains_rpch_routing_and_authentication_fields() {
@@ -60,10 +58,10 @@ async fn request_head_contains_rpch_routing_and_authentication_fields() {
         write_rpch_request_head(
             &mut client,
             RpchRequestHead {
-                method: "RPC_OUT_DATA",
+                method: "RPC_IN_DATA",
                 host: "gateway.example",
                 target: "target.example:3389",
-                content_length: 42,
+                content_length: 128 * 1024,
                 authorization: Some("Negotiate token"),
                 cookie: Some("session=value"),
                 session_id: Some("{12345678-1234-1234-1234-123456789abc}"),
@@ -80,15 +78,16 @@ async fn request_head_contains_rpch_routing_and_authentication_fields() {
     assert_eq!(
         request,
         concat!(
-            "RPC_OUT_DATA /rpc/rpcproxy.dll?target.example:3389 HTTP/1.1\r\n",
+            "RPC_IN_DATA /rpc/rpcproxy.dll?target.example:3389 HTTP/1.1\r\n",
             "Accept: application/rpc\r\n",
             "Cache-Control: no-cache\r\n",
             "Connection: Keep-Alive\r\n",
-            "Content-Length: 42\r\n",
+            "Content-Length: 131072\r\n",
             "Host: gateway.example\r\n",
-            "Pragma: ResourceTypeUuid=44e265dd-7daf-42cd-8560-3cdb6e7a2729, ",
-            "SessionId={12345678-1234-1234-1234-123456789abc}\r\n",
+            "Pragma: No-cache\r\n",
+            "Pragma: ResourceTypeUuid=44e265dd-7daf-42cd-8560-3cdb6e7a2729\r\n",
             "User-Agent: MSRPC\r\n",
+            "Pragma: SessionId={12345678-1234-1234-1234-123456789abc}\r\n",
             "Expect: 100-continue\r\n",
             "Authorization: Negotiate token\r\n",
             "Cookie: session=value\r\n",
@@ -98,7 +97,7 @@ async fn request_head_contains_rpch_routing_and_authentication_fields() {
 }
 
 #[tokio::test]
-async fn response_head_preserves_authentication_challenges_and_body() {
+async fn response_head_preserves_authentication_challenges_and_body_length() {
     let (mut client, mut server) = tokio::io::duplex(4096);
     let server_task = tokio::spawn(async move {
         server
@@ -125,6 +124,130 @@ async fn response_head_preserves_authentication_challenges_and_body() {
     client.read_exact(&mut body).await.expect("read response body");
     assert_eq!(body, *b"deny");
     server_task.await.expect("join response writer");
+}
+
+#[tokio::test]
+async fn request_head_rejects_invalid_values_before_writing() {
+    for head in [
+        RpchRequestHead {
+            method: "RPC_IN_DATA",
+            host: "gateway.example",
+            target: "target.example:3389\r\nX-Injected: value",
+            content_length: 128 * 1024,
+            authorization: None,
+            cookie: None,
+            session_id: None,
+            expect_continue: true,
+        },
+        RpchRequestHead {
+            method: "RPC_IN_DATA",
+            host: "gateway.example",
+            target: "target.example:1234567",
+            content_length: 128 * 1024,
+            authorization: None,
+            cookie: None,
+            session_id: None,
+            expect_continue: true,
+        },
+        RpchRequestHead {
+            method: "RPC_OUT_DATA",
+            host: "gateway.example",
+            target: "target.example:3389",
+            content_length: 76,
+            authorization: Some("Negotiate token\r\nX-Injected: value"),
+            cookie: None,
+            session_id: None,
+            expect_continue: false,
+        },
+        RpchRequestHead {
+            method: "RPC_OUT_DATA",
+            host: "gateway.example",
+            target: "target.example:3389",
+            content_length: 76,
+            authorization: None,
+            cookie: Some("session=value\r\nX-Injected: value"),
+            session_id: None,
+            expect_continue: false,
+        },
+        RpchRequestHead {
+            method: "RPC_OUT_DATA",
+            host: "gateway.example",
+            target: "target.example:3389",
+            content_length: 76,
+            authorization: None,
+            cookie: None,
+            session_id: Some("not-a-uuid"),
+            expect_continue: false,
+        },
+        RpchRequestHead {
+            method: "RPC_OUT_DATA",
+            host: "gateway.example\r\nX-Injected: value",
+            target: "target.example:3389",
+            content_length: 76,
+            authorization: None,
+            cookie: None,
+            session_id: None,
+            expect_continue: false,
+        },
+    ] {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        assert!(write_rpch_request_head(&mut client, head).await.is_err());
+        drop(client);
+        let mut bytes = Vec::new();
+        server.read_to_end(&mut bytes).await.expect("read rejected request");
+        assert!(bytes.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn request_head_rejects_invalid_rpch_content_lengths() {
+    for (method, content_length) in [
+        ("RPC_IN_DATA", 128 * 1024 - 1),
+        ("RPC_IN_DATA", 2 * 1024 * 1024 * 1024 + 1),
+        ("RPC_OUT_DATA", 75),
+        ("RPC_OUT_DATA", 77),
+    ] {
+        let (mut client, _) = tokio::io::duplex(4096);
+        assert!(
+            write_rpch_request_head(
+                &mut client,
+                RpchRequestHead {
+                    method,
+                    host: "gateway.example",
+                    target: "target.example:3389",
+                    content_length,
+                    authorization: None,
+                    cookie: None,
+                    session_id: None,
+                    expect_continue: false,
+                },
+            )
+            .await
+            .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn request_head_rejects_expect_continue_for_out_channel() {
+    let (mut client, _) = tokio::io::duplex(4096);
+    assert!(
+        write_rpch_request_head(
+            &mut client,
+            RpchRequestHead {
+                method: "RPC_OUT_DATA",
+                host: "gateway.example",
+                target: "target.example:3389",
+                content_length: 76,
+                authorization: None,
+                cookie: None,
+                session_id: None,
+                expect_continue: true,
+            },
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -163,49 +286,21 @@ async fn drain_body_preserves_following_response_bytes() {
 }
 
 #[tokio::test]
-async fn in_request_commits_body_only_after_authenticated_retry() {
-    let (client, mut server) = tokio::io::duplex(4096);
+async fn response_head_rejects_transfer_encoding() {
+    let (mut client, mut server) = tokio::io::duplex(4096);
     let server_task = tokio::spawn(async move {
-        let probe = read_head(&mut server).await;
-        assert!(probe.contains("Content-Length: 0\r\n"), "probe: {probe}");
-
         server
             .write_all(
                 b"HTTP/1.1 401 Unauthorized\r\n\
-                  Content-Length: 4\r\n\
-                  WWW-Authenticate: NTLM\r\n\
-                  \r\n\
-                  deny",
+                  Transfer-Encoding: chunked\r\n\
+                  \r\n",
             )
             .await
-            .expect("write authentication response");
-
-        let retry = read_head(&mut server).await;
-        assert!(retry.contains("Content-Length: 4\r\n"), "retry: {retry}");
-        assert!(retry.contains("Authorization: NTLM token\r\n"), "retry: {retry}");
-
-        let mut body = [0; 4];
-        server.read_exact(&mut body).await.expect("read committed body");
-        assert_eq!(body, *b"B1!!");
+            .expect("write chunked response head");
     });
 
-    let mut request = RpchInRequest::open(client, "gateway.example", "target.example:3389", None)
-        .await
-        .expect("open authentication probe");
-    assert!(request.write_body(b"B1!!").await.is_err());
-
-    let response = request.receive_response().await.expect("read authentication response");
-    assert_eq!(response.status, 401);
-
-    let mut request = request
-        .retry(Some("NTLM token"), 4)
-        .await
-        .expect("write authenticated retry");
-    request.write_body(b"B1!!").await.expect("write body");
-    request.flush().await.expect("flush body");
-    assert_eq!(request.remaining(), 0);
-
-    server_task.await.expect("join request server");
+    assert!(read_rpch_response_head(&mut client).await.is_err());
+    server_task.await.expect("join response writer");
 }
 
 async fn read_head(stream: &mut tokio::io::DuplexStream) -> String {
