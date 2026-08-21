@@ -373,6 +373,16 @@ impl Acceptor {
         self.credentials_handled = true;
     }
 
+    /// Encode the protocol-defined access-denied response for a rejected
+    /// credential or capability-exchange hook.
+    pub fn encode_access_denied(&self, output: &mut WriteBuf) -> ConnectorResult<usize> {
+        let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+            ProtocolIndependentCode::ServerDeniedConnection,
+        ));
+        debug!(message = ?info, "Send");
+        util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &info, output)
+    }
+
     /// Store credentials delegated by CredSSP/NLA so server code can use the
     /// same post-handshake validation and binding path as TLS ClientInfo
     /// credentials.
@@ -890,14 +900,7 @@ impl Sequence for Acceptor {
                         if expected != &creds {
                             // FIXME: How authorization should be denied with standard RDP security?
                             // Since standard RDP security is not a priority, we just send a ServerDeniedConnection ServerSetErrorInfo PDU.
-                            let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
-                                ProtocolIndependentCode::ServerDeniedConnection,
-                            ));
-
-                            debug!(message = ?info, "Send");
-
-                            util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &info, output)?;
-
+                            self.encode_access_denied(output)?;
                             return Err(ConnectorError::general("invalid credentials"));
                         }
                     }

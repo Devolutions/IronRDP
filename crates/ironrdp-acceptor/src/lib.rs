@@ -153,15 +153,33 @@ where
         }
         single_sequence_step(&mut framed, acceptor, &mut buf).await?;
         if acceptor.credentials_need_handling() {
-            credentials_handler
+            if let Err(error) = credentials_handler
                 .handle_credentials(acceptor.received_credentials().cloned())
-                .await?;
+                .await
+            {
+                buf.clear();
+                let written = acceptor.encode_access_denied(&mut buf)?;
+                framed
+                    .write_all(&buf[..written])
+                    .await
+                    .map_err(|e| ironrdp_connector::custom_err!("write access denied", e))?;
+                return Err(error);
+            }
             acceptor.mark_credentials_handled();
         }
-        if !acceptor.is_reactivation() && acceptor.is_ready_for_capability_exchange() {
-            credentials_handler
+        if !acceptor.is_reactivation()
+            && acceptor.is_ready_for_capability_exchange()
+            && let Err(error) = credentials_handler
                 .prepare_capability_exchange(acceptor.desktop_size())
-                .await?;
+                .await
+        {
+            buf.clear();
+            let written = acceptor.encode_access_denied(&mut buf)?;
+            framed
+                .write_all(&buf[..written])
+                .await
+                .map_err(|e| ironrdp_connector::custom_err!("write access denied", e))?;
+            return Err(error);
         }
     }
 }
