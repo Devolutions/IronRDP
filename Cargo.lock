@@ -3305,7 +3305,6 @@ dependencies = [
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-input",
  "ironrdp-mstsgu",
- "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rdpdr",
  "ironrdp-rdpdr-native",
@@ -3329,7 +3328,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "windows",
 ]
 
 [[package]]
