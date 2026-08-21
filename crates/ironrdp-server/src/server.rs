@@ -586,7 +586,6 @@ impl dvc::DvcProcessor for AInputHandler {
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::{ServerPdu, VersionPdu};
 
-        self.active.store(true, Ordering::Release);
         let pdu = ServerPdu::Version(VersionPdu::default());
 
         Ok(vec![Box::new(pdu)])
@@ -601,6 +600,7 @@ impl dvc::DvcProcessor for AInputHandler {
 
         match decode(payload).map_err(|e| decode_err!(e))? {
             ClientPdu::Mouse(pdu) => {
+                self.active.store(true, Ordering::Release);
                 let handler = Arc::clone(&self.handler);
                 task::spawn_blocking(move || {
                     handler.blocking_lock().mouse(pdu.into());
@@ -2746,7 +2746,8 @@ mod credential_binding_tests {
 mod tests {
     use core::future::pending;
 
-    use ironrdp_core::impl_as_any;
+    use ironrdp_core::{Encode as _, WriteCursor, impl_as_any};
+    use ironrdp_dvc::DvcProcessor as _;
     use ironrdp_pdu::gcc::ChannelName;
     use ironrdp_svc::{SvcMessage, SvcServerProcessor};
 
@@ -2776,6 +2777,42 @@ mod tests {
     }
 
     impl SvcServerProcessor for ResourceChannel {}
+
+    struct NoopInput;
+
+    impl RdpServerInputHandler for NoopInput {
+        fn keyboard(&mut self, _event: KeyboardEvent) {}
+        fn mouse(&mut self, _event: MouseEvent) {}
+    }
+
+    #[tokio::test]
+    async fn advanced_input_owns_mouse_only_after_first_pdu() {
+        use ironrdp_ainput::{ClientPdu, MouseEventFlags, MousePdu};
+
+        let active = Arc::new(AtomicBool::new(false));
+        let mut handler = AInputHandler {
+            handler: Arc::new(Mutex::new(Box::new(NoopInput))),
+            active: Arc::clone(&active),
+        };
+
+        handler.start(1).expect("AInput start failed");
+        assert!(!active.load(Ordering::Acquire));
+
+        let pdu = ClientPdu::Mouse(MousePdu {
+            time: 0,
+            flags: MouseEventFlags::MOVE,
+            x: 1,
+            y: 1,
+        });
+        let mut payload = vec![0; pdu.size()];
+        pdu.encode(&mut WriteCursor::new(&mut payload))
+            .expect("AInput encoding failed");
+        handler.process(1, &payload).expect("AInput processing failed");
+        assert!(active.load(Ordering::Acquire));
+
+        handler.close(1);
+        assert!(!active.load(Ordering::Acquire));
+    }
 
     struct PendingDisplay;
 
