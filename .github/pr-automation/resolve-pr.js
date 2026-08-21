@@ -1,5 +1,7 @@
 "use strict";
 
+const { OVERSIZED_REVIEW_LABEL } = require("./resolve-state");
+
 const SHA = /^[0-9a-f]{40}$/;
 
 function noResult(reason, route = "unknown") {
@@ -52,9 +54,18 @@ async function workflowRunPullRequests(github, owner, repo, workflowRun) {
 async function resolvePr({ github, context, inputs = {} }) {
   const route = routeFor(context);
   const { owner, repo } = context.repo;
+  const force = route === "dispatch" && ["true", true].includes(
+    inputs.force ?? context.payload.inputs?.force);
+  const oversizedReviewRequested = route === "classification" &&
+    context.payload.action === "labeled" && context.payload.label?.name === OVERSIZED_REVIEW_LABEL;
   let pr;
   try {
     if (route === "classification") {
+      // State writes also emit `labeled` events, so only the explicit maintainer opt-in may start
+      // automation through that event.
+      if (context.payload.action === "labeled" && context.payload.label?.name !== OVERSIZED_REVIEW_LABEL) {
+        return noResult("unrelated pull request label", route);
+      }
       const number = positiveNumber(context.payload.pull_request?.number);
       if (!number) return noResult("missing pull request number", route);
       pr = await getOpenAtHead(github, owner, repo, number);
@@ -82,26 +93,27 @@ async function resolvePr({ github, context, inputs = {} }) {
     return noResult("GitHub API unavailable", route);
   }
   if (!pr) return noResult("pull request is closed or stale", route);
-  if (pr.draft) return noResult("pull request is draft", route);
-  // Bot pull requests (dependabot and friends) stop at deterministic labelling: they are
-  // machine-generated, arrive in bulk, and would spend LLM capacity for no reviewable judgement.
-  const authorIsBot = pr.user?.type === "Bot" || /\[bot\]$/i.test(pr.user?.login || "");
+  if (pr.draft && !force) return noResult("pull request is draft", route);
+  // Dependabot owns dependency and language labels, while devolutionsbot opens release-plz PRs.
+  // This automation must not mutate either kind of automated pull request.
+  const authorLogin = pr.user?.login || "";
+  const authorIsBot = pr.user?.type === "Bot" || /\[bot\]$/i.test(authorLogin) ||
+    authorLogin.toLowerCase() === "devolutionsbot";
+  if (authorIsBot && !force) return noResult("bot-authored pull request", route);
   return {
     ok: true, route, prNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha,
     labels: (pr.labels || []).map((label) => typeof label === "string" ? label : label.name).filter(Boolean),
-    authorIsBot,
     author: {
       nodeId: pr.user?.node_id || null, login: pr.user?.login || null, type: pr.user?.type || null,
       association: pr.author_association || null,
     },
-    bypassCi: route === "dispatch" && ["true", true].includes(
-      inputs.bypassCi ?? context.payload.inputs?.["bypass-ci"]),
-    reviewRequested: route === "dispatch" && ["true", true].includes(
-      inputs.review ?? context.payload.inputs?.review),
+    force,
+    reviewRequested: oversizedReviewRequested ||
+      (route === "dispatch" && ["true", true].includes(inputs.review ?? context.payload.inputs?.review)),
     classificationRequested: route === "classification" ||
       (route === "dispatch" && !["true", true].includes(inputs.review ?? context.payload.inputs?.review)),
-    reviewRoute: !authorIsBot && (route === "ci" || route === "classification-complete" ||
-      (route === "dispatch" && ["true", true].includes(inputs.review ?? context.payload.inputs?.review))),
+    reviewRoute: route === "ci" || route === "classification-complete" ||
+      (route === "dispatch" && ["true", true].includes(inputs.review ?? context.payload.inputs?.review)),
   };
 }
 

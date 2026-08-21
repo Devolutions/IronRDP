@@ -3,7 +3,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::Arc;
 
 use anyhow::Result;
-use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, server_codecs_capabilities};
+use ironrdp_pdu::codecs::rfx::Quant;
+use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, EntropyBits, server_codecs_capabilities};
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use tokio_rustls::TlsAcceptor;
 
@@ -14,6 +15,7 @@ use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{
     ConnectionBinder, ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity,
+    StaticChannelFactory,
 };
 use crate::{DisplayUpdate, RdpServerDisplayUpdates, SoundServerFactory};
 
@@ -37,6 +39,7 @@ pub struct BuilderDone {
     max_request_size: u32,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
+    static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
@@ -48,6 +51,8 @@ pub struct BuilderDone {
     autodetect_rtt: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
+    remotefx_quant: Quant,
+    remotefx_entropy_coder: Option<EntropyBits>,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -138,6 +143,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 security: self.state.security,
                 handler: self.state.handler,
                 display: Box::new(display),
+                static_channel_factories: Vec::new(),
                 sound_factory: None,
                 cliprdr_factory: None,
                 connection_handler: None,
@@ -151,6 +157,8 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_rtt: None,
                 honor_client_desktop_size: None,
                 auto_reconnect_cookie: None,
+                remotefx_quant: Quant::default(),
+                remotefx_entropy_coder: None,
             },
         }
     }
@@ -162,6 +170,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 security: self.state.security,
                 handler: self.state.handler,
                 display: Box::new(NoopDisplay),
+                static_channel_factories: Vec::new(),
                 sound_factory: None,
                 cliprdr_factory: None,
                 connection_handler: None,
@@ -175,12 +184,20 @@ impl RdpServerBuilder<WantsDisplay> {
                 autodetect_rtt: None,
                 honor_client_desktop_size: None,
                 auto_reconnect_cookie: None,
+                remotefx_quant: Quant::default(),
+                remotefx_entropy_coder: None,
             },
         }
     }
 }
 
 impl RdpServerBuilder<BuilderDone> {
+    /// Add a factory that attaches a fresh static-channel processor per connection.
+    pub fn with_static_channel_factory(mut self, factory: Box<dyn StaticChannelFactory>) -> Self {
+        self.state.static_channel_factories.push(factory);
+        self
+    }
+
     pub fn with_cliprdr_factory(mut self, cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>) -> Self {
         self.state.cliprdr_factory = cliprdr_factory;
         self
@@ -332,6 +349,34 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Set the quantization values the RemoteFX encoder uses once selected.
+    /// Defaults to [`Quant::default`], the same values Windows RDP servers
+    /// send. Build a validated [`Quant`] with [`Quant::try_new`].
+    ///
+    /// Has no effect unless the client and server negotiate RemoteFX; this
+    /// only changes the quantization RemoteFX uses when it is picked.
+    pub fn with_remotefx_quant(mut self, quant: Quant) -> Self {
+        self.state.remotefx_quant = quant;
+        self
+    }
+
+    /// State a preferred RemoteFX entropy coder (RLGR1 or RLGR3). If the
+    /// client's advertised TS_RFX_ICAP array includes it, the server uses
+    /// it; otherwise the server falls back to whichever coder the client
+    /// offered first.
+    ///
+    /// `None` (the default) always uses whichever coder the client offered
+    /// first: [MS-RDPRFX] 3.1.5.1 has the server arbitrarily pick one
+    /// supported TS_RFX_ICAP element rather than rank the array as a
+    /// preference order. Has no effect unless the client and server
+    /// negotiate RemoteFX.
+    ///
+    /// [MS-RDPRFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/
+    pub fn with_remotefx_entropy_coder(mut self, coder: Option<EntropyBits>) -> Self {
+        self.state.remotefx_entropy_coder = coder;
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         let mut server = RdpServer::new(
             RdpServerOptions {
@@ -340,9 +385,12 @@ impl RdpServerBuilder<BuilderDone> {
                 codecs: self.state.codecs,
                 max_request_size: self.state.max_request_size,
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
+                remotefx_quant: self.state.remotefx_quant,
+                remotefx_entropy_coder: self.state.remotefx_entropy_coder,
             },
             self.state.handler,
             self.state.display,
+            self.state.static_channel_factories,
             self.state.sound_factory,
             self.state.cliprdr_factory,
             self.state.connection_handler,

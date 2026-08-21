@@ -225,6 +225,8 @@ impl<'de> Decode<'de> for FastPathUpdatePdu<'de> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum FastPathUpdate<'a> {
+    /// Raw Fast-Path Orders update data.
+    Orders(&'a [u8]),
     SurfaceCommands(Vec<SurfaceCommand<'a>>),
     Bitmap(BitmapUpdateData<'a>),
     Pointer(PointerUpdateData<'a>),
@@ -244,6 +246,11 @@ impl<'a> FastPathUpdate<'a> {
 
     pub fn decode_cursor_with_code(src: &mut ReadCursor<'a>, code: UpdateCode) -> DecodeResult<Self> {
         match code {
+            UpdateCode::Orders => {
+                let data = src.remaining();
+                src.advance(data.len());
+                Ok(Self::Orders(data))
+            }
             UpdateCode::SurfaceCommands => {
                 let mut commands = Vec::with_capacity(1);
                 while src.len() >= SURFACE_COMMAND_HEADER_SIZE {
@@ -274,6 +281,7 @@ impl<'a> FastPathUpdate<'a> {
 
     pub fn as_short_name(&self) -> &str {
         match self {
+            Self::Orders(_) => "Orders",
             Self::SurfaceCommands(_) => "Surface Commands",
             Self::Bitmap(_) => "Bitmap",
             Self::Pointer(_) => "Pointer",
@@ -287,6 +295,9 @@ impl Encode for FastPathUpdate<'_> {
         ensure_size!(in: dst, size: self.size());
 
         match self {
+            Self::Orders(data) => {
+                dst.write_slice(data);
+            }
             Self::SurfaceCommands(commands) => {
                 for command in commands {
                     command.encode(dst)?;
@@ -318,6 +329,7 @@ impl Encode for FastPathUpdate<'_> {
 
     fn size(&self) -> usize {
         match self {
+            Self::Orders(data) => data.len(),
             Self::SurfaceCommands(commands) => commands.iter().map(|c| c.size()).sum::<usize>(),
             Self::Bitmap(bitmap) => bitmap.size(),
             Self::Palette(data) => data.len(),
@@ -365,6 +377,7 @@ impl UpdateCode {
 impl From<&FastPathUpdate<'_>> for UpdateCode {
     fn from(update: &FastPathUpdate<'_>) -> Self {
         match update {
+            FastPathUpdate::Orders(_) => Self::Orders,
             FastPathUpdate::SurfaceCommands(_) => Self::SurfaceCommands,
             FastPathUpdate::Bitmap(_) => Self::Bitmap,
             FastPathUpdate::Palette(_) => Self::Palette,

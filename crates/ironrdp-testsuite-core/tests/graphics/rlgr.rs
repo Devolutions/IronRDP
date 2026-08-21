@@ -155,6 +155,50 @@ fn encode_correctly_encodes_rlgr1() {
     assert_eq!(expected.as_ref(), output.as_slice());
 }
 
+/// A tile whose entropy coding does not fit the caller's buffer, which RLGR
+/// gives no guarantee it will. Callers size the buffer on an assumed
+/// compression ratio, so the encoder has to say when the assumption fails
+/// rather than run off the end of it.
+#[test]
+fn encode_reports_an_undersized_output_buffer() {
+    // Full-range coefficients: nothing to run-length code, so the output is
+    // comfortably larger than the two bytes offered.
+    let input: Vec<i16> = (0..4096)
+        .map(|i| if i % 2 == 0 { i16::MAX } else { i16::MIN })
+        .collect();
+
+    for mode in [EntropyAlgorithm::Rlgr1, EntropyAlgorithm::Rlgr3] {
+        let mut output = vec![0; 2];
+        let err = encode(mode, input.as_ref(), output.as_mut_slice()).unwrap_err();
+
+        let RlgrError::OutputTooSmall { needed, available } = err else {
+            panic!("expected OutputTooSmall for {mode:?}, got {err:?}");
+        };
+        assert_eq!(available, 2, "the reported capacity is the buffer the caller passed");
+        assert!(
+            needed > available,
+            "the reported requirement must exceed the buffer, got {needed} against {available}"
+        );
+    }
+}
+
+/// The overflow check must not fire on a tile that fits exactly, which is the
+/// boundary a naive `>=` would get wrong.
+#[test]
+fn encode_accepts_an_output_buffer_of_exactly_the_required_size() {
+    let input = [0, 1, 4, 0];
+    let mode = EntropyAlgorithm::Rlgr1;
+
+    let mut probe = vec![0; 64];
+    let needed = encode(mode, input.as_ref(), probe.as_mut_slice()).unwrap();
+
+    let mut exact = vec![0; needed];
+    let written = encode(mode, input.as_ref(), exact.as_mut_slice()).unwrap();
+
+    assert_eq!(written, needed);
+    assert_eq!(exact.as_slice(), &probe[..needed]);
+}
+
 const Y_DATA_ENCODED: [u8; 942] = [
     0xc0, 0x01, 0x01, 0x15, 0x48, 0x99, 0xc7, 0x41, 0xa1, 0x12, 0x68, 0x11, 0xdc, 0x22, 0x29, 0x74, 0xef, 0xfd, 0x20,
     0x92, 0xe0, 0x4e, 0xa8, 0x69, 0x3b, 0xfd, 0x41, 0x83, 0xbf, 0x28, 0x53, 0x0c, 0x1f, 0xe2, 0x54, 0x0c, 0x77, 0x7c,
@@ -205,7 +249,7 @@ const Y_DATA_ENCODED: [u8; 942] = [
     0x42, 0x02, 0xd9, 0x37, 0x11, 0xde, 0x2d, 0xd4, 0x3f, 0xfe, 0x61, 0xe7, 0x33, 0xd7, 0x89, 0x4a, 0xdd, 0xb0, 0x34,
     0x47, 0xf4, 0xdc, 0xad, 0xaa, 0xc9, 0x9d, 0x7e, 0x6d, 0x4b, 0xcc, 0xdc, 0x17, 0x89, 0x57, 0xfd, 0xbb, 0x37, 0x75,
     0x47, 0x5a, 0xec, 0x2c, 0x6e, 0x3c, 0x15, 0x92, 0x54, 0x64, 0x2c, 0xab, 0x9e, 0xab, 0x2b, 0xdd, 0x3c, 0x66, 0xa0,
-    0x8f, 0x47, 0x5e, 0x93, 0x1a, 0x37, 0x16, 0xf4, 0x89, 0x23, 0x00,
+    0x8f, 0x47, 0x5e, 0x93, 0x1a, 0x37, 0x16, 0xf4, 0x88, 0xe3, 0x00,
 ];
 
 const CB_DATA_ENCODED: [u8; 975] = [
@@ -663,3 +707,34 @@ const CR_DATA_DECODED: [i16; 4096] = [
     -38, -3, -1, 61, -68, 60, -4, -37, 1, -18, 2, 29, 29, 8, 18, -74, 10, 5, -17, -22, 108, -16, 33, -124, 22, -7, 0,
     -4, 48, 26, -46, -33,
 ];
+
+/// A run that consumes the rest of the input has no value after it.
+///
+/// RL mode codes the following value's magnitude minus one, so it cannot
+/// express a magnitude of zero. Coding one anyway decodes as a magnitude of
+/// one, which appends a coefficient the input never had. Quantized wavelet
+/// coefficients almost always end in a zero run, so this reaches every
+/// RemoteFX tile.
+#[test]
+fn round_trip_preserves_a_run_that_reaches_the_end_of_the_input() {
+    let cases: [&[i16]; 6] = [
+        &[0],
+        &[0, 0, 0, 0, 0, 0, 0, 0],
+        &[5, 0, 0, 0, 0, 0, 0, 0],
+        &[0, 0, 3, 0, 0, 0, 0, 0],
+        &[1, -2, 3, 0, 0, 0, 0, 0],
+        &[7],
+    ];
+
+    for mode in [EntropyAlgorithm::Rlgr1, EntropyAlgorithm::Rlgr3] {
+        for input in cases {
+            let mut encoded = vec![0; 8192];
+            let len = encode(mode, input, encoded.as_mut_slice()).expect("encode");
+
+            let mut decoded = vec![0i16; input.len()];
+            decode(mode, &encoded[..len], decoded.as_mut_slice()).expect("decode");
+
+            assert_eq!(decoded.as_slice(), input, "{mode:?} round trip of {input:?}");
+        }
+    }
+}

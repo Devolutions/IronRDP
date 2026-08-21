@@ -1,10 +1,12 @@
 use ironrdp_core::{DecodeResult, decode, encode_vec};
 use ironrdp_rdpeusb::io::device::{
-    DeviceInfo, UsbBcdVersion, UsbClassCodes, UsbConfigInfo, UsbConnectionSpeed, UsbDeviceDescriptorInfo,
-    UsbDeviceLocation, UsbInterfaceInfo, add_device_from_info,
+    DeviceInfo, UsbClassCodes, UsbConfigInfo, UsbConnectionSpeed, UsbDeviceDescriptorInfo, UsbDeviceLocation,
+    UsbInterfaceInfo, add_device_from_info,
 };
 use ironrdp_rdpeusb::pdu::UrbdrcClientDevicePdu;
+use ironrdp_rdpeusb::pdu::completion::ts_urb_result::Raw;
 use ironrdp_rdpeusb::pdu::header::InterfaceId;
+use ironrdp_usb::BcdVersion;
 use rstest::rstest;
 
 use super::simple_device_info;
@@ -69,7 +71,7 @@ fn no_port_numbers_device_info() -> DeviceInfo {
     }
 }
 
-fn usb_version_device_info(usb_version: UsbBcdVersion) -> DeviceInfo {
+fn usb_version_device_info(usb_version: BcdVersion) -> DeviceInfo {
     DeviceInfo {
         descriptor: UsbDeviceDescriptorInfo {
             usb_version,
@@ -92,9 +94,9 @@ fn speed_device_info(speed: UsbConnectionSpeed) -> DeviceInfo {
 #[case::composite_iad(iad_composite_device_info())]
 #[case::no_active_config(no_active_config_device_info())]
 #[case::no_port_numbers(no_port_numbers_device_info())]
-#[case::usb10(usb_version_device_info(UsbBcdVersion::from_bcd(0x0100)))]
-#[case::usb11(usb_version_device_info(UsbBcdVersion::from_bcd(0x0110)))]
-#[case::usb20(usb_version_device_info(UsbBcdVersion::from_bcd(0x0200)))]
+#[case::usb10(usb_version_device_info(BcdVersion::from_raw(0x0100)))]
+#[case::usb11(usb_version_device_info(BcdVersion::from_raw(0x0110)))]
+#[case::usb20(usb_version_device_info(BcdVersion::from_raw(0x0200)))]
 #[case::low_speed(speed_device_info(UsbConnectionSpeed::Low))]
 #[case::full_speed(speed_device_info(UsbConnectionSpeed::Full))]
 #[case::high_speed(speed_device_info(UsbConnectionSpeed::High))]
@@ -137,6 +139,6 @@ fn add_device_rejects_reserved_default_interface(#[case] reserved: u32) {
     let add_device = add_device_from_info(iface, &simple_device_info()).expect("ADD_DEVICE should be generated");
     let encoded = encode_vec(&add_device).expect("ADD_DEVICE should encode");
 
-    let decoded: DecodeResult<UrbdrcClientDevicePdu> = decode(&encoded);
+    let decoded: DecodeResult<UrbdrcClientDevicePdu<Raw>> = decode(&encoded);
     assert!(decoded.is_err(), "UsbDevice == {reserved} must be rejected");
 }

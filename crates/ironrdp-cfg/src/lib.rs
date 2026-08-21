@@ -67,9 +67,9 @@ pub enum GatewayUsageMethod {
     ///
     /// Windows semantics are "try direct, use gateway if direct fails".
     ///
-    /// IronRDP currently does not implement that two-step fallback, and if
-    /// an explicit gateway hostname is present, it selects it eagerly as the best
-    /// available approximation.
+    /// IronRDP implements that two-step fallback when a gateway hostname and
+    /// credentials are configured: the client attempts a direct RDP connection
+    /// first, then opens an MS-TSGU tunnel on failure.
     ///
     /// RDC UI: bypass-local is selected.
     #[default]
@@ -248,6 +248,53 @@ impl core::fmt::Display for UnknownAudioMode {
 
 impl core::error::Error for UnknownAudioMode {}
 
+/// Controls whether the client captures microphone audio for the remote session.
+///
+/// Corresponds to the `audiocapturemode` `.rdp` property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
+pub enum AudioCaptureMode {
+    /// 0: Do not capture audio from the client.
+    Disabled = 0,
+    /// 1: Capture audio from the client and redirect it to the server.
+    CaptureFromClient = 1,
+}
+
+impl TryFrom<i64> for AudioCaptureMode {
+    type Error = UnknownAudioCaptureMode;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Disabled),
+            1 => Ok(Self::CaptureFromClient),
+            _ => Err(UnknownAudioCaptureMode(value)),
+        }
+    }
+}
+
+impl AudioCaptureMode {
+    /// Returns the raw integer value for writing to a `.rdp` property set.
+    #[expect(
+        clippy::as_conversions,
+        reason = "the enum is #[repr(i64)] with explicit discriminants"
+    )]
+    pub fn as_i64(self) -> i64 {
+        self as i64
+    }
+}
+
+/// Error returned when an `audiocapturemode` value is not a recognized variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownAudioCaptureMode(pub i64);
+
+impl core::fmt::Display for UnknownAudioCaptureMode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "unknown audiocapturemode value: {}", self.0)
+    }
+}
+
+impl core::error::Error for UnknownAudioCaptureMode {}
+
 /// Name-to-pipe mapping for a single DVC proxy channel.
 #[derive(Clone, Debug)]
 pub struct DvcPipeProxy {
@@ -299,12 +346,26 @@ pub trait PropertySetExt {
     /// Removes the `alternate shell` property.
     fn clear_alternate_shell(&mut self);
 
+    /// Whether the `.rdp` file requests RemoteApp mode (`remoteapplicationmode`).
+    fn remote_application_mode(&self) -> Option<bool>;
+    /// Sets the `remoteapplicationmode` property.
+    fn set_remote_application_mode(&mut self, value: bool);
+    /// Removes the `remoteapplicationmode` property.
+    fn clear_remote_application_mode(&mut self);
+
     /// Audio output redirection mode (`audiomode`).
     fn audio_mode(&self) -> Result<Option<AudioMode>, UnknownAudioMode>;
     /// Sets the `audiomode` property.
     fn set_audio_mode(&mut self, value: AudioMode);
     /// Removes the `audiomode` property.
     fn clear_audio_mode(&mut self);
+
+    /// Audio input (microphone) capture mode (`audiocapturemode`).
+    fn audio_capture_mode(&self) -> Result<Option<AudioCaptureMode>, UnknownAudioCaptureMode>;
+    /// Sets the `audiocapturemode` property.
+    fn set_audio_capture_mode(&mut self, value: AudioCaptureMode);
+    /// Removes the `audiocapturemode` property.
+    fn clear_audio_capture_mode(&mut self);
 
     /// Target RDP server password in clear text (`ClearTextPassword`).
     ///
@@ -423,6 +484,13 @@ pub trait PropertySetExt {
     fn set_redirect_clipboard(&mut self, value: bool);
     /// Removes the `redirectclipboard` property.
     fn clear_redirect_clipboard(&mut self);
+
+    /// Whether WebAuthn redirection is requested (`redirectwebauthn`).
+    fn redirect_webauthn(&self) -> Option<bool>;
+    /// Sets the `redirectwebauthn` property.
+    fn set_redirect_webauthn(&mut self, value: bool);
+    /// Removes the `redirectwebauthn` property.
+    fn clear_redirect_webauthn(&mut self);
 
     /// RemoteApp application name (`remoteapplicationname`).
     fn remote_application_name(&self) -> Option<&str>;
@@ -558,6 +626,20 @@ pub trait PropertySetExt {
     /// Removes the `ironrdp_rdcleanpathurl` property.
     fn clear_rdcleanpath_url(&mut self);
 
+    /// Windows named-pipe RDP path (`ironrdp_named_pipe`), e.g. `\\.\pipe\{VMId}`.
+    fn named_pipe(&self) -> Option<&str>;
+    /// Sets the `ironrdp_named_pipe` property.
+    fn set_named_pipe(&mut self, value: impl Into<String>);
+    /// Removes the `ironrdp_named_pipe` property.
+    fn clear_named_pipe(&mut self);
+
+    /// Windows Sandbox id used by agent tooling (`ironrdp_sandbox_id`).
+    fn sandbox_id(&self) -> Option<&str>;
+    /// Sets the `ironrdp_sandbox_id` property.
+    fn set_sandbox_id(&mut self, value: impl Into<String>);
+    /// Removes the `ironrdp_sandbox_id` property.
+    fn clear_sandbox_id(&mut self);
+
     /// Render the server-side pointer; default enabled (`ironrdp_serverpointer`).
     fn server_pointer(&self) -> Option<bool>;
     /// Sets the `ironrdp_serverpointer` property.
@@ -605,6 +687,18 @@ impl PropertySetExt for PropertySet {
         self.remove("alternate shell");
     }
 
+    fn remote_application_mode(&self) -> Option<bool> {
+        self.get::<bool>("remoteapplicationmode")
+    }
+
+    fn set_remote_application_mode(&mut self, value: bool) {
+        self.insert("remoteapplicationmode", value);
+    }
+
+    fn clear_remote_application_mode(&mut self) {
+        self.remove("remoteapplicationmode");
+    }
+
     fn audio_mode(&self) -> Result<Option<AudioMode>, UnknownAudioMode> {
         self.get::<i64>("audiomode").map(AudioMode::try_from).transpose()
     }
@@ -615,6 +709,20 @@ impl PropertySetExt for PropertySet {
 
     fn clear_audio_mode(&mut self) {
         self.remove("audiomode");
+    }
+
+    fn audio_capture_mode(&self) -> Result<Option<AudioCaptureMode>, UnknownAudioCaptureMode> {
+        self.get::<i64>("audiocapturemode")
+            .map(AudioCaptureMode::try_from)
+            .transpose()
+    }
+
+    fn set_audio_capture_mode(&mut self, value: AudioCaptureMode) {
+        self.insert("audiocapturemode", value.as_i64());
+    }
+
+    fn clear_audio_capture_mode(&mut self) {
+        self.remove("audiocapturemode");
     }
 
     fn clear_text_password(&self) -> Option<&str> {
@@ -823,6 +931,18 @@ impl PropertySetExt for PropertySet {
 
     fn clear_redirect_clipboard(&mut self) {
         self.remove("redirectclipboard");
+    }
+
+    fn redirect_webauthn(&self) -> Option<bool> {
+        self.get::<bool>("redirectwebauthn")
+    }
+
+    fn set_redirect_webauthn(&mut self, value: bool) {
+        self.insert("redirectwebauthn", value);
+    }
+
+    fn clear_redirect_webauthn(&mut self) {
+        self.remove("redirectwebauthn");
     }
 
     fn remote_application_name(&self) -> Option<&str> {
@@ -1091,6 +1211,35 @@ impl PropertySetExt for PropertySet {
 
     fn clear_rdcleanpath_url(&mut self) {
         self.remove("ironrdp_rdcleanpathurl");
+    }
+
+    /// Windows named-pipe path for RDP (e.g. Windows Sandbox `\\.\pipe\{VMId}`).
+    ///
+    /// When set, the client opens this pipe instead of a TCP socket. Pair with
+    /// `ironrdp_tls:i:0` and `enablecredsspsupport:i:0` for the Sandbox NamedPipe path.
+    fn named_pipe(&self) -> Option<&str> {
+        self.get::<&str>("ironrdp_named_pipe")
+    }
+
+    fn set_named_pipe(&mut self, value: impl Into<String>) {
+        self.insert("ironrdp_named_pipe", value.into());
+    }
+
+    fn clear_named_pipe(&mut self) {
+        self.remove("ironrdp_named_pipe");
+    }
+
+    /// Optional Windows Sandbox id used by agent tooling to resolve RDP config via gRPC.
+    fn sandbox_id(&self) -> Option<&str> {
+        self.get::<&str>("ironrdp_sandbox_id")
+    }
+
+    fn set_sandbox_id(&mut self, value: impl Into<String>) {
+        self.insert("ironrdp_sandbox_id", value.into());
+    }
+
+    fn clear_sandbox_id(&mut self) {
+        self.remove("ironrdp_sandbox_id");
     }
 
     fn server_pointer(&self) -> Option<bool> {

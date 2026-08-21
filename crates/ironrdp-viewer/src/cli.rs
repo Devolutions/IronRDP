@@ -8,7 +8,7 @@ use clap::Parser;
 use clap::clap_derive::ValueEnum;
 use ironrdp::client::config::{
     ClipboardType as ResolvedClipboardType, Config, ConfigBuilder, Destination, DvcProxyInfo, MissingField,
-    TransportKind,
+    TransportKind, VmConnectMode,
 };
 use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
 use ironrdp_cfg::PropertySetExt as _;
@@ -42,13 +42,13 @@ pub enum KeyboardType {
 impl KeyboardType {
     fn into_pdu(self) -> ironrdp::pdu::gcc::KeyboardType {
         match self {
-            KeyboardType::IbmEnhanced => ironrdp::pdu::gcc::KeyboardType::IbmEnhanced,
-            KeyboardType::IbmPcAt => ironrdp::pdu::gcc::KeyboardType::IbmPcAt,
-            KeyboardType::IbmPcXt => ironrdp::pdu::gcc::KeyboardType::IbmPcXt,
-            KeyboardType::OlivettiIco => ironrdp::pdu::gcc::KeyboardType::OlivettiIco,
-            KeyboardType::Nokia1050 => ironrdp::pdu::gcc::KeyboardType::Nokia1050,
-            KeyboardType::Nokia9140 => ironrdp::pdu::gcc::KeyboardType::Nokia9140,
-            KeyboardType::Japanese => ironrdp::pdu::gcc::KeyboardType::Japanese,
+            KeyboardType::IbmEnhanced => ironrdp::pdu::gcc::KeyboardType::IBM_ENHANCED,
+            KeyboardType::IbmPcAt => ironrdp::pdu::gcc::KeyboardType::IBM_PC_AT,
+            KeyboardType::IbmPcXt => ironrdp::pdu::gcc::KeyboardType::IBM_PC_XT,
+            KeyboardType::OlivettiIco => ironrdp::pdu::gcc::KeyboardType::OLIVETTI_ICO,
+            KeyboardType::Nokia1050 => ironrdp::pdu::gcc::KeyboardType::NOKIA_1050,
+            KeyboardType::Nokia9140 => ironrdp::pdu::gcc::KeyboardType::NOKIA_9140,
+            KeyboardType::Japanese => ironrdp::pdu::gcc::KeyboardType::JAPANESE,
         }
     }
 }
@@ -62,6 +62,14 @@ struct Args {
     #[clap(short, long, value_parser)]
     log_file: Option<String>,
 
+    /// Run as a visible GUI host for the IronRDP local RPC protocol.
+    #[clap(long)]
+    rpc: bool,
+
+    /// Override the agent-compatible RPC endpoint (defaults to the per-user agent endpoint).
+    #[clap(long, requires = "rpc")]
+    rpc_endpoint: Option<String>,
+
     #[clap(long, value_parser)]
     gw_endpoint: Option<String>,
     #[clap(long, value_parser)]
@@ -70,6 +78,7 @@ struct Args {
     gw_pass: Option<String>,
 
     /// An address on which the client will connect.
+    #[clap(env = "RDP_HOSTNAME")]
     destination: Option<Destination>,
 
     /// Path to a .rdp file to read the configuration from.
@@ -77,7 +86,7 @@ struct Args {
     rdp_file: Option<PathBuf>,
 
     /// A target RDP server user name
-    #[clap(short, long)]
+    #[clap(short, long, env = "RDP_USERNAME")]
     username: Option<String>,
 
     /// An optional target RDP server domain name
@@ -85,7 +94,7 @@ struct Args {
     domain: Option<String>,
 
     /// A target RDP server user password
-    #[clap(short, long)]
+    #[clap(short, long, env = "RDP_PASSWORD", hide_env_values = true)]
     password: Option<String>,
 
     /// Proxy URL to connect to for the RDCleanPath
@@ -97,6 +106,18 @@ struct Args {
     /// Authentication token to insert in the RDCleanPath packet
     #[clap(long, requires("rdcleanpath_url"))]
     rdcleanpath_token: Option<String>,
+
+    /// Connect to a Hyper-V VM console instead of an RDP host, by VM ID (`Get-VM | Select Id`).
+    ///
+    /// The destination is the Hyper-V host, which listens on port 2179. TLS and CredSSP are
+    /// required (do not combine with `--no-tls` / `--no-credssp`). Not supported with
+    /// `--gw-endpoint` / RDCleanPath until those transports can target port 2179.
+    #[clap(long, value_name = "VM_ID")]
+    vmconnect: Option<String>,
+
+    /// Use the Hyper-V basic console instead of Enhanced Session mode.
+    #[clap(long, requires = "vmconnect")]
+    vmconnect_basic: bool,
 
     /// The keyboard type
     #[clap(long, value_enum, default_value_t = KeyboardType::IbmEnhanced)]
@@ -163,6 +184,17 @@ struct Args {
     #[clap(long, value_enum, default_value_t = ClipboardType::Enable)]
     clipboard_type: ClipboardType,
 
+    /// Enable native MS-RDPEWA WebAuthn redirection (Windows Hello / security keys).
+    ///
+    /// Defaults to the `.rdp` `redirectwebauthn` value when present, otherwise enabled on
+    /// Windows builds that include the client `webauthn` feature.
+    #[clap(long, action = clap::ArgAction::SetTrue, overrides_with = "no_webauthn")]
+    webauthn: bool,
+
+    /// Disable native MS-RDPEWA WebAuthn redirection.
+    #[clap(long = "no-webauthn", action = clap::ArgAction::SetTrue, overrides_with = "webauthn")]
+    no_webauthn: bool,
+
     /// The bitmap codecs to use (remotefx:on, ...)
     #[clap(long, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
@@ -212,6 +244,13 @@ struct Args {
     /// or passed back via `--rdp-file` on the next invocation.
     #[clap(long)]
     dump_rdp: Option<PathBuf>,
+
+    /// Enable Windows WinSCard smartcard redirection (sets `ironrdp_smartcard`).
+    ///
+    /// On Windows this attaches the native RDPDR backend so smartcard IRPs complete via WinSCard.
+    /// Ignored on other platforms except for the property value itself.
+    #[clap(long)]
+    smartcard: bool,
 }
 
 /// Result of parsing CLI args + loading the `.rdp` file: a configured [`ConfigBuilder`] plus the
@@ -225,6 +264,8 @@ pub struct ViewerConfig {
     // CLI-only settings that are not representable as `.rdp` file properties.
     log_file: Option<String>,
     dump_rdp: Option<PathBuf>,
+    rpc: bool,
+    rpc_endpoint: Option<String>,
 }
 
 impl ViewerConfig {
@@ -255,6 +296,19 @@ impl ViewerConfig {
         let log_file = args.log_file.clone();
         let dump_rdp = args.dump_rdp.clone();
 
+        if args.rpc {
+            if args.rdp_file.is_some() || dump_rdp.is_some() {
+                anyhow::bail!("--rpc cannot be combined with --rdp-file or --dump-rdp");
+            }
+            return Ok(Self {
+                builder: ConfigBuilder::new(),
+                log_file,
+                dump_rdp: None,
+                rpc: true,
+                rpc_endpoint: args.rpc_endpoint,
+            });
+        }
+
         // The library overlays everything expressible as a `.rdp` property: destination, credentials,
         // transport, channels, desktop size, audio, DVC proxies, etc.
         let builder = ConfigBuilder::from_property_set(&properties)?;
@@ -262,14 +316,25 @@ impl ViewerConfig {
         // Whether the `.rdp` file requested clipboard redirection; the CLI `--clipboard-type` is
         // resolved against this when applied below.
         let redirect_clipboard = properties.redirect_clipboard().unwrap_or(true);
+        let redirect_webauthn = properties.redirect_webauthn().unwrap_or(true);
+        // Opt-in only: the client feature default for smartcard is `true`, which must not silently
+        // attach a WinSCard backend. Require CLI `--smartcard` or an explicit property.
+        let enable_smartcard = args.smartcard || properties.enable_smartcard().unwrap_or(false);
 
         // CLI arguments take precedence: apply them on top of the `.rdp`-derived builder.
-        let builder = apply_cli_to_builder(builder, args, redirect_clipboard);
+        let mut builder = apply_cli_to_builder(builder, args, redirect_clipboard, redirect_webauthn);
+        builder = if enable_smartcard {
+            builder.with_rdpdr(true).with_smartcard(true)
+        } else {
+            builder.with_smartcard(false)
+        };
 
         Ok(Self {
             builder,
             log_file,
             dump_rdp,
+            rpc: false,
+            rpc_endpoint: None,
         })
     }
 
@@ -290,11 +355,26 @@ impl ViewerConfig {
     pub fn dump_rdp(&self) -> Option<&std::path::Path> {
         self.dump_rdp.as_deref()
     }
+
+    /// Whether the viewer should host the local RPC server.
+    pub fn rpc_mode(&self) -> bool {
+        self.rpc
+    }
+
+    /// Endpoint explicitly selected for the RPC host.
+    pub fn rpc_endpoint(&self) -> Option<&str> {
+        self.rpc_endpoint.as_deref()
+    }
 }
 
 /// Apply CLI overrides on top of a builder that already reflects the `.rdp` file. Every flag that is
 /// present overwrites the corresponding builder (and mirrored property) value.
-fn apply_cli_to_builder(mut builder: ConfigBuilder, args: Args, redirect_clipboard: bool) -> ConfigBuilder {
+fn apply_cli_to_builder(
+    mut builder: ConfigBuilder,
+    args: Args,
+    redirect_clipboard: bool,
+    redirect_webauthn: bool,
+) -> ConfigBuilder {
     // Validate the codecs early to surface help text before connecting.
     {
         let codecs: Vec<_> = args.codecs.iter().map(String::as_str).collect();
@@ -351,6 +431,15 @@ fn apply_cli_to_builder(mut builder: ConfigBuilder, args: Args, redirect_clipboa
     }
 
     // Transport overrides: RDCleanPath takes precedence over Gateway.
+    if let Some(vm_id) = args.vmconnect {
+        let mode = if args.vmconnect_basic {
+            VmConnectMode::Basic
+        } else {
+            VmConnectMode::Enhanced
+        };
+        builder = builder.with_vmconnect_mode(vm_id, mode);
+    }
+
     if let Some(url) = args.rdcleanpath_url {
         builder = builder.with_transport(TransportKind::RDCleanPath { url });
 
@@ -358,7 +447,10 @@ fn apply_cli_to_builder(mut builder: ConfigBuilder, args: Args, redirect_clipboa
             builder = builder.with_rdcleanpath_token(token);
         }
     } else if let Some(endpoint) = args.gw_endpoint {
-        builder = builder.with_transport(TransportKind::Gateway { endpoint });
+        builder = builder.with_transport(TransportKind::Gateway {
+            endpoint,
+            prefer_direct: false,
+        });
 
         if let Some(username) = args.gw_user {
             builder = builder.with_gateway_username(username);
@@ -369,6 +461,16 @@ fn apply_cli_to_builder(mut builder: ConfigBuilder, args: Args, redirect_clipboa
     }
 
     builder = builder.with_clipboard(resolve_clipboard_type(args.clipboard_type, redirect_clipboard));
+
+    // Viewer enables ironrdp-client `webauthn` through `client-all`.
+    let webauthn = if args.webauthn {
+        true
+    } else if args.no_webauthn {
+        false
+    } else {
+        redirect_webauthn
+    };
+    builder = builder.with_webauthn(webauthn);
 
     // CLI-only knobs that are not representable as `.rdp` properties.
     // TODO/FIXME: Some of these, we may want to add support for storing in .rdp files (e.g.: IME file name can be reasonably seen as a connection option)

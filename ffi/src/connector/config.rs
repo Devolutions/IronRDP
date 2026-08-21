@@ -2,6 +2,26 @@ use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 
 use self::ffi::PerformanceFlagsType;
 
+// `ironrdp::pdu::gcc::KeyboardType` is a permissive newtype (MS-RDPBCGR's value table for this
+// field has grown across revisions), not a fieldless enum, so `diplomat::enum_convert` no longer
+// applies to it; this conversion is written by hand instead. It must live outside the
+// `#[diplomat::bridge]` module below, since that macro only understands inherent impls on the
+// bridged types, not trait impls. The FFI-facing enum keeps its existing fixed set of variants
+// unchanged.
+impl From<ffi::KeyboardType> for ironrdp::pdu::gcc::KeyboardType {
+    fn from(value: ffi::KeyboardType) -> Self {
+        match value {
+            ffi::KeyboardType::IbmPcXt => Self::IBM_PC_XT,
+            ffi::KeyboardType::OlivettiIco => Self::OLIVETTI_ICO,
+            ffi::KeyboardType::IbmPcAt => Self::IBM_PC_AT,
+            ffi::KeyboardType::IbmEnhanced => Self::IBM_ENHANCED,
+            ffi::KeyboardType::Nokia1050 => Self::NOKIA_1050,
+            ffi::KeyboardType::Nokia9140 => Self::NOKIA_9140,
+            ffi::KeyboardType::Japanese => Self::JAPANESE,
+        }
+    }
+}
+
 #[diplomat::bridge]
 pub mod ffi {
     use ironrdp::connector::Credentials;
@@ -54,7 +74,6 @@ pub mod ffi {
         pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
     }
 
-    #[diplomat::enum_convert(ironrdp::pdu::gcc::KeyboardType)]
     pub enum KeyboardType {
         IbmPcXt,
         OlivettiIco,
@@ -176,16 +195,18 @@ pub mod ffi {
                 domain: self.domain.clone(),
                 enable_tls: self.enable_tls.unwrap_or(false),
                 enable_credssp: self.enable_credssp.unwrap_or(true),
+                enable_standard_rdp_security: false,
                 keyboard_layout: self.keyboard_layout.unwrap_or(0),
                 keyboard_type: self
                     .keyboard_type
-                    .unwrap_or(ironrdp::pdu::gcc::KeyboardType::IbmEnhanced),
+                    .unwrap_or(ironrdp::pdu::gcc::KeyboardType::IBM_ENHANCED),
                 keyboard_subtype: self.keyboard_subtype.unwrap_or(0),
                 keyboard_functional_keys_count: self.keyboard_functional_keys_count.unwrap_or(12),
                 connection_type: ironrdp::pdu::gcc::ConnectionType::Lan,
                 ime_file_name: self.ime_file_name.clone().unwrap_or_default(),
                 dig_product_id: self.dig_product_id.clone().unwrap_or_default(),
                 desktop_size: self.desktop_size.ok_or("desktop size not set")?,
+                monitor_layout: None,
                 bitmap: None,
                 client_build: self.client_build.unwrap_or(0),
                 client_name: self.client_name.clone().ok_or("client name not set")?,
@@ -213,6 +234,7 @@ pub mod ffi {
                 enable_server_pointer: self.enable_server_pointer.unwrap_or(false),
                 autologon: self.autologon.unwrap_or(false),
                 enable_audio_playback: self.no_audio_playback.unwrap_or(true),
+                enable_audio_capture: false,
                 request_data: None,
                 compression_type: None,
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
@@ -224,6 +246,8 @@ pub mod ffi {
                 timezone_info: self.timezone_info.clone().unwrap_or_default(),
                 alternate_shell: String::new(),
                 work_dir: String::new(),
+                remote_application_mode: false,
+                rail_support_level: ironrdp::pdu::rdp::capability_sets::RailSupportLevel::empty(),
             };
             let dvc_pipe_proxy = self.dvc_pipe_proxy.clone();
 

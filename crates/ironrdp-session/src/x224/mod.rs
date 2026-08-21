@@ -1,7 +1,7 @@
 use ironrdp_bulk::BulkCompressor;
 use ironrdp_core::{WriteBuf, decode};
-use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
-use ironrdp_pdu::gcc::ChannelName;
+use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelRef};
+use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::client_info::CompressionType;
@@ -10,7 +10,9 @@ use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::rdp::session_info::{InfoData, SaveSessionInfoPdu, ServerAutoReconnect};
 use ironrdp_pdu::x224::X224;
-use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages, client_encode_svc_messages};
+use ironrdp_svc::{
+    StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages, client_encode_svc_messages_with_max_chunk_len,
+};
 use tracing::debug;
 
 use crate::{SessionError, SessionErrorExt as _, SessionResult, reason_err};
@@ -58,6 +60,12 @@ pub enum ProcessorOutput {
     /// [\[MS-RDPBCGR\] 2.2.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18f4f605-0ee3-4175-8a62-cf8775252547
     /// [\[MS-RDPBCGR\] 1.3.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
     AutoReconnectCookie(ServerAutoReconnect),
+    /// Server rejected a Client Auto-Reconnect Packet ([\[MS-RDPBCGR\] 2.2.4.1]).
+    ///
+    /// The client must discard its cookie and not report the reconnect as successful.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.4.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/5073f4ed-1e93-45e1-b039-6e30c385867c
+    AutoReconnectFailed,
     /// Auto-detect network characteristics from server ([\[MS-RDPBCGR\] 2.2.14]).
     ///
     /// Currently only surfaces [`AutoDetectRequest::NetworkCharacteristicsResult`].
@@ -71,6 +79,11 @@ pub enum ProcessorOutput {
     /// Slow-path pointer update ([MS-RDPBCGR] 2.2.9.1.1.4).
     /// Raw pointer payload starting with `messageType(u16) + pad(u16)`.
     PointerUpdate(Vec<u8>),
+    /// Server-reported remote monitor layout ([MS-RDPBCGR] 2.2.12.1).
+    ///
+    /// The server may send this after activation when the client advertises
+    /// `RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU`.
+    MonitorLayout(Vec<Monitor>),
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +127,16 @@ impl Processor {
         self.share_id = share_id;
     }
 
+    /// Updates the negotiated maximum payload length of outgoing static virtual channel chunks.
+    pub fn set_static_channel_chunk_size(&mut self, maximum_chunk_size: usize) -> bool {
+        self.static_channels.set_maximum_chunk_size(maximum_chunk_size)
+    }
+
+    /// Returns the negotiated maximum payload length of outgoing static virtual channel chunks.
+    pub fn static_channel_chunk_size(&self) -> usize {
+        self.static_channels.maximum_chunk_size()
+    }
+
     pub fn get_svc_processor<T: SvcProcessor + 'static>(&self) -> Option<&T> {
         self.static_channels
             .get_by_type::<T>()
@@ -137,7 +160,12 @@ impl Processor {
             .get_channel_id_by_type::<C>()
             .ok_or_else(|| reason_err!("SVC", "channel not found"))?;
 
-        process_svc_messages(messages.into(), channel_id, self.user_channel_id)
+        process_svc_messages(
+            messages.into(),
+            channel_id,
+            self.user_channel_id,
+            self.static_channels.maximum_chunk_size(),
+        )
     }
 
     /// Completes an SVC request for a runtime-defined channel name.
@@ -151,14 +179,22 @@ impl Processor {
             .get_channel_id_by_channel_name(channel_name)
             .ok_or_else(|| reason_err!("SVC", "channel not found"))?;
 
-        process_svc_messages(messages, channel_id, self.user_channel_id)
+        process_svc_messages(
+            messages,
+            channel_id,
+            self.user_channel_id,
+            self.static_channels.maximum_chunk_size(),
+        )
     }
 
-    pub fn get_dvc<T: DvcProcessor + 'static>(&self) -> Option<&DynamicVirtualChannel> {
-        self.get_svc_processor::<DrdynvcClient>()?.get_dvc_by_type_id::<T>()
+    pub fn get_dvc<T: DvcClientProcessor + 'static>(&self) -> Option<DynamicChannelRef<'_, T>> {
+        self.get_svc_processor::<DrdynvcClient>()?.get_dvc::<T>()
     }
 
-    pub fn get_dvc_by_channel_id(&self, channel_id: u32) -> Option<&DynamicVirtualChannel> {
+    pub fn get_dvc_by_channel_id<T: DvcClientProcessor + 'static>(
+        &self,
+        channel_id: u32,
+    ) -> Option<DynamicChannelRef<'_, T>> {
         self.get_svc_processor::<DrdynvcClient>()?
             .get_dvc_by_channel_id(channel_id)
     }
@@ -170,20 +206,38 @@ impl Processor {
         frame: &[u8],
         bulk_decompressor: &mut Option<BulkCompressor>,
     ) -> SessionResult<Vec<ProcessorOutput>> {
-        let data_ctx: SendDataIndicationCtx<'_> =
-            ironrdp_pdu::mcs::decode_send_data_indication(frame).map_err(SessionError::decode)?;
+        let data_ctx: SendDataIndicationCtx<'_> = match ironrdp_pdu::mcs::decode_send_data_indication(frame) {
+            Ok(data_ctx) => data_ctx,
+            Err(error) => {
+                // Some servers (xrdp) end the session with a plain MCS Disconnect Provider Ultimatum.
+                if let Ok(X224(McsMessage::DisconnectProviderUltimatum(ultimatum))) =
+                    decode::<X224<McsMessage<'_>>>(frame)
+                {
+                    debug!(reason = ?ultimatum.reason, "Received Disconnect Provider Ultimatum, session will be closed");
+
+                    return Ok(vec![ProcessorOutput::Disconnect(DisconnectDescription::McsDisconnect(
+                        ultimatum.reason,
+                    ))]);
+                }
+
+                return Err(SessionError::decode(error));
+            }
+        };
         let channel_id = data_ctx.channel_id;
 
         if channel_id == self.io_channel_id {
             self.process_io_channel(data_ctx, bulk_decompressor)
         } else if self.message_channel_id == Some(channel_id) {
             self.process_message_channel(data_ctx)
-        } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
-            let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
-            process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id)
-                .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
         } else {
-            Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
+            let maximum_chunk_size = self.static_channels.maximum_chunk_size();
+            if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
+                let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
+                process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id, maximum_chunk_size)
+                    .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
+            } else {
+                Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
+            }
         }
     }
 
@@ -248,6 +302,13 @@ impl Processor {
 
                 Ok(outputs)
             }
+            ShareDataPdu::ArcStatusPdu(status) => {
+                if status != [0; 4] {
+                    return Err(reason_err!("IO channel", "invalid auto-reconnect status PDU"));
+                }
+
+                Ok(vec![ProcessorOutput::AutoReconnectFailed])
+            }
             // FIXME: workaround fix to not terminate the session on "unhandled PDU: Set Keyboard Indicators PDU"
             ShareDataPdu::SetKeyboardIndicators(data) => {
                 debug!("Got Keyboard Indicators PDU: {data:?}");
@@ -295,6 +356,9 @@ impl Processor {
                 let data = Self::decompress_share_data(data, compression_flags, compression_type, bulk_decompressor)?;
                 debug!("Got slow-path pointer update ({} bytes)", data.len());
                 Ok(vec![ProcessorOutput::PointerUpdate(data)])
+            }
+            ShareDataPdu::MonitorLayout(monitor_layout) => {
+                Ok(vec![ProcessorOutput::MonitorLayout(monitor_layout.monitors)])
             }
             pdu => Err(reason_err!("IO channel", "unhandled PDU: {:?}", pdu.as_short_name())),
         }
@@ -391,14 +455,22 @@ fn is_logon_complete(session_info: &SaveSessionInfoPdu) -> bool {
 /// The messages returned here are ready to be sent to the server.
 ///
 /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
-fn process_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> SessionResult<Vec<u8>> {
-    client_encode_svc_messages(messages, channel_id, initiator_id).map_err(SessionError::encode)
+fn process_svc_messages(
+    messages: Vec<SvcMessage>,
+    channel_id: u16,
+    initiator_id: u16,
+    maximum_chunk_size: usize,
+) -> SessionResult<Vec<u8>> {
+    client_encode_svc_messages_with_max_chunk_len(messages, channel_id, initiator_id, maximum_chunk_size)
+        .map_err(SessionError::encode)
 }
 
 #[cfg(test)]
 mod tests {
     use ironrdp_bulk::{CompressionType as BulkCompressionType, flags};
     use ironrdp_core::encode_vec;
+    use ironrdp_pdu::gcc::MonitorFlags;
+    use ironrdp_pdu::rdp::finalization_messages::MonitorLayoutPdu;
     use ironrdp_pdu::rdp::headers::ShareDataPduType;
     use ironrdp_pdu::rdp::session_info::{InfoType, LogonExFlags, LogonInfoExtended};
 
@@ -496,6 +568,26 @@ mod tests {
     }
 
     #[test]
+    fn processor_gracefully_disconnects_on_provider_ultimatum() {
+        let frame = encode_vec(&X224(McsMessage::DisconnectProviderUltimatum(
+            DisconnectProviderUltimatum::from_reason(DisconnectReason::ProviderInitiated),
+        )))
+        .expect("encode disconnect provider ultimatum");
+        let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, None, 0);
+
+        let outputs = processor
+            .process(&frame, &mut None)
+            .expect("disconnect provider ultimatum should not be a protocol error");
+
+        assert!(matches!(
+            outputs.as_slice(),
+            [ProcessorOutput::Disconnect(DisconnectDescription::McsDisconnect(
+                DisconnectReason::ProviderInitiated
+            ))]
+        ));
+    }
+
+    #[test]
     fn plain_notify_signals_login_completion() {
         let session_info = SaveSessionInfoPdu {
             info_type: InfoType::PlainNotify,
@@ -503,5 +595,78 @@ mod tests {
         };
 
         assert!(is_logon_complete(&session_info));
+    }
+
+    #[test]
+    fn processor_surfaces_valid_auto_reconnect_status() {
+        let mut bulk_decompressor = None;
+        let outputs = Processor::process_share_data(
+            ShareDataCtx {
+                initiator_id: 0,
+                channel_id: 0,
+                share_id: 0,
+                pdu_source: 0,
+                compression_flags: CompressionFlags::empty(),
+                compression_type: CompressionType::K64,
+                pdu: ShareDataPdu::ArcStatusPdu(vec![0; 4]),
+            },
+            &mut bulk_decompressor,
+        )
+        .expect("valid auto-reconnect status PDU should be processed");
+
+        assert!(matches!(outputs.as_slice(), [ProcessorOutput::AutoReconnectFailed]));
+    }
+
+    #[test]
+    fn processor_surfaces_monitor_layout() {
+        let monitors = vec![Monitor {
+            left: 0,
+            top: 0,
+            right: 799,
+            bottom: 599,
+            flags: MonitorFlags::PRIMARY,
+        }];
+        let mut bulk_decompressor = None;
+        let outputs = Processor::process_share_data(
+            ShareDataCtx {
+                initiator_id: 0,
+                channel_id: 0,
+                share_id: 0,
+                pdu_source: 0,
+                compression_flags: CompressionFlags::empty(),
+                compression_type: CompressionType::K64,
+                pdu: ShareDataPdu::MonitorLayout(MonitorLayoutPdu {
+                    monitors: monitors.clone(),
+                }),
+            },
+            &mut bulk_decompressor,
+        )
+        .expect("monitor layout PDU should be processed");
+
+        let [ProcessorOutput::MonitorLayout(actual)] = outputs.as_slice() else {
+            panic!("expected a monitor layout output");
+        };
+        assert_eq!(actual, &monitors);
+    }
+
+    #[test]
+    fn processor_rejects_invalid_auto_reconnect_status() {
+        let mut bulk_decompressor = None;
+
+        assert!(
+            Processor::process_share_data(
+                ShareDataCtx {
+                    initiator_id: 0,
+                    channel_id: 0,
+                    share_id: 0,
+                    pdu_source: 0,
+                    compression_flags: CompressionFlags::empty(),
+                    compression_type: CompressionType::K64,
+                    pdu: ShareDataPdu::ArcStatusPdu(vec![0, 0, 0]),
+                },
+                &mut bulk_decompressor,
+            )
+            .is_err()
+        );
     }
 }

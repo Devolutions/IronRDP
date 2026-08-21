@@ -1,12 +1,13 @@
-use ironrdp_core::{decode, encode_vec};
+use ironrdp_core::{ReadCursor, decode, decode_cursor, encode_vec};
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
 use ironrdp_pdu::mcs;
+use ironrdp_pdu::rdp::headers::ShareControlHeader;
 use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
 use ironrdp_pdu::x224::X224;
-use ironrdp_session::x224::Processor;
+use ironrdp_session::{ActiveStageBuilder, x224::Processor};
 use ironrdp_svc::{
-    CHANNEL_CHUNK_LENGTH, MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, StaticVirtualChannel,
-    SvcClientProcessor, SvcMessage, SvcProcessor, SvcServerProcessor, make_channel_options,
+    CHANNEL_CHUNK_LENGTH, MAX_CHANNEL_CHUNK_LENGTH, MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet,
+    StaticVirtualChannel, SvcClientProcessor, SvcMessage, SvcProcessor, SvcServerProcessor, make_channel_options,
 };
 
 #[derive(Debug)]
@@ -252,6 +253,89 @@ fn static_channel_chunks_show_protocol_header() {
         let header = decode::<ChannelPduHeader>(chunk.filled()).expect("channel header should decode");
         assert!(header.flags.contains(ChannelControlFlags::FLAG_SHOW_PROTOCOL));
     }
+}
+
+#[test]
+fn static_channel_chunk_size_defaults_to_1600_and_rejects_out_of_range_values() {
+    let mut channels = StaticChannelSet::new();
+
+    assert_eq!(channels.maximum_chunk_size(), CHANNEL_CHUNK_LENGTH);
+    assert!(!channels.set_maximum_chunk_size(CHANNEL_CHUNK_LENGTH - 1));
+    assert_eq!(channels.maximum_chunk_size(), CHANNEL_CHUNK_LENGTH);
+    assert!(!channels.set_maximum_chunk_size(MAX_CHANNEL_CHUNK_LENGTH + 1));
+    assert_eq!(channels.maximum_chunk_size(), CHANNEL_CHUNK_LENGTH);
+    assert!(channels.set_maximum_chunk_size(MAX_CHANNEL_CHUNK_LENGTH));
+    assert_eq!(channels.maximum_chunk_size(), MAX_CHANNEL_CHUNK_LENGTH);
+}
+
+#[test]
+fn reactivated_session_applies_the_static_channel_chunk_size() {
+    let channel_name = ChannelName::from_utf8("runtime").expect("valid static channel name");
+    let mut channels = StaticChannelSet::new();
+    let key = channels
+        .insert_dynamic(RuntimeChannel::new("runtime", ChannelOptions::empty()))
+        .expect("dynamic key");
+    channels.attach_channel_id_by_key(key, 1005);
+
+    let mut active_stage = ActiveStageBuilder {
+        static_channels: channels,
+        user_channel_id: 1002,
+        io_channel_id: 1003,
+        message_channel_id: None,
+        share_id: 1,
+        compression_type: None,
+        enable_server_pointer: false,
+        pointer_software_rendering: false,
+    }
+    .build();
+    assert!(active_stage.reactivate(1003, 1002, 2, false, false, 4096));
+    assert!(!active_stage.reactivate(2003, 2002, 3, true, true, CHANNEL_CHUNK_LENGTH - 1));
+    let frame = active_stage
+        .process_svc_messages_by_name(&channel_name, vec![SvcMessage::from(vec![0; 4097])])
+        .expect("runtime channel should be encodable");
+
+    let mut cursor = ReadCursor::new(&frame);
+    let first: X224<mcs::SendDataRequest<'_>> = decode_cursor(&mut cursor).expect("first chunk should decode");
+    let second: X224<mcs::SendDataRequest<'_>> = decode_cursor(&mut cursor).expect("second chunk should decode");
+    assert!(cursor.is_empty());
+
+    let first_header = decode::<ChannelPduHeader>(first.0.user_data.as_ref()).expect("first header should decode");
+    assert_eq!(first.0.initiator_id, 1002);
+    assert_eq!(first_header.length, 4097);
+    assert_eq!(first.0.user_data.len() - 8, 4096);
+    assert!(
+        first_header
+            .flags
+            .contains(ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_SHOW_PROTOCOL)
+    );
+    assert!(!first_header.flags.contains(ChannelControlFlags::FLAG_LAST));
+
+    let second_header = decode::<ChannelPduHeader>(second.0.user_data.as_ref()).expect("second header should decode");
+    assert_eq!(second_header.length, 4097);
+    assert_eq!(second.0.user_data.len() - 8, 1);
+    assert!(
+        second_header
+            .flags
+            .contains(ChannelControlFlags::FLAG_LAST | ChannelControlFlags::FLAG_SHOW_PROTOCOL)
+    );
+    assert!(!second_header.flags.contains(ChannelControlFlags::FLAG_FIRST));
+
+    let shutdown = active_stage
+        .graceful_shutdown()
+        .expect("shutdown should encode")
+        .pop()
+        .expect("shutdown should have a response frame");
+    let ironrdp_session::ActiveStageOutput::ResponseFrame(shutdown) = shutdown else {
+        panic!("shutdown should have a response frame");
+    };
+    let shutdown = decode::<X224<mcs::SendDataRequest<'_>>>(&shutdown)
+        .expect("shutdown should decode")
+        .0;
+    let shutdown_header =
+        decode::<ShareControlHeader>(shutdown.user_data.as_ref()).expect("shutdown header should decode");
+    assert_eq!(shutdown.initiator_id, 1002);
+    assert_eq!(shutdown.channel_id, 1003);
+    assert_eq!(shutdown_header.share_id, 2);
 }
 
 #[test]

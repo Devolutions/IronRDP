@@ -80,7 +80,7 @@ impl DvcChannelListener for UrbdrcListener {
         CHANNEL_NAME
     }
 
-    fn create(&mut self, channel_id: u32) -> Option<Box<dyn DvcProcessor>> {
+    fn create(&mut self, channel_id: u32) -> Option<Box<dyn DvcClientProcessor>> {
         if let Some(callback) = self.on_capability_exchanged.take() {
             self.device_man.control_channel_assigned(channel_id);
             Some(Box::new(UrbdrcControlClient::new(callback)))
@@ -89,7 +89,7 @@ impl DvcChannelListener for UrbdrcListener {
             #[expect(clippy::as_conversions)]
             self.device_man.take_device_for_channel(channel_id).map(|backend| {
                 Box::new(UrbdrcDeviceClient::new(udev_iface, backend).expect("invalid interface id"))
-                    as Box<dyn DvcProcessor>
+                    as Box<dyn DvcClientProcessor>
             })
         }
     }
@@ -464,11 +464,16 @@ fn build_transfer_in_completion(
             output_buffer_size,
         }))
     } else {
+        let ts_urb_result = response
+            .ts_urb_result
+            .try_into_isoch()
+            .map_err(|_| pdu_other_err!("URB_COMPLETION result payload must be header-only or isochronous"))?;
+
         Ok(Box::new(UrbCompletion {
             msg_id: pending.msg_id,
             completion_iface,
             req_id,
-            ts_urb_result: response.ts_urb_result,
+            ts_urb_result,
             hresult: response.hresult,
             output_buffer: response.output_buffer,
         }))

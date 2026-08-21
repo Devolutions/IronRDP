@@ -230,7 +230,7 @@ where
 
         trace!(length = pdu.len(), "PDU received");
 
-        connector.step(&pdu, buf)?
+        connector.step(&pdu, framed.last_read_at(), buf)?
     } else {
         connector.step_no_input(buf)?
     };

@@ -1,12 +1,14 @@
 use core::mem;
 
 use ironrdp_pdu::rdp;
-use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, InputFlags};
+use ironrdp_pdu::rdp::capability_sets::{
+    CapabilitySet, InputFlags, Rail, RailSupportLevel, WindowList, WindowSupportLevel,
+};
 use tracing::{debug, warn};
 
 use crate::{
     Config, ConnectionFinalizationSequence, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize,
-    Sequence, State, Written, general_err, reason_err,
+    MonotonicInstant, Sequence, State, Written, general_err, reason_err,
 };
 
 /// Represents the Capability Exchange and Connection Finalization phases
@@ -24,6 +26,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct ConnectionActivationSequence {
     state: ConnectionActivationState,
+    monitor_layout: Option<rdp::finalization_messages::MonitorLayoutPdu>,
     config: Config,
     // The MCS channel IDs are invariant for the whole life of the sequence: they are negotiated
     // once and never change, even across a Deactivation-Reactivation Sequence. They are stored
@@ -39,6 +42,7 @@ impl ConnectionActivationSequence {
         //   I doubt this type really needs every field there.
         Self {
             state: ConnectionActivationState::CapabilitiesExchange,
+            monitor_layout: None,
             config,
             io_channel_id,
             user_channel_id,
@@ -55,7 +59,12 @@ impl ConnectionActivationSequence {
 
     /// Returns the current state as a distinct type, rather than `&dyn State` provided by [`Self::state`].
     pub fn connection_activation_state(&self) -> ConnectionActivationState {
-        self.state
+        self.state.clone()
+    }
+
+    /// Returns the server-reported monitor layout received during this activation.
+    pub fn monitor_layout(&self) -> Option<rdp::finalization_messages::MonitorLayoutPdu> {
+        self.monitor_layout.clone()
     }
 }
 
@@ -116,7 +125,12 @@ impl Sequence for ConnectionActivationSequence {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut ironrdp_core::WriteBuf) -> ConnectorResult<Written> {
+    fn step(
+        &mut self,
+        input: &[u8],
+        received_at: Option<MonotonicInstant>,
+        output: &mut ironrdp_core::WriteBuf,
+    ) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             ConnectionActivationState::Consumed | ConnectionActivationState::Finalized { .. } => {
                 return Err(general_err!(
@@ -202,6 +216,9 @@ impl Sequence for ConnectionActivationSequence {
                     ));
                 };
 
+                let window_list = server_window_list(&capability_sets);
+                let window_support_level = negotiated_window_support_level(window_list.as_ref());
+
                 let (refresh_rect_support, suppress_output_support) = capability_sets
                     .iter()
                     .find_map(|capability_set| {
@@ -227,6 +244,19 @@ impl Sequence for ConnectionActivationSequence {
                         _ => None,
                     })
                     .unwrap_or_else(InputFlags::empty);
+
+                let static_channel_chunk_size = capability_sets
+                    .iter()
+                    .find_map(|c| match c {
+                        CapabilitySet::VirtualChannel(channel) => channel
+                            .chunk_size
+                            .and_then(|chunk_size| usize::try_from(chunk_size).ok()),
+                        _ => None,
+                    })
+                    .filter(|chunk_size| {
+                        (ironrdp_svc::CHANNEL_CHUNK_LENGTH..=ironrdp_svc::MAX_CHANNEL_CHUNK_LENGTH).contains(chunk_size)
+                    })
+                    .unwrap_or(ironrdp_svc::CHANNEL_CHUNK_LENGTH);
 
                 // At this point we have already sent a requested desktop size to the server -- either as a part of the
                 // [`TS_UD_CS_CORE`] (on initial connection) or the [`DISPLAYCONTROL_MONITOR_LAYOUT`] (on resize event).
@@ -254,7 +284,7 @@ impl Sequence for ConnectionActivationSequence {
                 let share_id = share_control_ctx.share_id;
 
                 let client_confirm_active = rdp::headers::ShareControlPdu::ClientConfirmActive(
-                    create_client_confirm_active(&self.config, capability_sets, desktop_size)?,
+                    create_client_confirm_active(&self.config, capability_sets, desktop_size, window_list)?,
                 );
 
                 debug!(message = ?client_confirm_active, "Send");
@@ -274,8 +304,10 @@ impl Sequence for ConnectionActivationSequence {
                         desktop_size,
                         share_id,
                         input_flags,
+                        static_channel_chunk_size,
                         refresh_rect_support,
                         suppress_output_support,
+                        window_support_level,
                         connection_finalization: ConnectionFinalizationSequence::new(
                             self.io_channel_id,
                             self.user_channel_id,
@@ -288,32 +320,39 @@ impl Sequence for ConnectionActivationSequence {
                 desktop_size,
                 share_id,
                 input_flags,
+                static_channel_chunk_size,
                 refresh_rect_support,
                 suppress_output_support,
+                window_support_level,
                 mut connection_finalization,
             } => {
                 debug!("Connection Finalization");
 
-                let written = connection_finalization.step(input, output)?;
+                let written = connection_finalization.step(input, received_at, output)?;
 
                 let next_state = if !connection_finalization.state.is_terminal() {
                     ConnectionActivationState::ConnectionFinalization {
                         desktop_size,
                         share_id,
                         input_flags,
+                        static_channel_chunk_size,
                         refresh_rect_support,
                         suppress_output_support,
+                        window_support_level,
                         connection_finalization,
                     }
                 } else {
+                    self.monitor_layout = connection_finalization.monitor_layout;
                     ConnectionActivationState::Finalized {
                         desktop_size,
                         share_id,
                         input_flags,
+                        static_channel_chunk_size,
                         enable_server_pointer: self.config.enable_server_pointer,
                         pointer_software_rendering: self.config.pointer_software_rendering,
                         refresh_rect_support,
                         suppress_output_support,
+                        window_support_level,
                     }
                 };
 
@@ -327,7 +366,7 @@ impl Sequence for ConnectionActivationSequence {
     }
 }
 
-#[derive(Default, Debug, Copy, Clone)]
+#[derive(Default, Debug, Clone)]
 pub enum ConnectionActivationState {
     #[default]
     Consumed,
@@ -337,8 +376,12 @@ pub enum ConnectionActivationState {
         share_id: u32,
         /// The server's Input capability flags from the Server Demand Active PDU.
         input_flags: InputFlags,
+        /// The validated `VCChunkSize` from the server Virtual Channel Capability Set.
+        static_channel_chunk_size: usize,
         refresh_rect_support: bool,
         suppress_output_support: bool,
+        /// The server-negotiated Window List support level.
+        window_support_level: Option<WindowSupportLevel>,
         connection_finalization: ConnectionFinalizationSequence,
     },
     Finalized {
@@ -351,12 +394,16 @@ pub enum ConnectionActivationState {
         ///
         /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b8e7c588-51cb-455b-bb73-92d480903133
         input_flags: InputFlags,
+        /// The validated `VCChunkSize` from the server Virtual Channel Capability Set.
+        static_channel_chunk_size: usize,
         enable_server_pointer: bool,
         pointer_software_rendering: bool,
         /// Whether the server permits client Refresh Rect PDUs for visual recovery.
         refresh_rect_support: bool,
         /// Whether the server permits Suppress Output PDUs for visual recovery.
         suppress_output_support: bool,
+        /// The server-negotiated Window List support level.
+        window_support_level: Option<WindowSupportLevel>,
     },
 }
 
@@ -381,10 +428,63 @@ impl State for ConnectionActivationState {
 
 const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
 
+fn server_window_list(capability_sets: &[CapabilitySet]) -> Option<WindowList> {
+    capability_sets.iter().find_map(|capability_set| {
+        if let CapabilitySet::WindowList(window_list) = capability_set {
+            Some(window_list.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn negotiated_window_support_level(window_list: Option<&WindowList>) -> Option<WindowSupportLevel> {
+    window_list.and_then(|window_list| {
+        (window_list.support_level != WindowSupportLevel::NotSupported).then_some(window_list.support_level)
+    })
+}
+
+fn remote_app_rail_capability(
+    remote_application_mode: bool,
+    rail_support_level: RailSupportLevel,
+    server_capability_sets: &[CapabilitySet],
+    window_list: Option<&WindowList>,
+) -> ConnectorResult<Option<Rail>> {
+    if !remote_application_mode {
+        return Ok(None);
+    }
+    if !rail_support_level.contains(RailSupportLevel::SUPPORTED) {
+        return Err(reason_err!(
+            "Capabilities Exchange",
+            "client RemoteApp configuration does not support remote programs"
+        ));
+    }
+
+    let rail_supported = server_capability_sets.iter().any(|capability_set| {
+        matches!(
+            capability_set,
+            CapabilitySet::Rail(rail) if rail.support_level.contains(RailSupportLevel::SUPPORTED)
+        )
+    });
+    let window_list_supported =
+        window_list.is_some_and(|window_list| window_list.support_level != WindowSupportLevel::NotSupported);
+    if !rail_supported || !window_list_supported {
+        return Err(reason_err!(
+            "Capabilities Exchange",
+            "server does not support required RemoteApp capabilities"
+        ));
+    }
+
+    Ok(Some(Rail {
+        support_level: rail_support_level,
+    }))
+}
+
 fn create_client_confirm_active(
     config: &Config,
     mut server_capability_sets: Vec<CapabilitySet>,
     desktop_size: DesktopSize,
+    window_list: Option<WindowList>,
 ) -> ConnectorResult<rdp::capability_sets::ClientConfirmActive> {
     use ironrdp_pdu::rdp::capability_sets::{
         BITMAP_CACHE_ENTRIES_NUM, Bitmap, BitmapCache, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry,
@@ -393,6 +493,13 @@ fn create_client_confirm_active(
         OffscreenBitmapCache, Order, OrderFlags, OrderSupportExFlags, Pointer, SERVER_CHANNEL_ID, Sound, SoundFlags,
         SupportLevel, SurfaceCommands, VirtualChannel, VirtualChannelFlags, client_codecs_capabilities,
     };
+
+    let remote_app_rail_capability = remote_app_rail_capability(
+        config.remote_application_mode,
+        config.rail_support_level,
+        &server_capability_sets,
+        window_list.as_ref(),
+    )?;
 
     server_capability_sets.retain(|capability_set| matches!(capability_set, CapabilitySet::MultiFragmentUpdate(_)));
 
@@ -507,6 +614,12 @@ fn create_client_confirm_active(
             max_request_size: 8 * 1024 * 1024, // 8 MB
         }));
     }
+    if let Some(rail) = remote_app_rail_capability {
+        server_capability_sets.push(CapabilitySet::Rail(rail));
+    }
+    if let Some(window_list) = window_list {
+        server_capability_sets.push(CapabilitySet::WindowList(window_list));
+    }
 
     Ok(ClientConfirmActive {
         originator_id: SERVER_CHANNEL_ID,
@@ -539,7 +652,11 @@ fn requested_bitmap_color_depth(bitmap: Option<&crate::BitmapConfig>) -> Connect
 
 #[cfg(test)]
 mod tests {
-    use super::requested_bitmap_color_depth;
+    use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, Rail, RailSupportLevel, WindowList, WindowSupportLevel};
+
+    use super::{
+        negotiated_window_support_level, remote_app_rail_capability, requested_bitmap_color_depth, server_window_list,
+    };
     use crate::BitmapConfig;
 
     #[test]
@@ -557,5 +674,80 @@ mod tests {
                 expected_color_depth
             );
         }
+    }
+
+    #[test]
+    fn window_list_capability_preserves_supported_level() {
+        let window_list = WindowList {
+            support_level: WindowSupportLevel::SupportedEx,
+            num_icon_caches: 3,
+            num_icon_cache_entries: 12,
+        };
+        let capabilities = vec![CapabilitySet::WindowList(window_list.clone())];
+
+        assert_eq!(server_window_list(&capabilities), Some(window_list));
+        assert_eq!(
+            negotiated_window_support_level(server_window_list(&capabilities).as_ref()),
+            Some(WindowSupportLevel::SupportedEx)
+        );
+        assert_eq!(negotiated_window_support_level(None), None);
+        assert_eq!(
+            negotiated_window_support_level(Some(&WindowList {
+                support_level: WindowSupportLevel::NotSupported,
+                num_icon_caches: 0,
+                num_icon_cache_entries: 0,
+            })),
+            None
+        );
+    }
+
+    #[test]
+    fn remote_app_capabilities_require_server_rail_and_window_list() {
+        let rail_support_level = RailSupportLevel::SUPPORTED;
+        let window_list = WindowList {
+            support_level: WindowSupportLevel::SupportedEx,
+            num_icon_caches: 3,
+            num_icon_cache_entries: 12,
+        };
+        let rail = CapabilitySet::Rail(Rail {
+            support_level: RailSupportLevel::SUPPORTED,
+        });
+
+        assert_eq!(
+            remote_app_rail_capability(
+                true,
+                rail_support_level,
+                core::slice::from_ref(&rail),
+                Some(&window_list)
+            )
+            .unwrap(),
+            Some(Rail {
+                support_level: rail_support_level,
+            })
+        );
+        assert!(remote_app_rail_capability(true, rail_support_level, &[], Some(&window_list)).is_err());
+        assert!(remote_app_rail_capability(true, rail_support_level, core::slice::from_ref(&rail), None).is_err());
+    }
+
+    #[test]
+    fn remote_app_capabilities_require_client_rail_support() {
+        let window_list = WindowList {
+            support_level: WindowSupportLevel::Supported,
+            num_icon_caches: 0,
+            num_icon_cache_entries: 0,
+        };
+        let rail = CapabilitySet::Rail(Rail {
+            support_level: RailSupportLevel::SUPPORTED,
+        });
+
+        assert!(
+            remote_app_rail_capability(
+                true,
+                RailSupportLevel::empty(),
+                core::slice::from_ref(&rail),
+                Some(&window_list)
+            )
+            .is_err()
+        );
     }
 }

@@ -2,7 +2,7 @@
 
 const { SHA, exactKeys, invalid, normalizeText, parseJson } = require("./validation");
 
-const SCHEMA_VERSION = "classifier-v1";
+const SCHEMA_VERSION = "classifier-v2";
 // Machine-readable classifier state persisted on the SHA-bound check, because the review route runs
 // in a later workflow run and cannot read classifier job outputs.
 const CHECK_STATE_MARKER = "ironrdp-pr-automation-state:";
@@ -21,7 +21,7 @@ function isDocumentationPath(path) {
 function validateClassifier(raw, { expectedSha, changedPaths, documentationOnlyPaths, prNumber } = {}) {
   const value = parseJson(raw, 4096);
   const required = [
-    "schema_version", "head_sha", "risk", "technical_debt", "documentation_only", "duplicate",
+    "schema_version", "head_sha", "risk", "technical_debt", "documentation_only", "cross_cutting", "duplicate",
     "likely_non_legitimate", "non_legitimate_confidence", "non_legitimate_reason",
     "breaking_change_suspected", "breaking_change_rationale", "breaking_change_surface",
     "protocol_related", "summary",
@@ -32,6 +32,7 @@ function validateClassifier(raw, { expectedSha, changedPaths, documentationOnlyP
   }
   if (!["low", "medium", "high"].includes(value.risk) ||
       typeof value.technical_debt !== "boolean" || typeof value.documentation_only !== "boolean" ||
+      typeof value.cross_cutting !== "boolean" ||
       typeof value.breaking_change_suspected !== "boolean" ||
       typeof value.protocol_related !== "boolean" ||
       typeof value.likely_non_legitimate !== "boolean" ||
@@ -86,7 +87,7 @@ function validateClassifier(raw, { expectedSha, changedPaths, documentationOnlyP
   }
   const normalized = {
     schema_version: value.schema_version, head_sha: value.head_sha, risk: value.risk, technical_debt: value.technical_debt,
-    documentation_only: value.documentation_only, duplicate: {
+    documentation_only: value.documentation_only, cross_cutting: value.cross_cutting, duplicate: {
       detected: duplicate.detected, similar_pr_number: duplicate.similar_pr_number,
       similar_pr_url: duplicate.similar_pr_url, confidence: duplicate.confidence, rationale,
     },
@@ -101,9 +102,16 @@ function validateClassifier(raw, { expectedSha, changedPaths, documentationOnlyP
   return { ok: true, status: "valid", schemaVersion: SCHEMA_VERSION, value: normalized };
 }
 
-function encodeCheckState({ protocolRelated } = {}) {
+function encodeCheckState({ protocolRelated, automaticReviewEligible = true } = {}) {
   if (typeof protocolRelated !== "boolean") throw new Error("protocolRelated must be a boolean");
-  return `${CHECK_STATE_MARKER} ${JSON.stringify({ schema_version: SCHEMA_VERSION, protocol_related: protocolRelated })}`;
+  if (typeof automaticReviewEligible !== "boolean") {
+    throw new Error("automaticReviewEligible must be a boolean");
+  }
+  return `${CHECK_STATE_MARKER} ${JSON.stringify({
+    schema_version: SCHEMA_VERSION,
+    protocol_related: protocolRelated,
+    automatic_review_eligible: automaticReviewEligible,
+  })}`;
 }
 
 function parseCheckState(text) {
@@ -113,9 +121,16 @@ function parseCheckState(text) {
   if (!line) return null;
   let parsed;
   try { parsed = JSON.parse(line.slice(CHECK_STATE_MARKER.length)); } catch { return null; }
-  if (!exactKeys(parsed, ["schema_version", "protocol_related"]) ||
-      parsed.schema_version !== SCHEMA_VERSION || typeof parsed.protocol_related !== "boolean") return null;
-  return { protocolRelated: parsed.protocol_related };
+  const legacyKeys = ["schema_version", "protocol_related"];
+  const currentKeys = [...legacyKeys, "automatic_review_eligible"];
+  if ((!exactKeys(parsed, legacyKeys) && !exactKeys(parsed, currentKeys)) ||
+      parsed.schema_version !== SCHEMA_VERSION || typeof parsed.protocol_related !== "boolean" ||
+      (parsed.automatic_review_eligible !== undefined &&
+      typeof parsed.automatic_review_eligible !== "boolean")) return null;
+  return {
+    protocolRelated: parsed.protocol_related,
+    automaticReviewEligible: parsed.automatic_review_eligible ?? true,
+  };
 }
 
 module.exports = {

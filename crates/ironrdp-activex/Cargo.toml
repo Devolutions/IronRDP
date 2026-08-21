@@ -19,20 +19,29 @@ crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [target.'cfg(windows)'.dependencies]
-ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["clipboard", "dvc-com-plugin", "gateway", "rustls", "sound"] }
+anyhow = "1"
+ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["clipboard", "dvc-com-plugin", "gateway", "rdpdr", "rustls", "smartcard", "sound", "webauthn"] }
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7" }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.7" }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.10" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
+ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
+ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" }
+ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
+ironrdp-rail = { path = "../ironrdp-rail", version = "0.1" }
+ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.7" }
+ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.1" }
 ironrdp-session = { path = "../ironrdp-session", version = "0.11" }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
+png = "0.18"
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sync"] }
 tracing = { version = "0.1", features = ["log"] }
+url = "2.5"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -42,8 +51,10 @@ windows = { version = "0.62", features = [
     "Win32_System_Ole",
     "Win32_System_Registry",
     "Win32_System_Variant",
+    "Win32_Storage_FileSystem",
     "Win32_Security_Credentials",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_Pointer",
     "Win32_UI_Controls",
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",

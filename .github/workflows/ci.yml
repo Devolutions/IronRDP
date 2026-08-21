@@ -31,6 +31,20 @@ jobs:
       - name: Check formatting
         run: cargo xtask check fmt -v
 
+  test-settings:
+    name: Check test settings
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # PR checkout uses a merge commit; depth 2 includes its base parent as HEAD^1.
+          fetch-depth: 2
+
+      - name: Check protected settings
+        if: github.event_name == 'pull_request'
+        run: cargo xtask check test-settings --base 'HEAD^1' --head 'HEAD' -v
+
   typos:
     name: Check typos
     runs-on: ubuntu-latest
@@ -248,7 +262,7 @@ jobs:
   success:
     name: Success
     if: ${{ always() }}
-    needs: [formatting, typos, checks, fuzz, web, ffi, feature-matrix-setup, feature-matrix]
+    needs: [formatting, test-settings, typos, checks, fuzz, web, ffi, feature-matrix-setup, feature-matrix]
     runs-on: ubuntu-latest
 
     steps:

@@ -10,6 +10,7 @@ use ironrdp_rdpeusb::client::{
 };
 use ironrdp_rdpeusb::io::*;
 use ironrdp_rdpeusb::pdu::caps::{Capability, RimExchangeCapabilityRequest};
+use ironrdp_rdpeusb::pdu::completion::ts_urb_result::Raw;
 use ironrdp_rdpeusb::pdu::header::InterfaceId;
 use ironrdp_rdpeusb::pdu::iface_manipulation::InterfaceRelease;
 use ironrdp_rdpeusb::pdu::notify::{ChannelCreated, Direction};
@@ -25,7 +26,7 @@ fn decode_control_msg(message: &DvcMessage) -> UrbdrcClientControlPdu {
     decode(&encoded).expect("decode should succeed")
 }
 
-fn decode_device_msg(message: &DvcMessage) -> UrbdrcClientDevicePdu {
+fn decode_device_msg(message: &DvcMessage) -> UrbdrcClientDevicePdu<Raw> {
     let encoded = encode_vec(message.as_ref()).expect("encode should succeed");
     decode(&encoded).expect("decode should succeed")
 }

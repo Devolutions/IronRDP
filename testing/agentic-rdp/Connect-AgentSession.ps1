@@ -86,7 +86,6 @@ $connectOutput = Invoke-Agent connect `
         --prop "desktopwidth:i:$expectedWidth" `
         --prop "desktopheight:i:$expectedHeight" `
         --prop 'enablecredsspsupport:i:0' `
-        --prop 'ironrdp_certificate_validation:s:dangerously_accept_invalid_certificate' `
         --prop 'ironrdp_autologon:i:1' `
         --prop 'compression:i:0' `
         --prop 'ironrdp_colordepth:i:16' `

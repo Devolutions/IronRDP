@@ -16,4 +16,3 @@ tinyjson = "2.5"
 
 [lints]
 workspace = true
-

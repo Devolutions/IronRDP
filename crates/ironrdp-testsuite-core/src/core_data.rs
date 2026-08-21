@@ -67,7 +67,7 @@ pub static CLIENT_CORE_DATA_WITHOUT_OPTIONAL_FIELDS: LazyLock<ClientCoreData> = 
     keyboard_layout: 1033,
     client_build: 3790,
     client_name: String::from("ELTONS-DEV2"),
-    keyboard_type: KeyboardType::IbmEnhanced,
+    keyboard_type: KeyboardType::IBM_ENHANCED,
     keyboard_subtype: 0,
     keyboard_functional_keys_count: 12,
     ime_file_name: String::new(),

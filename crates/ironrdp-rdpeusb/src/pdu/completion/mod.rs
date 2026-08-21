@@ -14,7 +14,7 @@ use ironrdp_core::{
 use ironrdp_dvc::DvcEncode;
 use ironrdp_pdu::utils::strict_sum;
 
-use crate::pdu::completion::ts_urb_result::{TsUrbIsochTransferResult, TsUrbResult, TsUrbResultPayload};
+use crate::pdu::completion::ts_urb_result::{Raw, TsUrbIsochTransferResult, TsUrbResult, TsUrbResultPayload};
 use crate::pdu::header::{FunctionId, InterfaceId, Mask, MessageId, SharedMsgHeader};
 #[cfg(doc)]
 use crate::pdu::usb_dev::{
@@ -166,6 +166,20 @@ impl Encode for IoControlCompletion {
 
 impl DvcEncode for IoControlCompletion {}
 
+fn decode_raw_ts_urb_result(src: &mut ReadCursor<'_>, size: usize) -> DecodeResult<TsUrbResult<Raw>> {
+    ensure_size!(in: src, size: size);
+    let mut result_src = ReadCursor::new(src.read_slice(size));
+    let result = TsUrbResult::decode(&mut result_src)?;
+    if !result_src.is_empty() {
+        return Err(invalid_field_err!(
+            "CbTsUrbResult",
+            "does not match TS_URB_RESULT_HEADER::Size"
+        ));
+    }
+
+    Ok(result)
+}
+
 /// [\[MS-RDPEUSB\] 2.2.7.2 URB Completion (URB_COMPLETION)][1] packet.
 ///
 /// Sent from the client to the server as the final result of a [`TransferInRequest`] that contains
@@ -180,7 +194,7 @@ pub struct UrbCompletion {
     /// [`RegisterRequestCallback`] message.
     pub completion_iface: InterfaceId,
     pub req_id: RequestIdTransferInOut,
-    pub ts_urb_result: TsUrbResult,
+    pub ts_urb_result: TsUrbResult<TsUrbIsochTransferResult>,
     pub hresult: HResult,
     pub output_buffer: Vec<u8>,
 }
@@ -193,23 +207,12 @@ impl UrbCompletion {
             function_id: Some(FunctionId::URB_COMPLETION),
         }
     }
-
     pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* RequestId */ + 4 /* CbTsUrbResult */);
         let req_id = RequestIdTransferInOut::try_from(src.read_u32())?;
 
         let cb_ts_urb_result: usize = src.read_u32().try_into().map_err(|e| other_err!(source: e))?;
-        ensure_size!(in: src, size: cb_ts_urb_result);
-        let mut ts_urb_result = TsUrbResult::decode(&mut ReadCursor::new(src.read_slice(cb_ts_urb_result)))?;
-        let TsUrbResultPayload::Raw(bytes) = ts_urb_result.payload else {
-            unreachable!("TsUrbResultPayload::decode always returns Raw(_)")
-        };
-        ts_urb_result.payload = if bytes.is_empty() {
-            TsUrbResultPayload::Raw(bytes)
-        } else {
-            // URB_COMPLETION's TsUrbResult can only have a payload iff it's isoch
-            TsUrbResultPayload::Isoch(TsUrbIsochTransferResult::decode(&mut ReadCursor::new(&bytes))?)
-        };
+        let ts_urb_result = decode_raw_ts_urb_result(src, cb_ts_urb_result)?.into_isoch()?;
 
         ensure_size!(in: src, size: 4 /* HResult */ + 4 /* OutputBufferSize */);
         let hresult = src.read_u32();
@@ -235,14 +238,6 @@ impl Encode for UrbCompletion {
         match u32::try_from(self.ts_urb_result.size()) {
             Ok(cb_ts_urb_result) => dst.write_u32(cb_ts_urb_result),
             Err(e) => return Err(other_err!(source: e)),
-        }
-        if !matches!(self.ts_urb_result.payload, TsUrbResultPayload::Isoch(_))
-            && self.ts_urb_result.payload != TsUrbResultPayload::Raw(Vec::new())
-        {
-            return Err(invalid_field_err!(
-                "URB_COMPLETION::TsUrbResult",
-                "has non-empty payload but payload is not TS_URB_ISOCH_TRANSFER_RESULT"
-            ));
         }
 
         self.ts_urb_result.encode(dst)?;
@@ -277,18 +272,18 @@ impl DvcEncode for UrbCompletion {}
 /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/994fac8f-d258-47a6-aa35-48783abe49ec
 #[doc(alias = "URB_COMPLETION_NO_DATA")]
 #[derive(Debug, PartialEq, Clone)]
-pub struct UrbCompletionNoData {
+pub struct UrbCompletionNoData<P> {
     pub msg_id: MessageId,
     /// The interface ID provided by the server in the `RequestCompletion` field of the prior
     /// [`RegisterRequestCallback`] message.
     pub completion_iface: InterfaceId,
     pub req_id: RequestIdTransferInOut,
-    pub ts_urb_result: TsUrbResult,
+    pub ts_urb_result: TsUrbResult<P>,
     pub hresult: HResult,
     pub output_buffer_size: u32,
 }
 
-impl UrbCompletionNoData {
+impl<T> UrbCompletionNoData<T> {
     pub fn header(&self) -> SharedMsgHeader {
         SharedMsgHeader {
             iface_id: self.completion_iface.with_mask(Mask::Proxy),
@@ -296,14 +291,15 @@ impl UrbCompletionNoData {
             function_id: Some(FunctionId::URB_COMPLETION_NO_DATA),
         }
     }
+}
 
+impl UrbCompletionNoData<Raw> {
     pub(crate) fn decode(src: &mut ReadCursor<'_>, msg_id: MessageId, udev_iface: InterfaceId) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* RequestId */ + 4 /* CbTsUrbResult */);
         let req_id = RequestIdTransferInOut::try_from(src.read_u32())?;
 
         let cb_ts_urb_result = usize::try_from(src.read_u32()).map_err(|e| other_err!(source: e))?;
-        ensure_size!(in: src, size: cb_ts_urb_result);
-        let ts_urb_result = TsUrbResult::decode(&mut ReadCursor::new(src.read_slice(cb_ts_urb_result)))?;
+        let ts_urb_result = decode_raw_ts_urb_result(src, cb_ts_urb_result)?;
         ensure_size!(in: src, size: 4 /* HResult */ + 4 /* OutputBufferSize */);
         let hresult = src.read_u32();
         let output_buffer_size = src.read_u32();
@@ -318,7 +314,7 @@ impl UrbCompletionNoData {
     }
 }
 
-impl Encode for UrbCompletionNoData {
+impl Encode for UrbCompletionNoData<TsUrbResultPayload> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.header().encode(dst)?;
@@ -347,4 +343,4 @@ impl Encode for UrbCompletionNoData {
     }
 }
 
-impl DvcEncode for UrbCompletionNoData {}
+impl DvcEncode for UrbCompletionNoData<TsUrbResultPayload> {}

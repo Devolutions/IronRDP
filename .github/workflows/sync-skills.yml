@@ -1,0 +1,83 @@
+name: Sync shared skills
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 23 * * 0' # Sunday at 23:00 UTC
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-shared-skills
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync shared skills
+    # TODO: Rename this environment or move the bot write token to a dedicated
+    # environment; trusted publishing no longer requires it for crates.io tokens.
+    environment: cratesio-publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Synchronize configured skills
+        id: synchronize
+        uses: ./.github/actions/sync-skills
+
+      - name: Report no changes
+        if: steps.synchronize.outputs.changed != 'true'
+        run: echo "Configured skills are already synchronized."
+
+      - name: Create or update pull request
+        if: steps.synchronize.outputs.changed == 'true'
+        shell: bash
+        env:
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
+          PULL_REQUEST_BODY: |
+            Synchronizes configured shared skills from their upstream repositories.
+          PULL_REQUEST_TITLE: 'chore(skills): sync shared skills'
+          SYNCHRONIZATION_BRANCH: automation/sync-shared-skills
+        run: |
+          set -euo pipefail
+
+          if git ls-remote --exit-code --heads origin "$SYNCHRONIZATION_BRANCH" >/dev/null; then
+            git fetch --no-tags origin "refs/heads/$SYNCHRONIZATION_BRANCH:refs/remotes/origin/$SYNCHRONIZATION_BRANCH"
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --force -- .agents/skills
+
+          pull_request_url="$(
+            gh pr list --head "$SYNCHRONIZATION_BRANCH" --state open --json url --jq '.[0].url'
+          )"
+
+          if [[ -n "$pull_request_url" ]] &&
+            git show-ref --verify --quiet "refs/remotes/origin/$SYNCHRONIZATION_BRANCH" &&
+            git diff --cached --quiet "origin/$SYNCHRONIZATION_BRANCH" -- .agents/skills; then
+            echo "The open synchronization pull request already contains the desired skills."
+            exit 0
+          fi
+
+          git switch -C "$SYNCHRONIZATION_BRANCH"
+          git commit -m "$PULL_REQUEST_TITLE"
+          git push --force-with-lease origin "HEAD:$SYNCHRONIZATION_BRANCH"
+
+          if [[ -n "$pull_request_url" ]]; then
+            gh pr edit "$pull_request_url" --title "$PULL_REQUEST_TITLE" --body "$PULL_REQUEST_BODY"
+          else
+            gh pr create \
+              --base "$BASE_BRANCH" \
+              --head "$SYNCHRONIZATION_BRANCH" \
+              --title "$PULL_REQUEST_TITLE" \
+              --body "$PULL_REQUEST_BODY"
+          fi

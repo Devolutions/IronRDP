@@ -11,6 +11,7 @@ use ironrdp_core::{
 };
 
 use crate::pdu::caps::{RimExchangeCapabilityRequest, RimExchangeCapabilityResponse};
+use crate::pdu::completion::ts_urb_result::{Raw, TsUrbResultPayload};
 use crate::pdu::completion::{IoControlCompletion, UrbCompletion, UrbCompletionNoData};
 use crate::pdu::header::{FunctionId, InterfaceId, Mask, SharedMsgHeader, unpack};
 use crate::pdu::iface_manipulation::{InterfaceRelease, QueryInterfaceRequest};
@@ -217,13 +218,13 @@ pub enum UrbdrcClientControlPdu {
     QueryIfaceReq(QueryInterfaceRequest),
 }
 
-pub enum UrbdrcClientDevicePdu {
+pub enum UrbdrcClientDevicePdu<P> {
     ChanCreated(ChannelCreated),
     AddDev(AddDevice),
     DevTextRsp(QueryDeviceTextRsp),
     IoctlComp(IoControlCompletion),
     UrbComp(UrbCompletion),
-    UrbCompNoData(UrbCompletionNoData),
+    UrbCompNoData(UrbCompletionNoData<P>),
     IfaceRelease(InterfaceRelease),
     QueryIfaceReq(QueryInterfaceRequest),
 }
@@ -272,7 +273,7 @@ impl Decode<'_> for UrbdrcClientControlPdu {
     }
 }
 
-impl UrbdrcClientDevicePdu {
+impl<P> UrbdrcClientDevicePdu<P> {
     fn decode_sink(src: &mut ReadCursor<'_>, header: SharedMsgHeader) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4 /* function id */);
         let f_id = FunctionId(src.read_u32());
@@ -301,7 +302,7 @@ impl UrbdrcClientDevicePdu {
     }
 }
 
-impl Decode<'_> for UrbdrcClientDevicePdu {
+impl Decode<'_> for UrbdrcClientDevicePdu<Raw> {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = SharedMsgHeader::decode(src)?;
 
@@ -354,7 +355,7 @@ macro_rules! fill_client_ctl_pdu_arms {
 macro_rules! fill_client_dev_pdu_arms {
     ($pdu:expr, $($tokens:tt)*) => {{
         use UrbdrcClientDevicePdu::*;
-        match <&UrbdrcClientDevicePdu>::from($pdu) {
+        match <&UrbdrcClientDevicePdu<TsUrbResultPayload>>::from($pdu) {
             ChanCreated(channel_created) => channel_created$($tokens)*,
             IfaceRelease(iface_release) => iface_release$($tokens)*,
             QueryIfaceReq(query_iface_req) => query_iface_req$($tokens)*,
@@ -381,7 +382,7 @@ impl Encode for UrbdrcClientControlPdu {
     }
 }
 
-impl Encode for UrbdrcClientDevicePdu {
+impl Encode for UrbdrcClientDevicePdu<TsUrbResultPayload> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         fill_client_dev_pdu_arms!(self, .encode(dst))
     }

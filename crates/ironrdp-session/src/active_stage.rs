@@ -3,12 +3,13 @@ use std::sync::Arc;
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
 use ironrdp_core::{ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
-use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
+use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelRef};
 use ironrdp_graphics::pointer::DecodedPointer;
-use ironrdp_pdu::gcc::ChannelName;
+use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
+use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
@@ -16,9 +17,13 @@ use ironrdp_pdu::rdp::refresh_rectangle::RefreshRectanglePdu;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::rdp::suppress_output::SuppressOutputPdu;
 use ironrdp_pdu::slow_path::{self, GraphicsUpdateType};
+use ironrdp_pdu::window::{
+    WindowingOrdersUpdate, try_decode_fast_path_windowing_orders, try_decode_slow_path_windowing_orders,
+};
 use ironrdp_pdu::{Action, mcs};
+use ironrdp_rdpei::RdpeiClient;
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
@@ -39,6 +44,7 @@ pub struct ActiveStage {
     /// Shared server-to-client compression history across all output transports.
     bulk_decompressor: Option<BulkCompressor>,
     enable_server_pointer: bool,
+    window_support_level: Option<WindowSupportLevel>,
 }
 
 /// Builder for [`ActiveStage`].
@@ -94,6 +100,7 @@ impl ActiveStageBuilder {
             fast_path_processor,
             bulk_decompressor: new_bulk_decompressor(compression_type),
             enable_server_pointer,
+            window_support_level: None,
         }
     }
 }
@@ -126,14 +133,15 @@ impl ActiveStage {
         }
 
         // Mouse move events are prevalent, so we can preallocate space for
-        // response frame + graphics update
-        let mut output = Vec::with_capacity(2);
+        // response frames + graphics update.
+        let mut output = Vec::with_capacity(events.len().div_ceil(FastPathInput::MAX_EVENTS) + 1);
 
-        // Encoding fastpath response frame
-        // PERF: unnecessary copy
-        let fastpath_input = FastPathInput::new(events.to_vec()).map_err(SessionError::decode)?;
-        let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
-        output.push(ActiveStageOutput::ResponseFrame(frame));
+        for event_chunk in events.chunks(FastPathInput::MAX_EVENTS) {
+            // PERF: unnecessary copy
+            let fastpath_input = FastPathInput::new(event_chunk.to_vec()).map_err(SessionError::decode)?;
+            let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
+            output.push(ActiveStageOutput::ResponseFrame(frame));
+        }
 
         // If pointer rendering is disabled - we can skip the rest
         if !self.enable_server_pointer {
@@ -187,8 +195,16 @@ impl ActiveStage {
                 for output in x224_outputs {
                     match output {
                         x224::ProcessorOutput::GraphicsUpdate(data) => {
-                            let updates = process_slow_path_graphics(&mut self.fast_path_processor, image, &data)?;
+                            let (updates, windowing_orders) = process_slow_path_graphics(
+                                &mut self.fast_path_processor,
+                                image,
+                                self.window_support_level,
+                                &data,
+                            )?;
                             processor_updates.extend(updates);
+                            if let Some(windowing_orders) = windowing_orders {
+                                stage_outputs.push(ActiveStageOutput::WindowingOrders(windowing_orders));
+                            }
                         }
                         x224::ProcessorOutput::PointerUpdate(data) => {
                             let updates = process_slow_path_pointer(&mut self.fast_path_processor, image, &data)?;
@@ -207,6 +223,13 @@ impl ActiveStage {
         for update in processor_updates {
             match update {
                 UpdateKind::None => {}
+                UpdateKind::Orders(data) => {
+                    if let Some(windowing_orders) =
+                        process_fast_path_windowing_orders(self.window_support_level, &data)?
+                    {
+                        stage_outputs.push(ActiveStageOutput::WindowingOrders(windowing_orders));
+                    }
+                }
                 UpdateKind::Region(region) => {
                     stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
                 }
@@ -244,14 +267,34 @@ impl ActiveStage {
         self.x224_processor.set_share_id(share_id);
     }
 
+    /// Updates the negotiated maximum payload length of outgoing static virtual channel chunks.
+    pub fn set_static_channel_chunk_size(&mut self, maximum_chunk_size: usize) -> bool {
+        self.x224_processor.set_static_channel_chunk_size(maximum_chunk_size)
+    }
+
+    /// Returns the negotiated maximum payload length of outgoing static virtual channel chunks.
+    pub fn static_channel_chunk_size(&self) -> usize {
+        self.x224_processor.static_channel_chunk_size()
+    }
+
     pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
         self.enable_server_pointer = enable_server_pointer;
+    }
+
+    /// Sets Window List support for the current activation.
+    ///
+    /// `None` preserves desktop-session behavior by ignoring drawing orders.
+    pub fn set_window_support_level(&mut self, window_support_level: Option<WindowSupportLevel>) {
+        self.window_support_level = window_support_level;
     }
 
     /// Rebuilds the fast-path processor for a [Deactivation-Reactivation Sequence].
     ///
     /// The shared bulk decompression history is retained. The server signals any history reset
     /// with the PACKET_FLUSHED and PACKET_AT_FRONT compression flags, which are applied per update.
+    ///
+    /// Returns `false` without changing the active stage when the negotiated static virtual
+    /// channel chunk size is invalid.
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
     pub fn reactivate(
@@ -261,7 +304,15 @@ impl ActiveStage {
         share_id: u32,
         enable_server_pointer: bool,
         pointer_software_rendering: bool,
-    ) {
+        static_channel_chunk_size: usize,
+    ) -> bool {
+        if !self
+            .x224_processor
+            .set_static_channel_chunk_size(static_channel_chunk_size)
+        {
+            return false;
+        }
+
         self.fast_path_processor = fast_path::ProcessorBuilder {
             io_channel_id,
             user_channel_id,
@@ -273,6 +324,8 @@ impl ActiveStage {
         // The x224 processor encodes ShareDataPdu with the server's (possibly new) share_id.
         self.x224_processor.set_share_id(share_id);
         self.enable_server_pointer = enable_server_pointer;
+
+        true
     }
 
     /// Encodes client-side graceful shutdown request. Note that upon sending this request,
@@ -364,11 +417,14 @@ impl ActiveStage {
         self.x224_processor.get_svc_processor_mut()
     }
 
-    pub fn get_dvc<T: DvcProcessor + 'static>(&mut self) -> Option<&DynamicVirtualChannel> {
+    pub fn get_dvc<T: DvcClientProcessor + 'static>(&self) -> Option<DynamicChannelRef<'_, T>> {
         self.x224_processor.get_dvc::<T>()
     }
 
-    pub fn get_dvc_by_channel_id(&mut self, channel_id: u32) -> Option<&DynamicVirtualChannel> {
+    pub fn get_dvc_by_channel_id<T: DvcClientProcessor + 'static>(
+        &self,
+        channel_id: u32,
+    ) -> Option<DynamicChannelRef<'_, T>> {
         self.x224_processor.get_dvc_by_channel_id(channel_id)
     }
 
@@ -382,10 +438,7 @@ impl ActiveStage {
                 .get_svc_processor::<DrdynvcClient>()
                 .and_then(|drdynvc| drdynvc.has_registered_dvc::<DisplayControlClient>().then_some(false));
         };
-        let Some(_) = dvc.channel_id() else {
-            return Some(false);
-        };
-        Some(dvc.channel_processor_downcast_ref::<DisplayControlClient>()?.ready())
+        Some(dvc.processor().ready())
     }
 
     /// Completes user's SVC request with data, required to sent it over the network and returns
@@ -429,11 +482,8 @@ impl ActiveStage {
         physical_dims: Option<(u32, u32)>,
     ) -> Option<SessionResult<Vec<u8>>> {
         if let Some(dvc) = self.get_dvc::<DisplayControlClient>() {
-            let Some(channel_id) = dvc.channel_id() else {
-                debug!("Could not encode a resize: Display Control Virtual Channel is not yet connected");
-                return None;
-            };
-            let display_control = dvc.channel_processor_downcast_ref::<DisplayControlClient>()?;
+            let channel_id = dvc.channel_id();
+            let display_control = dvc.processor();
             if !display_control.ready() {
                 debug!("Could not encode a resize: Display Control capabilities have not been received");
                 return None;
@@ -457,6 +507,98 @@ impl ActiveStage {
         None
     }
 
+    /// Returns whether the RDPEI channel is available and ready (SC_READY / CS_READY exchanged).
+    ///
+    /// `None` means no RDPEI client is configured. `Some(false)` means it is registered but not
+    /// yet ready (or currently suspended for touch/pen send purposes when checking readiness for
+    /// injection — use [`Self::rdpei_can_send_touch`] for the send gate).
+    pub fn rdpei_ready(&mut self) -> Option<bool> {
+        let Some(dvc) = self.get_dvc::<RdpeiClient>() else {
+            return self
+                .get_svc_processor::<DrdynvcClient>()
+                .and_then(|drdynvc| drdynvc.has_registered_dvc::<RdpeiClient>().then_some(false));
+        };
+        Some(dvc.processor().ready())
+    }
+
+    /// True when RDPEI is ready and the server has not suspended input.
+    pub fn rdpei_can_send_touch(&mut self) -> bool {
+        self.get_dvc::<RdpeiClient>()
+            .is_some_and(|dvc| dvc.processor().ready() && !dvc.processor().is_suspended())
+    }
+
+    /// Encodes a touch event for the RDPEI dynamic channel.
+    ///
+    /// Returns `None` when the channel is unavailable, not ready, or suspended.
+    pub fn encode_rdpei_touch(&mut self, event: ironrdp_rdpei::pdu::TouchEventPdu) -> Option<SessionResult<Vec<u8>>> {
+        if let Some(dvc) = self.get_dvc::<RdpeiClient>() {
+            let channel_id = dvc.channel_id();
+            let rdpei = dvc.processor();
+            if !rdpei.ready() {
+                return Some(Err(SessionError::general("RDPEI channel is not ready")));
+            }
+            if rdpei.is_suspended() {
+                return Some(Err(SessionError::general("RDPEI input is suspended")));
+            }
+            let svc_messages = match rdpei.encode_touch_event(channel_id, event) {
+                Ok(messages) => messages,
+                Err(e) => return Some(Err(SessionError::encode(e))),
+            };
+            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
+        } else {
+            debug!("Could not encode RDPEI touch: Input Virtual Channel is not available");
+        }
+        None
+    }
+
+    /// Encodes a dismiss-hovering-touch-contact PDU on the RDPEI channel.
+    pub fn encode_rdpei_dismiss_hovering(&mut self, contact_id: u8) -> Option<SessionResult<Vec<u8>>> {
+        if let Some(dvc) = self.get_dvc::<RdpeiClient>() {
+            let channel_id = dvc.channel_id();
+            let rdpei = dvc.processor();
+            if !rdpei.ready() {
+                debug!("Could not encode RDPEI dismiss hovering: channel is not ready");
+                return None;
+            }
+            let svc_messages = match rdpei.encode_dismiss_hovering(channel_id, contact_id) {
+                Ok(messages) => messages,
+                Err(e) => return Some(Err(SessionError::encode(e))),
+            };
+            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
+        }
+        None
+    }
+
+    /// Encodes a pen event for the RDPEI dynamic channel.
+    ///
+    /// Returns `None` when the channel is unavailable, not ready, suspended, or pen is not allowed.
+    pub fn encode_rdpei_pen(&mut self, event: ironrdp_rdpei::pdu::PenEventPdu) -> Option<SessionResult<Vec<u8>>> {
+        if let Some(dvc) = self.get_dvc::<RdpeiClient>() {
+            let channel_id = dvc.channel_id();
+            let rdpei = dvc.processor();
+            if !rdpei.ready() {
+                debug!("Could not encode RDPEI pen: channel is not ready");
+                return None;
+            }
+            if rdpei.is_suspended() {
+                debug!("Could not encode RDPEI pen: input is suspended");
+                return None;
+            }
+            if !rdpei.pen_allowed() {
+                debug!("Could not encode RDPEI pen: pen not allowed for negotiated version");
+                return None;
+            }
+            let svc_messages = match rdpei.encode_pen_event(channel_id, event) {
+                Ok(messages) => messages,
+                Err(e) => return Some(Err(SessionError::encode(e))),
+            };
+            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
+        } else {
+            debug!("Could not encode RDPEI pen: Input Virtual Channel is not available");
+        }
+        None
+    }
+
     pub fn encode_dvc_messages(&mut self, messages: Vec<SvcMessage>) -> SessionResult<Vec<u8>> {
         self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(messages))
     }
@@ -473,6 +615,13 @@ pub enum ActiveStageOutput {
         y: u16,
     },
     PointerBitmap(Arc<DecodedPointer>),
+    /// Server-reported remote monitor layout ([MS-RDPBCGR] 2.2.12.1).
+    MonitorLayout(Vec<Monitor>),
+    /// Validated Windowing Alternate Secondary Drawing Orders.
+    ///
+    /// The payload is a complete slow-path Orders graphics update. It remains
+    /// protocol data rather than a RAIL message.
+    WindowingOrders(Vec<u8>),
     Terminate(GracefulDisconnectReason),
     /// Server Save Session Info notification ([MS-RDPBCGR] 2.2.10.1).
     ///
@@ -512,6 +661,8 @@ pub enum ActiveStageOutput {
     ///
     /// [\[MS-RDPBCGR\] 2.2.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18f4f605-0ee3-4175-8a62-cf8775252547
     AutoReconnectCookie(ServerAutoReconnect),
+    /// Server rejected the automatic reconnection attempt.
+    AutoReconnectFailed,
 }
 
 impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
@@ -537,6 +688,8 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
             x224::ProcessorOutput::MultitransportRequest(pdu) => Ok(Self::MultitransportRequest(pdu)),
             x224::ProcessorOutput::AutoDetect(request) => Ok(Self::AutoDetect(request)),
             x224::ProcessorOutput::AutoReconnectCookie(cookie) => Ok(Self::AutoReconnectCookie(cookie)),
+            x224::ProcessorOutput::AutoReconnectFailed => Ok(Self::AutoReconnectFailed),
+            x224::ProcessorOutput::MonitorLayout(monitors) => Ok(Self::MonitorLayout(monitors)),
             // GraphicsUpdate and PointerUpdate are consumed in ActiveStage::process()
             // before reaching this conversion.
             x224::ProcessorOutput::GraphicsUpdate(_) | x224::ProcessorOutput::PointerUpdate(_) => Err(
@@ -575,31 +728,76 @@ impl core::fmt::Display for GracefulDisconnectReason {
 fn process_slow_path_graphics(
     fast_path_processor: &mut fast_path::Processor,
     image: &mut DecodedImage,
+    window_support_level: Option<WindowSupportLevel>,
     data: &[u8],
-) -> SessionResult<Vec<UpdateKind>> {
+) -> SessionResult<(Vec<UpdateKind>, Option<Vec<u8>>)> {
     let mut src = ReadCursor::new(data);
     let update_type = slow_path::read_graphics_update_type(&mut src).map_err(SessionError::decode)?;
 
     match update_type {
         GraphicsUpdateType::Bitmap => {
             let bitmap = slow_path::decode_slow_path_bitmap(&mut src).map_err(SessionError::decode)?;
-            fast_path_processor.process_bitmap_update(image, bitmap)
+            fast_path_processor
+                .process_bitmap_update(image, bitmap)
+                .map(|updates| (updates, None))
         }
         GraphicsUpdateType::Orders => {
-            warn!("Slow-path drawing orders not supported (MS-RDPEGDI)");
-            Ok(Vec::new())
+            let Some(window_support_level) = window_support_level else {
+                return Ok((Vec::new(), None));
+            };
+            let orders = try_decode_slow_path_windowing_orders(&mut src).map_err(SessionError::decode)?;
+            validate_windowing_orders_support(&orders, window_support_level)?;
+            Ok((Vec::new(), Some(data.to_vec())))
         }
         GraphicsUpdateType::Palette => {
             fast_path_processor.process_palette_update(data);
-            Ok(Vec::new())
+            Ok((Vec::new(), None))
         }
         // Synchronize is an artifact from the T.128 multipoint protocol
         // and carries no data. Safe to ignore.
         GraphicsUpdateType::Synchronize => {
             debug!("Ignoring slow-path synchronize update");
-            Ok(Vec::new())
+            Ok((Vec::new(), None))
         }
     }
+}
+
+fn process_fast_path_windowing_orders(
+    window_support_level: Option<WindowSupportLevel>,
+    data: &[u8],
+) -> SessionResult<Option<Vec<u8>>> {
+    let Some(window_support_level) = window_support_level else {
+        return Ok(None);
+    };
+
+    let mut src = ReadCursor::new(data);
+    let orders = try_decode_fast_path_windowing_orders(&mut src).map_err(SessionError::decode)?;
+    validate_windowing_orders_support(&orders, window_support_level)?;
+
+    let mut normalized = Vec::with_capacity(
+        2 /* updateType */ + 2 /* pad2OctetsA */ + data.len() + 2, /* pad2OctetsB */
+    );
+    normalized.extend_from_slice(&0u16.to_le_bytes());
+    normalized.extend_from_slice(&0u16.to_le_bytes());
+    normalized.extend_from_slice(&data[..2]);
+    normalized.extend_from_slice(&0u16.to_le_bytes());
+    normalized.extend_from_slice(&data[2..]);
+    Ok(Some(normalized))
+}
+
+fn validate_windowing_orders_support(
+    orders: &WindowingOrdersUpdate<'_>,
+    window_support_level: WindowSupportLevel,
+) -> SessionResult<()> {
+    if window_support_level == WindowSupportLevel::SupportedEx
+        || !orders.orders.iter().any(|order| order.requires_extended_support())
+    {
+        return Ok(());
+    }
+
+    Err(SessionError::general(
+        "received extended window order fields without negotiated extended window support",
+    ))
 }
 
 /// Parse and process a slow-path pointer update through the shared pointer pipeline.
@@ -615,7 +813,10 @@ fn process_slow_path_pointer(
 
 #[cfg(test)]
 mod tests {
+    use ironrdp_core::Decode as _;
     use ironrdp_graphics::image_processing::PixelFormat;
+    use ironrdp_pdu::gcc::MonitorFlags;
+    use ironrdp_pdu::input::fast_path::KeyboardFlags;
     use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
 
     use super::*;
@@ -643,6 +844,70 @@ mod tests {
     }
 
     #[test]
+    fn fastpath_input_splits_at_event_limit() {
+        let mut stage = ActiveStageBuilder {
+            static_channels: StaticChannelSet::new(),
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let events = (0..=u8::MAX)
+            .map(|code| FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), u16::from(code)))
+            .collect::<Vec<_>>();
+
+        let output = stage.process_fastpath_input(&mut image, &events).unwrap();
+        let input_frames = output
+            .into_iter()
+            .map(|output| {
+                let ActiveStageOutput::ResponseFrame(frame) = output else {
+                    panic!("expected a fast-path input frame");
+                };
+                FastPathInput::decode(&mut ReadCursor::new(&frame)).unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            input_frames
+                .iter()
+                .map(|input| input.input_events().len())
+                .collect::<Vec<_>>(),
+            [FastPathInput::MAX_EVENTS, 1]
+        );
+        assert_eq!(
+            input_frames
+                .iter()
+                .flat_map(FastPathInput::input_events)
+                .collect::<Vec<_>>(),
+            events.iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn monitor_layout_is_forwarded_from_x224() {
+        let monitors = vec![Monitor {
+            left: 0,
+            top: 0,
+            right: 799,
+            bottom: 599,
+            flags: MonitorFlags::PRIMARY,
+        }];
+
+        let output = ActiveStageOutput::try_from(x224::ProcessorOutput::MonitorLayout(monitors.clone()))
+            .expect("monitor layout should be forwarded from X.224");
+
+        let ActiveStageOutput::MonitorLayout(actual) = output else {
+            panic!("expected a monitor layout output");
+        };
+        assert_eq!(actual, monitors);
+    }
+
+    #[test]
     fn slow_path_palette_applies_to_indexed_pointer() {
         let mut palette_data = vec![0; 8 + 256 * 3];
         palette_data[0..2].copy_from_slice(&0x0002u16.to_le_bytes());
@@ -659,9 +924,11 @@ mod tests {
         .build();
         let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
 
-        let palette_updates = process_slow_path_graphics(&mut processor, &mut image, &palette_data)
-            .expect("slow-path palette update should succeed");
+        let (palette_updates, windowing_orders) =
+            process_slow_path_graphics(&mut processor, &mut image, None, &palette_data)
+                .expect("slow-path palette update should succeed");
         assert!(palette_updates.is_empty());
+        assert!(windowing_orders.is_none());
 
         let pointer = PointerAttribute {
             xor_bpp: 8,
@@ -682,5 +949,101 @@ mod tests {
             panic!("expected an accelerated pointer bitmap");
         };
         assert_eq!(pointer.bitmap_data, [0x10, 0x20, 0x30, 0xff]);
+    }
+
+    fn window_order(fields_present: u32) -> Vec<u8> {
+        let mut order = Vec::new();
+        order.push(0x2e);
+        let client_area_size = (fields_present & 0x0001_0000 != 0).then_some([0; 8]);
+        let order_size: u16 = if client_area_size.is_some() { 19 } else { 11 };
+        order.extend_from_slice(&order_size.to_le_bytes());
+        order.extend_from_slice(&fields_present.to_le_bytes());
+        order.extend_from_slice(&7u32.to_le_bytes());
+        if let Some(client_area_size) = client_area_size {
+            order.extend_from_slice(&client_area_size);
+        }
+        order
+    }
+
+    fn slow_path_orders_update(order: &[u8]) -> Vec<u8> {
+        let mut update = Vec::new();
+        update.extend_from_slice(&0u16.to_le_bytes());
+        update.extend_from_slice(&0u16.to_le_bytes());
+        update.extend_from_slice(&1u16.to_le_bytes());
+        update.extend_from_slice(&0u16.to_le_bytes());
+        update.extend_from_slice(order);
+        update
+    }
+
+    #[test]
+    fn slow_path_windowing_orders_require_negotiated_support() {
+        let mut processor = fast_path::ProcessorBuilder {
+            io_channel_id: 0,
+            user_channel_id: 0,
+            share_id: 0,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+        let update = slow_path_orders_update(&window_order(0x2100_0000));
+
+        let (_, orders) = process_slow_path_graphics(&mut processor, &mut image, None, &update).unwrap();
+        assert!(orders.is_none());
+
+        let (_, orders) =
+            process_slow_path_graphics(&mut processor, &mut image, Some(WindowSupportLevel::Supported), &update)
+                .unwrap();
+        assert_eq!(orders.as_deref(), Some(update.as_slice()));
+    }
+
+    #[test]
+    fn fast_path_windowing_orders_are_normalized_for_forwarding() {
+        let order = window_order(0x2100_0000);
+        let mut update = Vec::new();
+        update.extend_from_slice(&1u16.to_le_bytes());
+        update.extend_from_slice(&order);
+
+        let normalized = process_fast_path_windowing_orders(Some(WindowSupportLevel::Supported), &update)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            normalized,
+            [
+                0, 0, // updateType
+                0, 0, // pad2OctetsA
+                1, 0, // numberOrders
+                0, 0, // pad2OctetsB
+                0x2e, 11, 0, 0, 0, 0, 0x21, 7, 0, 0, 0,
+            ]
+        );
+    }
+
+    #[test]
+    fn extended_windowing_orders_require_extended_support() {
+        let update = slow_path_orders_update(&window_order(0x0101_0000));
+        let mut processor = fast_path::ProcessorBuilder {
+            io_channel_id: 0,
+            user_channel_id: 0,
+            share_id: 0,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+
+        assert!(
+            process_slow_path_graphics(&mut processor, &mut image, Some(WindowSupportLevel::Supported), &update)
+                .is_err()
+        );
+        assert!(
+            process_slow_path_graphics(
+                &mut processor,
+                &mut image,
+                Some(WindowSupportLevel::SupportedEx),
+                &update
+            )
+            .is_ok()
+        );
     }
 }

@@ -1,0 +1,35 @@
+[package]
+name = "ironrdp-capture-replay"
+version = "0.0.0"
+publish = false
+description = "Offline analysis of direct TCP RDP captures"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+aes-gcm = "0.10"
+hmac = "0.12"
+ironrdp-core = { version = "0.2.1", path = "../ironrdp-core" }
+ironrdp-dvc = { version = "0.8.0", path = "../ironrdp-dvc" } # public
+ironrdp-egfx = { version = "0.3.0", path = "../ironrdp-egfx" }
+ironrdp-graphics = { version = "0.9.0", path = "../ironrdp-graphics" }
+ironrdp-pdu = { version = "0.9.0", path = "../ironrdp-pdu" } # public
+ironrdp-session = { version = "0.11.0", path = "../ironrdp-session" }
+ironrdp-svc = { version = "0.8.0", path = "../ironrdp-svc" }
+pcap-parser = "0.17"
+png = "0.18"
+sha2 = "0.10"
+thiserror = "2"
+zeroize = "1.8"
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true

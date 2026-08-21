@@ -14,7 +14,6 @@ categories.workspace = true
 
 [lib]
 doctest = false
-test = false
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" } # public
@@ -23,6 +22,7 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
 tracing = { version = "0.1", features = ["log"] }
 bitflags = "2.11"
+getrandom = { version = "0.3", features = ["std"] }
 
 [lints]
 workspace = true

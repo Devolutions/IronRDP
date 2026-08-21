@@ -1,21 +1,22 @@
-//! Codec round-trip tests for the `ironrdp-agent` IPC and wire protocols.
+//! Codec round-trip tests for the shared RPC protocol and daemon NOW endpoint.
 //!
-//! These exercise the crate's private wire format through its public (and `internal`-feature)
-//! API. They live here, in the shared test suite, rather than inside `ironrdp-agent` itself, per
+//! These exercise the reusable protocol and daemon support. They live here, in the shared test
+//! suite, rather than inside the owning crates themselves, per
 //! the workspace convention of keeping unit tests for protocol codecs in `ironrdp-testsuite-extra`.
 
 use core::fmt::Debug;
 
-use ironrdp_agent::ipc::{
-    AgentError, AgentErrorCategory, ConnState, KeyFilter, NowCapabilities, NowDiagnostics, NowExecutionKind,
-    NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload,
-    PropValue, PropertyDump, PropertyEntry, Request, Response, StatusInfo,
-};
-use ironrdp_agent::now::{DVC_CHANNEL_NAME, INITIAL_ENDPOINT_TIMEOUT, NowEndpoint, RECONNECT_ENDPOINT_TIMEOUT};
-use ironrdp_agent::wire;
 use ironrdp_core::{Decode, DecodeOwned, Encode, decode, decode_owned, encode_vec};
+use ironrdp_daemon::now::{DVC_CHANNEL_NAME, INITIAL_ENDPOINT_TIMEOUT, NowEndpoint, RECONNECT_ENDPOINT_TIMEOUT};
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::PropertySet;
+use ironrdp_rpc::ipc::{
+    AgentError, AgentErrorCategory, ConnState, KeyFilter, NowCapabilities, NowDiagnostics, NowExecutionKind,
+    NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload,
+    PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason,
+    RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo,
+};
+use ironrdp_rpc::wire;
 
 #[track_caller]
 fn round_trip<T>(value: &T)
@@ -84,6 +85,39 @@ fn request_variants_round_trip() {
             ch: '\u{00e9}',
             pressed: true,
         },
+        Request::UnicodeText {
+            text: "Hello, \u{4e16}\u{754c}".to_owned(),
+        },
+        Request::Touch {
+            encode_time: 12,
+            frames: vec![ironrdp_rpc::ipc::TouchFrameRequest {
+                frame_offset: 0,
+                contacts: vec![ironrdp_rpc::ipc::TouchContactRequest {
+                    contact_id: 1,
+                    x: 100,
+                    y: 200,
+                    flags: 0x0019, // DOWN | INRANGE | INCONTACT
+                }],
+            }],
+        },
+        Request::Pen {
+            encode_time: 24,
+            frames: vec![ironrdp_rpc::ipc::PenFrameRequest {
+                frame_offset: 0,
+                contacts: vec![ironrdp_rpc::ipc::PenContactRequest {
+                    device_id: 0,
+                    x: 300,
+                    y: 400,
+                    flags: 0x0019, // DOWN | INRANGE | INCONTACT
+                    pressure: Some(512),
+                    rotation: Some(45),
+                    tilt_x: Some(10),
+                    tilt_y: Some(-5),
+                    pen_flags: None,
+                }],
+            }],
+        },
+        Request::DismissHoveringTouchContact { contact_id: 3 },
         Request::NowCapabilities,
         Request::NowRun {
             command: "echo secret".to_owned(),
@@ -113,6 +147,20 @@ fn request_variants_round_trip() {
             last: true,
         },
         Request::NowDiagnostics,
+        Request::RailStatus,
+        Request::RailEvents {
+            after_sequence: Some(7),
+        },
+        Request::RailWait {
+            after_sequence: Some(7),
+            timeout_ms: 1_000,
+        },
+        Request::RailExecute(RailExecuteRequest {
+            executable: "notepad.exe".to_owned(),
+            working_directory: "C:\\Temp".to_owned(),
+            arguments: "audit.txt".to_owned(),
+            flags: 0,
+        }),
     ];
 
     for request in &requests {
@@ -212,6 +260,50 @@ fn response_variants_round_trip() {
             endpoint_allocated: true,
             connected: false,
             capabilities: None,
+        })),
+        Response::Ok(Payload::RailStatus(RailStatusInfo {
+            generation: 9,
+            next_sequence: 4,
+            handshake_complete: true,
+            desktop_synchronized: false,
+            pending_launches: vec![RailLaunchInfo {
+                launch_id: 3,
+                executable: "notepad.exe".to_owned(),
+                flags: 0,
+            }],
+        })),
+        Response::Ok(Payload::RailEvents(RailEventDump {
+            generation: 9,
+            events: vec![
+                RailEvent {
+                    sequence: 1,
+                    kind: RailEventKind::Gap { lost_through: 4 },
+                },
+                RailEvent {
+                    sequence: 5,
+                    kind: RailEventKind::ExecuteResult {
+                        launch_id: Some(3),
+                        executable: "notepad.exe".to_owned(),
+                        flags: 0,
+                        result: 0,
+                        raw_result: 0,
+                    },
+                },
+                RailEvent {
+                    sequence: 6,
+                    kind: RailEventKind::ExecuteFailed {
+                        launch_id: Some(3),
+                        executable: "notepad.exe".to_owned(),
+                        flags: 0,
+                        reason: RailExecuteFailureReason::QueueRejected,
+                    },
+                },
+            ],
+        })),
+        Response::Ok(Payload::RailLaunch(RailLaunchInfo {
+            launch_id: 3,
+            executable: "notepad.exe".to_owned(),
+            flags: 0,
         })),
     ];
 

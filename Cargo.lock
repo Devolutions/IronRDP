@@ -37,12 +37,33 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aead"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d122413f284cf2d62fb1b7db97e02edb8cda96d769b16e443a4f6195e35662b0"
+dependencies = [
+ "crypto-common 0.1.7",
+ "generic-array",
+]
+
+[[package]]
+name = "aead"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1973cfbc1a2daf9cf550e74e1f088c28e7f7d8c1e1418fb6c9dc5184b7e84c99"
 dependencies = [
  "crypto-common 0.2.2",
- "inout",
+ "inout 0.2.2",
+]
+
+[[package]]
+name = "aes"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
+dependencies = [
+ "cfg-if",
+ "cipher 0.4.4",
+ "cpufeatures 0.2.17",
 ]
 
 [[package]]
@@ -51,9 +72,23 @@ version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1fc76eaeac4c9164506c466d4ffdd8ec9d0c5bf57ee97177c4d8eceb3a0e138"
 dependencies = [
- "cipher",
+ "cipher 0.5.2",
  "cpubits",
  "cpufeatures 0.3.0",
+]
+
+[[package]]
+name = "aes-gcm"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1"
+dependencies = [
+ "aead 0.5.2",
+ "aes 0.8.4",
+ "cipher 0.4.4",
+ "ctr 0.9.2",
+ "ghash 0.5.1",
+ "subtle",
 ]
 
 [[package]]
@@ -62,11 +97,11 @@ version = "0.11.0-rc.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da8c919c118108f144adecad74b425b804ad075580d605d9b33c2d6d1c62a2f8"
 dependencies = [
- "aead",
- "aes",
- "cipher",
- "ctr",
- "ghash",
+ "aead 0.6.1",
+ "aes 0.9.1",
+ "cipher 0.5.2",
+ "ctr 0.10.1",
+ "ghash 0.6.0",
  "subtle",
 ]
 
@@ -76,7 +111,7 @@ version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41ac571010bd60765c56085a4f1d412012a9be2663b1a2f2b19b49318653fd0d"
 dependencies = [
- "aes",
+ "aes 0.9.1",
  "const-oid 0.10.2",
 ]
 
@@ -271,10 +306,11 @@ dependencies = [
  "asn1-rs-derive",
  "asn1-rs-impl",
  "displaydoc",
- "nom",
+ "nom 7.1.3",
  "num-traits",
- "rusticata-macros",
+ "rusticata-macros 4.1.0",
  "thiserror 2.0.19",
+ "time",
 ]
 
 [[package]]
@@ -423,7 +459,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
 dependencies = [
- "bit-vec",
+ "bit-vec 0.8.0",
 ]
 
 [[package]]
@@ -431,6 +467,15 @@ name = "bit-vec"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+
+[[package]]
+name = "bit-vec"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "bit_field"
@@ -607,7 +652,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce2dc9ee5f88d11e0beb842c88b33c8a5cf0d1329c4b19494af42b07dbfe8896"
 dependencies = [
- "cipher",
+ "cipher 0.5.2",
 ]
 
 [[package]]
@@ -693,20 +738,36 @@ dependencies = [
 
 [[package]]
 name = "cipher"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
+dependencies = [
+ "crypto-common 0.1.7",
+ "inout 0.1.4",
+]
+
+[[package]]
+name = "cipher"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf2a2c93cd704877c0858356ed03480ff301ee950b43f1cbe4573b088bfa6c"
 dependencies = [
  "block-buffer 0.12.1",
  "crypto-common 0.2.2",
- "inout",
+ "inout 0.2.2",
 ]
 
 [[package]]
-name = "clap"
-version = "4.6.4"
+name = "circular"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d91e0c145792ef73a6ad36d27c75ac09f1832222a3c209689d90f534685ee5b7"
+checksum = "b0fc239e0f6cb375d2402d48afb92f76f5404fd1df208a41930ec81eda078bea"
+
+[[package]]
+name = "clap"
+version = "4.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "301b56658598e48f3648647ac6fc887be7e7108eddfa4e9b63fcf3ec58c0cadf"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -714,9 +775,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.6.2"
+version = "4.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f09628afdcc538b57f3c6341e9c8e9970f18e4a481690a64974d7023bd33548b"
+checksum = "94a65403d1a1bd28f7dc68eb8506e8874808ee5eecb59298de588e2e1407a078"
 dependencies = [
  "anstream",
  "anstyle",
@@ -892,7 +953,7 @@ dependencies = [
  "mach2",
  "ndk",
  "ndk-context",
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "objc2 0.6.4",
  "objc2-audio-toolbox",
@@ -1063,6 +1124,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
+ "rand_core 0.6.4",
  "typenum",
 ]
 
@@ -1130,11 +1192,20 @@ dependencies = [
 
 [[package]]
 name = "ctr"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
+dependencies = [
+ "cipher 0.4.4",
+]
+
+[[package]]
+name = "ctr"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baaca1c4b237092596f64d571e9db6ce4109c4ef9742e27590f1709594461f21"
 dependencies = [
- "cipher",
+ "cipher 0.5.2",
 ]
 
 [[package]]
@@ -1223,9 +1294,10 @@ checksum = "07da5016415d5a3c4dd39b11ed26f915f52fc4e0dc197d87908bc916e51bc1a6"
 dependencies = [
  "asn1-rs",
  "displaydoc",
- "nom",
+ "nom 7.1.3",
+ "num-bigint 0.4.8",
  "num-traits",
- "rusticata-macros",
+ "rusticata-macros 4.1.0",
 ]
 
 [[package]]
@@ -1284,7 +1356,7 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "916a94e407b54f9034d71dd748234cd1e516ced6284009906ae246f177eafe5a"
 dependencies = [
- "cipher",
+ "cipher 0.5.2",
 ]
 
 [[package]]
@@ -1612,6 +1684,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-rdcleanpath",
+ "ironrdp-vmconnect",
  "sspi",
  "thiserror 2.0.19",
  "tracing",
@@ -1882,11 +1955,21 @@ dependencies = [
 
 [[package]]
 name = "ghash"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
+dependencies = [
+ "opaque-debug",
+ "polyval 0.6.2",
+]
+
+[[package]]
+name = "ghash"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2eecf2d5dc9b66b732b97707a0210906b1d30523eb773193ab777c0c84b3e8d5"
 dependencies = [
- "polyval",
+ "polyval 0.7.1",
 ]
 
 [[package]]
@@ -2104,9 +2187,9 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "1.10.1"
+version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55281c53a1894c864990125767da440a4e630446785086f52523b20033b74498"
+checksum = "d22053281f852e11534f5198498373cbb59295120a20771d90f7ed1897490a72"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2332,6 +2415,15 @@ dependencies = [
 
 [[package]]
 name = "inout"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
+dependencies = [
+ "generic-array",
+]
+
+[[package]]
+name = "inout"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4250ce6452e92010fdf7268ccc5d14faa80bb12fc741938534c58f16804e03c7"
@@ -2394,10 +2486,12 @@ dependencies = [
  "ironrdp-mstsgu",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
+ "ironrdp-rdpei",
  "ironrdp-rdpsnd",
  "ironrdp-server",
  "ironrdp-session",
  "ironrdp-svc",
+ "ironrdp-vmconnect",
  "opus2",
  "pico-args",
  "rand 0.9.4",
@@ -2425,6 +2519,7 @@ dependencies = [
 name = "ironrdp-activex"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "embed-resource",
  "ironrdp-cfg",
  "ironrdp-client",
@@ -2432,14 +2527,22 @@ dependencies = [
  "ironrdp-cliprdr-native",
  "ironrdp-connector",
  "ironrdp-core 0.2.1",
+ "ironrdp-daemon",
  "ironrdp-input",
  "ironrdp-pdu",
+ "ironrdp-propertyset",
+ "ironrdp-rail",
+ "ironrdp-rdpdr-native",
+ "ironrdp-rdpei",
+ "ironrdp-rpc",
  "ironrdp-session",
  "ironrdp-svc",
  "ironrdp-tls",
+ "png",
  "sha2 0.10.9",
  "tokio",
  "tracing",
+ "url",
  "windows",
  "windows-core",
 ]
@@ -2449,25 +2552,21 @@ name = "ironrdp-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "clap",
+ "h2",
+ "http",
  "ironrdp-cfg",
- "ironrdp-client",
- "ironrdp-core 0.2.1",
+ "ironrdp-daemon",
  "ironrdp-input",
- "ironrdp-pdu",
+ "ironrdp-mstsgu",
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
- "ironrdp-tls",
- "libc",
- "now-client",
- "now-proto-pdu",
- "png",
+ "ironrdp-rpc",
+ "md-5 0.10.6",
+ "serde",
  "serde_json",
  "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "whoami",
  "windows",
 ]
 
@@ -2478,7 +2577,7 @@ dependencies = [
  "bitflags 2.13.1",
  "ironrdp-core 0.2.1",
  "ironrdp-dvc",
- "num-derive",
+ "num-derive 0.5.1",
  "num-traits",
 ]
 
@@ -2491,6 +2590,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "tracing",
+ "web-time",
 ]
 
 [[package]]
@@ -2522,6 +2622,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-capture-replay"
+version = "0.0.0"
+dependencies = [
+ "aes-gcm 0.10.3",
+ "hmac 0.12.1",
+ "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
+ "ironrdp-egfx",
+ "ironrdp-graphics",
+ "ironrdp-pdu",
+ "ironrdp-session",
+ "ironrdp-svc",
+ "pcap-parser",
+ "png",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "zeroize",
+]
+
+[[package]]
 name = "ironrdp-cfg"
 version = "0.1.0"
 dependencies = [
@@ -2548,14 +2668,20 @@ dependencies = [
  "ironrdp-mstsgu",
  "ironrdp-pdu",
  "ironrdp-propertyset",
+ "ironrdp-rail",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr",
+ "ironrdp-rdpeai",
+ "ironrdp-rdpei",
+ "ironrdp-rdpewa",
+ "ironrdp-rdpewa-native",
  "ironrdp-rdpsnd",
  "ironrdp-rdpsnd-native",
  "ironrdp-session",
  "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "ironrdp-vmconnect",
  "smallvec",
  "tokio",
  "tokio-tungstenite",
@@ -2625,6 +2751,32 @@ name = "ironrdp-core"
 version = "0.2.1"
 dependencies = [
  "ironrdp-error 0.2.0",
+]
+
+[[package]]
+name = "ironrdp-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ironrdp-cfg",
+ "ironrdp-client",
+ "ironrdp-connector",
+ "ironrdp-input",
+ "ironrdp-pdu",
+ "ironrdp-propertyset",
+ "ironrdp-rail",
+ "ironrdp-rdpdr-native",
+ "ironrdp-rpc",
+ "ironrdp-tls",
+ "libc",
+ "now-client",
+ "now-proto-pdu",
+ "png",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "whoami",
 ]
 
 [[package]]
@@ -2732,6 +2884,9 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
+ "ironrdp-rdpemt",
+ "ironrdp-rdpeudp",
+ "ironrdp-rdpeusb",
  "ironrdp-rdpsnd",
  "ironrdp-svc",
 ]
@@ -2749,7 +2904,7 @@ dependencies = [
  "expect-test",
  "ironrdp-core 0.2.1",
  "ironrdp-pdu",
- "num-derive",
+ "num-derive 0.5.1",
  "num-traits",
  "wide 0.7.33",
  "yuv",
@@ -2778,6 +2933,7 @@ dependencies = [
  "ironrdp-error 0.2.0",
  "ironrdp-tls",
  "log",
+ "sspi",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
@@ -2806,7 +2962,7 @@ dependencies = [
  "ironrdp-error 0.2.0",
  "md-5 0.10.6",
  "num-bigint 0.4.8",
- "num-derive",
+ "num-derive 0.5.1",
  "num-integer",
  "num-traits",
  "pkcs1 0.7.5",
@@ -2824,6 +2980,14 @@ name = "ironrdp-propertyset"
 version = "0.1.0"
 
 [[package]]
+name = "ironrdp-rail"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core 0.2.1",
+ "ironrdp-svc",
+]
+
+[[package]]
 name = "ironrdp-rdcleanpath"
 version = "0.2.2"
 dependencies = [
@@ -2835,6 +2999,7 @@ name = "ironrdp-rdpdr"
 version = "0.7.0"
 dependencies = [
  "bitflags 2.13.1",
+ "getrandom 0.3.4",
  "ironrdp-core 0.2.1",
  "ironrdp-error 0.2.0",
  "ironrdp-pdu",
@@ -2852,6 +3017,68 @@ dependencies = [
  "ironrdp-svc",
  "nix",
  "tracing",
+ "windows",
+]
+
+[[package]]
+name = "ironrdp-rdpeai"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-rdpsnd",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpei"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpemt"
+version = "0.1.0"
+dependencies = [
+ "arbitrary",
+ "ironrdp-core 0.2.1",
+ "ironrdp-error 0.2.0",
+ "subtle",
+]
+
+[[package]]
+name = "ironrdp-rdpeudp"
+version = "0.1.0"
+dependencies = [
+ "arbitrary",
+ "bitflags 2.13.1",
+ "ironrdp-core 0.2.1",
+ "ironrdp-error 0.2.0",
+]
+
+[[package]]
+name = "ironrdp-rdpeudp-tokio"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "ironrdp-async",
+ "ironrdp-core 0.2.1",
+ "ironrdp-error 0.2.0",
+ "ironrdp-pdu",
+ "ironrdp-rdpemt",
+ "ironrdp-rdpeudp",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
 ]
 
 [[package]]
@@ -2862,6 +3089,27 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-str",
+ "ironrdp-usb",
+]
+
+[[package]]
+name = "ironrdp-rdpewa"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpewa-native"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-rdpewa",
+ "tracing",
+ "windows",
 ]
 
 [[package]]
@@ -2891,10 +3139,28 @@ dependencies = [
  "bytemuck",
  "cpal",
  "ironrdp-error 0.2.0",
+ "ironrdp-rdpeai",
  "ironrdp-rdpsnd",
  "opus2",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ironrdp-rpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ironrdp-core 0.2.1",
+ "ironrdp-input",
+ "ironrdp-pdu",
+ "ironrdp-propertyset",
+ "ironrdp-rdpei",
+ "libc",
+ "tokio",
+ "tracing",
+ "whoami",
+ "windows",
 ]
 
 [[package]]
@@ -2942,6 +3208,7 @@ dependencies = [
  "ironrdp-error 0.2.0",
  "ironrdp-graphics",
  "ironrdp-pdu",
+ "ironrdp-rdpei",
  "ironrdp-svc",
  "qoicoubeh",
  "tracing",
@@ -2997,6 +3264,10 @@ dependencies = [
  "ironrdp-propertyset",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr",
+ "ironrdp-rdpeai",
+ "ironrdp-rdpei",
+ "ironrdp-rdpemt",
+ "ironrdp-rdpeudp",
  "ironrdp-rdpeusb",
  "ironrdp-rdpfile",
  "ironrdp-rdpsnd",
@@ -3004,6 +3275,7 @@ dependencies = [
  "ironrdp-session",
  "ironrdp-str",
  "ironrdp-svc",
+ "ironrdp-usb",
  "openh264",
  "paste",
  "png",
@@ -3026,16 +3298,28 @@ dependencies = [
  "ironrdp-bulk",
  "ironrdp-client",
  "ironrdp-core 0.2.1",
+ "ironrdp-daemon",
  "ironrdp-dvc",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-input",
  "ironrdp-propertyset",
+ "ironrdp-rdpdr",
+ "ironrdp-rdpdr-native",
+ "ironrdp-rdpemt",
+ "ironrdp-rdpeudp",
+ "ironrdp-rdpeudp-tokio",
+ "ironrdp-rdpsnd",
+ "ironrdp-rdpsnd-native",
+ "ironrdp-rpc",
  "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",
  "ironrdp-viewer",
+ "ironrdp-vmconnect",
+ "rcgen",
  "semver",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -3064,6 +3348,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-usb"
+version = "0.1.0"
+
+[[package]]
 name = "ironrdp-viewer"
 version = "0.1.0"
 dependencies = [
@@ -3072,8 +3360,11 @@ dependencies = [
  "inquire",
  "ironrdp",
  "ironrdp-cfg",
+ "ironrdp-daemon",
  "ironrdp-propertyset",
+ "ironrdp-rdpdr-native",
  "ironrdp-rdpfile",
+ "ironrdp-rpc",
  "proc-exit",
  "raw-window-handle",
  "semver",
@@ -3086,6 +3377,17 @@ dependencies = [
  "url",
  "whoami",
  "winit",
+]
+
+[[package]]
+name = "ironrdp-vmconnect"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-async",
+ "ironrdp-connector",
+ "ironrdp-core 0.2.1",
+ "ironrdp-pdu",
+ "tracing",
 ]
 
 [[package]]
@@ -3112,6 +3414,7 @@ dependencies = [
  "ironrdp-rdcleanpath",
  "ironrdp-rdpfile",
  "ironrdp-svc",
+ "ironrdp-vmconnect",
  "js-sys",
  "png",
  "resize",
@@ -3558,6 +3861,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nom"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "now-client"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3625,6 +3937,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "num-derive"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4e98dc3b890f6c23a0f9d3d491a2823d0dea0fa656302a13dd225fa924112a8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -4008,6 +4331,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oid-registry"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12f40cff3dde1b6087cc5d5f5d4d65712f34016a03ed60e9c08dcc392736b5b7"
+dependencies = [
+ "asn1-rs",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4024,6 +4356,12 @@ name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
+
+[[package]]
+name = "opaque-debug"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openh264"
@@ -4210,6 +4548,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcap-parser"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1099a3a64b376c536394622c9e5ea8ecfac3e3e44f88857b1e7da114135d3df4"
+dependencies = [
+ "circular",
+ "nom 8.0.0",
+ "rusticata-macros 5.0.0",
+]
+
+[[package]]
+name = "pem"
+version = "3.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
+dependencies = [
+ "base64",
+ "serde_core",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4230,14 +4589,14 @@ version = "7.0.0-rc.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1ae9cd78eb1d61be4790713d28368cf71c844218fcd91542768805423f02666"
 dependencies = [
- "aes",
- "aes-gcm",
+ "aes 0.9.1",
+ "aes-gcm 0.11.0-rc.4",
  "aes-kw",
  "base64",
  "cbc",
  "crypto-bigint",
  "crypto-common 0.2.2",
- "ctr",
+ "ctr 0.10.1",
  "curve25519-dalek",
  "des",
  "digest 0.11.3",
@@ -4246,7 +4605,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "http",
- "inout",
+ "inout 0.2.2",
  "md-5 0.11.0",
  "p256",
  "p384",
@@ -4320,15 +4679,15 @@ version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d188f3192356068dbdba54bddbca6fd0f7a09565d3861eeb8efe1ab77ae8e97"
 dependencies = [
- "aes",
+ "aes 0.9.1",
  "block-padding",
  "byteorder",
  "cbc",
- "cipher",
+ "cipher 0.5.2",
  "crypto-bigint",
  "des",
  "hmac 0.13.0",
- "inout",
+ "inout 0.2.2",
  "oid",
  "pbkdf2",
  "picky-asn1",
@@ -4490,13 +4849,25 @@ dependencies = [
 
 [[package]]
 name = "polyval"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1fe60d06143b2430aa532c94cfe9e29783047f06c0d7fd359a9a51b729fa25"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "opaque-debug",
+ "universal-hash 0.5.1",
+]
+
+[[package]]
+name = "polyval"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dfc63250416fea14f5749b90725916a6c903f599d51cb635aa7a52bfd03eede"
 dependencies = [
  "cpubits",
  "cpufeatures 0.3.0",
- "universal-hash",
+ "universal-hash 0.6.1",
 ]
 
 [[package]]
@@ -4599,7 +4970,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b45fcc2344c680f5025fe57779faef368840d0bd1f42f216291f0dc4ace4744"
 dependencies = [
  "bit-set",
- "bit-vec",
+ "bit-vec 0.8.0",
  "bitflags 2.13.1",
  "num-traits",
  "rand 0.9.4",
@@ -4850,7 +5221,21 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ceda21af1ae61033b63175653a1af86cae399d79cd03ca80ba347eb3a6c4a7fe"
 dependencies = [
- "cipher",
+ "cipher 0.5.2",
+]
+
+[[package]]
+name = "rcgen"
+version = "0.14.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "091e7a8e7d86e6feb87a27ce8e2cba29d49eff9507afeebefab7eeb2ca667fb4"
+dependencies = [
+ "pem",
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "x509-parser",
+ "yasna",
 ]
 
 [[package]]
@@ -5107,7 +5492,16 @@ version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf0c4a6ece9950b9abdb62b1cfcf2a68b3b67a10ba445b3bb85be2a293d0632"
 dependencies = [
- "nom",
+ "nom 7.1.3",
+]
+
+[[package]]
+name = "rusticata-macros"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40620447734539bcc6c64e9c66fed2410e17b46986733f1090c922d85f7105b"
+dependencies = [
+ "nom 8.0.0",
 ]
 
 [[package]]
@@ -5694,7 +6088,7 @@ dependencies = [
  "hmac 0.13.0",
  "md-5 0.11.0",
  "md4",
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "oid",
  "p256",
@@ -6357,6 +6751,16 @@ name = "unicode-width"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+
+[[package]]
+name = "universal-hash"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc1de2c688dc15305988b563c3854064043356019f97a4b46276fe734c4f07ea"
+dependencies = [
+ "crypto-common 0.1.7",
+ "subtle",
+]
 
 [[package]]
 name = "universal-hash"
@@ -7143,7 +7547,7 @@ dependencies = [
  "flate2",
  "iso7816",
  "iso7816-tlv",
- "num-derive",
+ "num-derive 0.4.2",
  "num-traits",
  "picky",
  "picky-asn1-x509",
@@ -7232,6 +7636,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "x509-parser"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
+dependencies = [
+ "asn1-rs",
+ "data-encoding",
+ "der-parser",
+ "lazy_static",
+ "nom 7.1.3",
+ "oid-registry",
+ "ring",
+ "rusticata-macros 4.1.0",
+ "thiserror 2.0.19",
+ "time",
+]
+
+[[package]]
 name = "xcursor"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7286,6 +7708,16 @@ name = "yansi"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
+
+[[package]]
+name = "yasna"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5f6765e852b9b4dc8e2a76843e4d64d1cea8e79bcde0b6901aea8e7c7f08282"
+dependencies = [
+ "bit-vec 0.9.1",
+ "time",
+]
 
 [[package]]
 name = "yoke"

@@ -1,0 +1,25 @@
+[package]
+name = "ironrdp-rail"
+version = "0.1.0"
+readme = "README.md"
+description = "RAIL static virtual channel wire protocol implementation"
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["std"]
+std = ["alloc", "ironrdp-core/std", "dep:ironrdp-svc"]
+alloc = ["dep:ironrdp-core", "ironrdp-core/alloc"]
+
+[dependencies]
+ironrdp-core = { path = "../ironrdp-core", version = "0.2", default-features = false, optional = true } # public
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.8", optional = true } # public
+
+[lints]
+workspace = true

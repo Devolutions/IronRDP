@@ -10,7 +10,7 @@ pub mod ffi {
     use diplomat_runtime::DiplomatWriteable;
     use ironrdp::connector::Sequence as _;
     use ironrdp::displaycontrol::client::DisplayControlClient;
-    use ironrdp::dvc::DvcProcessor;
+    use ironrdp::dvc::DvcClientProcessor;
     use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
     use tracing::info;
 
@@ -23,6 +23,18 @@ pub mod ffi {
     use crate::error::ValueConsumedError;
     use crate::error::ffi::{IronRdpError, IronRdpErrorKind};
     use crate::pdu::ffi::WriteBuf;
+
+    /// Reads a monotonic clock for `Sequence::step`'s `received_at`. Epoch is the
+    /// first call; only differences are meaningful. This binding targets native
+    /// .NET hosts only, never `wasm32-unknown-unknown`, so `std::time::Instant`
+    /// is sufficient here (compare `ironrdp-blocking`'s identical helper, which
+    /// makes the same assumption for the same reason).
+    fn monotonic_now() -> ironrdp::connector::MonotonicInstant {
+        static EPOCH: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
+        ironrdp::connector::MonotonicInstant::from_millis(
+            u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX),
+        )
+    }
 
     #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
@@ -74,7 +86,7 @@ pub mod ffi {
 
         fn with_dvc<T>(&mut self, processor: T) -> Result<(), Box<IronRdpError>>
         where
-            T: DvcProcessor + 'static,
+            T: DvcClientProcessor + 'static,
         {
             let Some(connector) = &mut self.0 else {
                 return Err(ValueConsumedError::for_item("connector").into());
@@ -152,11 +164,53 @@ pub mod ffi {
             Ok(())
         }
 
+        /// Send X.224 with an explicit protocol set (VMConnect uses HYBRID only).
+        pub fn initiate_with_security_protocol(
+            &mut self,
+            security_protocol: u32,
+            write_buf: &mut WriteBuf,
+        ) -> Result<Box<Written>, Box<IronRdpError>> {
+            let Some(connector) = self.0.as_mut() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            let security_protocol = ironrdp::pdu::nego::SecurityProtocol::from_bits(security_protocol)
+                .ok_or_else(|| ironrdp::connector::general_err!("invalid security protocol"))?;
+            let written = connector.initiate_with_security_protocol(security_protocol, &mut write_buf.0)?;
+            Ok(Box::new(Written(written)))
+        }
+
+        /// Drop host identity after pre-X.224 CredSSP so it is not forwarded into guest RDP.
+        pub fn clear_credentials_after_host_auth(&mut self) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.as_mut() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            connector.config.credentials = ironrdp::connector::Credentials::UsernamePassword {
+                username: String::new(),
+                password: String::new(),
+            };
+            connector.config.domain = None;
+            connector.config.autologon = false;
+            Ok(())
+        }
+
+        /// Require EnhancedSecurityUpgrade with HYBRID, matching ironrdp-vmconnect::connect_front.
+        pub fn ensure_selected_hybrid(&self) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.as_ref() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            ironrdp_vmconnect::ensure_selected_credssp(&connector.state).map_err(Into::into)
+        }
+
         pub fn step(&mut self, input: &[u8], write_buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            let written = connector.step(input, &mut write_buf.0)?;
+            // The FFI surface has no parameter through which the .NET caller could pass
+            // when it read `input`, so this stamps on entry to the call instead. That is
+            // at least as accurate as the other drivers' `last_read_at`, which is also a
+            // post-read stamp taken right after the read completes rather than exactly
+            // when the first byte arrived.
+            let written = connector.step(input, Some(monotonic_now()), &mut write_buf.0)?;
             Ok(Box::new(Written(written)))
         }
 

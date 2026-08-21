@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use ironrdp_core::{Encode, WriteBuf, decode, encode_vec};
+use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{PduHint, gcc, mcs, nego, rdp};
@@ -17,7 +18,7 @@ use crate::connection_activation::{
 };
 use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
-    Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize,
+    Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize, MonotonicInstant,
     NegotiationFailure, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
 };
 
@@ -25,6 +26,75 @@ use crate::{
 /// permitted to send during bootstrapping, per MS-RDPBCGR 2.2.15.1 (one per
 /// transport protocol: reliable + lossy UDP).
 const MAX_MULTITRANSPORT_REQUESTS: usize = 2;
+
+/// Size of the auto-detect header that precedes a Bandwidth Measure payload.
+///
+/// `headerLength` + `headerTypeId` + `sequenceNumber` + `requestType` +
+/// `payloadLength`, which [MS-RDPBCGR] 2.2.14.1.3 pins by requiring
+/// `headerLength` to be 0x08.
+const AUTO_DETECT_HEADER_LEN: u32 = 8;
+
+/// What one Bandwidth Measure message contributes to the Network Characteristics
+/// Byte Count store, and the canonical source for the connect-time bandwidth
+/// reasoning this file uses in several places (`UNMEASURABLE_INTERVAL_MS`, the
+/// `BandwidthMeasureStop` arm below, [`Sequence::step`]'s doc). Those restate
+/// only their own local decision plus a pointer here, so the reasoning behind
+/// each one stays single-sourced instead of drifting across independent copies.
+///
+/// **What is counted.** [MS-RDPBCGR] 3.2.5.14 gives connect-time detection
+/// exactly two accumulation steps, one on the Bandwidth Measure Payload and one
+/// on the 0x002B Stop, both reading "increment ... by the value specified in
+/// the **payloadLength** field plus the size of the header fields (8 bytes)".
+/// The section's other accumulation rule, the one that counts every byte
+/// received while the window is open, belongs to the 0x0014 and 0x0114 Starts,
+/// the reliable and lossy UDP variants. Connect-time is 0x1014, whose step list
+/// contains no such clause, so on this path the two per-message increments are
+/// the whole of the byte count.
+///
+/// **Which request types are in scope.** Only the 0x002B Stop, encapsulated in
+/// an Auto-Detect Request PDU during the connect-time phase, is handled here.
+/// [MS-RDPBCGR] 2.2.14.1.4 scopes the Auto-Detect-Request-PDU form of 0x0429 to
+/// *after* the RDP Connection Sequence has completed, so it cannot legitimately
+/// arrive here; its other form, and 0x0629, are tunneled over a multitransport
+/// channel this step never sees. The same 2.2.14.1.4 split sets `headerLength`
+/// to 0x08 for 0x002B and 0x06 otherwise, which is what fixes `AUTO_DETECT_HEADER_LEN`
+/// at 8 for this path specifically.
+///
+/// **Windows that could not be timed.** A driver whose `received_at` is always
+/// `None` never opens a window (see [`Sequence::step`]'s doc), so its Results
+/// report only the Stop's own payload against the untimed floor
+/// (`UNMEASURABLE_INTERVAL_MS`) rather than a full count divided by a
+/// `timeDelta` nobody measured. [MS-RDPBCGR] 3.2.5.14 states the Payload
+/// increment unconditionally; gating it on the window being open is a
+/// deliberate SHOULD-level deviation. It under-reports rather than over-reports
+/// (a server acting on 3.3.5.14 picks conservative settings for such a client),
+/// so it is not treated as a spec violation worth rejecting.
+///
+/// **This deliberately does not match FreeRDP.** FreeRDP counts the whole PDU
+/// length at the framing layer, `bandwidthMeasureByteCount += length` in
+/// `libfreerdp/core/rdp.c` after `rdp_read_header`, for any window including
+/// connect-time, and then adds `payloadLength` again in
+/// `libfreerdp/core/autodetect.c` for the Payload and the Stop. On the
+/// connect-time path that counts the payload twice and adds framing bytes the
+/// spec does not ask for. The figure is an informational QoS hint and the server
+/// proceeds either way, so following the spec costs no interop and is easier to
+/// justify than reproducing the reference's arithmetic. (This citation names
+/// files and expressions in a project outside this tree; it may drift as
+/// FreeRDP changes, and is not itself load-bearing for the decision above.)
+fn counted_len(payload_len: usize) -> u32 {
+    u32::try_from(payload_len)
+        .unwrap_or(u32::MAX)
+        .saturating_add(AUTO_DETECT_HEADER_LEN)
+}
+
+/// Reported as `timeDelta` when a connect-time bandwidth window was not timed.
+/// See [`counted_len`]'s doc for why an untimed window is reported at all.
+///
+/// One millisecond rather than zero, because a server computing
+/// `byteCount * 8 / timeDelta` divides by it ([MS-RDPBCGR] 3.3.5.14). It also
+/// floors a window that was timed and elapsed in under a millisecond, where it is
+/// a real bound rather than a stand-in.
+const UNMEASURABLE_INTERVAL_MS: u32 = 1;
 
 /// Outcome of a single multitransport bootstrapping request, passed to
 /// [`ClientConnector::complete_multitransport()`].
@@ -76,6 +146,13 @@ pub struct ConnectionResult {
     pub refresh_rect_support: bool,
     /// Whether the server permits Suppress Output PDUs for visual recovery.
     pub suppress_output_support: bool,
+    /// The Window List support level negotiated with the server.
+    ///
+    /// `None` means Window List was absent or disabled, so windowing orders
+    /// retain ordinary desktop-session handling.
+    pub window_support_level: Option<WindowSupportLevel>,
+    /// The monitor layout reported by the server during connection finalization.
+    pub monitor_layout: Option<rdp::finalization_messages::MonitorLayoutPdu>,
     /// Factory for producing connection activation sequences.
     ///
     /// Used to drive the [Deactivation-Reactivation Sequence] when a Server Deactivate All PDU is
@@ -227,6 +304,10 @@ impl State for ClientConnectorState {
     }
 }
 
+#[expect(
+    clippy::partial_pub_fields,
+    reason = "server response flags are negotiated internally and must not expand the public connector construction API; the connect-time bandwidth accumulators are likewise internal to the measurement, and exposing them would let a caller break the Start/Payload/Stop invariant"
+)]
 #[derive(Debug)]
 pub struct ClientConnector {
     pub config: Config,
@@ -236,6 +317,8 @@ pub struct ClientConnector {
     pub static_channels: StaticChannelSet,
     /// MCS message channel ID assigned by the server, once negotiated.
     pub message_channel_id: Option<u16>,
+    /// X.224 negotiation flags supplied by the server.
+    response_flags: nego::ResponseFlags,
     /// Multitransport flags the server advertised in its GCC
     /// `MultiTransportChannelData` block, if it sent one. Retained because
     /// MS-RDPBCGR 2.2.15.2 permits an `S_OK` response only to a server that
@@ -246,6 +329,18 @@ pub struct ClientConnector {
     ///
     /// Set via [`ClientConnector::with_auto_reconnect_cookie`].
     pub auto_reconnect_cookie: Option<ServerAutoReconnect>,
+    /// Start of the in-flight connect-time bandwidth measurement window.
+    ///
+    /// Set when the server's Bandwidth Measure Start arrives, and only when the
+    /// driver reported an arrival time for it. Cleared when the matching Stop is
+    /// answered. `None` therefore means no window is open, whether because no Start
+    /// was seen or because this driver does not observe time at all.
+    connect_time_bw_started_at: Option<MonotonicInstant>,
+    /// Bytes seen in the open window, accumulated across Payload messages.
+    ///
+    /// Only accumulated while a window is open, since a total with no interval to
+    /// divide it by is not a measurement of anything.
+    connect_time_bw_bytes: u32,
 }
 
 impl ClientConnector {
@@ -256,8 +351,11 @@ impl ClientConnector {
             client_addr,
             static_channels: StaticChannelSet::new(),
             message_channel_id: None,
+            response_flags: nego::ResponseFlags::empty(),
             server_multitransport_flags: None,
             auto_reconnect_cookie: None,
+            connect_time_bw_started_at: None,
+            connect_time_bw_bytes: 0,
         }
     }
 
@@ -278,6 +376,82 @@ impl ClientConnector {
     pub fn with_auto_reconnect_cookie(mut self, cookie: ServerAutoReconnect) -> Self {
         self.auto_reconnect_cookie = Some(cookie);
         self
+    }
+
+    /// Send the initial X.224 request with an explicit security protocol set.
+    pub fn initiate_with_security_protocol(
+        &mut self,
+        security_protocol: nego::SecurityProtocol,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
+        if !matches!(self.state, ClientConnectorState::ConnectionInitiationSendRequest) {
+            return Err(reason_err!("Initiation", "connection initiation has already started"));
+        }
+
+        let enabled_protocols = self.enabled_security_protocols()?;
+        if !enabled_protocols.contains(security_protocol) {
+            return Err(reason_err!(
+                "Initiation",
+                "requested security protocols {security_protocol} are not enabled by connector configuration",
+            ));
+        }
+
+        self.state = ClientConnectorState::Consumed;
+        self.encode_connection_request(security_protocol, output)
+    }
+
+    fn enabled_security_protocols(&self) -> ConnectorResult<nego::SecurityProtocol> {
+        let mut security_protocol = nego::SecurityProtocol::empty();
+
+        if self.config.enable_tls {
+            security_protocol.insert(nego::SecurityProtocol::SSL);
+        }
+        if self.config.enable_credssp {
+            // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
+            // PROTOCOL_HYBRID "SHOULD" also set PROTOCOL_SSL, but it is not a MUST.
+            // IronRDP intentionally omits SSL unless enable_tls is set so the server
+            // cannot silently downgrade NLA to TLS-only.
+            security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
+        }
+
+        // PROTOCOL_RDP (empty flags) is standard RDP security. IronRDP only supports the
+        // ENCRYPTION_LEVEL_NONE variant (no RC4 Security Exchange). Keep it opt-in so
+        // `enable_tls = false` + `enable_credssp = false` cannot silently open a plaintext
+        // TCP session; local named-pipe transports set `enable_standard_rdp_security`.
+        if security_protocol.is_standard_rdp_security() {
+            if !self.config.enable_standard_rdp_security {
+                return Err(reason_err!("Initiation", "standard RDP security is not supported"));
+            }
+            debug!("Advertising standard RDP security (PROTOCOL_RDP / no enhanced protocols)");
+        }
+
+        Ok(security_protocol)
+    }
+
+    fn encode_connection_request(
+        &mut self,
+        security_protocol: nego::SecurityProtocol,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
+        let connection_request = nego::ConnectionRequest {
+            nego_data: self.config.request_data.clone().or_else(|| {
+                self.config
+                    .credentials
+                    .username()
+                    .map(|username| nego::NegoRequestData::cookie(username.to_owned()))
+            }),
+            flags: nego::RequestFlags::empty(),
+            protocol: security_protocol,
+            correlation_info: None,
+        };
+
+        debug!(message = ?connection_request, "Send");
+
+        let written = ironrdp_core::encode_buf(&X224(connection_request), output).map_err(ConnectorError::encode)?;
+        self.state = ClientConnectorState::ConnectionInitiationWaitConfirm {
+            requested_protocol: security_protocol,
+        };
+        Written::from_size(written)
     }
 
     /// Whether Soft-Sync (`SOFTSYNC_TCP_TO_UDP`) was mutually advertised, meaning
@@ -378,12 +552,15 @@ impl ClientConnector {
         matches!(self.state, ClientConnectorState::EnhancedSecurityUpgrade { .. })
     }
 
+    /// Advance past [`ClientConnectorState::EnhancedSecurityUpgrade`] after TLS is already done.
+    ///
     /// # Panics
     ///
     /// Panics if state is not [ClientConnectorState::EnhancedSecurityUpgrade].
     pub fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.should_perform_security_upgrade());
-        self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
+        self.step(&[], None, &mut WriteBuf::new())
+            .expect("transition to next state");
         debug_assert!(!self.should_perform_security_upgrade());
     }
 
@@ -391,12 +568,16 @@ impl ClientConnector {
         matches!(self.state, ClientConnectorState::Credssp { .. })
     }
 
+    /// Advance past [`ClientConnectorState::Credssp`] after NLA is already done.
+    ///
     /// # Panics
     ///
     /// Panics if state is not [ClientConnectorState::Credssp].
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
-        let res = self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
+        let res = self
+            .step(&[], None, &mut WriteBuf::new())
+            .expect("transition to next state");
         debug_assert!(!self.should_perform_credssp());
         assert_eq!(res, Written::Nothing);
     }
@@ -590,6 +771,149 @@ impl ClientConnector {
             Written::from_size(total_written)
         }
     }
+
+    fn respond_to_connect_time_autodetect(
+        &mut self,
+        request: rdp::autodetect::AutoDetectRequest,
+        received_at: Option<MonotonicInstant>,
+        message_channel_id: u16,
+        user_channel_id: u16,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
+        use ironrdp_pdu::rdp::autodetect::{
+            AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu, BW_RESULTS_CONNECT_TIME, BW_START_CONNECT_TIME,
+            BW_STOP_CONNECT_TIME,
+        };
+
+        match request {
+            AutoDetectRequest::RttRequest { sequence_number, .. } => {
+                let response = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number });
+                let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
+                Written::from_size(written)
+            }
+            // Start opens the measurement window ([MS-RDPBCGR] 2.2.14.1.2). No reply is
+            // due; we only note when it arrived.
+            //
+            // Only the connect-time variant belongs to this phase. [MS-RDPBCGR]
+            // 3.2.5.14 gives 0x0014 and 0x0114, the reliable and lossy UDP Starts, a
+            // different procedure: they accumulate every byte received rather than
+            // just the Bandwidth Measure messages, and they are answered on a
+            // multitransport channel. Opening a connect-time window for one would
+            // measure the wrong thing and answer on the wrong channel, so they are
+            // left alone here.
+            //
+            // A driver that reports no arrival time cannot time this window, so it does
+            // not open one. That keeps the two unmeasurable situations distinct: a
+            // window that was timed and turned out to be short is still a measurement,
+            // while a driver with no clock never took one.
+            AutoDetectRequest::BandwidthMeasureStart { request_type, .. } if request_type == BW_START_CONNECT_TIME => {
+                self.connect_time_bw_started_at = received_at;
+                self.connect_time_bw_bytes = 0;
+                Ok(Written::Nothing)
+            }
+            // Payload carries the bytes whose transfer is being timed ([MS-RDPBCGR]
+            // 2.2.14.1.3). No reply is due; accumulate so Stop can report the total.
+            // With no window open there is nothing for the total to be divided by, so
+            // there is nothing worth accumulating.
+            //
+            // [MS-RDPBCGR] 3.2.5.14 increments the Byte Count store by payloadLength
+            // plus the size of the header fields (8 bytes: headerLength, headerTypeId,
+            // sequenceNumber, requestType, and payloadLength itself), not by
+            // payloadLength alone. `payload.len()` is exactly payloadLength, since
+            // decode reads that many bytes into it after consuming the header fields.
+            AutoDetectRequest::BandwidthMeasurePayload { payload, .. } => {
+                if self.connect_time_bw_started_at.is_some() {
+                    let len = counted_len(payload.len());
+                    self.connect_time_bw_bytes = self.connect_time_bw_bytes.saturating_add(len);
+                }
+                Ok(Written::Nothing)
+            }
+            // A connect-time Bandwidth Measure Stop ([MS-RDPBCGR] 2.2.14.1.4) warrants a
+            // Bandwidth Measure Results reply ([MS-RDPBCGR] 2.2.14.2.2), and only the
+            // 0x002B form is handled here; see `counted_len`'s doc for why, and for the
+            // byte-count and untimed-window reasoning this arm applies below.
+            //
+            // The reply is mandatory, not best-effort: FreeRDP-based servers (for
+            // example GNOME Remote Desktop) block in their AWAIT_BW_RESULT state until
+            // they receive it and never proceed to licensing without it, so omitting it
+            // stalls the whole connection.
+            AutoDetectRequest::BandwidthMeasureStop {
+                sequence_number,
+                request_type,
+                payload,
+            } if request_type == BW_STOP_CONNECT_TIME => {
+                let stop_bytes = payload.as_ref().map_or(0, |p| counted_len(p.len()));
+
+                // A window normally opens and closes on the same driver, so the same
+                // driver stamps both Start and this Stop. Nothing enforces that: a
+                // `Framed` rebuilt between the two (leftover bytes handed to a fresh
+                // `Framed`, which starts with no arrival time of its own) would open a
+                // window on one driver and close it on another with no reading, landing
+                // in the `(Some, None)` arm below. That arm silently drops whatever this
+                // window had accumulated; the debug log makes the drop visible instead of
+                // leaving it indistinguishable from the ordinary no-window case.
+                let (time_delta_ms, byte_count) = match (self.connect_time_bw_started_at, received_at) {
+                    (Some(started_at), Some(stopped_at)) => {
+                        let measured_ms =
+                            u32::try_from(stopped_at.duration_since(started_at).as_millis()).unwrap_or(u32::MAX);
+                        (
+                            measured_ms.max(UNMEASURABLE_INTERVAL_MS),
+                            self.connect_time_bw_bytes.saturating_add(stop_bytes),
+                        )
+                    }
+                    (Some(_), None) => {
+                        debug!(
+                            dropped_bytes = self.connect_time_bw_bytes,
+                            "Bandwidth Measure Stop arrived with no arrival time although its window was open; \
+                             dropping the accumulated count"
+                        );
+                        (UNMEASURABLE_INTERVAL_MS, stop_bytes)
+                    }
+                    (None, _) => (UNMEASURABLE_INTERVAL_MS, stop_bytes),
+                };
+
+                self.connect_time_bw_started_at = None;
+                self.connect_time_bw_bytes = 0;
+
+                let response = AutoDetectRspPdu::new(AutoDetectResponse::BandwidthMeasureResults {
+                    sequence_number,
+                    response_type: BW_RESULTS_CONNECT_TIME,
+                    time_delta_ms,
+                    byte_count,
+                });
+                let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
+                Written::from_size(written)
+            }
+            // A Stop reaching here with any other requestType means a nonconformant
+            // server. [MS-RDPBCGR] 2.2.14.1.4 scopes 0x0429-via-Auto-Detect-Request-PDU
+            // to after the RDP Connection Sequence has completed, so during connect-time
+            // detection the only legitimate form on this channel is 0x002B, matched
+            // above; 0x0429 as a tunneled Sub-Header and 0x0629 both belong to a
+            // multitransport channel this step never sees. No reply is owed here per
+            // spec, but silently dropping it leaves nothing to debug a stalled
+            // connection with, so it is noted rather than swallowed like the truly
+            // expected continuous variants below.
+            AutoDetectRequest::BandwidthMeasureStop {
+                sequence_number,
+                request_type,
+                ..
+            } => {
+                warn!(
+                    sequence_number,
+                    request_type, "Unexpected Bandwidth Measure Stop requestType during connect-time auto-detection"
+                );
+                Ok(Written::Nothing)
+            }
+            // The Network Characteristics Result is informational; nothing to send.
+            //
+            // This also catches the continuous-detection Bandwidth Measure Start,
+            // answered on a multitransport channel under a different procedure.
+            // Reaching it here means a server sent a continuous request during
+            // connect-time detection, which [MS-RDPBCGR] 3.2.5.14 does not provide for;
+            // ignoring is the conservative response.
+            _ => Ok(Written::Nothing),
+        }
+    }
 }
 
 /// Build an Initiate Multitransport Response carrying `hr_response`.
@@ -613,9 +937,10 @@ fn advance_licensing_exchange(
     user_channel_id: u16,
     message_channel_id: Option<u16>,
     input: &[u8],
+    received_at: Option<MonotonicInstant>,
     output: &mut WriteBuf,
 ) -> ConnectorResult<(Written, ClientConnectorState)> {
-    let written = license_exchange.step(input, output)?;
+    let written = license_exchange.step(input, received_at, output)?;
 
     let next_state = if license_exchange.state.is_terminal() {
         ClientConnectorState::MultitransportBootstrapping {
@@ -678,7 +1003,12 @@ impl Sequence for ClientConnector {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
+    fn step(
+        &mut self,
+        input: &[u8],
+        received_at: Option<MonotonicInstant>,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             // Invalid state
             ClientConnectorState::Consumed => {
@@ -689,52 +1019,9 @@ impl Sequence for ClientConnector {
             // Exchange supported security protocols and a few other connection flags.
             ClientConnectorState::ConnectionInitiationSendRequest => {
                 debug!("Connection Initiation");
-
-                let mut security_protocol = nego::SecurityProtocol::empty();
-
-                if self.config.enable_tls {
-                    security_protocol.insert(nego::SecurityProtocol::SSL);
-                }
-
-                if self.config.enable_credssp {
-                    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
-                    // The spec is stating that `PROTOCOL_SSL` "SHOULD" also be set when using `PROTOCOL_HYBRID`.
-                    // > PROTOCOL_HYBRID (0x00000002)
-                    // > Credential Security Support Provider protocol (CredSSP) (section 5.4.5.2).
-                    // > If this flag is set, then the PROTOCOL_SSL (0x00000001) flag SHOULD also be set
-                    // > because Transport Layer Security (TLS) is a subset of CredSSP.
-                    // However, crucially, it’s not strictly required (not "MUST").
-                    // In fact, we purposefully choose to not set `PROTOCOL_SSL` unless `enable_winlogon` is `true`.
-                    // This tells the server that we are not going to accept downgrading NLA to TLS security.
-                    security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
-                }
-
-                if security_protocol.is_standard_rdp_security() {
-                    return Err(reason_err!("Initiation", "standard RDP security is not supported",));
-                }
-
-                let connection_request = nego::ConnectionRequest {
-                    nego_data: self.config.request_data.clone().or_else(|| {
-                        self.config
-                            .credentials
-                            .username()
-                            .map(|username| nego::NegoRequestData::cookie(username.to_owned()))
-                    }),
-                    flags: nego::RequestFlags::empty(),
-                    protocol: security_protocol,
-                };
-
-                debug!(message = ?connection_request, "Send");
-
-                let written =
-                    ironrdp_core::encode_buf(&X224(connection_request), output).map_err(ConnectorError::encode)?;
-
-                (
-                    Written::from_size(written)?,
-                    ClientConnectorState::ConnectionInitiationWaitConfirm {
-                        requested_protocol: security_protocol,
-                    },
-                )
+                let security_protocol = self.enabled_security_protocols()?;
+                let written = self.encode_connection_request(security_protocol, output)?;
+                (written, mem::take(&mut self.state))
             }
             ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
                 let connection_confirm = decode::<X224<nego::ConnectionConfirm>>(input)
@@ -756,12 +1043,21 @@ impl Sequence for ClientConnector {
 
                 info!(?selected_protocol, ?flags, "Server confirmed connection");
 
-                if !selected_protocol.intersects(requested_protocol) {
+                // PROTOCOL_RDP is encoded as an empty bitset. `intersects` is false for two empty
+                // sets, so treat standard RDP security as a special case.
+                let protocol_ok = if selected_protocol.is_standard_rdp_security() {
+                    requested_protocol.is_standard_rdp_security()
+                } else {
+                    selected_protocol.intersects(requested_protocol)
+                };
+                if !protocol_ok {
                     return Err(reason_err!(
                         "Initiation",
                         "client advertised {requested_protocol}, but server selected {selected_protocol}",
                     ));
                 }
+
+                self.response_flags = flags;
 
                 (
                     Written::Nothing,
@@ -770,10 +1066,14 @@ impl Sequence for ClientConnector {
             }
 
             //== Upgrade to Enhanced RDP Security ==//
-            // NOTE: we assume the selected protocol is never the standard RDP security (RC4).
-            // User code should match this variant and perform the appropriate upgrade (TLS handshake, etc).
+            // When PROTOCOL_RDP is selected there is no TLS/CredSSP front-end: the caller should
+            // still invoke mark_security_upgrade_as_done() (a no-op upgrade) before continuing.
+            // When SSL/HYBRID is selected, user code must perform the TLS handshake first.
             ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => {
-                let next_state = if selected_protocol
+                let next_state = if selected_protocol.is_standard_rdp_security() {
+                    debug!("Standard RDP security selected; skipping TLS and CredSSP");
+                    ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
+                } else if selected_protocol
                     .intersects(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX)
                 {
                     debug!("Begin NLA using CredSSP");
@@ -797,8 +1097,13 @@ impl Sequence for ClientConnector {
             ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol } => {
                 debug!("Basic Settings Exchange");
 
-                let client_gcc_blocks =
-                    create_gcc_blocks(&self.config, selected_protocol, self.static_channels.values())?;
+                let client_gcc_blocks = create_gcc_blocks(
+                    &self.config,
+                    selected_protocol,
+                    self.response_flags
+                        .contains(nego::ResponseFlags::EXTENDED_CLIENT_DATA_SUPPORTED),
+                    self.static_channels.values(),
+                )?;
 
                 let connect_initial =
                     mcs::ConnectInitial::with_gcc_blocks(client_gcc_blocks).map_err(ConnectorError::decode)?;
@@ -884,7 +1189,7 @@ impl Sequence for ClientConnector {
                 mut channel_connection,
             } => {
                 debug!("Channel Connection");
-                let written = channel_connection.step(input, output)?;
+                let written = channel_connection.step(input, received_at, output)?;
 
                 let next_state = if let ChannelConnectionState::AllJoined { user_channel_id } = channel_connection.state
                 {
@@ -905,9 +1210,10 @@ impl Sequence for ClientConnector {
             }
 
             //== RDP Security Commencement ==//
-            // When using standard RDP security (RC4), a Security Exchange PDU is sent at this point.
-            // However, IronRDP does not support this unsecure security protocol (purposefully) and
-            // this part of the sequence is not implemented.
+            // With standard RDP security and ENCRYPTION_LEVEL_NONE, no Security Exchange PDU is
+            // sent (MS-RDPBCGR 5.3.2). IronRDP only supports that no-encryption path; RC4/FIPS
+            // would require a Security Exchange here and is rejected earlier when the server's
+            // SC_SECURITY block is not ServerSecurityData::no_security().
             //==============================//
 
             //== Secure Settings Exchange ==//
@@ -964,8 +1270,9 @@ impl Sequence for ClientConnector {
 
                 if let Some((message_channel_id, data)) = message_channel_pdu {
                     if let Ok(autodetect) = decode::<rdp::autodetect::AutoDetectReqPdu>(&data.user_data) {
-                        let written = respond_to_connect_time_autodetect(
+                        let written = self.respond_to_connect_time_autodetect(
                             autodetect.request,
+                            received_at,
                             message_channel_id,
                             user_channel_id,
                             output,
@@ -1014,6 +1321,7 @@ impl Sequence for ClientConnector {
                             user_channel_id,
                             self.message_channel_id,
                             input,
+                            received_at,
                             output,
                         )?
                     } else {
@@ -1045,6 +1353,7 @@ impl Sequence for ClientConnector {
                     user_channel_id,
                     self.message_channel_id,
                     input,
+                    received_at,
                     output,
                 )?
             }
@@ -1113,7 +1422,7 @@ impl Sequence for ClientConnector {
                     // exchange with the PDU intact.
                     let mut connection_activation =
                         ConnectionActivationSequence::new(self.config.clone(), io_channel_id, user_channel_id);
-                    let written = connection_activation.step(input, output)?;
+                    let written = connection_activation.step(input, received_at, output)?;
 
                     (
                         written,
@@ -1150,7 +1459,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::CapabilitiesExchange {
                 mut connection_activation,
             } => {
-                let written = connection_activation.step(input, output)?;
+                let written = connection_activation.step(input, received_at, output)?;
                 match connection_activation.connection_activation_state() {
                     ConnectionActivationState::ConnectionFinalization { .. } => (
                         written,
@@ -1174,7 +1483,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectionFinalization {
                 mut connection_activation,
             } => {
-                let written = connection_activation.step(input, output)?;
+                let written = connection_activation.step(input, received_at, output)?;
 
                 let next_state = if !connection_activation.connection_activation_state().is_terminal() {
                     ClientConnectorState::ConnectionFinalization { connection_activation }
@@ -1184,31 +1493,42 @@ impl Sequence for ClientConnector {
                             desktop_size,
                             share_id,
                             input_flags,
+                            static_channel_chunk_size,
                             enable_server_pointer,
                             pointer_software_rendering,
                             refresh_rect_support,
                             suppress_output_support,
-                        } => ClientConnectorState::Connected {
-                            result: ConnectionResult {
-                                io_channel_id: connection_activation.io_channel_id(),
-                                user_channel_id: connection_activation.user_channel_id(),
-                                message_channel_id: self.message_channel_id,
-                                share_id,
-                                static_channels: mem::take(&mut self.static_channels),
-                                desktop_size,
-                                input_flags,
-                                enable_server_pointer,
-                                pointer_software_rendering,
-                                refresh_rect_support,
-                                suppress_output_support,
-                                activation_factory: ConnectionActivationFactory::new(
-                                    self.config.clone(),
-                                    connection_activation.io_channel_id(),
-                                    connection_activation.user_channel_id(),
-                                ),
-                                compression_type: self.config.compression_type,
-                            },
-                        },
+                            window_support_level,
+                        } => {
+                            let mut static_channels = mem::take(&mut self.static_channels);
+                            if !static_channels.set_maximum_chunk_size(static_channel_chunk_size) {
+                                return Err(general_err!("invalid static channel chunk size"));
+                            }
+
+                            ClientConnectorState::Connected {
+                                result: ConnectionResult {
+                                    io_channel_id: connection_activation.io_channel_id(),
+                                    user_channel_id: connection_activation.user_channel_id(),
+                                    message_channel_id: self.message_channel_id,
+                                    share_id,
+                                    static_channels,
+                                    desktop_size,
+                                    input_flags,
+                                    enable_server_pointer,
+                                    pointer_software_rendering,
+                                    refresh_rect_support,
+                                    suppress_output_support,
+                                    window_support_level,
+                                    monitor_layout: connection_activation.monitor_layout(),
+                                    activation_factory: ConnectionActivationFactory::new(
+                                        self.config.clone(),
+                                        connection_activation.io_channel_id(),
+                                        connection_activation.user_channel_id(),
+                                    ),
+                                    compression_type: self.config.compression_type,
+                                },
+                            }
+                        }
                         _ => return Err(general_err!("invalid state (this is a bug)")),
                     }
                 };
@@ -1246,58 +1566,11 @@ pub fn encode_send_data_request<T: Encode>(
     Ok(written)
 }
 
-fn respond_to_connect_time_autodetect(
-    request: rdp::autodetect::AutoDetectRequest,
-    message_channel_id: u16,
-    user_channel_id: u16,
-    output: &mut WriteBuf,
-) -> ConnectorResult<Written> {
-    use ironrdp_pdu::rdp::autodetect::{
-        AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu, BW_RESULTS_CONNECT_TIME,
-    };
-
-    match request {
-        AutoDetectRequest::RttRequest { sequence_number, .. } => {
-            let response = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number });
-            let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
-            Written::from_size(written)
-        }
-        // A connect-time Bandwidth Measure Stop ([MS-RDPBCGR] 2.2.14.1.4) warrants a
-        // Bandwidth Measure Results reply ([MS-RDPBCGR] 2.2.14.2.2). This reply must
-        // be sent: FreeRDP-based servers (for example GNOME Remote Desktop) block in
-        // their AWAIT_BW_RESULT state until they receive it and never proceed to
-        // licensing without it, so omitting it stalls the whole connection. We do not
-        // run a stateful connect-time measurement, so we report the payload the
-        // server handed us over a nominal interval; the figure is an informational
-        // QoS hint and the server proceeds on receipt. A precise measurement (timing
-        // the Start/Payload/Stop window) can refine the reported bandwidth later.
-        AutoDetectRequest::BandwidthMeasureStop {
-            sequence_number,
-            payload,
-            ..
-        } => {
-            let byte_count = payload
-                .as_ref()
-                .map_or(0, |p| u32::try_from(p.len()).unwrap_or(u32::MAX));
-            let response = AutoDetectRspPdu::new(AutoDetectResponse::BandwidthMeasureResults {
-                sequence_number,
-                response_type: BW_RESULTS_CONNECT_TIME,
-                time_delta_ms: 1,
-                byte_count,
-            });
-            let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
-            Written::from_size(written)
-        }
-        // Bandwidth Measure Start and Payload carry no client reply, and the Network
-        // Characteristics Result is informational; nothing to send for those.
-        _ => Ok(Written::Nothing),
-    }
-}
-
 #[expect(single_use_lifetimes)] // anonymous lifetimes in `impl Trait` are unstable
 fn create_gcc_blocks<'a>(
     config: &Config,
     selected_protocol: nego::SecurityProtocol,
+    extended_client_data_supported: bool,
     static_channels: impl Iterator<Item = &'a StaticVirtualChannel>,
 ) -> ConnectorResult<gcc::ClientGccBlocks> {
     use ironrdp_pdu::gcc::{
@@ -1366,6 +1639,9 @@ fn create_gcc_blocks<'a>(
                     if max_color_depth == 32 {
                         early_capability_flags |= ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION;
                     }
+                    if extended_client_data_supported {
+                        early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU;
+                    }
 
                     Some(early_capability_flags)
                 },
@@ -1398,14 +1674,20 @@ fn create_gcc_blocks<'a>(
         },
         // TODO(#139): support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
         cluster: None,
-        monitor: None,
+        monitor: extended_client_data_supported
+            .then(|| config.monitor_layout.clone())
+            .flatten(),
         // Request the MCS message channel, which carries network auto-detect
         // ([MS-RDPBCGR] 2.2.14) and the multitransport / heartbeat PDUs. The
         // server assigns its ID in Server Message Channel Data.
-        message_channel: Some(gcc::ClientMessageChannelData),
-        multi_transport_channel: config
-            .multitransport_flags
-            .map(|flags| gcc::MultiTransportChannelData { flags }),
+        message_channel: extended_client_data_supported.then_some(gcc::ClientMessageChannelData),
+        multi_transport_channel: extended_client_data_supported
+            .then(|| {
+                config
+                    .multitransport_flags
+                    .map(|flags| gcc::MultiTransportChannelData { flags })
+            })
+            .flatten(),
         monitor_extended: None,
     })
 }
@@ -1449,6 +1731,14 @@ fn create_client_info_pdu(
         flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK;
     }
 
+    if config.enable_audio_capture {
+        flags |= ClientInfoFlags::AUDIO_CAPTURE;
+    }
+
+    if config.remote_application_mode {
+        flags |= ClientInfoFlags::RAIL;
+    }
+
     // Advertise bulk compression support if configured
     let compression_type = if let Some(ct) = config.compression_type {
         flags |= ClientInfoFlags::COMPRESSION;
@@ -1456,6 +1746,13 @@ fn create_client_info_pdu(
         ct
     } else {
         CompressionType::K8 // ignored if ClientInfoFlags::COMPRESSION is not set
+    };
+
+    // MS-RDPERP requires RemoteApp launch data on the RAIL channel.
+    let (alternate_shell, work_dir) = if config.remote_application_mode {
+        (String::new(), String::new())
+    } else {
+        (config.alternate_shell.clone(), config.work_dir.clone())
     };
 
     let client_info = ClientInfo {
@@ -1467,8 +1764,8 @@ fn create_client_info_pdu(
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
         flags,
         compression_type,
-        alternate_shell: config.alternate_shell.clone(),
-        work_dir: config.work_dir.clone(),
+        alternate_shell,
+        work_dir,
         extra_info: ExtendedClientInfo {
             address_family: match client_addr {
                 SocketAddr::V4(_) => AddressFamily::INET,
@@ -1498,5 +1795,224 @@ fn create_client_info_pdu(
     ClientInfoPdu {
         security_header,
         client_info,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
+    use ironrdp_pdu::rdp::client_info::ClientInfoFlags;
+    use ironrdp_pdu::{gcc, nego};
+
+    use super::{create_client_info_pdu, create_gcc_blocks};
+    use crate::{Config, Credentials, DesktopSize};
+
+    #[test]
+    fn remote_application_client_info_uses_rail_launch_data() {
+        let config = Config {
+            desktop_size: DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            monitor_layout: None,
+            desktop_scale_factor: 0,
+            enable_tls: true,
+            enable_credssp: false,
+            enable_standard_rdp_security: false,
+            credentials: Credentials::UsernamePassword {
+                username: "test".into(),
+                password: "test".into(),
+            },
+            domain: None,
+            client_build: 0,
+            client_name: "test".into(),
+            keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 12,
+            keyboard_layout: 0,
+            connection_type: gcc::ConnectionType::Lan,
+            ime_file_name: String::new(),
+            bitmap: None,
+            dig_product_id: String::new(),
+            client_dir: String::new(),
+            alternate_shell: "app.exe".into(),
+            work_dir: "C:\\apps".into(),
+            remote_application_mode: true,
+            rail_support_level: RailSupportLevel::SUPPORTED,
+            platform: MajorPlatformType::UNIX,
+            hardware_id: None,
+            request_data: None,
+            autologon: false,
+            enable_audio_playback: false,
+            enable_audio_capture: false,
+            performance_flags: Default::default(),
+            license_cache: None,
+            timezone_info: Default::default(),
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+            multitransport_flags: None,
+        };
+
+        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
+
+        assert!(client_info.flags.contains(ClientInfoFlags::RAIL));
+        assert!(client_info.alternate_shell.is_empty());
+        assert!(client_info.work_dir.is_empty());
+        assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
+    }
+
+    #[test]
+    fn audio_capture_flag_is_set_when_enabled() {
+        let mut config = Config {
+            desktop_size: DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            monitor_layout: None,
+            desktop_scale_factor: 0,
+            enable_tls: true,
+            enable_credssp: false,
+            enable_standard_rdp_security: false,
+            credentials: Credentials::UsernamePassword {
+                username: "test".into(),
+                password: "test".into(),
+            },
+            domain: None,
+            client_build: 0,
+            client_name: "test".into(),
+            keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 12,
+            keyboard_layout: 0,
+            connection_type: gcc::ConnectionType::Lan,
+            ime_file_name: String::new(),
+            bitmap: None,
+            dig_product_id: String::new(),
+            client_dir: String::new(),
+            alternate_shell: String::new(),
+            work_dir: String::new(),
+            remote_application_mode: false,
+            rail_support_level: RailSupportLevel::empty(),
+            platform: MajorPlatformType::UNIX,
+            hardware_id: None,
+            request_data: None,
+            autologon: false,
+            enable_audio_playback: true,
+            enable_audio_capture: true,
+            performance_flags: Default::default(),
+            license_cache: None,
+            timezone_info: Default::default(),
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+            multitransport_flags: None,
+        };
+
+        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
+        assert!(client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
+        assert!(!client_info.flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK));
+
+        config.enable_audio_capture = false;
+        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
+        assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
+    }
+
+    #[test]
+    fn gcc_blocks_advertise_monitor_layout_when_supported() {
+        let mut config = Config {
+            desktop_size: DesktopSize {
+                width: 1_920,
+                height: 1_080,
+            },
+            monitor_layout: Some(gcc::ClientMonitorData {
+                monitors: vec![gcc::Monitor {
+                    left: 0,
+                    top: 0,
+                    right: 1_919,
+                    bottom: 1_079,
+                    flags: gcc::MonitorFlags::PRIMARY,
+                }],
+            }),
+            desktop_scale_factor: 0,
+            enable_tls: true,
+            enable_credssp: false,
+            enable_standard_rdp_security: false,
+            credentials: Credentials::UsernamePassword {
+                username: "test".into(),
+                password: "test".into(),
+            },
+            domain: None,
+            client_build: 0,
+            client_name: "test".into(),
+            keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 12,
+            keyboard_layout: 0,
+            connection_type: gcc::ConnectionType::Lan,
+            ime_file_name: String::new(),
+            bitmap: None,
+            dig_product_id: String::new(),
+            client_dir: String::new(),
+            alternate_shell: String::new(),
+            work_dir: String::new(),
+            remote_application_mode: false,
+            rail_support_level: RailSupportLevel::empty(),
+            platform: MajorPlatformType::UNIX,
+            hardware_id: None,
+            request_data: None,
+            autologon: false,
+            enable_audio_playback: false,
+            enable_audio_capture: false,
+            performance_flags: Default::default(),
+            license_cache: None,
+            timezone_info: Default::default(),
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+            multitransport_flags: None,
+        };
+
+        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), true, core::iter::empty())
+            .expect("valid GCC Client Monitor Data");
+
+        assert_eq!(blocks.monitor, config.monitor_layout);
+        assert!(
+            blocks
+                .core
+                .optional_data
+                .early_capability_flags
+                .expect("early capability flags are present")
+                .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
+        );
+
+        config.monitor_layout = None;
+        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), true, core::iter::empty())
+            .expect("valid GCC Client Monitor Data");
+
+        assert!(blocks.monitor.is_none());
+        assert!(
+            blocks
+                .core
+                .optional_data
+                .early_capability_flags
+                .expect("early capability flags are present")
+                .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
+        );
+
+        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), false, core::iter::empty())
+            .expect("valid GCC Client Monitor Data");
+
+        assert!(blocks.monitor.is_none());
+        assert!(blocks.message_channel.is_none());
+        assert!(blocks.multi_transport_channel.is_none());
+        assert!(
+            !blocks
+                .core
+                .optional_data
+                .early_capability_flags
+                .expect("early capability flags are present")
+                .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
+        );
     }
 }

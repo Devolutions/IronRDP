@@ -163,6 +163,11 @@ const PALETTE_PAYLOAD: [u8; 10] = [
     0xFF, 0x00, 0x80, 0x00, // B=0xFF, G=0x00, R=0x80, pad=0x00
 ];
 
+const ORDERS_PAYLOAD: [u8; 3] = [
+    0x01, 0x00, // numberOrders = 1
+    0x2E, // Windowing Alternate Secondary order controlFlags
+];
+
 // header(1) + length(2) + payload(10)
 const FAST_PATH_PALETTE_BUFFER: [u8; 13] = [
     0x02, // updateCode=Palette(0x2), fragmentation=Single(0x0)
@@ -194,6 +199,15 @@ fn palette_decode_with_code_returns_palette_variant() {
     match update {
         FastPathUpdate::Palette(data) => assert_eq!(data, PALETTE_PAYLOAD.as_ref()),
         other => panic!("Expected Palette variant, got: {other:?}"),
+    }
+}
+
+#[test]
+fn orders_decode_with_code_returns_raw_orders_variant() {
+    let update = FastPathUpdate::decode_with_code(&ORDERS_PAYLOAD, UpdateCode::Orders).unwrap();
+    match update {
+        FastPathUpdate::Orders(data) => assert_eq!(data, ORDERS_PAYLOAD.as_ref()),
+        other => panic!("Expected Orders variant, got: {other:?}"),
     }
 }
 

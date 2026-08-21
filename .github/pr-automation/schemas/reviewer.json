@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Devolutions/IronRDP/pr-automation/reviewer-v1",
   "type": "object",
   "additionalProperties": false,
@@ -57,12 +56,5 @@
         ]
       }
     }
-  },
-  "allOf": [
-    {
-      "if": { "properties": { "has_findings": { "const": true } }, "required": ["has_findings"] },
-      "then": { "properties": { "findings": { "minItems": 1 } } },
-      "else": { "properties": { "findings": { "maxItems": 0 } } }
-    }
-  ]
+  }
 }
