@@ -730,7 +730,6 @@ pub struct RdpServer {
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     connection_binder: Option<Arc<dyn ConnectionBinder>>,
     pending_authenticated_credentials: Option<Credentials>,
-    pending_bound_connection: Option<BoundConnection>,
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
@@ -914,7 +913,6 @@ impl RdpServer {
             credential_validator: None,
             connection_binder: None,
             pending_authenticated_credentials: None,
-            pending_bound_connection: None,
             local_addr: None,
             autodetect: None,
             connection_handler,
@@ -1437,7 +1435,6 @@ impl RdpServer {
             BeginResult::Continue(framed) => {
                 self.clear_bound_connection().await;
                 self.pending_authenticated_credentials = None;
-                self.pending_bound_connection = None;
                 self.accept_finalize(framed, acceptor).await?;
             }
         };
@@ -1462,7 +1459,6 @@ impl RdpServer {
         acceptor.mark_security_upgrade_as_done();
         self.clear_bound_connection().await;
         self.pending_authenticated_credentials = None;
-        self.pending_bound_connection = None;
 
         if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
             // Generic streams don't expose peer address. Use a neutral
@@ -1976,7 +1972,7 @@ impl RdpServer {
         received_credentials: Option<ReceivedCredentials>,
     ) -> core::result::Result<(), ConnectorError> {
         let authenticated_credentials =
-            resolve_authenticated_credentials(self.credential_validator.clone(), received_credentials.as_ref(), false)
+            resolve_authenticated_credentials(self.credential_validator.clone(), received_credentials.as_ref())
                 .await
                 .map_err(|error| ConnectorError::reason("credential validation failed", format!("{error:#}")))?;
 
@@ -2473,7 +2469,6 @@ fn validate_bound_display_size(
 async fn resolve_authenticated_credentials(
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     received_credentials: Option<&ReceivedCredentials>,
-    reactivation: bool,
 ) -> Result<Option<&Credentials>> {
     if let Some(received) = received_credentials {
         let creds = &received.credentials;
@@ -2495,9 +2490,6 @@ async fn resolve_authenticated_credentials(
         } else {
             Ok(Some(creds))
         }
-    } else if reactivation {
-        debug!("Skipping credential validation for reactivation without credentials");
-        Ok(None)
     } else {
         debug!("Skipping credential validation (no credentials in AcceptorResult)");
         Ok(None)
@@ -2663,23 +2655,17 @@ impl CredentialsHandler for RdpServer {
             ));
         }
 
-        if self.pending_bound_connection.is_none()
-            && let Some(binder) = self.connection_binder.clone()
-        {
-            let credentials = self
-                .pending_authenticated_credentials
-                .as_ref()
-                .ok_or_else(|| ConnectorError::general("no authenticated credentials for connection binding"))?;
-            let bound = binder
-                .bind_connection(credentials, desktop_size)
-                .await
-                .map_err(|error| ConnectorError::reason("connection binder failed", format!("{error:#}")))?;
-            self.pending_bound_connection = Some(bound);
-        }
-
-        let Some(bound) = self.pending_bound_connection.take() else {
+        let Some(binder) = self.connection_binder.clone() else {
             return Ok(());
         };
+        let credentials = self
+            .pending_authenticated_credentials
+            .as_ref()
+            .ok_or_else(|| ConnectorError::general("no authenticated credentials for connection binding"))?;
+        let bound = binder
+            .bind_connection(credentials, desktop_size)
+            .await
+            .map_err(|error| ConnectorError::reason("connection binder failed", format!("{error:#}")))?;
 
         let mut bound_display = bound.display;
         let bound_size = bound_display.size().await;
@@ -2696,25 +2682,8 @@ impl CredentialsHandler for RdpServer {
 }
 
 #[cfg(test)]
-mod wrdp_reactivation_tests {
+mod credential_binding_tests {
     use super::*;
-
-    struct AllowUserValidator(&'static str);
-
-    #[async_trait::async_trait]
-    impl CredentialValidator for AllowUserValidator {
-        async fn validate(
-            &self,
-            credentials: &Credentials,
-            _origin: CredentialOrigin,
-        ) -> Result<CredentialDecision, CredentialValidationError> {
-            if credentials.username == self.0 {
-                Ok(CredentialDecision::Accept)
-            } else {
-                Ok(CredentialDecision::Reject)
-            }
-        }
-    }
 
     struct FailingValidator;
 
@@ -2737,41 +2706,6 @@ mod wrdp_reactivation_tests {
             password: "secret".to_owned(),
             domain: None,
         }
-    }
-
-    #[tokio::test]
-    async fn reactivation_without_credentials_does_not_retain_validated_identity() {
-        let validator: Arc<dyn CredentialValidator> = Arc::new(AllowUserValidator("alice"));
-        let initial_credentials = ReceivedCredentials {
-            credentials: creds("alice"),
-            origin: CredentialOrigin::ClientInfo,
-        };
-
-        let first = resolve_authenticated_credentials(Some(Arc::clone(&validator)), Some(&initial_credentials), false)
-            .await
-            .expect("initial validation should succeed")
-            .expect("initial validation should produce credentials");
-        assert_eq!(first.username, "alice");
-
-        let reactivated = resolve_authenticated_credentials(Some(validator), None, true)
-            .await
-            .expect("missing reactivation credentials is not a backend error");
-        assert!(reactivated.is_none());
-    }
-
-    #[tokio::test]
-    async fn reactivation_with_credentials_revalidates_resent_identity() {
-        let validator = Arc::new(AllowUserValidator("alice"));
-        let reactivation_credentials = ReceivedCredentials {
-            credentials: creds("alice"),
-            origin: CredentialOrigin::ClientInfo,
-        };
-
-        let reactivated = resolve_authenticated_credentials(Some(validator), Some(&reactivation_credentials), true)
-            .await
-            .expect("resent reactivation credentials should be validated")
-            .expect("resent reactivation credentials should remain available");
-        assert_eq!(reactivated.username, "alice");
     }
 
     #[test]
@@ -2797,7 +2731,7 @@ mod wrdp_reactivation_tests {
             origin: CredentialOrigin::ClientInfo,
         };
 
-        let error = resolve_authenticated_credentials(Some(validator), Some(&received_credentials), false)
+        let error = resolve_authenticated_credentials(Some(validator), Some(&received_credentials))
             .await
             .expect_err("backend failure should be returned");
         let validation_error = error
