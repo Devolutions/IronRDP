@@ -106,7 +106,7 @@ public partial class ConnectionActivationSequence: IDisposable
     /// <returns>
     /// A <c>Written</c> allocated on Rust side.
     /// </returns>
-    public Written Step(byte[] pdu, MonotonicInstant receivedAt, WriteBuf buf)
+    public Written Step(byte[] pdu, ulong receivedAt, WriteBuf buf)
     {
         unsafe
         {
@@ -123,7 +123,7 @@ public partial class ConnectionActivationSequence: IDisposable
             }
             fixed (byte* pduPtr = pdu)
             {
-                Raw.ConnectorActivationFfiResultBoxWrittenBoxIronRdpError result = Raw.ConnectionActivationSequence.Step(_inner, pduPtr, pduLength, receivedAt.Milliseconds, bufRaw);
+                Raw.ConnectorActivationFfiResultBoxWrittenBoxIronRdpError result = Raw.ConnectionActivationSequence.Step(_inner, pduPtr, pduLength, receivedAt, bufRaw);
                 if (!result.isOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));

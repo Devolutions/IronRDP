@@ -305,7 +305,7 @@ public partial class ClientConnector: IDisposable
     /// <returns>
     /// A <c>Written</c> allocated on Rust side.
     /// </returns>
-    public Written Step(byte[] input, MonotonicInstant receivedAt, WriteBuf writeBuf)
+    public Written Step(byte[] input, ulong receivedAt, WriteBuf writeBuf)
     {
         unsafe
         {
@@ -322,7 +322,7 @@ public partial class ClientConnector: IDisposable
             }
             fixed (byte* inputPtr = input)
             {
-                Raw.ConnectorFfiResultBoxWrittenBoxIronRdpError result = Raw.ClientConnector.Step(_inner, inputPtr, inputLength, receivedAt.Milliseconds, writeBufRaw);
+                Raw.ConnectorFfiResultBoxWrittenBoxIronRdpError result = Raw.ClientConnector.Step(_inner, inputPtr, inputLength, receivedAt, writeBufRaw);
                 if (!result.isOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
