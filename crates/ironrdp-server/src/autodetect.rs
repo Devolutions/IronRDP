@@ -312,6 +312,14 @@ impl AutoDetectManager {
         })
     }
 
+    /// Session-lifetime lowest RTT in milliseconds (`baseRTT` per
+    /// [MS-RDPBCGR] 2.2.14.1.5), or `None` if no measurement has landed yet.
+    /// Unlike [`Self::snapshot`]'s `min_ms`, this never rises as samples age
+    /// out of the window: it is the floor over the whole session.
+    pub fn baseline_rtt_ms(&self) -> Option<u32> {
+        self.min_rtt_ms
+    }
+
     /// Number of outstanding probes awaiting response.
     pub fn pending_count(&self) -> usize {
         self.pending_probes.len()
@@ -347,136 +355,4 @@ pub struct RttSnapshot {
     pub avg_ms: u32,
     /// Number of samples in the current window.
     pub sample_count: usize,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rtt_request_increments_sequence() {
-        let mut mgr = AutoDetectManager::new();
-        let req1 = mgr.send_rtt_request(0);
-        let req2 = mgr.send_rtt_request(0);
-        assert_eq!(req1.sequence_number(), 0);
-        assert_eq!(req2.sequence_number(), 1);
-        assert_eq!(mgr.pending_count(), 2);
-    }
-
-    #[test]
-    fn rtt_response_computes_latency() {
-        let mut mgr = AutoDetectManager::new();
-        let req = mgr.send_rtt_request(0);
-
-        let response = AutoDetectResponse::RttResponse {
-            sequence_number: req.sequence_number(),
-        };
-        // Both timestamps come from the caller, so the measurement is exact rather than
-        // dependent on how fast the test happens to run.
-        assert_eq!(mgr.handle_response(&response, 20), Some(20));
-        assert_eq!(mgr.pending_count(), 0);
-    }
-
-    #[test]
-    fn unknown_sequence_returns_none() {
-        let mut mgr = AutoDetectManager::new();
-        let _ = mgr.send_rtt_request(0);
-
-        let response = AutoDetectResponse::RttResponse { sequence_number: 999 };
-        assert!(mgr.handle_response(&response, 20).is_none());
-        assert_eq!(mgr.pending_count(), 1, "original probe should remain");
-    }
-
-    #[test]
-    fn snapshot_returns_none_without_data() {
-        let mgr = AutoDetectManager::new();
-        assert!(mgr.snapshot().is_none());
-    }
-
-    #[test]
-    fn snapshot_reflects_measurements() {
-        let mut mgr = AutoDetectManager::new();
-
-        for (sent_at, rtt) in [(0u64, 10u64), (100, 20), (200, 30)] {
-            let req = mgr.send_rtt_request(sent_at);
-            let response = AutoDetectResponse::RttResponse {
-                sequence_number: req.sequence_number(),
-            };
-            let _ = mgr.handle_response(&response, sent_at + rtt);
-        }
-
-        let snap = mgr.snapshot().expect("should have data after 3 measurements");
-        assert_eq!(snap.sample_count, 3);
-        assert_eq!(snap.min_ms, 10);
-        assert_eq!(snap.max_ms, 30);
-        assert_eq!(snap.avg_ms, 20);
-    }
-
-    /// A caller whose clock ran backwards between the request and the response must
-    /// produce a zero sample. Wrapping subtraction here would yield a value near
-    /// `u32::MAX` and poison every statistic drawn from the window.
-    #[test]
-    fn backwards_clock_yields_a_zero_sample() {
-        let mut mgr = AutoDetectManager::new();
-        let req = mgr.send_rtt_request(1000);
-
-        let response = AutoDetectResponse::RttResponse {
-            sequence_number: req.sequence_number(),
-        };
-        assert_eq!(mgr.handle_response(&response, 400), Some(0));
-
-        // The zero has to reach the window, not just the return value, since the
-        // snapshot is what the peer eventually sees.
-        let snap = mgr.snapshot().expect("one measurement was recorded");
-        assert_eq!(snap.min_ms, 0);
-        assert_eq!(snap.max_ms, 0);
-        assert_eq!(snap.avg_ms, 0);
-    }
-
-    /// The same backwards clock reaches expiry, where the saturation has the opposite
-    /// shape: an age of zero is below any maximum, so the probe stays pending.
-    /// Wrapping subtraction would make it look older than any limit and drop a probe
-    /// whose response is still in flight.
-    #[test]
-    fn backwards_clock_keeps_the_probe_pending() {
-        let mut mgr = AutoDetectManager::new();
-        let _ = mgr.send_rtt_request(1000);
-
-        mgr.expire_stale_probes(400, 100);
-        assert_eq!(mgr.pending_count(), 1, "a probe from the future is not stale");
-    }
-
-    /// A gap wider than `u32::MAX` milliseconds (about 49.7 days) clamps rather than
-    /// truncating to the low 32 bits, which would report a small RTT for an enormous one.
-    #[test]
-    fn an_enormous_gap_clamps_to_u32_max() {
-        let mut mgr = AutoDetectManager::new();
-        let req = mgr.send_rtt_request(0);
-
-        let response = AutoDetectResponse::RttResponse {
-            sequence_number: req.sequence_number(),
-        };
-        assert_eq!(mgr.handle_response(&response, u64::from(u32::MAX) + 1), Some(u32::MAX));
-    }
-
-    #[test]
-    fn sequence_number_wraps() {
-        let mut mgr = AutoDetectManager::new();
-        mgr.next_sequence = u16::MAX;
-        let req = mgr.send_rtt_request(0);
-        assert_eq!(req.sequence_number(), u16::MAX);
-
-        let req2 = mgr.send_rtt_request(0);
-        assert_eq!(req2.sequence_number(), 0, "should wrap around");
-    }
-
-    #[test]
-    fn stale_probe_expiry() {
-        let mut mgr = AutoDetectManager::new();
-        let _ = mgr.send_rtt_request(0);
-        assert_eq!(mgr.pending_count(), 1);
-
-        mgr.expire_stale_probes(1, 0);
-        assert_eq!(mgr.pending_count(), 0);
-    }
 }

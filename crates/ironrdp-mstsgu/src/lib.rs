@@ -10,6 +10,8 @@ mod packet_io;
 mod proto;
 #[doc(hidden)]
 pub mod rpc;
+#[expect(dead_code)]
+mod rpc_transport;
 mod udp;
 
 use core::fmt;

@@ -23,6 +23,9 @@ pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 pub const SHARE_DATA_HEADER_COMPRESSION_MASK: u8 = 0xF;
 const SHARE_CONTROL_HEADER_MASK: u16 = 0xF;
 const SHARE_CONTROL_HEADER_SIZE: usize = 2 * 3 + 4;
+/// On-the-wire Share Control Header per MS-RDPBCGR 2.2.8.1.1.1.1: totalLength,
+/// pduType and pduSource. shareId is part of the individual PDU bodies.
+const SHARE_CONTROL_HEADER_WIRE_SIZE: usize = 2 * 3;
 
 const PROTOCOL_VERSION: u16 = 0x10;
 
@@ -299,12 +302,14 @@ impl Encode for ShareControlHeader {
 
 impl<'de> Decode<'de> for ShareControlHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        ensure_fixed_part_size!(in: src);
+        // The wire header is only 6 bytes (MS-RDPBCGR 2.2.8.1.1.1.1); shareId belongs
+        // to the PDU body. xrdp sends header-only Deactivate All PDUs without it.
+        ensure_size!(in: src, size: SHARE_CONTROL_HEADER_WIRE_SIZE);
 
         let total_length = usize::from(src.read_u16());
         let pdu_type_with_version = src.read_u16();
         let pdu_source = src.read_u16();
-        let share_id = src.read_u32();
+        let share_id = if src.len() >= 4 { src.read_u32() } else { 0 };
 
         let pdu_type = ShareControlPduType::from_u16(pdu_type_with_version & SHARE_CONTROL_HEADER_MASK)
             .ok_or_else(|| invalid_field_err!("pdu_type", "invalid pdu type"))?;
@@ -945,6 +950,41 @@ mod tests {
                 expected: 18
             }
         ));
+    }
+
+    #[test]
+    fn decode_short_deactivate_all_pdu() {
+        let encoded = [
+            0x06, 0x00, // totalLength (6 - header only, no shareId)
+            0x16, 0x00, // pduType (Deactivate All) + protocolVersion
+            0xE9, 0x03, // pduSource
+        ];
+
+        let decoded: ShareControlHeader = decode(&encoded).expect("header-only Deactivate All PDU");
+
+        assert!(matches!(
+            decoded.share_control_pdu,
+            ShareControlPdu::ServerDeactivateAll(_)
+        ));
+        assert_eq!(decoded.share_id, 0);
+    }
+
+    #[test]
+    fn decode_deactivate_all_pdu_with_share_id() {
+        let encoded = [
+            0x0A, 0x00, // totalLength (10 - header with shareId)
+            0x16, 0x00, // pduType (Deactivate All) + protocolVersion
+            0xE9, 0x03, // pduSource
+            0xDD, 0xCC, 0xBB, 0xAA, // shareId
+        ];
+
+        let decoded: ShareControlHeader = decode(&encoded).expect("full-length Deactivate All PDU");
+
+        assert!(matches!(
+            decoded.share_control_pdu,
+            ShareControlPdu::ServerDeactivateAll(_)
+        ));
+        assert_eq!(decoded.share_id, 0xAABB_CCDD);
     }
 
     #[test]
