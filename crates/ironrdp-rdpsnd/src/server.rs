@@ -117,6 +117,20 @@ pub trait RdpsndServerHandler: Send + core::fmt::Debug {
     /// Called when the audio stream is torn down (e.g. the client closed the
     /// channel or the session ended).
     fn stop(&mut self);
+
+    /// Called for every Wave Confirm PDU the client sends.
+    ///
+    /// `timestamp` is the `wTimeStamp` the server put on the corresponding wave,
+    /// echoed back once the client consumed, cancelled or dropped that block, so
+    /// a handler that timestamps its own captures can measure how long the data
+    /// spent on the client. The default implementation ignores it.
+    ///
+    /// Defined in [\[MS-RDPEA\] 2.2.3.8].
+    ///
+    /// [\[MS-RDPEA\] 2.2.3.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/1c67d6d0-4e8b-4e1a-9d3a-cd0d6f0d1c5f
+    fn wave_confirm(&mut self, block_no: u8, timestamp: u16) {
+        let _ = (block_no, timestamp);
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -187,11 +201,18 @@ impl RdpsndServer {
             .format_no
             .ok_or_else(|| pdu_other_err!("invalid state - no format"))?;
 
+        // The client echoes wTimeStamp back in the Wave Confirm PDU, which is
+        // how a server measures how long the client held the data. Carry the
+        // low bits of the same capture time the 32-bit dwAudioTimeStamp gets,
+        // so both fields describe one instant.
+        let [timestamp_lo, timestamp_hi, _, _] = ts.to_le_bytes();
+        let wire_timestamp = u16::from_le_bytes([timestamp_lo, timestamp_hi]);
+
         // The server doesn't wait for wave confirm, apparently FreeRDP neither.
         let msg = if version >= pdu::Version::V8 {
             let pdu = pdu::Wave2Pdu {
                 block_no: self.block_no,
-                timestamp: 0,
+                timestamp: wire_timestamp,
                 audio_timestamp: ts,
                 format_no,
                 data: data.into(),
@@ -212,7 +233,7 @@ impl RdpsndServer {
             let info = pdu::WavePdu {
                 block_no: self.block_no,
                 format_no,
-                timestamp: 0,
+                timestamp: wire_timestamp,
                 data_prefix,
                 audio_length,
             };
@@ -352,6 +373,7 @@ impl SvcProcessor for RdpsndServer {
             RdpsndState::Ready => {
                 if let pdu::ClientAudioOutputPdu::WaveConfirm(c) = pdu {
                     debug!(?c);
+                    self.handler.wave_confirm(c.block_no, c.timestamp);
                 }
                 vec![]
             }
