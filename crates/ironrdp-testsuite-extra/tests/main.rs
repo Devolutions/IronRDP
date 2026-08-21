@@ -4,9 +4,7 @@
 mod agent;
 mod async_framed;
 mod capture_helpers;
-mod client_config;
-mod client_input;
-mod client_rail;
+mod client;
 mod dvc_pipe_proxy;
 mod e2e;
 mod gateway_detect;
