@@ -338,10 +338,39 @@ pub trait ConnectionBinder: Send + Sync {
 
 struct BoundDisplaySlot {
     default: Box<dyn RdpServerDisplay>,
-    // Async display methods temporarily take the bound display out of this
-    // slot before awaiting. That relies on the outer tokio::Mutex around
-    // RdpServer::display to serialize all display callers.
+    // Async display methods lease the bound display from this slot. The lease
+    // restores it on cancellation unless a newer connection binding replaced it.
     bound: Arc<StdMutex<Option<Box<dyn RdpServerDisplay>>>>,
+}
+
+struct BoundDisplayLease {
+    slot: Arc<StdMutex<Option<Box<dyn RdpServerDisplay>>>>,
+    display: Option<Box<dyn RdpServerDisplay>>,
+}
+
+impl BoundDisplayLease {
+    fn take(slot: &Arc<StdMutex<Option<Box<dyn RdpServerDisplay>>>>) -> Option<Self> {
+        let display = slot.lock().expect("bound display lock poisoned").take()?;
+        Some(Self {
+            slot: Arc::clone(slot),
+            display: Some(display),
+        })
+    }
+
+    fn display_mut(&mut self) -> &mut dyn RdpServerDisplay {
+        self.display
+            .as_deref_mut()
+            .expect("bound display lease always owns a display")
+    }
+}
+
+impl Drop for BoundDisplayLease {
+    fn drop(&mut self) {
+        let mut slot = self.slot.lock().expect("bound display lock poisoned");
+        if slot.is_none() {
+            *slot = self.display.take();
+        }
+    }
 }
 
 impl BoundDisplaySlot {
@@ -353,45 +382,24 @@ impl BoundDisplaySlot {
 #[async_trait::async_trait]
 impl RdpServerDisplay for BoundDisplaySlot {
     async fn size(&mut self) -> DesktopSize {
-        let bound_display = {
-            let mut bound = self.bound.lock().expect("bound display lock poisoned");
-            bound.take()
-        };
-
-        if let Some(mut display) = bound_display {
-            let size = display.size().await;
-            *self.bound.lock().expect("bound display lock poisoned") = Some(display);
-            size
+        if let Some(mut lease) = BoundDisplayLease::take(&self.bound) {
+            lease.display_mut().size().await
         } else {
             self.default.size().await
         }
     }
 
     async fn request_initial_size(&mut self, client_size: DesktopSize) -> DesktopSize {
-        let bound_display = {
-            let mut bound = self.bound.lock().expect("bound display lock poisoned");
-            bound.take()
-        };
-
-        if let Some(mut display) = bound_display {
-            let size = display.request_initial_size(client_size).await;
-            *self.bound.lock().expect("bound display lock poisoned") = Some(display);
-            size
+        if let Some(mut lease) = BoundDisplayLease::take(&self.bound) {
+            lease.display_mut().request_initial_size(client_size).await
         } else {
             self.default.request_initial_size(client_size).await
         }
     }
 
     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
-        let bound_display = {
-            let mut bound = self.bound.lock().expect("bound display lock poisoned");
-            bound.take()
-        };
-
-        if let Some(mut display) = bound_display {
-            let updates = display.updates().await;
-            *self.bound.lock().expect("bound display lock poisoned") = Some(display);
-            updates
+        if let Some(mut lease) = BoundDisplayLease::take(&self.bound) {
+            lease.display_mut().updates().await
         } else {
             self.default.updates().await
         }
@@ -6413,5 +6421,110 @@ mod wrdp_reactivation_tests {
             .expect("credential validation error should remain downcastable");
         let source = core::error::Error::source(validation_error).expect("backend source should be preserved");
         assert_eq!(source.to_string(), "backend unavailable");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::future::pending;
+
+    use ironrdp_core::impl_as_any;
+    use ironrdp_pdu::gcc::ChannelName;
+    use ironrdp_svc::{SvcMessage, SvcServerProcessor};
+
+    use super::*;
+
+    /// A channel backend that owns a resource, released on drop the way
+    /// `RdpsndServer` stops its handler.
+    #[derive(Debug)]
+    struct ResourceChannel(Arc<AtomicBool>);
+
+    impl Drop for ResourceChannel {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    impl_as_any!(ResourceChannel);
+
+    impl SvcProcessor for ResourceChannel {
+        fn channel_name(&self) -> ChannelName {
+            ChannelName::from_static(b"testchan")
+        }
+
+        fn process(&mut self, _payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl SvcServerProcessor for ResourceChannel {}
+
+    struct PendingDisplay;
+
+    #[async_trait::async_trait]
+    impl RdpServerDisplay for PendingDisplay {
+        async fn size(&mut self) -> DesktopSize {
+            pending().await
+        }
+
+        async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+            pending().await
+        }
+    }
+
+    struct FixedDisplay(DesktopSize);
+
+    #[async_trait::async_trait]
+    impl RdpServerDisplay for FixedDisplay {
+        async fn size(&mut self) -> DesktopSize {
+            self.0
+        }
+
+        async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+            pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_bound_display_call_restores_authenticated_display() {
+        let expected = DesktopSize {
+            width: 1280,
+            height: 720,
+        };
+        let bound = Arc::new(StdMutex::new(Some(
+            Box::new(PendingDisplay) as Box<dyn RdpServerDisplay>
+        )));
+        let mut slot = BoundDisplaySlot::new(Box::new(FixedDisplay(expected)), Arc::clone(&bound));
+
+        assert!(
+            tokio::time::timeout(core::time::Duration::ZERO, slot.size())
+                .await
+                .is_err()
+        );
+        assert!(bound.lock().expect("bound display lock poisoned").is_some());
+    }
+
+    #[tokio::test]
+    async fn run_connection_releases_the_static_channels() {
+        let mut server = RdpServer::builder()
+            .with_addr(([127, 0, 0, 1], 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+
+        let released = Arc::new(AtomicBool::new(false));
+        server.static_channels.insert(ResourceChannel(Arc::clone(&released)));
+
+        // A stream that is already at EOF: the connection ends early, which
+        // is the path an embedder's accept loop sees when a client vanishes.
+        let (client, server_side) = tokio::io::duplex(64);
+        drop(client);
+        let _ = server.run_connection(server_side).await;
+
+        assert!(
+            released.load(Ordering::Relaxed),
+            "the channel backends of a finished connection must be released, not held until the next client"
+        );
     }
 }
