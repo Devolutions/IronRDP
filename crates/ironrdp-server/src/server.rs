@@ -1128,12 +1128,12 @@ impl RdpServer {
         self.connection_binder = binder;
     }
 
-    async fn install_bound_connection(&mut self, bound: BoundConnection) {
+    fn install_bound_connection(&mut self, bound: BoundConnection) {
         *self.bound_display.lock().expect("bound display lock poisoned") = Some(bound.display);
         *self.bound_handler.lock().expect("bound input lock poisoned") = Some(bound.input);
     }
 
-    async fn clear_bound_connection(&mut self) {
+    fn clear_bound_connection(&mut self) {
         self.bound_display.lock().expect("bound display lock poisoned").take();
         self.bound_handler.lock().expect("bound input lock poisoned").take();
         self.advanced_input_active.store(false, Ordering::Release);
@@ -1433,7 +1433,7 @@ impl RdpServer {
             },
 
             BeginResult::Continue(framed) => {
-                self.clear_bound_connection().await;
+                self.clear_bound_connection();
                 self.pending_authenticated_credentials = None;
                 self.accept_finalize(framed, acceptor).await?;
             }
@@ -1457,7 +1457,7 @@ impl RdpServer {
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
         acceptor.mark_security_upgrade_as_done();
-        self.clear_bound_connection().await;
+        self.clear_bound_connection();
         self.pending_authenticated_credentials = None;
 
         if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
@@ -1564,7 +1564,7 @@ impl RdpServer {
                             error!(?error, "Connection error");
                         }
 
-                        self.clear_bound_connection().await;
+                        self.clear_bound_connection();
 
                         if let Some(ref mut handler) = self.connection_handler {
                             let action = handler.on_disconnected(
@@ -2674,8 +2674,7 @@ impl CredentialsHandler for RdpServer {
         self.install_bound_connection(BoundConnection {
             display: bound_display,
             input: bound.input,
-        })
-        .await;
+        });
         debug!(?bound_size, "Connection binder installed display/input handlers");
         Ok(())
     }
