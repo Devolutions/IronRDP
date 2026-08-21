@@ -166,6 +166,7 @@ impl GwClient {
         let work = tokio::spawn(async move {
             let iv = Duration::from_secs(15 * 60);
             let mut keepalive_interval = tokio::time::interval_at(tokio::time::Instant::now() + iv, iv);
+            let mut inbound_open = true;
 
             loop {
                 let mut wsbuf = [0u8; 8192];
@@ -197,10 +198,10 @@ impl GwClient {
                             },
                             PktTy::Data => {
                                 let p = HttpDataPkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
-                                if in_tx.send(Bytes::from(p.data.to_vec())).await.is_err() {
+                                if inbound_open && in_tx.send(Bytes::from(p.data.to_vec())).await.is_err() {
                                     // Reader gone or shutdown closed the inbound channel.
-                                    gw.io.close().await?;
-                                    return Ok(());
+                                    // Keep draining outbound bytes before closing the WebSocket.
+                                    inbound_open = false;
                                 }
                             },
                             PktTy::ServiceMessage => {
