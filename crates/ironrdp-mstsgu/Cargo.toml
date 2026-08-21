@@ -33,6 +33,10 @@ path = "tests/http_control.rs"
 name = "rpc_pdu"
 path = "tests/rpc_pdu.rs"
 
+[[test]]
+name = "rpch_http"
+path = "tests/rpch_http.rs"
+
 [features]
 default = []
 rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
@@ -52,7 +56,7 @@ log = "0.4"
 sspi = { version = "0.21", features = ["network_client"] }
 tokio-tungstenite = { version = "0.29" }
 tokio-util = { version = "0.7" }
-tokio = { version = "1.52", features = ["macros", "rt"] }
+tokio = { version = "1.52", features = ["macros", "rt", "io-util"] }
 uuid = { version = "1", features = ["v4"] }
 
 [lints]
