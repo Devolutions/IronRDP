@@ -12,6 +12,17 @@ keywords.workspace = true
 categories.workspace = true
 autotests = false
 
+[features]
+default = ["full", "rustls"]
+full = ["dep:ironrdp-agent", "dep:ironrdp-daemon", "dep:ironrdp-viewer"]
+rustls = ["ironrdp-mstsgu/rustls", "ironrdp-tls/rustls"]
+native-tls = ["ironrdp-mstsgu/native-tls", "ironrdp-tls/native-tls"]
+
+[dependencies]
+ironrdp-agent = { path = "../ironrdp-agent", optional = true }
+ironrdp-daemon = { path = "../ironrdp-daemon", optional = true }
+ironrdp-viewer = { path = "../ironrdp-viewer", optional = true }
+
 [lib]
 doctest = false
 test = false
@@ -27,8 +38,6 @@ async-trait = "0.1"
 ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo"] }
 ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-async.path = "../ironrdp-async"
-ironrdp-agent.path = "../ironrdp-agent"
-ironrdp-daemon.path = "../ironrdp-daemon"
 ironrdp-bulk.path = "../ironrdp-bulk"
 ironrdp-client = { path = "../ironrdp-client", features = ["sound"] }
 ironrdp-core.path = "../ironrdp-core"
@@ -46,9 +55,8 @@ ironrdp-rdpeudp-tokio.path = "../ironrdp-rdpeudp-tokio"
 ironrdp-rdpsnd.path = "../ironrdp-rdpsnd"
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", features = ["capture"] }
 ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }
-ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-tokio.path = "../ironrdp-tokio"
-ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
+ironrdp-tls.path = "../ironrdp-tls"
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", features = ["__test"] }
 rcgen = "0.14"
 semver = "1.0"
@@ -60,6 +68,7 @@ tokio = { version = "1", features = ["sync", "time", "net", "rt", "rt-multi-thre
 # process default, which fails every TLS test in this binary.
 tokio-rustls = { version = "0.26", default-features = false }
 uuid = { version = "1", features = ["v4"] }
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
 
 [target.'cfg(windows)'.dev-dependencies]
 ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"
