@@ -48,6 +48,25 @@ pub struct Capture {
     pub tls_key_log: TlsKeyLog,
 }
 
+impl Capture {
+    /// Merge additional NSS-compatible TLS key-log entries.
+    ///
+    /// Capture exports include secrets only for TLS flows the exporter sees.
+    /// Supply the original key log for a TLS session unwrapped from a gateway.
+    pub fn add_tls_key_log(&mut self, key_log: &str) {
+        if key_log.is_empty() {
+            return;
+        }
+        if !self.tls_key_log.0.is_empty() && !self.tls_key_log.0.ends_with('\n') {
+            self.tls_key_log.0.push('\n');
+        }
+        self.tls_key_log.0.push_str(key_log);
+        if !key_log.ends_with('\n') {
+            self.tls_key_log.0.push('\n');
+        }
+    }
+}
+
 impl core::fmt::Debug for Capture {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Capture")
