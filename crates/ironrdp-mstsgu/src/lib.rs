@@ -12,6 +12,9 @@ mod proto;
 pub mod rpc;
 #[expect(dead_code)]
 mod rpc_transport;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod test_support;
 mod udp;
 
 use core::fmt;
@@ -28,7 +31,7 @@ use log::warn;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::PollSender;
 
-use self::packet_io::{PacketIo, open_websocket_transport};
+use self::packet_io::{PacketIo, open_gateway_transport};
 #[doc(hidden)]
 pub use self::proto::{ChannelClosePkt, ReauthMessagePkt, ServiceMessagePkt, gateway_code_label};
 use self::proto::{
@@ -71,6 +74,7 @@ type Error = ironrdp_error::Error<GwErrorKind>;
 pub enum GwErrorKind {
     InvalidGwTarget,
     Connect,
+    HttpStatus(u16),
     PacketEof,
     UnsupportedFeature,
     Custom,
@@ -99,6 +103,7 @@ impl Display for GwErrorKind {
         let x = match self {
             GwErrorKind::InvalidGwTarget => "invalid GW Target",
             GwErrorKind::Connect => "connection error",
+            GwErrorKind::HttpStatus(status) => return write!(f, "unexpected http status {status}"),
             GwErrorKind::PacketEof => "PacketEOF",
             GwErrorKind::UnsupportedFeature => "unsupported feature",
             GwErrorKind::Custom => "custom",
@@ -156,7 +161,7 @@ impl GwClient {
         client_name: &str,
         server_port: u16,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
-        let (io, client_addr) = open_websocket_transport(target).await?;
+        let (io, client_addr) = open_gateway_transport(target).await?;
         Self::connect_ws(target.clone(), client_name, server_port, io)
             .await
             .map(|x| (x, client_addr))
