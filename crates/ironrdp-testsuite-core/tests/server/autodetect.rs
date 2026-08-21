@@ -336,6 +336,54 @@ fn with_autodetect_rtt_handle_round_trips_the_same_arc() {
 }
 
 #[test]
+fn autodetect_baseline_rtt_handle_defaults_to_sentinel() {
+    use core::net::{Ipv4Addr, SocketAddr};
+    use core::sync::atomic::Ordering;
+
+    use ironrdp_server::RdpServer;
+
+    let server = RdpServer::builder()
+        .with_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .build();
+
+    assert_eq!(
+        server.autodetect_baseline_rtt_handle().load(Ordering::Relaxed),
+        u32::MAX
+    );
+}
+
+#[test]
+fn with_autodetect_baseline_rtt_handle_round_trips_the_same_arc() {
+    use core::net::{Ipv4Addr, SocketAddr};
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    use ironrdp_server::RdpServer;
+
+    let handle = Arc::new(AtomicU32::new(42));
+    let server = RdpServer::builder()
+        .with_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .with_autodetect_baseline_rtt_handle(Arc::clone(&handle))
+        .build();
+
+    assert!(Arc::ptr_eq(&handle, &server.autodetect_baseline_rtt_handle()));
+    // The server resets an injected handle to the sentinel at construction.
+    assert_eq!(
+        server.autodetect_baseline_rtt_handle().load(Ordering::Relaxed),
+        u32::MAX
+    );
+    // The Arc is shared: mutating the original is visible through the server's handle.
+    handle.store(42, Ordering::Relaxed);
+    assert_eq!(server.autodetect_baseline_rtt_handle().load(Ordering::Relaxed), 42);
+}
+
+#[test]
 fn stale_probe_expiry() {
     let mut mgr = AutoDetectManager::new();
     let _ = mgr.send_rtt_request(0);
@@ -491,6 +539,43 @@ fn base_rtt_is_the_session_low_not_the_window_low() {
         }
         other => panic!("expected NetworkCharacteristicsResult, got {other:?}"),
     }
+}
+
+/// The same session-lifetime-low property `base_rtt_is_the_session_low_not_the_window_low`
+/// pins on the wire result, but on the public getter directly rather than through
+/// `build_netchar_result`.
+#[test]
+fn baseline_rtt_ms_reflects_the_session_low_not_the_window_low() {
+    let mut mgr = AutoDetectManager::new();
+    assert!(mgr.baseline_rtt_ms().is_none(), "nothing measured yet");
+
+    let sample = |mgr: &mut AutoDetectManager, rtt: u64| {
+        let req = mgr.send_rtt_request(0);
+        let _ = mgr.handle_response(
+            &AutoDetectResponse::RttResponse {
+                sequence_number: req.sequence_number(),
+            },
+            rtt,
+        );
+    };
+
+    sample(&mut mgr, 5);
+    assert_eq!(mgr.baseline_rtt_ms(), Some(5));
+
+    for _ in 0..RTT_WINDOW {
+        sample(&mut mgr, 100);
+    }
+
+    assert_eq!(
+        mgr.snapshot().expect("samples recorded").min_ms,
+        100,
+        "the 5 ms sample has aged out of the window"
+    );
+    assert_eq!(
+        mgr.baseline_rtt_ms(),
+        Some(5),
+        "the session-lifetime low does not age out with it"
+    );
 }
 
 /// Pins which measured quantity lands in which wire field.

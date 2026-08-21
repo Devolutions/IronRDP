@@ -312,6 +312,14 @@ impl AutoDetectManager {
         })
     }
 
+    /// Session-lifetime lowest RTT in milliseconds (`baseRTT` per
+    /// [MS-RDPBCGR] 2.2.14.1.5), or `None` if no measurement has landed yet.
+    /// Unlike [`Self::snapshot`]'s `min_ms`, this never rises as samples age
+    /// out of the window: it is the floor over the whole session.
+    pub fn baseline_rtt_ms(&self) -> Option<u32> {
+        self.min_rtt_ms
+    }
+
     /// Number of outstanding probes awaiting response.
     pub fn pending_count(&self) -> usize {
         self.pending_probes.len()
