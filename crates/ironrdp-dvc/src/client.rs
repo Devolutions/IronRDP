@@ -283,6 +283,25 @@ impl DrdynvcClient {
             .map(|p| DynamicChannelMut::new(channel_id, p))
     }
 
+    /// Returns a mutable typed accessor for a pre-registered client DVC.
+    ///
+    /// The mutable counterpart of [`DrdynvcClient::get_dvc`]. Type lookup is available
+    /// only for channels registered with [`DrdynvcClient::with_dynamic_channel`] or
+    /// [`DrdynvcClient::attach_dynamic_channel`]. Returns `None` until the server has
+    /// created the channel and the processor has started.
+    pub fn get_dvc_mut<T>(&mut self) -> Option<DynamicChannelMut<'_, T>>
+    where
+        T: DvcClientProcessor,
+    {
+        let dvc_channel = self.dynamic_channels.get_by_type_id_mut(TypeId::of::<T>())?;
+        let channel_id = dvc_channel.channel_id?;
+        dvc_channel
+            .channel_processor
+            .as_any_mut()
+            .downcast_mut()
+            .map(|p| DynamicChannelMut::new(channel_id, p))
+    }
+
     fn create_capabilities_response(&mut self, server_version: CapsVersion) -> SvcMessage {
         let caps_response = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(server_version));
         debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
@@ -566,6 +585,11 @@ impl DynamicChannelSet {
         self.listeners
             .values()
             .any(|entry| entry.type_id == Some(type_id) && entry.listener.is_available())
+    }
+
+    fn get_by_type_id_mut(&mut self, type_id: TypeId) -> Option<&mut DynamicVirtualChannel> {
+        let channel_id = *self.type_id_to_channel_id.get(&type_id)?;
+        self.active_channels.get_mut(&channel_id)
     }
 
     fn get_by_channel_id(&self, id: DynamicChannelId) -> Option<&DynamicVirtualChannel> {
