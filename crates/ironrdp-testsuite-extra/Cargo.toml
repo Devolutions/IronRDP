@@ -64,6 +64,7 @@ sha2 = "0.10"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["sync", "time", "net", "rt", "rt-multi-thread", "macros", "io-util"] }
+tokio-native-tls = "0.3"
 # No provider feature here on purpose: `ironrdp-tls` already brings
 # aws-lc-rs, and enabling a second one leaves rustls unable to pick a
 # process default, which fails every TLS test in this binary.
