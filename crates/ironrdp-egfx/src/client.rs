@@ -398,7 +398,11 @@ enum ClientState {
 pub struct GraphicsPipelineClient {
     handler: Box<dyn GraphicsPipelineHandler>,
     h264_decoder: Option<Box<dyn H264Decoder>>,
-    clearcodec_decoder: ClearCodecDecoder,
+    /// Built on first use via [`Self::decode_clearcodec`]. `None` means no ClearCodec
+    /// frame has arrived yet, not that the codec is unsupported: keeping the ~1.37 MiB
+    /// V-bar and glyph cache spine (see `ClearCodecDecoder::new`) unallocated saves that
+    /// much per session for the common case of a server that never sends ClearCodec.
+    clearcodec_decoder: Option<ClearCodecDecoder>,
     planar_decoder: BitmapStreamDecoder,
     progressive_decoder: ProgressiveDecoder,
 
@@ -420,12 +424,14 @@ impl GraphicsPipelineClient {
     /// Create a new `GraphicsPipelineClient`
     ///
     /// If `h264_decoder` is `None`, AVC420 frames are logged and skipped.
-    /// ClearCodec decoding is always available (no external decoder required).
+    /// ClearCodec decoding is always available (no external decoder required)
+    /// and its cache spine is allocated lazily, on the first ClearCodec frame,
+    /// rather than up front for a codec the session may never use.
     pub fn new(handler: Box<dyn GraphicsPipelineHandler>, h264_decoder: Option<Box<dyn H264Decoder>>) -> Self {
         Self {
             handler,
             h264_decoder,
-            clearcodec_decoder: ClearCodecDecoder::new(),
+            clearcodec_decoder: None,
             planar_decoder: BitmapStreamDecoder::default(),
             progressive_decoder: ProgressiveDecoder::new(),
             decompressor: zgfx::Decompressor::new(),
@@ -952,6 +958,7 @@ impl GraphicsPipelineClient {
 
         let bgra = self
             .clearcodec_decoder
+            .get_or_insert_with(ClearCodecDecoder::new)
             .decode(bitmap_data, dest_width, dest_height)
             .map_err(|e| pdu_other_err!("ClearCodec decode", source: e))?;
 
