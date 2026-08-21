@@ -1381,8 +1381,8 @@ impl ConfigBuilder {
     /// List the required fields that still need a value before [`build`](Self::build) can succeed.
     ///
     /// Gateway credentials are only required when a gateway transport is selected.
-    /// When `gatewaycredentialssource` selects `UseServerCredentials`, missing gateway credentials
-    /// are resolved from the RDP server account.
+    /// When `gatewaycredentialssource` selects `UseServerCredentials`, gateway fields are omitted
+    /// because [`build`](Self::build) resolves them from the RDP server account.
     pub fn missing(&self) -> Vec<MissingField> {
         let mut missing = Vec::new();
         if self.destination.is_none() {
@@ -1451,7 +1451,14 @@ impl ConfigBuilder {
             {
                 Some(GatewayCredentialsSource::UseServerCredentials) => {
                     if self.gateway_username.is_none() {
-                        self.gateway_username = self.username.clone();
+                        self.gateway_username = self.username.as_deref().map(|username| match self.domain.as_deref() {
+                            Some(domain)
+                                if !domain.is_empty() && !username.contains('\\') && !username.contains('@') =>
+                            {
+                                format!("{domain}\\{username}")
+                            }
+                            _ => username.to_owned(),
+                        });
                     }
                     if self.gateway_password.is_none() {
                         self.gateway_password = self.password.clone();
@@ -2102,6 +2109,22 @@ mod tests {
         };
         assert_eq!(gateway.username, "user");
         assert_eq!(gateway.password, "password");
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn gateway_server_credentials_qualify_bare_username_with_domain() {
+        let config = with_gateway_credentials_source(
+            gateway_builder().with_domain("CONTOSO"),
+            ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials,
+        )
+        .build()
+        .expect("valid server credential configuration");
+
+        let Transport::Gateway(gateway) = config.transport() else {
+            panic!("gateway transport expected");
+        };
+        assert_eq!(gateway.username, "CONTOSO\\user");
     }
 
     #[cfg(feature = "gateway")]
