@@ -158,7 +158,7 @@ pub struct AcceptorResult {
     /// handled before capability exchange and are not exposed here.
     ///
     /// Servers that need to validate credentials (e.g., via PAM or LDAP)
-    /// should use a [`CredentialsHandler`](crate::CredentialsHandler).
+    /// should use a [`ConnectionSetupHandler`](crate::ConnectionSetupHandler).
     pub credentials: Option<Credentials>,
     /// Client Auto-Reconnect Packet received in the Client Info PDU.
     ///
@@ -347,11 +347,11 @@ impl Acceptor {
         matches!(self.state, AcceptorState::Credssp { .. })
     }
 
-    pub fn desktop_size(&self) -> DesktopSize {
+    pub(crate) fn desktop_size(&self) -> DesktopSize {
         self.desktop_size
     }
 
-    pub fn is_reactivation(&self) -> bool {
+    pub(crate) fn is_reactivation(&self) -> bool {
         self.reactivation
     }
 
@@ -359,25 +359,25 @@ impl Acceptor {
     ///
     /// The server still has to verify its security verifier before accepting
     /// the connection.
-    pub fn is_auto_reconnect_attempt(&self) -> bool {
+    pub(crate) fn is_auto_reconnect_attempt(&self) -> bool {
         self.received_auto_reconnect.is_some()
     }
 
-    pub fn is_ready_for_capability_exchange(&self) -> bool {
+    pub(crate) fn is_ready_for_capability_exchange(&self) -> bool {
         matches!(self.state, AcceptorState::CapabilitiesSendServer { .. })
     }
 
     /// Returns credentials received during the current handshake, if any.
-    pub fn received_credentials(&self) -> Option<&ReceivedCredentials> {
+    pub(crate) fn received_credentials(&self) -> Option<&ReceivedCredentials> {
         self.received_credentials.as_ref()
     }
 
     /// Takes credentials received during the current handshake, if any.
-    pub fn credentials_need_handling(&self) -> bool {
+    pub(crate) fn credentials_need_handling(&self) -> bool {
         !self.is_auto_reconnect_attempt() && self.received_credentials.is_some() && !self.credentials_handled
     }
 
-    pub fn mark_credentials_handled(&mut self) {
+    pub(crate) fn mark_credentials_handled(&mut self) {
         self.credentials_handled = true;
     }
 

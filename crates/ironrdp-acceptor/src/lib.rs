@@ -30,8 +30,12 @@ where
     Continue(Framed<S>),
 }
 
+/// Async hooks that complete authenticated connection setup at protocol-safe points.
+///
+/// Credential handling runs before HYBRID_EX reports success. Capability setup
+/// runs after the operational desktop size is known but before capability exchange.
 #[async_trait::async_trait(?Send)]
-pub trait CredentialsHandler {
+pub trait ConnectionSetupHandler {
     async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> ConnectorResult<()>;
 
     async fn prepare_capability_exchange(&mut self, desktop_size: DesktopSize) -> ConnectorResult<()> {
@@ -40,10 +44,10 @@ pub trait CredentialsHandler {
     }
 }
 
-struct NoopCredentialsHandler;
+struct NoopConnectionSetupHandler;
 
 #[async_trait::async_trait(?Send)]
-impl CredentialsHandler for NoopCredentialsHandler {
+impl ConnectionSetupHandler for NoopConnectionSetupHandler {
     async fn handle_credentials(&mut self, _credentials: Option<ReceivedCredentials>) -> ConnectorResult<()> {
         Ok(())
     }
@@ -89,12 +93,12 @@ where
         client_computer_name,
         public_key,
         kerberos_config,
-        &mut NoopCredentialsHandler,
+        &mut NoopConnectionSetupHandler,
     )
     .await
 }
 
-/// Runs CredSSP and invokes `credentials_handler` before HYBRID_EX reports success.
+/// Runs CredSSP and invokes `connection_setup_handler` before HYBRID_EX reports success.
 pub async fn accept_credssp_with<S, N, H>(
     framed: &mut Framed<S>,
     acceptor: &mut Acceptor,
@@ -107,7 +111,7 @@ pub async fn accept_credssp_with<S, N, H>(
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
-    H: CredentialsHandler,
+    H: ConnectionSetupHandler,
 {
     if acceptor.should_perform_credssp() {
         perform_credssp_step(
@@ -132,10 +136,10 @@ pub async fn accept_finalize<S>(
 where
     S: FramedRead + FramedWrite,
 {
-    accept_finalize_with(framed, acceptor, &mut NoopCredentialsHandler).await
+    accept_finalize_with(framed, acceptor, &mut NoopConnectionSetupHandler).await
 }
 
-/// Finalizes the RDP handshake and invokes `credentials_handler` before capability exchange.
+/// Finalizes the RDP handshake and invokes `connection_setup_handler` before capability exchange.
 pub async fn accept_finalize_with<S, H>(
     mut framed: Framed<S>,
     acceptor: &mut Acceptor,
@@ -143,7 +147,7 @@ pub async fn accept_finalize_with<S, H>(
 ) -> ConnectorResult<(Framed<S>, AcceptorResult)>
 where
     S: FramedRead + FramedWrite,
-    H: CredentialsHandler,
+    H: ConnectionSetupHandler,
 {
     let mut buf = WriteBuf::new();
 
@@ -198,7 +202,7 @@ async fn perform_credssp_step<S, N, H>(
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
-    H: CredentialsHandler,
+    H: ConnectionSetupHandler,
 {
     assert!(acceptor.should_perform_credssp());
     let mut buf = WriteBuf::new();
