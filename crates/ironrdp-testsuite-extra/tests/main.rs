@@ -18,7 +18,11 @@ mod dvc_pipe_proxy;
 mod e2e;
 mod gateway_detect;
 mod mstsgu;
+#[cfg(windows)]
+mod rdpdr;
 mod rdpeudp_tokio;
+#[cfg(feature = "native-tls")]
+mod tls;
 mod vmconnect;
 mod volume;
 

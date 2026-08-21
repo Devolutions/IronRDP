@@ -2,7 +2,6 @@ use ironrdp_tls::{CertificateValidation, upgrade, upgrade_with_certificate_valid
 use tokio::net::{TcpListener, TcpStream};
 use tokio_native_tls::TlsAcceptor;
 use tokio_native_tls::native_tls::{Identity, TlsAcceptor as NativeTlsAcceptor};
-use x509_cert as _;
 
 #[tokio::test]
 async fn default_accepts_self_signed_certificates_and_strict_rejects_them() {

@@ -47,6 +47,7 @@ ironrdp-dvc.path = "../ironrdp-dvc"
 ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
 ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-input.path = "../ironrdp-input"
+ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpdr.path = "../ironrdp-rdpdr"
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", features = ["std"] }
@@ -64,6 +65,7 @@ sha2 = "0.10"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["sync", "time", "net", "rt", "rt-multi-thread", "macros", "io-util"] }
+tokio-native-tls = "0.3"
 # No provider feature here on purpose: `ironrdp-tls` already brings
 # aws-lc-rs, and enabling a second one leaves rustls unable to pick a
 # process default, which fails every TLS test in this binary.
@@ -73,6 +75,18 @@ ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
 
 [target.'cfg(windows)'.dev-dependencies]
 ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"
+windows = { version = "0.62", features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Wdk_System_SystemServices",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Credentials",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+] }
 
 [lints]
 workspace = true
