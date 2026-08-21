@@ -40,7 +40,7 @@ use tokio::task;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, trace, warn};
 
-use crate::autodetect::{AutoDetectManager, RttSnapshot};
+use crate::autodetect::{AutoDetectManager, AutoDetectOutcome, RttSnapshot};
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
@@ -576,6 +576,16 @@ pub struct RdpServer {
     /// RTT for flow control.
     autodetect_rtt: Arc<AtomicU32>,
 
+    /// Latest NetworkAutoDetect measured bandwidth in kilobits per second, or
+    /// `u32::MAX` until the first measurement completes (and while auto-detect
+    /// is disabled). Updated whenever a Bandwidth Measure Results response is
+    /// processed, same trigger point as [`Self::autodetect_rtt`]. Exposed via
+    /// [`Self::autodetect_bandwidth_handle`]: without it, the server can tell
+    /// the *client* its measured bandwidth over the wire but has no way to
+    /// tell the embedder, which the connect-time figure carried to the client
+    /// alone does not fix.
+    autodetect_bandwidth: Arc<AtomicU32>,
+
     /// Optional Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`). When `Some`, the server validates a returning
     /// `ARC_CS_PRIVATE_PACKET`, replaces its random after every connection, and
@@ -693,6 +703,7 @@ impl RdpServer {
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
         display_suppressed: Option<Arc<AtomicBool>>,
         autodetect_rtt: Option<Arc<AtomicU32>>,
+        autodetect_bandwidth: Option<Arc<AtomicU32>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -729,6 +740,11 @@ impl RdpServer {
             autodetect_rtt: {
                 // Reset to the sentinel: an injected handle must not expose a stale value before the first measurement.
                 let handle = autodetect_rtt.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
+                handle.store(u32::MAX, Ordering::Relaxed);
+                handle
+            },
+            autodetect_bandwidth: {
+                let handle = autodetect_bandwidth.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
                 handle.store(u32::MAX, Ordering::Relaxed);
                 handle
             },
@@ -974,6 +990,17 @@ impl RdpServer {
     /// [`RdpServerBuilder::with_autodetect_rtt_handle`](crate::RdpServerBuilder::with_autodetect_rtt_handle).
     pub fn autodetect_rtt_handle(&self) -> Arc<AtomicU32> {
         Arc::clone(&self.autodetect_rtt)
+    }
+
+    /// Returns a handle to the latest NetworkAutoDetect measured bandwidth in
+    /// kilobits per second (`u32::MAX` until the first measurement completes,
+    /// and while auto-detect is disabled). The server updates it whenever a
+    /// Bandwidth Measure Results response completes a measurement; backends
+    /// clone the handle to read the figure the server also reports to the
+    /// client on the wire. Inject a shared instance at construction with
+    /// [`RdpServerBuilder::with_autodetect_bandwidth_handle`](crate::RdpServerBuilder::with_autodetect_bandwidth_handle).
+    pub fn autodetect_bandwidth_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.autodetect_bandwidth)
     }
 
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
@@ -2070,11 +2097,32 @@ impl RdpServer {
         match decode::<rdp::autodetect::AutoDetectRspPdu>(data.user_data.as_ref()) {
             Ok(pdu) => {
                 if let Some(ref mut ad) = self.autodetect {
-                    if let Some(rtt_ms) = ad.handle_response(&pdu.response, monotonic_now_ms()) {
-                        self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
-                        debug!(rtt_ms, seq = pdu.response.sequence_number(), "RTT measured");
-                    } else {
-                        trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
+                    match ad.handle_response(&pdu.response, monotonic_now_ms()) {
+                        AutoDetectOutcome::Rtt(rtt_ms) => {
+                            self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
+                            debug!(rtt_ms, seq = pdu.response.sequence_number(), "RTT measured");
+                        }
+                        AutoDetectOutcome::Bandwidth(Some(bandwidth_kbps)) => {
+                            self.autodetect_bandwidth.store(bandwidth_kbps, Ordering::Relaxed);
+                            debug!(
+                                bandwidth_kbps,
+                                seq = pdu.response.sequence_number(),
+                                "Bandwidth measured"
+                            );
+                        }
+                        AutoDetectOutcome::Bandwidth(None) => {
+                            // The manager just cleared its own figure rather than keep
+                            // reporting a stale one (see `handle_response`'s doc comment);
+                            // mirror that here so the exposed handle does not disagree.
+                            self.autodetect_bandwidth.store(u32::MAX, Ordering::Relaxed);
+                            trace!(
+                                seq = pdu.response.sequence_number(),
+                                "Bandwidth measurement completed without a usable figure"
+                            );
+                        }
+                        AutoDetectOutcome::Unmatched => {
+                            trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
+                        }
                     }
                 }
             }
