@@ -57,7 +57,7 @@ You are expected to read and follow these sources of truth when relevant:
 - **Web client details:** `web-client/README.md`
 
 Do not create, edit, or update `crates/*/CHANGELOG.md` during feature or fix work.
-release-plz exclusively generates and updates crate changelogs in its release PRs.
+Crate changelogs are generated and updated exclusively in release-plz release PRs.
 Crate changelogs are not normal hand-maintained documentation.
 
 ### Microsoft Open Specifications (Agent Skill)
