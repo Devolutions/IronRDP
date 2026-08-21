@@ -119,11 +119,28 @@ fn empty_data_before_completion_fails_rather_than_looping_forever() {
 }
 
 #[test]
-fn oversized_response_is_clamped_to_the_remaining_bytes() {
+fn response_exceeding_requested_size_fails_the_fetch() {
     let mut fetch = ChunkedFetch::new(1, 0, 4, 64);
-    let _ = fetch.next_request();
+    let request = fetch.next_request().unwrap();
+    assert_eq!(
+        request.requested_size, 4,
+        "requested exactly the file's remaining 4 bytes"
+    );
 
-    // Peer sends more than the file's total size; must not overrun.
+    // Peer sends more than cbRequested. MS-RDPECLIP 2.2.5.3 makes that a protocol
+    // violation regardless of whether it would still fit under the file's total size.
+    let progress = fetch.on_response(&FileContentsResponse::new_data_response(1, b"abcdEXTRA".as_slice()));
+
+    assert_eq!(progress, ChunkedFetchProgress::Failed);
+}
+
+#[test]
+fn response_within_requested_size_still_clamps_against_total_size_as_a_backstop() {
+    // Feeding a response with no prior next_request() call (so last_requested_size is
+    // still None) exercises the defensive total_size clamp on its own, independent of
+    // the cbRequested check above.
+    let mut fetch = ChunkedFetch::new(1, 0, 4, 64);
+
     let progress = fetch.on_response(&FileContentsResponse::new_data_response(1, b"abcdEXTRA".as_slice()));
 
     assert_eq!(progress, ChunkedFetchProgress::Complete);

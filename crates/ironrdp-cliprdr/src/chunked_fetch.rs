@@ -70,6 +70,11 @@ pub struct ChunkedFetch {
     next_offset: u64,
     state: State,
     awaiting_response: bool,
+    /// `requested_size` of the outstanding `RANGE` request, if any. Set by
+    /// [`Self::next_request`], checked by [`Self::on_response`]: MS-RDPECLIP 2.2.5.3 defines
+    /// `cbRequested` as the maximum a `RANGE` responder may return, so a response longer than
+    /// this is a protocol violation, not extra data to accept.
+    last_requested_size: Option<u32>,
 }
 
 impl ChunkedFetch {
@@ -92,6 +97,7 @@ impl ChunkedFetch {
                 State::Fetching
             },
             awaiting_response: false,
+            last_requested_size: None,
         }
     }
 
@@ -108,6 +114,7 @@ impl ChunkedFetch {
             next_offset: 0,
             state: State::AwaitingSize,
             awaiting_response: false,
+            last_requested_size: None,
         }
     }
 
@@ -149,6 +156,7 @@ impl ChunkedFetch {
                 let requested_size = remaining.min(u64::from(self.chunk_size));
                 // Infallible: bounded above by self.chunk_size (a u32) via the min() just above.
                 let requested_size = u32::try_from(requested_size).unwrap_or(self.chunk_size);
+                self.last_requested_size = Some(requested_size);
 
                 FileContentsRequest {
                     stream_id: self.stream_id,
@@ -189,17 +197,25 @@ impl ChunkedFetch {
             },
             State::Fetching => {
                 let data = response.data();
+                let exceeds_requested = self
+                    .last_requested_size
+                    .is_some_and(|requested| u64::from(requested) < u64::try_from(data.len()).unwrap_or(u64::MAX));
 
                 // A compliant peer never sends an empty range response before the file is
                 // complete (MS-RDPECLIP defines no "not ready yet" signal here). Treating
                 // one as failure rather than InProgress avoids looping forever re-requesting
                 // the same range against a peer that keeps answering with nothing.
-                if data.is_empty() {
+                //
+                // A response longer than cbRequested is a protocol violation, not extra data
+                // to accept: [MS-RDPECLIP] 2.2.5.3 defines cbRequested as the maximum a RANGE
+                // responder may return, and bytes beyond it were never validated as the range
+                // this fetch actually asked for.
+                if data.is_empty() || exceeds_requested {
                     self.state = State::Failed;
                 } else {
-                    // Clamp rather than trust the peer's byte count: a response longer than
-                    // what's left would otherwise grow the buffer past total_size and desync
-                    // next_offset from what was actually requested.
+                    // Still clamp against total_size defensively: a response within
+                    // cbRequested that nonetheless overruns a (possibly attacker-influenced)
+                    // total_size must not grow the buffer past it or desync next_offset.
                     let data_len = u64::try_from(data.len()).unwrap_or(u64::MAX);
                     let remaining = self
                         .total_size
