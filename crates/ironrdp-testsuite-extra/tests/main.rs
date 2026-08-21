@@ -19,7 +19,11 @@ mod e2e;
 mod gateway_detect;
 mod mstsgu;
 pub(crate) use mstsgu::rpch_http::{Error, GwErrorExt, GwErrorKind};
+#[cfg(windows)]
+mod rdpdr;
 mod rdpeudp_tokio;
+#[cfg(feature = "native-tls")]
+mod tls;
 mod vmconnect;
 mod volume;
 
