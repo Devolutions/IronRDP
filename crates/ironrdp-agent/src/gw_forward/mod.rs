@@ -15,7 +15,6 @@ mod socks5;
 
 use anyhow::Context as _;
 use ironrdp_mstsgu::{GwClient, GwConnectTarget};
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 
 /// Max payload `GwClient` can encode into its 8192-byte workspace.
@@ -136,38 +135,8 @@ where
     A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + ?Sized,
     B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + ?Sized,
 {
-    let mut to_tunnel = vec![0u8; TUNNEL_WRITE_MAX];
-    let mut to_local = vec![0u8; LOCAL_WRITE_MAX];
-    let mut local_eof = false;
-    let mut tunnel_eof = false;
-
-    while !local_eof || !tunnel_eof {
-        tokio::select! {
-            result = local.read(&mut to_tunnel), if !local_eof => {
-                let n = result.context("read local stream")?;
-                if n == 0 {
-                    local_eof = true;
-                    let _ = tunnel.shutdown().await;
-                } else {
-                    tunnel
-                        .write_all(&to_tunnel[..n])
-                        .await
-                        .context("write gateway stream")?;
-                }
-            }
-            result = tunnel.read(&mut to_local), if !tunnel_eof => {
-                let n = result.context("read gateway stream")?;
-                if n == 0 {
-                    tunnel_eof = true;
-                    let _ = local.shutdown().await;
-                } else {
-                    local
-                        .write_all(&to_local[..n])
-                        .await
-                        .context("write local stream")?;
-                }
-            }
-        }
-    }
+    tokio::io::copy_bidirectional_with_sizes(local, tunnel, TUNNEL_WRITE_MAX, LOCAL_WRITE_MAX)
+        .await
+        .context("relay streams")?;
     Ok(())
 }
