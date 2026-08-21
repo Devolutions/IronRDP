@@ -1,10 +1,118 @@
-//! Codec round-trip tests for the shared RPC protocol and daemon NOW endpoint.
+//! Agent integration, codec round-trip, and daemon NOW endpoint tests.
 //!
 //! These exercise the reusable protocol and daemon support. They live here, in the shared test
 //! suite, rather than inside the owning crates themselves, per
 //! the workspace convention of keeping unit tests for protocol codecs in `ironrdp-testsuite-extra`.
 
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
 use core::fmt::Debug;
+
+mod ipc;
+mod live_e2e;
+
+fn test_endpoint(name: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!(r"\\.\pipe\ironrdp-agent-{name}-{}", std::process::id())
+    }
+
+    #[cfg(unix)]
+    {
+        let path = std::env::temp_dir().join(format!("ironrdp-agent-{name}-{}.sock", std::process::id()));
+        path.display().to_string()
+    }
+}
+
+fn agent_command() -> Command {
+    Command::new(agent_binary())
+}
+
+fn agent_binary() -> &'static Path {
+    static AGENT_BINARY: OnceLock<PathBuf> = OnceLock::new();
+
+    AGENT_BINARY
+        .get_or_init(|| {
+            let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(Path::parent)
+                .expect("testsuite must be in the workspace")
+                .to_owned();
+            let status = Command::new(env!("CARGO"))
+                .current_dir(&workspace_root)
+                .args([
+                    "build",
+                    "--quiet",
+                    "--package",
+                    "ironrdp-agent",
+                    "--bin",
+                    "ironrdp-agent",
+                ])
+                .status()
+                .expect("build agent binary");
+            assert!(status.success(), "build agent binary");
+
+            let mut binary = std::env::var_os("CARGO_TARGET_DIR")
+                .map(PathBuf::from)
+                .map(|path| {
+                    if path.is_absolute() {
+                        path
+                    } else {
+                        workspace_root.join(path)
+                    }
+                })
+                .unwrap_or_else(|| workspace_root.join("target"));
+            if let Some(target) = std::env::var_os("CARGO_BUILD_TARGET") {
+                binary.push(target);
+            }
+            binary.push("debug");
+            binary.push(format!("ironrdp-agent{}", std::env::consts::EXE_SUFFIX));
+            assert!(binary.is_file(), "agent binary does not exist: {}", binary.display());
+            binary
+        })
+        .as_path()
+}
+
+fn spawn_daemon(endpoint: &str, skip_certificate_check: bool) -> Child {
+    let mut command = agent_command();
+    command.arg("--endpoint").arg(endpoint).arg("daemon-start");
+    if skip_certificate_check {
+        command.arg("--skip-certificate-check");
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn daemon")
+}
+
+fn agent(endpoint: &str, args: &[&str]) -> std::process::Output {
+    agent_command()
+        .arg("--endpoint")
+        .arg(endpoint)
+        .args(args)
+        .output()
+        .expect("run agent")
+}
+
+fn wait_for_daemon(endpoint: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    while Instant::now() < deadline {
+        let output = agent(endpoint, &["status"]);
+        if output.status.success() {
+            return;
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    panic!("daemon did not become ready");
+}
 
 use ironrdp_core::{Decode, DecodeOwned, Encode, decode, decode_owned, encode_vec};
 use ironrdp_daemon::now::{DVC_CHANNEL_NAME, INITIAL_ENDPOINT_TIMEOUT, NowEndpoint, RECONNECT_ENDPOINT_TIMEOUT};
