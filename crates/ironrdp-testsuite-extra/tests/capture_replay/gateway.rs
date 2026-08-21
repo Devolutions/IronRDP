@@ -1,8 +1,3 @@
-#![expect(
-    unused_crate_dependencies,
-    reason = "integration tests link the library crate and do not use its direct dependencies"
-)]
-
 use ironrdp_capture_replay::{Plaintext, ReplayError, extract_tunneled_rdp, is_gateway_tunnel};
 
 const DATA_PACKET_HEADER: usize = 8 /* packet header */ + 2 /* data length */;

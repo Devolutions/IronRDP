@@ -1,8 +1,3 @@
-#![expect(
-    unused_crate_dependencies,
-    reason = "integration tests link the library crate and do not use its direct dependencies"
-)]
-
 use ironrdp_capture_replay::{Plaintext, ReplayError, extract_rpch_from_flows, extract_rpch_tunneled_rdp};
 
 const COMMON_HEADER: usize = 16;
