@@ -168,6 +168,7 @@ where
             acceptor.mark_credentials_handled();
         }
         if !acceptor.is_reactivation()
+            && !acceptor.is_auto_reconnect_attempt()
             && acceptor.is_ready_for_capability_exchange()
             && let Err(error) = credentials_handler
                 .prepare_capability_exchange(acceptor.desktop_size())

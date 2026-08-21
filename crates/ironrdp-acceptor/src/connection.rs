@@ -355,6 +355,14 @@ impl Acceptor {
         self.reactivation
     }
 
+    /// Whether the client supplied a well-formed Client Auto-Reconnect Packet.
+    ///
+    /// The server still has to verify its security verifier before accepting
+    /// the connection.
+    pub fn is_auto_reconnect_attempt(&self) -> bool {
+        self.received_auto_reconnect.is_some()
+    }
+
     pub fn is_ready_for_capability_exchange(&self) -> bool {
         matches!(self.state, AcceptorState::CapabilitiesSendServer { .. })
     }
@@ -366,7 +374,7 @@ impl Acceptor {
 
     /// Takes credentials received during the current handshake, if any.
     pub fn credentials_need_handling(&self) -> bool {
-        self.received_credentials.is_some() && !self.credentials_handled
+        !self.is_auto_reconnect_attempt() && self.received_credentials.is_some() && !self.credentials_handled
     }
 
     pub fn mark_credentials_handled(&mut self) {
@@ -1150,6 +1158,30 @@ mod tests {
                 .username,
             "tls-user"
         );
+    }
+
+    #[test]
+    fn auto_reconnect_defers_client_info_credentials() {
+        let mut acceptor = Acceptor::new(
+            SecurityProtocol::SSL,
+            DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            Vec::new(),
+            None,
+        );
+        acceptor.received_credentials = Some(ReceivedCredentials {
+            credentials: credentials("reconnect-user"),
+            origin: CredentialOrigin::ClientInfo,
+        });
+        acceptor.received_auto_reconnect = Some(ClientAutoReconnect {
+            logon_id: 7,
+            security_verifier: [0x5A; 16],
+        });
+
+        assert!(acceptor.is_auto_reconnect_attempt());
+        assert!(!acceptor.credentials_need_handling());
     }
 }
 
