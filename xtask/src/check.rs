@@ -201,7 +201,13 @@ pub fn test_targets(sh: &Shell) -> anyhow::Result<()> {
 
 fn validate_test_targets(metadata: &str) -> anyhow::Result<()> {
     let metadata: JsonValue = metadata.parse().context("parse Cargo metadata")?;
-    let packages = json_array(json_field(&metadata, "packages")?, "`packages`")?;
+    let metadata = json_object(&metadata, "Cargo metadata")?;
+    let packages = json_array(
+        metadata
+            .get("packages")
+            .context("Cargo metadata is missing `packages`")?,
+        "`packages`",
+    )?;
     let mut unauthorized = Vec::new();
 
     for package in packages {
@@ -265,12 +271,6 @@ fn validate_test_targets(metadata: &str) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-fn json_field<'a>(value: &'a JsonValue, name: &str) -> anyhow::Result<&'a JsonValue> {
-    json_object(value, "Cargo metadata")?
-        .get(name)
-        .with_context(|| format!("Cargo metadata is missing `{name}`"))
 }
 
 fn json_object<'a>(
