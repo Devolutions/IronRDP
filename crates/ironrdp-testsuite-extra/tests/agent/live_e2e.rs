@@ -1,61 +1,7 @@
-#![allow(unused_crate_dependencies)]
-#![allow(clippy::panic)]
-#![allow(clippy::std_instead_of_core)]
-
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-fn test_endpoint(name: &str) -> String {
-    #[cfg(windows)]
-    {
-        format!(r"\\.\pipe\ironrdp-agent-{name}-{}", std::process::id())
-    }
-
-    #[cfg(unix)]
-    {
-        let path = std::env::temp_dir().join(format!("ironrdp-agent-{name}-{}.sock", std::process::id()));
-        path.display().to_string()
-    }
-}
-
-fn spawn_daemon(endpoint: &str, skip_certificate_check: bool) -> Child {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ironrdp-agent"));
-    command.arg("--endpoint").arg(endpoint).arg("daemon-start");
-    if skip_certificate_check {
-        command.arg("--skip-certificate-check");
-    }
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn daemon")
-}
-
-fn agent(endpoint: &str, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_ironrdp-agent"))
-        .arg("--endpoint")
-        .arg(endpoint)
-        .args(args)
-        .output()
-        .expect("run agent")
-}
-
-fn wait_for_daemon(endpoint: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-
-    while Instant::now() < deadline {
-        let output = agent(endpoint, &["status"]);
-        if output.status.success() {
-            return;
-        }
-
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    panic!("daemon did not become ready");
-}
+use super::{agent, spawn_daemon, test_endpoint, wait_for_daemon};
 
 fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
