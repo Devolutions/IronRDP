@@ -3204,6 +3204,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
+ "ironrdp-egfx",
  "ironrdp-error 0.2.0",
  "ironrdp-graphics",
  "ironrdp-pdu",
@@ -3211,6 +3212,7 @@ dependencies = [
  "ironrdp-svc",
  "qoicoubeh",
  "tracing",
+ "visibility",
  "zstd-safe",
 ]
 

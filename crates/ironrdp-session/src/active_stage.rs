@@ -3,10 +3,11 @@ use std::sync::Arc;
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
 use ironrdp_core::{ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
-use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelRef};
+use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelMut, DynamicChannelRef};
+use ironrdp_egfx::client::GraphicsPipelineClient;
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
-use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
@@ -23,7 +24,7 @@ use ironrdp_pdu::window::{
 use ironrdp_pdu::{Action, mcs};
 use ironrdp_rdpei::RdpeiClient;
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
@@ -214,6 +215,21 @@ impl ActiveStage {
                             stage_outputs.push(ActiveStageOutput::try_from(other)?);
                         }
                     }
+                }
+
+                // Drain the client-side EGFX compositor: composite each completed-frame
+                // output region into the image and surface it as a graphics update. EGFX
+                // data only ever arrives over a DVC, which is X224-carried, so this stays
+                // out of the Action::FastPath arm rather than running on every fast-path
+                // frame (the highest-frequency path in a session).
+                let graphics_updates = self
+                    .get_dvc_mut::<GraphicsPipelineClient>()
+                    .map(|mut gfx| gfx.processor_mut().drain_output())
+                    .unwrap_or_default();
+                if let Some(region) =
+                    composite_graphics_updates(image, graphics_updates.into_iter().map(|u| (u.region, u.data)))?
+                {
+                    stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
                 }
 
                 (stage_outputs, processor_updates)
@@ -419,6 +435,10 @@ impl ActiveStage {
 
     pub fn get_dvc<T: DvcClientProcessor + 'static>(&self) -> Option<DynamicChannelRef<'_, T>> {
         self.x224_processor.get_dvc::<T>()
+    }
+
+    pub fn get_dvc_mut<T: DvcClientProcessor + 'static>(&mut self) -> Option<DynamicChannelMut<'_, T>> {
+        self.x224_processor.get_dvc_mut::<T>()
     }
 
     pub fn get_dvc_by_channel_id<T: DvcClientProcessor + 'static>(
@@ -811,15 +831,71 @@ fn process_slow_path_pointer(
     fast_path_processor.process_pointer_update(image, pointer)
 }
 
+/// Apply every compositor delta to `image` and return the single region covering them.
+///
+/// Emitting one update per delta would be correct but ruinous: a consumer is entitled to
+/// redraw whatever a `GraphicsUpdate` names, and `ironrdp-client` rebuilds the entire
+/// framebuffer for each one, so an N-rectangle frame would copy the whole desktop N
+/// times. A single SolidFill or CacheToSurface can name up to `u16::MAX` rectangles, so
+/// N is the server's choice, not ours. The union's worst case is the full desktop, which
+/// is still one copy rather than N.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+fn composite_graphics_updates(
+    image: &mut DecodedImage,
+    updates: impl IntoIterator<Item = (ExclusiveRectangle, Vec<u8>)>,
+) -> SessionResult<Option<InclusiveRectangle>> {
+    let mut dirty: Option<InclusiveRectangle> = None;
+    for (region, data) in updates {
+        // egfx maps regions with exclusive right/bottom; the session's InclusiveRectangle
+        // is one-past-inclusive. Compositor updates are always non-empty, so the
+        // saturating decrements never underflow a real region.
+        let region = InclusiveRectangle {
+            left: region.left,
+            top: region.top,
+            right: region.right.saturating_sub(1),
+            bottom: region.bottom.saturating_sub(1),
+        };
+
+        // `apply_rgba32` reports rejection by returning `InclusiveRectangle::empty()`,
+        // which is `(0, 0, 0, 0)` and not distinguishable from a real 1x1 update at the
+        // origin. Checking fit here first, rather than branching on that return value,
+        // means the delta is skipped outright rather than folded into the accumulator
+        // as a phantom region. This can happen for real: the compositor clips to the
+        // dimensions ResetGraphics declared, while `image` is sized from the desktop
+        // size negotiated at connection time and is never resized on ResetGraphics, so
+        // a server that reports a larger graphics output than the desktop hits this on
+        // every delta outside the desktop bounds.
+        let fits = region.left <= region.right
+            && region.top <= region.bottom
+            && region.right < image.width()
+            && region.bottom < image.height();
+        if !fits {
+            warn!(
+                ?region,
+                image_width = image.width(),
+                image_height = image.height(),
+                "Dropping a compositor delta outside the image bounds"
+            );
+            continue;
+        }
+
+        let applied = image.apply_rgba32(&data, &region, false)?;
+        dirty = Some(match dirty {
+            Some(acc) => acc.union(&applied),
+            None => applied,
+        });
+    }
+    Ok(dirty)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
     use ironrdp_core::Decode as _;
     use ironrdp_graphics::image_processing::PixelFormat;
     use ironrdp_pdu::gcc::MonitorFlags;
     use ironrdp_pdu::input::fast_path::KeyboardFlags;
     use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
-
-    use super::*;
 
     #[test]
     fn full_redraw_prefers_suppress_output_toggle_when_supported() {
