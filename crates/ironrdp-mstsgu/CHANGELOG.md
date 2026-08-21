@@ -13,10 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RDG-UDP PDU encode/decode helpers (`CONNECT_PKT`, `DATA_PKT`, `DISC_PKT`, and `UDP_CORRELATION_INFO`) without opening a live DTLS side channel.
 - Encode and decode for HTTP control packets (`HTTP_SERVICE_MESSAGE`, `HTTP_REAUTH_MESSAGE`, and `HTTP_CLOSE_PACKET`) without performing mid-session reauthentication.
 
-### Changed
-
-- `GwClient` write-side shutdown now closes the outbound queue and waits for the gateway worker to finish.
-
 ## [[0.0.1](https://github.com/Devolutions/IronRDP/releases/tag/ironrdp-mstsgu-v0.0.1)] - 2026-07-10
 
 Initial release.
