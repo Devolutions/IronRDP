@@ -409,6 +409,22 @@ fn response_reassembler_rejects_call_id_mismatch_and_invalid_alloc_hint() {
 
 #[test]
 fn response_reassembler_bounds_hints_and_recovers_from_an_oversized_first_fragment() {
+    let mut reassembler = RpcResponseReassembler::new(usize::MAX);
+    assert_eq!(
+        reassembler.push(RpcResponse {
+            call_id: 6,
+            pfc_flags: PFC_FIRST_FRAG,
+            alloc_hint: u32::MAX,
+            cancel_count: 0,
+            reserved: 0,
+            stub: &[],
+        }),
+        Err(RpcPduError::ResponseStubTooLarge {
+            actual: usize::try_from(u32::MAX).expect("u32 fits in usize"),
+            maximum: 0x7fff_ffff,
+        })
+    );
+
     let mut reassembler = RpcResponseReassembler::new(5);
     assert_eq!(
         reassembler.push(RpcResponse {

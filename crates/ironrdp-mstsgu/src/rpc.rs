@@ -55,6 +55,8 @@ pub const DEFAULT_FRAGMENT_SIZE: u16 = 0x10b8;
 /// Maximum-sized fragment equivalents the stream may buffer before the caller drains them.
 pub const MAX_PENDING_RPC_FRAGMENTS: usize = 16;
 
+const MAXIMUM_RESPONSE_ALLOC_HINT: usize = 0x7fff_ffff;
+
 /// Errors reported by the DCE/RPC common-header and fragment codecs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RpcPduError {
@@ -430,6 +432,7 @@ pub struct RpcResponse<'a> {
     pub pfc_flags: u8,
     pub alloc_hint: u32,
     pub cancel_count: u8,
+    /// Decoded reserved byte; response encoders always write zero.
     pub reserved: u8,
     pub stub: &'a [u8],
 }
@@ -446,6 +449,7 @@ impl RpcResponse<'_> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpcReassembledResponse {
     pub call_id: u32,
+    /// Cancellation count from the last response fragment.
     pub cancel_count: u8,
     pub reserved: u8,
     pub stub: Vec<u8>,
@@ -467,10 +471,11 @@ pub struct RpcResponseReassembler {
 }
 
 impl RpcResponseReassembler {
-    /// Creates a reassembler that rejects stubs larger than `maximum_stub_size`.
+    /// Creates a reassembler that rejects stubs larger than `maximum_stub_size`
+    /// or the MS-RPCE response `alloc_hint` limit.
     pub fn new(maximum_stub_size: usize) -> Self {
         Self {
-            maximum_stub_size,
+            maximum_stub_size: maximum_stub_size.min(MAXIMUM_RESPONSE_ALLOC_HINT),
             call_id: None,
             cancel_count: 0,
             reserved: 0,
@@ -574,6 +579,7 @@ pub struct RpcFault<'a> {
     pub cancel_count: u8,
     pub reserved: u8,
     pub status: u32,
+    /// Decoded reserved field; fault encoders always write zero.
     pub reserved2: u32,
     /// Trailing fault data, which MS-RPCE clients must ignore.
     ///
