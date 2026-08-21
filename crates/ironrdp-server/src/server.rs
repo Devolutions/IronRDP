@@ -630,6 +630,16 @@ pub struct RdpServer {
     /// [`Self::autodetect_baseline_rtt_handle`].
     autodetect_baseline_rtt: Arc<AtomicU32>,
 
+    /// Latest NetworkAutoDetect measured bandwidth in kilobits per second, or
+    /// `u32::MAX` until the first measurement completes (and while auto-detect
+    /// is disabled). Updated whenever a Bandwidth Measure Results response is
+    /// processed, same trigger point as [`Self::autodetect_rtt`]. Exposed via
+    /// [`Self::autodetect_bandwidth_handle`]: without it, the server can tell
+    /// the *client* its measured bandwidth over the wire but has no way to
+    /// tell the embedder, which the connect-time figure carried to the client
+    /// alone does not fix.
+    autodetect_bandwidth: Arc<AtomicU32>,
+
     /// Optional Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`). When `Some`, the server validates a returning
     /// `ARC_CS_PRIVATE_PACKET`, replaces its random after every connection, and
@@ -754,6 +764,7 @@ impl RdpServer {
         #[cfg(feature = "usb")] usb_factory: Option<Box<dyn DeviceFactory>>,
         autodetect_rtt: Option<Arc<AtomicU32>>,
         autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
+        autodetect_bandwidth: Option<Arc<AtomicU32>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -802,6 +813,11 @@ impl RdpServer {
             },
             autodetect_baseline_rtt: {
                 let handle = autodetect_baseline_rtt.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
+                handle.store(u32::MAX, Ordering::Relaxed);
+                handle
+            },
+            autodetect_bandwidth: {
+                let handle = autodetect_bandwidth.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
                 handle.store(u32::MAX, Ordering::Relaxed);
                 handle
             },
@@ -1081,6 +1097,17 @@ impl RdpServer {
     /// [`RdpServerBuilder::with_autodetect_baseline_rtt_handle`](crate::RdpServerBuilder::with_autodetect_baseline_rtt_handle).
     pub fn autodetect_baseline_rtt_handle(&self) -> Arc<AtomicU32> {
         Arc::clone(&self.autodetect_baseline_rtt)
+    }
+
+    /// Returns a handle to the latest NetworkAutoDetect measured bandwidth in
+    /// kilobits per second (`u32::MAX` until the first measurement completes,
+    /// and while auto-detect is disabled). The server updates it whenever a
+    /// Bandwidth Measure Results response completes a measurement; backends
+    /// clone the handle to read the figure the server also reports to the
+    /// client on the wire. Inject a shared instance at construction with
+    /// [`RdpServerBuilder::with_autodetect_bandwidth_handle`](crate::RdpServerBuilder::with_autodetect_bandwidth_handle).
+    pub fn autodetect_bandwidth_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.autodetect_bandwidth)
     }
 
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
@@ -2408,23 +2435,45 @@ impl RdpServer {
         match decode::<rdp::autodetect::AutoDetectRspPdu>(data.user_data.as_ref()) {
             Ok(pdu) => {
                 if let Some(ref mut ad) = self.autodetect {
-                    if let Some(rtt_ms) = ad.handle_response(&pdu.response, monotonic_now_ms()) {
-                        self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
-                        // A matched RTT sample always updates the session-lifetime low in the
-                        // same call (see `handle_response`'s RttResponse arm), so it is available
-                        // unconditionally here, not just on a new low.
-                        let baseline_rtt_ms = ad
-                            .baseline_rtt_ms()
-                            .expect("handle_response just recorded a sample above");
-                        self.autodetect_baseline_rtt.store(baseline_rtt_ms, Ordering::Relaxed);
-                        debug!(
-                            rtt_ms,
-                            baseline_rtt_ms,
-                            seq = pdu.response.sequence_number(),
-                            "RTT measured"
-                        );
-                    } else {
-                        trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
+                    // `handle_response` reports a matched RTT sample via its return value but
+                    // only updates bandwidth internally (see its own doc comment), so a fresh
+                    // bandwidth figure is detected by comparing before and after rather than
+                    // from the call's result. That also keeps a stray or unmatched bandwidth
+                    // response (which leaves the internal value unchanged) from being
+                    // mislabeled as a new measurement below.
+                    let bandwidth_before = ad.bandwidth_kbps();
+                    let rtt_result = ad.handle_response(&pdu.response, monotonic_now_ms());
+                    let bandwidth_after = ad.bandwidth_kbps();
+
+                    match rtt_result {
+                        Some(rtt_ms) => {
+                            self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
+                            // A matched RTT sample always updates the session-lifetime low in the
+                            // same call (see `handle_response`'s RttResponse arm), so it is available
+                            // unconditionally here, not just on a new low.
+                            let baseline_rtt_ms = ad
+                                .baseline_rtt_ms()
+                                .expect("handle_response just recorded a sample above");
+                            self.autodetect_baseline_rtt.store(baseline_rtt_ms, Ordering::Relaxed);
+                            debug!(
+                                rtt_ms,
+                                baseline_rtt_ms,
+                                seq = pdu.response.sequence_number(),
+                                "RTT measured"
+                            );
+                        }
+                        None if bandwidth_after.is_some() && bandwidth_after != bandwidth_before => {
+                            let bandwidth_kbps = bandwidth_after.expect("checked Some above");
+                            self.autodetect_bandwidth.store(bandwidth_kbps, Ordering::Relaxed);
+                            debug!(
+                                bandwidth_kbps,
+                                seq = pdu.response.sequence_number(),
+                                "Bandwidth measured"
+                            );
+                        }
+                        None => {
+                            trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
+                        }
                     }
                 }
             }
