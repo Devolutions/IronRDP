@@ -1,7 +1,4 @@
-#![expect(
-    unused_crate_dependencies,
-    reason = "integration tests link the library crate and do not use its direct dependencies"
-)]
+use super::capture_replay_binary;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,10 +10,12 @@ use ironrdp_capture_replay::{ReplayError, decrypt_tls, read_capture, replay_capt
 use sha2::Sha256;
 
 fn temporary_path(name: &str) -> PathBuf {
+    let thread_name = std::thread::current().name().unwrap_or("test").replace(':', "_");
+
     std::env::temp_dir().join(format!(
         "ironrdp-capture-replay-{name}-{}-{}.pcapng",
         std::process::id(),
-        std::thread::current().name().unwrap_or("test")
+        thread_name
     ))
 }
 
@@ -361,7 +360,7 @@ fn reports_invalid_key_log_file() {
     write_capture(&capture_path, &x224_connection(0xe0), &x224_connection(0xd0));
     std::fs::write(&key_log_path, [0xff]).expect("write invalid key log");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_ironrdp-capture-replay"))
+    let output = Command::new(capture_replay_binary())
         .args([
             "--keylog",
             key_log_path.to_str().expect("UTF-8 path"),
