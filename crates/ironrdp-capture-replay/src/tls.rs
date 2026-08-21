@@ -1,6 +1,6 @@
 use aes_gcm::aead::{AeadInPlace as _, KeyInit as _};
 use aes_gcm::{Aes128Gcm, Aes256Gcm, Nonce, Tag};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit as _, Mac as _};
 use sha2::{Sha256, Sha384};
 
 use crate::transport::x224_connection_tpdu_end;
@@ -434,7 +434,7 @@ fn tls_prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Re
     let mut label_seed = Vec::with_capacity(label.len() + seed.len());
     label_seed.extend_from_slice(label);
     label_seed.extend_from_slice(seed);
-    let mut a = <Hmac<Sha256> as Mac>::new_from_slice(secret)
+    let mut a = Hmac::<Sha256>::new_from_slice(secret)
         .map_err(|_| ReplayError::UnsupportedTls)?
         .chain_update(&label_seed)
         .finalize()
@@ -442,11 +442,11 @@ fn tls_prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Re
         .to_vec();
     let mut output = Vec::with_capacity(length);
     while output.len() < length {
-        let mut hmac = <Hmac<Sha256> as Mac>::new_from_slice(secret).map_err(|_| ReplayError::UnsupportedTls)?;
+        let mut hmac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| ReplayError::UnsupportedTls)?;
         hmac.update(&a);
         hmac.update(&label_seed);
         output.extend_from_slice(&hmac.finalize().into_bytes());
-        a = <Hmac<Sha256> as Mac>::new_from_slice(secret)
+        a = Hmac::<Sha256>::new_from_slice(secret)
             .map_err(|_| ReplayError::UnsupportedTls)?
             .chain_update(&a)
             .finalize()
@@ -461,7 +461,7 @@ fn tls_prf_sha384(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Re
     let mut label_seed = Vec::with_capacity(label.len() + seed.len());
     label_seed.extend_from_slice(label);
     label_seed.extend_from_slice(seed);
-    let mut a = <Hmac<Sha384> as Mac>::new_from_slice(secret)
+    let mut a = Hmac::<Sha384>::new_from_slice(secret)
         .map_err(|_| ReplayError::UnsupportedTls)?
         .chain_update(&label_seed)
         .finalize()
@@ -469,11 +469,11 @@ fn tls_prf_sha384(secret: &[u8], label: &[u8], seed: &[u8], length: usize) -> Re
         .to_vec();
     let mut output = Vec::with_capacity(length);
     while output.len() < length {
-        let mut hmac = <Hmac<Sha384> as Mac>::new_from_slice(secret).map_err(|_| ReplayError::UnsupportedTls)?;
+        let mut hmac = Hmac::<Sha384>::new_from_slice(secret).map_err(|_| ReplayError::UnsupportedTls)?;
         hmac.update(&a);
         hmac.update(&label_seed);
         output.extend_from_slice(&hmac.finalize().into_bytes());
-        a = <Hmac<Sha384> as Mac>::new_from_slice(secret)
+        a = Hmac::<Sha384>::new_from_slice(secret)
             .map_err(|_| ReplayError::UnsupportedTls)?
             .chain_update(&a)
             .finalize()
@@ -514,7 +514,7 @@ fn hkdf_expand_sha256(secret: &[u8], info: &[u8], length: usize) -> Result<Vec<u
     let mut previous = Vec::new();
     let mut output = Vec::with_capacity(length);
     for counter in 1..=u8::MAX {
-        let mut hmac = <Hmac<Sha256> as Mac>::new_from_slice(secret).map_err(|_| ReplayError::UnsupportedTls)?;
+        let mut hmac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| ReplayError::UnsupportedTls)?;
         hmac.update(&previous);
         hmac.update(info);
         hmac.update(&[counter]);
@@ -532,7 +532,7 @@ fn hkdf_expand_sha384(secret: &[u8], info: &[u8], length: usize) -> Result<Vec<u
     let mut previous = Vec::new();
     let mut output = Vec::with_capacity(length);
     for counter in 1..=u8::MAX {
-        let mut hmac = <Hmac<Sha384> as Mac>::new_from_slice(secret).map_err(|_| ReplayError::UnsupportedTls)?;
+        let mut hmac = Hmac::<Sha384>::new_from_slice(secret).map_err(|_| ReplayError::UnsupportedTls)?;
         hmac.update(&previous);
         hmac.update(info);
         hmac.update(&[counter]);
