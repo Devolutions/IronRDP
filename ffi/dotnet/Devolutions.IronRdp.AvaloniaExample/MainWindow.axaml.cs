@@ -182,7 +182,8 @@ public partial class MainWindow : Window
                     var (gatewayRes, gatewayFramed) = await RDCleanPathConnection.ConnectRDCleanPath(
                         config, gatewayUrl, gatewayToken!, destination, null, factory);
                     res = gatewayRes;
-                    this._framed = new Framed<Stream>(gatewayFramed.GetInner().Item1);
+                    var (gatewayStream, gatewayLeftover) = gatewayFramed.GetInner();
+                    this._framed = new Framed<Stream>(gatewayStream, gatewayLeftover);
 
                     Trace.TraceInformation("=== GATEWAY CONNECTION SUCCESSFUL ===");
                 }
@@ -193,7 +194,8 @@ public partial class MainWindow : Window
                     // Direct connection (original behavior)
                     var (directRes, directFramed) = await Connection.Connect(config, server, factory, port);
                     res = directRes;
-                    this._framed = new Framed<Stream>(directFramed.GetInner().Item1);
+                    var (directStream, directLeftover) = directFramed.GetInner();
+                    this._framed = new Framed<Stream>(directStream, directLeftover);
 
                     Trace.TraceInformation("=== DIRECT CONNECTION SUCCESSFUL ===");
                 }

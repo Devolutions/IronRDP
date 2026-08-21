@@ -29,7 +29,16 @@ public static class Connection
     private static async Task<(byte[], Framed<SslStream>)> SecurityUpgrade(Framed<NetworkStream> framed,
         ClientConnector connector)
     {
-        var (streamRequireUpgrade, _) = framed.GetInner();
+        var (streamRequireUpgrade, leftover) = framed.GetInner();
+        if (!leftover.IsEmpty)
+        {
+            // The buffered bytes are plaintext and cannot be replayed through the TLS stream, so
+            // reaching this point means the sequence was driven past where the upgrade had to happen.
+            throw new IronRdpLibException(
+                IronRdpLibExceptionType.ConnectionFailed,
+                "leftover bytes in the framed stream at the security upgrade");
+        }
+
         var promise = new TaskCompletionSource<byte[]>();
         var sslStream = new SslStream(streamRequireUpgrade, false, (_, certificate, _, _) =>
         {
@@ -127,8 +136,8 @@ public static class Connection
 
         if (pduHint != null)
         {
-            byte[] pdu = await framed.ReadByHint(pduHint);
-            written = sequence.Step(pdu, buf);
+            var (pdu, receivedAt) = await framed.ReadByHint(pduHint);
+            written = sequence.Step(pdu, receivedAt, buf);
         }
         else
         {

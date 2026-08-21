@@ -40,6 +40,8 @@ mod sequence_error;
 mod server_name;
 #[cfg(feature = "state-machine")]
 mod state;
+#[cfg(feature = "state-machine")]
+mod step_input;
 mod time;
 #[cfg(feature = "state-machine")]
 mod written;
@@ -55,6 +57,8 @@ pub use self::sequence_error::{SequenceError, SequenceErrorExt, SequenceErrorKin
 pub use self::server_name::ServerName;
 #[cfg(feature = "state-machine")]
 pub use self::state::{State, state_downcast, state_is};
+#[cfg(feature = "state-machine")]
+pub use self::step_input::StepInput;
 pub use self::time::MonotonicInstant;
 #[cfg(feature = "state-machine")]
 pub use self::written::Written;

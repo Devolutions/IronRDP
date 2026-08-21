@@ -57,24 +57,55 @@ pub trait StreamWrapper: Sized {
 pub struct Framed<S> {
     stream: S,
     buf: BytesMut,
-    /// When the most recent socket read completed, if this build observes time.
+    /// When the socket read that filled `buf` completed.
     ///
     /// A PDU served entirely from `buf` arrived at the socket read that filled it,
     /// not at the moment the caller happened to drain it, so this is the honest
-    /// arrival time for anything `read_by_hint` returns. `None` until the first
-    /// read, and always `None` on a build with no clock.
+    /// arrival time for anything read out of `buf`.
+    ///
+    /// INVARIANT: this is `Some` whenever `buf` is non-empty.
     last_read_at: Option<MonotonicInstant>,
+}
+
+/// The bytes a [`Framed`] still had buffered when it was taken apart, and when they arrived.
+///
+/// A `Framed` is dismantled and rebuilt whenever the transport underneath it changes: a TLS
+/// upgrade, a `tokio` split, a websocket handed over to the connector. Those bytes were read
+/// from the wire at a real moment, and a PDU decoded out of them later still arrived then.
+/// Carrying the two together is what keeps the rebuilt `Framed` able to stamp them honestly.
+///
+/// The type is opaque on purpose: it is only ever produced by [`Framed::into_inner`] (or
+/// [`Leftover::none`], which carries nothing), so bytes can never be paired with a timestamp
+/// they did not come from, nor arrive without one.
+#[derive(Debug)]
+pub struct Leftover {
+    bytes: BytesMut,
+    /// INVARIANT: this is `Some` whenever `bytes` is non-empty.
+    read_at: Option<MonotonicInstant>,
+}
+
+impl Leftover {
+    /// Nothing carried over.
+    pub fn none() -> Self {
+        Self {
+            bytes: BytesMut::new(),
+            read_at: None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    /// Returns the buffered bytes without exposing mutation.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 impl<S> Framed<S> {
     pub fn peek(&self) -> &[u8] {
         &self.buf
-    }
-
-    /// When the bytes currently buffered last arrived from the socket, or `None`
-    /// if nothing has been read yet or this build cannot observe time.
-    pub fn last_read_at(&self) -> Option<MonotonicInstant> {
-        self.last_read_at
     }
 }
 
@@ -83,24 +114,28 @@ where
     S: StreamWrapper,
 {
     pub fn new(stream: S::InnerStream) -> Self {
-        Self::new_with_leftover(stream, BytesMut::new())
+        Self::new_with_leftover(stream, Leftover::none())
     }
 
-    pub fn new_with_leftover(stream: S::InnerStream, leftover: BytesMut) -> Self {
+    pub fn new_with_leftover(stream: S::InnerStream, leftover: Leftover) -> Self {
         Self {
             stream: S::from_inner(stream),
-            buf: leftover,
-            last_read_at: None,
+            buf: leftover.bytes,
+            last_read_at: leftover.read_at,
         }
     }
 
-    pub fn into_inner(self) -> (S::InnerStream, BytesMut) {
-        (self.stream.into_inner(), self.buf)
+    pub fn into_inner(self) -> (S::InnerStream, Leftover) {
+        let leftover = Leftover {
+            bytes: self.buf,
+            read_at: self.last_read_at,
+        };
+        (self.stream.into_inner(), leftover)
     }
 
     pub fn into_inner_no_leftover(self) -> S::InnerStream {
         let (stream, leftover) = self.into_inner();
-        debug_assert_eq!(leftover.len(), 0, "unexpected leftover");
+        debug_assert!(leftover.is_empty(), "unexpected leftover");
         stream
     }
 
@@ -108,8 +143,12 @@ where
         (self.stream.get_inner(), &self.buf)
     }
 
-    pub fn get_inner_mut(&mut self) -> (&mut S::InnerStream, &mut BytesMut) {
-        (self.stream.get_inner_mut(), &mut self.buf)
+    /// The underlying stream, without the buffer.
+    ///
+    /// Bytes appended to the buffer from the outside would have no arrival time, which is
+    /// exactly what [`Leftover`] exists to prevent, so the buffer is not handed out mutably.
+    pub fn get_inner_mut(&mut self) -> &mut S::InnerStream {
+        self.stream.get_inner_mut()
     }
 }
 
@@ -117,7 +156,8 @@ impl<S> Framed<S>
 where
     S: FramedRead,
 {
-    /// Accumulates at least `length` bytes and returns exactly `length` bytes, keeping the leftover in the internal buffer.
+    /// Accumulates at least `length` bytes and returns exactly `length` bytes along with when
+    /// they arrived, keeping the leftover in the internal buffer.
     ///
     /// # Cancel safety
     ///
@@ -125,14 +165,21 @@ where
     /// `tokio::select!` statement and some other branch
     /// completes first, then it is safe to drop the future and re-create it later.
     /// Data may have been read, but it will be stored in the internal buffer.
-    pub(crate) async fn read_exact(&mut self, length: usize) -> io::Result<BytesMut> {
+    pub(crate) async fn read_exact(&mut self, length: usize) -> io::Result<(BytesMut, MonotonicInstant)> {
+        if length == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "zero PDU size"));
+        }
+
         loop {
-            if self.buf.len() >= length {
-                return Ok(self.buf.split_to(length));
-            } else {
-                self.buf
-                    .reserve(length.checked_sub(self.buf.len()).expect("length > self.buf.len()"));
+            // The `last_read_at` invariant makes this `Some` for any non-empty buffer, so a
+            // complete frame is never held back waiting for a timestamp that will not come.
+            if let Some(read_at) = self.last_read_at
+                && self.buf.len() >= length
+            {
+                return Ok((self.buf.split_to(length), read_at));
             }
+
+            self.buf.reserve(length.saturating_sub(self.buf.len()));
 
             let len = self.read().await?;
 
@@ -156,7 +203,7 @@ where
             // Try decoding and see if a frame has been received already
             match ironrdp_pdu::find_size(self.peek()) {
                 Ok(Some(pdu_info)) => {
-                    let frame = self.read_exact(pdu_info.length).await?;
+                    let (frame, _) = self.read_exact(pdu_info.length).await?;
 
                     return Ok((pdu_info.action, frame));
                 }
@@ -173,7 +220,10 @@ where
         }
     }
 
-    /// Reads a frame using the provided PduHint.
+    /// Reads a frame using the provided PduHint, along with when it arrived from the socket.
+    ///
+    /// The instant is the read that produced the bytes, which for a frame served out of the
+    /// internal buffer is an earlier read than this call.
     ///
     /// # Cancel safety
     ///
@@ -181,13 +231,13 @@ where
     /// `tokio::select!` statement and some other branch
     /// completes first, then it is safe to drop the future and re-create it later.
     /// Data may have been read, but it will be stored in the internal buffer.
-    pub async fn read_by_hint(&mut self, hint: &dyn PduHint) -> io::Result<Bytes> {
+    pub async fn read_by_hint(&mut self, hint: &dyn PduHint) -> io::Result<(Bytes, MonotonicInstant)> {
         loop {
             match hint.find_size(self.peek()).map_err(io::Error::other)? {
                 Some((matched, length)) => {
-                    let bytes = self.read_exact(length).await?.freeze();
+                    let (bytes, read_at) = self.read_exact(length).await?;
                     if matched {
-                        return Ok(bytes);
+                        return Ok((bytes.freeze(), read_at));
                     } else {
                         debug!("Received and lost an unexpected PDU");
                     }
@@ -213,7 +263,11 @@ where
     /// completes first, then it is guaranteed that no data was read.
     async fn read(&mut self) -> io::Result<usize> {
         let len = self.stream.read(&mut self.buf).await?;
-        self.last_read_at = Some(monotonic_now());
+
+        if len > 0 {
+            self.last_read_at = Some(monotonic_now());
+        }
+
         Ok(len)
     }
 }
@@ -271,14 +325,14 @@ where
             "Wait for PDU"
         );
 
-        let pdu = framed
+        let (pdu, received_at) = framed
             .read_by_hint(next_pdu_hint)
             .await
             .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
         trace!(length = pdu.len(), "PDU received");
 
-        sequence.step(&pdu, framed.last_read_at(), buf)
+        sequence.step(&pdu, received_at, buf)
     } else {
         sequence.step_no_input(buf)
     }

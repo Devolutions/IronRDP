@@ -19,7 +19,7 @@ use crate::connection_activation::{
 use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
     Config, DesktopSize, MonotonicInstant, NegotiationFailure, Sequence, SequenceError, SequenceErrorExt as _,
-    SequenceResult, State, Written, encode_x224_packet, general_err, reason_err,
+    SequenceResult, State, StepInput, Written, encode_x224_packet, general_err, reason_err,
 };
 
 /// Maximum number of `Initiate Multitransport Request` PDUs the server is
@@ -36,10 +36,10 @@ const AUTO_DETECT_HEADER_LEN: u32 = 8;
 
 /// What one Bandwidth Measure message contributes to the Network Characteristics
 /// Byte Count store, and the canonical source for the connect-time bandwidth
-/// reasoning this file uses in several places (`UNMEASURABLE_INTERVAL_MS`, the
-/// `BandwidthMeasureStop` arm below, [`Sequence::step`]'s doc). Those restate
-/// only their own local decision plus a pointer here, so the reasoning behind
-/// each one stays single-sourced instead of drifting across independent copies.
+/// reasoning this file uses in several places (`UNMEASURABLE_INTERVAL_MS` and the
+/// `BandwidthMeasureStop` arm below). Those restate only their own local decision
+/// plus a pointer here, so the reasoning behind each one stays single-sourced
+/// instead of drifting across independent copies.
 ///
 /// **What is counted.** [MS-RDPBCGR] 3.2.5.14 gives connect-time detection
 /// exactly two accumulation steps, one on the Bandwidth Measure Payload and one
@@ -60,10 +60,9 @@ const AUTO_DETECT_HEADER_LEN: u32 = 8;
 /// to 0x08 for 0x002B and 0x06 otherwise, which is what fixes `AUTO_DETECT_HEADER_LEN`
 /// at 8 for this path specifically.
 ///
-/// **Windows that could not be timed.** A driver whose `received_at` is always
-/// `None` never opens a window (see [`Sequence::step`]'s doc), so its Results
-/// report only the Stop's own payload against the untimed floor
-/// (`UNMEASURABLE_INTERVAL_MS`) rather than a full count divided by a
+/// **Windows that could not be timed.** A Stop with no Start before it opened no
+/// window, so its Results report only the Stop's own payload against the untimed
+/// floor (`UNMEASURABLE_INTERVAL_MS`) rather than a full count divided by a
 /// `timeDelta` nobody measured. [MS-RDPBCGR] 3.2.5.14 states the Payload
 /// increment unconditionally; gating it on the window being open is a
 /// deliberate SHOULD-level deviation. It under-reports rather than over-reports
@@ -559,7 +558,7 @@ impl ClientConnector {
     /// Panics if state is not [ClientConnectorState::EnhancedSecurityUpgrade].
     pub fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.should_perform_security_upgrade());
-        self.step(&[], None, &mut WriteBuf::new())
+        self.step_no_input(&mut WriteBuf::new())
             .expect("transition to next state");
         debug_assert!(!self.should_perform_security_upgrade());
     }
@@ -576,7 +575,7 @@ impl ClientConnector {
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
         let res = self
-            .step(&[], None, &mut WriteBuf::new())
+            .step_no_input(&mut WriteBuf::new())
             .expect("transition to next state");
         debug_assert!(!self.should_perform_credssp());
         assert_eq!(res, Written::Nothing);
@@ -775,7 +774,7 @@ impl ClientConnector {
     fn respond_to_connect_time_autodetect(
         &mut self,
         request: rdp::autodetect::AutoDetectRequest,
-        received_at: Option<MonotonicInstant>,
+        received_at: MonotonicInstant,
         message_channel_id: u16,
         user_channel_id: u16,
         output: &mut WriteBuf,
@@ -801,13 +800,8 @@ impl ClientConnector {
             // multitransport channel. Opening a connect-time window for one would
             // measure the wrong thing and answer on the wrong channel, so they are
             // left alone here.
-            //
-            // A driver that reports no arrival time cannot time this window, so it does
-            // not open one. That keeps the two unmeasurable situations distinct: a
-            // window that was timed and turned out to be short is still a measurement,
-            // while a driver with no clock never took one.
             AutoDetectRequest::BandwidthMeasureStart { request_type, .. } if request_type == BW_START_CONNECT_TIME => {
-                self.connect_time_bw_started_at = received_at;
+                self.connect_time_bw_started_at = Some(received_at);
                 self.connect_time_bw_bytes = 0;
                 Ok(Written::Nothing)
             }
@@ -844,32 +838,19 @@ impl ClientConnector {
             } if request_type == BW_STOP_CONNECT_TIME => {
                 let stop_bytes = payload.as_ref().map_or(0, |p| counted_len(p.len()));
 
-                // A window normally opens and closes on the same driver, so the same
-                // driver stamps both Start and this Stop. Nothing enforces that: a
-                // `Framed` rebuilt between the two (leftover bytes handed to a fresh
-                // `Framed`, which starts with no arrival time of its own) would open a
-                // window on one driver and close it on another with no reading, landing
-                // in the `(Some, None)` arm below. That arm silently drops whatever this
-                // window had accumulated; the debug log makes the drop visible instead of
-                // leaving it indistinguishable from the ordinary no-window case.
-                let (time_delta_ms, byte_count) = match (self.connect_time_bw_started_at, received_at) {
-                    (Some(started_at), Some(stopped_at)) => {
+                // A Stop with no Start before it opened no window, so there is nothing
+                // for the byte count to be divided by; report the Stop's own payload
+                // against the untimed floor. See `counted_len`'s doc.
+                let (time_delta_ms, byte_count) = match self.connect_time_bw_started_at {
+                    Some(started_at) => {
                         let measured_ms =
-                            u32::try_from(stopped_at.duration_since(started_at).as_millis()).unwrap_or(u32::MAX);
+                            u32::try_from(received_at.duration_since(started_at).as_millis()).unwrap_or(u32::MAX);
                         (
                             measured_ms.max(UNMEASURABLE_INTERVAL_MS),
                             self.connect_time_bw_bytes.saturating_add(stop_bytes),
                         )
                     }
-                    (Some(_), None) => {
-                        debug!(
-                            dropped_bytes = self.connect_time_bw_bytes,
-                            "Bandwidth Measure Stop arrived with no arrival time although its window was open; \
-                             dropping the accumulated count"
-                        );
-                        (UNMEASURABLE_INTERVAL_MS, stop_bytes)
-                    }
-                    (None, _) => (UNMEASURABLE_INTERVAL_MS, stop_bytes),
+                    None => (UNMEASURABLE_INTERVAL_MS, stop_bytes),
                 };
 
                 self.connect_time_bw_started_at = None;
@@ -936,11 +917,10 @@ fn advance_licensing_exchange(
     io_channel_id: u16,
     user_channel_id: u16,
     message_channel_id: Option<u16>,
-    input: &[u8],
-    received_at: Option<MonotonicInstant>,
+    input: StepInput<'_>,
     output: &mut WriteBuf,
 ) -> SequenceResult<(Written, ClientConnectorState)> {
-    let written = license_exchange.step(input, received_at, output)?;
+    let written = license_exchange.step_input(input, output)?;
 
     let next_state = if license_exchange.state.is_terminal() {
         ClientConnectorState::MultitransportBootstrapping {
@@ -1003,12 +983,7 @@ impl Sequence for ClientConnector {
         &self.state
     }
 
-    fn step(
-        &mut self,
-        input: &[u8],
-        received_at: Option<MonotonicInstant>,
-        output: &mut WriteBuf,
-    ) -> SequenceResult<Written> {
+    fn step_input(&mut self, input: StepInput<'_>, output: &mut WriteBuf) -> SequenceResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             // Invalid state
             ClientConnectorState::Consumed => {
@@ -1024,7 +999,7 @@ impl Sequence for ClientConnector {
                 (written, mem::take(&mut self.state))
             }
             ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
-                let connection_confirm = decode::<X224<nego::ConnectionConfirm>>(input)
+                let connection_confirm = decode::<X224<nego::ConnectionConfirm>>(input.pdu())
                     .map_err(SequenceError::decode)
                     .map(|p| p.0)?;
 
@@ -1118,7 +1093,7 @@ impl Sequence for ClientConnector {
                 )
             }
             ClientConnectorState::BasicSettingsExchangeWaitResponse { connect_initial } => {
-                let x224_payload = decode::<X224<crate::x224::X224Data<'_>>>(input)
+                let x224_payload = decode::<X224<crate::x224::X224Data<'_>>>(input.pdu())
                     .map_err(SequenceError::decode)
                     .map(|p| p.0)?;
                 let connect_response =
@@ -1189,7 +1164,7 @@ impl Sequence for ClientConnector {
                 mut channel_connection,
             } => {
                 debug!("Channel Connection");
-                let written = channel_connection.step(input, received_at, output)?;
+                let written = channel_connection.step_input(input, output)?;
 
                 let next_state = if let ChannelConnectionState::AllJoined { user_channel_id } = channel_connection.state
                 {
@@ -1258,17 +1233,22 @@ impl Sequence for ClientConnector {
                 // message channel nothing is read and we go straight to licensing,
                 // as before.
                 // Decode the inbound PDU once and demux on the MCS channel.
-                let message_channel_pdu = self.message_channel_id.and_then(|message_channel_id| {
-                    let mcs = decode::<X224<mcs::McsMessage<'_>>>(input).ok()?;
-                    match mcs.0 {
-                        mcs::McsMessage::SendDataIndication(data) if data.channel_id == message_channel_id => {
-                            Some((message_channel_id, data))
-                        }
-                        _ => None,
-                    }
-                });
+                // Both the channel and the arrival time are needed to answer an autodetect
+                // request, and a decodable PDU always brings the latter.
+                let message_channel_pdu =
+                    self.message_channel_id
+                        .zip(input.received_at())
+                        .and_then(|(message_channel_id, received_at)| {
+                            let mcs = decode::<X224<mcs::McsMessage<'_>>>(input.pdu()).ok()?;
+                            match mcs.0 {
+                                mcs::McsMessage::SendDataIndication(data) if data.channel_id == message_channel_id => {
+                                    Some((message_channel_id, received_at, data))
+                                }
+                                _ => None,
+                            }
+                        });
 
-                if let Some((message_channel_id, data)) = message_channel_pdu {
+                if let Some((message_channel_id, received_at, data)) = message_channel_pdu {
                     if let Ok(autodetect) = decode::<rdp::autodetect::AutoDetectReqPdu>(&data.user_data) {
                         let written = self.respond_to_connect_time_autodetect(
                             autodetect.request,
@@ -1321,7 +1301,6 @@ impl Sequence for ClientConnector {
                             user_channel_id,
                             self.message_channel_id,
                             input,
-                            received_at,
                             output,
                         )?
                     } else {
@@ -1353,7 +1332,6 @@ impl Sequence for ClientConnector {
                     user_channel_id,
                     self.message_channel_id,
                     input,
-                    received_at,
                     output,
                 )?
             }
@@ -1379,7 +1357,7 @@ impl Sequence for ClientConnector {
                 message_channel_id,
                 requests_seen,
             } => {
-                let ctx = mcs::decode_send_data_indication(input).map_err(SequenceError::decode)?;
+                let ctx = mcs::decode_send_data_indication(input.pdu()).map_err(SequenceError::decode)?;
 
                 if Some(ctx.channel_id) == message_channel_id {
                     let pdu = decode::<rdp::multitransport::MultitransportRequestPdu>(ctx.user_data)
@@ -1422,7 +1400,7 @@ impl Sequence for ClientConnector {
                     // exchange with the PDU intact.
                     let mut connection_activation =
                         ConnectionActivationSequence::new(self.config.clone(), io_channel_id, user_channel_id);
-                    let written = connection_activation.step(input, received_at, output)?;
+                    let written = connection_activation.step_input(input, output)?;
 
                     (
                         written,
@@ -1459,7 +1437,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::CapabilitiesExchange {
                 mut connection_activation,
             } => {
-                let written = connection_activation.step(input, received_at, output)?;
+                let written = connection_activation.step_input(input, output)?;
                 match connection_activation.connection_activation_state() {
                     ConnectionActivationState::ConnectionFinalization { .. } => (
                         written,
@@ -1483,7 +1461,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectionFinalization {
                 mut connection_activation,
             } => {
-                let written = connection_activation.step(input, received_at, output)?;
+                let written = connection_activation.step_input(input, output)?;
 
                 let next_state = if !connection_activation.connection_activation_state().is_terminal() {
                     ClientConnectorState::ConnectionFinalization { connection_activation }

@@ -1878,7 +1878,7 @@ where
     }
 
     {
-        let rdcleanpath_res = framed
+        let (rdcleanpath_res, received_at) = framed
             .read_by_hint(&RDCLEANPATH_HINT)
             .await
             .map_err(|e| ironrdp_connector::custom_err!("read RDCleanPath response", e))
@@ -1990,8 +1990,10 @@ where
                 debug_assert!(connector.next_pdu_hint().is_some());
 
                 buf.clear();
+                // The X.224 response travelled inside the RDCleanPath PDU read above, so it
+                // arrived when that read completed, not now.
                 let written = connector
-                    .step(x224_connection_response.as_bytes(), None, &mut buf)
+                    .step(x224_connection_response.as_bytes(), received_at, &mut buf)
                     .map_err_as::<ConnectorErrorKind>()?;
                 debug_assert!(written.is_nothing());
 

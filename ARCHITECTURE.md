@@ -115,8 +115,8 @@ The Windows backend lives in [`crates/ironrdp-rdpewa-native`](./crates/ironrdp-r
 
 Sans-I/O state-machine contract shared by RDP connect and accept sequences.
 
-Defines the `Sequence` trait (one `step` per PDU, no I/O performed by the implementor) along with its supporting types: `State`, `Written`, `SequenceError`, `ServerName`, `DesktopSize`, and the `general_err!`/`reason_err!`/`custom_err!` helper macros.
-Also owns `MonotonicInstant`, the clock type passed into `Sequence::step`.
+Defines the `Sequence` trait (one `step` per PDU, no I/O performed by the implementor) along with its supporting types: `StepInput`, `State`, `Written`, `SequenceError`, `ServerName`, `DesktopSize`, and the `general_err!`/`reason_err!`/`custom_err!` helper macros.
+Also owns `MonotonicInstant`, the clock type every input PDU is stamped with.
 It is colocated here, rather than in `ironrdp-core`, because reading time is part of what it means to drive this contract, not a foundational encoding primitive.
 
 `MonotonicInstant` and `DesktopSize` need no allocation and stay available unconditionally.

@@ -211,6 +211,9 @@ jobs:
       - name: Build .NET projects
         run: cd ./ffi/dotnet && dotnet build
 
+      - name: Test .NET projects
+        run: cd ./ffi/dotnet && dotnet test --no-build
+
   feature-matrix-setup:
     name: feature matrix setup
     needs: [formatting]

@@ -67,8 +67,15 @@ public partial struct ClientConnector
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_ensure_selected_hybrid", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError EnsureSelectedHybrid(ClientConnector* self);
 
+    /// <summary>
+    /// Advances the sequence with a PDU that arrived at `received_at`.
+    /// </summary>
+    /// <remarks>
+    /// `received_at` must be read as soon as the read producing `input` completed. Stamping
+    /// it here instead would time how long the caller took to get around to this call.
+    /// </remarks>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_step", ExactSpelling = true)]
-    public static unsafe extern ConnectorFfiResultBoxWrittenBoxIronRdpError Step(ClientConnector* self, byte* input, nuint inputSz, WriteBuf* writeBuf);
+    public static unsafe extern ConnectorFfiResultBoxWrittenBoxIronRdpError Step(ClientConnector* self, byte* input, nuint inputSz, ulong receivedAt, WriteBuf* writeBuf);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_step_no_input", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultBoxWrittenBoxIronRdpError StepNoInput(ClientConnector* self, WriteBuf* writeBuf);

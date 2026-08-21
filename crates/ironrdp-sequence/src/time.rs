@@ -22,15 +22,21 @@ use core::time::Duration;
 /// A monotonic instant, in milliseconds, from an epoch chosen by the caller.
 ///
 /// The epoch is arbitrary and carries no meaning; only differences between two
-/// instants do. Millisecond resolution is well below the shortest interval any
-/// current caller needs to measure.
+/// instants do, and only when both were read from the same clock. Nothing in
+/// the type records which clock that was, so a difference taken across two
+/// drivers is a meaningless number rather than an error: each I/O driver reads
+/// one process-wide clock of its own and hands out instants from it, and a
+/// sequence only ever subtracts instants its own driver gave it.
+///
+/// Millisecond resolution is well below the shortest interval any current
+/// caller needs to measure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MonotonicInstant(u64);
 
 impl MonotonicInstant {
     /// Builds an instant from a monotonic millisecond reading.
     #[must_use]
-    pub fn from_millis(milliseconds: u64) -> Self {
+    pub const fn from_millis(milliseconds: u64) -> Self {
         Self(milliseconds)
     }
 

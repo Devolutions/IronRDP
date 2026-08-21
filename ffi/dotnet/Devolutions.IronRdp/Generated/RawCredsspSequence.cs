@@ -25,6 +25,10 @@ public partial struct CredsspSequence
     /// <summary>
     /// Init CredSSP with an explicit protocol (pre-X.224 VMConnect front).
     /// </summary>
+    /// <remarks>
+    /// Enforces the same TLS + CredSSP prerequisites as
+    /// [`ironrdp_vmconnect::prepare_connector`] / [`ironrdp_vmconnect::connect_front`].
+    /// </remarks>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "CredsspSequence_init_with_protocol", ExactSpelling = true)]
     public static unsafe extern CredsspFfiResultBoxCredsspSequenceInitResultBoxIronRdpError InitWithProtocol(ClientConnector* connector, byte* serverName, nuint serverNameSz, byte* serverPublicKey, nuint serverPublicKeySz, uint selectedProtocol, KerberosConfig* kerberoConfigs);
 

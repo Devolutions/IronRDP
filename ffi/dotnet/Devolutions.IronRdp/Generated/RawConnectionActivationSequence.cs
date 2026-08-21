@@ -22,8 +22,15 @@ public partial struct ConnectionActivationSequence
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_next_pdu_hint", ExactSpelling = true)]
     public static unsafe extern ConnectorActivationFfiResultOptBoxPduHintBoxIronRdpError NextPduHint(ConnectionActivationSequence* self);
 
+    /// <summary>
+    /// Advances the sequence with a PDU that arrived at `received_at`.
+    /// </summary>
+    /// <remarks>
+    /// `received_at` must be read as soon as the read producing `pdu` completed. Stamping it
+    /// here instead would time how long the caller took to get around to this call.
+    /// </remarks>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_step", ExactSpelling = true)]
-    public static unsafe extern ConnectorActivationFfiResultBoxWrittenBoxIronRdpError Step(ConnectionActivationSequence* self, byte* pduHint, nuint pduHintSz, WriteBuf* buf);
+    public static unsafe extern ConnectorActivationFfiResultBoxWrittenBoxIronRdpError Step(ConnectionActivationSequence* self, byte* pdu, nuint pduSz, ulong receivedAt, WriteBuf* buf);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_step_no_input", ExactSpelling = true)]
     public static unsafe extern ConnectorActivationFfiResultBoxWrittenBoxIronRdpError StepNoInput(ConnectionActivationSequence* self, WriteBuf* buf);

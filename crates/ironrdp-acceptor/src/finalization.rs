@@ -1,6 +1,4 @@
-use ironrdp_connector::{
-    MonotonicInstant, Sequence, SequenceError, SequenceErrorExt as _, SequenceResult, State, Written,
-};
+use ironrdp_connector::{Sequence, SequenceError, SequenceErrorExt as _, SequenceResult, State, StepInput, Written};
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp;
 use ironrdp_pdu::x224::X224;
@@ -80,12 +78,9 @@ impl Sequence for FinalizationSequence {
         &self.state
     }
 
-    fn step(
-        &mut self,
-        input: &[u8],
-        _received_at: Option<MonotonicInstant>,
-        output: &mut WriteBuf,
-    ) -> SequenceResult<Written> {
+    fn step_input(&mut self, input: StepInput<'_>, output: &mut WriteBuf) -> SequenceResult<Written> {
+        let input = input.pdu();
+
         let (written, next_state) = match core::mem::take(&mut self.state) {
             FinalizationState::WaitSynchronize => {
                 let synchronize = decode_share_control(input);

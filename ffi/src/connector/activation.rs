@@ -26,8 +26,18 @@ pub mod ffi {
             Ok(pdu_hint.map(PduHint).map(Box::new))
         }
 
-        pub fn step(&mut self, pdu_hint: &[u8], buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {
-            let res = self.0.step(pdu_hint, None, &mut buf.0).map(Written).map(Box::new)?;
+        /// Advances the sequence with a PDU that arrived at `received_at`.
+        ///
+        /// `received_at` must be read as soon as the read producing `pdu` completed. Stamping it
+        /// here instead would time how long the caller took to get around to this call.
+        pub fn step(
+            &mut self,
+            pdu: &[u8],
+            received_at: u64,
+            buf: &mut WriteBuf,
+        ) -> Result<Box<Written>, Box<IronRdpError>> {
+            let received_at = ironrdp::connector::MonotonicInstant::from_millis(received_at);
+            let res = self.0.step(pdu, received_at, &mut buf.0).map(Written).map(Box::new)?;
             Ok(res)
         }
 
