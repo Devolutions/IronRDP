@@ -1997,8 +1997,7 @@ fn kerberos_config_from_properties(
 #[cfg(test)]
 mod tests {
     use ironrdp_cfg::PropertySetExt as _;
-    use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};
-    use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
+    use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 
     use super::{ConfigBuilder, Destination};
 
@@ -2011,49 +2010,6 @@ mod tests {
             .with_client_dir("C:\\")
             .with_platform(MajorPlatformType::WINDOWS)
             .with_client_name("client")
-    }
-
-    #[test]
-    fn remote_application_mode_requires_remote_programs_support() {
-        let error = complete_builder()
-            .with_remote_application_mode(true)
-            .with_rail_support_level(RailSupportLevel::empty())
-            .build()
-            .expect_err("RemoteApp must require remote programs support");
-
-        assert!(error.to_string().contains("RAIL support level"), "{error:?}");
-    }
-
-    #[test]
-    fn remote_application_mode_is_preserved_in_properties() {
-        let config = complete_builder()
-            .with_remote_application_mode(true)
-            .build()
-            .expect("valid RemoteApp configuration");
-
-        assert!(config.connector().remote_application_mode);
-        assert_eq!(config.properties().remote_application_mode(), Some(true));
-    }
-
-    #[test]
-    fn monitor_layout_is_preserved_in_connector_configuration() {
-        let monitor_layout = ClientMonitorData {
-            monitors: vec![Monitor {
-                left: 0,
-                top: 0,
-                right: 1_919,
-                bottom: 1_079,
-                flags: MonitorFlags::PRIMARY,
-            }],
-        };
-        let config = complete_builder()
-            .with_desktop_width(1_920)
-            .with_desktop_height(1_080)
-            .with_monitor_layout(monitor_layout.clone())
-            .build()
-            .expect("valid monitor layout configuration");
-
-        assert_eq!(config.connector().monitor_layout.as_ref(), Some(&monitor_layout));
     }
 
     #[test]
@@ -2075,91 +2031,6 @@ mod tests {
         let execute = config.rail_initial_execute.expect("initial Execute PDU");
         assert_eq!(execute.executable, "notepad.exe");
         assert_eq!(execute.working_directory, "C:\\Temp");
-    }
-
-    #[cfg(feature = "sound")]
-    #[test]
-    fn with_audio_mode_redirect_enables_playback_channel() {
-        use ironrdp_cfg::AudioMode;
-
-        let config = complete_builder()
-            .with_audio_mode(AudioMode::RedirectToClient)
-            .build()
-            .expect("valid configuration");
-
-        assert!(config.connector().enable_audio_playback);
-        assert!(config.channels().sound);
-        assert_eq!(
-            config.properties().audio_mode().unwrap(),
-            Some(AudioMode::RedirectToClient)
-        );
-    }
-
-    #[cfg(feature = "sound")]
-    #[test]
-    fn with_audio_mode_play_on_server_disables_local_playback() {
-        use ironrdp_cfg::AudioMode;
-
-        let config = complete_builder()
-            .with_audio_mode(AudioMode::PlayOnServer)
-            .build()
-            .expect("valid configuration");
-
-        assert!(!config.connector().enable_audio_playback);
-        assert!(!config.channels().sound);
-        assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::PlayOnServer));
-    }
-
-    #[cfg(feature = "sound")]
-    #[test]
-    fn with_audio_mode_disabled_suppresses_sound_channel() {
-        use ironrdp_cfg::AudioMode;
-
-        let config = complete_builder()
-            .with_audio_mode(AudioMode::Disabled)
-            .build()
-            .expect("valid configuration");
-
-        assert!(!config.connector().enable_audio_playback);
-        assert!(!config.channels().sound);
-        assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::Disabled));
-    }
-
-    #[cfg(feature = "sound")]
-    #[test]
-    fn with_audio_capture_enables_client_info_flag_and_channel() {
-        use ironrdp_cfg::AudioCaptureMode;
-
-        let config = complete_builder()
-            .with_audio_capture(true)
-            .build()
-            .expect("valid configuration");
-
-        assert!(config.connector().enable_audio_capture);
-        assert!(config.channels().audio_capture);
-        assert_eq!(
-            config.properties().audio_capture_mode().unwrap(),
-            Some(AudioCaptureMode::CaptureFromClient)
-        );
-    }
-
-    #[cfg(feature = "sound")]
-    #[test]
-    fn with_audio_capture_disabled_clears_channel() {
-        use ironrdp_cfg::AudioCaptureMode;
-
-        let config = complete_builder()
-            .with_audio_capture(true)
-            .with_audio_capture(false)
-            .build()
-            .expect("valid configuration");
-
-        assert!(!config.connector().enable_audio_capture);
-        assert!(!config.channels().audio_capture);
-        assert_eq!(
-            config.properties().audio_capture_mode().unwrap(),
-            Some(AudioCaptureMode::Disabled)
-        );
     }
 
     #[cfg(feature = "webauthn")]
