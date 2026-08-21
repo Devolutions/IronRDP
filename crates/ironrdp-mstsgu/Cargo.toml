@@ -11,27 +11,15 @@ repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+autotests = false
 
 [lib]
 doctest = false
 test = false
 
 [[test]]
-name = "http_auth"
-path = "tests/http_auth.rs"
-required-features = ["native-tls"]
-
-[[test]]
-name = "udp"
-path = "tests/udp.rs"
-
-[[test]]
-name = "http_control"
-path = "tests/http_control.rs"
-
-[[test]]
-name = "rpc_pdu"
-path = "tests/rpc_pdu.rs"
+name = "integration_tests_mstsgu"
+path = "tests/main.rs"
 
 [[test]]
 name = "rpc_tsgu_stubs"
