@@ -1,5 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
 use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
 use ironrdp_mstsgu::{ChannelClosePkt, ReauthMessagePkt, ServiceMessagePkt, gateway_code_label};
 
