@@ -2,6 +2,8 @@ use core::fmt;
 use core::net::SocketAddr;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
+#[cfg(feature = "usb")]
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -16,6 +18,8 @@ use ironrdp_core::{decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_dvc as dvc;
+#[cfg(feature = "usb")]
+use ironrdp_dvc::DynamicChannelId;
 use ironrdp_pdu::codecs::rfx::Quant;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
@@ -28,6 +32,8 @@ use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
+#[cfg(feature = "usb")]
+use ironrdp_rdpeusb::io::RequestId;
 use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
@@ -48,7 +54,14 @@ use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
+#[cfg(feature = "usb")]
+use crate::urbdrc::{
+    DeviceFactory, RawPending, ServerDeviceIoReq, UrbdrcDeviceServerMessage, UrbdrcServerMessage, UsbControlHandle,
+    UsbDeviceHandle, UsbDeviceLifecycle,
+};
 use crate::{SoundServerFactory, builder, capabilities};
+#[cfg(feature = "usb")]
+use ironrdp_rdpeusb::{InterfaceAlloc, io::CompletionData, server::UrbdrcControlServer, server::UrbdrcDeviceServer};
 
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
@@ -460,6 +473,33 @@ impl DisplayControlHandler for DisplayControlBackend {
     }
 }
 
+#[cfg(feature = "usb")]
+struct ServerUsbManager {
+    factory: Box<dyn DeviceFactory>,
+    comp_iface_alloc: InterfaceAlloc,
+    router: HashMap<DynamicChannelId, ServerUsbDevice>,
+}
+
+#[cfg(feature = "usb")]
+struct ServerUsbDevice {
+    lifecycle: Arc<UsbDeviceLifecycle>,
+    /// Handle attached to a submitted request, so dropping the request cancels
+    /// it. Kept per device rather than per message to keep [`ServerEvent`] small.
+    handle: UsbDeviceHandle,
+    pending: HashMap<RequestId, oneshot::Sender<CompletionData>>,
+}
+
+#[cfg(feature = "usb")]
+impl ServerUsbManager {
+    fn new(inner: Box<dyn DeviceFactory>) -> Self {
+        Self {
+            factory: inner,
+            comp_iface_alloc: InterfaceAlloc::default(),
+            router: HashMap::new(),
+        }
+    }
+}
+
 /// Selects who performs the TLS handshake for a connection accepted via
 /// [`RdpServer::run_connection_with`].
 #[derive(Debug, Clone, Copy)]
@@ -549,6 +589,8 @@ pub struct RdpServer {
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "egfx")]
     gfx_handle: Option<crate::gfx::GfxServerHandle>,
+    #[cfg(feature = "usb")]
+    usb_man: Option<ServerUsbManager>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
@@ -631,6 +673,8 @@ pub enum ServerEvent {
     Egfx(EgfxServerMessage),
     /// Trigger an RTT measurement probe (requires auto-detect enabled).
     AutoDetectRttRequest,
+    #[cfg(feature = "usb")]
+    Usb(UrbdrcServerMessage),
 }
 
 /// Creates a fresh static-channel processor for each accepted RDP connection.
@@ -655,6 +699,8 @@ impl fmt::Debug for ServerEvent {
             Self::GetLocalAddr(..) => f.write_str("GetLocalAddr(..)"),
             #[cfg(feature = "egfx")]
             Self::Egfx(..) => f.write_str("Egfx(..)"),
+            #[cfg(feature = "usb")]
+            Self::Usb(..) => f.write_str("Usb(..)"),
             Self::AutoDetectRttRequest => f.write_str("AutoDetectRttRequest"),
         }
     }
@@ -692,6 +738,7 @@ impl RdpServer {
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
         display_suppressed: Option<Arc<AtomicBool>>,
+        #[cfg(feature = "usb")] usb_factory: Option<Box<dyn DeviceFactory>>,
         autodetect_rtt: Option<Arc<AtomicU32>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
@@ -705,6 +752,7 @@ impl RdpServer {
         if let Some(gfx) = gfx_factory.as_mut() {
             gfx.set_sender(ev_sender.clone());
         }
+
         Self {
             opts,
             handler: Arc::new(Mutex::new(handler)),
@@ -718,6 +766,8 @@ impl RdpServer {
             gfx_factory,
             #[cfg(feature = "egfx")]
             gfx_handle: None,
+            #[cfg(feature = "usb")]
+            usb_man: usb_factory.map(ServerUsbManager::new),
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
@@ -933,6 +983,27 @@ impl RdpServer {
         &self.ev_sender
     }
 
+    #[cfg(feature = "usb")]
+    fn remove_usb_device(&mut self, dvc_id: DynamicChannelId) {
+        let Some(usb_man) = self.usb_man.as_mut() else {
+            warn!("Missing USB device factory");
+            return;
+        };
+
+        if let Some(device) = usb_man.router.remove(&dvc_id) {
+            // Set the terminal state before dropping completion senders. A woken
+            // PendingRequest must not enqueue CANCEL_REQUEST for a removed DVC.
+            device.lifecycle.mark_closed();
+            debug!(
+                dvc_id,
+                pending_requests = device.pending.len(),
+                "Removed closed USB device from request router"
+            );
+        } else {
+            trace!(dvc_id, "Closed USB device is absent from request router");
+        }
+    }
+
     /// Returns the shared "display suppressed" flag — `true` while the
     /// connected client has sent `SuppressOutput { desktop_rect: None }`
     /// (e.g., mstsc minimized).
@@ -1051,6 +1122,17 @@ impl RdpServer {
                     let gfx_server = ironrdp_egfx::server::GraphicsPipelineServer::new(handler);
                     dvc = dvc.with_dynamic_channel(gfx_server);
                 }
+            }
+            dvc
+        };
+
+        #[cfg(feature = "usb")]
+        let dvc = {
+            let mut dvc = dvc;
+            if self.usb_man.is_some() {
+                dvc = dvc.with_dynamic_channel(UrbdrcControlServer::new(Box::new(UsbControlHandle::new(
+                    self.ev_sender.clone(),
+                ))));
             }
             dvc
         };
@@ -1564,6 +1646,220 @@ impl RdpServer {
 
                         let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
                         writer.write_all(&data).await?;
+                    }
+                },
+                #[cfg(feature = "usb")]
+                ServerEvent::Usb(msg) => match msg {
+                    UrbdrcServerMessage::AddChan => {
+                        let create_dvc_msg = {
+                            use crate::urbdrc::UsbRedirServer;
+
+                            let Some(usb_man) = self.usb_man.as_mut() else {
+                                warn!("Missing USB device factory");
+                                continue;
+                            };
+                            let Some(drdynvc) = self
+                                .static_channels
+                                .get_by_type_mut::<dvc::DrdynvcServer>()
+                                .and_then(|svc| svc.channel_processor_downcast_mut::<dvc::DrdynvcServer>())
+                            else {
+                                warn!("No drdynvc channel, dropping URBDRC request");
+                                continue;
+                            };
+
+                            let Some(comp_iface) = usb_man.comp_iface_alloc.alloc() else {
+                                warn!("Run out of URBDRC interface IDs");
+                                continue;
+                            };
+
+                            let Some(device_backend) = usb_man.factory.create_device() else {
+                                warn!("Failed to create USB device backend");
+                                continue;
+                            };
+
+                            drdynvc.create_channel_with(|dvc_id| {
+                                let lifecycle = Arc::new(UsbDeviceLifecycle::new());
+                                let handle =
+                                    UsbDeviceHandle::new(self.ev_sender.clone(), dvc_id, Arc::clone(&lifecycle));
+                                let device = ServerUsbDevice {
+                                    lifecycle,
+                                    handle: handle.clone(),
+                                    pending: HashMap::new(),
+                                };
+                                if usb_man.router.insert(dvc_id, device).is_some() {
+                                    warn!(dvc_id = dvc_id, "Replacing USB device pending-request map");
+                                }
+                                Ok::<_, anyhow::Error>(
+                                    UrbdrcDeviceServer::new(
+                                        Box::new(UsbRedirServer::new(device_backend, handle)),
+                                        comp_iface,
+                                    )
+                                    .expect("interface ID allocated by InterfaceAlloc must be valid"),
+                                )
+                            })?
+                        };
+
+                        let drdynvc_channel_id = self
+                            .get_channel_id_by_type::<dvc::DrdynvcServer>()
+                            .context("DRDYNVC channel not found")?;
+                        let data =
+                            server_encode_svc_messages(vec![create_dvc_msg], drdynvc_channel_id, user_channel_id)?;
+
+                        writer.write_all(&data).await?;
+                    }
+                    UrbdrcServerMessage::Device { dvc_id, dev_msg } => {
+                        let Some(lifecycle) = self
+                            .usb_man
+                            .as_ref()
+                            .and_then(|usb_man| usb_man.router.get(&dvc_id))
+                            .map(|device| Arc::clone(&device.lifecycle))
+                        else {
+                            warn!(dvc_id, "Missing USB device state");
+                            continue;
+                        };
+
+                        // Handle checks are an early rejection for callers. This event-loop check
+                        // is authoritative because a request may already be queued when retract or
+                        // channel close changes the shared lifecycle state.
+                        if !lifecycle.is_open() {
+                            trace!(dvc_id, "Dropping request for closing or closed USB device");
+                            continue;
+                        }
+
+                        let (dvc_msgs, io_reply, close_dev) = {
+                            let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
+                                warn!("No drdynvc channel, dropping URBDRC request");
+                                continue;
+                            };
+
+                            let Some(mut dvc) = drdynvc.dvc_by_id_mut::<UrbdrcDeviceServer>(dvc_id) else {
+                                warn!(dvc_id, "USB dynamic channel ID mismatch");
+                                continue;
+                            };
+                            let processor = dvc.processor_mut();
+
+                            match dev_msg {
+                                UrbdrcDeviceServerMessage::QueryDeviceText { text_type, locale_id } => {
+                                    (vec![processor.query_device_text(text_type, locale_id)?], None, false)
+                                }
+                                UrbdrcDeviceServerMessage::IoComp { request_id, completion } => {
+                                    let Some(usb_man) = self.usb_man.as_mut() else {
+                                        warn!("Missing USB device factory");
+                                        continue;
+                                    };
+                                    let Some(device) = usb_man.router.get_mut(&dvc_id) else {
+                                        warn!(dvc_id, "Missing USB device state");
+                                        continue;
+                                    };
+                                    let Some(sender) = device.pending.remove(&request_id) else {
+                                        warn!(dvc_id, request_id, "Missing pending USB I/O request");
+                                        continue;
+                                    };
+
+                                    if sender.send(completion).is_err() {
+                                        trace!(dvc_id, request_id, "USB I/O completion receiver dropped");
+                                    }
+                                    (Vec::new(), None, false)
+                                }
+                                UrbdrcDeviceServerMessage::IoReq { data, tx } => {
+                                    if tx.is_closed() {
+                                        continue;
+                                    }
+
+                                    let request = match data {
+                                        ServerDeviceIoReq::IoControl(packet) => processor.io_control(packet),
+                                        ServerDeviceIoReq::InternalIoControl(packet) => {
+                                            processor.internal_io_control(packet)
+                                        }
+                                        ServerDeviceIoReq::TransferOut(packet) => processor.transfer_out(packet),
+                                        ServerDeviceIoReq::TransferIn(packet) => processor.transfer_in(packet),
+                                    }?;
+
+                                    let pending = if request.expects_completion {
+                                        let Some(usb_man) = self.usb_man.as_mut() else {
+                                            warn!("Missing USB device factory");
+                                            continue;
+                                        };
+                                        let Some(device) = usb_man.router.get_mut(&dvc_id) else {
+                                            error!(dvc_id, "Missing USB device state");
+                                            continue;
+                                        };
+
+                                        let (comp_tx, comp_rx) = oneshot::channel();
+                                        if device.pending.insert(request.request_id, comp_tx).is_some() {
+                                            warn!(
+                                                dvc_id,
+                                                request_id = request.request_id,
+                                                "Replacing pending USB I/O request"
+                                            );
+                                        }
+
+                                        Some(RawPending {
+                                            rx: comp_rx,
+                                            id: request.request_id,
+                                            handle: device.handle.clone(),
+                                        })
+                                    } else {
+                                        None
+                                    };
+
+                                    (vec![request.message], Some((tx, pending)), false)
+                                }
+                                UrbdrcDeviceServerMessage::Retract(reason) => {
+                                    let request = processor.retract_device(reason)?;
+                                    lifecycle.mark_retracting();
+                                    (vec![request], None, true)
+                                }
+                                UrbdrcDeviceServerMessage::CancelRequest(request_id) => {
+                                    let request = processor.cancel_request(request_id)?;
+                                    let Some(usb_man) = self.usb_man.as_mut() else {
+                                        warn!("Missing USB device factory");
+                                        continue;
+                                    };
+                                    let Some(device) = usb_man.router.get_mut(&dvc_id) else {
+                                        warn!(dvc_id, "Missing USB device state");
+                                        continue;
+                                    };
+
+                                    // A completion may have won the race with PendingRequest::drop.
+                                    // Only emit CANCEL_REQUEST while the request is still pending.
+                                    if !device.pending.contains_key(&request_id) {
+                                        trace!(dvc_id, request_id, "USB I/O request is no longer pending");
+                                        continue;
+                                    }
+
+                                    (vec![request], None, false)
+                                }
+                            }
+                        };
+
+                        let mut messages = dvc::encode_dvc_messages(dvc_id, dvc_msgs, ChannelFlags::SHOW_PROTOCOL)?;
+
+                        if close_dev {
+                            let close_message = self
+                                .get_svc_processor::<dvc::DrdynvcServer>()
+                                .and_then(|drdynvc| drdynvc.close_channel(dvc_id))
+                                .context("URBDRC dynamic channel disappeared before close")?;
+                            self.remove_usb_device(dvc_id);
+                            messages.push(close_message);
+                        }
+
+                        let drdynvc_channel_id = self
+                            .get_channel_id_by_type::<dvc::DrdynvcServer>()
+                            .context("DRDYNVC channel not found")?;
+
+                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
+                        writer.write_all(&data).await?;
+
+                        if let Some((tx, pending)) = io_reply {
+                            if let Err(pending) = tx.send(pending) {
+                                trace!(dvc_id, "USB I/O request receiver dropped");
+                                drop(pending);
+                            }
+                        }
+                    }
+                    UrbdrcServerMessage::DeviceClosed { dvc_id } => {
+                        self.remove_usb_device(dvc_id);
                     }
                 },
                 #[cfg(feature = "egfx")]
