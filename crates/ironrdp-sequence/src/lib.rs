@@ -10,6 +10,25 @@ extern crate alloc;
 #[cfg(feature = "state-machine")]
 mod macros;
 
+/// Not part of the public API. Exposed only so `reason_err!`'s expansion can
+/// reach `format!` through a `$crate`-qualified path.
+///
+/// A bare `format!` written inside a `macro_rules!` body is not fully
+/// hygienic: unlike item and type names, an unqualified macro invocation
+/// falls back to the *caller's* scope when it is not found at the
+/// definition site. A caller that has not itself imported `alloc::format`
+/// (e.g. a `no_std` crate depending on the `state-machine` feature) would
+/// then fail to compile `reason_err!(...)`, regardless of whether this
+/// crate itself is built with `alloc`/`std`. Routing through `$crate`
+/// resolves unconditionally against this crate's own `alloc`, sidestepping
+/// the caller's scope entirely. See `tests/reason_err.rs` for the
+/// regression test.
+#[cfg(feature = "state-machine")]
+#[doc(hidden)]
+pub mod __private {
+    pub use alloc::format;
+}
+
 mod desktop_size;
 #[cfg(feature = "state-machine")]
 mod negotiation_failure;

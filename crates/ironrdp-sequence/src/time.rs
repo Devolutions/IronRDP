@@ -12,12 +12,9 @@
 //! on `wasm32-unknown-unknown`, which some drivers using this type compile
 //! for, and this crate is `no_std` besides.
 //!
-//! This type has no dependency on the rest of the crate (in particular, none
-//! on the `state-machine` feature's [`Sequence`](crate::Sequence) trait and
-//! its `ironrdp-pdu` dependency), so it stays available even when
-//! `state-machine` is disabled. `ironrdp-connector` and `ironrdp-rdpeudp` both
-//! re-export it as a permanent facade so existing callers are unaffected by
-//! this crate's introduction.
+//! This type needs no allocation and stays available even when the
+//! `state-machine` feature is disabled; see the crate's README for the full
+//! feature-split rationale.
 
 use core::ops::Add;
 use core::time::Duration;

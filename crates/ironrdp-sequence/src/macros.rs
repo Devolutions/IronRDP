@@ -18,7 +18,7 @@ macro_rules! general_err {
 #[macro_export]
 macro_rules! reason_err {
     ( $context:expr, $($arg:tt)* ) => {{
-        <$crate::SequenceError as $crate::SequenceErrorExt>::reason($context, format!($($arg)*))
+        <$crate::SequenceError as $crate::SequenceErrorExt>::reason($context, $crate::__private::format!($($arg)*))
     }};
 }
 

@@ -13,6 +13,7 @@ const CANONICAL_SCOPES: &[&str] = &[
     "meta",
     "core",
     "error",
+    "sequence",
     "pdu",
     "str",
     "bulk",

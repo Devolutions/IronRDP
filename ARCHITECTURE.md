@@ -115,24 +115,17 @@ The Windows backend lives in [`crates/ironrdp-rdpewa-native`](./crates/ironrdp-r
 
 Sans-I/O state-machine contract shared by RDP connect and accept sequences.
 
-Defines the `Sequence` trait (one `step` per PDU, no I/O performed by the implementor) along with its
-supporting types: `State`, `Written`, `SequenceError`, `ServerName`, `DesktopSize`, and the
-`general_err!`/`reason_err!`/`custom_err!` helper macros. Also owns `MonotonicInstant`, the clock type
-passed into `Sequence::step`: it is colocated here, rather than in `ironrdp-core`, because reading time is
-part of what it means to drive this contract, not a foundational encoding primitive.
+Defines the `Sequence` trait (one `step` per PDU, no I/O performed by the implementor) along with its supporting types: `State`, `Written`, `SequenceError`, `ServerName`, `DesktopSize`, and the `general_err!`/`reason_err!`/`custom_err!` helper macros.
+Also owns `MonotonicInstant`, the clock type passed into `Sequence::step`.
+It is colocated here, rather than in `ironrdp-core`, because reading time is part of what it means to drive this contract, not a foundational encoding primitive.
 
-`MonotonicInstant` and `DesktopSize` carry no dependency beyond `core`/`alloc` and stay available
-unconditionally. Everything else needs `ironrdp-pdu`, so it is gated behind the `state-machine` feature
-(default-disabled): `ironrdp-rdpeudp` depends on this crate only for `MonotonicInstant` and must not be
-forced to pull in `ironrdp-pdu`'s much larger dependency tree just for the clock type.
+`MonotonicInstant` and `DesktopSize` need no allocation and stay available unconditionally.
+Everything else needs `ironrdp-pdu`, so it is gated behind the default-disabled `state-machine` feature.
+See the crate's `Cargo.toml` and README for the full feature-split rationale.
 
-`ironrdp-connector` and `ironrdp-rdpeudp` both re-export everything they previously defined directly from
-this crate, so existing `ironrdp_connector::{Sequence, MonotonicInstant, ...}` and
-`ironrdp_rdpeudp::MonotonicInstant` import paths remain stable.
+`ironrdp-connector` and `ironrdp-rdpeudp` both re-export everything they previously defined directly from this crate, so existing `ironrdp_connector::{Sequence, MonotonicInstant, ...}` and `ironrdp_rdpeudp::MonotonicInstant` import paths remain stable.
 
-This crate must never depend on `ironrdp-connector`, `sspi`, or any RDP connection-flow logic: it is the
-generic contract that `ironrdp-connector` (and any future accept-side or session-side sequence) is built
-on top of, not the other way around.
+**Architectural Invariant**: this crate must never depend on `ironrdp-connector`, `sspi`, or any RDP connection-flow logic; it is the generic contract that `ironrdp-connector` (and any future accept-side or session-side sequence) is built on top of, not the other way around.
 
 #### [`crates/ironrdp-connector`](./crates/ironrdp-connector)
 

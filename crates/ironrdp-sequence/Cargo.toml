@@ -45,3 +45,9 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", optional = true } # pu
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+# `state-machine` (and the `ServerName` it implies via `alloc`) is
+# default-disabled, so without this docs.rs would build with `default = []`
+# and only render `DesktopSize`/`MonotonicInstant`.
+all-features = true

@@ -5,7 +5,8 @@ Sans-I/O state-machine contract shared by RDP connect and accept sequences.
 ## Purpose
 
 `ironrdp-connector` and `ironrdp-acceptor` each drive an RDP connection through a chain of phases (negotiation, channel connection, license exchange, activation, finalization).
-Both crates implement the same contract for that chain, so it lives here instead of being duplicated or having one crate depend on the other.
+Both crates implement the same contract for that chain; this crate is where it now lives, so it does not need to be defined a second time.
+`ironrdp-acceptor` still depends on `ironrdp-connector` directly today rather than on this crate; having it implement the contract from here instead, and drop that dependency, is a follow-up.
 
 The contract is entirely sans-I/O: a [`Sequence`] consumes at most one input PDU per [`Sequence::step`] call and produces at most one output PDU, leaving all reading, writing, and timing to the caller.
 
