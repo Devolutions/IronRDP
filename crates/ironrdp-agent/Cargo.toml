@@ -10,9 +10,11 @@ repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+autotests = false
 
 [lib]
 doctest = false
+test = false
 
 [[bin]]
 name = "ironrdp-agent"
