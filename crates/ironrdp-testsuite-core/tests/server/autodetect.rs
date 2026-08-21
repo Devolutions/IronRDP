@@ -1,5 +1,5 @@
 use ironrdp_pdu::rdp::autodetect::{AutoDetectRequest, AutoDetectResponse};
-use ironrdp_server::autodetect::AutoDetectManager;
+use ironrdp_server::autodetect::{AutoDetectManager, AutoDetectOutcome};
 
 /// Upper bound on ticks to drive while waiting for a bandwidth transaction:
 /// generous enough to cover the pacing plus the window, tight enough that a
@@ -57,7 +57,7 @@ fn rtt_response_returns_latency() {
     };
     // Both timestamps come from the caller, so the measurement is exact rather than
     // dependent on how fast the test happens to run.
-    assert_eq!(mgr.handle_response(&response, 20), Some(20));
+    assert_eq!(mgr.handle_response(&response, 20), AutoDetectOutcome::Rtt(20));
     assert_eq!(mgr.pending_count(), 0);
 }
 
@@ -67,7 +67,7 @@ fn unknown_sequence_returns_none() {
     let _ = mgr.send_rtt_request(0);
 
     let response = AutoDetectResponse::RttResponse { sequence_number: 999 };
-    assert!(mgr.handle_response(&response, 20).is_none());
+    assert_eq!(mgr.handle_response(&response, 20), AutoDetectOutcome::Unmatched);
     assert_eq!(mgr.pending_count(), 1, "original probe should remain");
 }
 
@@ -107,7 +107,7 @@ fn backwards_clock_yields_a_zero_sample() {
     let response = AutoDetectResponse::RttResponse {
         sequence_number: req.sequence_number(),
     };
-    assert_eq!(mgr.handle_response(&response, 400), Some(0));
+    assert_eq!(mgr.handle_response(&response, 400), AutoDetectOutcome::Rtt(0));
 
     // The zero has to reach the window, not just the return value, since the
     // snapshot is what the peer eventually sees.
@@ -140,7 +140,10 @@ fn an_enormous_gap_clamps_to_u32_max() {
     let response = AutoDetectResponse::RttResponse {
         sequence_number: req.sequence_number(),
     };
-    assert_eq!(mgr.handle_response(&response, u64::from(u32::MAX) + 1), Some(u32::MAX));
+    assert_eq!(
+        mgr.handle_response(&response, u64::from(u32::MAX) + 1),
+        AutoDetectOutcome::Rtt(u32::MAX)
+    );
 }
 
 #[test]
@@ -189,7 +192,10 @@ fn bandwidth_measure_transacts_and_enables_netchar() {
         time_delta_ms: 10,
         byte_count: 100_000,
     };
-    assert!(mgr.handle_response(&results, 20).is_none());
+    assert_eq!(
+        mgr.handle_response(&results, 20),
+        AutoDetectOutcome::Bandwidth(Some(80_000))
+    );
 
     match mgr
         .build_netchar_result(20)
@@ -214,7 +220,10 @@ fn bandwidth_kbps_reflects_the_last_completed_measurement() {
         time_delta_ms: 10,
         byte_count: 100_000,
     };
-    assert!(mgr.handle_response(&results, 20).is_none());
+    assert_eq!(
+        mgr.handle_response(&results, 20),
+        AutoDetectOutcome::Bandwidth(Some(80_000))
+    );
 
     assert_eq!(mgr.bandwidth_kbps(), Some(80_000), "byte_count * 8 / time_delta_ms");
 }
@@ -261,7 +270,7 @@ fn mismatched_bandwidth_sequence_is_ignored() {
         time_delta_ms: 10,
         byte_count: 100_000,
     };
-    assert!(mgr.handle_response(&mismatched, 20).is_none());
+    assert_eq!(mgr.handle_response(&mismatched, 20), AutoDetectOutcome::Unmatched);
     assert!(
         mgr.build_netchar_result(1_000).is_none(),
         "a mismatched reply must not have recorded a bandwidth figure"
@@ -277,7 +286,10 @@ fn mismatched_bandwidth_sequence_is_ignored() {
         time_delta_ms: 10,
         byte_count: 100_000,
     };
-    assert!(mgr.handle_response(&matching, 20).is_none());
+    assert_eq!(
+        mgr.handle_response(&matching, 20),
+        AutoDetectOutcome::Bandwidth(Some(80_000))
+    );
     assert!(
         mgr.build_netchar_result(1_000).is_some(),
         "the outstanding transaction's own reply must still complete it"
@@ -307,7 +319,10 @@ fn zero_time_delta_ages_out_a_previous_bandwidth_figure() {
         time_delta_ms: 10,
         byte_count: 100_000,
     };
-    assert!(mgr.handle_response(&good_results, 20).is_none());
+    assert_eq!(
+        mgr.handle_response(&good_results, 20),
+        AutoDetectOutcome::Bandwidth(Some(80_000))
+    );
     assert!(
         mgr.build_netchar_result(1_000).is_some(),
         "a real bandwidth figure is known"
@@ -328,7 +343,14 @@ fn zero_time_delta_ages_out_a_previous_bandwidth_figure() {
         time_delta_ms: 0,
         byte_count: 100_000,
     };
-    assert!(mgr.handle_response(&zero_delta_results, 1_020).is_none());
+    // Matched (it completes the outstanding transaction), but unusable: distinct from
+    // an unmatched reply, and distinct from `Bandwidth(Some(_))`. A caller collapsing
+    // this into "no measurement happened" would miss that the manager just cleared its
+    // own figure right here.
+    assert_eq!(
+        mgr.handle_response(&zero_delta_results, 1_020),
+        AutoDetectOutcome::Bandwidth(None)
+    );
 
     // The RTT sample is fresh, but the old bandwidth figure must not ride
     // along as though it were still current.
@@ -336,6 +358,38 @@ fn zero_time_delta_ages_out_a_previous_bandwidth_figure() {
         mgr.build_netchar_result(2_000).is_none(),
         "the aged-out bandwidth figure must withhold the result, not report the stale one"
     );
+}
+
+/// Two consecutive measurements landing on the identical kbps figure (plausible on a
+/// stable link) must both be reported as a match. A caller that derives "did this
+/// complete a measurement" from comparing the value before and after the call, rather
+/// than from `handle_response`'s own return value, would see no change on the second
+/// one and misclassify a real match as unmatched.
+#[test]
+fn identical_consecutive_bandwidth_measurements_are_both_reported_as_matched() {
+    let mut mgr = AutoDetectManager::new();
+    let req = mgr.send_rtt_request(0);
+    let _ = mgr.handle_response(
+        &AutoDetectResponse::RttResponse {
+            sequence_number: req.sequence_number(),
+        },
+        20,
+    );
+
+    for now_ms in [20u64, 1_020] {
+        let bw_seq = drive_bandwidth_start_and_stop(&mut mgr);
+        let results = AutoDetectResponse::BandwidthMeasureResults {
+            sequence_number: bw_seq,
+            response_type: ironrdp_pdu::rdp::autodetect::BW_RESULTS_CONTINUOUS,
+            time_delta_ms: 10,
+            byte_count: 100_000,
+        };
+        assert_eq!(
+            mgr.handle_response(&results, now_ms),
+            AutoDetectOutcome::Bandwidth(Some(80_000)),
+            "the same kbps figure twice in a row is still a match, not a repeat of nothing"
+        );
+    }
 }
 
 #[test]
@@ -525,7 +579,10 @@ fn netchar_result_is_paced_independently_of_the_probe_cadence() {
         time_delta_ms: 10,
         byte_count: 100_000,
     };
-    assert!(mgr.handle_response(&results, 20).is_none());
+    assert_eq!(
+        mgr.handle_response(&results, 20),
+        AutoDetectOutcome::Bandwidth(Some(80_000))
+    );
 
     assert!(mgr.build_netchar_result(1_000).is_some(), "the first one is due");
 
@@ -570,7 +627,10 @@ fn netchar_result_stops_when_the_client_stops_answering() {
         time_delta_ms: 10,
         byte_count: 100_000,
     };
-    assert!(mgr.handle_response(&results, 20).is_none());
+    assert_eq!(
+        mgr.handle_response(&results, 20),
+        AutoDetectOutcome::Bandwidth(Some(80_000))
+    );
 
     let mut now = 1_000;
     assert!(mgr.build_netchar_result(now).is_some(), "the first one is due");
@@ -637,7 +697,10 @@ fn base_rtt_is_the_session_low_not_the_window_low() {
         time_delta_ms: 10,
         byte_count: 100_000,
     };
-    assert!(mgr.handle_response(&results, 20).is_none());
+    assert_eq!(
+        mgr.handle_response(&results, 20),
+        AutoDetectOutcome::Bandwidth(Some(80_000))
+    );
 
     match mgr.build_netchar_result(1_000).expect("RTT and bandwidth are known") {
         AutoDetectRequest::NetworkCharacteristicsResult { base_rtt_ms, .. } => {
@@ -718,7 +781,10 @@ fn netchar_result_maps_each_measurement_to_its_own_field() {
         time_delta_ms: 10,
         byte_count: 100_000,
     };
-    assert!(mgr.handle_response(&results, 20).is_none());
+    assert_eq!(
+        mgr.handle_response(&results, 20),
+        AutoDetectOutcome::Bandwidth(Some(80_000))
+    );
 
     match mgr.build_netchar_result(1_000).expect("RTT and bandwidth are known") {
         AutoDetectRequest::NetworkCharacteristicsResult {

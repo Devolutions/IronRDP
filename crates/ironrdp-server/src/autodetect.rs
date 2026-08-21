@@ -95,6 +95,20 @@ pub struct AutoDetectManager {
     bandwidth_is_fresh: bool,
 }
 
+/// Result of [`AutoDetectManager::handle_response()`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoDetectOutcome {
+    /// An RTT Measure Response matched a pending probe; carries the measured RTT
+    /// in milliseconds.
+    Rtt(u32),
+    /// A Bandwidth Measure Results matched the pending transaction. `None` means
+    /// the measurement completed without a usable figure, and any previously
+    /// stored bandwidth was cleared rather than left in place.
+    Bandwidth(Option<u32>),
+    /// The response did not match any pending probe or transaction.
+    Unmatched,
+}
+
 /// State of an in-flight continuous bandwidth measurement.
 enum PendingBandwidth {
     /// Start has been sent; the window stays open for this many more ticks
@@ -240,17 +254,23 @@ impl AutoDetectManager {
 
     /// Process an Auto-Detect Response from the client.
     ///
-    /// For an RTT Measure Response, records the sample and returns the measured
-    /// RTT in milliseconds. For a Bandwidth Measure Results, records the
-    /// computed bandwidth internally and returns `None`. Returns `None` for an
-    /// unexpected or unmatched response.
+    /// For an RTT Measure Response, records the sample and returns
+    /// [`AutoDetectOutcome::Rtt`] with the measured RTT in milliseconds. For a
+    /// Bandwidth Measure Results, records the computed bandwidth internally and
+    /// returns [`AutoDetectOutcome::Bandwidth`]; its payload is `None` when the
+    /// measurement completed without a usable figure, in which case any
+    /// previously stored bandwidth was just cleared (see the note on
+    /// [`build_netchar_result()`](Self::build_netchar_result)). Returns
+    /// [`AutoDetectOutcome::Unmatched`] for an unexpected or unmatched response.
     ///
     /// `now_ms` is the receipt time on the same clock passed to
     /// [`send_rtt_request()`](Self::send_rtt_request).
-    pub fn handle_response(&mut self, response: &AutoDetectResponse, now_ms: u64) -> Option<u32> {
+    pub fn handle_response(&mut self, response: &AutoDetectResponse, now_ms: u64) -> AutoDetectOutcome {
         match response {
             AutoDetectResponse::RttResponse { sequence_number } => {
-                let idx = self.pending_probes.iter().position(|(s, _)| *s == *sequence_number)?;
+                let Some(idx) = self.pending_probes.iter().position(|(s, _)| *s == *sequence_number) else {
+                    return AutoDetectOutcome::Unmatched;
+                };
                 let (_, sent_at_ms) = self.pending_probes.remove(idx);
 
                 // Saturating rather than wrapping: a caller whose clock went backwards gets
@@ -264,27 +284,28 @@ impl AutoDetectManager {
                 self.min_rtt_ms = Some(self.min_rtt_ms.map_or(rtt_ms, |m| m.min(rtt_ms)));
                 self.rtt_is_fresh = true;
 
-                Some(rtt_ms)
+                AutoDetectOutcome::Rtt(rtt_ms)
             }
             AutoDetectResponse::BandwidthMeasureResults { sequence_number, .. } => {
                 let awaiting = matches!(
                     self.pending_bw,
                     Some(PendingBandwidth::AwaitingResults { sequence }) if sequence == *sequence_number
                 );
-                if awaiting {
-                    self.pending_bw = None;
-                    // A transaction that completes without a usable figure clears the
-                    // previous one rather than leaving it in place, so a run of failures
-                    // withholds the result (see `build_netchar_result`) instead of
-                    // reporting an increasingly stale bandwidth.
-                    self.bandwidth_kbps = response.computed_bandwidth_kbps();
-                    if self.bandwidth_kbps.is_some() {
-                        self.bandwidth_is_fresh = true;
-                    }
+                if !awaiting {
+                    return AutoDetectOutcome::Unmatched;
                 }
-                None
+                self.pending_bw = None;
+                // A transaction that completes without a usable figure clears the
+                // previous one rather than leaving it in place, so a run of failures
+                // withholds the result (see `build_netchar_result`) instead of
+                // reporting an increasingly stale bandwidth.
+                self.bandwidth_kbps = response.computed_bandwidth_kbps();
+                if self.bandwidth_kbps.is_some() {
+                    self.bandwidth_is_fresh = true;
+                }
+                AutoDetectOutcome::Bandwidth(self.bandwidth_kbps)
             }
-            _ => None,
+            _ => AutoDetectOutcome::Unmatched,
         }
     }
 
