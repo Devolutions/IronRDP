@@ -538,6 +538,7 @@ dependencies = [
  "bitflags",
  "ironrdp-core",
  "ironrdp-error",
+ "ironrdp-sequence",
 ]
 
 [[package]]
@@ -561,6 +562,10 @@ dependencies = [
  "ironrdp-svc",
  "tracing",
 ]
+
+[[package]]
+name = "ironrdp-sequence"
+version = "0.1.0"
 
 [[package]]
 name = "ironrdp-str"

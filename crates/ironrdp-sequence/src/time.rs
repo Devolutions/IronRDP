@@ -11,6 +11,10 @@
 //! `std::time::Instant` is deliberately not used here. `Instant::now` panics
 //! on `wasm32-unknown-unknown`, which some drivers using this type compile
 //! for, and this crate is `no_std` besides.
+//!
+//! This type needs no allocation and stays available even when the
+//! `state-machine` feature is disabled; see the crate's README for the full
+//! feature-split rationale.
 
 use core::ops::Add;
 use core::time::Duration;

@@ -4,17 +4,15 @@
 //! PDU state machine (a [`Sequence`](crate::Sequence) impl and its helpers). It
 //! never carries an `sspi::Error` and never needs to know about CredSSP or
 //! access-denied semantics: those are connect-flow-level concerns owned by
-//! [`ConnectorError`](crate::ConnectorError), which nests a `SequenceError` in
-//! its own `Sequence` variant at each connect boundary (see the
-//! `ErrorMapping<SequenceErrorKind> for ConnectorErrorKind` impl).
-//!
-//! Keeping this type and its constructors in their own module (rather than
-//! inline in `lib.rs`) keeps it shaped for the planned extraction into a
-//! standalone `ironrdp-sequence` crate (tracked separately).
+//! `ironrdp-connector`'s `ConnectorError`, which nests a `SequenceError` in its
+//! own `Sequence` variant at each connect boundary.
 
 use core::fmt;
 
-use crate::NegotiationFailure;
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
+
+use crate::negotiation_failure::NegotiationFailure;
 
 pub type SequenceResult<T> = Result<T, SequenceError>;
 

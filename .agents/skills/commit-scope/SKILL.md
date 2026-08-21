@@ -10,7 +10,7 @@ Choose at most one optional scope for `<type>[optional scope][!]: <description>`
 ## Canonical scopes
 
 ```text
-meta core error pdu str bulk graphics config input connector session driver
+meta core error sequence pdu str bulk graphics config input connector session driver
 svc dvc cliprdr rdpdr rdpsnd rdpeai displaycontrol rdpei echo egfx rdpeudp rdpeusb rdpemt rdcleanpath
 tls mstsgu vmconnect
 

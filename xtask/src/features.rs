@@ -119,7 +119,13 @@ const CASES: &[FeatureCheckCase] = &[
     FeatureCheckCase {
         name: "workspace/powerset-foundation",
         invocation: Invocation::CargoHack {
-            packages: &["ironrdp-core", "ironrdp-error", "ironrdp-str", "ironrdp-bulk"],
+            packages: &[
+                "ironrdp-core",
+                "ironrdp-error",
+                "ironrdp-str",
+                "ironrdp-bulk",
+                "ironrdp-sequence",
+            ],
             depth: 2,
             extra_args: &[],
         },

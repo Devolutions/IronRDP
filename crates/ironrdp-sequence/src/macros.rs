@@ -2,7 +2,7 @@
 ///
 /// Shorthand for
 /// ```rust
-/// <ironrdp_connector::SequenceError as ironrdp_connector::SequenceErrorExt>::general(context)
+/// <ironrdp_sequence::SequenceError as ironrdp_sequence::SequenceErrorExt>::general(context)
 /// ```
 #[macro_export]
 macro_rules! general_err {
@@ -13,12 +13,12 @@ macro_rules! general_err {
 ///
 /// Shorthand for
 /// ```rust
-/// <ironrdp_connector::SequenceError as ironrdp_connector::SequenceErrorExt>::reason(context, reason)
+/// <ironrdp_sequence::SequenceError as ironrdp_sequence::SequenceErrorExt>::reason(context, reason)
 /// ```
 #[macro_export]
 macro_rules! reason_err {
     ( $context:expr, $($arg:tt)* ) => {{
-        <$crate::SequenceError as $crate::SequenceErrorExt>::reason($context, format!($($arg)*))
+        <$crate::SequenceError as $crate::SequenceErrorExt>::reason($context, $crate::__private::format!($($arg)*))
     }};
 }
 
@@ -26,7 +26,7 @@ macro_rules! reason_err {
 ///
 /// Shorthand for
 /// ```rust
-/// <ironrdp_connector::SequenceError as ironrdp_connector::SequenceErrorExt>::custom(context, source)
+/// <ironrdp_sequence::SequenceError as ironrdp_sequence::SequenceErrorExt>::custom(context, source)
 /// ```
 #[macro_export]
 macro_rules! custom_err {

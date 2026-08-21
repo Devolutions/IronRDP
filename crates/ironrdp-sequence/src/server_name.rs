@@ -1,3 +1,9 @@
+#[cfg(not(feature = "std"))]
+use alloc::borrow::ToOwned as _;
+#[cfg(not(feature = "std"))]
+use alloc::string::{String, ToString as _};
+
+/// A sanitized server name or address to connect to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerName(String);
 
