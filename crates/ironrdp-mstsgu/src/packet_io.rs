@@ -128,8 +128,13 @@ impl PacketIo {
                     .map_err(|e| custom_err!("websocket close flush", e))?;
                 Ok(())
             }
-            PacketIo::DualHttp { in_tx, .. } => {
+            PacketIo::DualHttp { in_tx, in_response, .. } => {
                 let _ = in_tx.take();
+                if let Some(response) = in_response.take() {
+                    response
+                        .await
+                        .map_err(|e| custom_err!("dual-http in response task", e))??;
+                }
                 Ok(())
             }
         }

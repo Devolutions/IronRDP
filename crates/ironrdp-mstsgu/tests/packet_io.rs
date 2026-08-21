@@ -296,6 +296,69 @@ async fn dual_http_reports_in_authentication_rejection() {
     in_server.await.expect("IN task");
 }
 
+#[tokio::test]
+async fn dual_http_close_reports_final_in_status() {
+    let (out_client, out_server) = tokio::io::duplex(4096);
+    let (in_client, in_server) = tokio::io::duplex(4096);
+
+    let out_server = tokio::spawn(async move {
+        let steps = Arc::new(AtomicUsize::new(0));
+        let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+            let steps = Arc::clone(&steps);
+            async move {
+                assert_eq!(request.method(), "RDG_OUT_DATA");
+                match steps.fetch_add(1, Ordering::SeqCst) {
+                    0 => Ok::<_, Infallible>(response(
+                        StatusCode::UNAUTHORIZED,
+                        &[("www-authenticate", "Basic realm=\"RDG\"")],
+                        Bytes::new(),
+                    )),
+                    1 => Ok(response(StatusCode::OK, &[], Bytes::from_static(b"0123456789"))),
+                    _ => panic!("unexpected OUT request"),
+                }
+            }
+        });
+        http1::Builder::new()
+            .serve_connection(TokioIo::new(out_server), service)
+            .await
+            .expect("serve OUT");
+    });
+
+    let in_server = tokio::spawn(async move {
+        let steps = Arc::new(AtomicUsize::new(0));
+        let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+            let steps = Arc::clone(&steps);
+            async move {
+                match steps.fetch_add(1, Ordering::SeqCst) {
+                    0 => Ok::<_, Infallible>(response(
+                        StatusCode::UNAUTHORIZED,
+                        &[("www-authenticate", "Basic realm=\"RDG\"")],
+                        Bytes::new(),
+                    )),
+                    1 => Ok(response(StatusCode::OK, &[], Bytes::new())),
+                    2 => {
+                        request.into_body().collect().await.expect("drain IN request");
+                        Ok(response(StatusCode::FORBIDDEN, &[], Bytes::new()))
+                    }
+                    _ => panic!("unexpected IN request"),
+                }
+            }
+        });
+        http1::Builder::new()
+            .serve_connection(TokioIo::new(in_server), service)
+            .await
+            .expect("serve IN");
+    });
+
+    let mut transport = GatewayTransport::connect(out_client, in_client).await.expect("connect");
+    let error = transport.close().await.expect_err("final IN status must fail close");
+    assert!(error.contains("rdg in data"));
+    assert!(error.contains("unexpected http status 403"));
+
+    out_server.await.expect("OUT task");
+    in_server.await.expect("IN task");
+}
+
 fn response(status: StatusCode, headers: &[(&str, &str)], body: Bytes) -> Response<TestBody> {
     let mut response = Response::new(Full::new(body).boxed());
     *response.status_mut() = status;
