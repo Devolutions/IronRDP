@@ -43,11 +43,54 @@ pub use self::udp::{
     UdpCorrelationInfo, UdpPacketHeader, UdpPktType, encode_connect_request, fragment_connect_pkt,
 };
 
+/// Smart-card credentials used for HTTP Negotiate Kerberos PKINIT authentication.
+///
+/// This type owns application-supplied identity material and reader metadata.
+/// It does not perform smart-card I/O or prompt for a PIN.
+#[derive(Clone)]
+pub struct GwSmartCardCredentials {
+    /// User principal name supplied to Kerberos.
+    pub username: String,
+    /// PIN used to unlock the smart card.
+    pub pin: String,
+    /// DER-encoded X.509 certificate identifying the user.
+    pub certificate: Vec<u8>,
+    /// PKCS#1 private key for an emulated smart card.
+    ///
+    /// Set this to `None` to use the Windows smart-card API.
+    pub private_key: Option<Vec<u8>>,
+    /// Smart-card reader name.
+    pub reader_name: String,
+    /// Optional smart-card name.
+    pub card_name: Option<String>,
+    /// Optional key container name.
+    pub container_name: Option<String>,
+    /// Optional cryptographic service provider name.
+    pub csp_name: Option<String>,
+}
+
+impl fmt::Debug for GwSmartCardCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GwSmartCardCredentials")
+            .field("username", &"<redacted>")
+            .field("pin", &"<redacted>")
+            .field("certificate", &"<redacted>")
+            .field("private_key", &self.private_key.as_ref().map(|_| "<redacted>"))
+            .field("reader_name", &self.reader_name)
+            .field("card_name", &self.card_name)
+            .field("container_name", &self.container_name)
+            .field("csp_name", &self.csp_name)
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct GwConnectTarget {
     pub gw_endpoint: String,
     pub gw_user: String,
     pub gw_pass: String,
+    /// Optional smart-card credentials for HTTP Negotiate Kerberos PKINIT authentication.
+    pub smart_card: Option<Box<GwSmartCardCredentials>>,
 
     pub server: String,
 }
