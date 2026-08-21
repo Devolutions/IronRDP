@@ -11,11 +11,7 @@ mod dvc_pipe_proxy;
 #[cfg(feature = "rustls")]
 mod e2e;
 mod gateway_detect;
-#[cfg(feature = "native-tls")]
-mod mstsgu_http_auth;
-mod mstsgu_http_control;
-mod mstsgu_rpc_pdu;
-mod mstsgu_udp;
+mod mstsgu;
 mod rdpeudp_tokio;
 mod vmconnect;
 mod volume;
