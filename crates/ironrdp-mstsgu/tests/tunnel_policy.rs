@@ -1,10 +1,19 @@
-#![allow(unused_crate_dependencies)]
+#![expect(
+    dead_code,
+    unreachable_pub,
+    unused_crate_dependencies,
+    reason = "tests import private protocol structures"
+)]
 
 #[path = "../src/proto.rs"]
-#[allow(dead_code, unreachable_pub, unfulfilled_lint_expectations)]
+#[expect(
+    clippy::allow_attributes,
+    reason = "the imported protocol source contains an intentionally unfulfilled expectation"
+)]
+#[allow(unfulfilled_lint_expectations)]
 mod proto;
 
-use ironrdp_core::{Decode, ReadCursor};
+use ironrdp_core::{Decode as _, ReadCursor};
 use ironrdp_mstsgu::GwTunnelPolicy;
 use proto::TunnelAuthRespPkt;
 
