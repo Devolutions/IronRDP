@@ -48,7 +48,7 @@ pub(crate) async fn write_rpch_request_head<S>(stream: &mut S, head: RpchRequest
 where
     S: AsyncWrite + Unpin,
 {
-    validate_request_head(&head)?;
+    let session_id = validate_request_head(&head)?;
 
     let mut request = format!(
         "{} /rpc/rpcproxy.dll?{} HTTP/1.1\r\n\
@@ -62,9 +62,9 @@ where
          User-Agent: MSRPC\r\n",
         head.method, head.target, head.content_length, head.host
     );
-    if let Some(session_id) = head.session_id {
+    if let Some(session_id) = session_id {
         request.push_str("Pragma: SessionId=");
-        request.push_str(session_id);
+        request.push_str(&session_id.to_string());
         request.push_str("\r\n");
     }
     if head.expect_continue {
@@ -116,7 +116,7 @@ where
     parse_rpch_response_head(&bytes)
 }
 
-fn validate_request_head(head: &RpchRequestHead<'_>) -> Result<(), Error> {
+fn validate_request_head(head: &RpchRequestHead<'_>) -> Result<Option<uuid::Uuid>, Error> {
     if !matches!(head.method, "RPC_IN_DATA" | "RPC_OUT_DATA") {
         return Err(Error::new("invalid RPCH request method", GwErrorKind::Encode));
     }
@@ -130,11 +130,11 @@ fn validate_request_head(head: &RpchRequestHead<'_>) -> Result<(), Error> {
     {
         return Err(Error::new("invalid RPCH request header value", GwErrorKind::Encode));
     }
-    if let Some(session_id) = head.session_id
-        && uuid::Uuid::parse_str(session_id).is_err()
-    {
-        return Err(Error::new("invalid RPCH session ID", GwErrorKind::Encode));
-    }
+    let session_id = head
+        .session_id
+        .map(uuid::Uuid::parse_str)
+        .transpose()
+        .map_err(|_| Error::new("invalid RPCH session ID", GwErrorKind::Encode))?;
 
     match head.method {
         "RPC_IN_DATA" if !(MIN_IN_CONTENT_LENGTH..=MAX_IN_CONTENT_LENGTH).contains(&head.content_length) => {
@@ -143,7 +143,7 @@ fn validate_request_head(head: &RpchRequestHead<'_>) -> Result<(), Error> {
         "RPC_OUT_DATA" if !matches!(head.content_length, 76 | 120) => {
             Err(Error::new("invalid RPCH OUT content length", GwErrorKind::Encode))
         }
-        _ => Ok(()),
+        _ => Ok(session_id),
     }
 }
 
@@ -160,7 +160,7 @@ fn is_valid_target(target: &str) -> bool {
         && server.len() < 1024
         && server
             .bytes()
-            .all(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'/' | b'?' | b'#'))
+            .all(|byte| !byte.is_ascii_whitespace() && !matches!(byte, b'/' | b'?' | b'#' | b':'))
         && (1..=6).contains(&port.len())
         && port.bytes().all(|byte| byte.is_ascii_digit())
         && port.parse::<u16>().is_ok_and(|port| port != 0)
