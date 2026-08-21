@@ -199,13 +199,16 @@ where
     .await;
 
     let result = match result {
-        Ok(()) => {
-            credentials_handler
-                .handle_credentials(acceptor.received_credentials().cloned())
-                .await?;
-            acceptor.mark_credentials_handled();
-            Ok(())
-        }
+        Ok(()) => match credentials_handler
+            .handle_credentials(acceptor.received_credentials().cloned())
+            .await
+        {
+            Ok(()) => {
+                acceptor.mark_credentials_handled();
+                Ok(())
+            }
+            Err(error) => Err(error),
+        },
         Err(error) => Err(error),
     };
 
