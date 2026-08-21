@@ -1279,6 +1279,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid 0.9.6",
+ "der_derive 0.7.3",
+ "flagset",
  "zeroize",
 ]
 
@@ -1289,7 +1291,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a69dedd701da44b0536442edf09c81a64b0ab97a7a4a5e3d1971f00027cbc63d"
 dependencies = [
  "const-oid 0.10.2",
- "der_derive",
+ "der_derive 0.8.0",
  "flagset",
  "pem-rfc7468",
  "zeroize",
@@ -1307,6 +1309,17 @@ dependencies = [
  "num-bigint 0.4.8",
  "num-traits",
  "rusticata-macros 4.1.0",
+]
+
+[[package]]
+name = "der_derive"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8034092389675178f570469e6c3b0465d3d30b4505c294a6550db47f3c17ad18"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -2587,7 +2600,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
- "x509-cert",
+ "x509-cert 0.3.0",
 ]
 
 [[package]]
@@ -2777,7 +2790,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "url",
- "x509-cert",
+ "x509-cert 0.3.0",
 ]
 
 [[package]]
@@ -3071,7 +3084,7 @@ dependencies = [
  "pkcs1 0.7.5",
  "sha1 0.11.0",
  "tap",
- "x509-cert",
+ "x509-cert 0.3.0",
 ]
 
 [[package]]
@@ -3296,7 +3309,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "visibility",
- "x509-cert",
+ "x509-cert 0.3.0",
  "zstd-safe",
 ]
 
@@ -3345,7 +3358,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "ironrdp-core",
+ "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "ironrdp-server",
  "ironrdp-wtsprotocol-ipc",
@@ -3355,7 +3368,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows",
- "x509-cert",
+ "x509-cert 0.2.5",
 ]
 
 [[package]]
@@ -3458,7 +3471,7 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
- "x509-cert",
+ "x509-cert 0.3.0",
 ]
 
 [[package]]
@@ -3553,7 +3566,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "x509-cert",
+ "x509-cert 0.3.0",
 ]
 
 [[package]]
@@ -5732,7 +5745,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "807615e3031830a0b598a65be815a8a195a4a8eff5e037959f134e449998e13d"
 dependencies = [
- "bitflags 2.10.0",
+ "bitflags 2.13.1",
  "rustls",
  "windows-sys 0.61.2",
 ]
@@ -7820,6 +7833,18 @@ dependencies = [
  "curve25519-dalek",
  "rand_core 0.10.1",
  "zeroize",
+]
+
+[[package]]
+name = "x509-cert"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1301e935010a701ae5f8655edc0ad17c44bad3ac5ce8c39185f75453b720ae94"
+dependencies = [
+ "const-oid 0.9.6",
+ "der 0.7.10",
+ "spki 0.7.3",
+ "tls_codec",
 ]
 
 [[package]]
