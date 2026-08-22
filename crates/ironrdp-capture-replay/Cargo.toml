@@ -15,13 +15,13 @@ categories.workspace = true
 [dependencies]
 aes-gcm = "0.10"
 hmac = "0.12"
-ironrdp-core = { version = "0.2.1", path = "../ironrdp-core" }
-ironrdp-dvc = { version = "0.8.0", path = "../ironrdp-dvc" } # public
-ironrdp-egfx = { version = "0.3.0", path = "../ironrdp-egfx" }
-ironrdp-graphics = { version = "0.9.0", path = "../ironrdp-graphics" }
-ironrdp-pdu = { version = "0.9.0", path = "../ironrdp-pdu" } # public
-ironrdp-session = { version = "0.11.0", path = "../ironrdp-session" }
-ironrdp-svc = { version = "0.8.0", path = "../ironrdp-svc" }
+ironrdp-core = { version = "0.3.0", path = "../ironrdp-core" }
+ironrdp-dvc = { version = "0.9.0", path = "../ironrdp-dvc" } # public
+ironrdp-egfx = { version = "0.3.1", path = "../ironrdp-egfx" }
+ironrdp-graphics = { version = "0.10.0", path = "../ironrdp-graphics" }
+ironrdp-pdu = { version = "0.10.0", path = "../ironrdp-pdu" } # public
+ironrdp-session = { version = "0.12.0", path = "../ironrdp-session" }
+ironrdp-svc = { version = "0.8.1", path = "../ironrdp-svc" }
 pcap-parser = "0.17"
 png = "0.18"
 sha2 = "0.10"

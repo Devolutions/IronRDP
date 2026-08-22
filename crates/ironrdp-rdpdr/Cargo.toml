@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpdr"
-version = "0.7.0"
+version = "0.8.0"
 readme = "README.md"
 description = "RDPDR channel implementation."
 edition.workspace = true
@@ -16,9 +16,9 @@ categories.workspace = true
 doctest = false
 
 [dependencies]
-ironrdp-core = { path = "../ironrdp-core", version = "0.2" } # public
+ironrdp-core = { path = "../ironrdp-core", version = "0.3" } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.10" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
 tracing = { version = "0.1", features = ["log"] }
 bitflags = "2.11"

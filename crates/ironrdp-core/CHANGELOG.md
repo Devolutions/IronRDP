@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-core-v0.2.1...ironrdp-core-v0.3.0)] - 2026-08-22
+
+### <!-- 1 -->Features
+
+- Add NonEmpty<T> ([#1444](https://github.com/Devolutions/IronRDP/issues/1444)) ([bdcc0ceec3](https://github.com/Devolutions/IronRDP/commit/bdcc0ceec3aaa19441917db02c36cd3be2f58465)) 
+
+  Add a `NonEmpty<T>` collection guaranteeing at least one element. The
+  first element (head) is stored inline, so a single-element `NonEmpty`
+  performs no heap allocation, and `first()` is infallible while `len()`
+  returns a `NonZeroUsize`, and callers never branch on an "is it empty?"
+  case.
+
+- [**breaking**] Pass frame arrival time into Sequence::step ([#1530](https://github.com/Devolutions/IronRDP/issues/1530)) ([6a499faece](https://github.com/Devolutions/IronRDP/commit/6a499faece8911e50a715a3fb08d4fd8e7d7dc87)) 
+
+  ## Summary
+  
+  - Connect-time bandwidth measurement needs to know when bytes arrived,
+  and nothing in the sans-I/O layer could tell it. #1465, now merged,
+  answers the server's Bandwidth Measure Stop with a nominal interval for
+  exactly that reason: the connector has no way to observe the real one.
+  - Introduce `MonotonicInstant`, a millisecond counter with an arbitrary
+  epoch, and make `Option<MonotonicInstant>` a required parameter of
+  `Sequence::step`. The I/O drivers already know when a read completed, so
+  `Framed` records the arrival time of each read and hands it to the state
+  machine. A driver with no clock passes `None`.
+  - With arrival times available, measure for real: a Bandwidth Measure
+  Start opens a window, Payload messages accumulate their byte counts, and
+  Stop reports the elapsed time between its own arrival and the Start's.
+  
+  #1465 has merged, so this applies directly to master and carries no
+  merge-order dependency. That PR was the FreeRDP unblock on its own; this
+  is the design change behind it, split out at @CBenoit's suggestion in
+  review.
+  
+  ## Why the clock lives in the driver
+  
+  Two reasons, both of which rule out having the sequence read a clock
+  itself.
+
+### <!-- 4 -->Bug Fixes
+
+- Rename {Read,Write}Cursor::rewinded into rewound ([#1529](https://github.com/Devolutions/IronRDP/issues/1529)) ([c85b089b46](https://github.com/Devolutions/IronRDP/commit/c85b089b4617176240b41482be65a77c9ad76a07)) 
+
+
+
 ## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-core-v0.2.0...ironrdp-core-v0.2.1)] - 2026-07-10
 
 ### <!-- 1 -->Features

@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.2.3](https://github.com/Devolutions/IronRDP/compare/ironrdp-tls-v0.2.2...ironrdp-tls-v0.2.3)] - 2026-08-22
+
+### <!-- 4 -->Bug Fixes
+
+- Make certificate validation explicit ([#1520](https://github.com/Devolutions/IronRDP/issues/1520)) ([f1d53c78d3](https://github.com/Devolutions/IronRDP/commit/f1d53c78d390de1c6778773cdc859d59901466f0)) 
+
+  IronRDP deployments commonly use self-signed or private-CA certificates.
+  This keeps the historical permissive behavior for unmodified callers
+  while making platform-root and server-name validation an explicit
+  opt-in.
+  
+  ## Approach
+  
+  - Keep `upgrade` and `ConfigBuilder` defaults compatible with existing
+  self-signed endpoints, including the prior native-TLS SNI behavior.
+  - Expose `CertificateValidation::Strict` for callers that require normal
+  certificate-chain and hostname validation.
+  - Retain the Rustls callback path for certificate pinning or other
+  explicit exception decisions; configuring a callback selects strict
+  validation before invoking it.
+  - Preserve CredSSP's existing public-key binding and disabled TLS
+  resumption behavior.
+  
+  MS-CSSP section 3.1.5 does not require a common trusted CA root and
+  permits servers to use self-signed certificates, so strict verification
+  cannot be introduced as a transparent default.
+  
+  ## Validation
+  
+  - `cargo xtask check fmt -v`
+  - `cargo xtask check lints -v`
+  - Focused Rustls default/strict/callback runtime test
+  - Focused native-TLS default/strict runtime test
+  
+  ---------
+
+### <!-- 7 -->Build
+
+- Bump the crypto group across 1 directory with 3 updates ([#1449](https://github.com/Devolutions/IronRDP/issues/1449)) ([e1725e8c8a](https://github.com/Devolutions/IronRDP/commit/e1725e8c8a581b83835647b6ee563a5b3f6c7a1b)) 
+
+
+
 ## [[0.2.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-tls-v0.2.1...ironrdp-tls-v0.2.2)] - 2026-07-10
 
 ### <!-- 1 -->Features
