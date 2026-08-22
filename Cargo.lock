@@ -3237,6 +3237,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rfxbench"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "ironrdp-core 0.2.1",
+ "ironrdp-graphics",
+ "ironrdp-pdu",
+ "ironrdp-session",
+]
+
+[[package]]
 name = "ironrdp-rpc"
 version = "0.1.0"
 dependencies = [
