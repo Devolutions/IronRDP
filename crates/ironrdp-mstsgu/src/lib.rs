@@ -118,7 +118,7 @@ pub struct GwTunnelPolicy {
 ///
 /// [MS-TSGU 2.2.10.21]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=72
 /// [MS-TSGU 2.2.10.22]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=73
-pub type GwConsentCallback<'a> = dyn FnMut(&str) -> bool + 'a;
+pub type GwConsentCallback<'a> = dyn FnMut(&str) -> bool + Send + 'a;
 
 type Error = ironrdp_error::Error<GwErrorKind>;
 
