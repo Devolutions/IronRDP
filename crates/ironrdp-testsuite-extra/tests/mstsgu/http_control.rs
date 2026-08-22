@@ -1,11 +1,6 @@
-#![expect(
-    dead_code,
-    unreachable_pub,
-    unused_crate_dependencies,
-    reason = "tests import private protocol structures"
-)]
+#![expect(dead_code, unreachable_pub, reason = "tests import private protocol structures")]
 
-#[path = "../src/proto.rs"]
+#[path = "../../../ironrdp-mstsgu/src/proto.rs"]
 #[expect(
     clippy::allow_attributes,
     reason = "the imported protocol source contains an intentionally unfulfilled expectation"
