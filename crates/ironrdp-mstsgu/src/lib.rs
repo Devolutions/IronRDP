@@ -110,6 +110,16 @@ pub struct GwTunnelPolicy {
     pub soh_response: Option<Vec<u8>>,
 }
 
+/// Synchronously decides whether to accept a gateway consent message.
+///
+/// The callback receives the UTF-16LE consent message decoded from
+/// [HTTP_TUNNEL_RESPONSE_OPTIONAL][MS-TSGU 2.2.10.21] as an [HTTP_UNICODE_STRING][MS-TSGU 2.2.10.22].
+/// Returning `false` declines the gateway consent and stops tunnel setup.
+///
+/// [MS-TSGU 2.2.10.21]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=72
+/// [MS-TSGU 2.2.10.22]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=73
+pub type GwConsentCallback = dyn FnMut(&str) -> bool + Send;
+
 type Error = ironrdp_error::Error<GwErrorKind>;
 
 #[derive(Debug)]
@@ -120,6 +130,7 @@ pub enum GwErrorKind {
     HttpStatus(u16),
     PacketEof,
     UnsupportedFeature,
+    ConsentDeclined,
     Custom,
     Encode,
     Decode,
@@ -149,6 +160,7 @@ impl Display for GwErrorKind {
             GwErrorKind::HttpStatus(status) => return write!(f, "unexpected http status {status}"),
             GwErrorKind::PacketEof => "PacketEOF",
             GwErrorKind::UnsupportedFeature => "unsupported feature",
+            GwErrorKind::ConsentDeclined => "gateway consent declined",
             GwErrorKind::Custom => "custom",
             GwErrorKind::Encode => "encode",
             GwErrorKind::Decode => "decode",
@@ -198,14 +210,48 @@ impl GwClient {
         Self::connect_with_port(target, client_name, 3389).await
     }
 
+    /// Open an MS-TSGU tunnel and decide a gateway consent message synchronously.
+    ///
+    /// The callback is invoked once for each consent message returned while creating the tunnel.
+    /// Returning `false` stops tunnel setup with [`GwErrorKind::ConsentDeclined`].
+    pub async fn connect_with_consent(
+        target: &GwConnectTarget,
+        client_name: &str,
+        consent_callback: &mut GwConsentCallback,
+    ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        Self::connect_with_port_and_consent(target, client_name, 3389, consent_callback).await
+    }
+
     /// Open an MS-TSGU tunnel, presenting `server_port` as HTTP_CHANNEL_PACKET `port`.
     pub async fn connect_with_port(
         target: &GwConnectTarget,
         client_name: &str,
         server_port: u16,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        Self::connect_with_port_and_optional_consent(target, client_name, server_port, None).await
+    }
+
+    /// Open an MS-TSGU tunnel and decide a gateway consent message synchronously.
+    ///
+    /// The callback is invoked once for each consent message returned while creating the tunnel.
+    /// Returning `false` stops tunnel setup with [`GwErrorKind::ConsentDeclined`].
+    pub async fn connect_with_port_and_consent(
+        target: &GwConnectTarget,
+        client_name: &str,
+        server_port: u16,
+        consent_callback: &mut GwConsentCallback,
+    ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        Self::connect_with_port_and_optional_consent(target, client_name, server_port, Some(consent_callback)).await
+    }
+
+    async fn connect_with_port_and_optional_consent(
+        target: &GwConnectTarget,
+        client_name: &str,
+        server_port: u16,
+        consent_callback: Option<&mut GwConsentCallback>,
+    ) -> Result<(GwClient, core::net::SocketAddr), Error> {
         let (io, client_addr) = open_gateway_transport(target).await?;
-        Self::connect_ws(target.clone(), client_name, server_port, io)
+        Self::connect_ws(target.clone(), client_name, server_port, io, consent_callback)
             .await
             .map(|x| (x, client_addr))
     }
@@ -215,6 +261,7 @@ impl GwClient {
         client_name: &str,
         server_port: u16,
         io: PacketIo,
+        consent_callback: Option<&mut GwConsentCallback>,
     ) -> Result<GwClient, Error> {
         let mut gw = GwConn {
             client_name: client_name.to_owned(),
@@ -224,7 +271,7 @@ impl GwClient {
         };
 
         gw.handshake().await?;
-        gw.tunnel().await?;
+        gw.tunnel(consent_callback).await?;
         let policy = gw.tunnel_auth().await?;
         gw.channel().await?;
 
@@ -391,7 +438,7 @@ impl GwConn {
         Ok(())
     }
 
-    async fn tunnel(&mut self) -> Result<(), Error> {
+    async fn tunnel(&mut self, consent_callback: Option<&mut GwConsentCallback>) -> Result<(), Error> {
         let req = TunnelReqPkt {
             // Havent seen any server working without this.
             caps: HttpCapsTy::MessagingConsentSign.as_u32(),
@@ -408,12 +455,7 @@ impl GwConn {
             return Err(Error::new("Tunnel", GwErrorKind::Connect));
         }
         assert!(cur.eof());
-        if !resp.consent_msg.is_empty() {
-            return Err(Error::new(
-                "Received consent message but showing it not implemented",
-                GwErrorKind::UnsupportedFeature,
-            ));
-        }
+        evaluate_consent_message(&resp.consent_msg, consent_callback)?;
         Ok(())
     }
 
@@ -458,6 +500,36 @@ impl GwConn {
         assert!(cur.eof());
         Ok(resp)
     }
+}
+
+fn decode_consent_message(bytes: &[u8]) -> Result<String, Error> {
+    if !bytes.len().is_multiple_of(2) {
+        return Err(Error::new("TunnelConsent", GwErrorKind::Decode));
+    }
+
+    let code_units = bytes
+        .chunks_exact(2)
+        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+        .collect::<Vec<_>>();
+    let message = String::from_utf16(&code_units).map_err(|_| Error::new("TunnelConsent", GwErrorKind::Decode))?;
+    Ok(message.strip_suffix('\0').unwrap_or(&message).to_owned())
+}
+
+fn evaluate_consent_message(
+    consent_message: &[u8],
+    consent_callback: Option<&mut GwConsentCallback>,
+) -> Result<(), Error> {
+    if consent_message.is_empty() {
+        return Ok(());
+    }
+
+    let message = decode_consent_message(consent_message)?;
+    if let Some(consent_callback) = consent_callback {
+        if !consent_callback(&message) {
+            return Err(Error::new("TunnelConsent", GwErrorKind::ConsentDeclined));
+        }
+    }
+    Ok(())
 }
 
 impl AsyncRead for GwClient {
