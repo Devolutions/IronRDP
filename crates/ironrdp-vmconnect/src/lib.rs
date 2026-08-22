@@ -1,5 +1,7 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
+// The explicit unit-test target reuses this file and does not need Cargo's implicit library dependency.
+#![cfg_attr(test, allow(unused_crate_dependencies))]
 
 //! Hyper-V VM console front-end: **PCB → TLS → CredSSP → X.224**.
 //!
