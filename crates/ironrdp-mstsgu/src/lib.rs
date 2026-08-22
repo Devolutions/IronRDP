@@ -49,6 +49,21 @@ pub struct GwConnectTarget {
     pub server: String,
 }
 
+/// Policy parameters reported by the gateway during [tunnel authorization][MS-TSGU 2.2.10.17].
+///
+/// IronRDP exposes these values but does not enforce device redirection restrictions or client-side idle timeouts.
+///
+/// [MS-TSGU 2.2.10.17]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=70
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GwTunnelPolicy {
+    /// Device redirection flags supplied by the gateway, if any.
+    pub redirection_flags: Option<u32>,
+    /// Idle timeout in minutes supplied by the gateway, if any.
+    pub idle_timeout_minutes: Option<u32>,
+    /// Statement of health response supplied by the gateway, if any.
+    pub soh_response: Option<Vec<u8>>,
+}
+
 type Error = ironrdp_error::Error<GwErrorKind>;
 
 #[derive(Debug)]
@@ -114,6 +129,7 @@ pub struct GwClient {
     rx: tokio::sync::mpsc::Receiver<Bytes>,
     rx_bufs: Vec<Bytes>,
     tx: PollSender<Bytes>,
+    policy: GwTunnelPolicy,
 }
 
 impl Drop for GwClient {
@@ -161,7 +177,7 @@ impl GwClient {
 
         gw.handshake().await?;
         gw.tunnel().await?;
-        gw.tunnel_auth().await?;
+        let policy = gw.tunnel_auth().await?;
         gw.channel().await?;
 
         let (in_tx, in_rx) = tokio::sync::mpsc::channel(4);
@@ -267,7 +283,13 @@ impl GwClient {
             rx: in_rx,
             rx_bufs: vec![],
             tx: PollSender::new(out_tx),
+            policy,
         })
+    }
+
+    /// Policy parameters reported by the gateway during tunnel authorization.
+    pub fn tunnel_policy(&self) -> &GwTunnelPolicy {
+        &self.policy
     }
 }
 
@@ -347,7 +369,7 @@ impl GwConn {
         Ok(())
     }
 
-    async fn tunnel_auth(&mut self) -> Result<(), Error> {
+    async fn tunnel_auth(&mut self) -> Result<GwTunnelPolicy, Error> {
         let req = TunnelAuthPkt {
             fields_present: 0,
             client_name: self.client_name.clone(),
@@ -359,10 +381,14 @@ impl GwConn {
         let resp: TunnelAuthRespPkt =
             TunnelAuthRespPkt::decode(&mut cur).map_err(|_| Error::new("TunnelAuth", GwErrorKind::Decode))?;
 
-        if resp.error_code() != 0 {
+        if resp.error_code != 0 {
             return Err(Error::new("TunnelAuth", GwErrorKind::Connect));
         }
-        Ok(())
+        Ok(GwTunnelPolicy {
+            redirection_flags: resp.redirection_flags,
+            idle_timeout_minutes: resp.idle_timeout_minutes,
+            soh_response: resp.soh_response,
+        })
     }
 
     async fn channel(&mut self) -> Result<ChannelResp, Error> {

@@ -416,31 +416,58 @@ impl Encode for TunnelAuthPkt {
     }
 }
 
-/// 2.2.10.16 HTTP_TUNNEL_AUTH_RESPONSE Structure
-#[derive(Debug)]
+/// [2.2.5.3.5] `HTTP_TUNNEL_AUTH_RESPONSE_FIELDS_PRESENT_FLAGS`.
+///
+/// [2.2.5.3.5]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=42
+const HTTP_TUNNEL_AUTH_RESPONSE_FIELD_REDIR_FLAGS: u16 = 0x1;
+const HTTP_TUNNEL_AUTH_RESPONSE_FIELD_IDLE_TIMEOUT: u16 = 0x2;
+const HTTP_TUNNEL_AUTH_RESPONSE_FIELD_SOH_RESPONSE: u16 = 0x4;
+
+/// [2.2.10.16] `HTTP_TUNNEL_AUTH_RESPONSE` structure and [2.2.10.17] optional fields.
+///
+/// [2.2.10.16]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=70
+/// [2.2.10.17]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=70
+#[derive(Debug, Default)]
 pub(crate) struct TunnelAuthRespPkt {
-    error_code: u32,
-    _fields_present: u16,
+    pub(crate) error_code: u32,
+    fields_present: u16,
     _reserved: u16,
+    pub(crate) redirection_flags: Option<u32>,
+    pub(crate) idle_timeout_minutes: Option<u32>,
+    pub(crate) soh_response: Option<Vec<u8>>,
 }
 
 impl TunnelAuthRespPkt {
     const FIXED_PART_SIZE: usize = 4 /* error_code */ + 2 /* fields_present */ + 2 /* _reserved */;
-
-    pub(crate) fn error_code(&self) -> u32 {
-        self.error_code
-    }
 }
 
 impl Decode<'_> for TunnelAuthRespPkt {
     fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        Ok(TunnelAuthRespPkt {
+        let mut pkt = TunnelAuthRespPkt {
             error_code: src.read_u32(),
-            _fields_present: src.read_u16(),
+            fields_present: src.read_u16(),
             _reserved: src.read_u16(),
-        })
+            ..TunnelAuthRespPkt::default()
+        };
+
+        if pkt.fields_present & HTTP_TUNNEL_AUTH_RESPONSE_FIELD_REDIR_FLAGS != 0 {
+            ensure_size!(in: src, size: 4 /* redirFlags */);
+            pkt.redirection_flags = Some(src.read_u32());
+        }
+        if pkt.fields_present & HTTP_TUNNEL_AUTH_RESPONSE_FIELD_IDLE_TIMEOUT != 0 {
+            ensure_size!(in: src, size: 4 /* idleTimeout */);
+            pkt.idle_timeout_minutes = Some(src.read_u32());
+        }
+        if pkt.fields_present & HTTP_TUNNEL_AUTH_RESPONSE_FIELD_SOH_RESPONSE != 0 {
+            ensure_size!(in: src, size: 2 /* cbLen */);
+            let soh_response_len = usize::from(src.read_u16());
+            ensure_size!(in: src, size: soh_response_len);
+            pkt.soh_response = Some(src.read_slice(soh_response_len).to_vec());
+        }
+
+        Ok(pkt)
     }
 }
 

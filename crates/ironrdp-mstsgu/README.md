@@ -7,6 +7,7 @@ This crate
 - only supports the HTTPS protocol with WebSocket (and not the legacy HTTP or HTTP-RPC transports),
 - provides internal raw RPCH HTTP framing codecs, but no live RPC-over-HTTP gateway transport,
 - decodes HTTP control packets (`HTTP_SERVICE_MESSAGE`, `HTTP_REAUTH_MESSAGE`, and `HTTP_CLOSE_PACKET`) without performing mid-session reauthentication,
+- exposes decoded tunnel-authorization policy values without enforcing redirection rules or idle timeouts,
 - does not implement reconnection, Detect, or a live UDP/DTLS side channel,
 - authenticates the WebSocket upgrade with HTTP Negotiate (Kerberos then NTLM), NTLM, or Basic fallback,
 - encodes and decodes RDG-UDP PDUs (`CONNECT_PKT`, `DATA_PKT`, `DISC_PKT`, and correlation info) without opening that side channel,

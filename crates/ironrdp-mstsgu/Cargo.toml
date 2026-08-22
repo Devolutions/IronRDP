@@ -37,6 +37,10 @@ path = "tests/rpc_pdu.rs"
 name = "rpch_http"
 path = "tests/rpch_http.rs"
 
+[[test]]
+name = "tunnel_policy"
+path = "tests/tunnel_policy.rs"
+
 [features]
 default = []
 rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
