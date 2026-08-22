@@ -333,7 +333,7 @@ impl UpdateEncoder {
         ))
     }
 
-    fn pre_encoded_surface(surface: &PreEncodedSurface) -> Result<UpdateFragmenter> {
+    fn pre_encoded_surface(surface: &PreEncodedSurface) -> ServerResult<UpdateFragmenter> {
         let destination = ExclusiveRectangle {
             left: 0,
             top: 0,
@@ -353,7 +353,10 @@ impl UpdateEncoder {
             extended_bitmap_data,
         };
         let cmd = SurfaceCommand::SetSurfaceBits(pdu);
-        Ok(UpdateFragmenter::new(UpdateCode::SurfaceCommands, encode_vec(&cmd)?))
+        Ok(UpdateFragmenter::new(
+            UpdateCode::SurfaceCommands,
+            encode_vec(&cmd).map_err(ServerError::encode)?,
+        ))
     }
 
     fn bitmap_diffs(&mut self, bitmap: &BitmapUpdate) -> Vec<Rect> {

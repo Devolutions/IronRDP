@@ -15,6 +15,7 @@ mod finalization;
 mod util;
 
 pub use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize};
+pub use ironrdp_connector::sspi::{AuthIdentity as CredsspAuthIdentity, UsernameParts};
 use ironrdp_pdu::nego;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};

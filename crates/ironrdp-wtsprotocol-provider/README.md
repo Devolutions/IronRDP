@@ -2,28 +2,7 @@
 
 Windows-specific Remote Desktop Services protocol provider implementation backed by IronRDP.
 
-This crate is intended to host an `IWRdsProtocolManager`/`IWRdsProtocolListener`/`IWRdsProtocolConnection`
-implementation for side-by-side protocol registration before any in-place replacement strategy.
-
-## Status
-
-Early implementation scaffold.
-
-The provider now owns protocol-manager and listener control flow (no delegation to the built-in
-Windows RDP protocol manager/listener). With control IPC enabled, the listener worker polls
-incoming connection IDs from the companion service and dispatches `OnConnected` per accepted
-socket; without control IPC, it falls back to a single bootstrap `OnConnected` dispatch for
-sequencing validation.
-
-Provider-to-service control-plane IPC is now available through the shared
-`ironrdp-wtsprotocol-ipc` contract crate and a companion `ironrdp-termsrv` process.
-When `IRONRDP_WTS_CONTROL_PIPE` is set in the provider process environment,
-`StartListen`/`StopListen`, `WaitForIncoming`, and
-`AcceptConnection`/connection-close notifications are sent over the configured named pipe and
-`AcceptConnection` waits for a `ConnectionReady` response before issuing `OnReady`.
-When `IRONRDP_WTS_CONTROL_PIPE` is unset, the provider now opportunistically probes the
-default control pipe name (`IronRdpWtsControl`) and uses service polling only when
-the initial `StartListen` handshake succeeds; otherwise it keeps local bootstrap fallback behavior.
+This crate implements `IWRdsProtocolManager`, `IWRdsProtocolListener`, and `IWRdsProtocolConnection` for side-by-side protocol registration.
 
 ## Scope (current)
 
@@ -32,7 +11,7 @@ the initial `StartListen` handshake succeeds; otherwise it keeps local bootstrap
 - Listener lifecycle worker-thread dispatch
 - Optional provider/service control bridge over named-pipe IPC (`IRONRDP_WTS_CONTROL_PIPE`)
 - Connection lifecycle state machine with transition validation
-- CredSSP-first authentication bridge placeholders
+- CredSSP credential handoff from the companion service to Winlogon
 - Input/video handle acquisition for keyboard, mouse, and video device paths
 - Virtual channel endpoint creation via `IWRdsProtocolConnection::CreateVirtualChannel`
 - In-proc COM class factory and DLL exports (`DllGetClassObject`, `DllCanUnloadNow`)

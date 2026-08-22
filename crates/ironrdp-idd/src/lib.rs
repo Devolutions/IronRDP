@@ -1,6 +1,20 @@
 #![cfg(windows)]
-#![allow(non_snake_case)]
-#![allow(non_camel_case_types)]
+#![expect(
+    non_snake_case,
+    non_camel_case_types,
+    reason = "WDK and IddCx ABI names follow Windows header casing"
+)]
+#![cfg_attr(
+    not(ironrdp_idd_link),
+    expect(
+        dead_code,
+        reason = "non-WDK builds compile the ABI surface without linking the driver callbacks"
+    )
+)]
+#![expect(
+    clippy::as_conversions,
+    reason = "IddCx and WDF ABI glue converts opaque handles and header-defined integer fields"
+)]
 
 mod adapter;
 #[cfg(ironrdp_idd_link)]
@@ -40,7 +54,7 @@ pub(crate) const IDD_DEBUG_TRACE_FILE: &str = r"C:\ProgramData\IronRDP\Idd\ironr
 
 pub(crate) fn debug_trace(message: &str) {
     use std::fs::{OpenOptions, create_dir_all};
-    use std::io::Write;
+    use std::io::Write as _;
     use std::path::PathBuf;
 
     let mut candidates = Vec::with_capacity(4);
@@ -92,7 +106,6 @@ pub extern "system" fn DllMain(_: HINSTANCE, _: u32, _: *mut c_void) -> BOOL {
 }
 
 #[unsafe(no_mangle)]
-#[allow(unused_variables)]
 pub extern "system" fn DriverEntry(
     driver_object: *mut DRIVER_OBJECT,
     registry_path: *const UNICODE_STRING,
@@ -142,7 +155,7 @@ pub extern "system" fn DriverEntry(
     let _ = (driver_object, registry_path);
     // Exercise the callback table to catch type mismatches at compile time.
     let _ = iddcx_callback_table();
-    tracing::info!("ironrdp-idd DriverEntry called (stub — build with IRONRDP_IDD_LINK=1 for real driver)");
+    tracing::info!("ironrdp-idd DriverEntry called (stub \u{2014} build with IRONRDP_IDD_LINK=1 for real driver)");
     STATUS_SUCCESS
 }
 
@@ -184,5 +197,3 @@ fn iddcx_callback_table() -> IddCxCallbackTable {
         monitor_get_physical_size: monitor::monitor_get_physical_size,
     }
 }
-
-

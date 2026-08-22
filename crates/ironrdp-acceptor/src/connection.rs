@@ -38,10 +38,6 @@ struct CredentialIdentity<'a> {
     domain: Option<&'a str>,
 }
 
-fn eq_ignore_ascii_case(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b)
-}
-
 fn split_down_level_logon_name(s: &str) -> Option<(&str, &str)> {
     let (domain, username) = s.split_once('\\')?;
     if domain.is_empty() || username.is_empty() {
@@ -85,13 +81,13 @@ fn credential_identities(creds: &Credentials) -> [Option<CredentialIdentity<'_>>
 }
 
 fn credential_identity_equal(a: CredentialIdentity<'_>, b: CredentialIdentity<'_>) -> bool {
-    if !eq_ignore_ascii_case(a.username, b.username) {
+    if !a.username.eq_ignore_ascii_case(b.username) {
         return false;
     }
 
     match (a.domain, b.domain) {
         (None, None) => true,
-        (Some(a), Some(b)) => eq_ignore_ascii_case(a, b),
+        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
         _ => false,
     }
 }
@@ -108,18 +104,6 @@ fn credentials_match(expected: &Credentials, actual: &Credentials) -> bool {
         for actual_id in actual_ids.into_iter().flatten() {
             if credential_identity_equal(expected_id, actual_id) {
                 return true;
-            }
-        }
-    }
-
-    // mstsc can send UPN in the username field while leaving the domain field empty.
-    // When that happens, tolerate domain mismatches and only match on the UPN username part.
-    if actual.domain.is_none() {
-        if let Some((actual_username, _actual_domain)) = split_upn(&actual.username) {
-            for expected_id in expected_ids.into_iter().flatten() {
-                if eq_ignore_ascii_case(expected_id.username, actual_username) {
-                    return true;
-                }
             }
         }
     }
@@ -155,6 +139,7 @@ pub struct Acceptor {
     received_credentials: Option<ReceivedCredentials>,
     credentials_handled: bool,
     received_auto_reconnect: Option<ClientAutoReconnect>,
+    allow_unverified_credentials: bool,
     reactivation: bool,
     honor_client_desktop_size: Option<DesktopSize>,
     /// UDP multitransport flags to advertise to the client and, if it
@@ -403,6 +388,7 @@ impl Acceptor {
             received_credentials: None,
             credentials_handled: false,
             received_auto_reconnect: None,
+            allow_unverified_credentials: false,
             reactivation: false,
             honor_client_desktop_size: None,
             offer_multitransport: None,
@@ -462,6 +448,11 @@ impl Acceptor {
     /// [`RdpServerDisplay`]: <https://docs.rs/ironrdp-server/latest/ironrdp_server/trait.RdpServerDisplay.html>
     pub fn set_honor_client_desktop_size(&mut self, max: Option<DesktopSize>) {
         self.honor_client_desktop_size = max;
+    }
+
+    /// Allows ClientInfo credentials to be validated by an external logon provider.
+    pub fn set_allow_unverified_credentials(&mut self, allow: bool) {
+        self.allow_unverified_credentials = allow;
     }
 
     /// Advertise UDP multitransport support (MS-RDPBCGR 2.2.1.4.6) and offer
@@ -643,6 +634,7 @@ impl Acceptor {
             received_credentials: consumed.received_credentials,
             credentials_handled: consumed.credentials_handled,
             received_auto_reconnect: consumed.received_auto_reconnect,
+            allow_unverified_credentials: consumed.allow_unverified_credentials,
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
             offer_multitransport: consumed.offer_multitransport,
@@ -733,7 +725,7 @@ impl Acceptor {
     }
 
     /// Returns credentials received during the current handshake, if any.
-    pub(crate) fn received_credentials(&self) -> Option<&ReceivedCredentials> {
+    pub fn received_credentials(&self) -> Option<&ReceivedCredentials> {
         self.received_credentials.as_ref()
     }
 
@@ -1357,7 +1349,7 @@ impl Sequence for Acceptor {
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
 
-                    if let Some(expected) = &self.creds {
+                    if !self.allow_unverified_credentials && let Some(expected) = &self.creds {
                         if !credentials_match(expected, &creds) {
                             self.encode_access_denied(output)?;
                             return Err(ConnectorError::general("invalid credentials"));
@@ -1767,5 +1759,34 @@ mod tests {
 
         assert!(acceptor.is_auto_reconnect_attempt());
         assert!(!acceptor.credentials_need_handling());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn credentials(username: &str, domain: Option<&str>) -> Credentials {
+        Credentials {
+            username: username.to_owned(),
+            password: "secret".to_owned(),
+            domain: domain.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn credentials_match_upn_with_same_realm() {
+        let expected = credentials("alice", Some("CORP"));
+        let actual = credentials("alice@corp", None);
+
+        assert!(credentials_match(&expected, &actual));
+    }
+
+    #[test]
+    fn credentials_reject_upn_with_different_realm() {
+        let expected = credentials("alice", Some("CORP"));
+        let actual = credentials("alice@evil.example", None);
+
+        assert!(!credentials_match(&expected, &actual));
     }
 }

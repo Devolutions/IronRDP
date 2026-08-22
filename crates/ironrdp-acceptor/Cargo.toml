@@ -25,9 +25,6 @@ ironrdp-async = { path = "../ironrdp-async", version = "0.11" } # public
 rand = "0.9"
 async-trait = "0.1"
 tracing = { version = "0.1", features = ["log"] }
-picky-asn1 = "0.10.1"
-picky-asn1-der = "0.5.4"
-picky-krb = "0.12.0"
 
 [lints]
 workspace = true
