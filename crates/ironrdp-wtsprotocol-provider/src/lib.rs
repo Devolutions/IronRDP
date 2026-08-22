@@ -1,13 +1,11 @@
 #![cfg(windows)]
 
-mod auth_bridge;
 mod connection;
 mod listener;
 mod manager;
 mod session_registry;
 mod wts_com;
 
-pub use auth_bridge::{CredsspPolicy, CredsspServerBridge};
 pub use connection::{ConnectionLifecycleState, ProtocolConnection};
 pub use listener::ProtocolListener;
 pub use manager::ProtocolManager;

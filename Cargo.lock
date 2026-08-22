@@ -1375,7 +1375,7 @@ checksum = "8034092389675178f570469e6c3b0465d3d30b4505c294a6550db47f3c17ad18"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.118",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3630,7 +3630,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "ironrdp-server",
  "ironrdp-wtsprotocol-ipc",
@@ -3900,9 +3899,6 @@ dependencies = [
 name = "ironrdp-wtsprotocol-provider"
 version = "0.1.0"
 dependencies = [
- "ironrdp-acceptor",
- "ironrdp-connector",
- "ironrdp-pdu",
  "ironrdp-wtsprotocol-ipc",
  "parking_lot",
  "tracing",
@@ -6105,7 +6101,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "807615e3031830a0b598a65be815a8a195a4a8eff5e037959f134e449998e13d"
 dependencies = [
- "bitflags 2.13.1",
+ "bitflags 2.13.2",
  "rustls",
  "windows-sys 0.61.2",
 ]

@@ -4,6 +4,8 @@ Extendable skeleton for implementing custom RDP servers.
 
 For now, it requires the [Tokio runtime](https://tokio.rs/).
 
+This crate is part of the [IronRDP] project.
+
 ---
 
 The server currently supports:
@@ -122,7 +124,8 @@ local
 # Ok(()) }
 ```
 
-`send_request` queues a probe via the server event loop. If no client has opened the ECHO channel yet, the request is dropped.
+`send_request` queues a probe through the server event loop.
+The request is dropped if the client has not opened the ECHO channel.
 
 ## Static-channel writes
 

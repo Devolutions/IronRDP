@@ -1,6 +1,7 @@
 [package]
 name = "ironrdp-wtsprotocol-provider"
 version = "0.1.0"
+publish = false
 readme = "README.md"
 description = "Windows Remote Desktop Services protocol provider backed by IronRDP"
 edition.workspace = true
@@ -21,9 +22,6 @@ tracing = { version = "0.1", features = ["log"] }
 parking_lot = "0.12"
 
 [target.'cfg(windows)'.dependencies]
-ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.10" }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
-ironrdp-connector = { path = "../ironrdp-connector", version = "0.10" }
 ironrdp-wtsprotocol-ipc = { path = "../ironrdp-wtsprotocol-ipc", version = "0.1" }
 windows = { version = "0.62", features = [
     "Win32_Devices_DeviceAndDriverInstallation",

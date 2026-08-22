@@ -14,23 +14,8 @@ The intended rollout is side-by-side first (new protocol listener name), before 
 
 ## Current status
 
-- COM interface implementations are present.
-- In-proc COM activation exports are present (`DllGetClassObject`, `DllCanUnloadNow`).
-- Protocol manager/listener delegation to built-in Windows RDP is removed.
-- Listener startup dispatches `OnConnected` from a dedicated worker thread.
-- With control IPC available, listener worker polls companion-service incoming
-	connections and dispatches `OnConnected` per accepted socket.
-- Without control IPC configured, listener worker falls back to a bootstrap connection dispatch
-	for sequencing validation.
-- Optional control-plane IPC bridge to companion service is available via
-	`IRONRDP_WTS_CONTROL_PIPE`; when enabled, `AcceptConnection` waits for service
-	`ConnectionReady` before `OnReady` is issued.
-- When `IRONRDP_WTS_CONTROL_PIPE` is not set, provider startup now probes the default
-	pipe name (`IronRdpWtsControl`) and enables service polling only if `StartListen`
-	handshake succeeds; otherwise it keeps bootstrap fallback behavior.
-- Connection lifecycle state transitions and cleanup hooks are in place.
-- Invalid connection method ordering now returns explicit transition errors.
-- CredSSP policy gate (HYBRID/HYBRID_EX required) is wired in `AcceptConnection`.
+See the [provider README](./README.md#scope-current) for implementation status.
+
 - Side-by-side install and uninstall scripts are present under `scripts/`.
 - Licensing, shadowing, virtual channels, and several advanced methods are still `E_NOTIMPL`.
 
@@ -40,10 +25,9 @@ Run all commands from an elevated PowerShell session on a Windows test VM.
 
 Prerequisite: host Remote Desktop must be enabled (`fDenyTSConnections = 0`).
 
-Prerequisite: the host must expose the standard TCP RDP transport path (`TermDD` service key at
-`HKLM\SYSTEM\CurrentControlSet\Services\TermDD`). Hosts that only expose non-TCP listeners
-(for example `qwinsta` shows only an opaque listener name and no `RDP-Tcp`) cannot be used for
-`mstsc` TCP side-by-side validation.
+Prerequisite: the host must expose the standard TCP RDP transport path (`TermDD` service key at `HKLM\SYSTEM\CurrentControlSet\Services\TermDD`).
+Hosts that expose only non-TCP listeners cannot be used for `mstsc` TCP side-by-side validation.
+For example, an incompatible host might show only an opaque listener name and no `RDP-Tcp` in `qwinsta`.
 
 Optional preflight for Hyper-V fleets (run from host):
 

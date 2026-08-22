@@ -1,7 +1,7 @@
 use crate::monitor::DISPLAYCONFIG_VIDEO_SIGNAL_INFO;
-use crate::{ntstatus_to_u32, IDDCX_ADAPTER, IDDCX_MONITOR, NTSTATUS, STATUS_NOT_SUPPORTED, STATUS_SUCCESS};
+use crate::{IDDCX_ADAPTER, IDDCX_MONITOR, NTSTATUS, STATUS_NOT_SUPPORTED, STATUS_SUCCESS, ntstatus_to_u32};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
+use core::time::Duration;
 
 #[cfg(ironrdp_idd_link)]
 const IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE: u32 = 1;
@@ -30,7 +30,9 @@ const ADAPTER_INIT_POLL_ATTEMPTS: u32 = 60;
 const ADAPTER_INIT_POLL_INTERVAL_MS: u64 = 100;
 
 fn optional_u32_text(value: Option<u32>) -> String {
-    value.map(|value| value.to_string()).unwrap_or_else(|| "none".to_owned())
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_owned())
 }
 
 #[cfg(ironrdp_idd_link)]
@@ -93,9 +95,7 @@ fn complete_adapter_initialization_with_retry(
         if !session_ready || !adapter_init_finished {
             crate::debug_trace(&format!(
                 "{source}: deferring monitor arrival session_ready={} driver_loaded={} adapter_init_finished={}",
-                session_ready,
-                config.driver_loaded,
-                adapter_init_finished,
+                session_ready, config.driver_loaded, adapter_init_finished,
             ));
             std::thread::sleep(Duration::from_millis(ADAPTER_INIT_POLL_INTERVAL_MS));
             continue;
@@ -190,9 +190,7 @@ fn schedule_adapter_initialization_probe(source: &'static str) {
     }
 
     if ADAPTER_INIT_PROBE_RUNNING.swap(true, Ordering::AcqRel) {
-        crate::debug_trace(&format!(
-            "{source}: background adapter init probe already running"
-        ));
+        crate::debug_trace(&format!("{source}: background adapter init probe already running"));
         return;
     }
 
@@ -201,11 +199,8 @@ fn schedule_adapter_initialization_probe(source: &'static str) {
         .name("irdp-idd-adapter-probe".to_owned())
         .spawn(move || {
             let adapter = adapter_raw as IDDCX_ADAPTER;
-            crate::debug_trace(&format!(
-                "{source_owned}: background adapter init probe started"
-            ));
-            let status =
-                complete_adapter_initialization_with_retry(adapter, STATUS_SUCCESS, source_owned.as_str());
+            crate::debug_trace(&format!("{source_owned}: background adapter init probe started"));
+            let status = complete_adapter_initialization_with_retry(adapter, STATUS_SUCCESS, source_owned.as_str());
             crate::debug_trace(&format!(
                 "{source_owned}: background adapter init probe completed status=0x{:08X} completed={}",
                 ntstatus_to_u32(status),
@@ -220,7 +215,6 @@ fn schedule_adapter_initialization_probe(source: &'static str) {
         ));
     }
 }
-
 
 #[repr(C)]
 pub struct IDDCX_PATH {
@@ -269,7 +263,7 @@ pub(crate) extern "system" fn adapter_init_finished(
     {
         let _ = (adapter, args);
         tracing::info!("EvtIddCxAdapterInitFinished (stub)");
-        return STATUS_SUCCESS;
+        STATUS_SUCCESS
     }
 
     #[cfg(ironrdp_idd_link)]
@@ -311,13 +305,19 @@ pub(crate) extern "system" fn adapter_commit_modes(
     let path_count = match usize::try_from(args.PathCount) {
         Ok(value) => value,
         Err(_) => {
-            tracing::warn!(path_count = args.PathCount, "EvtIddCxAdapterCommitModes path count conversion failed");
+            tracing::warn!(
+                path_count = args.PathCount,
+                "EvtIddCxAdapterCommitModes path count conversion failed"
+            );
             return STATUS_INVALID_PARAMETER;
         }
     };
 
     if path_count > 0 && args.pPaths.is_null() {
-        tracing::warn!(path_count = args.PathCount, "EvtIddCxAdapterCommitModes missing paths pointer");
+        tracing::warn!(
+            path_count = args.PathCount,
+            "EvtIddCxAdapterCommitModes missing paths pointer"
+        );
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -374,7 +374,6 @@ pub(crate) extern "system" fn adapter_commit_modes(
     );
 
     STATUS_SUCCESS
-
 }
 
 // ──────────────── EvtDriverDeviceAdd — real IddCx device initialization ──────────────────────
@@ -436,7 +435,6 @@ unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
         AdapterObject: core::ptr::null_mut(),
     };
 
-
     let mut version_args = crate::iddcx::IDARG_OUT_GETVERSION { IddCxVersion: 0 };
     let version_status = unsafe { crate::iddcx::get_version(&mut version_args) };
     crate::debug_trace(&format!(
@@ -473,7 +471,6 @@ unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
         "IddCxAdapterInitAsync succeeded"
     );
     ADAPTER_OBJECT_RAW.store(out_args.AdapterObject as usize, Ordering::Release);
-
 
     let config = crate::remote::load_runtime_config();
     crate::debug_trace(&format!(
@@ -632,13 +629,8 @@ pub(crate) unsafe extern "system" fn device_add(
         "WdfDeviceCreate succeeded"
     );
 
-
     let device_interface_status = unsafe {
-        crate::wdf::device_create_device_interface(
-            device,
-            &GUID_DEVINTERFACE_IRONRDP_IDD_VIDEO,
-            core::ptr::null(),
-        )
+        crate::wdf::device_create_device_interface(device, &GUID_DEVINTERFACE_IRONRDP_IDD_VIDEO, core::ptr::null())
     };
     crate::debug_trace(&format!(
         "EvtDriverDeviceAdd: WdfDeviceCreateDeviceInterface status=0x{:08X}",
@@ -733,4 +725,3 @@ pub(crate) unsafe extern "system" fn device_add(
     tracing::info!("EvtDriverDeviceAdd: IDD device and adapter initialized successfully");
     STATUS_SUCCESS
 }
-

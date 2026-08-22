@@ -935,9 +935,7 @@ impl RdpServerSecurity {
         match self {
             RdpServerSecurity::None => nego::SecurityProtocol::empty(),
             RdpServerSecurity::Tls(_) => nego::SecurityProtocol::SSL,
-            RdpServerSecurity::Hybrid(_) => {
-                nego::SecurityProtocol::SSL | nego::SecurityProtocol::HYBRID
-            }
+            RdpServerSecurity::Hybrid(_) => nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX,
         }
     }
 
@@ -1358,6 +1356,8 @@ pub struct RdpServer {
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
+    allow_unverified_credentials: bool,
+    client_info_credentials_sink: Option<Arc<dyn Fn(Credentials) + Send + Sync>>,
     connection_binder: Option<Arc<dyn ConnectionBinder>>,
     pending_authenticated_credentials: Arc<StdMutex<Option<Credentials>>>,
     local_addr: Option<SocketAddr>,
@@ -1715,7 +1715,7 @@ impl RdpServerHandle {
     pub fn quit(&self, reason: impl Into<String>) -> ServerResult<()> {
         self.sender
             .send(ServerEvent::Quit(reason.into()))
-            .map_err(|_| ServerError::channel("send server quit event"))
+            .map_err(|error| ServerError::custom("send server quit event", error))
     }
 
     /// Queues credentials for subsequent incoming connections.
@@ -1725,7 +1725,7 @@ impl RdpServerHandle {
     pub fn set_credentials(&self, credentials: Credentials) -> ServerResult<()> {
         self.sender
             .send(ServerEvent::SetCredentials(credentials))
-            .map_err(|_| ServerError::channel("send server credentials event"))
+            .map_err(|error| ServerError::custom("send server credentials event", error))
     }
 
     /// Queries the listener address through the server event loop.
@@ -1737,9 +1737,9 @@ impl RdpServerHandle {
         let (tx, rx) = oneshot::channel();
         self.sender
             .send(ServerEvent::GetLocalAddr(tx))
-            .map_err(|_| ServerError::channel("send server local address request event"))?;
-        rx.await
-            .map_err(|error| ServerError::custom("receive server local address", error))
+            .map_err(|error| ServerError::custom("send server local address request event", error))?;
+
+        rx.await.map_err(|error| ServerError::custom("receive server local address", error))
     }
 }
 
@@ -1999,6 +1999,19 @@ struct NegotiatedConnection<S> {
     /// the server accepted itself; see [`RdpServer::set_connection_local_addr`].
     local_addr: Option<SocketAddr>,
     authenticated_credentials: Option<Credentials>,
+}
+
+/// A negotiated connection whose session has not started yet.
+pub struct PendingSession {
+    connection: NegotiatedConnection<TcpStream>,
+    captured_identity: Option<ironrdp_acceptor::CredsspAuthIdentity>,
+}
+
+impl PendingSession {
+    /// Returns the delegated CredSSP identity captured during the handshake, if any.
+    pub fn captured_identity(&self) -> Option<&ironrdp_acceptor::CredsspAuthIdentity> {
+        self.captured_identity.as_ref()
+    }
 }
 
 /// State that belongs to a single client connection.
@@ -2316,6 +2329,7 @@ struct NegotiationContext {
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     requires_authenticated_credentials: bool,
+    allow_unverified_credentials: bool,
 }
 
 /// Negotiate and authenticate a candidate connection against a cloned `ctx`,
@@ -2345,7 +2359,7 @@ where
     } = incoming;
     let size = ctx.display.lock().await.size().await;
     let capabilities = capabilities::capabilities(&ctx.opts, size);
-    let pending = PendingConnection::new(
+    let mut pending = PendingConnection::new(
         ctx.opts.security.clone(),
         size,
         capabilities,
@@ -2358,6 +2372,8 @@ where
             ..ServerCredentialsHandler::default()
         },
     );
+
+    pending.acceptor_mut().set_allow_unverified_credentials(ctx.allow_unverified_credentials);
 
     // NOTE: deliberately NO channel attachment here. Building the cliprdr /
     // sound / gfx backends means running user-supplied factories for a peer
@@ -2503,6 +2519,8 @@ impl RdpServer {
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
             credential_validator: None,
+            allow_unverified_credentials: false,
+            client_info_credentials_sink: None,
             connection_binder: None,
             pending_authenticated_credentials: Arc::new(StdMutex::new(None)),
             local_addr: None,
@@ -3171,6 +3189,7 @@ impl RdpServer {
             display: Arc::clone(&self.display),
             credential_validator: self.credential_validator.clone(),
             requires_authenticated_credentials: self.connection_binder.is_some(),
+            allow_unverified_credentials: self.allow_unverified_credentials,
         }
     }
 
@@ -3321,7 +3340,7 @@ impl RdpServer {
 
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
-        let pending = PendingConnection::new(
+        let mut pending = PendingConnection::new(
             self.opts.security.clone(),
             size,
             capabilities,
@@ -3335,11 +3354,69 @@ impl RdpServer {
             },
         );
 
+        pending
+            .acceptor_mut()
+            .set_allow_unverified_credentials(self.allow_unverified_credentials);
+
         let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
             return Ok(());
         };
 
         self.finalize_negotiated(negotiated).await
+    }
+
+    /// Completes negotiation and authentication without starting the session loop.
+    pub async fn run_connection_handshake(&mut self, stream: TcpStream) -> ServerResult<PendingSession> {
+        self.discard_stale_session_events().await;
+        let local_addr = stream.local_addr().map_err(|error| ServerError::io("get local address", error))?;
+        let size = self.display.lock().await.size().await;
+        let capabilities = capabilities::capabilities(&self.opts, size);
+        let mut pending = PendingConnection::new(
+            self.opts.security.clone(),
+            size,
+            capabilities,
+            self.creds.clone(),
+            self.opts.honor_client_desktop_size,
+            self.opts.udp_bind_addr,
+            ServerCredentialsHandler {
+                validator: self.credential_validator.clone(),
+                require_authenticated: self.connection_binder.is_some(),
+                ..ServerCredentialsHandler::default()
+            },
+        );
+        pending
+            .acceptor_mut()
+            .set_allow_unverified_credentials(self.allow_unverified_credentials);
+        let mut connection = pending
+            .negotiate_and_authenticate(stream, TransportTls::Managed)
+            .await?
+            .ok_or_else(|| ServerError::reason("TLS handshake failed", "TLS negotiation did not complete"))?;
+        connection.local_addr = Some(local_addr);
+        let captured_identity = connection
+            .acceptor
+            .received_credentials()
+            .filter(|received| received.origin == CredentialOrigin::CredSspDelegated)
+            .map(|received| {
+                let credentials = &received.credentials;
+                let username = ironrdp_connector::sspi::Username::new(
+                    &credentials.username,
+                    credentials.domain.as_deref(),
+                )
+                .map_err(|error| ServerError::custom("invalid delegated username", error))?;
+                Ok(ironrdp_acceptor::CredsspAuthIdentity {
+                    username,
+                    password: credentials.password.clone().into(),
+                })
+            })
+            .transpose()?;
+        Ok(PendingSession { connection, captured_identity })
+    }
+
+    /// Starts the session loop for a connection returned by [`Self::run_connection_handshake`].
+    pub async fn run_connection_session(&mut self, pending: PendingSession) -> ServerResult<()> {
+        let result = self.finalize_negotiated(pending.connection).await;
+        self.connection_local_addr = None;
+        result
     }
 
     /// Finalize a connection that has already negotiated (and, under Hybrid,
@@ -6371,6 +6448,19 @@ impl RdpServer {
         self.creds = creds
     }
 
+    /// Allows TLS-only credentials to be checked by an external logon provider.
+    pub fn set_allow_unverified_credentials(&mut self, allow: bool) {
+        self.allow_unverified_credentials = allow;
+    }
+
+    /// Installs a callback for credentials received through TLS-only ClientInfo.
+    pub fn set_client_info_credentials_sink<F>(&mut self, sink: F)
+    where
+        F: Fn(Credentials) + Send + Sync + 'static,
+    {
+        self.client_info_credentials_sink = Some(Arc::new(sink));
+    }
+
     /// Tell the server which local address the next client reached, for
     /// connections driven through [`Self::run_connection`] or
     /// [`Self::run_connection_with`]. [`Self::run`] sets it itself.
@@ -6779,6 +6869,12 @@ pub async fn dispatch_static_channel_events(
 #[async_trait::async_trait(?Send)]
 impl ConnectionSetupHandler for RdpServer {
     async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> Result<(), ConnectorError> {
+        if let Some(received) = credentials.as_ref()
+            && received.origin == CredentialOrigin::ClientInfo
+            && let Some(sink) = self.client_info_credentials_sink.as_ref()
+        {
+            sink(received.credentials.clone());
+        }
         self.prepare_authenticated_connection(credentials).await
     }
 
@@ -6863,6 +6959,7 @@ mod preempt_tests {
             display: Arc::new(Mutex::new(Box::new(NoDisplay))),
             credential_validator: None,
             requires_authenticated_credentials: false,
+            allow_unverified_credentials: false,
         }
     }
 

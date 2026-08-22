@@ -3,28 +3,28 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::io::Write as _;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use windows::core::w;
-use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, HANDLE, HMODULE, LUID, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
-};
+#[cfg(ironrdp_idd_link)]
+use windows::Win32::Foundation::WAIT_TIMEOUT;
+use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HMODULE, LUID, WAIT_FAILED, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
-};
 #[cfg(ironrdp_idd_link)]
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
     ID3D11Resource, ID3D11Texture2D,
 };
-#[cfg(ironrdp_idd_link)]
-use windows::Win32::Graphics::Dxgi::{IDXGIDevice, IDXGIResource};
-use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory2, IDXGIAdapter1, IDXGIFactory5, DXGI_CREATE_FACTORY_FLAGS};
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
+};
 #[cfg(ironrdp_idd_link)]
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB};
+use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter1, IDXGIFactory5};
+#[cfg(ironrdp_idd_link)]
+use windows::Win32::Graphics::Dxgi::{IDXGIDevice, IDXGIResource};
 use windows::Win32::System::Threading::{
-    AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW, SetEvent, WaitForMultipleObjects,
-    INFINITE,
+    AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW, INFINITE, SetEvent,
+    WaitForMultipleObjects,
 };
+use windows::core::w;
 
 #[cfg(ironrdp_idd_link)]
 use crate::iddcx;
@@ -140,9 +140,9 @@ impl Drop for MmcssGuard {
 const IDD_DUMP_INTERVAL_MS: u64 = 2_000;
 const IDD_DUMP_MAX_COUNT: u64 = 60;
 
-static IDD_DUMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static IDD_DUMP_LAST_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static IDD_DUMP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static IDD_DUMP_SEQ: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static IDD_DUMP_LAST_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static IDD_DUMP_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static IDD_DUMP_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
 static IDD_DUMP_ERROR_LOGGED: AtomicBool = AtomicBool::new(false);
 static IDD_FIRST_FRAME_SESSION: AtomicU32 = AtomicU32::new(0);
@@ -150,13 +150,11 @@ static IDD_FIRST_FRAME_SESSION: AtomicU32 = AtomicU32::new(0);
 fn now_unix_ms_best_effort() -> Option<u64> {
     let now = std::time::SystemTime::now();
     let dur = now.duration_since(std::time::UNIX_EPOCH).ok()?;
-    Some(dur.as_millis().min(u128::from(u64::MAX)) as u64)
+    Some(u64::try_from(dur.as_millis()).unwrap_or(u64::MAX))
 }
 
 fn write_bmp_bgra32(path: &std::path::Path, width: usize, height: usize, pixels: &[u8]) -> Result<(), String> {
-    let stride = width
-        .checked_mul(4)
-        .ok_or_else(|| "bmp stride overflow".to_owned())?;
+    let stride = width.checked_mul(4).ok_or_else(|| "bmp stride overflow".to_owned())?;
     let expected = stride
         .checked_mul(height)
         .ok_or_else(|| "bmp payload length overflow".to_owned())?;
@@ -197,8 +195,8 @@ fn write_bmp_bgra32(path: &std::path::Path, width: usize, height: usize, pixels:
             .map_err(|error| format!("failed to create dump directory '{}': {error}", parent.display()))?;
     }
 
-    let mut file = std::fs::File::create(path)
-        .map_err(|error| format!("failed to create bmp '{}': {error}", path.display()))?;
+    let mut file =
+        std::fs::File::create(path).map_err(|error| format!("failed to create bmp '{}': {error}", path.display()))?;
     file.write_all(&header)
         .map_err(|error| format!("failed to write bmp header '{}': {error}", path.display()))?;
     file.write_all(pixels)
@@ -471,9 +469,7 @@ impl SwapChainProcessor {
                 // SAFETY: called from the dedicated swapchain thread, using a live swapchain handle + COM device.
                 let hr = unsafe { iddcx::swapchain_set_device(swapchain.raw(), dxgi_device_ptr) };
                 if hr.is_err() {
-                    crate::debug_trace(&format!(
-                        "SESSION_PROOF_IDD_SWAPCHAIN_SET_DEVICE_RESULT status={hr:?}"
-                    ));
+                    crate::debug_trace(&format!("SESSION_PROOF_IDD_SWAPCHAIN_SET_DEVICE_RESULT status={hr:?}"));
                     tracing::warn!(?hr, "IddCxSwapChainSetDevice failed");
                     return;
                 }
@@ -575,9 +571,7 @@ impl SwapChainProcessor {
                             meta.PresentationFrameNumber,
                         ) {
                             if !IDD_DUMP_ERROR_LOGGED.swap(true, Ordering::Relaxed) {
-                                crate::debug_trace(&format!(
-                                    "SESSION_PROOF_IDD_SWAPCHAIN_DUMP_ERROR error={error}"
-                                ));
+                                crate::debug_trace(&format!("SESSION_PROOF_IDD_SWAPCHAIN_DUMP_ERROR error={error}"));
                                 tracing::warn!(error, "Failed to dump IDD swapchain bitmap frame");
                             }
                         }
@@ -606,7 +600,7 @@ impl SwapChainProcessor {
             {
                 crate::debug_trace(&format!(
                     "SESSION_PROOF_IDD_SWAPCHAIN_THREAD_START swapchain=stub adapter_luid=0x{:08X}{:08X}",
-                    render_adapter_luid.HighPart as u32,
+                    u32::from_ne_bytes(render_adapter_luid.HighPart.to_ne_bytes()),
                     render_adapter_luid.LowPart,
                 ));
                 while !stop_for_thread.load(Ordering::SeqCst) {
@@ -747,5 +741,3 @@ fn create_d3d_device(render_adapter_luid: LUID) -> windows_core::Result<(ID3D11D
 
     Ok((device, context))
 }
-
-

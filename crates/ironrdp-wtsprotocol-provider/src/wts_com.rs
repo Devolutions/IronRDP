@@ -1,97 +1,87 @@
 #![expect(
+    clippy::as_conversions,
     clippy::as_pointer_underscore,
     clippy::inline_always,
-    clippy::multiple_unsafe_ops_per_block
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::undocumented_unsafe_blocks,
+    reason = "hand-written COM and WTS ABI glue mirrors Windows header pointer and integer representations"
 )]
 
+use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
-use core::ffi::c_void;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Write};
 use std::os::windows::io::AsRawHandle as _;
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 use std::thread;
 
-use ironrdp_pdu::nego;
 use ironrdp_wtsprotocol_ipc::{
     DEFAULT_MAX_FRAME_SIZE, ProviderCommand, ServiceEvent, default_pipe_name, pipe_path, read_json_message,
     resolve_pipe_name_from_env, write_json_message,
 };
 use parking_lot::Mutex;
 use tracing::{debug, info, warn};
-use windows::core::AgileReference;
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
+    DIGCF_ALLCLASSES, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, SETUP_DI_REGISTRY_PROPERTY, SP_DEVICE_INTERFACE_DATA,
+    SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA, SPDRP_PHYSICAL_DEVICE_OBJECT_NAME,
     SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
     SetupDiGetDeviceInstanceIdW, SetupDiGetDeviceInterfaceDetailW, SetupDiGetDeviceRegistryPropertyW,
-    DIGCF_ALLCLASSES, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, SP_DEVICE_INTERFACE_DATA,
-    SP_DEVICE_INTERFACE_DETAIL_DATA_W, SP_DEVINFO_DATA, SPDRP_PHYSICAL_DEVICE_OBJECT_NAME,
-    SETUP_DI_REGISTRY_PROPERTY,
 };
 use windows::Win32::Foundation::{
-    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_NOINTERFACE, E_NOTIMPL, E_POINTER, E_UNEXPECTED,
-    ERROR_BROKEN_PIPE, ERROR_INSUFFICIENT_BUFFER, ERROR_IO_INCOMPLETE, ERROR_NO_DATA, ERROR_SEM_TIMEOUT,
-    ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, HANDLE, HANDLE_PTR, HLOCAL,
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_NO_TOKEN, E_OUTOFMEMORY as E_OUTOFMEMORY_WIN32, GetLastError, LocalFree,
-    WIN32_ERROR,
+    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, CloseHandle, E_NOINTERFACE, E_NOTIMPL,
+    E_OUTOFMEMORY as E_OUTOFMEMORY_WIN32, E_POINTER, E_UNEXPECTED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND,
+    ERROR_INSUFFICIENT_BUFFER, ERROR_IO_INCOMPLETE, ERROR_NO_DATA, ERROR_NO_MORE_ITEMS, ERROR_NO_TOKEN,
+    ERROR_PATH_NOT_FOUND, ERROR_SEM_TIMEOUT, GetLastError, HANDLE, HANDLE_PTR, HLOCAL, LocalFree, WIN32_ERROR,
 };
-use windows::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-};
+use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{
-    DACL_SECURITY_INFORMATION, DuplicateTokenEx, GROUP_SECURITY_INFORMATION, GetKernelObjectSecurity,
-    IsValidSecurityDescriptor, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, LookupAccountNameW,
-    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, RevertToSelf, SACL_SECURITY_INFORMATION, SID_NAME_USE,
-    SecurityImpersonation, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
-    TokenImpersonation, TokenPrimary, LogonUserW,
+    DuplicateTokenEx, IsValidSecurityDescriptor, LookupAccountNameW, PSECURITY_DESCRIPTOR, PSID, RevertToSelf,
+    SID_NAME_USE, SecurityImpersonation, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
+    TokenImpersonation, TokenPrimary,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, QueryDosDeviceW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, QueryDosDeviceW,
 };
 use windows::Win32::System::Com::{
-    CoInitializeEx, CoTaskMemAlloc, CoUninitialize, IAgileObject, IAgileObject_Impl, IClassFactory, IClassFactory_Impl,
-    COINIT_MULTITHREADED,
+    COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemAlloc, CoUninitialize, IAgileObject, IAgileObject_Impl,
+    IClassFactory, IClassFactory_Impl,
 };
 use windows::Win32::System::Pipes::PeekNamedPipe;
 use windows::Win32::System::Registry::{
-    HKEY_LOCAL_MACHINE, RRF_RT_REG_BINARY, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ, RRF_ZEROONFAILURE, RegGetValueW,
-};
-use windows::Win32::System::Services::{
-    CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, StartServiceW, SC_MANAGER_CONNECT,
-    SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING, SERVICE_STATUS,
-};
-use windows::Win32::System::Threading::{
-    CreateProcessAsUserW, GetCurrentThread, OpenThreadToken, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
-    SetThreadToken, STARTUPINFOW,
+    HKEY_LOCAL_MACHINE, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ, RRF_ZEROONFAILURE, RegGetValueW,
 };
 use windows::Win32::System::RemoteDesktop::{
-    IWRdsProtocolConnection, IWRdsProtocolConnection_Impl, IWRdsProtocolConnectionCallback,
-    IWRdsProtocolConnection_Vtbl, IWRdsProtocolConnectionSettings, IWRdsProtocolConnectionSettings_Impl,
-    IWRdsProtocolLicenseConnection,
+    IWRdsProtocolConnection, IWRdsProtocolConnection_Impl, IWRdsProtocolConnection_Vtbl,
+    IWRdsProtocolConnectionCallback, IWRdsProtocolConnectionSettings_Impl, IWRdsProtocolLicenseConnection,
     IWRdsProtocolLicenseConnection_Impl, IWRdsProtocolListener, IWRdsProtocolListener_Impl,
     IWRdsProtocolListenerCallback, IWRdsProtocolLogonErrorRedirector, IWRdsProtocolLogonErrorRedirector_Impl,
-    IWRdsProtocolManager,
-    IWRdsProtocolManager_Impl, IWRdsProtocolSettings, IWRdsProtocolShadowConnection, IWRdsWddmIddProps,
-    IWRdsWddmIddProps1, IWRdsWddmIddProps1_Impl, IWRdsWddmIddProps_Impl, WRDS_CONNECTION_SETTING,
-    WRDS_CONNECTION_SETTING_LEVEL, WRDS_CONNECTION_SETTINGS,
-    WRDS_CONNECTION_SETTINGS_1, WRDS_LISTENER_SETTING, WRDS_LISTENER_SETTING_LEVEL, WRDS_LISTENER_SETTING_LEVEL_1,
-    WRDS_LISTENER_SETTINGS, WRDS_LISTENER_SETTINGS_1, WRDS_SETTINGS, WTS_CERT_TYPE_INVALID, WTS_CHANNEL_OPTION_DYNAMIC,
+    IWRdsProtocolManager, IWRdsProtocolManager_Impl, IWRdsProtocolSettings, IWRdsProtocolShadowConnection,
+    IWRdsWddmIddProps, IWRdsWddmIddProps_Impl, IWRdsWddmIddProps1, IWRdsWddmIddProps1_Impl,
+    WRDS_CONNECTION_SETTING_LEVEL, WRDS_CONNECTION_SETTINGS, WRDS_LISTENER_SETTING_LEVEL, WRDS_LISTENER_SETTINGS,
+    WRDS_LISTENER_SETTINGS_1, WRDS_SETTINGS, WTS_CERT_TYPE_INVALID, WTS_CHANNEL_OPTION_DYNAMIC,
     WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH, WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED,
     WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL, WTS_CLIENT_DATA, WTS_KEY_EXCHANGE_ALG_RSA, WTS_LICENSE_CAPABILITIES,
-    WTS_LICENSE_PREAMBLE_VERSION, WTS_LOGON_ERROR_REDIRECTOR_RESPONSE, WTS_LOGON_ERR_NOT_HANDLED,
-    WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_SESSION_INFOW,
-    WTS_USER_CREDENTIAL, WTSDisconnected, WTSEnumerateProcessesW, WTSEnumerateSessionsW, WTSFreeMemory,
-    WTSGetActiveConsoleSessionId, WTSGetListenerSecurityW, WTSQueryUserToken, WTSVirtualChannelClose,
-    WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite, WTS_PROCESS_INFOW,
+    WTS_LICENSE_PREAMBLE_VERSION, WTS_LOGON_ERR_NOT_HANDLED, WTS_LOGON_ERROR_REDIRECTOR_RESPONSE, WTS_PROCESS_INFOW,
+    WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_SESSION_INFOW, WTS_USER_CREDENTIAL,
+    WTSEnumerateProcessesW, WTSEnumerateSessionsW, WTSFreeMemory, WTSGetActiveConsoleSessionId, WTSQueryUserToken,
+    WTSVirtualChannelClose, WTSVirtualChannelOpenEx, WTSVirtualChannelRead, WTSVirtualChannelWrite,
 };
-use windows::Win32::System::Threading::GetCurrentProcess;
+use windows::Win32::System::Services::{
+    CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS,
+    SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING, SERVICE_STATUS, StartServiceW,
+};
+use windows::Win32::System::Threading::{
+    CreateProcessAsUserW, GetCurrentThread, OpenThreadToken, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
+    SetThreadToken,
+};
+use windows::core::AgileReference;
 use windows_core::{BOOL, GUID, Interface as _, PCSTR, PCWSTR, PWSTR, implement};
 use windows_core::{HRESULT, IUnknown, IUnknownImpl};
 
-use crate::auth_bridge::{CredsspPolicy, CredsspServerBridge};
 use crate::connection::ProtocolConnection;
 use crate::listener::ProtocolListener;
 use crate::manager::ProtocolManager;
@@ -133,18 +123,24 @@ impl core::ops::Deref for IWRdsProtocolConnection2 {
 
     fn deref(&self) -> &Self::Target {
         // SAFETY: `IWRdsProtocolConnection2` extends `IWRdsProtocolConnection`.
-        unsafe { core::mem::transmute(self) }
+        unsafe { &*core::ptr::from_ref(self).cast::<IWRdsProtocolConnection>() }
     }
 }
 
 #[repr(C)]
 struct IWRdsProtocolConnection2_Vtbl {
     base__: IWRdsProtocolConnection_Vtbl,
-    get_serialized_user_credential:
-        unsafe extern "system" fn(this: *mut c_void, usercredential: *mut *mut WRDS_SERIALIZED_USER_CREDENTIAL) -> HRESULT,
+    get_serialized_user_credential: unsafe extern "system" fn(
+        this: *mut c_void,
+        usercredential: *mut *mut WRDS_SERIALIZED_USER_CREDENTIAL,
+    ) -> HRESULT,
 }
 
-#[allow(non_camel_case_types)]
+#[expect(
+    non_camel_case_types,
+    non_snake_case,
+    reason = "custom COM interface names mirror the Windows ABI"
+)]
 trait IWRdsProtocolConnection2_Impl: IWRdsProtocolConnection_Impl + IUnknownImpl {
     fn GetSerializedUserCredential(
         &self,
@@ -161,8 +157,8 @@ impl IWRdsProtocolConnection2_Vtbl {
     }
 
     fn matches(iid: &GUID) -> bool {
-        let is_match =
-            iid == &<IWRdsProtocolConnection2 as windows_core::Interface>::IID || IWRdsProtocolConnection_Vtbl::matches(iid);
+        let is_match = iid == &<IWRdsProtocolConnection2 as windows_core::Interface>::IID
+            || IWRdsProtocolConnection_Vtbl::matches(iid);
 
         debug_log_line(&format!(
             "IWRdsProtocolConnection2::QueryInterfaceMatch iid={iid:?} matched={is_match}",
@@ -171,7 +167,10 @@ impl IWRdsProtocolConnection2_Vtbl {
         is_match
     }
 
-    unsafe extern "system" fn get_serialized_user_credential<Identity: IWRdsProtocolConnection2_Impl, const OFFSET: isize>(
+    unsafe extern "system" fn get_serialized_user_credential<
+        Identity: IWRdsProtocolConnection2_Impl,
+        const OFFSET: isize,
+    >(
         this: *mut c_void,
         usercredential: *mut *mut WRDS_SERIALIZED_USER_CREDENTIAL,
     ) -> HRESULT {
@@ -183,7 +182,6 @@ impl IWRdsProtocolConnection2_Vtbl {
 
 #[repr(transparent)]
 #[derive(Clone)]
-#[allow(non_camel_case_types)]
 struct IWRdsEnhancedFastReconnectArbitrator(IUnknown);
 
 unsafe impl windows_core::Interface for IWRdsEnhancedFastReconnectArbitrator {
@@ -192,7 +190,6 @@ unsafe impl windows_core::Interface for IWRdsEnhancedFastReconnectArbitrator {
     const IID: GUID = GUID::from_u128(0x5718_ae9b_47f2_499f_b634_d817_5bd5_1131);
 }
 
-#[allow(non_camel_case_types)]
 impl core::ops::Deref for IWRdsEnhancedFastReconnectArbitrator {
     type Target = IUnknown;
 
@@ -202,14 +199,21 @@ impl core::ops::Deref for IWRdsEnhancedFastReconnectArbitrator {
 }
 
 #[repr(C)]
-#[allow(non_camel_case_types)]
 struct IWRdsEnhancedFastReconnectArbitrator_Vtbl {
     base__: windows_core::IUnknown_Vtbl,
-    get_session_for_enhanced_fast_reconnect:
-        unsafe extern "system" fn(this: *mut c_void, psessionidarray: *const i32, dwsessioncount: u32, presultsessionid: *mut i32) -> HRESULT,
+    get_session_for_enhanced_fast_reconnect: unsafe extern "system" fn(
+        this: *mut c_void,
+        psessionidarray: *const i32,
+        dwsessioncount: u32,
+        presultsessionid: *mut i32,
+    ) -> HRESULT,
 }
 
-#[allow(non_camel_case_types)]
+#[expect(
+    non_camel_case_types,
+    non_snake_case,
+    reason = "custom COM interface names mirror the Windows ABI"
+)]
 trait IWRdsEnhancedFastReconnectArbitrator_Impl: IUnknownImpl {
     fn GetSessionForEnhancedFastReconnect(
         &self,
@@ -223,8 +227,7 @@ impl IWRdsEnhancedFastReconnectArbitrator_Vtbl {
     const fn new<Identity: IWRdsEnhancedFastReconnectArbitrator_Impl, const OFFSET: isize>() -> Self {
         Self {
             base__: windows_core::IUnknown_Vtbl::new::<Identity, OFFSET>(),
-            get_session_for_enhanced_fast_reconnect:
-                Self::get_session_for_enhanced_fast_reconnect::<Identity, OFFSET>,
+            get_session_for_enhanced_fast_reconnect: Self::get_session_for_enhanced_fast_reconnect::<Identity, OFFSET>,
         }
     }
 
@@ -264,7 +267,6 @@ const WTS_PROTOCOL_TYPE_NON_RDP: u16 = 2;
 
 const WTS_VALUE_TYPE_ULONG: u16 = 1;
 const WTS_VALUE_TYPE_STRING: u16 = 2;
-const WTS_VALUE_TYPE_GUID: u16 = 4;
 
 // From Windows SDK `wtsdefs.h`.
 const PROPERTY_TYPE_GET_FAST_RECONNECT: GUID = GUID::from_u128(0x6212_d757_0043_4862_99c3_9f30_59ac_2a3b);
@@ -283,19 +285,10 @@ const FAST_RECONNECT_DISABLED: u32 = 0;
 const FAST_RECONNECT_BASIC: u32 = 1;
 const FAST_RECONNECT_ENHANCED: u32 = 2;
 
-fn deterministic_license_guid(connection_id: u32) -> GUID {
-    const BASE: u128 = 0x7d5e31f3_0ff8_4a25_9fcb_7b7e2f634000;
-    GUID::from_u128(BASE | u128::from(connection_id))
-}
-
 fn active_console_session_id() -> Option<u32> {
     // SAFETY: FFI call has no input parameters and always returns a plain value.
     let session_id = unsafe { WTSGetActiveConsoleSessionId() };
-    if session_id == u32::MAX {
-        None
-    } else {
-        Some(session_id)
-    }
+    if session_id == u32::MAX { None } else { Some(session_id) }
 }
 
 fn session_has_user_token(session_id: u32) -> bool {
@@ -305,7 +298,7 @@ fn session_has_user_token(session_id: u32) -> bool {
     if result.is_ok() {
         // SAFETY: close token handle returned by `WTSQueryUserToken`.
         unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(token);
+            let _ = CloseHandle(token);
         }
         true
     } else {
@@ -427,154 +420,6 @@ fn session_selection_snapshot() -> String {
     }
 }
 
-fn preferred_interactive_capture_session_id() -> Option<(u32, &'static str)> {
-    let console_session = active_console_session_id();
-
-    if let Some(session_id) = console_session {
-        if session_has_user_token(session_id) && session_has_process(session_id, "explorer.exe") {
-            return Some((session_id, "accept_connection_interactive_console"));
-        }
-    }
-
-    let mut sessions_ptr: *mut WTS_SESSION_INFOW = core::ptr::null_mut();
-    let mut session_count = 0u32;
-
-    // SAFETY: WTSEnumerateSessionsW writes a pointer/count pair on success.
-    let enumerate_result = unsafe { WTSEnumerateSessionsW(None, 0, 1, &mut sessions_ptr, &mut session_count) };
-
-    if enumerate_result.is_ok() && !sessions_ptr.is_null() && session_count > 0 {
-        if let Ok(session_count_usize) = usize::try_from(session_count) {
-            // SAFETY: `sessions_ptr` references `session_count_usize` entries on success.
-            let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count_usize) };
-            let mut candidates: Vec<u32> = sessions
-                .iter()
-                .map(|session| canonicalize_enumerated_session_id(session.SessionId))
-                .collect();
-            candidates.sort_unstable();
-            candidates.dedup();
-
-            for &session_id in &candidates {
-                if session_id == u32::MAX {
-                    continue;
-                }
-
-                if session_has_user_token(session_id) && session_has_process(session_id, "explorer.exe") {
-                    // SAFETY: free memory allocated by WTSEnumerateSessionsW.
-                    unsafe {
-                        WTSFreeMemory(sessions_ptr.cast());
-                    }
-                    return Some((session_id, "accept_connection_interactive_enumerated"));
-                }
-            }
-        }
-
-        // SAFETY: free memory allocated by WTSEnumerateSessionsW.
-        unsafe {
-            WTSFreeMemory(sessions_ptr.cast());
-        }
-    }
-
-    None
-}
-
-fn preferred_capture_session_id() -> Option<(u32, &'static str)> {
-    let console_session = active_console_session_id();
-
-    if let Some(session_id) = console_session {
-        if session_has_user_token(session_id) {
-            let source = if session_has_process(session_id, "explorer.exe") {
-                "accept_connection_console_interactive"
-            } else {
-                "accept_connection_console_token"
-            };
-
-            return Some((session_id, source));
-        }
-    }
-
-    let mut sessions_ptr: *mut WTS_SESSION_INFOW = core::ptr::null_mut();
-    let mut session_count = 0u32;
-
-    // SAFETY: WTSEnumerateSessionsW writes a pointer/count pair on success.
-    let enumerate_result = unsafe { WTSEnumerateSessionsW(None, 0, 1, &mut sessions_ptr, &mut session_count) };
-
-    if enumerate_result.is_ok() && !sessions_ptr.is_null() && session_count > 0 {
-        if let Ok(session_count_usize) = usize::try_from(session_count) {
-            // SAFETY: `sessions_ptr` references `session_count_usize` entries on success.
-            let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count_usize) };
-            let mut candidates: Vec<u32> = sessions
-                .iter()
-                .map(|session| canonicalize_enumerated_session_id(session.SessionId))
-                .collect();
-            candidates.sort_unstable();
-            candidates.dedup();
-
-            for &session_id in &candidates {
-                if session_id == u32::MAX || !session_has_user_token(session_id) {
-                    continue;
-                }
-
-                let source = if session_has_process(session_id, "explorer.exe") {
-                    "accept_connection_enumerated_interactive"
-                } else {
-                    "accept_connection_enumerated_token"
-                };
-
-                // SAFETY: free memory allocated by WTSEnumerateSessionsW.
-                unsafe {
-                    WTSFreeMemory(sessions_ptr.cast());
-                }
-                return Some((session_id, source));
-            }
-        }
-
-        // SAFETY: free memory allocated by WTSEnumerateSessionsW.
-        unsafe {
-            WTSFreeMemory(sessions_ptr.cast());
-        }
-    }
-
-    if let Some(session_id) = console_session {
-        if session_id != 0 && session_id != u32::MAX {
-            return Some((session_id, "accept_connection_console_fallback"));
-        }
-    }
-
-    let mut sessions_ptr: *mut WTS_SESSION_INFOW = core::ptr::null_mut();
-    let mut session_count = 0u32;
-
-    // SAFETY: WTSEnumerateSessionsW writes a pointer/count pair on success.
-    let enumerate_result = unsafe { WTSEnumerateSessionsW(None, 0, 1, &mut sessions_ptr, &mut session_count) };
-    if enumerate_result.is_ok() && !sessions_ptr.is_null() && session_count > 0 {
-        if let Ok(session_count_usize) = usize::try_from(session_count) {
-            // SAFETY: `sessions_ptr` references `session_count_usize` entries on success.
-            let sessions = unsafe { core::slice::from_raw_parts(sessions_ptr, session_count_usize) };
-            let mut candidates: Vec<u32> = sessions
-                .iter()
-                .map(|session| canonicalize_enumerated_session_id(session.SessionId))
-                .filter(|session_id| *session_id != 0 && *session_id != u32::MAX)
-                .collect();
-            candidates.sort_unstable();
-            candidates.dedup();
-
-            if let Some(session_id) = candidates.first().copied() {
-                // SAFETY: free memory allocated by WTSEnumerateSessionsW.
-                unsafe {
-                    WTSFreeMemory(sessions_ptr.cast());
-                }
-                return Some((session_id, "accept_connection_enumerated_fallback"));
-            }
-        }
-
-        // SAFETY: free memory allocated by WTSEnumerateSessionsW.
-        unsafe {
-            WTSFreeMemory(sessions_ptr.cast());
-        }
-    }
-
-    None
-}
-
 fn lookup_account_sid_string(username: &str, domain: &str) -> windows_core::Result<String> {
     let username = username.trim();
     let domain = domain.trim();
@@ -661,11 +506,7 @@ fn lookup_account_sid_string(username: &str, domain: &str) -> windows_core::Resu
 }
 
 const DEBUG_LOG_PATH_ENV: &str = "IRONRDP_WTS_PROVIDER_DEBUG_LOG";
-
-const DEBUG_LOG_FALLBACK_PATHS: [&str; 2] = [
-    r"C:\IronRDPDeploy\logs\wts-provider-debug.log",
-    r"C:\Windows\Temp\wts-provider-debug.log",
-];
+static DEBUG_LOG_FILE: OnceLock<Option<Mutex<File>>> = OnceLock::new();
 
 fn normalize_winlogon_credentials(username: &str, domain: &str) -> (String, String) {
     let username = username.trim();
@@ -679,15 +520,11 @@ fn normalize_winlogon_credentials(username: &str, domain: &str) -> (String, Stri
                 return (user.to_owned(), dom.to_owned());
             }
         }
-
-        if username.contains('@') {
-            // Preserve UPN formatting exactly as provided: the full UPN must stay
-            // in the username field with an empty domain field.
-            return (username.to_owned(), String::new());
-        }
     }
 
     if username.contains('@') {
+        // Preserve UPN formatting exactly as provided: the full UPN must stay
+        // in the username field with an empty domain field.
         return (username.to_owned(), String::new());
     }
 
@@ -695,25 +532,25 @@ fn normalize_winlogon_credentials(username: &str, domain: &str) -> (String, Stri
 }
 
 fn debug_log_line(message: &str) {
-    let mut candidate_paths = Vec::new();
-
-    if let Some(path) = std::env::var(DEBUG_LOG_PATH_ENV)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-    {
-        candidate_paths.push(path);
-    }
-
-    for fallback in DEBUG_LOG_FALLBACK_PATHS {
-        if !candidate_paths.iter().any(|existing| existing.eq_ignore_ascii_case(fallback)) {
-            candidate_paths.push(fallback.to_owned());
-        }
-    }
-
-    if candidate_paths.is_empty() {
+    let Some(file) = DEBUG_LOG_FILE
+        .get_or_init(|| {
+            let path = std::env::var(DEBUG_LOG_PATH_ENV)
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())?;
+            let parent = std::path::Path::new(&path).parent()?;
+            std::fs::create_dir_all(parent).ok()?;
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+                .map(Mutex::new)
+        })
+        .as_ref()
+    else {
         return;
-    }
+    };
 
     let timestamp_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -721,17 +558,7 @@ fn debug_log_line(message: &str) {
         .unwrap_or_default();
 
     let line = format!("{timestamp_ms} {message}\n");
-
-    for path in candidate_paths {
-        if let Some(parent) = std::path::Path::new(&path).parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
-            let _ = file.write_all(line.as_bytes());
-            break;
-        }
-    }
+    let _ = file.lock().write_all(line.as_bytes());
 }
 
 fn load_idd_runtime_state() -> HashMap<String, String> {
@@ -838,7 +665,9 @@ fn ensure_wudfrd_running() {
     let Ok(svc) = svc else {
         let error = std::io::Error::last_os_error();
         debug_log_line(&format!("ensure_wudfrd_running: OpenServiceW(WUDFRd) failed: {error}"));
-        unsafe { let _ = CloseServiceHandle(scm); }
+        unsafe {
+            let _ = CloseServiceHandle(scm);
+        }
         // Fallback: try via sc.exe
         ensure_wudfrd_running_via_sc_exe();
         return;
@@ -882,17 +711,17 @@ fn ensure_wudfrd_running() {
 
             // Wait up to 5 seconds for WUDFRd to reach RUNNING state.
             for attempt in 0..50 {
-                std::thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_millis(100));
                 let mut poll_status = SERVICE_STATUS::default();
                 // SAFETY: svc is still a valid handle.
-                if unsafe { QueryServiceStatus(svc, &mut poll_status) }.is_ok() {
-                    if poll_status.dwCurrentState == SERVICE_RUNNING {
-                        debug_log_line(&format!(
-                            "ensure_wudfrd_running: WUDFRd running after {} ms",
-                            (attempt + 1) * 100
-                        ));
-                        break;
-                    }
+                if unsafe { QueryServiceStatus(svc, &mut poll_status) }.is_ok()
+                    && poll_status.dwCurrentState == SERVICE_RUNNING
+                {
+                    debug_log_line(&format!(
+                        "ensure_wudfrd_running: WUDFRd running after {} ms",
+                        (attempt + 1) * 100
+                    ));
+                    break;
                 }
             }
         }
@@ -911,10 +740,7 @@ fn ensure_wudfrd_running() {
 /// Used when the SCM API fails (e.g., insufficient permissions for NETWORK SERVICE).
 fn ensure_wudfrd_running_via_sc_exe() {
     debug_log_line("ensure_wudfrd_running_via_sc_exe: attempting sc.exe start WUDFRd");
-    match std::process::Command::new("sc.exe")
-        .args(["start", "WUDFRd"])
-        .output()
-    {
+    match std::process::Command::new("sc.exe").args(["start", "WUDFRd"]).output() {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -927,11 +753,8 @@ fn ensure_wudfrd_running_via_sc_exe() {
             if output.status.success() {
                 // Wait up to 5 seconds for WUDFRd to start.
                 for attempt in 0..50 {
-                    std::thread::sleep(Duration::from_millis(100));
-                    if let Ok(check) = std::process::Command::new("sc.exe")
-                        .args(["query", "WUDFRd"])
-                        .output()
-                    {
+                    thread::sleep(Duration::from_millis(100));
+                    if let Ok(check) = std::process::Command::new("sc.exe").args(["query", "WUDFRd"]).output() {
                         let query_out = String::from_utf8_lossy(&check.stdout);
                         if query_out.contains("RUNNING") {
                             debug_log_line(&format!(
@@ -946,7 +769,9 @@ fn ensure_wudfrd_running_via_sc_exe() {
             }
         }
         Err(error) => {
-            debug_log_line(&format!("ensure_wudfrd_running_via_sc_exe: failed to spawn sc.exe: {error}"));
+            debug_log_line(&format!(
+                "ensure_wudfrd_running_via_sc_exe: failed to spawn sc.exe: {error}"
+            ));
         }
     }
 }
@@ -991,332 +816,6 @@ const VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE: usize = 1024 * 1024;
 type SharedVirtualChannelBridgeHandler = Arc<dyn VirtualChannelBridgeHandler>;
 
 static VIRTUAL_CHANNEL_BRIDGE_HANDLER: OnceLock<Mutex<Option<SharedVirtualChannelBridgeHandler>>> = OnceLock::new();
-
-static LISTENER_SECURITY_DESCRIPTOR: OnceLock<Mutex<HashMap<String, ListenerSecurityDescriptorBuffers>>> =
-    OnceLock::new();
-
-struct ListenerSecurityDescriptorBuffers {
-    sd: Vec<u8>,
-    sd_size: u32,
-}
-
-fn to_utf16_null(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(core::iter::once(0)).collect()
-}
-
-fn read_listener_sd_from_registry(listener_name: &str) -> Option<Vec<u8>> {
-    let subkey = format!("SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\{listener_name}");
-    let subkey_w = to_utf16_null(&subkey);
-    let subkey = PCWSTR(subkey_w.as_ptr());
-
-    for value_name in ["Security", "SecurityDescriptor", "Permissions", "UserSecurity"] {
-        let value_w = to_utf16_null(value_name);
-        let value = PCWSTR(value_w.as_ptr());
-
-        let mut len = 0u32;
-        // SAFETY: pointers remain valid for the duration of the call.
-        let status = unsafe {
-            RegGetValueW(
-                HKEY_LOCAL_MACHINE,
-                subkey,
-                value,
-                RRF_RT_REG_BINARY,
-                None,
-                None,
-                Some(&mut len),
-            )
-        };
-
-        if status != ERROR_SUCCESS || len == 0 {
-            continue;
-        }
-
-        let mut buf = vec![0u8; len as usize];
-        // SAFETY: buffer is writable and sized to `len` bytes.
-        let status = unsafe {
-            RegGetValueW(
-                HKEY_LOCAL_MACHINE,
-                subkey,
-                value,
-                RRF_RT_REG_BINARY,
-                None,
-                Some(buf.as_mut_ptr().cast()),
-                Some(&mut len),
-            )
-        };
-
-        if status != ERROR_SUCCESS {
-            continue;
-        }
-
-        buf.truncate(len as usize);
-        let sd_ptr = PSECURITY_DESCRIPTOR(buf.as_ptr() as *mut core::ffi::c_void);
-        let valid = unsafe { IsValidSecurityDescriptor(sd_ptr) };
-
-        debug_log_line(&format!(
-            "listener registry security descriptor value={value_name} valid={} len={len}",
-            valid.as_bool(),
-        ));
-
-        if valid.as_bool() {
-            return Some(buf);
-        }
-    }
-
-    None
-}
-
-fn read_listener_sd_from_wtsapi(listener_name: &str) -> Option<Vec<u8>> {
-    let listener_w = to_utf16_null(listener_name);
-    let listener_name = PCWSTR(listener_w.as_ptr());
-
-    let info_with_sacl =
-        DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | SACL_SECURITY_INFORMATION;
-    let info_no_sacl = DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION;
-
-    let mut needed = 0u32;
-    let mut info = info_with_sacl;
-
-    // First call is expected to fail with insufficient buffer, but should populate `needed`.
-    let _ = unsafe { WTSGetListenerSecurityW(None, core::ptr::null(), 0, listener_name, info, None, 0, &mut needed) };
-
-    if needed == 0 {
-        info = info_no_sacl;
-        let _ =
-            unsafe { WTSGetListenerSecurityW(None, core::ptr::null(), 0, listener_name, info, None, 0, &mut needed) };
-    }
-
-    if needed == 0 {
-        debug_log_line("WTSGetListenerSecurityW did not report required buffer size");
-        return None;
-    }
-
-    let mut buf = vec![0u8; needed as usize];
-    let sd_ptr = PSECURITY_DESCRIPTOR(buf.as_mut_ptr().cast());
-
-    if let Err(error) = unsafe {
-        WTSGetListenerSecurityW(
-            None,
-            core::ptr::null(),
-            0,
-            listener_name,
-            info,
-            Some(sd_ptr),
-            needed,
-            &mut needed,
-        )
-    } {
-        debug_log_line(&format!("WTSGetListenerSecurityW failed: {error}"));
-        return None;
-    }
-
-    buf.truncate(needed as usize);
-    let valid = unsafe { IsValidSecurityDescriptor(sd_ptr) };
-    debug_log_line(&format!(
-        "listener wtsapi security descriptor valid={} len={needed} sacl_included={}",
-        valid.as_bool(),
-        info == info_with_sacl,
-    ));
-
-    if !valid.as_bool() {
-        debug_log_line("WTSGetListenerSecurityW returned invalid security descriptor");
-        return None;
-    }
-
-    Some(buf)
-}
-
-fn read_winstations_default_security() -> Option<Vec<u8>> {
-    let subkey = "SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations";
-    let subkey_w = to_utf16_null(subkey);
-    let subkey = PCWSTR(subkey_w.as_ptr());
-    let value_w = to_utf16_null("DefaultSecurity");
-    let value = PCWSTR(value_w.as_ptr());
-
-    let mut len = 0u32;
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            subkey,
-            value,
-            RRF_RT_REG_BINARY,
-            None,
-            None,
-            Some(&mut len),
-        )
-    };
-
-    if status != ERROR_SUCCESS || len == 0 {
-        debug_log_line("WinStations DefaultSecurity not found in registry");
-        return None;
-    }
-
-    let mut buf = vec![0u8; len as usize];
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            subkey,
-            value,
-            RRF_RT_REG_BINARY,
-            None,
-            Some(buf.as_mut_ptr().cast()),
-            Some(&mut len),
-        )
-    };
-
-    if status != ERROR_SUCCESS {
-        debug_log_line(&format!("WinStations DefaultSecurity read failed: {status:?}"));
-        return None;
-    }
-
-    buf.truncate(len as usize);
-    let sd_ptr = PSECURITY_DESCRIPTOR(buf.as_ptr() as *mut core::ffi::c_void);
-    let valid = unsafe { IsValidSecurityDescriptor(sd_ptr) };
-
-    debug_log_line(&format!(
-        "WinStations DefaultSecurity valid={} len={len}",
-        valid.as_bool(),
-    ));
-
-    if valid.as_bool() { Some(buf) } else { None }
-}
-
-fn compute_listener_security_descriptor(listener_name: &str) -> Option<ListenerSecurityDescriptorBuffers> {
-    if let Some(buf) = read_listener_sd_from_wtsapi(listener_name) {
-        return Some(ListenerSecurityDescriptorBuffers {
-            sd_size: buf.len() as u32,
-            sd: buf,
-        });
-    }
-
-    if let Some(buf) = read_listener_sd_from_registry(listener_name) {
-        return Some(ListenerSecurityDescriptorBuffers {
-            sd_size: buf.len() as u32,
-            sd: buf,
-        });
-    }
-
-    // Fall back to the system-wide DefaultSecurity from the parent WinStations key.
-    // This is the SD that TermService uses for listeners without a per-listener SD.
-    if let Some(buf) = read_winstations_default_security() {
-        return Some(ListenerSecurityDescriptorBuffers {
-            sd_size: buf.len() as u32,
-            sd: buf,
-        });
-    }
-
-    let sddl = windows::core::w!("D:(A;;GA;;;WD)");
-
-    let mut sd = PSECURITY_DESCRIPTOR::default();
-    let mut sd_len = 0u32;
-
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &mut sd, Some(&mut sd_len))
-    }
-    .is_ok()
-        && !sd.0.is_null()
-        && sd_len > 0
-    {
-        // SAFETY: `sd` points to a self-relative security descriptor buffer of length `sd_len`.
-        let bytes = unsafe { core::slice::from_raw_parts(sd.0.cast::<u8>(), sd_len as usize) };
-        let mut buf = bytes.to_vec();
-        let sd_ptr = PSECURITY_DESCRIPTOR(buf.as_mut_ptr().cast());
-        let valid = unsafe { IsValidSecurityDescriptor(sd_ptr) };
-        debug_log_line(&format!(
-            "listener sddl security descriptor valid={} len={sd_len}",
-            valid.as_bool(),
-        ));
-
-        if valid.as_bool() {
-            return Some(ListenerSecurityDescriptorBuffers {
-                sd: buf,
-                sd_size: sd_len,
-            });
-        }
-    } else {
-        debug_log_line("ConvertStringSecurityDescriptorToSecurityDescriptorW failed; falling back");
-    }
-
-    let handle = unsafe { GetCurrentProcess() };
-    let info_with_sacl = (DACL_SECURITY_INFORMATION
-        | OWNER_SECURITY_INFORMATION
-        | GROUP_SECURITY_INFORMATION
-        | SACL_SECURITY_INFORMATION)
-        .0;
-    let info_no_sacl = (DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION).0;
-
-    let mut needed = 0u32;
-    // Try with SACL first; this may fail without SeSecurityPrivilege.
-    let _ = unsafe { GetKernelObjectSecurity(handle, info_with_sacl, None, 0, &mut needed) };
-    let mut info = info_with_sacl;
-    if needed == 0 {
-        let _ = unsafe { GetKernelObjectSecurity(handle, info_no_sacl, None, 0, &mut needed) };
-        info = info_no_sacl;
-    }
-
-    if needed == 0 {
-        debug_log_line("GetKernelObjectSecurity did not report required buffer size");
-        return None;
-    }
-
-    let mut buf = vec![0u8; needed as usize];
-    let sd_ptr = PSECURITY_DESCRIPTOR(buf.as_mut_ptr().cast());
-    if let Err(error) = unsafe { GetKernelObjectSecurity(handle, info, Some(sd_ptr), needed, &mut needed) } {
-        debug_log_line(&format!("GetKernelObjectSecurity failed: {error}"));
-        return None;
-    }
-
-    let valid = unsafe { IsValidSecurityDescriptor(sd_ptr) };
-    debug_log_line(&format!(
-        "listener kernel security descriptor valid={} len={needed} sacl_included={}",
-        valid.as_bool(),
-        info == info_with_sacl,
-    ));
-
-    if !valid.as_bool() {
-        debug_log_line("kernel security descriptor failed IsValidSecurityDescriptor");
-        return None;
-    }
-
-    Some(ListenerSecurityDescriptorBuffers {
-        sd: buf,
-        sd_size: needed,
-    })
-}
-
-fn listener_security_descriptor(listener_name: &str) -> Option<(*mut u8, u32)> {
-    let cache = LISTENER_SECURITY_DESCRIPTOR.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache.lock();
-
-    if cache.get(listener_name).is_none() {
-        if let Some(buffers) = compute_listener_security_descriptor(listener_name) {
-            cache.insert(listener_name.to_owned(), buffers);
-        }
-    }
-
-    let buffers = cache.get(listener_name)?;
-    let sd_size = buffers.sd_size;
-
-    // Allocate a fresh copy with LocalAlloc each time.
-    // TermService may free the pSecurityDescriptor pointer (e.g., after GetSettings),
-    // so we must provide a separately-allocated copy for each call.
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn LocalAlloc(uflags: u32, ubytes: usize) -> *mut u8;
-    }
-    const LMEM_FIXED: u32 = 0x0000;
-    let ptr = unsafe { LocalAlloc(LMEM_FIXED, sd_size as usize) };
-    if ptr.is_null() {
-        debug_log_line("LocalAlloc failed for security descriptor copy");
-        return None;
-    }
-    unsafe {
-        core::ptr::copy_nonoverlapping(buffers.sd.as_ptr(), ptr, sd_size as usize);
-    }
-    Some((ptr, sd_size))
-}
-
-static UNKNOWN_QUERY_PROPERTY_GUIDS: OnceLock<Mutex<HashSet<GUID>>> = OnceLock::new();
 
 struct ComInitGuard {
     initialized: bool,
@@ -2291,7 +1790,7 @@ fn run_named_pipe_bridge_worker(
 }
 
 fn pump_named_pipe_inbound_frames(
-    pipe: &mut std::fs::File,
+    pipe: &mut File,
     endpoint: &VirtualChannelBridgeEndpoint,
     to_channel_tx: &VirtualChannelBridgeTx,
     read_buffer: &mut Vec<u8>,
@@ -2322,7 +1821,7 @@ fn pump_named_pipe_inbound_frames(
     Ok(())
 }
 
-fn named_pipe_available_bytes(pipe: &std::fs::File) -> std::io::Result<u32> {
+fn named_pipe_available_bytes(pipe: &File) -> std::io::Result<u32> {
     let mut total_bytes_available = 0u32;
 
     // SAFETY: `pipe.as_raw_handle()` returns a live OS handle for this file. We only ask
@@ -2464,7 +1963,7 @@ impl IClassFactory_Impl for ProtocolManagerClassFactory_Impl {
         &self,
         punkouter: windows_core::Ref<'_, IUnknown>,
         riid: *const GUID,
-        ppvobject: *mut *mut core::ffi::c_void,
+        ppvobject: *mut *mut c_void,
     ) -> windows_core::Result<()> {
         if ppvobject.is_null() || riid.is_null() {
             return Err(windows_core::Error::new(E_POINTER, "null COM output pointer"));
@@ -2521,11 +2020,7 @@ impl IClassFactory_Impl for ProtocolManagerClassFactory_Impl {
 
 #[expect(unreachable_pub)]
 #[unsafe(no_mangle)]
-pub extern "system" fn DllGetClassObject(
-    rclsid: *const GUID,
-    riid: *const GUID,
-    ppv: *mut *mut core::ffi::c_void,
-) -> HRESULT {
+pub extern "system" fn DllGetClassObject(rclsid: *const GUID, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
     let result = dll_get_class_object_impl(rclsid, riid, ppv);
 
     match result {
@@ -2547,7 +2042,7 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
 fn dll_get_class_object_impl(
     rclsid: *const GUID,
     riid: *const GUID,
-    ppv: *mut *mut core::ffi::c_void,
+    ppv: *mut *mut c_void,
 ) -> windows_core::Result<()> {
     if ppv.is_null() || riid.is_null() || rclsid.is_null() {
         return Err(windows_core::Error::new(E_POINTER, "null class object pointer"));
@@ -2718,11 +2213,16 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                 self.listener_name, wrdslistenersettinglevel.0
             ));
 
-            return Err(windows_core::Error::new(E_NOTIMPL, "unsupported listener setting level"));
+            return Err(windows_core::Error::new(
+                E_NOTIMPL,
+                "unsupported listener setting level",
+            ));
         }
 
-        let mut settings = WRDS_LISTENER_SETTINGS::default();
-        settings.WRdsListenerSettingLevel = setting_level_1;
+        let mut settings = WRDS_LISTENER_SETTINGS {
+            WRdsListenerSettingLevel: setting_level_1,
+            ..Default::default()
+        };
 
         settings.WRdsListenerSetting.WRdsListenerSettings1 = WRDS_LISTENER_SETTINGS_1 {
             MaxProtocolListenerConnectionCount: 0,
@@ -2805,7 +2305,7 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
             )]
             let callback_for_worker = {
                 // SAFETY: token was produced by `IWRdsProtocolListenerCallback::into_raw` in this process.
-                unsafe { IWRdsProtocolListenerCallback::from_raw(callback_token as *mut core::ffi::c_void) }
+                unsafe { IWRdsProtocolListenerCallback::from_raw(callback_token as *mut c_void) }
             };
 
             let mut connection_callbacks: HashMap<u32, IWRdsProtocolConnectionCallback> = HashMap::new();
@@ -2886,13 +2386,12 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                         );
                     }
 
-                    let connection_credentials = match control_bridge.get_connection_credentials(incoming.connection_id) {
+                    let connection_credentials = match control_bridge.get_connection_credentials(incoming.connection_id)
+                    {
                         Ok(Some(credentials)) => {
                             debug_log_line(&format!(
                                 "OnConnected credential gate satisfied connection_id={} user={} domain={}",
-                                incoming.connection_id,
-                                credentials.0,
-                                credentials.1,
+                                incoming.connection_id, credentials.0, credentials.1,
                             ));
                             credentials
                         }
@@ -3041,9 +2540,7 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
 
                             debug_log_line(&format!(
                                 "OnReady credential gate already satisfied connection_id={} user={} domain={}",
-                                incoming.connection_id,
-                                connection_credentials.0,
-                                connection_credentials.1,
+                                incoming.connection_id, connection_credentials.0, connection_credentials.1,
                             ));
 
                             // SAFETY: connection_callback is a valid COM interface returned by TermService.
@@ -3114,11 +2611,7 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
 
                 debug_log_line(&format!(
                     "OnConnected calling listener_name={} connection_id={} conn_level={} listener_level={} protocol_type={}",
-                    listener_name,
-                    0,
-                    settings.WRdsConnectionSettingLevel.0,
-                    listener_level,
-                    protocol_type,
+                    listener_name, 0, settings.WRdsConnectionSettingLevel.0, listener_level, protocol_type,
                 ));
 
                 // SAFETY: COM callback and connection object are valid for call duration.
@@ -3292,9 +2785,7 @@ impl IWRdsProtocolLogonErrorRedirector_Impl for WrdsLogonErrorRedirector_Impl {
             unsafe { pszmessage.to_string() }.unwrap_or_default()
         };
 
-        debug_log_line(&format!(
-            "WrdsLogonErrorRedirector::RedirectStatus message={message}",
-        ));
+        debug_log_line(&format!("WrdsLogonErrorRedirector::RedirectStatus message={message}",));
         Ok(WTS_LOGON_ERR_NOT_HANDLED)
     }
 
@@ -3361,7 +2852,6 @@ impl IWRdsProtocolLogonErrorRedirector_Impl for WrdsLogonErrorRedirector_Impl {
 )]
 struct ComProtocolConnection {
     inner: Arc<ProtocolConnection>,
-    auth_bridge: CredsspServerBridge,
     connection_callback: Arc<Mutex<Option<AgileReference<IWRdsProtocolConnectionCallback>>>>,
     control_bridge: ProviderControlBridge,
     wddm_idd_enabled: AtomicBool,
@@ -3600,7 +3090,6 @@ impl ComProtocolConnection {
     ) -> Self {
         Self {
             inner,
-            auth_bridge: CredsspServerBridge::default(),
             connection_callback,
             control_bridge,
             wddm_idd_enabled: AtomicBool::new(false),
@@ -3629,15 +3118,13 @@ impl ComProtocolConnection {
             if let Some(handle) = slot.lock().take() {
                 // SAFETY: handle came from CreateFileW.
                 unsafe {
-                    let _ = windows::Win32::Foundation::CloseHandle(handle);
+                    let _ = CloseHandle(handle);
                 }
             }
         }
 
         if let Some((session_id, token)) = self.session_impersonation_token.lock().take() {
-            debug_log_line(&format!(
-                "release_session_impersonation_token session_id={session_id}"
-            ));
+            debug_log_line(&format!("release_session_impersonation_token session_id={session_id}"));
             unsafe {
                 let _ = CloseHandle(token);
             }
@@ -3650,7 +3137,7 @@ impl ComProtocolConnection {
         self.idd_driver_load_notified.store(false, Ordering::SeqCst);
     }
 
-    fn fill_idd_hardware_id(&self, pdisplaydriverhardwareid: &PCWSTR, count: u32) -> windows_core::Result<()> {
+    fn fill_idd_hardware_id(pdisplaydriverhardwareid: &PCWSTR, count: u32) -> windows_core::Result<()> {
         ensure_wudfrd_running();
 
         let hardware_id = IRONRDP_IDD_HARDWARE_ID;
@@ -3692,10 +3179,8 @@ impl ComProtocolConnection {
         let normalized = device_instance.to_ascii_lowercase();
         let marker = "sessionid_";
         let index = normalized.find(marker)?;
-        let digits = normalized[index + marker.len()..]
-            .chars()
-            .take_while(|ch| ch.is_ascii_digit())
-            .collect::<String>();
+        let suffix = normalized.get(index + marker.len()..)?;
+        let digits = suffix.chars().take_while(|ch| ch.is_ascii_digit()).collect::<String>();
         if digits.is_empty() {
             return None;
         }
@@ -3733,9 +3218,7 @@ impl ComProtocolConnection {
         connection_id: u32,
         source: &'static str,
     ) -> windows_core::Result<(*mut WRDS_SERIALIZED_USER_CREDENTIAL, u32)> {
-        let credentials = self
-            .cached_connection_credentials()
-            .or(self.fetch_and_cache_connection_credentials(connection_id, source)?);
+        let credentials = self.connection_credentials(connection_id, source)?;
 
         let Some((winlogon_username, winlogon_domain, password)) = credentials else {
             debug_log_line(&format!(
@@ -3785,13 +3268,19 @@ impl ComProtocolConnection {
 
         let packed_len = usize::try_from(packed_size).unwrap_or(0);
         if packed_len == 0 {
-            return Err(windows_core::Error::new(E_OUTOFMEMORY, "invalid packed credential size"));
+            return Err(windows_core::Error::new(
+                E_OUTOFMEMORY,
+                "invalid packed credential size",
+            ));
         }
 
         // SAFETY: COM allocates the returned blob so TermService can free it with COM task allocator rules.
         let packed_ptr = unsafe { CoTaskMemAlloc(packed_len) }.cast::<u8>();
         if packed_ptr.is_null() {
-            return Err(windows_core::Error::new(E_OUTOFMEMORY_WIN32.into(), "CoTaskMemAlloc failed for packed credentials"));
+            return Err(windows_core::Error::new(
+                E_OUTOFMEMORY_WIN32,
+                "CoTaskMemAlloc failed for packed credentials",
+            ));
         }
 
         // SAFETY: `packed_ptr` references `packed_len` writable bytes from `CoTaskMemAlloc`.
@@ -3813,19 +3302,22 @@ impl ComProtocolConnection {
             ));
             // SAFETY: `packed_ptr` came from `CoTaskMemAlloc`.
             unsafe {
-                let _ = windows::Win32::System::Com::CoTaskMemFree(Some(packed_ptr.cast()));
+                windows::Win32::System::Com::CoTaskMemFree(Some(packed_ptr.cast()));
             }
             return Err(windows_core::Error::from_hresult(HRESULT::from_win32(error.0)));
         }
 
         // SAFETY: COM allocates the returned struct so TermService can free it with COM task allocator rules.
-        let wrapper_ptr =
-            unsafe { CoTaskMemAlloc(size_of::<WRDS_SERIALIZED_USER_CREDENTIAL>()) }.cast::<WRDS_SERIALIZED_USER_CREDENTIAL>();
+        let wrapper_ptr = unsafe { CoTaskMemAlloc(size_of::<WRDS_SERIALIZED_USER_CREDENTIAL>()) }
+            .cast::<WRDS_SERIALIZED_USER_CREDENTIAL>();
         if wrapper_ptr.is_null() {
             unsafe {
-                let _ = windows::Win32::System::Com::CoTaskMemFree(Some(packed_ptr.cast()));
+                windows::Win32::System::Com::CoTaskMemFree(Some(packed_ptr.cast()));
             }
-            return Err(windows_core::Error::new(E_OUTOFMEMORY_WIN32.into(), "CoTaskMemAlloc failed for serialized credential wrapper"));
+            return Err(windows_core::Error::new(
+                E_OUTOFMEMORY_WIN32,
+                "CoTaskMemAlloc failed for serialized credential wrapper",
+            ));
         }
 
         // SAFETY: `wrapper_ptr` references writable storage allocated above.
@@ -3859,8 +3351,7 @@ impl ComProtocolConnection {
             VideoHandleSource::Unknown
         };
         *self.driver_device_instance.lock() = device_instance.map(ToOwned::to_owned);
-        self.idd_last_driver_load_session_id
-            .store(sessionid, Ordering::SeqCst);
+        self.idd_last_driver_load_session_id.store(sessionid, Ordering::SeqCst);
         self.idd_driver_load_notified.store(false, Ordering::SeqCst);
 
         let mut runtime_updates = vec![
@@ -3980,11 +3471,8 @@ impl ComProtocolConnection {
             return;
         }
 
-        let token = HANDLE(usertoken.0 as *mut core::ffi::c_void);
-        match Self::duplicate_impersonation_token(
-            token,
-            TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY,
-        ) {
+        let token = HANDLE(usertoken.0 as *mut c_void);
+        match Self::duplicate_impersonation_token(token, TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY) {
             Ok(impersonation_token) => {
                 let mut slot = self.session_impersonation_token.lock();
                 if let Some((previous_session_id, previous_token)) = slot.replace((session_id, impersonation_token)) {
@@ -4103,7 +3591,7 @@ impl ComProtocolConnection {
             return;
         }
 
-        let duplicated_token = match Self::duplicate_primary_token(HANDLE(usertoken.0 as *mut core::ffi::c_void)) {
+        let duplicated_token = match Self::duplicate_primary_token(HANDLE(usertoken.0 as *mut c_void)) {
             Ok(token) => token,
             Err(error) => {
                 self.user_shell_bootstrap_attempted.store(false, Ordering::SeqCst);
@@ -4124,7 +3612,7 @@ impl ComProtocolConnection {
         if let Err(error) = thread::Builder::new()
             .name(format!("irdp-shell-bootstrap-{connection_id}"))
             .spawn(move || {
-                let duplicated_token = HANDLE(duplicated_token_raw as *mut core::ffi::c_void);
+                let duplicated_token = HANDLE(duplicated_token_raw as *mut c_void);
                 thread::sleep(Duration::from_secs(2));
 
                 if session_has_process(session_id, "userinit.exe") || session_has_process(session_id, "explorer.exe") {
@@ -4238,7 +3726,12 @@ impl ComProtocolConnection {
             "SESSION_PROOF_PROVIDER_IDD_DIAGNOSTIC_PROBE_SKIPPED source={source} connection_id={connection_id} session_id={session_id} reason={} mode=bootstrap",
             last_error
                 .as_ref()
-                .map(|error| format!("probe_exhausted code=0x{:08X}", error.code().0 as u32))
+                .map(|error| {
+                    format!(
+                        "probe_exhausted code=0x{:08X}",
+                        u32::from_ne_bytes(error.code().0.to_ne_bytes())
+                    )
+                })
                 .unwrap_or_else(|| "no_driver_handle_yet_after_probe".to_owned())
         ));
 
@@ -4262,7 +3755,13 @@ impl ComProtocolConnection {
         )
     }
 
-    fn probe_idd_driver_load(&self, session_id: u32, source: &'static str, attempts: u32, retry_delay: Duration) -> bool {
+    fn probe_idd_driver_load(
+        &self,
+        session_id: u32,
+        source: &'static str,
+        attempts: u32,
+        retry_delay: Duration,
+    ) -> bool {
         if !self.wddm_idd_enabled.load(Ordering::SeqCst) {
             return false;
         }
@@ -4294,7 +3793,7 @@ impl ComProtocolConnection {
             match open_result {
                 Ok((handle, path)) => {
                     unsafe {
-                        let _ = windows::Win32::Foundation::CloseHandle(handle);
+                        let _ = CloseHandle(handle);
                     }
 
                     debug_log_line(&format!(
@@ -4459,15 +3958,17 @@ impl ComProtocolConnection {
         };
 
         let restore_token = match existing_thread_token {
-            Some(thread_token) => match Self::duplicate_impersonation_token(thread_token, TOKEN_IMPERSONATE | TOKEN_QUERY) {
-                Ok(token) => Some(token),
-                Err(error) => {
-                    debug_log_line(&format!(
-                        "{operation_name}: failed to duplicate existing thread token before session impersonation: {error}",
-                    ));
-                    None
+            Some(thread_token) => {
+                match Self::duplicate_impersonation_token(thread_token, TOKEN_IMPERSONATE | TOKEN_QUERY) {
+                    Ok(token) => Some(token),
+                    Err(error) => {
+                        debug_log_line(&format!(
+                            "{operation_name}: failed to duplicate existing thread token before session impersonation: {error}",
+                        ));
+                        None
+                    }
                 }
-            },
+            }
             None => None,
         };
 
@@ -4590,7 +4091,10 @@ impl ComProtocolConnection {
         }
     }
 
-    fn open_ironrdp_idd_from_query_dos_device(&self, session_id: Option<u32>) -> windows_core::Result<(HANDLE, String)> {
+    fn open_ironrdp_idd_from_query_dos_device(
+        &self,
+        session_id: Option<u32>,
+    ) -> windows_core::Result<(HANDLE, String)> {
         let mut last_error: Option<windows_core::Error> = None;
         let rw = (windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
             | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE)
@@ -4621,7 +4125,9 @@ impl ComProtocolConnection {
                             for access in access_modes {
                                 let open_result = session_id.map_or_else(
                                     || Self::open_device_handle_with_access(&open_path, access),
-                                    |session_id| self.open_device_handle_with_session_access(&open_path, access, session_id),
+                                    |session_id| {
+                                        self.open_device_handle_with_session_access(&open_path, access, session_id)
+                                    },
                                 );
                                 match open_result {
                                     Ok(handle) => {
@@ -4639,7 +4145,9 @@ impl ComProtocolConnection {
                     }
                 }
                 Err(error) => {
-                    debug_log_line(&format!("GetVideoHandle: QueryDosDevice failed for {dos_name}: {error}"));
+                    debug_log_line(&format!(
+                        "GetVideoHandle: QueryDosDevice failed for {dos_name}: {error}"
+                    ));
                     last_error = Some(error);
                 }
             }
@@ -4709,9 +4217,8 @@ impl ComProtocolConnection {
     ) -> windows_core::Result<String> {
         let mut required_size = 0u32;
         let required_size_ptr = &mut required_size as *mut u32;
-        let first_try = unsafe {
-            SetupDiGetDeviceInstanceIdW(device_info_set, device_info_data, None, Some(required_size_ptr))
-        };
+        let first_try =
+            unsafe { SetupDiGetDeviceInstanceIdW(device_info_set, device_info_data, None, Some(required_size_ptr)) };
 
         match first_try {
             Ok(()) => {}
@@ -4759,7 +4266,10 @@ impl ComProtocolConnection {
         }
     }
 
-    fn open_ironrdp_idd_from_setupapi_interface(&self, session_id: Option<u32>) -> windows_core::Result<(HANDLE, String)> {
+    fn open_ironrdp_idd_from_setupapi_interface(
+        &self,
+        session_id: Option<u32>,
+    ) -> windows_core::Result<(HANDLE, String)> {
         let rw = (windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
             | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE)
             .0;
@@ -4843,12 +4353,14 @@ impl ComProtocolConnection {
                         continue;
                     }
 
-                    let mut detail_buffer = vec![0u8; usize::try_from(required_size).unwrap_or(0)];
+                    let detail_word_count = usize::try_from(required_size).unwrap_or(0).div_ceil(size_of::<u32>());
+                    let mut detail_buffer = vec![0u32; detail_word_count];
                     let detail_ptr = detail_buffer.as_mut_ptr().cast::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>();
 
                     // SAFETY: detail_ptr points to `detail_buffer`, which is writable for `required_size` bytes.
                     unsafe {
-                        (*detail_ptr).cbSize = u32::try_from(size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>()).unwrap_or(0);
+                        (*detail_ptr).cbSize =
+                            u32::try_from(size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>()).unwrap_or(0);
                     }
 
                     let detail_result = unsafe {
@@ -4883,9 +4395,7 @@ impl ComProtocolConnection {
 
                     debug_log_line(&format!(
                         "GetVideoHandle: SetupAPI interface matched instance_id={} device_path={} session_filter={:?} flags=0x{flags_raw:08X}",
-                        instance_id,
-                        device_path,
-                        session_id,
+                        instance_id, device_path, session_id,
                     ));
 
                     for access in access_modes {
@@ -4897,7 +4407,9 @@ impl ComProtocolConnection {
                             Ok(handle) => {
                                 return Ok((
                                     handle,
-                                    format!("setupapi_interface:{device_path}:access=0x{access:08X}:flags=0x{flags_raw:08X}"),
+                                    format!(
+                                        "setupapi_interface:{device_path}:access=0x{access:08X}:flags=0x{flags_raw:08X}"
+                                    ),
                                 ));
                             }
                             Err(error) => {
@@ -4945,14 +4457,8 @@ impl ComProtocolConnection {
             .0;
         let access_modes = [rw, windows::Win32::Storage::FileSystem::FILE_GENERIC_READ.0, 0];
 
-        let device_info_set = unsafe {
-            SetupDiGetClassDevsW(
-                None,
-                PCWSTR::null(),
-                None,
-                DIGCF_ALLCLASSES | DIGCF_PRESENT,
-            )?
-        };
+        let device_info_set =
+            unsafe { SetupDiGetClassDevsW(None, PCWSTR::null(), None, DIGCF_ALLCLASSES | DIGCF_PRESENT)? };
 
         let result = (|| {
             let mut index = 0u32;
@@ -4964,8 +4470,7 @@ impl ComProtocolConnection {
                     ..Default::default()
                 };
 
-                let enum_result =
-                    unsafe { SetupDiEnumDeviceInfo(device_info_set, index, &mut device_info_data) };
+                let enum_result = unsafe { SetupDiEnumDeviceInfo(device_info_set, index, &mut device_info_data) };
 
                 match enum_result {
                     Ok(()) => {}
@@ -4992,8 +4497,7 @@ impl ComProtocolConnection {
 
                 debug_log_line(&format!(
                     "GetVideoHandle: SetupAPI matched device instance id {} (session_filter={:?})",
-                    instance_id,
-                    session_id,
+                    instance_id, session_id,
                 ));
 
                 let pdo_names = match Self::setupdi_get_registry_property_strings(
@@ -5018,15 +4522,15 @@ impl ComProtocolConnection {
                         let open_path = format!("{prefix}{normalized_pdo_name}");
                         debug_log_line(&format!(
                             "GetVideoHandle: SetupAPI matched device_markers={:?} pdo_name={} open_path={}",
-                            IRONRDP_IDD_DEVICE_MARKERS,
-                            normalized_pdo_name,
-                            open_path,
+                            IRONRDP_IDD_DEVICE_MARKERS, normalized_pdo_name, open_path,
                         ));
 
                         for access in access_modes {
                             let open_result = session_id.map_or_else(
                                 || Self::open_device_handle_with_access(&open_path, access),
-                                |session_id| self.open_device_handle_with_session_access(&open_path, access, session_id),
+                                |session_id| {
+                                    self.open_device_handle_with_session_access(&open_path, access, session_id)
+                                },
                             );
                             match open_result {
                                 Ok(handle) => {
@@ -5116,6 +4620,17 @@ impl ComProtocolConnection {
 
     fn cached_connection_credentials(&self) -> Option<(String, String, String)> {
         self.cached_credentials.lock().clone()
+    }
+
+    fn connection_credentials(
+        &self,
+        connection_id: u32,
+        source: &'static str,
+    ) -> windows_core::Result<Option<(String, String, String)>> {
+        match self.cached_connection_credentials() {
+            Some(credentials) => Ok(Some(credentials)),
+            None => self.fetch_and_cache_connection_credentials(connection_id, source),
+        }
     }
 
     fn release_connection_callback(&self) {
@@ -5307,7 +4822,7 @@ impl IWRdsProtocolConnectionSettings_Impl for ComProtocolConnection_Impl {
 
 impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
     fn GetHardwareId(&self, pdisplaydriverhardwareid: &PCWSTR, count: u32) -> windows_core::Result<()> {
-        self.fill_idd_hardware_id(pdisplaydriverhardwareid, count)
+        ComProtocolConnection::fill_idd_hardware_id(pdisplaydriverhardwareid, count)
     }
 
     fn OnDriverLoad(&self, sessionid: u32, driverhandle: HANDLE_PTR) -> windows_core::Result<()> {
@@ -5321,14 +4836,7 @@ impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
         ));
 
         self.close_cached_video_handle();
-        self.commit_driver_load_state(
-            sessionid,
-            driverhandle.0,
-            connection_id,
-            "props",
-            None,
-            None,
-        );
+        self.commit_driver_load_state(sessionid, driverhandle.0, connection_id, "props", None, None);
         self.maybe_notify_driver_load(sessionid, connection_id);
         Ok(())
     }
@@ -5346,10 +4854,7 @@ impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
     fn EnableWddmIdd(&self, enabled: BOOL) -> windows_core::Result<()> {
         let connection_id = self.inner.connection_id();
         let enabled_bool = enabled.as_bool();
-        debug_log_line(&format!(
-            "IWRdsWddmIddProps::EnableWddmIdd enabled={}",
-            enabled_bool
-        ));
+        debug_log_line(&format!("IWRdsWddmIddProps::EnableWddmIdd enabled={}", enabled_bool));
         debug_log_line(&format!(
             "SESSION_PROOF_PROVIDER_IDD_WDDM_ENABLE connection_id={connection_id} enabled={enabled_bool}",
         ));
@@ -5368,19 +4873,19 @@ impl IWRdsWddmIddProps_Impl for ComProtocolConnection_Impl {
 
 impl IWRdsWddmIddProps1_Impl for ComProtocolConnection_Impl {
     fn GetHardwareId(&self, pdisplaydriverhardwareid: &PCWSTR, count: u32) -> windows_core::Result<()> {
-        self.fill_idd_hardware_id(pdisplaydriverhardwareid, count)
+        ComProtocolConnection::fill_idd_hardware_id(pdisplaydriverhardwareid, count)
     }
 
     fn OnDriverLoad(&self, sessionid: u32, deviceinstance: &PCWSTR) -> windows_core::Result<()> {
         let connection_id = self.inner.connection_id();
-        let device_instance = if deviceinstance.is_null() {
+        let reported_device_instance = if deviceinstance.is_null() {
             String::new()
         } else {
             unsafe { deviceinstance.to_string() }.unwrap_or_default()
         };
 
         debug_log_line(&format!(
-            "IWRdsWddmIddProps1::OnDriverLoad session_id={sessionid} device_instance={device_instance}",
+            "IWRdsWddmIddProps1::OnDriverLoad session_id={sessionid} device_instance={reported_device_instance}",
         ));
 
         self.close_cached_video_handle();
@@ -5388,12 +4893,12 @@ impl IWRdsWddmIddProps1_Impl for ComProtocolConnection_Impl {
         let mut diagnostic_probe_succeeded = false;
         let mut diagnostic_open_path = None;
 
-        if device_instance.is_empty() {
+        if reported_device_instance.is_empty() {
             debug_log_line(&format!(
                 "SESSION_PROOF_PROVIDER_IDD_ON_DRIVER_LOAD_ERROR connection_id={connection_id} session_id={sessionid} callback=props1 reason=empty_device_instance",
             ));
         } else if diagnostic_probe_enabled {
-            match self.open_ironrdp_idd_from_driver_callback_device_instance(sessionid, &device_instance) {
+            match self.open_ironrdp_idd_from_driver_callback_device_instance(sessionid, &reported_device_instance) {
                 Ok((handle, path)) => {
                     diagnostic_probe_succeeded = true;
                     diagnostic_open_path = Some(path);
@@ -5403,14 +4908,14 @@ impl IWRdsWddmIddProps1_Impl for ComProtocolConnection_Impl {
                 }
                 Err(error) => {
                     debug_log_line(&format!(
-                        "SESSION_PROOF_PROVIDER_IDD_ON_DRIVER_LOAD_DIAGNOSTIC_ERROR connection_id={connection_id} session_id={sessionid} callback=props1 device_instance={device_instance} error={error}",
+                        "SESSION_PROOF_PROVIDER_IDD_ON_DRIVER_LOAD_DIAGNOSTIC_ERROR connection_id={connection_id} session_id={sessionid} callback=props1 device_instance={reported_device_instance} error={error}",
                     ));
                 }
             }
         }
 
         debug_log_line(&format!(
-            "SESSION_PROOF_PROVIDER_IDD_ON_DRIVER_LOAD connection_id={connection_id} session_id={sessionid} handle_nonzero=false callback=props1 device_instance={device_instance} diagnostic_probe_enabled={} diagnostic_probe_succeeded={} diagnostic_open_path={}",
+            "SESSION_PROOF_PROVIDER_IDD_ON_DRIVER_LOAD connection_id={connection_id} session_id={sessionid} handle_nonzero=false callback=props1 device_instance={reported_device_instance} diagnostic_probe_enabled={} diagnostic_probe_succeeded={} diagnostic_open_path={}",
             diagnostic_probe_enabled,
             diagnostic_probe_succeeded,
             diagnostic_open_path.as_deref().unwrap_or("none"),
@@ -5421,10 +4926,10 @@ impl IWRdsWddmIddProps1_Impl for ComProtocolConnection_Impl {
             0,
             connection_id,
             "props1",
-            if device_instance.is_empty() {
+            if reported_device_instance.is_empty() {
                 None
             } else {
-                Some(device_instance.as_str())
+                Some(reported_device_instance.as_str())
             },
             None,
         );
@@ -5493,7 +4998,10 @@ impl IWRdsEnhancedFastReconnectArbitrator_Impl for ComProtocolConnection_Impl {
         ));
 
         if presultsessionid.is_null() {
-            return Err(windows_core::Error::new(E_POINTER, "null enhanced fast reconnect result pointer"));
+            return Err(windows_core::Error::new(
+                E_POINTER,
+                "null enhanced fast reconnect result pointer",
+            ));
         }
 
         unsafe {
@@ -5504,22 +5012,27 @@ impl IWRdsEnhancedFastReconnectArbitrator_Impl for ComProtocolConnection_Impl {
             debug_log_line(&format!(
                 "IWRdsEnhancedFastReconnectArbitrator::GetSessionForEnhancedFastReconnect no_candidates connection_id={connection_id}",
             ));
-            return Err(windows_core::Error::new(E_NOTIMPL, "no enhanced fast reconnect candidates"));
+            return Err(windows_core::Error::new(
+                E_NOTIMPL,
+                "no enhanced fast reconnect candidates",
+            ));
         }
 
         if psessionidarray.is_null() {
-            return Err(windows_core::Error::new(E_POINTER, "null enhanced fast reconnect session array"));
+            return Err(windows_core::Error::new(
+                E_POINTER,
+                "null enhanced fast reconnect session array",
+            ));
         }
 
         let count = usize::try_from(dwsessioncount).unwrap_or(0);
         let candidates = unsafe { core::slice::from_raw_parts(psessionidarray, count) };
 
-        let mut selected: Option<u32> = None;
-        let mut selected_reason = "first_candidate";
+        let mut selected: Option<(u32, &'static str)> = None;
         let mut summary = Vec::with_capacity(candidates.len());
 
         for candidate in candidates {
-            let raw_session_id = if *candidate < 0 { u32::MAX } else { *candidate as u32 };
+            let raw_session_id = u32::try_from(*candidate).unwrap_or(u32::MAX);
             let session_id = canonicalize_enumerated_session_id(raw_session_id);
             let has_token = session_id != u32::MAX && session_has_user_token(session_id);
             let has_explorer = session_id != u32::MAX && session_has_process(session_id, "explorer.exe");
@@ -5536,19 +5049,12 @@ impl IWRdsEnhancedFastReconnectArbitrator_Impl for ComProtocolConnection_Impl {
             }
 
             if interactive {
-                selected = Some(session_id);
-                selected_reason = "interactive";
+                selected = Some((session_id, "interactive"));
                 break;
             }
 
             if has_token && selected.is_none() {
-                selected = Some(session_id);
-                selected_reason = "token";
-                continue;
-            }
-
-            if selected.is_none() {
-                selected = Some(session_id);
+                selected = Some((session_id, "token"));
             }
         }
 
@@ -5557,11 +5063,14 @@ impl IWRdsEnhancedFastReconnectArbitrator_Impl for ComProtocolConnection_Impl {
             summary.join("; "),
         ));
 
-        let Some(session_id) = selected else {
+        let Some((session_id, selected_reason)) = selected else {
             debug_log_line(&format!(
                 "IWRdsEnhancedFastReconnectArbitrator::GetSessionForEnhancedFastReconnect no_valid_candidate connection_id={connection_id}",
             ));
-            return Err(windows_core::Error::new(E_NOTIMPL, "no valid enhanced fast reconnect candidate"));
+            return Err(windows_core::Error::new(
+                E_NOTIMPL,
+                "no valid enhanced fast reconnect candidate",
+            ));
         };
 
         unsafe {
@@ -5587,11 +5096,6 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             "IWRdsProtocolConnection::AcceptConnection called connection_id={}",
             connection_id
         ));
-
-        self.auth_bridge.validate_security_protocol(
-            CredsspPolicy::default(),
-            nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX,
-        )?;
 
         self.inner.accept_connection().map_err(transition_error)?;
 
@@ -5637,9 +5141,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         //
         // The username/password are plaintext per Microsoft docs.
         let connection_id = self.inner.connection_id();
-        let credentials = self
-            .cached_connection_credentials()
-            .or(self.fetch_and_cache_connection_credentials(connection_id, "get_client_data")?);
+        let credentials = self.connection_credentials(connection_id, "get_client_data")?;
 
         match credentials {
             Some((winlogon_username, winlogon_domain, password)) => {
@@ -5690,9 +5192,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             return Err(windows_core::Error::new(E_POINTER, "null user credentials pointer"));
         }
 
-        let credentials = self
-            .cached_connection_credentials()
-            .or(self.fetch_and_cache_connection_credentials(connection_id, "get_user_credentials")?);
+        let credentials = self.connection_credentials(connection_id, "get_user_credentials")?;
 
         let Some((winlogon_username, winlogon_domain, password)) = credentials else {
             debug_log_line(&format!(
@@ -5723,10 +5223,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             "IWRdsProtocolConnection::GetLicenseConnection called connection_id={}",
             self.inner.connection_id()
         ));
-        // Return a stub license connection object.  Returning E_NOTIMPL here causes TermService
-        // to close the connection immediately (it cannot proceed to IsUserAllowedToLogon without
-        // completing the licensing phase).  The stub allows the licensing phase to succeed so that
-        // the connection can advance to IsUserAllowedToLogon and session creation.
+        // Stub license object; see WrdsLicenseConnection for why E_NOTIMPL would break the connection.
         let stub: IWRdsProtocolLicenseConnection = WrdsLicenseConnection.into();
         Ok(stub)
     }
@@ -5776,10 +5273,11 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         ));
         self.inner.notify_session_id(wts_session_id).map_err(transition_error)?;
 
-        if let Err(error) = self
-            .control_bridge
-            .set_capture_session_id_retried(self.inner.connection_id(), wts_session_id, "notify_session_id")
-        {
+        if let Err(error) = self.control_bridge.set_capture_session_id_retried(
+            self.inner.connection_id(),
+            wts_session_id,
+            "notify_session_id",
+        ) {
             debug_log_line(&format!(
                 "IWRdsProtocolConnection::NotifySessionId set_capture_session_id failed connection_id={} session_id={} error={error}",
                 self.inner.connection_id(),
@@ -5932,7 +5430,8 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             return Ok(HANDLE_PTR(driver_handle_raw));
         }
 
-        let (wddm_enabled, driver_handle_seen, driver_load_notified, driver_load_session_id) = self.idd_readiness_snapshot();
+        let (wddm_enabled, driver_handle_seen, driver_load_notified, driver_load_session_id) =
+            self.idd_readiness_snapshot();
         let driver_load_session = driver_load_session_id
             .map(|value| value.to_string())
             .unwrap_or_else(|| "none".to_owned());
@@ -6398,7 +5897,9 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         }
 
         if *_querytype == PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT {
-            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT -> E_NOTIMPL");
+            debug_log_line(
+                "IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_CAPTURE_PROTECTED_CONTENT -> E_NOTIMPL",
+            );
             return Err(E_NOTIMPL.into());
         }
 
@@ -6433,7 +5934,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
                 return Ok(());
             }
 
-            let connection_id = self.inner.connection_id();
+            let _connection_id = self.inner.connection_id();
             let sid = self
                 .cached_connection_credentials()
                 .and_then(|(username, domain, _password)| {
@@ -6575,11 +6076,7 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         debug_log_line(&format!(
             "IWRdsProtocolConnection::NotifyCommandProcessCreated called connection_id={} session_id={sessionid} userinit={} explorer={} logonui={} winlogon={}",
-            connection_id,
-            has_userinit,
-            has_explorer,
-            has_logonui,
-            has_winlogon,
+            connection_id, has_userinit, has_explorer, has_logonui, has_winlogon,
         ));
         debug_log_line(&format!(
             "SESSION_PROOF_PROVIDER_VIDEO_HANDLE_STATE connection_id={connection_id} session_id={sessionid} opened={video_handle_open} handle_nonzero={video_handle_nonzero} source={}",
@@ -6612,7 +6109,7 @@ fn handle_to_raw_usize(handle: HANDLE) -> usize {
 
 #[expect(clippy::as_conversions)]
 fn raw_usize_to_handle(raw: usize) -> HANDLE {
-    HANDLE(raw as *mut core::ffi::c_void)
+    HANDLE(raw as *mut c_void)
 }
 
 #[derive(Debug)]
