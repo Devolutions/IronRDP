@@ -17,6 +17,7 @@ default = ["full", "rustls"]
 full = ["dep:ironrdp-agent", "dep:ironrdp-daemon", "dep:ironrdp-viewer"]
 rustls = ["ironrdp-mstsgu/rustls", "ironrdp-tls/rustls"]
 native-tls = ["ironrdp-mstsgu/native-tls", "ironrdp-tls/native-tls"]
+smartcard = ["ironrdp-mstsgu/smartcard"]
 
 [dependencies]
 ironrdp-agent = { path = "../ironrdp-agent", optional = true }
@@ -70,6 +71,7 @@ tokio = { version = "1", features = ["sync", "time", "net", "rt", "rt-multi-thre
 tokio-rustls = { version = "0.26", default-features = false }
 uuid = { version = "1", features = ["v4"] }
 ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
+bitflags = "2.11.0"
 
 [target.'cfg(windows)'.dev-dependencies]
 ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"
