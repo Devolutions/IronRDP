@@ -1012,6 +1012,50 @@ type RdpdrFactoryRef<'a> = Option<&'a (dyn RdpdrBackendFactory + Send)>;
 #[cfg(not(feature = "rdpdr"))]
 type RdpdrFactoryRef<'a> = core::marker::PhantomData<&'a ()>;
 
+#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
+const HTTP_TUNNEL_REDIR_DISABLE_ALL: u32 = 0x4000_0000;
+#[cfg(all(feature = "gateway", feature = "rdpdr"))]
+const HTTP_TUNNEL_REDIR_DISABLE_DRIVE: u32 = 0x0000_0001;
+#[cfg(all(feature = "gateway", feature = "clipboard"))]
+const HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD: u32 = 0x0000_0008;
+
+#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
+#[derive(Clone, Copy)]
+struct GatewayRedirectionPolicy {
+    flags: Option<u32>,
+}
+
+#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
+impl GatewayRedirectionPolicy {
+    fn from_flags(flags: Option<u32>) -> Self {
+        Self { flags }
+    }
+
+    #[cfg(feature = "clipboard")]
+    fn allows_clipboard(self) -> bool {
+        self.allows(HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD)
+    }
+
+    #[cfg(feature = "rdpdr")]
+    fn allows_drive(self) -> bool {
+        self.allows(HTTP_TUNNEL_REDIR_DISABLE_DRIVE)
+    }
+
+    #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
+    fn flags(self) -> Option<u32> {
+        self.flags
+    }
+
+    fn filter<T>(self, factory: Option<T>, disabled_flag: u32) -> Option<T> {
+        self.allows(disabled_flag).then_some(factory).flatten()
+    }
+
+    fn allows(self, disabled_flag: u32) -> bool {
+        self.flags
+            .is_none_or(|flags| flags & (HTTP_TUNNEL_REDIR_DISABLE_ALL | disabled_flag) == 0)
+    }
+}
+
 #[cfg(feature = "rdpdr")]
 #[derive(Debug)]
 struct RdpdrBackendBuildError(Box<dyn core::error::Error + Send + Sync>);
@@ -1517,6 +1561,32 @@ async fn connect_gateway(
     )
     .await
     .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
+
+    let tunnel_policy = gw_stream.tunnel_policy().clone();
+    #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
+    let gateway_redirection_policy = GatewayRedirectionPolicy::from_flags(tunnel_policy.redirection_flags);
+    #[cfg(feature = "clipboard")]
+    let cliprdr_factory = {
+        if !gateway_redirection_policy.allows_clipboard() && cliprdr_factory.is_some() {
+            debug!(
+                redirection_flags = ?gateway_redirection_policy.flags(),
+                "Suppressing CLIPRDR due to gateway device-redirection policy"
+            );
+        }
+        gateway_redirection_policy.filter(cliprdr_factory, HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD)
+    };
+    #[cfg(feature = "rdpdr")]
+    let rdpdr_factory = {
+        if !gateway_redirection_policy.allows_drive() && rdpdr_factory.is_some() {
+            debug!(
+                redirection_flags = ?gateway_redirection_policy.flags(),
+                "Suppressing RDPDR due to gateway device-redirection policy"
+            );
+        }
+        gateway_redirection_policy.filter(rdpdr_factory, HTTP_TUNNEL_REDIR_DISABLE_DRIVE)
+    };
+    #[cfg(not(any(feature = "clipboard", feature = "rdpdr")))]
+    let _ = tunnel_policy;
 
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
@@ -3168,6 +3238,56 @@ mod tests {
             scale_factor: 100,
             physical_size: None,
         }
+    }
+
+    #[cfg(all(feature = "gateway", feature = "clipboard", feature = "rdpdr"))]
+    #[test]
+    fn gateway_redirection_policy_interprets_flags() {
+        let no_policy = GatewayRedirectionPolicy::from_flags(None);
+        assert!(no_policy.allows_clipboard());
+        assert!(no_policy.allows_drive());
+
+        let enable_all = GatewayRedirectionPolicy::from_flags(Some(0x8000_0000));
+        assert!(enable_all.allows_clipboard());
+        assert!(enable_all.allows_drive());
+
+        let disable_clipboard = GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD));
+        assert!(!disable_clipboard.allows_clipboard());
+        assert!(disable_clipboard.allows_drive());
+
+        let disable_drive = GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_DRIVE));
+        assert!(disable_drive.allows_clipboard());
+        assert!(!disable_drive.allows_drive());
+
+        let disable_all = GatewayRedirectionPolicy::from_flags(Some(
+            HTTP_TUNNEL_REDIR_DISABLE_ALL | HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD,
+        ));
+        assert!(!disable_all.allows_clipboard());
+        assert!(!disable_all.allows_drive());
+    }
+
+    #[cfg(all(feature = "gateway", feature = "clipboard", feature = "rdpdr"))]
+    #[test]
+    fn gateway_redirection_policy_gates_requested_factories() {
+        let clipboard_policy = GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD));
+        assert_eq!(
+            clipboard_policy.filter(Some("cliprdr"), HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD),
+            None
+        );
+        assert_eq!(
+            clipboard_policy.filter(Some("rdpdr"), HTTP_TUNNEL_REDIR_DISABLE_DRIVE),
+            Some("rdpdr")
+        );
+
+        let drive_policy = GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_DRIVE));
+        assert_eq!(
+            drive_policy.filter(Some("cliprdr"), HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD),
+            Some("cliprdr")
+        );
+        assert_eq!(
+            drive_policy.filter(Some("rdpdr"), HTTP_TUNNEL_REDIR_DISABLE_DRIVE),
+            None
+        );
     }
 
     #[test]
