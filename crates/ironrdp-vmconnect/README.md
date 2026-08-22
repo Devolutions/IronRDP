@@ -22,6 +22,10 @@ X.224 username cookie, licensing identity, and guest-facing Client Info PDU. The
 Session endpoint did not honor a separate Client Info password for guest autologon; guest sign-in
 remains interactive.
 
+On Windows, `connect_front_with_current_user` uses native SSPI to authenticate the Hyper-V host with the caller's logon token.
+This path does not require or expose a reusable host password.
+It requires CredSSP version 5 or later for nonce-bound public-key verification.
+
 | API | Role |
 | --- | --- |
 | `PORT` | 2179 |
@@ -34,6 +38,7 @@ remains interactive.
 | `prepare_connector` | shared TLS + CredSSP prerequisite check |
 | `ensure_selected_credssp` | require HYBRID after post-CredSSP X.224 |
 | `connect_front` | CredSSP + X.224 after TLS; takes `PcbSent` → `Upgraded` |
+| `connect_front_with_current_user` | Native Windows CredSSP + X.224 using the caller's token |
 
 ```rust,ignore
 let pcb_sent =
