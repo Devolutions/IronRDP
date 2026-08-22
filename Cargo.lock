@@ -3382,6 +3382,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bitflags 2.13.1",
  "ironrdp",
  "ironrdp-agent",
  "ironrdp-async",
@@ -3393,6 +3394,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-input",
+ "ironrdp-mstsgu",
  "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rail",

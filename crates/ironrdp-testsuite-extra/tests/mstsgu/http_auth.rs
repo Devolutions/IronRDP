@@ -1,5 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
 use ironrdp_mstsgu::GwSmartCardCredentials;
 use ironrdp_mstsgu::http_auth::{AuthStep, GatewayHttpAuth, basic_authorization, split_auth_challenge};
 
