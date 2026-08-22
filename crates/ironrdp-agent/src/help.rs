@@ -53,7 +53,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  TLS certificate and hostname validation is strict by default.
                                  `--skip-certificate-check` disables both for this daemon only.
                                  Use it only for an explicitly authorized test endpoint because it accepts any certificate and is vulnerable to on-path attacks.
-- `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
+- `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--vmconnect VM_ID] [--vmconnect-basic] [--vmconnect-current-user] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. Precedence (low to high): .rdp file -> `--prop`
                                  overrides -> named flags (`--server`/`-u`/`-p`/`-d`). When those
@@ -75,6 +75,12 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  them, except NamedPipe TLS/CredSSP stay forced off. Prefer
                                  `--sandbox-id` over `--sandbox-pipe`; the pipe escape hatch needs
                                  `-u`/`-p` (guest password from `sandbox config`).
+                                 On Windows, `--vmconnect VM_ID` routes the session through the
+                                 Hyper-V host on port 2179. `--vmconnect-basic` selects the basic
+                                 console. `--vmconnect-current-user` uses native SSPI with the
+                                 caller's logon token, needs no username or password, and defaults
+                                 an omitted server to localhost. Local VMConnect accepts the private
+                                 frame-buffer DVC and reads its shared-memory DIB.
 - `gw-forward --gateway HOST[:PORT] (--socks5 | --target HOST:PORT) [--listen ADDR]`
                                  Forward TCP through an RD Gateway without an RDP session.
                                  `--socks5` serves SOCKS5 CONNECT (no auth); `--target` is an
@@ -209,7 +215,7 @@ On retail builds that permit one active sandbox, stop that initial sandbox befor
                                  Low-level NamedPipe connect when you already have the guest password.
 
 Default product transport is NamedPipe.
-Local (VMConnect :2179 + PCB) and guest TCP are not the primary path.
+VMConnect is available for Hyper-V VMs; NamedPipe remains the Windows Sandbox default.
 
 ## Errors
 

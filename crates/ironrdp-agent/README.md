@@ -82,6 +82,23 @@ The agent advertises no local RAIL shell-integration flags because it does not i
 The daemon reserves all queue slots before changing keyboard state, so queue backpressure sends none of a rejected request.
 The ActiveX backend explicitly rejects this bulk input operation.
 
+## Hyper-V VMConnect
+
+On Windows, the daemon can connect to a Hyper-V VM console through the host's VMConnect endpoint on port 2179.
+Use `--vmconnect-current-user` for native SSPI authentication with the caller's Windows logon token.
+The local host defaults to `localhost`, so this path needs neither `--server` nor a reusable password.
+
+```powershell
+ironrdp-agent daemon-start
+ironrdp-agent connect --vmconnect <VM_ID> --vmconnect-basic --vmconnect-current-user
+ironrdp-agent screenshot vm-console.png
+```
+
+List VM IDs with `Get-VM | Select-Object Name, Id`.
+The basic console accepts Hyper-V's private frame-buffer DVC and copies the host-created shared-memory DIB into the daemon's retained frame.
+Omit `--vmconnect-basic` for Enhanced Session mode.
+Omit `--vmconnect-current-user` and supply host credentials when integrated authentication is not appropriate.
+
 ## Windows Sandbox
 
 On Windows with the Windows Sandbox feature enabled, the agent can create and attach to a sandbox over the product's default **named-pipe** transport (`\\.\pipe\{VMId}`).
@@ -113,8 +130,8 @@ Low-level escape hatch when you already have the pipe path and guest password:
 ironrdp-agent connect --sandbox-pipe \\.\pipe\{VMId} -u WDAGUtilityAccount -p <password>
 ```
 
-`Local` (VMConnect `:2179` + PCB) and guest TCP `:3389` transports are not implemented as the
-primary path; use the default NamedPipe recipe.
+NamedPipe remains the default Windows Sandbox transport.
+Use VMConnect for Hyper-V VMs rather than replacing the Sandbox recipe.
 
 ## Prebuilt binaries
 
