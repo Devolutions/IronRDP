@@ -83,6 +83,7 @@ async fn open_tunnel(config: &GatewayTunnelConfig, target_host: &str, target_por
         gw_endpoint: config.gateway_endpoint.clone(),
         gw_user: config.username.clone(),
         gw_pass: config.password.clone(),
+        smart_card: None,
         server: target_host.to_owned(),
     };
 

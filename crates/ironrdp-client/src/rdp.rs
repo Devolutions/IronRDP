@@ -1507,6 +1507,7 @@ async fn connect_gateway(
         gw_endpoint: gw.endpoint.clone(),
         gw_user: gw.username.clone(),
         gw_pass: gw.password.clone(),
+        smart_card: None,
         server: config.destination.name().to_owned(),
     };
 

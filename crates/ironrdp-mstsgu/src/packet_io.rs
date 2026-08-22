@@ -308,6 +308,7 @@ pub(crate) async fn open_test_transport(
         gw_endpoint: "gateway.test:443".to_owned(),
         gw_user: "user".to_owned(),
         gw_pass: "pass".to_owned(),
+        smart_card: None,
         server: "server.test".to_owned(),
     };
     let client_addr = "127.0.0.1:0"
@@ -449,6 +450,7 @@ async fn authenticated_rdg_request(
 
         let user = context.target.gw_user.clone();
         let pass = context.target.gw_pass.clone();
+        let smart_card = context.target.smart_card.clone();
         let target_name = spn.to_owned();
         let step = if let Some(mut auth) = http_auth.take() {
             let (auth, step) = run_http_auth(move || {
@@ -462,7 +464,7 @@ async fn authenticated_rdg_request(
         } else {
             let (auth, step) = run_http_auth(move || {
                 let refs: Vec<&str> = challenges.iter().map(String::as_str).collect();
-                GatewayHttpAuth::from_challenges(&user, &pass, Some(target_name), &refs)
+                GatewayHttpAuth::from_challenges(&user, &pass, smart_card.as_deref(), Some(target_name), &refs)
             })
             .await?;
             http_auth = auth;

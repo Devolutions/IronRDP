@@ -10,6 +10,8 @@ This crate
 - exposes decoded tunnel-authorization policy values without enforcing redirection rules or idle timeouts,
 - does not implement reconnection, Detect, or a live UDP/DTLS side channel,
 - authenticates gateway setup with HTTP Negotiate (Kerberos then NTLM), NTLM, or Basic fallback,
+- can use Kerberos PKINIT with application-supplied UPN `smartcard` credentials for HTTP Negotiate authentication only,
+- does not implement `HTTP_EXTENDED_AUTH_SC`, PAA, or a credential-provider UI,
 - encodes and decodes RDG-UDP PDUs (`CONNECT_PKT`, `DATA_PKT`, `DISC_PKT`, and correlation info) without opening that side channel,
 - encodes and decodes DCE/RPC common-header fragments and reassembles responses, without a live RPC-over-HTTP transport, and
 - finishes write-side shutdown by closing the outbound WebSocket or ending the dual HTTP IN request body.

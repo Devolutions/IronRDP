@@ -47,6 +47,7 @@ pub struct GatewayHttpAuth {
     /// Optional SPN / target name (for example `HTTP/rdg.contoso.com`).
     target_name: Option<String>,
     complete: bool,
+    allow_basic_fallback: bool,
 }
 
 impl GatewayHttpAuth {
@@ -60,16 +61,54 @@ impl GatewayHttpAuth {
     pub fn from_challenges(
         username: &str,
         password: &str,
+        smart_card: Option<&crate::GwSmartCardCredentials>,
         target_name: Option<String>,
         challenges: &[&str],
     ) -> Result<(Option<Self>, AuthStep), Error> {
+        let challenges: Vec<&str> = iter_auth_challenges(challenges.iter().copied()).collect();
+
+        #[cfg(feature = "smartcard")]
+        if let Some(smart_card) = smart_card {
+            let Some(negotiate_token) = challenges
+                .iter()
+                .find_map(|challenge| split_auth_challenge(challenge, "Negotiate"))
+            else {
+                return Err(Error::new(
+                    "gateway does not offer Negotiate for smart-card authentication",
+                    GwErrorKind::UnsupportedFeature,
+                ));
+            };
+            let negotiate_token = if negotiate_token.is_empty() {
+                None
+            } else {
+                Some(
+                    STANDARD
+                        .decode(negotiate_token.as_bytes())
+                        .map_err(|error| Error::custom("decode negotiate challenge", error))?,
+                )
+            };
+
+            let mut auth = Self::new_negotiate_smartcard(smart_card, target_name)?;
+            let token = auth.initialize(negotiate_token.as_deref())?;
+            let header = auth.format_authorization(&token);
+            return Ok((Some(auth), AuthStep::Continue(header)));
+        }
+
+        #[cfg(not(feature = "smartcard"))]
+        if smart_card.is_some() {
+            return Err(Error::new(
+                "smart-card gateway authentication requires the `smartcard` feature",
+                GwErrorKind::UnsupportedFeature,
+            ));
+        }
+
         let mut saw_negotiate = false;
         let mut saw_ntlm = false;
         let mut saw_basic = false;
         let mut negotiate_token: Option<Vec<u8>> = None;
         let mut ntlm_token: Option<Vec<u8>> = None;
 
-        for value in iter_auth_challenges(challenges.iter().copied()) {
+        for value in challenges {
             if let Some(rest) = split_auth_challenge(value, "Negotiate") {
                 saw_negotiate = true;
                 if rest.is_empty() {
@@ -155,6 +194,7 @@ impl GatewayHttpAuth {
             scheme: "NTLM",
             target_name,
             complete: false,
+            allow_basic_fallback: true,
         })
     }
 
@@ -188,6 +228,90 @@ impl GatewayHttpAuth {
             scheme: "Negotiate",
             target_name,
             complete: false,
+            allow_basic_fallback: true,
+        })
+    }
+
+    #[cfg(feature = "smartcard")]
+    fn new_negotiate_smartcard(
+        smart_card: &crate::GwSmartCardCredentials,
+        target_name: Option<String>,
+    ) -> Result<Self, Error> {
+        use picky::key::PrivateKey;
+        use picky_asn1_x509::Certificate;
+        use sspi::{KerberosConfig, Secret, SmartCardIdentity, SmartCardType};
+
+        if smart_card.username.is_empty() {
+            return Err(Error::new(
+                "smart-card username is required",
+                GwErrorKind::UnsupportedFeature,
+            ));
+        }
+
+        let certificate: Certificate = picky_asn1_der::from_bytes(&smart_card.certificate)
+            .map_err(|error| Error::custom("parse smart-card certificate", error))?;
+        let username = smart_card.username.clone();
+
+        let (private_key, scard_type) = match &smart_card.private_key {
+            Some(private_key) => (
+                Some(
+                    PrivateKey::from_pkcs1(private_key)
+                        .map_err(|error| Error::custom("parse smart-card private key", error))?
+                        .into(),
+                ),
+                SmartCardType::Emulated {
+                    scard_pin: Secret::new(smart_card.pin.as_bytes().to_vec()),
+                },
+            ),
+            #[cfg(target_os = "windows")]
+            None => (None, SmartCardType::WindowsNative),
+            #[cfg(not(target_os = "windows"))]
+            None => {
+                return Err(Error::new(
+                    "smart card without a private key requires a Windows card reader",
+                    GwErrorKind::UnsupportedFeature,
+                ));
+            }
+        };
+
+        let credentials = Credentials::SmartCard(Box::new(SmartCardIdentity {
+            username,
+            certificate,
+            reader_name: smart_card.reader_name.clone(),
+            card_name: smart_card.card_name.clone(),
+            container_name: smart_card.container_name.clone(),
+            csp_name: smart_card.csp_name.clone().unwrap_or_default(),
+            pin: Secret::new(smart_card.pin.as_bytes().to_vec()),
+            private_key,
+            scard_type,
+        }));
+        let client_computer_name = client_computer_name();
+        let kdc_url = std::env::var("SSPI_KDC_URL").unwrap_or_default();
+        let config = NegotiateConfig {
+            protocol_config: Box::new(KerberosConfig::new(&kdc_url, client_computer_name.clone())),
+            package_list: Some("kerberos".to_owned()),
+            client_computer_name,
+        };
+
+        let mut negotiate =
+            Negotiate::new_client(config).map_err(|error| Error::custom("create negotiate package", error))?;
+        let credentials_handle = negotiate
+            .acquire_credentials_handle()
+            .with_credential_use(CredentialUse::Outbound)
+            .with_auth_data(&credentials)
+            .execute(&mut negotiate)
+            .map_err(|error| Error::custom("acquire negotiate smart-card credentials", error))?
+            .credentials_handle;
+
+        Ok(Self {
+            backend: AuthBackend::Negotiate {
+                negotiate,
+                credentials_handle,
+            },
+            scheme: "Negotiate",
+            target_name,
+            complete: false,
+            allow_basic_fallback: false,
         })
     }
 
@@ -236,7 +360,7 @@ impl GatewayHttpAuth {
                     Ok(AuthStep::Continue(self.format_authorization(&next)))
                 }
             }
-            None if saw_basic => Ok(AuthStep::TryBasic),
+            None if saw_basic && self.allow_basic_fallback => Ok(AuthStep::TryBasic),
             None => Err(Error::new(
                 "websocket upgrade auth challenge",
                 GwErrorKind::UnsupportedFeature,
