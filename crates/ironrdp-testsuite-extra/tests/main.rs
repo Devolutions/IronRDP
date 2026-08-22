@@ -2,7 +2,6 @@
 #![allow(clippy::unwrap_used, reason = "unwrap is fine in tests")]
 
 #[cfg(feature = "full")]
-#[cfg(feature = "full")]
 mod agent;
 mod async_framed;
 mod capture_helpers;
