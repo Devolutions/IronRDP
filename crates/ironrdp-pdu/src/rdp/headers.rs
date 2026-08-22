@@ -338,13 +338,32 @@ impl<'de> Decode<'de> for ShareControlHeader {
 
             if header_length != total_length && !(total_length == 0 && is_empty_output_pdu) {
                 if total_length < header_length {
-                    return Err(not_enough_bytes_err!(total_length, header_length));
+                    // `totalLength` is consulted here for exactly one purpose: to
+                    // locate trailing padding after the inner unit. A value smaller
+                    // than what we decoded therefore means there is no padding to
+                    // skip, and nothing more.
+                    //
+                    // It is not grounds to reject the PDU. The inner unit already
+                    // decoded within the cursor's bounds, and where this PDU ends is
+                    // decided by the transport framing — the TPKT or fast-path
+                    // length — never by this field. Servers do get it wrong:
+                    // VirtualBox VRDP declares 24 on a complete 8550-byte pointer
+                    // update, and failing there costs the whole session over a field
+                    // we were only going to use to skip zero bytes.
+                    //
+                    // A totalLength of zero stays rejected for anything but the
+                    // no-op output PDUs handled above: a field that is absent
+                    // entirely is a different signal from one that is merely wrong,
+                    // and #1515 drew that line deliberately.
+                    if total_length == 0 {
+                        return Err(not_enough_bytes_err!(total_length, header_length));
+                    }
+                } else {
+                    // Some Windows versions append padding that is not part of the inner unit.
+                    let padding = total_length - header_length;
+                    ensure_size!(in: src, size: padding);
+                    read_padding!(src, padding);
                 }
-
-                // Some Windows versions append padding that is not part of the inner unit.
-                let padding = total_length - header_length;
-                ensure_size!(in: src, size: padding);
-                read_padding!(src, padding);
             }
         }
 
@@ -950,6 +969,57 @@ mod tests {
                 expected: 18
             }
         ));
+    }
+
+    /// A Data PDU whose payload is decoded to the end of the cursor, declaring
+    /// `total_length` — the shape VirtualBox VRDP sends.
+    fn data_pdu_declaring(total_length: u16, pdu_type: u8, payload_len: usize) -> Vec<u8> {
+        let mut encoded = zero_length_empty_data_pdu(pdu_type).to_vec();
+        encoded[0..2].copy_from_slice(&total_length.to_le_bytes());
+        encoded.resize(encoded.len() + payload_len, 0);
+        encoded
+    }
+
+    /// VirtualBox VRDP under-declares `totalLength` on a complete slow-path
+    /// pointer update: the reporter's frame was 8565 bytes on the wire — 8550 of
+    /// MCS user data after TPKT(4) + X224(3) + Send Data Indication(8) — with
+    /// `totalLength` set to 24. Nothing was missing, so this must decode.
+    #[test]
+    fn decode_under_declared_total_length() {
+        const USER_DATA: usize = 8565 - 15;
+        let encoded = data_pdu_declaring(24, 0x1B, USER_DATA - 18);
+        assert_eq!(encoded.len(), USER_DATA);
+
+        let decoded: ShareControlHeader =
+            decode(&encoded).expect("the PDU is complete; only its length field is wrong");
+
+        assert!(matches!(
+            decoded.share_control_pdu,
+            ShareControlPdu::Data(ShareDataHeader {
+                share_data_pdu: ShareDataPdu::Pointer(data),
+                ..
+            }) if data.len() == USER_DATA - 18
+        ));
+    }
+
+    /// The leniency is for a length that is wrong, not for one that is absent:
+    /// `reject_zero_length_non_output_data_pdu` must keep holding.
+    #[test]
+    fn under_declared_leniency_does_not_extend_to_zero() {
+        let encoded = data_pdu_declaring(0, 0x25, 0);
+
+        decode::<ShareControlHeader>(&encoded).expect_err("zero total length is only accepted for no-op output");
+    }
+
+    /// Over-declared still means padding, and padding that was promised but not
+    /// sent is still an error — neither behaviour moves.
+    #[test]
+    fn over_declared_total_length_still_consumes_padding() {
+        let with_padding = data_pdu_declaring(22, 0x25, 4);
+        decode::<ShareControlHeader>(&with_padding).expect("4 bytes of padding are present and consumed");
+
+        let missing_padding = data_pdu_declaring(22, 0x25, 0);
+        decode::<ShareControlHeader>(&missing_padding).expect_err("padding was declared but not sent");
     }
 
     #[test]
