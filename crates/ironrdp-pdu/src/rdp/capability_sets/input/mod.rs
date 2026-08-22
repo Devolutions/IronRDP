@@ -64,13 +64,17 @@ impl Encode for Input {
         dst.write_u32(self.keyboard_subtype);
         dst.write_u32(self.keyboard_function_key);
 
-        utils::encode_string(
-            dst.remaining_mut(),
-            &self.keyboard_ime_filename,
-            utils::CharacterSet::Unicode,
-            true,
-        )?;
-        dst.advance(IME_FILE_NAME_SIZE);
+        // The name occupies a fixed 64-byte slot, so it is resized to fit rather
+        // than measured after the fact: a name of 32 or more UTF-16 code units
+        // would otherwise write past the slot, and computing the padding as
+        // `IME_FILE_NAME_SIZE - written` would underflow. `decode` accepts 64
+        // non-zero bytes, so such a name can arrive from a peer and be re-encoded.
+        // This mirrors `ClientCoreData`, which resizes both of its fixed-width
+        // name fields the same way.
+        let mut ime_file_name = utils::to_utf16_bytes(&self.keyboard_ime_filename);
+        ime_file_name.resize(IME_FILE_NAME_SIZE - 2, 0);
+        dst.write_slice(&ime_file_name);
+        dst.write_u16(0); // ime file name UTF-16 null terminator
 
         Ok(())
     }

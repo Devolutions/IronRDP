@@ -128,11 +128,9 @@ impl RdpdrPdu {
             )),
             PacketId::CoreDeviceIoRequest => Ok(RdpdrPdu::DeviceIoRequest(DeviceIoRequest::decode(src)?)),
             PacketId::CoreUserLoggedon => Ok(RdpdrPdu::UserLoggedon),
-            packet_id => Err(unsupported_value_err!(
-                "RdpdrPdu::decode_body",
+            packet_id => Err(unsupported_value_err!( "RdpdrPdu::decode_body",
                 "PacketId",
-                format!("{packet_id} ({:#06X})", u16::from(packet_id))
-            )),
+                format!("{packet_id} ({:#06X})", u16::from(packet_id)), in: src)),
         }
     }
 }
