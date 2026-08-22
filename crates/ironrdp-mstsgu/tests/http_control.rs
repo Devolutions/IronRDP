@@ -54,6 +54,17 @@ fn tunnel_request_without_reauth_context_preserves_existing_wire_format() {
 }
 
 #[test]
+fn tunnel_request_without_reauth_context_clears_reauth_field_bit() {
+    let bytes = encode_to_vec(&TunnelReqPkt {
+        fields_present: 0x2,
+        ..TunnelReqPkt::default()
+    });
+
+    assert_eq!(bytes.len(), 16);
+    assert_eq!(&bytes[12..14], &0u16.to_le_bytes());
+}
+
+#[test]
 fn tunnel_request_encodes_reauth_context() {
     let reauth_tunnel_context = 0x1122_3344_5566_7788;
     let bytes = encode_to_vec(&TunnelReqPkt {

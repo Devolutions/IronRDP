@@ -213,11 +213,12 @@ impl Encode for TunnelReqPkt {
         };
         hdr.encode(dst)?;
 
-        let fields_present = if self.reauth_tunnel_context.is_some() {
-            self.fields_present | HTTP_TUNNEL_PACKET_FIELD_REAUTH
-        } else {
-            self.fields_present
-        };
+        let fields_present = self.fields_present & !HTTP_TUNNEL_PACKET_FIELD_REAUTH
+            | if self.reauth_tunnel_context.is_some() {
+                HTTP_TUNNEL_PACKET_FIELD_REAUTH
+            } else {
+                0
+            };
 
         dst.write_u32(self.caps);
         dst.write_u16(fields_present);
