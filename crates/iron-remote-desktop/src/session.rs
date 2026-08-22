@@ -36,6 +36,19 @@ pub trait SessionBuilder {
     #[must_use]
     fn render_canvas(&self, canvas: HtmlCanvasElement) -> Self;
 
+    // tdmanh1 28/03/2026 expose thêm 1 số hàm để set các thông tin từ web
+    #[must_use]
+    fn set_enable_server_pointer(&self, enable_server_pointer: bool) -> Self;
+
+    #[must_use]
+    fn set_pointer_software_rendering(&self, pointer_software_rendering: bool) -> Self;
+
+    #[must_use]
+    fn set_enable_audio_playback(&self, enable_audio_playback: bool) -> Self;
+
+    #[must_use]
+    fn set_desktop_scale_factor(&self, desktop_scale_factor: u32) -> Self;
+
     #[must_use]
     fn set_cursor_style_callback(&self, callback: js_sys::Function) -> Self;
 

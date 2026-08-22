@@ -243,6 +243,38 @@ macro_rules! make_bridge {
                 Self($crate::SessionBuilder::render_canvas(&self.0, canvas))
             }
 
+            // tdmanh1 28/03/2026 expose thêm 1 số hàm để set các thông tin từ web
+            #[wasm_bindgen(js_name = setEnableServerPointer)]
+            pub fn set_enable_server_pointer(&self, enable_server_pointer: bool) -> Self {
+                Self($crate::SessionBuilder::set_enable_server_pointer(
+                    &self.0,
+                    enable_server_pointer,
+                ))
+            }
+
+            #[wasm_bindgen(js_name = setPointerSoftwareRendering)]
+            pub fn set_pointer_software_rendering(&self, pointer_software_rendering: bool) -> Self {
+                Self($crate::SessionBuilder::set_pointer_software_rendering(
+                    &self.0,
+                    pointer_software_rendering,
+                ))
+            }
+
+            #[wasm_bindgen(js_name = setEnableAudioPlayback)]
+            pub fn set_enable_audio_playback(&self, enable_audio_playback: bool) -> Self {
+                Self($crate::SessionBuilder::set_enable_audio_playback(
+                    &self.0,
+                    enable_audio_playback,
+                ))
+            }
+            #[wasm_bindgen(js_name = setDesktopScaleFactor)]
+            pub fn set_desktop_scale_factor(&self, desktop_scale_factor: u32) -> Self {
+                Self($crate::SessionBuilder::set_desktop_scale_factor(
+                    &self.0,
+                    desktop_scale_factor,
+                ))
+            }
+
             #[wasm_bindgen(js_name = setCursorStyleCallback)]
             pub fn set_cursor_style_callback(&self, callback: $crate::internal::web_sys::js_sys::Function) -> Self {
                 Self($crate::SessionBuilder::set_cursor_style_callback(
