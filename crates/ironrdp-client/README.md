@@ -11,6 +11,11 @@ The library is winit-agnostic. Output events are emitted on a bounded
 `tokio::sync::mpsc::Sender<RdpOutputEvent>` channel: the embedder is responsible
 for consuming them and dispatching them to whatever event loop or runtime it wishes.
 
+TLS peer-certificate validation remains disabled by default for compatibility with
+existing deployments. `ConfigBuilder` exposes an explicit
+`CertificateValidation::Strict` policy for callers that require platform-root and
+server-name validation.
+
 For the end-user RDP client binary, see [`ironrdp-viewer`](../ironrdp-viewer).
 
 This crate is part of the [IronRDP] project.

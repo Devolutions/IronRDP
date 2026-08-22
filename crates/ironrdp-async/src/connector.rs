@@ -17,7 +17,7 @@ pub struct ShouldUpgrade;
 #[instrument(skip_all)]
 pub async fn connect_begin<S>(framed: &mut Framed<S>, connector: &mut ClientConnector) -> ConnectorResult<ShouldUpgrade>
 where
-    S: Sync + FramedRead + FramedWrite,
+    S: FramedRead + FramedWrite,
 {
     let mut buf = WriteBuf::new();
 
@@ -78,6 +78,24 @@ where
     }
 
     let result = loop {
+        if connector.should_perform_multitransport() {
+            // Auto-skip multitransport bootstrapping: this driver does not own
+            // UDP transport setup, so it declines on the application's behalf
+            // and the connection continues TCP-only. Applications that want to
+            // participate in multitransport must drive the connector directly
+            // using `ClientConnector::complete_multitransport()` instead of
+            // calling `connect_finalize`.
+            buf.clear();
+            let written = connector.skip_multitransport(&mut buf)?;
+            if written.size().is_some() {
+                framed
+                    .write_all(buf.filled())
+                    .await
+                    .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+            }
+            continue;
+        }
+
         single_sequence_step(framed, &mut connector, &mut buf).await?;
 
         if let ClientConnectorState::Connected { result } = connector.state {
@@ -110,36 +128,22 @@ async fn resolve_generator(
     }
 }
 
+/// Run the CredSSP/NLA exchange on an already-TLS stream.
+///
+/// Does not touch [`ClientConnector`] state; callers that drive a connector should call
+/// [`ClientConnector::mark_credssp_as_done`] afterwards when appropriate.
 #[instrument(level = "trace", skip_all)]
-async fn perform_credssp_step<S, N>(
-    connector: &mut ClientConnector,
+pub async fn perform_credssp<S, N>(
     framed: &mut Framed<S>,
     network_client: &mut N,
     buf: &mut WriteBuf,
-    server_name: ServerName,
-    server_public_key: Vec<u8>,
-    kerberos_config: Option<KerberosConfig>,
+    mut sequence: CredsspSequence,
+    mut ts_request: ironrdp_connector::sspi::credssp::TsRequest,
 ) -> ConnectorResult<()>
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
 {
-    assert!(connector.should_perform_credssp());
-
-    let selected_protocol = match connector.state {
-        ClientConnectorState::Credssp { selected_protocol, .. } => selected_protocol,
-        _ => return Err(general_err!("invalid connector state for CredSSP sequence")),
-    };
-
-    let (mut sequence, mut ts_request) = CredsspSequence::init(
-        connector.config.credentials.clone(),
-        connector.config.domain.as_deref(),
-        selected_protocol,
-        server_name,
-        server_public_key,
-        kerberos_config,
-    )?;
-
     loop {
         let client_state = {
             let mut generator = sequence.process_ts_request(ts_request);
@@ -163,11 +167,7 @@ where
             break;
         };
 
-        debug!(
-            connector.state = connector.state.name(),
-            hint = ?next_pdu_hint,
-            "Wait for PDU"
-        );
+        debug!(hint = ?next_pdu_hint, "Wait for PDU");
 
         let pdu = framed
             .read_by_hint(next_pdu_hint)
@@ -182,6 +182,43 @@ where
             break;
         }
     }
+
+    Ok(())
+}
+
+#[instrument(level = "trace", skip_all)]
+async fn perform_credssp_step<S, N>(
+    connector: &mut ClientConnector,
+    framed: &mut Framed<S>,
+    network_client: &mut N,
+    buf: &mut WriteBuf,
+    server_name: ServerName,
+    server_public_key: Vec<u8>,
+    kerberos_config: Option<KerberosConfig>,
+) -> ConnectorResult<()>
+where
+    S: FramedRead + FramedWrite,
+    N: NetworkClient,
+{
+    assert!(connector.should_perform_credssp());
+
+    let selected_protocol = match connector.state {
+        ClientConnectorState::Credssp { selected_protocol, .. } => selected_protocol,
+        _ => return Err(general_err!("invalid connector state for CredSSP sequence")),
+    };
+
+    debug!(connector.state = connector.state.name(), "Begin CredSSP");
+
+    let (sequence, ts_request) = CredsspSequence::init(
+        connector.config.credentials.clone(),
+        connector.config.domain.as_deref(),
+        selected_protocol,
+        server_name,
+        server_public_key,
+        kerberos_config,
+    )?;
+
+    perform_credssp(framed, network_client, buf, sequence, ts_request).await?;
 
     connector.mark_credssp_as_done();
 

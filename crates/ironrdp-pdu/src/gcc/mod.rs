@@ -1,6 +1,6 @@
 use ironrdp_core::{
-    Decode, DecodeErrorKind, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, decode,
-    ensure_fixed_part_size, ensure_size, invalid_field_err,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, decode, ensure_fixed_part_size,
+    ensure_size, invalid_field_err,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -26,22 +26,12 @@ pub use self::core_data::client::{
 pub use self::core_data::server::{ServerCoreData, ServerCoreOptionalData, ServerEarlyCapabilityFlags};
 pub use self::message_channel_data::{ClientMessageChannelData, ServerMessageChannelData};
 pub use self::monitor_data::{
-    ClientMonitorData, MONITOR_COUNT_SIZE, MONITOR_FLAGS_SIZE, MONITOR_SIZE, Monitor, MonitorFlags,
+    ClientMonitorData, MONITOR_COUNT_MAX, MONITOR_COUNT_SIZE, MONITOR_FLAGS_SIZE, MONITOR_SIZE, Monitor, MonitorFlags,
 };
 pub use self::monitor_extended_data::{ClientMonitorExtendedData, ExtendedMonitorInfo, MonitorOrientation};
 pub use self::multi_transport_channel_data::{MultiTransportChannelData, MultiTransportFlags};
 pub use self::network_data::{ChannelDef, ChannelName, ChannelOptions, ClientNetworkData, ServerNetworkData};
 pub use self::security_data::{ClientSecurityData, EncryptionLevel, EncryptionMethod, ServerSecurityData};
-
-macro_rules! user_header_try {
-    ($e:expr) => {
-        match $e {
-            Ok(user_header) => user_header,
-            Err(e) if matches!(e.kind(), DecodeErrorKind::NotEnoughBytes { .. }) => break,
-            Err(e) => return Err(e),
-        }
-    };
-}
 
 const USER_DATA_HEADER_SIZE: usize = 4;
 
@@ -148,8 +138,18 @@ impl<'de> Decode<'de> for ClientGccBlocks {
         let mut multi_transport_channel = None;
         let mut monitor_extended = None;
 
-        loop {
-            let (ty, cur) = user_header_try!(UserDataHeader::decode(src));
+        while !src.is_empty() {
+            let (raw_ty, cur) = UserDataHeader::decode_raw(src)?;
+            let Some(ty) = ClientGccType::from_u16(raw_ty) else {
+                // Forward-compat: a user-data block with a type IronRDP does not
+                // model is skipped rather than rejected. The block table in
+                // MS-RDPBCGR 2.2.1.3.1 is not closed: current Microsoft clients
+                // emit blocks absent from the public spec (e.g. 0xC00D from
+                // recent mstsc/Windows App, mirroring the historical 0xC009 sent
+                // by the Lync client), and rejecting them would break the
+                // connection. The block length lets us advance past the body.
+                continue;
+            };
 
             match ty {
                 ClientGccType::CoreData => core = Some(decode(cur)?),
@@ -243,8 +243,14 @@ impl<'de> Decode<'de> for ServerGccBlocks {
         let mut message_channel = None;
         let mut multi_transport_channel = None;
 
-        loop {
-            let (ty, cur) = user_header_try!(UserDataHeader::decode(src));
+        while !src.is_empty() {
+            let (raw_ty, cur) = UserDataHeader::decode_raw(src)?;
+            let Some(ty) = ServerGccType::from_u16(raw_ty) else {
+                // Forward-compat: skip server user-data blocks IronRDP does not
+                // model rather than rejecting the connection (see the matching
+                // note on `ClientGccBlocks::decode`).
+                continue;
+            };
 
             match ty {
                 ServerGccType::CoreData => core = Some(decode(cur)?),
@@ -331,14 +337,16 @@ impl UserDataHeader {
         Ok(())
     }
 
-    pub fn decode<'de, T>(src: &mut ReadCursor<'de>) -> DecodeResult<(T, &'de [u8])>
-    where
-        T: FromPrimitive,
-    {
+    /// Decodes a GCC user-data block header, returning the raw `blockType` and
+    /// the block body without mapping the type to an enum.
+    ///
+    /// Unlike [`decode`](Self::decode), an unrecognised `blockType` is not an
+    /// error: the raw value is returned so the caller can skip blocks it does
+    /// not recognise, as MS-RDPBCGR requires for forward-compatibility.
+    pub fn decode_raw<'de>(src: &mut ReadCursor<'de>) -> DecodeResult<(u16, &'de [u8])> {
         ensure_fixed_part_size!(in: src);
 
-        let block_type =
-            T::from_u16(src.read_u16()).ok_or_else(|| invalid_field_err!("blockType", "invalid GCC type"))?;
+        let block_type = src.read_u16();
         let block_length: usize = cast_length!("blockLen", src.read_u16())?;
 
         if block_length <= USER_DATA_HEADER_SIZE {
@@ -349,5 +357,15 @@ impl UserDataHeader {
         ensure_size!(in: src, size: len);
 
         Ok((block_type, src.read_slice(len)))
+    }
+
+    pub fn decode<'de, T>(src: &mut ReadCursor<'de>) -> DecodeResult<(T, &'de [u8])>
+    where
+        T: FromPrimitive,
+    {
+        let (raw_type, body) = Self::decode_raw(src)?;
+        let block_type = T::from_u16(raw_type).ok_or_else(|| invalid_field_err!("blockType", "invalid GCC type"))?;
+
+        Ok((block_type, body))
     }
 }

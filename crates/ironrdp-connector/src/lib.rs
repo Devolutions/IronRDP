@@ -24,7 +24,10 @@ use ironrdp_pdu::{PduHint, gcc, x224};
 pub use sspi;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
-pub use self::connection::{ClientConnector, ClientConnectorState, ConnectionResult, encode_send_data_request};
+pub use self::connection::{
+    ClientConnector, ClientConnectorState, ConnectionResult, DynamicStaticChannelAttachError, MultitransportResult,
+    encode_send_data_request,
+};
 pub use self::connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 pub use self::license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use self::server_name::ServerName;
@@ -109,6 +112,7 @@ pub struct SmartCardIdentity {
 #[derive(Debug, Clone)]
 pub enum Credentials {
     UsernamePassword {
+        /// An empty username suppresses the X.224 `mstshash` cookie.
         username: String,
         password: String,
     },
@@ -121,7 +125,8 @@ pub enum Credentials {
 impl Credentials {
     fn username(&self) -> Option<&str> {
         match self {
-            Self::UsernamePassword { username, .. } => Some(username),
+            Self::UsernamePassword { username, .. } if !username.is_empty() => Some(username),
+            Self::UsernamePassword { .. } => None,
             Self::SmartCard { .. } => None, // Username is ultimately provided by the smart card certificate.
         }
     }
@@ -138,6 +143,11 @@ impl Credentials {
 pub struct Config {
     /// The initial desktop size to request
     pub desktop_size: DesktopSize,
+    /// The optional client monitor layout advertised in the GCC Client Monitor Data block.
+    ///
+    /// When present, [`desktop_size`](Self::desktop_size) must describe the virtual desktop
+    /// containing these monitors.
+    pub monitor_layout: Option<gcc::ClientMonitorData>,
     /// The initial desktop scale factor to request.
     ///
     /// This becomes the `desktop_scale_factor` in the [`TS_UD_CS_CORE`](gcc::ClientCoreOptionalData) structure.
@@ -188,6 +198,17 @@ pub struct Config {
     /// computers.
     #[doc(alias("enable_nla", "nla"))]
     pub enable_credssp: bool,
+    /// Allow Standard RDP Security (`PROTOCOL_RDP`, empty X.224 flags).
+    ///
+    /// When both [`enable_tls`](Self::enable_tls) and [`enable_credssp`](Self::enable_credssp) are
+    /// `false`, the connector would otherwise advertise no enhanced protocols. IronRDP only supports
+    /// the `ENCRYPTION_LEVEL_NONE` variant of standard RDP security (no RC4 Security Exchange), which
+    /// is appropriate for trusted local transports such as Windows Sandbox named pipes — not for
+    /// ordinary TCP sessions.
+    ///
+    /// Defaults should stay `false`. Enable this only for known-local paths that opt in explicitly
+    /// (e.g. `Transport::NamedPipe`).
+    pub enable_standard_rdp_security: bool,
     pub credentials: Credentials,
     pub domain: Option<String>,
     /// The build number of the client.
@@ -200,6 +221,8 @@ pub struct Config {
     pub keyboard_subtype: u32,
     pub keyboard_functional_keys_count: u32,
     pub keyboard_layout: u32,
+    /// Network profile advertised in the Client Core Data GCC block.
+    pub connection_type: gcc::ConnectionType,
     pub ime_file_name: String,
     pub bitmap: Option<BitmapConfig>,
     pub dig_product_id: String,
@@ -210,6 +233,15 @@ pub struct Config {
     pub alternate_shell: String,
     /// Working directory for the alternate shell
     pub work_dir: String,
+    /// Whether the connection uses the RemoteApp/RAIL connection model.
+    ///
+    /// RemoteApp launch information travels over the `rail` static virtual channel.
+    pub remote_application_mode: bool,
+    /// RAIL extensions implemented by the client.
+    ///
+    /// This must include [`capability_sets::RailSupportLevel::SUPPORTED`] when
+    /// [`Self::remote_application_mode`] is enabled.
+    pub rail_support_level: capability_sets::RailSupportLevel,
     pub platform: capability_sets::MajorPlatformType,
     /// Unique identifier for the computer
     ///
@@ -224,8 +256,12 @@ pub struct Config {
     pub request_data: Option<NegoRequestData>,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub autologon: bool,
-    /// If true, the INFO_NOAUDIOPLAYBACK flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
+    /// If true, local audio playback is enabled and `INFO_NOAUDIOPLAYBACK` is left clear
+    /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
     pub enable_audio_playback: bool,
+    /// If true, client microphone capture is enabled and `INFO_AUDIOCAPTURE` is set
+    /// in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu).
+    pub enable_audio_capture: bool,
     pub performance_flags: PerformanceFlags,
 
     pub license_cache: Option<Arc<dyn LicenseCache>>,
@@ -319,15 +355,52 @@ impl Written {
     }
 }
 
+/// A point on a monotonic millisecond clock owned by the I/O driver.
+///
+/// Lives in `ironrdp-core`, shared with `ironrdp-rdpeudp`, and re-exported
+/// here. The epoch is arbitrary and carries no meaning; only differences
+/// between two instants do. All instants passed to one connector across its
+/// lifetime must come from the same clock: comparing instants from two
+/// different epochs produces a meaningless delta rather than an error, either
+/// saturating to zero or landing on a huge value with no diagnostic.
+///
+/// The clock deliberately lives outside the sans-I/O sequences, because a
+/// sequence reading a clock itself would measure how quickly it drained an
+/// already-filled buffer rather than how long the bytes took to arrive. Only
+/// the driver that performed the read knows the latter, which is what the
+/// `None` in [`Sequence::step`] is for: a driver with no reading to pass on.
+/// `ironrdp-blocking` and `ironrdp-async` each stamp with their own
+/// driver-owned epoch; the FFI connector, which has no read loop of its own to
+/// time, stamps on entry to its `step` binding instead.
+pub use ironrdp_core::MonotonicInstant;
+
 pub trait Sequence: Send {
     fn next_pdu_hint(&self) -> Option<&dyn PduHint>;
 
     fn state(&self) -> &dyn State;
 
-    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written>;
+    /// Advances the sequence.
+    ///
+    /// `received_at` is when `input` arrived on the wire, as observed by the I/O
+    /// driver, or `None` from a driver that does not observe arrival times. The
+    /// absence of a reading is deliberately not expressible as an instant: a
+    /// driver that cannot measure has taken no measurement, which is a different
+    /// thing from one that measured no elapsed time, and only the sequence
+    /// knows which of the two its reply may be derived from.
+    ///
+    /// A driver that always passes `None` never opens a connect-time bandwidth
+    /// window, so the Bandwidth Measure Results it sends report only the Stop's
+    /// own payload against the untimed floor. See `connection::counted_len`'s doc
+    /// for why the byte count is measurement-gated rather than reported in full.
+    fn step(
+        &mut self,
+        input: &[u8],
+        received_at: Option<MonotonicInstant>,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written>;
 
     fn step_no_input(&mut self, output: &mut WriteBuf) -> ConnectorResult<Written> {
-        self.step(&[], output)
+        self.step(&[], None, output)
     }
 }
 

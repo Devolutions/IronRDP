@@ -1,10 +1,11 @@
-use ironrdp_core::{Encode, WriteCursor};
+use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::pdu::{
     Avc420Region, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
-    CapabilitySet, GfxPdu,
+    CapabilitySet, Codec1Type, GfxPdu, PixelFormat,
 };
 use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer, QoeMetrics, Surface};
+use ironrdp_graphics::zgfx::Decompressor;
 
 // ============================================================================
 // Test Handler
@@ -145,6 +146,92 @@ fn test_server_not_ready_before_capabilities() {
 
     let result = server.send_avc420_frame(0, &h264_data, &regions, 0);
     assert!(result.is_none());
+}
+
+// ============================================================================
+// Planar Frame Tests
+// ============================================================================
+
+#[test]
+fn test_planar_frame_round_trip() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+
+    // V10 client with AVC disabled: Planar remains usable.
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::AVC_DISABLED,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    assert!(server.is_ready());
+    assert!(!server.supports_avc420());
+    assert!(!server.supports_avc444());
+
+    let surface_id = server
+        .create_surface_with_format(1280, 720, PixelFormat::ARgb)
+        .expect("surface creation failed");
+    server.drain_output();
+
+    let planar_data = [0x20, 0x00, 0x01, 0x02];
+    let frame_id = server
+        .send_planar_frame(surface_id, &planar_data, 1280, 720, 42)
+        .expect("Planar frame should be queued");
+
+    let output = server.drain_output();
+    assert_eq!(output.len(), 3);
+
+    let mut decompressor = Decompressor::new();
+    let mut pdus = Vec::with_capacity(output.len());
+    for message in output {
+        let encoded = encode_vec(message.as_ref()).expect("encode should succeed");
+        let mut decoded = Vec::new();
+        decompressor
+            .decompress(&encoded, &mut decoded)
+            .expect("ZGFX decode should succeed");
+        let mut cursor = ReadCursor::new(&decoded);
+        pdus.push(GfxPdu::decode(&mut cursor).expect("PDU decode should succeed"));
+    }
+
+    match pdus.as_slice() {
+        [
+            GfxPdu::StartFrame(start),
+            GfxPdu::WireToSurface1(wire),
+            GfxPdu::EndFrame(end),
+        ] => {
+            assert_eq!(start.frame_id, frame_id);
+            assert_eq!(wire.surface_id, surface_id);
+            assert_eq!(wire.codec_id, Codec1Type::Planar);
+            assert_eq!(wire.pixel_format, PixelFormat::ARgb);
+            assert_eq!(wire.destination_rectangle.left, 0);
+            assert_eq!(wire.destination_rectangle.top, 0);
+            assert_eq!(wire.destination_rectangle.right, 1280);
+            assert_eq!(wire.destination_rectangle.bottom, 720);
+            assert_eq!(wire.bitmap_data, planar_data);
+            assert_eq!(end.frame_id, frame_id);
+        }
+        pdus => panic!("expected StartFrame, WireToSurface1, EndFrame; got {pdus:?}"),
+    }
+}
+
+#[test]
+fn test_planar_frame_rejects_oversized_destination() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::AVC_DISABLED,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    let surface_id = server.create_surface(1280, 720).expect("surface creation failed");
+    server.drain_output();
+
+    assert_eq!(server.frames_in_flight(), 0);
+    assert!(server.send_planar_frame(surface_id, &[0x20], 1281, 720, 42).is_none());
+    assert!(!server.has_pending_output());
+    assert_eq!(server.frames_in_flight(), 0);
 }
 
 #[test]

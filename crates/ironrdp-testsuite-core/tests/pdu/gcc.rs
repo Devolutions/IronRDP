@@ -184,6 +184,64 @@ fn from_buffer_correctly_handles_invalid_lengths_in_user_data_header() {
 }
 
 #[test]
+fn decode_raw_returns_raw_block_type_for_unknown_type() {
+    // blockType = 0xC00D (an undocumented type not modelled by IronRDP),
+    // blockLen = 8, then 4 body bytes. decode_raw returns the raw type instead
+    // of rejecting it, so block decoders can skip unrecognised blocks
+    // (MS-RDPBCGR forward-compat).
+    let buffer: [u8; 8] = [0x0d, 0xc0, 0x08, 0x00, 0xde, 0xad, 0xbe, 0xef];
+    let mut cur = ReadCursor::new(&buffer);
+
+    let (block_type, body) = UserDataHeader::decode_raw(&mut cur).unwrap();
+
+    assert_eq!(block_type, 0xc00d);
+    assert_eq!(body, [0xde, 0xad, 0xbe, 0xef]);
+}
+
+#[test]
+fn from_buffer_skips_unknown_client_gcc_block_and_parses_known_blocks() {
+    // An undocumented block (type 0xC00D, blockLen 8, 4 body bytes) preceding
+    // known blocks must be skipped without affecting the known blocks.
+    // Recent Microsoft clients emit such blocks; rejecting them would break the
+    // connection (see ClientGccBlocks::decode).
+    let mut buffer = CLIENT_GCC_CORE_BLOCK_BUFFER.to_vec();
+    buffer.extend_from_slice(&[0x0d, 0xc0, 0x08, 0x00, 0xde, 0xad, 0xbe, 0xef]);
+    buffer.extend_from_slice(&CLIENT_GCC_SECURITY_BLOCK_BUFFER);
+    buffer.extend_from_slice(&CLIENT_GCC_NETWORK_BLOCK_BUFFER);
+
+    assert_eq!(*CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS, decode(buffer.as_slice()).unwrap());
+}
+
+#[test]
+fn from_buffer_ignores_cs_unused1_client_gcc_block() {
+    // TS_UD_CS_UNUSED1 (type 0xC00C, blockLen 6, 2 pad octets) is a documented
+    // padding block the server "SHOULD ignore" (MS-RDPBCGR 2.2.1.3.9). It is
+    // skipped through the forward-compatible unknown-block path.
+    let mut buffer = CLIENT_GCC_CORE_BLOCK_BUFFER.to_vec();
+    buffer.extend_from_slice(&[0x0c, 0xc0, 0x06, 0x00, 0x00, 0x00]);
+    buffer.extend_from_slice(&CLIENT_GCC_SECURITY_BLOCK_BUFFER);
+    buffer.extend_from_slice(&CLIENT_GCC_NETWORK_BLOCK_BUFFER);
+
+    assert_eq!(*CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS, decode(buffer.as_slice()).unwrap());
+}
+
+#[test]
+fn from_buffer_rejects_truncated_unknown_client_gcc_block() {
+    let mut buffer = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS_BUFFER.to_vec();
+    buffer.extend_from_slice(&[0x0d, 0xc0, 0xff, 0xff]);
+
+    assert!(decode::<ClientGccBlocks>(buffer.as_slice()).is_err());
+}
+
+#[test]
+fn from_buffer_rejects_truncated_unknown_server_gcc_block() {
+    let mut buffer = SERVER_GCC_WITHOUT_OPTIONAL_FIELDS_BUFFER.to_vec();
+    buffer.extend_from_slice(&[0x0d, 0x0c, 0xff, 0xff]);
+
+    assert!(decode::<ServerGccBlocks>(buffer.as_slice()).is_err());
+}
+
+#[test]
 fn from_buffer_correctly_parses_client_cluster_data() {
     let buffer = CLUSTER_DATA_BUFFER.as_ref();
 
@@ -245,6 +303,28 @@ fn to_buffer_correctly_serializes_client_core_data_without_optional_fields() {
     let buf = encode_vec(&core_data).unwrap();
 
     assert_eq!(expected_buffer, buf.as_slice());
+}
+
+#[test]
+fn client_core_data_decode_reencode_round_trip_for_keyboard_types_outside_original_closed_enum() {
+    // keyboardType occupies CLIENT_CORE_DATA_BUFFER[52..56]. MS-RDPBCGR documents keyboardType
+    // twice: 2.2.1.3.2 (Client Core Data) lists values 1-8 including KOREAN, while 2.2.7.1.6
+    // (Input Capability Set), the table the original closed enum was built from, stops at 7 and
+    // omits KOREAN entirely. 0x51 is in neither table; it is Windows' GetKeyboardType generic-HID
+    // value, not a spec-named constant.
+    for keyboard_type in [KeyboardType::KOREAN, KeyboardType(0x51)] {
+        let mut buffer = CLIENT_CORE_DATA_BUFFER;
+        buffer[52..56].copy_from_slice(&u32::from(keyboard_type).to_le_bytes());
+
+        let mut expected = CLIENT_CORE_DATA_WITHOUT_OPTIONAL_FIELDS.clone();
+        expected.keyboard_type = keyboard_type;
+
+        let decoded: ClientCoreData = decode(buffer.as_slice()).unwrap();
+        assert_eq!(expected, decoded);
+
+        let reencoded = encode_vec(&decoded).unwrap();
+        assert_eq!(buffer.as_slice(), reencoded.as_slice());
+    }
 }
 
 #[test]

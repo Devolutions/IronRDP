@@ -72,12 +72,12 @@ impl BulkCompressor {
     /// - `Rdp6` (0x02): NCRUSH (Huffman-based)
     /// - `Rdp61` (0x03): XCRUSH (two-level: chunk matching + MPPC)
     ///
-    pub fn new(compression_level: CompressionType) -> Result<Self, BulkError> {
+    pub fn new(compression_level: CompressionType) -> Self {
         // MPPC contexts are created with level 1 by default and adjusted dynamically.
         let mppc_send = MppcContext::new(1);
         let mppc_recv = MppcContext::new(1);
-        let ncrush_send = NCrushContext::new()?;
-        let ncrush_recv = NCrushContext::new()?;
+        let ncrush_send = NCrushContext::new();
+        let ncrush_recv = NCrushContext::new();
         let xcrush_send = XCrushContext::new();
         let xcrush_recv = XCrushContext::new();
 
@@ -88,7 +88,7 @@ impl BulkCompressor {
             v.into_boxed_slice().try_into().unwrap_or_else(|_| unreachable!())
         };
 
-        Ok(Self {
+        Self {
             compression_level,
             mppc_send,
             mppc_recv,
@@ -99,7 +99,7 @@ impl BulkCompressor {
             output_buffer,
             total_uncompressed_bytes: 0,
             total_compressed_bytes: 0,
-        })
+        }
     }
 
     /// Returns the configured compression level.
@@ -271,25 +271,25 @@ mod tests {
 
     #[test]
     fn test_bulk_compressor_new_rdp4() {
-        let bulk = BulkCompressor::new(CompressionType::Rdp4).unwrap();
+        let bulk = BulkCompressor::new(CompressionType::Rdp4);
         assert_eq!(bulk.compression_level(), CompressionType::Rdp4);
     }
 
     #[test]
     fn test_bulk_compressor_new_rdp5() {
-        let bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let bulk = BulkCompressor::new(CompressionType::Rdp5);
         assert_eq!(bulk.compression_level(), CompressionType::Rdp5);
     }
 
     #[test]
     fn test_bulk_compressor_new_rdp6() {
-        let bulk = BulkCompressor::new(CompressionType::Rdp6).unwrap();
+        let bulk = BulkCompressor::new(CompressionType::Rdp6);
         assert_eq!(bulk.compression_level(), CompressionType::Rdp6);
     }
 
     #[test]
     fn test_bulk_compressor_new_rdp61() {
-        let bulk = BulkCompressor::new(CompressionType::Rdp61).unwrap();
+        let bulk = BulkCompressor::new(CompressionType::Rdp61);
         assert_eq!(bulk.compression_level(), CompressionType::Rdp61);
     }
 
@@ -314,14 +314,14 @@ mod tests {
 
     #[test]
     fn test_bulk_compressor_reset() {
-        let mut bulk = BulkCompressor::new(CompressionType::Rdp61).unwrap();
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp61);
         // Should not panic
         bulk.reset();
     }
 
     #[test]
     fn test_bulk_compressor_contexts_independent() {
-        let bulk = BulkCompressor::new(CompressionType::Rdp6).unwrap();
+        let bulk = BulkCompressor::new(CompressionType::Rdp6);
         // Send and receive NCRUSH contexts should be separate instances
         // (we can only verify they exist and the struct was created)
         assert_eq!(bulk.compression_level(), CompressionType::Rdp6);
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_bulk_compress_skip_small_input() {
-        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5);
         let data = b"tiny"; // 4 bytes, below threshold
         let (size, flags) = bulk.compress(data).unwrap();
         assert_eq!(size, data.len());
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn test_bulk_compress_skip_empty() {
-        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5);
         let data = b"";
         let (size, flags) = bulk.compress(data).unwrap();
         assert_eq!(size, 0);
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_bulk_decompress_no_flags() {
-        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5);
         let data = b"uncompressed data";
         let result = bulk.decompress(data, 0x00).unwrap();
         assert_eq!(result, data);
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn test_bulk_decompress_unsupported_type() {
-        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5);
         // flags = PACKET_COMPRESSED | type 0x0F (invalid)
         let result = bulk.decompress(b"data", 0x2F);
         assert!(result.is_err());
@@ -376,8 +376,8 @@ mod tests {
     /// Helper: compress with one BulkCompressor (sender) and decompress
     /// with another (receiver). Returns the decompressed data as a Vec.
     fn bulk_roundtrip(compression_level: CompressionType, input: &[u8]) -> Vec<u8> {
-        let mut sender = BulkCompressor::new(compression_level).unwrap();
-        let mut receiver = BulkCompressor::new(compression_level).unwrap();
+        let mut sender = BulkCompressor::new(compression_level);
+        let mut receiver = BulkCompressor::new(compression_level);
 
         let (comp_size, flags) = sender.compress(input).unwrap();
 
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn test_bulk_compress_rdp5_sets_type_bits() {
-        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5);
         let input = b"Some data that should compress with MPPC level 1 algorithm!!";
         let (_size, flags) = bulk.compress(input).unwrap();
 
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_bulk_compress_rdp6_sets_type_bits() {
-        let mut bulk = BulkCompressor::new(CompressionType::Rdp6).unwrap();
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp6);
         let input = b"for.whom.the.bell.tolls,.the.bell.tolls.for.thee!xx";
         let (_size, flags) = bulk.compress(input).unwrap();
 
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn test_metrics_start_at_zero() {
-        let bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let bulk = BulkCompressor::new(CompressionType::Rdp5);
         assert_eq!(bulk.total_compressed_bytes(), 0);
         assert_eq!(bulk.total_uncompressed_bytes(), 0);
         assert!(bulk.compression_ratio().abs() < f64::EPSILON);
@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_metrics_accumulate_on_compress() {
-        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5);
         let input = b"Hello world! Hello world! Hello world! Hello world! x";
         let (comp_size, flags) = bulk.compress(input).unwrap();
 
@@ -509,8 +509,8 @@ mod tests {
 
     #[test]
     fn test_metrics_accumulate_on_decompress() {
-        let mut sender = BulkCompressor::new(CompressionType::Rdp5).unwrap();
-        let mut receiver = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let mut sender = BulkCompressor::new(CompressionType::Rdp5);
+        let mut receiver = BulkCompressor::new(CompressionType::Rdp5);
 
         let input = b"Hello world! Hello world! Hello world! Hello world! x";
         let (comp_size, flags) = sender.compress(input).unwrap();
@@ -533,8 +533,8 @@ mod tests {
 
     #[test]
     fn test_metrics_accumulate_across_multiple_calls() {
-        let mut sender = BulkCompressor::new(CompressionType::Rdp5).unwrap();
-        let mut receiver = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let mut sender = BulkCompressor::new(CompressionType::Rdp5);
+        let mut receiver = BulkCompressor::new(CompressionType::Rdp5);
 
         let inputs: &[&[u8]] = &[
             b"Hello world! Hello world! Hello world! Hello world! x",
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn test_metrics_not_reset_by_context_reset() {
-        let mut bulk = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp5);
         let input = b"Hello world! Hello world! Hello world! Hello world! x";
         let _ = bulk.compress(input).unwrap();
         let before = bulk.total_uncompressed_bytes();
@@ -569,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_bulk_compress_rdp61_sets_type_bits() {
-        let mut bulk = BulkCompressor::new(CompressionType::Rdp61).unwrap();
+        let mut bulk = BulkCompressor::new(CompressionType::Rdp61);
         let input = b"XCRUSH test data with repeated XCRUSH patterns for compression!!";
         let (_size, flags) = bulk.compress(input).unwrap();
 

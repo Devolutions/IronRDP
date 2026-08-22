@@ -17,8 +17,8 @@
 //! use ironrdp_bulk::{BulkCompressor, CompressionType, flags};
 //!
 //! // Create sender (compressor) and receiver (decompressor)
-//! let mut sender = BulkCompressor::new(CompressionType::Rdp5).unwrap();
-//! let mut receiver = BulkCompressor::new(CompressionType::Rdp5).unwrap();
+//! let mut sender = BulkCompressor::new(CompressionType::Rdp5);
+//! let mut receiver = BulkCompressor::new(CompressionType::Rdp5);
 //!
 //! let input = b"Hello world! Hello world! Hello world! Hello world! x";
 //!

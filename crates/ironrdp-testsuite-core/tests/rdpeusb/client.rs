@@ -10,6 +10,7 @@ use ironrdp_rdpeusb::client::{
 };
 use ironrdp_rdpeusb::io::*;
 use ironrdp_rdpeusb::pdu::caps::{Capability, RimExchangeCapabilityRequest};
+use ironrdp_rdpeusb::pdu::completion::ts_urb_result::Raw;
 use ironrdp_rdpeusb::pdu::header::InterfaceId;
 use ironrdp_rdpeusb::pdu::iface_manipulation::InterfaceRelease;
 use ironrdp_rdpeusb::pdu::notify::{ChannelCreated, Direction};
@@ -18,24 +19,14 @@ use ironrdp_rdpeusb::pdu::{
     UrbdrcClientControlPdu, UrbdrcClientDevicePdu, UrbdrcServerControlPdu, UrbdrcServerDevicePdu,
 };
 
-use super::simple_device_info;
-
-const STREAM_ID_PROXY: u32 = 1;
-
-fn proxy_iface_id(iface: InterfaceId) -> u32 {
-    u32::from(iface) | (STREAM_ID_PROXY << 30)
-}
-
-fn encode_pdu<T: ironrdp_core::Encode>(pdu: &T) -> Vec<u8> {
-    encode_vec(pdu).expect("encode should succeed")
-}
+use super::{encode_pdu, proxy_iface_id, simple_device_info};
 
 fn decode_control_msg(message: &DvcMessage) -> UrbdrcClientControlPdu {
     let encoded = encode_vec(message.as_ref()).expect("encode should succeed");
     decode(&encoded).expect("decode should succeed")
 }
 
-fn decode_device_msg(message: &DvcMessage) -> UrbdrcClientDevicePdu {
+fn decode_device_msg(message: &DvcMessage) -> UrbdrcClientDevicePdu<Raw> {
     let encoded = encode_vec(message.as_ref()).expect("encode should succeed");
     decode(&encoded).expect("decode should succeed")
 }
@@ -81,30 +72,28 @@ impl DeviceManagerBackend for TestDeviceManager {
     }
 }
 
-struct TestDeviceBackend {
+struct NoopDeviceClientBackend {
     device_info: DeviceInfo,
 }
 
-impl TestDeviceBackend {
+impl NoopDeviceClientBackend {
     fn new(device_info: DeviceInfo) -> Self {
         Self { device_info }
     }
 }
 
-impl UrbdrcDeviceBackend for TestDeviceBackend {
+impl UrbdrcDeviceBackend for NoopDeviceClientBackend {
     fn device_info(&mut self, _channel_id: u32) -> PduResult<DeviceInfo> {
         Ok(self.device_info.clone())
     }
 
     fn cancel_request(&mut self, _request_id: RequestId, _channel_id: u32) {}
 
-    fn query_device_text(
-        &mut self,
-        _channel_id: u32,
-        _text_type: u32,
-        _locale_id: u32,
-    ) -> PduResult<Option<DeviceText>> {
-        Ok(None)
+    fn query_device_text(&mut self, _channel_id: u32, _text_type: u32, _locale_id: u32) -> PduResult<DeviceText> {
+        Ok(DeviceText {
+            hresult: 0,
+            description: String::new(),
+        })
     }
 
     fn io_control(
@@ -169,10 +158,10 @@ fn channel_setup_sequence() {
             .expect("device manager state lock should not be poisoned");
         state
             .pending_devices
-            .push_back(Box::new(TestDeviceBackend::new(simple_device_info())));
+            .push_back(Box::new(NoopDeviceClientBackend::new(simple_device_info())));
         state
             .pending_devices
-            .push_back(Box::new(TestDeviceBackend::new(simple_device_info())));
+            .push_back(Box::new(NoopDeviceClientBackend::new(simple_device_info())));
     }
 
     let callback_manager_state = Arc::clone(&manager_state);
@@ -295,7 +284,7 @@ fn channel_setup_sequence() {
 #[test]
 fn new_device_sequence() {
     let udev_iface = InterfaceId::try_from(4).expect("valid device interface id");
-    let backend = Box::new(TestDeviceBackend::new(simple_device_info()));
+    let backend = Box::new(NoopDeviceClientBackend::new(simple_device_info()));
     let mut client = UrbdrcDeviceClient::new(udev_iface, backend).expect("device client should be created");
 
     assert!(!client.ready_for_io());

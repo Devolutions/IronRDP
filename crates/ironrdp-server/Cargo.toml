@@ -4,7 +4,7 @@ version = "0.13.0"
 readme = "README.md"
 description = "Extendable skeleton for implementing custom RDP servers"
 edition.workspace = true
-rust-version = "1.89"
+rust-version = "1.94"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -34,7 +34,8 @@ __bench = ["dep:visibility"]
 
 [dependencies]
 anyhow = "1.0"
-tokio = { version = "1", features = ["net", "macros", "sync", "rt"] } # public
+rand = "0.9"
+tokio = { version = "1", features = ["net", "macros", "sync", "rt", "time"] } # public
 tokio-rustls = "0.26" # public
 async-trait = "0.1"
 ironrdp-async = { path = "../ironrdp-async", version = "0.10" }
@@ -53,7 +54,7 @@ ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.10" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.9" } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9" } # public
 tracing = { version = "0.1", features = ["log"] }
-x509-cert = { version = "0.2", optional = true }
+x509-cert = { version = "0.3", optional = true }
 rustls-pemfile = { version = "2.2", optional = true }
 rayon = { version = "1.12", optional = true }
 bytes = "1"

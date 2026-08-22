@@ -1,16 +1,17 @@
+use core::any::TypeId;
 use core::mem;
 
 use ironrdp_connector::{
-    ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State, Written, encode_x224_packet,
-    general_err, reason_err,
+    ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, MonotonicInstant, Sequence, State, Written,
+    encode_x224_packet, general_err, reason_err,
 };
 use ironrdp_core::{WriteBuf, decode};
 use ironrdp_pdu as pdu;
 use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::x224::X224;
-use ironrdp_svc::{StaticChannelSet, SvcServerProcessor};
+use ironrdp_svc::{MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
-use pdu::rdp::client_info::Credentials;
+use pdu::rdp::client_info::{ClientAutoReconnect, Credentials};
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
@@ -32,13 +33,17 @@ pub struct Acceptor {
     message_channel_id: Option<u16>,
     desktop_size: DesktopSize,
     keyboard_layout: u32,
+    keyboard_type: gcc::KeyboardType,
+    ime_file_name: String,
+    multitransport_flags: gcc::MultiTransportFlags,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
     received_credentials: Option<Credentials>,
+    received_auto_reconnect: Option<ClientAutoReconnect>,
     reactivation: bool,
-    honor_client_desktop_size: bool,
+    honor_client_desktop_size: Option<DesktopSize>,
 }
 
 /// Minimum and maximum desktop dimension honored from a client.
@@ -96,6 +101,25 @@ pub struct AcceptorResult {
     /// announce one. Servers can use it to pick a server-side keyboard layout
     /// matching the client without changing any local input state.
     pub keyboard_layout: u32,
+    /// Keyboard type announced by the client in its GCC Client Core Data
+    /// (section 2.2.1.3.2, `keyboardType`).
+    ///
+    /// `KeyboardType(0)` when the client did not announce one (0 is not among the
+    /// documented values, so it doubles as "unset" the same way `keyboard_layout`'s
+    /// `0` does).
+    pub keyboard_type: gcc::KeyboardType,
+    /// Input method editor file name announced by the client in its GCC Client Core
+    /// Data (section 2.2.1.3.2, `imeFileName`).
+    ///
+    /// Populated for East Asian IME-based input locales; empty otherwise.
+    pub ime_file_name: String,
+    /// Multitransport (MS-RDPEMT) capability flags announced by the client in
+    /// its GCC `MultiTransportChannelData` block (section 2.2.1.3.8).
+    ///
+    /// Empty when the client did not send a multitransport block. Servers that
+    /// implement UDP multitransport can use it to decide whether to send a
+    /// Server Initiate Multitransport Request.
+    pub multitransport_flags: gcc::MultiTransportFlags,
     /// Credentials received from the client during SecureSettingsExchange.
     ///
     /// Present for TLS-mode connections where the client sends credentials
@@ -105,6 +129,13 @@ pub struct AcceptorResult {
     /// Servers that need to validate credentials (e.g., via PAM or LDAP)
     /// can use this field for post-handshake validation.
     pub credentials: Option<Credentials>,
+    /// Client Auto-Reconnect Packet received in the Client Info PDU.
+    ///
+    /// This is present when the client resumes a session using an
+    /// `ARC_CS_PRIVATE_PACKET`. The packet has already passed wire-format
+    /// validation, but the server must still verify its security verifier
+    /// against the reconnect random for the target session.
+    pub auto_reconnect: Option<ClientAutoReconnect>,
 }
 
 impl Acceptor {
@@ -122,30 +153,46 @@ impl Acceptor {
             message_channel_id: None,
             desktop_size,
             keyboard_layout: 0,
+            keyboard_type: gcc::KeyboardType(0),
+            ime_file_name: String::new(),
+            multitransport_flags: gcc::MultiTransportFlags::empty(),
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
             creds,
             received_credentials: None,
+            received_auto_reconnect: None,
             reactivation: false,
-            honor_client_desktop_size: false,
+            honor_client_desktop_size: None,
         }
     }
 
     /// Adopt the desktop size requested by the client in its Client Core Data
-    /// instead of the size this acceptor was constructed with.
+    /// instead of the size this acceptor was constructed with, clamped to an
+    /// operator-configured maximum.
     ///
     /// The client's requested resolution is only carried in the GCC Client
     /// Core Data of the MCS Connect Initial PDU; the desktop size echoed back
     /// later in the client's Confirm Active is, per [MS-RDPBCGR] 2.2.1.13.2,
     /// the value the client copied from the *server's* Demand Active, so it
     /// cannot be used to discover what the client originally asked for. When
-    /// this is enabled and the client's request is within the protocol-legal
-    /// range, the acceptor negotiates that size from the start (it is written
-    /// into the server's Bitmap capability set before Demand Active is sent),
-    /// avoiding a Deactivation-Reactivation resize round trip.
+    /// this is enabled, the client's request is first clamped per dimension to
+    /// the operator maximum and then validated against the protocol-legal range;
+    /// if the clamped size is legal the acceptor negotiates it from the start (it
+    /// is written into the server's Bitmap capability set before Demand Active is
+    /// sent), avoiding a Deactivation-Reactivation resize round trip.
     ///
-    /// Disabled by default, preserving the previous behavior of always
+    /// Pass `Some(max)` to honor the client's request, clamped per dimension to
+    /// `max`: the client can ask for a *smaller* desktop than `max`, but never a
+    /// larger one. The desktop size is a client-controlled `u16` bounded only by
+    /// the protocol ([200, 8192]); without a ceiling, a client could request
+    /// e.g. 8192×8192 and drive the server's framebuffer/encoder allocation off
+    /// that untrusted number (~256 MiB per frame buffer). `max` is that ceiling
+    /// — set it to what the server is actually willing to render (for instance
+    /// the host display's native resolution). Pass `None` to disable honoring
+    /// entirely and always enforce the server-provided size.
+    ///
+    /// `None` is the default, preserving the previous behavior of always
     /// enforcing the server-provided size.
     ///
     /// # Precondition
@@ -160,8 +207,8 @@ impl Acceptor {
     /// handler, leave this disabled.
     ///
     /// [`RdpServerDisplay`]: <https://docs.rs/ironrdp-server/latest/ironrdp_server/trait.RdpServerDisplay.html>
-    pub fn set_honor_client_desktop_size(&mut self, honor: bool) {
-        self.honor_client_desktop_size = honor;
+    pub fn set_honor_client_desktop_size(&mut self, max: Option<DesktopSize>) {
+        self.honor_client_desktop_size = max;
     }
 
     pub fn new_deactivation_reactivation(
@@ -194,11 +241,15 @@ impl Acceptor {
             message_channel_id: consumed.message_channel_id,
             desktop_size,
             keyboard_layout: consumed.keyboard_layout,
+            keyboard_type: consumed.keyboard_type,
+            ime_file_name: consumed.ime_file_name,
+            multitransport_flags: consumed.multitransport_flags,
             server_capabilities: consumed.server_capabilities,
             static_channels,
             saved_for_reactivation,
             creds: consumed.creds,
             received_credentials: consumed.received_credentials,
+            received_auto_reconnect: consumed.received_auto_reconnect,
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
         })
@@ -208,7 +259,38 @@ impl Acceptor {
     where
         T: SvcServerProcessor + 'static,
     {
+        let channel_name = channel.channel_name();
+        let channel_key = StaticChannelKey::Typed(TypeId::of::<T>());
+        if self.static_channels.get_by_type::<T>().is_none() && self.static_channels.len() >= MAX_STATIC_CHANNELS {
+            warn!(max_channels = MAX_STATIC_CHANNELS, "Static channel limit reached");
+            return;
+        }
+        if let Some((existing_key, _)) = self.static_channels.get_by_channel_name_key(&channel_name)
+            && existing_key != channel_key
+        {
+            warn!(?channel_name, "Static channel name is already registered");
+            return;
+        }
         self.static_channels.insert(channel);
+    }
+
+    /// Attaches a runtime-defined static virtual channel.
+    ///
+    /// This permits multiple instances of the same processor type, each with its own negotiated
+    /// channel name. `false` means the static-channel limit was reached or the name is already
+    /// registered.
+    pub fn attach_dynamic_static_channel<T>(&mut self, channel: T) -> bool
+    where
+        T: SvcServerProcessor + 'static,
+    {
+        let channel_name = channel.channel_name();
+        if self.static_channels.len() >= MAX_STATIC_CHANNELS
+            || self.static_channels.get_by_channel_name_key(&channel_name).is_some()
+        {
+            return false;
+        }
+
+        self.static_channels.insert_dynamic(channel).is_some()
     }
 
     pub fn reached_security_upgrade(&self) -> Option<SecurityProtocol> {
@@ -223,7 +305,8 @@ impl Acceptor {
     /// Panics if state is not [AcceptorState::SecurityUpgrade].
     pub fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.reached_security_upgrade().is_some());
-        self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
+        self.step(&[], None, &mut WriteBuf::new())
+            .expect("transition to next state");
         debug_assert!(self.reached_security_upgrade().is_none());
     }
 
@@ -236,7 +319,9 @@ impl Acceptor {
     /// Panics if state is not [AcceptorState::Credssp].
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
-        let res = self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
+        let res = self
+            .step(&[], None, &mut WriteBuf::new())
+            .expect("transition to next state");
         debug_assert!(!self.should_perform_credssp());
         assert_eq!(res, Written::Nothing);
     }
@@ -255,8 +340,12 @@ impl Acceptor {
                 io_channel_id: self.io_channel_id,
                 message_channel_id: self.message_channel_id,
                 keyboard_layout: self.keyboard_layout,
+                keyboard_type: self.keyboard_type,
+                ime_file_name: self.ime_file_name.clone(),
+                multitransport_flags: self.multitransport_flags,
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),
+                auto_reconnect: self.received_auto_reconnect.take(),
             }),
             previous_state => {
                 self.state = previous_state;
@@ -392,7 +481,12 @@ impl Sequence for Acceptor {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
+    fn step(
+        &mut self,
+        input: &[u8],
+        received_at: Option<MonotonicInstant>,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
         let prev_state = mem::take(&mut self.state);
 
         let (written, next_state) = match prev_state {
@@ -513,29 +607,44 @@ impl Sequence for Acceptor {
                 let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
                 let client_wants_message_channel = gcc_blocks.message_channel.is_some();
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
+                self.keyboard_type = gcc_blocks.core.keyboard_type;
+                self.ime_file_name.clone_from(&gcc_blocks.core.ime_file_name);
+                self.multitransport_flags = gcc_blocks
+                    .multi_transport_channel
+                    .as_ref()
+                    .map(|m| m.flags)
+                    .unwrap_or_else(gcc::MultiTransportFlags::empty);
 
                 // Adopt the client's requested desktop size (from its Client
                 // Core Data) before Demand Active is sent, so the session is
                 // negotiated at that size without a Deactivation-Reactivation
-                // resize. See `set_honor_client_desktop_size`.
-                if self.honor_client_desktop_size {
-                    if let Some(client_size) =
-                        validate_desktop_size(gcc_blocks.core.desktop_width, gcc_blocks.core.desktop_height)
-                    {
+                // resize. The request is clamped to the operator-configured
+                // maximum first, so an untrusted client can't drive the
+                // framebuffer/encoder allocation past that ceiling. See
+                // `set_honor_client_desktop_size`.
+                if let Some(max) = self.honor_client_desktop_size {
+                    let requested_width = gcc_blocks.core.desktop_width;
+                    let requested_height = gcc_blocks.core.desktop_height;
+                    let clamped_width = requested_width.min(max.width);
+                    let clamped_height = requested_height.min(max.height);
+                    if let Some(client_size) = validate_desktop_size(clamped_width, clamped_height) {
                         if client_size != self.desktop_size {
                             debug!(
-                                requested = ?client_size,
+                                requested = ?DesktopSize { width: requested_width, height: requested_height },
+                                max = ?max,
+                                adopted = ?client_size,
                                 previous = ?self.desktop_size,
-                                "Honoring client-requested desktop size"
+                                "Honoring client-requested desktop size (clamped to operator maximum)"
                             );
                             self.desktop_size = client_size;
                             set_bitmap_desktop_size(&mut self.server_capabilities, client_size);
                         }
                     } else {
                         debug!(
-                            width = gcc_blocks.core.desktop_width,
-                            height = gcc_blocks.core.desktop_height,
-                            "Client requested an out-of-range desktop size; keeping the server-provided size"
+                            requested = ?DesktopSize { width: requested_width, height: requested_height },
+                            clamped = ?DesktopSize { width: clamped_width, height: clamped_height },
+                            max = ?max,
+                            "Client-requested desktop size is out of protocol range after clamping to the operator maximum; keeping the server-provided size"
                         );
                     }
                 }
@@ -548,8 +657,8 @@ impl Sequence for Acceptor {
                             .into_iter()
                             .map(|c| {
                                 self.static_channels
-                                    .get_by_channel_name(&c.name)
-                                    .map(|(type_id, _)| (type_id, c))
+                                    .get_by_channel_name_key(&c.name)
+                                    .map(|(key, _)| (key, c))
                             })
                             .collect()
                     })
@@ -561,8 +670,8 @@ impl Sequence for Acceptor {
                     .enumerate()
                     .map(|(i, channel)| {
                         let channel_id = u16::try_from(i).expect("always in the range") + self.io_channel_id + 1;
-                        if let Some((type_id, c)) = channel {
-                            self.static_channels.attach_channel_id(type_id, channel_id);
+                        if let Some((key, c)) = channel {
+                            self.static_channels.attach_channel_id_by_key(key, channel_id);
                             (channel_id, Some(c))
                         } else {
                             (channel_id, None)
@@ -645,7 +754,7 @@ impl Sequence for Acceptor {
                 channels,
                 mut connection,
             } => {
-                let written = connection.step(input, output)?;
+                let written = connection.step(input, received_at, output)?;
                 let state = if connection.is_done() {
                     AcceptorState::RdpSecurityCommencement {
                         protocol,
@@ -688,7 +797,17 @@ impl Sequence for Acceptor {
                 let client_info: rdp::ClientInfoPdu =
                     decode(data.user_data.as_ref()).map_err(ConnectorError::decode)?;
 
-                debug!(message = ?client_info, "Received");
+                let auto_reconnect = client_info
+                    .client_info
+                    .extra_info
+                    .optional_data
+                    .auto_reconnect()
+                    .cloned();
+                debug!(
+                    has_auto_reconnect = auto_reconnect.is_some(),
+                    "Received Client Info PDU"
+                );
+                self.received_auto_reconnect = auto_reconnect;
 
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
@@ -789,8 +908,8 @@ impl Sequence for Acceptor {
                         monitors: vec![gcc::Monitor {
                             left: 0,
                             top: 0,
-                            right: i32::from(self.desktop_size.width),
-                            bottom: i32::from(self.desktop_size.height),
+                            right: i32::from(self.desktop_size.width) - 1,
+                            bottom: i32::from(self.desktop_size.height) - 1,
                             flags: gcc::MonitorFlags::PRIMARY,
                         }],
                     });
@@ -875,7 +994,7 @@ impl Sequence for Acceptor {
                 channels,
                 client_capabilities,
             } => {
-                let written = finalization.step(input, output)?;
+                let written = finalization.step(input, received_at, output)?;
 
                 let state = if finalization.is_done() {
                     AcceptorState::Accepted {

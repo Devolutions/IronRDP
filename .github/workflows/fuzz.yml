@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2.7.3
+        uses: Swatinem/rust-cache@v2.9.1
 
       - name: Setup matrix
         id: setup-matrix
@@ -80,7 +80,7 @@ jobs:
           tree ./fuzz/artifacts
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2.7.3
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           workspaces: fuzz -> target
 

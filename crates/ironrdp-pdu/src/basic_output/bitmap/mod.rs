@@ -25,9 +25,7 @@ pub struct BitmapUpdateData<'a> {
 impl BitmapUpdateData<'_> {
     const NAME: &'static str = "TS_UPDATE_BITMAP_DATA";
     const FIXED_PART_SIZE: usize = 2 /* flags */ + 2 /* nrect */;
-}
 
-impl BitmapUpdateData<'_> {
     pub fn encode_header(rectangles: u16, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: 2);
 

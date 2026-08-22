@@ -1,0 +1,132 @@
+[
+  {
+    "name": "scope/core",
+    "color": "fbca04",
+    "description": "Touches the core architectural tier"
+  },
+  {
+    "name": "scope/cross-cutting",
+    "color": "fbca04",
+    "description": "Spans multiple architectural boundaries"
+  },
+  {
+    "name": "scope/web",
+    "color": "fbca04",
+    "description": "Affects the web/WASM ecosystem"
+  },
+  {
+    "name": "scope/ffi",
+    "color": "fbca04",
+    "description": "Affects native or .NET bindings"
+  },
+  {
+    "name": "scope/tooling",
+    "color": "fbca04",
+    "description": "Build, CI, release, or developer tooling"
+  },
+  {
+    "name": "kind/technical-debt",
+    "color": "fef2c0",
+    "description": "Internal cleanup work"
+  },
+  {
+    "name": "kind/protocol",
+    "color": "fef2c0",
+    "description": "Affects RDP or related protocol behavior"
+  },
+  {
+    "name": "documentation",
+    "color": "0075ca",
+    "description": "Improvements or additions to documentation"
+  },
+  {
+    "name": "duplicate",
+    "color": "cfd3d7",
+    "description": "This issue or pull request already exists"
+  },
+  {
+    "name": "size/XS",
+    "color": "f9d0c4",
+    "description": "Size: up to 49 counted lines and 2 files"
+  },
+  {
+    "name": "size/S",
+    "color": "f9d0c4",
+    "description": "Size: up to 199 counted lines and 5 files; exceeds XS in either measure"
+  },
+  {
+    "name": "size/M",
+    "color": "f9d0c4",
+    "description": "Size: up to 449 counted lines and 10 files; exceeds S in either measure"
+  },
+  {
+    "name": "size/L",
+    "color": "f9d0c4",
+    "description": "Size: up to 899 counted lines and 20 files; exceeds M in either measure"
+  },
+  {
+    "name": "size/XL",
+    "color": "f9d0c4",
+    "description": "Size: up to 1299 counted lines and 49 files; exceeds L in either measure"
+  },
+  {
+    "name": "size/XXL",
+    "color": "f9d0c4",
+    "description": "Size: 1300 or more counted lines or 50 or more files"
+  },
+  {
+    "name": "risk/low",
+    "color": "0e8a16",
+    "description": "Self-contained change with no cross-crate behavioral effect"
+  },
+  {
+    "name": "risk/medium",
+    "color": "d93f0b",
+    "description": "Behavioral change that does not substantially alter a core public API"
+  },
+  {
+    "name": "risk/high",
+    "color": "b60205",
+    "description": "Substantial core public API impact, or fail-closed triage; needs maintainer-level scrutiny"
+  },
+  {
+    "name": "risk/unknown",
+    "color": "5319e7",
+    "description": "Risk could not be determined automatically; needs maintainer-level scrutiny"
+  },
+  {
+    "name": "breaking-change",
+    "color": "ff0101",
+    "description": "Includes a breaking change, and requires special scrutiny at the boundaries"
+  },
+  {
+    "name": "contributor/first-time",
+    "color": "c2e0c6",
+    "description": "First contribution to this repository"
+  },
+  {
+    "name": "maintainer-required",
+    "color": "c2e0c6",
+    "description": "Maintainer review or intervention is required"
+  },
+  {
+    "name": "triage/legitimacy",
+    "color": "fbca04",
+    "description": "A classifier flagged at least one commit for legitimacy triage"
+  },
+  {
+    "name": "ai-reviewed/1",
+    "color": "000000",
+    "description": "One automated review completed"
+  },
+  {
+    "name": "ai-reviewed/2",
+    "color": "000000",
+    "description": "Final automated review completed"
+  },
+  {
+    "name": "ai-review/allow-oversized",
+    "color": "fbca04",
+    "description": "Allows normal automated review of an oversized pull request"
+  }
+]

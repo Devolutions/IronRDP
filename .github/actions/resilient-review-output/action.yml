@@ -1,0 +1,217 @@
+name: Resilient review output
+description: Validate a review result and resume its Claude session once when necessary
+
+inputs:
+  stage:
+    description: Trusted validator to apply
+    required: true
+  expected_sha:
+    description: Pull request head SHA the output must bind to
+    required: true
+  pr_number:
+    description: Pull request number for classifier output validation
+    required: false
+    default: ""
+  anthropic_api_key:
+    description: Anthropic API key for the review stage
+    required: true
+  claude_args:
+    description: Claude CLI arguments for the initial analysis
+    required: true
+  retry_claude_args:
+    description: Claude CLI arguments for the bounded resume
+    required: true
+  settings:
+    description: Claude Code settings
+    required: true
+  prompt:
+    description: Initial analysis prompt
+    required: true
+  retry_prompt:
+    description: Prompt asking the existing session to finish its structured output
+    required: true
+
+outputs:
+  structured_output:
+    description: First validator-accepted structured output
+    value: ${{ steps.select.outputs.output }}
+  failure_reason:
+    description: Trusted validation reason when neither attempt produced usable output
+    value: ${{ steps.select.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - id: initial
+      continue-on-error: true
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.anthropic_api_key }}
+        github_token: ${{ github.token }}
+        allowed_non_write_users: "*"
+        include_comments_by_actor: "__pr_automation_no_comments__"
+        track_progress: false
+        use_sticky_comment: false
+        display_report: false
+        show_full_output: false
+        claude_args: ${{ inputs.claude_args }}
+        settings: ${{ inputs.settings }}
+        prompt: ${{ inputs.prompt }}
+
+    - id: clean-before-validation
+      if: always()
+      # claude-code-action can leave an untracked, malformed package manifest in the base checkout.
+      # The repository does not track one, and Node refuses every subsequent require until it is removed.
+      run: |
+        if ! git ls-files --error-unmatch -- package.json >/dev/null 2>&1; then
+          rm -f -- package.json
+        fi
+      shell: bash
+
+    - id: validate-initial
+      if: always()
+      uses: actions/github-script@v8
+      env:
+        STAGE: ${{ inputs.stage }}
+        EXPECTED_SHA: ${{ inputs.expected_sha }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        OUTCOME: ${{ steps.initial.outcome }}
+        STRUCTURED_OUTPUT: ${{ steps.initial.outputs.structured_output }}
+        SESSION_ID: ${{ steps.initial.outputs.session_id }}
+        RETRY_ARGS: ${{ inputs.retry_claude_args }}
+      with:
+        script: |
+          const {
+            isSessionId, recoverExecutionOutput, validateModelOutput,
+          } = require("./.github/actions/resilient-review-output/validate");
+          const recovered = recoverExecutionOutput(process.env.RUNNER_TEMP);
+          const actionOutput = process.env.STRUCTURED_OUTPUT || "";
+          const output = actionOutput || (recovered.ok ? recovered.structuredOutput : "");
+          const source = actionOutput ? "initial" : output ? "initial-transcript" : "";
+          const result = output === "" && process.env.OUTCOME !== "success"
+            ? {
+              ok: false,
+              reason: recovered.ok
+                ? `initial model action ${process.env.OUTCOME} before producing structured output`
+                : `initial model action ${process.env.OUTCOME} before producing structured output; ` +
+                  recovered.reason,
+            }
+            : validateModelOutput(output, {
+              stage: process.env.STAGE, expectedSha: process.env.EXPECTED_SHA,
+              prNumber: Number(process.env.PR_NUMBER),
+            });
+          core.setOutput("valid", result.ok);
+          core.setOutput("output", result.ok ? output : "");
+          core.setOutput("source", result.ok ? source : "");
+          core.setOutput("reason", result.ok ? "" : result.reason);
+          const sessionId = isSessionId(process.env.SESSION_ID)
+            ? process.env.SESSION_ID
+            : recovered.ok ? recovered.sessionId : "";
+          if (!result.ok && sessionId) {
+            core.setOutput("retry-args", `${process.env.RETRY_ARGS} --resume ${sessionId}`);
+          }
+
+    - id: retry
+      if: steps.validate-initial.outputs.retry-args != ''
+      continue-on-error: true
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.anthropic_api_key }}
+        github_token: ${{ github.token }}
+        allowed_non_write_users: "*"
+        include_comments_by_actor: "__pr_automation_no_comments__"
+        track_progress: false
+        use_sticky_comment: false
+        display_report: false
+        show_full_output: false
+        claude_args: ${{ steps.validate-initial.outputs.retry-args }}
+        settings: ${{ inputs.settings }}
+        prompt: >-
+          ${{ inputs.retry_prompt }}
+          Trusted validation reason: ${{ steps.validate-initial.outputs.reason }}.
+
+    - id: clean-before-selection
+      if: always()
+      # See the cleanup before validate-initial. The resumed model invocation can recreate the file.
+      run: |
+        if ! git ls-files --error-unmatch -- package.json >/dev/null 2>&1; then
+          rm -f -- package.json
+        fi
+      shell: bash
+
+    - id: select
+      if: always()
+      uses: actions/github-script@v8
+      env:
+        STAGE: ${{ inputs.stage }}
+        EXPECTED_SHA: ${{ inputs.expected_sha }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        INITIAL_VALID: ${{ steps.validate-initial.outputs.valid }}
+        INITIAL_SOURCE: ${{ steps.validate-initial.outputs.source }}
+        INITIAL_REASON: ${{ steps.validate-initial.outputs.reason }}
+        INITIAL_OUTCOME: ${{ steps.initial.outcome }}
+        INITIAL_OUTPUT: ${{ steps.validate-initial.outputs.output }}
+        RETRY_ATTEMPTED: ${{ steps.validate-initial.outputs.retry-args != '' }}
+        RETRY_OUTCOME: ${{ steps.retry.outcome }}
+        RETRY_OUTPUT: ${{ steps.retry.outputs.structured_output }}
+      with:
+        script: |
+          const {
+            recoverExecutionOutput, validateModelOutput,
+          } = require("./.github/actions/resilient-review-output/validate");
+          let output = process.env.INITIAL_OUTPUT || "";
+          let selected = process.env.INITIAL_VALID === "true"
+            ? process.env.INITIAL_SOURCE || "initial"
+            : null;
+          let reason = process.env.INITIAL_REASON;
+          let retryStructuredOutput = process.env.RETRY_OUTPUT || "";
+          if (!selected && process.env.RETRY_ATTEMPTED === "true") {
+            const recovered = recoverExecutionOutput(process.env.RUNNER_TEMP);
+            const actionOutput = retryStructuredOutput;
+            const retryOutput = actionOutput || (recovered.ok ? recovered.structuredOutput : "");
+            retryStructuredOutput = retryOutput;
+            const retry = retryOutput === "" && process.env.RETRY_OUTCOME !== "success"
+              ? {
+                ok: false,
+                reason: recovered.ok
+                  ? `resumed model action ${process.env.RETRY_OUTCOME} before producing structured output`
+                  : `resumed model action ${process.env.RETRY_OUTCOME} before producing structured output; ` +
+                    recovered.reason,
+              }
+              : validateModelOutput(retryOutput, {
+                stage: process.env.STAGE, expectedSha: process.env.EXPECTED_SHA,
+                prNumber: Number(process.env.PR_NUMBER),
+              });
+            if (retry.ok) {
+              output = retryOutput;
+              selected = actionOutput ? "resumed" : "resumed-transcript";
+              reason = "";
+            } else {
+              reason = `initial: ${reason}; resumed: ${retry.reason}`;
+            }
+          }
+          core.setOutput("output", selected ? output : "");
+          core.setOutput("reason", selected ? "" : reason);
+          const transcriptOutcome = selected === "initial-transcript"
+            ? process.env.INITIAL_OUTCOME
+            : selected === "resumed-transcript" ? process.env.RETRY_OUTCOME : null;
+          if (transcriptOutcome && transcriptOutcome !== "success") {
+            core.notice(
+              `Recovered valid ${process.env.STAGE} output from the execution transcript after ` +
+              `the model step reported ${transcriptOutcome}`,
+            );
+          }
+          const outputMetadata = (value) => ({
+            present: value !== "",
+            bytes: Buffer.byteLength(value, "utf8"),
+          });
+          core.info(JSON.stringify({
+            event: "pr-automation.llm-output", stage: process.env.STAGE, selected,
+            initialOutcome: process.env.INITIAL_OUTCOME,
+            retryOutcome: process.env.RETRY_ATTEMPTED === "true" ? process.env.RETRY_OUTCOME : null,
+            initialStructuredOutput: outputMetadata(process.env.INITIAL_OUTPUT || ""),
+            retryStructuredOutput: process.env.RETRY_ATTEMPTED === "true"
+              ? outputMetadata(retryStructuredOutput) : null,
+            reason: selected ? null : reason,
+          }));
+          if (!selected) core.warning(`No valid ${process.env.STAGE} output: ${reason}`);

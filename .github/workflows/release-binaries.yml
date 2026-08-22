@@ -96,7 +96,7 @@ jobs:
         uses: ./.github/actions/install-build-deps
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2.7.3
+        uses: Swatinem/rust-cache@v2.9.1
 
       - name: Build release binary
         shell: pwsh

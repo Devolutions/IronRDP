@@ -1,3 +1,5 @@
+mod autodetect;
+mod client_auto_reconnect;
 mod gcc;
 mod gfx;
 mod input;

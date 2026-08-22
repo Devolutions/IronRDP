@@ -1,0 +1,60 @@
+{
+  "$id": "https://github.com/Devolutions/IronRDP/pr-automation/reviewer-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["head_sha", "has_findings", "summary", "protocol_handoff", "findings"],
+  "properties": {
+    "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "has_findings": { "type": "boolean" },
+    "summary": { "type": "string", "maxLength": 1000 },
+    "protocol_handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["received", "disposition", "rationale"],
+      "properties": {
+        "received": { "type": "boolean" },
+        "disposition": { "enum": ["not_applicable", "accepted", "partially_accepted", "rejected"] },
+        "rationale": { "type": "string", "maxLength": 800 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "received": { "const": true } }, "required": ["received"] },
+          "then": {
+            "properties": {
+              "disposition": { "enum": ["accepted", "partially_accepted", "rejected"] },
+              "rationale": { "minLength": 1 }
+            }
+          },
+          "else": { "properties": { "disposition": { "const": "not_applicable" } } }
+        }
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["classification", "severity", "path", "start_line", "end_line", "rationale", "confidence", "protocol_compatibility", "public_api_compatibility"],
+        "properties": {
+          "classification": { "enum": ["blocking", "non_blocking", "question"] },
+          "severity": { "enum": ["critical", "high", "medium", "low"] },
+          "path": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$" },
+          "start_line": { "type": ["integer", "null"], "minimum": 1 },
+          "end_line": { "type": ["integer", "null"], "minimum": 1 },
+          "rationale": { "type": "string", "minLength": 1, "maxLength": 1200 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "protocol_compatibility": { "type": "boolean" },
+          "public_api_compatibility": { "type": "boolean" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "start_line": { "type": "null" } }, "required": ["start_line"] },
+            "then": { "properties": { "end_line": { "type": "null" } } },
+            "else": { "properties": { "end_line": { "type": "integer", "minimum": 1 } } }
+          }
+        ]
+      }
+    }
+  }
+}

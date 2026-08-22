@@ -1,0 +1,52 @@
+scope/core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/ironrdp/**"
+          - "crates/ironrdp-core/**"
+          - "crates/ironrdp-pdu/**"
+          - "crates/ironrdp-graphics/**"
+          - "crates/ironrdp-svc/**"
+          - "crates/ironrdp-dvc/**"
+          - "crates/ironrdp-cliprdr/**"
+          - "crates/ironrdp-cliprdr-format/**"
+          - "crates/ironrdp-rdpdr/**"
+          - "crates/ironrdp-rdpsnd/**"
+          - "crates/ironrdp-connector/**"
+          - "crates/ironrdp-session/**"
+          - "crates/ironrdp-input/**"
+          - "crates/ironrdp-rdcleanpath/**"
+          - "crates/ironrdp-error/**"
+          - "crates/ironrdp-propertyset/**"
+          - "crates/ironrdp-rdpfile/**"
+          - "crates/ironrdp-str/**"
+          - "crates/ironrdp-displaycontrol/**"
+          - "crates/ironrdp-ainput/**"
+          - "crates/ironrdp-egfx/**"
+          - "crates/ironrdp-rdpeusb/**"
+          - "crates/ironrdp-echo/**"
+          - "crates/ironrdp-bulk/**"
+          - "crates/ironrdp-nscodec/**"
+
+scope/web:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/ironrdp-web/**"
+          - "crates/iron-remote-desktop/**"
+          - "web-client/**"
+
+scope/ffi:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "ffi/**"
+          - "crates/ironrdp-activex/**"
+
+scope/tooling:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - ".cargo/**"
+          - "xtask/**"
+          - "rust-toolchain.toml"
+          - "rustfmt.toml"
+          - "clippy.toml"
+          - "typos.toml"

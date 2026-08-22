@@ -8,7 +8,8 @@ pub const MONITOR_COUNT_SIZE: usize = 4;
 pub const MONITOR_SIZE: usize = 20;
 pub const MONITOR_FLAGS_SIZE: usize = 4;
 
-const MONITOR_COUNT_MAX: usize = 16;
+/// Maximum monitors supported by Client Monitor Data.
+pub const MONITOR_COUNT_MAX: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -26,10 +27,14 @@ impl Encode for ClientMonitorData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
+        if self.monitors.len() > MONITOR_COUNT_MAX {
+            return Err(invalid_field_err!("nMonitors", "too many monitors"));
+        }
+
         dst.write_u32(0); // flags
         dst.write_u32(cast_length!("nMonitors", self.monitors.len())?);
 
-        for monitor in self.monitors.iter().take(MONITOR_COUNT_MAX) {
+        for monitor in &self.monitors {
             monitor.encode(dst)?;
         }
 
@@ -129,5 +134,28 @@ bitflags! {
     #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub struct MonitorFlags: u32 {
         const PRIMARY = 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_core::encode_vec;
+
+    use super::{ClientMonitorData, MONITOR_COUNT_MAX, Monitor, MonitorFlags};
+
+    #[test]
+    fn client_monitor_data_rejects_more_than_sixteen_monitors() {
+        let monitor = Monitor {
+            left: 0,
+            top: 0,
+            right: 799,
+            bottom: 599,
+            flags: MonitorFlags::PRIMARY,
+        };
+        let monitor_data = ClientMonitorData {
+            monitors: vec![monitor; MONITOR_COUNT_MAX + 1],
+        };
+
+        assert!(encode_vec(&monitor_data).is_err());
     }
 }

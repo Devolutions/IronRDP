@@ -30,15 +30,24 @@ native-tls = [
     "ironrdp-mstsgu?/native-tls",
 ]
 
-sound = ["dep:ironrdp-rdpsnd", "dep:ironrdp-rdpsnd-native"]
+sound = [
+    "dep:ironrdp-rdpsnd",
+    "dep:ironrdp-rdpsnd-native",
+    "ironrdp-rdpsnd-native/capture",
+    "dep:ironrdp-rdpeai",
+]
 clipboard = ["dep:ironrdp-cliprdr", "dep:ironrdp-cliprdr-native"]
-rdpdr = ["dep:ironrdp-rdpdr"]
+rdpdr = ["dep:ironrdp-rdpdr", "dep:ironrdp-rdpsnd"]
 smartcard = ["rdpdr"]
 gateway = ["dep:ironrdp-mstsgu"]
 qoi = ["ironrdp-connector/qoi", "ironrdp-session/qoi"]
 qoiz = ["ironrdp-connector/qoiz", "ironrdp-session/qoiz"]
 dvc-pipe-proxy = ["dep:ironrdp-dvc-pipe-proxy"]
 dvc-com-plugin = ["dep:ironrdp-dvc-com-plugin"]
+# Prefer System32\webauthn.dll via the DVC COM plugin host (MSTSC parity / hash-only hosts).
+# Keep the pure-Rust RDPEWA path as a fallback when the COM plugin is unavailable.
+webauthn = ["dep:ironrdp-rdpewa", "dep:ironrdp-rdpewa-native", "dvc-com-plugin"]
+vmconnect = ["dep:ironrdp-vmconnect"]
 
 all = [
     "sound",
@@ -48,6 +57,8 @@ all = [
     "gateway",
     "dvc-pipe-proxy",
     "dvc-com-plugin",
+    "webauthn",
+    "vmconnect",
 ]
 
 [dependencies]
@@ -61,16 +72,20 @@ ironrdp-session = { path = "../ironrdp-session", version = "0.11" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.9" } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.8" }
 ironrdp-echo = { path = "../ironrdp-echo", version = "0.4" }
-ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
+ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" }
+ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" } # public
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.10", features = ["reqwest"] }
 ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath", version = "0.2" }
+ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.1", optional = true }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
+ironrdp-rail = { path = "../ironrdp-rail", version = "0.1" }
 
 # Optional protocol crates (activated by features above)
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7", optional = true } # public
-ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7", optional = true }
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7", optional = true } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9", optional = true }
+ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.1", optional = true }
 
 # Optional backend crates (activated by features above)
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.7", optional = true }
@@ -90,10 +105,12 @@ futures-util = { version = "0.3", features = ["sink"] }
 anyhow = "1"
 smallvec = "1.15"
 url = "2"
-x509-cert = { version = "0.2", default-features = false, features = ["std"] }
+x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
 ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin", version = "0.1", optional = true }
+ironrdp-rdpewa = { path = "../ironrdp-rdpewa", version = "0.1", optional = true }
+ironrdp-rdpewa-native = { path = "../ironrdp-rdpewa-native", version = "0.1", optional = true }
 
 [lints]
 workspace = true

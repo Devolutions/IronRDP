@@ -1,3 +1,5 @@
+use core::fmt;
+
 use bitflags::bitflags;
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
@@ -97,11 +99,27 @@ impl<'de> Decode<'de> for LogonInfoExtended {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerAutoReconnect {
     pub logon_id: u32,
     pub random_bits: [u8; AUTO_RECONNECT_RANDOM_BITS_SIZE],
+}
+
+impl fmt::Debug for ServerAutoReconnect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // NOTE: do not show secret (auto-reconnect random).
+        //
+        // These bytes key the HMAC that proves, on reconnect, that this client
+        // was the one last attached to the session ([MS-RDPBCGR] 5.5), so they
+        // are credential material: the spec has the client store the cookie
+        // "in memory, never allowing programmatic access to it". Printing them
+        // would put a live reconnect credential wherever the containing PDU or
+        // event is logged.
+        f.debug_struct("ServerAutoReconnect")
+            .field("logon_id", &self.logon_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ServerAutoReconnect {

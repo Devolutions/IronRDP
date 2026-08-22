@@ -1,8 +1,11 @@
+use core::marker::PhantomData;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::io;
-use std::marker::PhantomData;
-use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+use crate::{CertificateValidation, CertificateValidationCallback};
 
 #[derive(Debug)]
 pub struct TlsStream<S> {
@@ -10,21 +13,21 @@ pub struct TlsStream<S> {
 }
 
 impl<S> AsyncRead for TlsStream<S> {
-    fn poll_read(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>, _: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    fn poll_read(self: Pin<&mut Self>, _: &mut Context<'_>, _: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 }
 
 impl<S> AsyncWrite for TlsStream<S> {
-    fn poll_write(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>, _: &[u8]) -> Poll<Result<usize, io::Error>> {
+    fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, _: &[u8]) -> Poll<Result<usize, io::Error>> {
         Poll::Ready(Ok(0))
     }
 
-    fn poll_flush(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Poll::Ready(Ok(()))
     }
 }
@@ -33,8 +36,32 @@ pub async fn upgrade<S>(stream: S, server_name: &str) -> io::Result<(TlsStream<S
 where
     S: Unpin + AsyncRead + AsyncWrite,
 {
-    // Do nothing and fail
-    let _ = (stream, server_name);
+    upgrade_with_certificate_validation(stream, server_name, CertificateValidation::default()).await
+}
+
+/// The stub backend performs no handshake regardless of the requested policy.
+pub async fn upgrade_with_certificate_validation<S>(
+    stream: S,
+    server_name: &str,
+    certificate_validation: CertificateValidation,
+) -> io::Result<(TlsStream<S>, Vec<u8>)>
+where
+    S: Unpin + AsyncRead + AsyncWrite,
+{
+    let _ = (stream, server_name, certificate_validation);
+    Err(io::Error::other("no TLS backend enabled for this build"))
+}
+
+/// The stub backend cannot perform a certificate-validation callback.
+pub async fn upgrade_with_certificate_validation_callback<S>(
+    stream: S,
+    server_name: &str,
+    callback: CertificateValidationCallback,
+) -> io::Result<(TlsStream<S>, Vec<u8>)>
+where
+    S: Unpin + AsyncRead + AsyncWrite,
+{
+    let _ = (stream, server_name, callback);
     Err(io::Error::other("no TLS backend enabled for this build"))
 }
 

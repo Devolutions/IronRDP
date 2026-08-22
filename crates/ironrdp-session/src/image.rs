@@ -8,7 +8,7 @@ use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use tracing::{debug, trace};
 
-use crate::{SessionResult, custom_err};
+use crate::{SessionError, SessionErrorExt as _, SessionErrorKind, SessionResult, custom_err};
 
 const TILE_SIZE: u16 = 64;
 
@@ -202,7 +202,45 @@ impl DecodedImage {
 
     /// Returns `true` if the rectangle fits entirely within the image bounds.
     fn rect_fits(&self, rect: &InclusiveRectangle) -> bool {
-        rect.right < self.width && rect.bottom < self.height
+        rect.left <= rect.right
+            && rect.top <= rect.bottom
+            && rect.left < self.width
+            && rect.top < self.height
+            && rect.right < self.width
+            && rect.bottom < self.height
+    }
+
+    fn require_bitmap_data_size(
+        data: &[u8],
+        update_rectangle: &InclusiveRectangle,
+        source_width: u16,
+        bytes_per_pixel: usize,
+    ) -> SessionResult<()> {
+        let pixel_count = usize::from(source_width)
+            .checked_mul(usize::from(update_rectangle.height()))
+            .ok_or_else(|| SessionError::general("bitmap rectangle dimensions overflow"))?;
+        let expected_length = pixel_count
+            .checked_mul(bytes_per_pixel)
+            .ok_or_else(|| SessionError::general("bitmap source dimensions overflow"))?;
+
+        if data.len() != expected_length {
+            return Err(SessionError::new(
+                "ApplyBitmap",
+                SessionErrorKind::InvalidBitmapSourceLength,
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn bitmap_destination(
+        &self,
+        update_rectangle: &InclusiveRectangle,
+        width: u16,
+        height: u16,
+    ) -> Option<InclusiveRectangle> {
+        (self.rect_fits(update_rectangle) && width >= update_rectangle.width() && update_rectangle.height() == height)
+            .then_some(update_rectangle.clone())
     }
 
     fn apply_pointer_layer(&mut self, layer: PointerLayer) -> SessionResult<Option<InclusiveRectangle>> {
@@ -552,6 +590,7 @@ impl DecodedImage {
         &mut self,
         rgb16: &[u8],
         update_rectangle: &InclusiveRectangle,
+        source_width: u16,
     ) -> SessionResult<InclusiveRectangle> {
         if !self.rect_fits(update_rectangle) {
             debug!(
@@ -564,8 +603,12 @@ impl DecodedImage {
         const SRC_COLOR_DEPTH: usize = 2;
         const DST_COLOR_DEPTH: usize = 4;
 
+        Self::require_bitmap_data_size(rgb16, update_rectangle, source_width, SRC_COLOR_DEPTH)?;
+
         let image_width = usize::from(self.width);
         let rectangle_width = usize::from(update_rectangle.width());
+        let source_width = usize::from(source_width);
+        let rectangle_height = usize::from(update_rectangle.height());
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
         let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
@@ -573,11 +616,13 @@ impl DecodedImage {
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
         rgb16
-            .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+            .chunks_exact(source_width * SRC_COLOR_DEPTH)
             .rev()
+            .take(rectangle_height)
             .enumerate()
             .for_each(|(row_idx, row)| {
                 row.chunks_exact(SRC_COLOR_DEPTH)
+                    .take(rectangle_width)
                     .enumerate()
                     .for_each(|(col_idx, src_pixel)| {
                         let rgb16_value = u16::from_le_bytes(
@@ -605,6 +650,7 @@ impl DecodedImage {
         &mut self,
         rgb15: &[u8],
         update_rectangle: &InclusiveRectangle,
+        source_width: u16,
     ) -> SessionResult<InclusiveRectangle> {
         if !self.rect_fits(update_rectangle) {
             debug!(
@@ -617,8 +663,12 @@ impl DecodedImage {
         const SRC_COLOR_DEPTH: usize = 2;
         const DST_COLOR_DEPTH: usize = 4;
 
+        Self::require_bitmap_data_size(rgb15, update_rectangle, source_width, SRC_COLOR_DEPTH)?;
+
         let image_width = usize::from(self.width);
         let rectangle_width = usize::from(update_rectangle.width());
+        let source_width = usize::from(source_width);
+        let rectangle_height = usize::from(update_rectangle.height());
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
         let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
@@ -626,11 +676,13 @@ impl DecodedImage {
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
         rgb15
-            .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+            .chunks_exact(source_width * SRC_COLOR_DEPTH)
             .rev()
+            .take(rectangle_height)
             .enumerate()
             .for_each(|(row_idx, row)| {
                 row.chunks_exact(SRC_COLOR_DEPTH)
+                    .take(rectangle_width)
                     .enumerate()
                     .for_each(|(col_idx, src_pixel)| {
                         let rgb15_value = u16::from_le_bytes(
@@ -660,6 +712,7 @@ impl DecodedImage {
         &mut self,
         bgr24: &[u8],
         update_rectangle: &InclusiveRectangle,
+        source_width: u16,
     ) -> SessionResult<InclusiveRectangle> {
         if !self.rect_fits(update_rectangle) {
             debug!(
@@ -672,8 +725,12 @@ impl DecodedImage {
         const SRC_COLOR_DEPTH: usize = 3;
         const DST_COLOR_DEPTH: usize = 4;
 
+        Self::require_bitmap_data_size(bgr24, update_rectangle, source_width, SRC_COLOR_DEPTH)?;
+
         let image_width = usize::from(self.width);
         let rectangle_width = usize::from(update_rectangle.width());
+        let source_width = usize::from(source_width);
+        let rectangle_height = usize::from(update_rectangle.height());
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
         let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
@@ -681,11 +738,13 @@ impl DecodedImage {
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
         bgr24
-            .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+            .chunks_exact(source_width * SRC_COLOR_DEPTH)
             .rev()
+            .take(rectangle_height)
             .enumerate()
             .for_each(|(row_idx, row)| {
                 row.chunks_exact(SRC_COLOR_DEPTH)
+                    .take(rectangle_width)
                     .enumerate()
                     .for_each(|(col_idx, src_pixel)| {
                         let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
@@ -710,6 +769,7 @@ impl DecodedImage {
         indexed: &[u8],
         update_rectangle: &InclusiveRectangle,
         palette: &[[u8; 3]; 256],
+        source_width: u16,
     ) -> SessionResult<InclusiveRectangle> {
         if !self.rect_fits(update_rectangle) {
             debug!(
@@ -719,10 +779,15 @@ impl DecodedImage {
             return Ok(InclusiveRectangle::empty());
         }
 
+        const SRC_COLOR_DEPTH: usize = 1;
         const DST_COLOR_DEPTH: usize = 4;
+
+        Self::require_bitmap_data_size(indexed, update_rectangle, source_width, SRC_COLOR_DEPTH)?;
 
         let image_width = usize::from(self.width);
         let rectangle_width = usize::from(update_rectangle.width());
+        let source_width = usize::from(source_width);
+        let rectangle_height = usize::from(update_rectangle.height());
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
         let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
@@ -730,18 +795,22 @@ impl DecodedImage {
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
         indexed
-            .chunks_exact(rectangle_width)
+            .chunks_exact(source_width)
             .rev()
+            .take(rectangle_height)
             .enumerate()
             .for_each(|(row_idx, row)| {
-                row.iter().enumerate().for_each(|(col_idx, &index)| {
-                    let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
-                    let [r, g, b] = palette[usize::from(index)];
-                    self.data[dst_idx + ri] = r;
-                    self.data[dst_idx + gi] = g;
-                    self.data[dst_idx + bi] = b;
-                    self.data[dst_idx + ai] = 0xff;
-                })
+                row.iter()
+                    .take(rectangle_width)
+                    .enumerate()
+                    .for_each(|(col_idx, &index)| {
+                        let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+                        let [r, g, b] = palette[usize::from(index)];
+                        self.data[dst_idx + ri] = r;
+                        self.data[dst_idx + gi] = g;
+                        self.data[dst_idx + bi] = b;
+                        self.data[dst_idx + ai] = 0xff;
+                    })
             });
 
         let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
@@ -777,6 +846,7 @@ impl DecodedImage {
 
         rgb24.enumerate().for_each(|(row_idx, row)| {
             row.chunks_exact(SRC_COLOR_DEPTH)
+                .take(usize::from(update_rectangle.width()))
                 .enumerate()
                 .for_each(|(col_idx, src_pixel)| {
                     let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
@@ -797,15 +867,25 @@ impl DecodedImage {
         &mut self,
         rgb24: &[u8],
         update_rectangle: &InclusiveRectangle,
+        source_width: u16,
         flip: bool,
     ) -> SessionResult<InclusiveRectangle> {
         const SRC_COLOR_DEPTH: usize = 3;
-        let rectangle_width = usize::from(update_rectangle.width());
-        let lines = rgb24.chunks_exact(rectangle_width * SRC_COLOR_DEPTH);
+        if !self.rect_fits(update_rectangle) {
+            debug!(
+                "Skipping rgb24 update {:?} outside image bounds {}x{}",
+                update_rectangle, self.width, self.height,
+            );
+            return Ok(InclusiveRectangle::empty());
+        }
+        Self::require_bitmap_data_size(rgb24, update_rectangle, source_width, SRC_COLOR_DEPTH)?;
+        let source_width = usize::from(source_width);
+        let rectangle_height = usize::from(update_rectangle.height());
+        let lines = rgb24.chunks_exact(source_width * SRC_COLOR_DEPTH);
         if flip {
-            self.apply_rgb24_iter(lines.rev(), update_rectangle)
+            self.apply_rgb24_iter(lines.rev().take(rectangle_height), update_rectangle)
         } else {
-            self.apply_rgb24_iter(lines, update_rectangle)
+            self.apply_rgb24_iter(lines.take(rectangle_height), update_rectangle)
         }
     }
 
@@ -862,6 +942,14 @@ impl DecodedImage {
         flip: bool,
     ) -> SessionResult<InclusiveRectangle> {
         const SRC_COLOR_DEPTH: usize = 4;
+        if !self.rect_fits(update_rectangle) {
+            debug!(
+                "Skipping rgba32 update {:?} outside image bounds {}x{}",
+                update_rectangle, self.width, self.height,
+            );
+            return Ok(InclusiveRectangle::empty());
+        }
+        Self::require_bitmap_data_size(rgba32, update_rectangle, update_rectangle.width(), SRC_COLOR_DEPTH)?;
         let rectangle_width = usize::from(update_rectangle.width());
         let lines = rgba32.chunks_exact(rectangle_width * SRC_COLOR_DEPTH);
         if flip {
@@ -876,6 +964,7 @@ impl DecodedImage {
         rgb32: &[u8],
         format: PixelFormat,
         update_rectangle: &InclusiveRectangle,
+        source_width: u16,
     ) -> SessionResult<InclusiveRectangle> {
         if !self.rect_fits(update_rectangle) {
             debug!(
@@ -888,8 +977,12 @@ impl DecodedImage {
         const SRC_COLOR_DEPTH: usize = 4;
         const DST_COLOR_DEPTH: usize = 4;
 
+        Self::require_bitmap_data_size(rgb32, update_rectangle, source_width, SRC_COLOR_DEPTH)?;
+
         let image_width = usize::from(self.width);
         let rectangle_width = usize::from(update_rectangle.width());
+        let source_width = usize::from(source_width);
+        let rectangle_height = usize::from(update_rectangle.height());
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
 
@@ -897,11 +990,13 @@ impl DecodedImage {
 
         if format == self.pixel_format {
             rgb32
-                .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+                .chunks_exact(source_width * SRC_COLOR_DEPTH)
                 .rev()
+                .take(rectangle_height)
                 .enumerate()
                 .for_each(|(row_idx, row)| {
                     row.chunks_exact(SRC_COLOR_DEPTH)
+                        .take(rectangle_width)
                         .enumerate()
                         .for_each(|(col_idx, src_pixel)| {
                             let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
@@ -912,11 +1007,13 @@ impl DecodedImage {
         } else {
             let [ri, gi, bi, ai] = self.pixel_format.channel_offsets();
             rgb32
-                .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+                .chunks_exact(source_width * SRC_COLOR_DEPTH)
                 .rev()
+                .take(rectangle_height)
                 .enumerate()
                 .try_for_each(|(row_idx, row)| {
                     row.chunks_exact(SRC_COLOR_DEPTH)
+                        .take(rectangle_width)
                         .enumerate()
                         .try_for_each(|(col_idx, src_pixel)| {
                             let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
@@ -940,5 +1037,95 @@ impl DecodedImage {
         let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
 
         Ok(update_rectangle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pixel(image: &DecodedImage, x: usize, y: usize) -> [u8; 4] {
+        let offset = (y * usize::from(image.width()) + x) * 4;
+        image.data()[offset..offset + 4]
+            .try_into()
+            .expect("pixel has four channels")
+    }
+
+    #[test]
+    fn bgr_bitmap_crops_source_stride_and_preserves_bottom_up_orientation() {
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
+        let rectangle = InclusiveRectangle {
+            left: 1,
+            top: 0,
+            right: 2,
+            bottom: 1,
+        };
+
+        // The wire data is bottom-up, with two extra source columns per row.
+        let bgr = [
+            3, 2, 1, 6, 5, 4, 9, 8, 7, 12, 11, 10, // bottom row
+            15, 14, 13, 18, 17, 16, 21, 20, 19, 24, 23, 22, // top row
+        ];
+
+        image.apply_bgr24_bitmap(&bgr, &rectangle, 4).unwrap();
+
+        assert_eq!(pixel(&image, 1, 0), [13, 14, 15, 255]);
+        assert_eq!(pixel(&image, 2, 0), [16, 17, 18, 255]);
+        assert_eq!(pixel(&image, 1, 1), [1, 2, 3, 255]);
+        assert_eq!(pixel(&image, 2, 1), [4, 5, 6, 255]);
+        assert_eq!(pixel(&image, 3, 0), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rgb24_bitmap_crops_source_stride_and_preserves_top_down_orientation() {
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 3);
+        let rectangle = InclusiveRectangle {
+            left: 1,
+            top: 0,
+            right: 2,
+            bottom: 1,
+        };
+
+        // RDP6 decoding produces row-major RGB data, so no row flip is required.
+        let rgb = [
+            1, 2, 3, 4, 5, 6, 90, 91, 92, 93, 94, 95, // top row
+            13, 14, 15, 16, 17, 18, 96, 97, 98, 99, 100, 101, // bottom row
+        ];
+
+        image.apply_rgb24(&rgb, &rectangle, 4, false).unwrap();
+
+        assert_eq!(pixel(&image, 1, 0), [1, 2, 3, 255]);
+        assert_eq!(pixel(&image, 2, 0), [4, 5, 6, 255]);
+        assert_eq!(pixel(&image, 1, 1), [13, 14, 15, 255]);
+        assert_eq!(pixel(&image, 2, 1), [16, 17, 18, 255]);
+        assert_eq!(pixel(&image, 3, 1), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn bitmap_application_rejects_invalid_rectangles_and_source_lengths() {
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 2, 2);
+        let invalid_rectangle = InclusiveRectangle {
+            left: 2,
+            top: 0,
+            right: 1,
+            bottom: 0,
+        };
+        assert_eq!(image.bitmap_destination(&invalid_rectangle, 1, 1), None);
+        assert_eq!(
+            image.apply_rgb16_bitmap(&[], &invalid_rectangle, 1).unwrap(),
+            InclusiveRectangle::empty()
+        );
+
+        let encoded_rectangle = InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 1,
+            bottom: 1,
+        };
+        assert_eq!(image.bitmap_destination(&encoded_rectangle, 1, 1), None);
+        assert!(
+            image.apply_rgb16_bitmap(&[0; 6], &encoded_rectangle, 1).is_err(),
+            "oversized bitmap data must not be applied"
+        );
     }
 }

@@ -2,16 +2,36 @@ use std::io;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 
+use crate::{CertificateValidation, CertificateValidationCallback};
+
 pub type TlsStream<S> = tokio_native_tls::TlsStream<S>;
 
 pub async fn upgrade<S>(stream: S, server_name: &str) -> io::Result<(TlsStream<S>, x509_cert::Certificate)>
 where
     S: Unpin + AsyncRead + AsyncWrite,
 {
+    upgrade_with_certificate_validation(stream, server_name, CertificateValidation::default()).await
+}
+
+/// Upgrades `stream` to TLS using the explicitly selected certificate-validation policy.
+///
+/// The dangerous policy is intended only for controlled development and test environments.
+pub async fn upgrade_with_certificate_validation<S>(
+    stream: S,
+    server_name: &str,
+    certificate_validation: CertificateValidation,
+) -> io::Result<(TlsStream<S>, x509_cert::Certificate)>
+where
+    S: Unpin + AsyncRead + AsyncWrite,
+{
     let mut tls_stream = {
-        let connector = tokio_native_tls::native_tls::TlsConnector::builder()
-            .danger_accept_invalid_certs(true)
-            .use_sni(false)
+        let mut builder = tokio_native_tls::native_tls::TlsConnector::builder();
+        if certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate {
+            builder.danger_accept_invalid_certs(true);
+            builder.danger_accept_invalid_hostnames(true);
+            builder.use_sni(false);
+        }
+        let connector = builder
             .build()
             .map(tokio_native_tls::TlsConnector::from)
             .map_err(io::Error::other)?;
@@ -35,6 +55,21 @@ where
     };
 
     Ok((tls_stream, tls_cert))
+}
+
+/// The `native-tls` backend cannot safely expose a certificate-validation callback.
+pub async fn upgrade_with_certificate_validation_callback<S>(
+    stream: S,
+    server_name: &str,
+    callback: CertificateValidationCallback,
+) -> io::Result<(TlsStream<S>, x509_cert::Certificate)>
+where
+    S: Unpin + AsyncRead + AsyncWrite,
+{
+    let _ = (stream, server_name, callback);
+    Err(io::Error::other(
+        "certificate validation callbacks require the rustls backend",
+    ))
 }
 
 /// The `native-tls` backend does not expose the negotiated version or cipher.

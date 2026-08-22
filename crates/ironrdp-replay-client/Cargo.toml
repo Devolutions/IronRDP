@@ -4,7 +4,7 @@ version = "0.1.0"
 readme = "README.md"
 description = "Utility tool to replay RDP graphics pipeline for debugging purposes"
 edition.workspace = true
-rust-version = "1.89"
+rust-version = "1.94"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -22,4 +22,3 @@ glutin = { version = "0.29" }
 
 [lints]
 workspace = true
-

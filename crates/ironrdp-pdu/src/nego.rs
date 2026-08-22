@@ -266,12 +266,71 @@ pub struct ConnectionRequest {
     pub nego_data: Option<NegoRequestData>,
     pub flags: RequestFlags,
     pub protocol: SecurityProtocol,
+    /// Optional X.224 connection correlation information.
+    pub correlation_info: Option<CorrelationInfo>,
 }
 
 impl_x224_pdu_pod!(ConnectionRequest);
 
 impl ConnectionRequest {
     const RDP_NEG_REQ_SIZE: u16 = 8;
+}
+
+/// Connection correlation information carried after an RDP negotiation request.
+///
+/// Defined in [\[MS-RDPBCGR\] 2.2.1.1.2].
+///
+/// [\[MS-RDPBCGR\] 2.2.1.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/981b2aa8-2aa3-4bfb-8ac8-fc8efad2c0cd
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorrelationInfo {
+    /// The client-selected connection correlation identifier.
+    ///
+    /// The first byte should not be `0x00` or `0xF4`, and no byte should
+    /// be `0x0D`.
+    pub correlation_id: [u8; 16],
+}
+
+impl CorrelationInfo {
+    const TYPE: u8 = 0x06;
+    const FLAGS: u8 = 0;
+    const SIZE: u16 = 36;
+    const RESERVED_SIZE: usize = 16;
+
+    fn write(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: usize::from(Self::SIZE));
+        dst.write_u8(Self::TYPE);
+        dst.write_u8(Self::FLAGS);
+        dst.write_u16(Self::SIZE);
+        dst.write_slice(&self.correlation_id);
+        dst.write_slice(&[0; Self::RESERVED_SIZE]);
+        Ok(())
+    }
+
+    fn read(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: usize::from(Self::SIZE));
+        let message_type = src.read_u8();
+        let flags = src.read_u8();
+        let length = src.read_u16();
+        if message_type != Self::TYPE || flags != Self::FLAGS || length != Self::SIZE {
+            return Err(invalid_field_err!(
+                "RDP_NEG_CORRELATION_INFO",
+                "header",
+                "contains invalid type, flags, or length"
+            ));
+        }
+
+        let mut correlation_id = [0; 16];
+        correlation_id.copy_from_slice(src.read_slice(16));
+        if src.read_slice(Self::RESERVED_SIZE).iter().any(|&byte| byte != 0) {
+            return Err(invalid_field_err!(
+                "RDP_NEG_CORRELATION_INFO",
+                "reserved",
+                "must be zero"
+            ));
+        }
+
+        Ok(Self { correlation_id })
+    }
 }
 
 impl<'de> X224Pdu<'de> for ConnectionRequest {
@@ -287,17 +346,14 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
         // [MS-RDPBCGR] mentions the following payload as optional, but it appears that on recent
         // versions of Windows, the server always expect to find this payload.
         dst.write_u8(u8::from(NegoMsgType::REQUEST));
-        dst.write_u8(self.flags.bits());
+        let mut flags = self.flags;
+        flags.set(RequestFlags::CORRELATION_INFO_PRESENT, self.correlation_info.is_some());
+        dst.write_u8(flags.bits());
         dst.write_u16(Self::RDP_NEG_REQ_SIZE);
         dst.write_u32(self.protocol.bits());
 
-        if self.flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
-            // TODO(#111): support for RDP_NEG_CORRELATION_INFO
-            return Err(invalid_field_err(
-                Self::NAME,
-                "flags",
-                "CORRECTION_INFO_PRESENT flag is set, but not supported by IronRDP",
-            ));
+        if let Some(correlation_info) = &self.correlation_info {
+            correlation_info.write(dst)?;
         }
 
         Ok(())
@@ -320,6 +376,14 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
             ));
         };
 
+        if variable_part_rest_size > 0 && variable_part_rest_size < usize::from(Self::RDP_NEG_REQ_SIZE) {
+            return Err(invalid_field_err!(
+                Self::NAME,
+                "TPDU header variable part",
+                "has a truncated negotiation request"
+            ));
+        }
+
         if variable_part_rest_size >= usize::from(Self::RDP_NEG_REQ_SIZE) {
             let msg_type = NegoMsgType::from(src.read_u8());
 
@@ -328,37 +392,56 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
             }
 
             let flags = RequestFlags::from_bits_retain(src.read_u8());
-
-            if flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
-                // TODO(#111): support for RDP_NEG_CORRELATION_INFO
-                return Err(invalid_field_err(
-                    Self::NAME,
-                    "flags",
-                    "CORRECTION_INFO_PRESENT flag is set, but not supported by IronRDP",
-                ));
+            let length = src.read_u16();
+            if length != Self::RDP_NEG_REQ_SIZE {
+                return Err(invalid_field_err!(Self::NAME, "length", "must be eight bytes"));
             }
 
-            let _length = src.read_u16();
-
             let protocol = SecurityProtocol::from_bits_retain(src.read_u32());
+            let correlation_info = if flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
+                if variable_part_rest_size != usize::from(Self::RDP_NEG_REQ_SIZE + CorrelationInfo::SIZE) {
+                    return Err(invalid_field_err!(
+                        Self::NAME,
+                        "TPDU header variable part",
+                        "has invalid correlation information length"
+                    ));
+                }
+                Some(CorrelationInfo::read(src)?)
+            } else {
+                if variable_part_rest_size != usize::from(Self::RDP_NEG_REQ_SIZE) {
+                    return Err(invalid_field_err!(
+                        Self::NAME,
+                        "TPDU header variable part",
+                        "has unexpected trailing data"
+                    ));
+                }
+                None
+            };
 
             Ok(Self {
                 nego_data,
                 flags,
                 protocol,
+                correlation_info,
             })
         } else {
             Ok(Self {
                 nego_data,
                 flags: RequestFlags::empty(),
                 protocol: SecurityProtocol::empty(),
+                correlation_info: None,
             })
         }
     }
 
     fn tpdu_header_variable_part_size(&self) -> usize {
         let optional_nego_data_size = self.nego_data.as_ref().map(|data| data.size()).unwrap_or(0);
-        optional_nego_data_size + usize::from(Self::RDP_NEG_REQ_SIZE)
+        optional_nego_data_size
+            + usize::from(Self::RDP_NEG_REQ_SIZE)
+            + self
+                .correlation_info
+                .as_ref()
+                .map_or(0, |_| usize::from(CorrelationInfo::SIZE))
     }
 
     fn tpdu_user_data_size(&self) -> usize {

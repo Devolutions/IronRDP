@@ -4,7 +4,7 @@ version = "0.2.2"
 readme = "README.md"
 description = "RDCleanPath PDU structure used by IronRDP web client and Devolutions Gateway"
 edition.workspace = true
-rust-version = "1.89"
+rust-version = "1.94"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -17,8 +17,7 @@ doctest = false
 test = false
 
 [dependencies]
-der = { version = "0.7", features = ["alloc", "derive"] } # public
+der = { version = "0.8", features = ["alloc", "derive"] } # public
 
 [lints]
 workspace = true
-

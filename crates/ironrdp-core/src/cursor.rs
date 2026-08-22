@@ -489,11 +489,11 @@ impl<'a> ReadCursor<'a> {
         self.pos -= len;
     }
 
-    /// Return a new cursor rewinded by `len` bytes.
+    /// Return a new cursor rewound by `len` bytes.
     #[inline]
     #[track_caller]
     #[must_use]
-    pub const fn rewinded(&'a self, len: usize) -> ReadCursor<'a> {
+    pub const fn rewound(&'a self, len: usize) -> ReadCursor<'a> {
         ReadCursor {
             inner: self.inner,
             pos: self.pos - len,
@@ -725,11 +725,11 @@ impl<'a> WriteCursor<'a> {
         self.pos -= len;
     }
 
-    /// Returns a new cursor rewinded by `len` bytes.
+    /// Returns a new cursor rewound by `len` bytes.
     #[inline]
     #[track_caller]
     #[must_use]
-    pub fn rewinded(&'a mut self, len: usize) -> WriteCursor<'a> {
+    pub fn rewound(&'a mut self, len: usize) -> WriteCursor<'a> {
         WriteCursor {
             inner: self.inner,
             pos: self.pos - len,

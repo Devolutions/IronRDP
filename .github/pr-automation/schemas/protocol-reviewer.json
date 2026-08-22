@@ -1,0 +1,71 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "head_sha", "protocol_relevance", "relevance_reason", "protocols_consulted", "change_mappings", "potential_discrepancies", "required_or_valuable_tests", "uncertainty"],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "protocol_relevance": { "enum": ["none", "low", "medium", "high"] },
+    "relevance_reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "protocols_consulted": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["protocol_id", "section", "heading"],
+        "properties": {
+          "protocol_id": { "type": "string", "pattern": "^(?:MS|MC)-[A-Z0-9]+$" },
+          "section": { "type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)*$" },
+          "heading": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      }
+    },
+    "change_mappings": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "line", "symbol", "change", "requirement", "source_protocol", "source_section", "assessment", "confidence", "evidence"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$" },
+          "line": { "type": ["integer", "null"], "minimum": 1 },
+          "symbol": { "type": ["string", "null"], "maxLength": 200 },
+          "change": { "type": "string", "minLength": 1, "maxLength": 600 },
+          "requirement": { "type": "string", "minLength": 1, "maxLength": 600 },
+          "source_protocol": { "type": "string", "pattern": "^(?:MS|MC)-[A-Z0-9]+$" },
+          "source_section": { "type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)*$" },
+          "assessment": { "enum": ["conforms", "conflicts", "incomplete_evidence", "ambiguous"] },
+          "confidence": { "enum": ["high", "medium", "low"] },
+          "evidence": { "type": "string", "minLength": 1, "maxLength": 1200 }
+        }
+      }
+    },
+    "potential_discrepancies": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["description", "affected_behavior", "protocol_id", "section"],
+        "properties": {
+          "description": { "type": "string", "minLength": 1, "maxLength": 800 },
+          "affected_behavior": { "type": "string", "minLength": 1, "maxLength": 400 },
+          "protocol_id": { "type": "string", "pattern": "^(?:MS|MC)-[A-Z0-9]+$" },
+          "section": { "type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)*$" }
+        }
+      }
+    },
+    "required_or_valuable_tests": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+    },
+    "uncertainty": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+    }
+  }
+}

@@ -1,6 +1,6 @@
-use ironrdp_core::{Decode as _, EncodeResult, ReadCursor, impl_as_any};
+use ironrdp_core::{EncodeResult, decode, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
-use ironrdp_pdu::{PduResult, decode_err};
+use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::debug;
 
@@ -76,7 +76,17 @@ impl DvcProcessor for DisplayControlClient {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        let caps = DisplayControlCapabilities::decode(&mut ReadCursor::new(payload)).map_err(|e| decode_err!(e))?;
+        // The server sends the full DISPLAYCONTROL_CAPS_PDU, i.e. the capability set prefixed
+        // with the DISPLAYCONTROL_HEADER (Type + Length), per MS-RDPEDISP 2.2.2.1.
+        let caps = match decode(payload).map_err(|e| decode_err!(e))? {
+            DisplayControlPdu::Caps(caps) => caps,
+            DisplayControlPdu::MonitorLayout(_) => {
+                return Err(pdu_other_err!(
+                    "DisplayControlClient::process",
+                    "received unexpected DISPLAYCONTROL_MONITOR_LAYOUT_PDU from server"
+                ));
+            }
+        };
         debug!("Received {:?}", caps);
         self.ready = true;
         (self.on_capabilities_received)(caps)

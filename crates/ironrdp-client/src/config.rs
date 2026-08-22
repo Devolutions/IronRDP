@@ -8,7 +8,11 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_propertyset::PropertySet;
+use ironrdp_rail::pdu::ExecutePdu;
 use url::Url;
+
+#[cfg(feature = "vmconnect")]
+pub use ironrdp_vmconnect::Mode as VmConnectMode;
 
 // ── Extension registry ────────────────────────────────────────────────────────
 
@@ -58,9 +62,20 @@ pub struct Config {
     pub(crate) connector: ironrdp_connector::Config,
     pub(crate) destination: Destination,
     pub(crate) transport: Transport,
+    pub(crate) certificate_validation: ironrdp_tls::CertificateValidation,
+    pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
+
+    #[cfg(feature = "vmconnect")]
+    /// Hyper-V VM ID when connecting to a VM console (port [`ironrdp_vmconnect::PORT`]).
+    pub(crate) vm_id: Option<String>,
+    #[cfg(feature = "vmconnect")]
+    pub(crate) vmconnect_mode: VmConnectMode,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
+    pub(crate) rail_client_status_flags: Option<u32>,
+    /// Initial RemoteApp launch queued after the RAIL handshake.
+    pub(crate) rail_initial_execute: Option<ExecutePdu>,
 
     /// DVC channel ↔ named-pipe proxy configuration.
     ///
@@ -75,6 +90,10 @@ pub struct Config {
     /// called to obtain DVC plugin COM objects.  Example: `C:\Windows\System32\webauthn.dll`.
     #[cfg(all(windows, feature = "dvc-com-plugin"))]
     pub(crate) dvc_plugins: Vec<PathBuf>,
+
+    /// Parent HWND for WebAuthn UI prompts (Windows only).
+    #[cfg(all(windows, feature = "webauthn"))]
+    pub(crate) webauthn_parent_hwnd: Option<isize>,
 
     /// The merged PropertySet that produced this config, shared (read-only) with channel factories.
     ///
@@ -98,6 +117,28 @@ impl Config {
     /// Selected transport (Direct, Gateway, or RDCleanPath).
     pub fn transport(&self) -> &Transport {
         &self.transport
+    }
+
+    /// TLS peer-certificate validation policy.
+    pub fn certificate_validation(&self) -> ironrdp_tls::CertificateValidation {
+        self.certificate_validation
+    }
+
+    /// Optional exception handler for an otherwise-invalid server certificate.
+    pub fn certificate_validation_callback(&self) -> Option<&ironrdp_tls::CertificateValidationCallback> {
+        self.certificate_validation_callback.as_ref()
+    }
+
+    #[cfg(feature = "vmconnect")]
+    /// Hyper-V VM ID for a vmconnect session, if any.
+    pub fn vm_id(&self) -> Option<&str> {
+        self.vm_id.as_deref()
+    }
+
+    #[cfg(feature = "vmconnect")]
+    /// Hyper-V console mode for a vmconnect session, if any.
+    pub fn vmconnect_mode(&self) -> Option<VmConnectMode> {
+        self.vm_id.as_ref().map(|_| self.vmconnect_mode)
     }
 
     /// Optional Kerberos/KDC proxy configuration.
@@ -127,6 +168,12 @@ impl Config {
         &self.dvc_plugins
     }
 
+    /// Parent HWND for native WebAuthn redirection prompts (Windows only).
+    #[cfg(all(windows, feature = "webauthn"))]
+    pub fn webauthn_parent_hwnd(&self) -> Option<isize> {
+        self.webauthn_parent_hwnd
+    }
+
     /// Merged `.rdp` PropertySet that produced this config.
     pub fn properties(&self) -> &PropertySet {
         &self.properties
@@ -139,13 +186,26 @@ impl fmt::Debug for Config {
         s.field("connector", &self.connector);
         s.field("destination", &self.destination);
         s.field("transport", &self.transport);
+        s.field("certificate_validation", &self.certificate_validation);
+        s.field(
+            "certificate_validation_callback",
+            &self.certificate_validation_callback.as_ref().map(|_| "<configured>"),
+        );
+        #[cfg(feature = "vmconnect")]
+        {
+            s.field("vm_id", &self.vm_id);
+            s.field("vmconnect_mode", &self.vmconnect_mode);
+        }
         s.field("kerberos_config", &self.kerberos_config);
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
+        s.field("rail_client_status_flags", &self.rail_client_status_flags);
         #[cfg(feature = "dvc-pipe-proxy")]
         s.field("dvc_pipe_proxies", &self.dvc_pipe_proxies);
         #[cfg(all(windows, feature = "dvc-com-plugin"))]
         s.field("dvc_plugins", &self.dvc_plugins);
+        #[cfg(all(windows, feature = "webauthn"))]
+        s.field("webauthn_parent_hwnd", &self.webauthn_parent_hwnd);
         s.field("extensions", &self.extensions);
         s.finish()
     }
@@ -184,6 +244,10 @@ pub struct ChannelConfig {
     #[cfg(feature = "sound")]
     pub sound: bool,
 
+    /// Enable the AUDIO_INPUT (microphone capture) dynamic virtual channel.
+    #[cfg(feature = "sound")]
+    pub audio_capture: bool,
+
     /// Clipboard redirection mode.
     #[cfg(feature = "clipboard")]
     pub clipboard: ClipboardType,
@@ -202,10 +266,20 @@ pub struct ChannelConfig {
     /// Enable QOIZ (QOI with zlib) bitmap codec.
     #[cfg(feature = "qoiz")]
     pub qoiz: bool,
+
+    /// Enable native MS-RDPEWA WebAuthn redirection.
+    #[cfg(feature = "webauthn")]
+    pub webauthn: bool,
 }
 
 #[cfg_attr(
-    not(any(feature = "sound", feature = "clipboard", feature = "qoi", feature = "qoiz")),
+    not(any(
+        feature = "sound",
+        feature = "clipboard",
+        feature = "qoi",
+        feature = "qoiz",
+        feature = "webauthn"
+    )),
     expect(
         clippy::derivable_impls,
         reason = "fields setting non-default values are feature-gated; the impl is only trivially derivable in some feature combinations"
@@ -216,6 +290,8 @@ impl Default for ChannelConfig {
         Self {
             #[cfg(feature = "sound")]
             sound: true,
+            #[cfg(feature = "sound")]
+            audio_capture: false,
             #[cfg(feature = "clipboard")]
             clipboard: ClipboardType::Enable,
             #[cfg(feature = "rdpdr")]
@@ -224,6 +300,8 @@ impl Default for ChannelConfig {
             qoi: true,
             #[cfg(feature = "qoiz")]
             qoiz: true,
+            #[cfg(feature = "webauthn")]
+            webauthn: true,
         }
     }
 }
@@ -265,16 +343,23 @@ pub enum Transport {
 
     /// Connect via an RDS gateway (MS-TSGU / MSTSGU).
     ///
-    /// The target RDP server is derived from [`Config::destination`]; the gateway
-    /// only needs its own endpoint and credentials.
-    ///
-    /// NOTE: the destination port is currently not forwarded to the gateway.
-    /// If `ironrdp-mstsgu` hardcodes port 3389, open a follow-up issue.
+    /// The target RDP server host and port are taken from [`Config::destination`] and
+    /// forwarded in the MS-TSGU channel-create packet. The gateway only needs its own
+    /// endpoint and credentials.
     #[cfg(feature = "gateway")]
     Gateway(GatewayConfig),
 
     /// Connect via an RDCleanPath proxy (WebSocket-based).
     RDCleanPath(RDCleanPathConfig),
+
+    /// Windows named-pipe byte stream carrying TPKT/X.224 (e.g. Windows Sandbox `\\.\pipe\{VMId}`).
+    ///
+    /// Typically used with standard RDP security (`enable_tls`/`enable_credssp` both false).
+    #[cfg(windows)]
+    NamedPipe {
+        /// Full pipe path (`\\.\pipe\…`) or bare pipe name.
+        path: String,
+    },
 }
 
 /// Transport selection used to configure a [`ConfigBuilder`].
@@ -305,6 +390,9 @@ pub enum TransportKind {
     Gateway {
         /// Gateway endpoint address (e.g., `"rdg.contoso.com:443"`).
         endpoint: String,
+        /// When `true` (`GatewayUsageMethod::Detect`), try a direct TCP connection first and fall
+        /// back to the gateway only if that fails.
+        prefer_direct: bool,
     },
 
     /// Connect via an RDCleanPath proxy (WebSocket-based).
@@ -314,6 +402,13 @@ pub enum TransportKind {
     RDCleanPath {
         /// RDCleanPath proxy URL.
         url: Url,
+    },
+
+    /// Windows named-pipe RDP stream (e.g. Windows Sandbox).
+    #[cfg(windows)]
+    NamedPipe {
+        /// Full pipe path (`\\.\pipe\…`) or bare pipe name.
+        path: String,
     },
 }
 
@@ -327,44 +422,39 @@ pub struct GatewayConfig {
     pub username: String,
     /// Gateway password.
     pub password: String,
+    /// When `true` (`GatewayUsageMethod::Detect`), try direct TCP first and fall back to the
+    /// gateway on connection failure.
+    pub prefer_direct: bool,
 }
 
 // ── Destination ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Destination {
     name: String,
-    port: u16,
+    port: Option<u16>,
 }
 
 impl Destination {
     pub fn new(addr: impl Into<String>) -> anyhow::Result<Self> {
-        const RDP_DEFAULT_PORT: u16 = 3389;
-
         let addr = addr.into();
 
         if let Some(addr_split) = addr.rsplit_once(':') {
             if let Ok(sock_addr) = addr.parse::<core::net::SocketAddr>() {
                 Ok(Self {
                     name: sock_addr.ip().to_string(),
-                    port: sock_addr.port(),
+                    port: Some(sock_addr.port()),
                 })
             } else if addr.parse::<core::net::Ipv6Addr>().is_ok() {
-                Ok(Self {
-                    name: addr,
-                    port: RDP_DEFAULT_PORT,
-                })
+                Ok(Self { name: addr, port: None })
             } else {
                 Ok(Self {
                     name: addr_split.0.to_owned(),
-                    port: addr_split.1.parse().context("invalid port")?,
+                    port: Some(addr_split.1.parse().context("invalid port")?),
                 })
             }
         } else {
-            Ok(Self {
-                name: addr,
-                port: RDP_DEFAULT_PORT,
-            })
+            Ok(Self { name: addr, port: None })
         }
     }
 
@@ -373,7 +463,7 @@ impl Destination {
     }
 
     pub fn port(&self) -> u16 {
-        self.port
+        self.port.unwrap_or(RDP_DEFAULT_PORT)
     }
 
     /// Construct a `Destination` from already-validated components.
@@ -383,18 +473,26 @@ impl Destination {
     pub fn from_parts(name: impl Into<String>, port: u16) -> Self {
         Self {
             name: name.into(),
-            port,
+            port: Some(port),
         }
     }
 }
+
+impl PartialEq for Destination {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.port() == other.port()
+    }
+}
+
+impl Eq for Destination {}
 
 impl fmt::Display for Destination {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // IPv6 addresses must be bracketed in host:port notation.
         if self.name.parse::<core::net::Ipv6Addr>().is_ok() {
-            write!(f, "[{}]:{}", self.name, self.port)
+            write!(f, "[{}]:{}", self.name, self.port())
         } else {
-            write!(f, "{}:{}", self.name, self.port)
+            write!(f, "{}:{}", self.name, self.port())
         }
     }
 }
@@ -544,26 +642,42 @@ pub struct ConfigBuilder {
     domain: Option<String>,
     enable_tls: Option<bool>,
     enable_credssp: Option<bool>,
+    certificate_validation: Option<ironrdp_tls::CertificateValidation>,
+    certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
     keyboard_type: Option<ironrdp_pdu::gcc::KeyboardType>,
     keyboard_subtype: Option<u32>,
     keyboard_functional_keys_count: Option<u32>,
+    keyboard_layout: Option<u32>,
+    connection_type: Option<ironrdp_pdu::gcc::ConnectionType>,
     ime_file_name: Option<String>,
     dig_product_id: Option<String>,
     desktop_width: Option<u16>,
     desktop_height: Option<u16>,
+    monitor_layout: Option<ironrdp_pdu::gcc::ClientMonitorData>,
     desktop_scale_factor: Option<u32>,
     color_depth: Option<u32>,
+    lossy_compression: Option<bool>,
     codecs: Vec<String>,
     autologon: Option<bool>,
     enable_server_pointer: Option<bool>,
     pointer_software_rendering: Option<bool>,
+    performance_flags: Option<ironrdp_pdu::rdp::client_info::PerformanceFlags>,
     enable_audio_playback: Option<bool>,
+    enable_audio_capture: Option<bool>,
     compression_type: Option<ironrdp_pdu::rdp::client_info::CompressionType>,
     compression_enabled: Option<bool>,
     alternate_shell: Option<String>,
     work_dir: Option<String>,
+    remote_application_mode: Option<bool>,
+    remote_application_program: Option<String>,
+    rail_support_level: Option<ironrdp_pdu::rdp::capability_sets::RailSupportLevel>,
+    rail_client_status_flags: Option<u32>,
 
     transport: TransportKind,
+    #[cfg(feature = "vmconnect")]
+    vm_id: Option<String>,
+    #[cfg(feature = "vmconnect")]
+    vmconnect_mode: VmConnectMode,
     rdcleanpath_token: Option<String>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     fake_events_interval: Option<Duration>,
@@ -572,6 +686,8 @@ pub struct ConfigBuilder {
     dvc_pipe_proxies: Vec<DvcProxyInfo>,
     #[cfg(all(windows, feature = "dvc-com-plugin"))]
     dvc_plugins: Vec<PathBuf>,
+    #[cfg(all(windows, feature = "webauthn"))]
+    webauthn_parent_hwnd: Option<isize>,
     properties: PropertySet,
     extensions: ExtensionRegistry,
 }
@@ -592,7 +708,7 @@ impl ConfigBuilder {
         };
         self.properties
             .set_full_address(&ironrdp_cfg::TargetAddr { host, port: None });
-        self.properties.set_server_port(destination.port);
+        self.properties.set_server_port(destination.port());
         self.properties.clear_alternate_full_address();
         self.destination = Some(destination);
         self
@@ -677,6 +793,20 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set the keyboard layout (HKL) advertised in the GCC Client Core Data block.
+    #[must_use]
+    pub fn with_keyboard_layout(mut self, keyboard_layout: u32) -> Self {
+        self.keyboard_layout = Some(keyboard_layout);
+        self
+    }
+
+    /// Set the network profile advertised in the GCC Client Core Data block.
+    #[must_use]
+    pub fn with_connection_type(mut self, connection_type: ironrdp_pdu::gcc::ConnectionType) -> Self {
+        self.connection_type = Some(connection_type);
+        self
+    }
+
     #[must_use]
     pub fn with_ime_file_name(mut self, name: impl Into<String>) -> Self {
         self.ime_file_name = Some(name.into());
@@ -693,6 +823,13 @@ impl ConfigBuilder {
     pub fn with_color_depth(mut self, depth: u32) -> Self {
         self.color_depth = Some(depth);
         self.properties.set_color_depth(depth);
+        self
+    }
+
+    /// Permit dynamic color fidelity and chroma subsampling in RDP 6.0 bitmap updates.
+    #[must_use]
+    pub fn with_lossy_compression(mut self, enabled: bool) -> Self {
+        self.lossy_compression = Some(enabled);
         self
     }
 
@@ -715,6 +852,16 @@ impl ConfigBuilder {
     pub fn with_desktop_height(mut self, height: u16) -> Self {
         self.desktop_height = Some(height);
         self.properties.set_desktop_height(height);
+        self
+    }
+
+    /// Advertise the client monitor topology in the GCC Client Monitor Data block.
+    ///
+    /// The caller must set [`Self::with_desktop_width`] and [`Self::with_desktop_height`] to
+    /// the virtual desktop dimensions containing every monitor.
+    #[must_use]
+    pub fn with_monitor_layout(mut self, monitor_layout: ironrdp_pdu::gcc::ClientMonitorData) -> Self {
+        self.monitor_layout = Some(monitor_layout);
         self
     }
 
@@ -758,6 +905,69 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set the alternate shell to start after logon. Upserts the `alternate shell` property.
+    ///
+    /// An empty value clears the alternate shell and requests the server's normal user shell.
+    #[must_use]
+    pub fn with_alternate_shell(mut self, shell: impl Into<String>) -> Self {
+        let shell = shell.into();
+        if shell.is_empty() {
+            self.alternate_shell = None;
+            self.properties.clear_alternate_shell();
+        } else {
+            self.properties.set_alternate_shell(shell.clone());
+            self.alternate_shell = Some(shell);
+        }
+        self
+    }
+
+    /// Set the working directory for the alternate shell. Upserts the `shell working directory` property.
+    ///
+    /// An empty value clears the working directory.
+    #[must_use]
+    pub fn with_work_dir(mut self, work_dir: impl Into<String>) -> Self {
+        let work_dir = work_dir.into();
+        if work_dir.is_empty() {
+            self.work_dir = None;
+            self.properties.clear_shell_working_directory();
+        } else {
+            self.properties.set_shell_working_directory(work_dir.clone());
+            self.work_dir = Some(work_dir);
+        }
+        self
+    }
+
+    /// Enable or disable RemoteApp/RAIL connection mode.
+    ///
+    /// RemoteApp launch information is sent on the RAIL static virtual channel
+    /// rather than through the Client Info Alternate Shell field.
+    #[must_use]
+    pub fn with_remote_application_mode(mut self, enabled: bool) -> Self {
+        self.properties.set_remote_application_mode(enabled);
+        self.remote_application_mode = Some(enabled);
+        self
+    }
+
+    /// Declares the RAIL capabilities implemented by this client.
+    ///
+    /// RemoteApp mode requires
+    /// [`RailSupportLevel::SUPPORTED`](ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED).
+    #[must_use]
+    pub fn with_rail_support_level(
+        mut self,
+        support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel,
+    ) -> Self {
+        self.rail_support_level = Some(support_level);
+        self
+    }
+
+    /// Overrides the RAIL Client Status flags advertised during channel initialization.
+    #[must_use]
+    pub fn with_rail_client_status_flags(mut self, flags: u32) -> Self {
+        self.rail_client_status_flags = Some(flags);
+        self
+    }
+
     /// Enable or disable TLS + Graphical login (legacy security protocol; also called SSL). Upserts
     /// the `ironrdp_tls` property.
     ///
@@ -771,6 +981,30 @@ impl ConfigBuilder {
     pub fn with_tls(mut self, enabled: bool) -> Self {
         self.enable_tls = Some(enabled);
         self.properties.set_enable_tls(enabled);
+        self
+    }
+
+    /// Set the TLS peer-certificate validation policy.
+    ///
+    /// The default preserves historic behavior by accepting invalid certificates. Use
+    /// [`ironrdp_tls::CertificateValidation::Strict`] to validate the certificate
+    /// chain and server name against the platform trust store.
+    #[must_use]
+    pub fn with_certificate_validation(mut self, validation: ironrdp_tls::CertificateValidation) -> Self {
+        self.certificate_validation = Some(validation);
+        self
+    }
+
+    /// Set an explicit handler for otherwise-invalid server certificates.
+    ///
+    /// This requires the Rustls backend. The callback is invoked only after normal
+    /// platform-root and server-name validation fails.
+    #[must_use]
+    pub fn with_certificate_validation_callback(
+        mut self,
+        callback: ironrdp_tls::CertificateValidationCallback,
+    ) -> Self {
+        self.certificate_validation_callback = Some(callback);
         self
     }
 
@@ -788,6 +1022,13 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_pointer_software_rendering(mut self, enabled: bool) -> Self {
         self.pointer_software_rendering = Some(enabled);
+        self
+    }
+
+    /// Set the Client Info PDU performance flags.
+    #[must_use]
+    pub fn with_performance_flags(mut self, flags: ironrdp_pdu::rdp::client_info::PerformanceFlags) -> Self {
+        self.performance_flags = Some(flags);
         self
     }
 
@@ -843,26 +1084,73 @@ impl ConfigBuilder {
     /// [`with_gateway_username`](Self::with_gateway_username) /
     /// [`with_gateway_password`](Self::with_gateway_password) and the RDCleanPath token via
     /// [`with_rdcleanpath_token`](Self::with_rdcleanpath_token).
+    /// A `gatewaycredentialssource` property of
+    /// [`UseServerCredentials`](ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials)
+    /// resolves unspecified gateway credentials from the RDP server account.
     #[must_use]
     pub fn with_transport(mut self, transport: TransportKind) -> Self {
         match &transport {
             TransportKind::Direct => {
                 self.properties.clear_rdcleanpath();
                 self.properties.clear_gateway();
+                #[cfg(windows)]
+                self.properties.clear_named_pipe();
             }
             TransportKind::RDCleanPath { url } => {
                 self.properties.clear_gateway();
+                #[cfg(windows)]
+                self.properties.clear_named_pipe();
                 self.properties.set_rdcleanpath_url(url.to_string());
             }
             #[cfg(feature = "gateway")]
-            TransportKind::Gateway { endpoint } => {
+            TransportKind::Gateway {
+                endpoint,
+                prefer_direct,
+            } => {
                 self.properties.clear_rdcleanpath();
+                #[cfg(windows)]
+                self.properties.clear_named_pipe();
                 self.properties.set_gateway_hostname(endpoint.clone());
-                self.properties
-                    .set_gateway_usage_method(ironrdp_cfg::GatewayUsageMethod::UseAlways);
+                self.properties.set_gateway_usage_method(if *prefer_direct {
+                    ironrdp_cfg::GatewayUsageMethod::Detect
+                } else {
+                    ironrdp_cfg::GatewayUsageMethod::UseAlways
+                });
+            }
+            #[cfg(windows)]
+            TransportKind::NamedPipe { path } => {
+                self.properties.clear_rdcleanpath();
+                self.properties.clear_gateway();
+                self.properties.set_named_pipe(path.clone());
             }
         }
         self.transport = transport;
+        self
+    }
+
+    #[cfg(feature = "vmconnect")]
+    /// Connect to a Hyper-V VM console by VM GUID. Destination must use port
+    /// [`ironrdp_vmconnect::PORT`] (2179) unless the caller explicitly selects another port.
+    /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
+    ///
+    /// Security (TLS + CredSSP) is required by [`ironrdp_vmconnect::connect_front`] for every
+    /// embedder (error if disabled). Works over Direct, RDCleanPath, and RDS Gateway (the
+    /// destination port, typically 2179, is forwarded in the MS-TSGU channel-create packet,
+    /// then the VMConnect PCB / `connect_front` handshake runs on the tunneled stream).
+    #[must_use]
+    pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
+        self.vm_id = Some(vm_id.into());
+        self
+    }
+
+    #[cfg(feature = "vmconnect")]
+    /// Connect to a Hyper-V VM console using the selected mode.
+    ///
+    /// See [`with_vmconnect`](Self::with_vmconnect) for transport notes.
+    #[must_use]
+    pub fn with_vmconnect_mode(mut self, vm_id: impl Into<String>, mode: VmConnectMode) -> Self {
+        self.vm_id = Some(vm_id.into());
+        self.vmconnect_mode = mode;
         self
     }
 
@@ -901,12 +1189,38 @@ impl ConfigBuilder {
     /// Enable or disable RDPSND (audio) playback.
     #[cfg(feature = "sound")]
     #[must_use]
-    pub fn with_sound(mut self, enabled: bool) -> Self {
-        self.channels.sound = enabled;
-        self.properties.set_audio_mode(if enabled {
+    pub fn with_sound(self, enabled: bool) -> Self {
+        self.with_audio_mode(if enabled {
             ironrdp_cfg::AudioMode::RedirectToClient
         } else {
             ironrdp_cfg::AudioMode::Disabled
+        })
+    }
+
+    /// Set the public RDP audio redirection mode.
+    ///
+    /// `PlayOnServer` and `Disabled` currently share the same client-info outcome:
+    /// both clear local RDPSND playback and set `INFO_NOAUDIOPLAYBACK`. Distinct
+    /// `INFO_REMOTECONSOLEAUDIO` (true “play on server console”) is not wired yet.
+    #[cfg(feature = "sound")]
+    #[must_use]
+    pub fn with_audio_mode(mut self, mode: ironrdp_cfg::AudioMode) -> Self {
+        self.channels.sound = matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient);
+        self.enable_audio_playback = Some(matches!(mode, ironrdp_cfg::AudioMode::RedirectToClient));
+        self.properties.set_audio_mode(mode);
+        self
+    }
+
+    /// Enable or disable client microphone capture (MS-RDPEAI / AUDIO_INPUT).
+    #[cfg(feature = "sound")]
+    #[must_use]
+    pub fn with_audio_capture(mut self, enabled: bool) -> Self {
+        self.channels.audio_capture = enabled;
+        self.enable_audio_capture = Some(enabled);
+        self.properties.set_audio_capture_mode(if enabled {
+            ironrdp_cfg::AudioCaptureMode::CaptureFromClient
+        } else {
+            ironrdp_cfg::AudioCaptureMode::Disabled
         });
         self
     }
@@ -957,6 +1271,23 @@ impl ConfigBuilder {
         self
     }
 
+    /// Enable or disable native MS-RDPEWA WebAuthn redirection.
+    #[cfg(feature = "webauthn")]
+    #[must_use]
+    pub fn with_webauthn(mut self, enabled: bool) -> Self {
+        self.channels.webauthn = enabled;
+        self.properties.set_redirect_webauthn(enabled);
+        self
+    }
+
+    /// Parent HWND used for WebAuthn UI prompts (Windows only).
+    #[cfg(all(windows, feature = "webauthn"))]
+    #[must_use]
+    pub fn with_webauthn_parent_hwnd(mut self, hwnd: isize) -> Self {
+        self.webauthn_parent_hwnd = Some(hwnd);
+        self
+    }
+
     // TODO: It can be useful to have a method for enabling or disabling all the extra channels at once.
     // Example: in tests, disable all + enable only the required channel.
 
@@ -1003,6 +1334,30 @@ impl ConfigBuilder {
         self
     }
 
+    /// Register a factory for multiple runtime-defined instances of one static-channel processor.
+    #[must_use]
+    pub fn with_static_channel_instances<P, F>(mut self, factory: F) -> Self
+    where
+        F: Fn(&PropertySet) -> Vec<P> + Send + Sync + 'static,
+        P: ironrdp_svc::SvcClientProcessor + 'static,
+    {
+        let cb: StaticChannelFn = Arc::new(move |connector: &mut ironrdp_connector::ClientConnector, ps| {
+            for processor in factory(ps) {
+                match connector.try_attach_dynamic_static_channel(processor) {
+                    Ok(()) => {}
+                    Err(ironrdp_connector::DynamicStaticChannelAttachError::ChannelLimitReached) => {
+                        tracing::error!("Unable to register runtime-defined static channel: key space exhausted");
+                    }
+                    Err(ironrdp_connector::DynamicStaticChannelAttachError::DuplicateChannelName) => {
+                        tracing::warn!("Unable to register runtime-defined static channel: duplicate channel name");
+                    }
+                }
+            }
+        });
+        self.extensions.static_channels.push(cb);
+        self
+    }
+
     /// Register a factory for a user-defined dynamic virtual channel.
     ///
     /// `factory` is called once per connection attempt with the shared (read-only) [`PropertySet`],
@@ -1012,7 +1367,7 @@ impl ConfigBuilder {
     pub fn with_dvc<P, F>(mut self, factory: F) -> Self
     where
         F: Fn(&PropertySet) -> Option<P> + Send + Sync + 'static,
-        P: ironrdp_dvc::DvcProcessor + 'static,
+        P: ironrdp_dvc::DvcClientProcessor + 'static,
     {
         let cb: DvcChannelFn = Arc::new(move |drdynvc, ps| {
             if let Some(processor) = factory(ps) {
@@ -1026,6 +1381,8 @@ impl ConfigBuilder {
     /// List the required fields that still need a value before [`build`](Self::build) can succeed.
     ///
     /// Gateway credentials are only required when a gateway transport is selected.
+    /// When `gatewaycredentialssource` selects `UseServerCredentials`, gateway fields are omitted
+    /// because [`build`](Self::build) resolves them from the RDP server account.
     pub fn missing(&self) -> Vec<MissingField> {
         let mut missing = Vec::new();
         if self.destination.is_none() {
@@ -1039,11 +1396,17 @@ impl ConfigBuilder {
         }
         #[cfg(feature = "gateway")]
         if matches!(self.transport, TransportKind::Gateway { .. }) {
-            if self.gateway_username.is_none() {
-                missing.push(MissingField::GatewayUsername);
-            }
-            if self.gateway_password.is_none() {
-                missing.push(MissingField::GatewayPassword);
+            let uses_server_credentials = matches!(
+                self.properties.gateway_credentials_source(),
+                Ok(Some(ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials))
+            );
+            if !uses_server_credentials {
+                if self.gateway_username.is_none() {
+                    missing.push(MissingField::GatewayUsername);
+                }
+                if self.gateway_password.is_none() {
+                    missing.push(MissingField::GatewayPassword);
+                }
             }
         }
         if matches!(self.transport, TransportKind::RDCleanPath { .. }) && self.rdcleanpath_token.is_none() {
@@ -1071,9 +1434,59 @@ impl ConfigBuilder {
         clippy::missing_panics_doc,
         reason = "a panic here would be a bug (secrets are guaranteed present by missing()), not documented behavior"
     )]
-    pub fn build(self) -> anyhow::Result<Config> {
+    // `mut` is only required when the vmconnect default-port path mutates destination/properties.
+    #[cfg_attr(not(any(feature = "vmconnect", feature = "gateway")), expect(unused_mut))]
+    pub fn build(mut self) -> anyhow::Result<Config> {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
-        use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+        use ironrdp_pdu::rdp::client_info::TimezoneInfo;
+
+        #[cfg(feature = "gateway")]
+        if matches!(self.transport, TransportKind::Gateway { .. }) {
+            use ironrdp_cfg::GatewayCredentialsSource;
+
+            match self
+                .properties
+                .gateway_credentials_source()
+                .context("invalid gateway credential source")?
+            {
+                Some(GatewayCredentialsSource::UseServerCredentials) => {
+                    if self.gateway_username.is_none() {
+                        self.gateway_username = self.username.as_deref().map(|username| match self.domain.as_deref() {
+                            Some(domain)
+                                if !domain.is_empty() && !username.contains('\\') && !username.contains('@') =>
+                            {
+                                format!("{domain}\\{username}")
+                            }
+                            _ => username.to_owned(),
+                        });
+                    }
+                    if self.gateway_password.is_none() {
+                        self.gateway_password = self.password.clone();
+                    }
+                }
+                None | Some(GatewayCredentialsSource::UseUserCredentials) => {}
+                Some(GatewayCredentialsSource::UseProfile) => {
+                    anyhow::bail!(
+                        "gateway credential source UseProfile requires an unavailable profile credential provider"
+                    );
+                }
+                Some(GatewayCredentialsSource::Prompt) => {
+                    anyhow::bail!(
+                        "gateway credential source Prompt requires an unavailable interactive credential prompt provider"
+                    );
+                }
+                Some(GatewayCredentialsSource::SmartCard) => {
+                    anyhow::bail!(
+                        "gateway credential source SmartCard requires an unavailable smart-card credential provider"
+                    );
+                }
+                Some(GatewayCredentialsSource::UseLogonCredentials) => {
+                    anyhow::bail!(
+                        "gateway credential source UseLogonCredentials requires an unavailable OS logon credential provider"
+                    );
+                }
+            }
+        }
 
         let missing = self.missing();
         if !missing.is_empty() {
@@ -1087,6 +1500,26 @@ impl ConfigBuilder {
             );
         }
 
+        #[cfg(feature = "vmconnect")]
+        if let Some(vm_id) = &self.vm_id {
+            anyhow::ensure!(!vm_id.trim().is_empty(), "vmconnect VM ID is empty");
+        }
+
+        #[cfg(feature = "vmconnect")]
+        if self.vm_id.is_some()
+            && let Some(destination) = self.destination.as_mut()
+            && destination.port.is_none()
+        {
+            destination.port = Some(ironrdp_vmconnect::PORT);
+            self.properties.set_server_port(ironrdp_vmconnect::PORT);
+        }
+
+        if self.certificate_validation == Some(ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate)
+            && self.certificate_validation_callback.is_some()
+        {
+            anyhow::bail!("cannot combine a dangerous certificate policy with a validation callback");
+        }
+
         let codecs: Vec<&str> = self.codecs.iter().map(String::as_str).collect();
         let codecs = client_codecs_capabilities(&codecs).map_err(|help| anyhow::anyhow!("{help}"))?;
         let color_depth = self.color_depth.unwrap_or(32);
@@ -1095,9 +1528,17 @@ impl ConfigBuilder {
         }
         let bitmap = ironrdp_connector::BitmapConfig {
             color_depth,
-            lossy_compression: true,
+            lossy_compression: self.lossy_compression.unwrap_or(true),
             codecs,
         };
+
+        // Named-pipe RDP (Windows Sandbox) is the only built-in path that opts into PROTOCOL_RDP
+        // with ENCRYPTION_LEVEL_NONE. Keep TCP/gateway paths on enhanced security by default.
+        // Check before consuming `self.transport` below.
+        #[cfg(windows)]
+        let enable_standard_rdp_security = matches!(&self.transport, TransportKind::NamedPipe { .. });
+        #[cfg(not(windows))]
+        let enable_standard_rdp_security = false;
 
         // Resolve the granular transport selection into the bundled form, folding in the separately
         // tracked secrets (gateway credentials, RDCleanPath token).
@@ -1108,21 +1549,44 @@ impl ConfigBuilder {
         let transport = match self.transport {
             TransportKind::Direct => Transport::Direct,
             #[cfg(feature = "gateway")]
-            TransportKind::Gateway { endpoint } => Transport::Gateway(GatewayConfig {
+            TransportKind::Gateway {
+                endpoint,
+                prefer_direct,
+            } => Transport::Gateway(GatewayConfig {
                 endpoint,
                 username: self.gateway_username.unwrap(),
                 password: self.gateway_password.unwrap(),
+                prefer_direct,
             }),
             TransportKind::RDCleanPath { url } => Transport::RDCleanPath(RDCleanPathConfig {
                 url,
                 auth_token: self.rdcleanpath_token.unwrap(),
             }),
+            #[cfg(windows)]
+            TransportKind::NamedPipe { path } => Transport::NamedPipe { path },
         };
+
+        #[cfg(feature = "vmconnect")]
+        if self.vm_id.is_some() {
+            if !self.enable_tls.unwrap_or(true) {
+                anyhow::bail!("vmconnect requires TLS");
+            }
+            if !self.enable_credssp.unwrap_or(true) {
+                anyhow::bail!("vmconnect requires CredSSP");
+            }
+        }
 
         let client_name = self.client_name.unwrap_or_default();
         let kerberos_config = self
             .kerberos_config
             .or_else(|| kerberos_config_from_properties(&self.properties, &client_name));
+        let certificate_validation = self.certificate_validation.unwrap_or_else(|| {
+            if self.certificate_validation_callback.is_some() {
+                ironrdp_tls::CertificateValidation::Strict
+            } else {
+                ironrdp_tls::CertificateValidation::default()
+            }
+        });
 
         // Bulk compression is enabled by default. We default to MPPC 64K (RDP5) rather than the
         // richer XCRUSH (RDP6.1) because it is the most universally supported and lowest-state
@@ -1138,26 +1602,65 @@ impl ConfigBuilder {
             None
         };
 
+        let enable_tls = if enable_standard_rdp_security {
+            false
+        } else {
+            self.enable_tls.unwrap_or(true)
+        };
+        let enable_credssp = if enable_standard_rdp_security {
+            false
+        } else {
+            self.enable_credssp.unwrap_or(true)
+        };
+
+        let remote_application_mode = self.remote_application_mode.unwrap_or(false);
+        let rail_support_level = self
+            .rail_support_level
+            .unwrap_or(ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED);
+        if remote_application_mode
+            && !rail_support_level.contains(ironrdp_pdu::rdp::capability_sets::RailSupportLevel::SUPPORTED)
+        {
+            anyhow::bail!("RAIL support level must include remote programs support when RemoteApp mode is enabled");
+        }
+
+        let rail_initial_execute = if remote_application_mode {
+            self.remote_application_program
+                .as_deref()
+                .filter(|program| !program.is_empty())
+                .or_else(|| self.alternate_shell.as_deref().filter(|shell| !shell.is_empty()))
+                .map(|executable| ExecutePdu {
+                    flags: 0,
+                    executable: executable.to_owned(),
+                    working_directory: self.work_dir.clone().unwrap_or_default(),
+                    arguments: String::new(),
+                })
+        } else {
+            None
+        };
+
         let connector = ironrdp_connector::Config {
             credentials: ironrdp_connector::Credentials::UsernamePassword {
                 username: self.username.unwrap_or_default(),
                 password: self.password.unwrap_or_default(),
             },
             domain: self.domain,
-            enable_tls: self.enable_tls.unwrap_or(true),
-            enable_credssp: self.enable_credssp.unwrap_or(true),
+            enable_tls,
+            enable_credssp,
+            enable_standard_rdp_security,
             keyboard_type: self
                 .keyboard_type
-                .unwrap_or(ironrdp_pdu::gcc::KeyboardType::IbmEnhanced),
+                .unwrap_or(ironrdp_pdu::gcc::KeyboardType::IBM_ENHANCED),
             keyboard_subtype: self.keyboard_subtype.unwrap_or(0),
-            keyboard_layout: 0,
+            keyboard_layout: self.keyboard_layout.unwrap_or(0),
             keyboard_functional_keys_count: self.keyboard_functional_keys_count.unwrap_or(12),
+            connection_type: self.connection_type.unwrap_or(ironrdp_pdu::gcc::ConnectionType::Lan),
             ime_file_name: self.ime_file_name.unwrap_or_default(),
             dig_product_id: self.dig_product_id.unwrap_or_default(),
             desktop_size: ironrdp_connector::DesktopSize {
                 width: self.desktop_width.unwrap_or(DEFAULT_WIDTH),
                 height: self.desktop_height.unwrap_or(DEFAULT_HEIGHT),
             },
+            monitor_layout: self.monitor_layout,
             desktop_scale_factor: self.desktop_scale_factor.unwrap_or(0),
             bitmap: Some(bitmap),
             client_build: self.client_build.unwrap_or_default(),
@@ -1171,14 +1674,25 @@ impl ConfigBuilder {
             enable_server_pointer: self.enable_server_pointer.unwrap_or(true),
             autologon: self.autologon.unwrap_or(false),
             enable_audio_playback: self.enable_audio_playback.unwrap_or(true),
+            enable_audio_capture: self.enable_audio_capture.unwrap_or(false),
             request_data: None,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
             compression_type,
-            performance_flags: PerformanceFlags::default(),
+            performance_flags: self.performance_flags.unwrap_or_default(),
             timezone_info: TimezoneInfo::default(),
-            alternate_shell: self.alternate_shell.unwrap_or_default(),
-            work_dir: self.work_dir.unwrap_or_default(),
+            alternate_shell: if remote_application_mode {
+                String::new()
+            } else {
+                self.alternate_shell.unwrap_or_default()
+            },
+            work_dir: if remote_application_mode {
+                String::new()
+            } else {
+                self.work_dir.unwrap_or_default()
+            },
+            remote_application_mode,
+            rail_support_level,
         };
 
         // To avoid easily leaking secrets, strip any known secret property before returning the resulting Config.
@@ -1196,13 +1710,23 @@ impl ConfigBuilder {
             connector,
             destination: self.destination.context("server address is required")?,
             transport,
+            certificate_validation,
+            certificate_validation_callback: self.certificate_validation_callback,
+            #[cfg(feature = "vmconnect")]
+            vm_id: self.vm_id,
+            #[cfg(feature = "vmconnect")]
+            vmconnect_mode: self.vmconnect_mode,
             kerberos_config,
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,
+            rail_client_status_flags: self.rail_client_status_flags,
+            rail_initial_execute,
             #[cfg(feature = "dvc-pipe-proxy")]
             dvc_pipe_proxies: self.dvc_pipe_proxies,
             #[cfg(all(windows, feature = "dvc-com-plugin"))]
             dvc_plugins: self.dvc_plugins,
+            #[cfg(all(windows, feature = "webauthn"))]
+            webauthn_parent_hwnd: self.webauthn_parent_hwnd,
             properties,
             extensions: self.extensions,
         })
@@ -1223,7 +1747,7 @@ impl ConfigBuilder {
     pub fn with_property_set(mut self, ps: &PropertySet) -> anyhow::Result<Self> {
         #[cfg(feature = "gateway")]
         use ironrdp_cfg::GatewayUsageMethod;
-        use ironrdp_cfg::{AudioMode, TargetHost};
+        use ironrdp_cfg::{AudioCaptureMode, AudioMode, TargetHost};
 
         self.properties.merge(ps);
 
@@ -1231,15 +1755,12 @@ impl ConfigBuilder {
             .alternate_full_address()
             .context("invalid 'alternate full address'")?);
         if let Some(target) = target {
-            let port = target
-                .port
-                .or(ps.server_port().context("invalid 'server port'")?)
-                .unwrap_or(RDP_DEFAULT_PORT);
+            let port = target.port.or(ps.server_port().context("invalid 'server port'")?);
             let name = match target.host {
                 TargetHost::Ip(ip) => ip.to_string(),
                 TargetHost::Domain(host) => host,
             };
-            self.destination = Some(Destination::from_parts(name, port));
+            self.destination = Some(Destination { name, port });
         }
 
         if let Some(username) = ps.username() {
@@ -1278,6 +1799,12 @@ impl ConfigBuilder {
         if let Some(dir) = ps.shell_working_directory() {
             self.work_dir = Some(dir.to_owned());
         }
+        if let Some(remote_application_mode) = ps.remote_application_mode() {
+            self.remote_application_mode = Some(remote_application_mode);
+        }
+        if let Some(program) = ps.remote_application_program() {
+            self.remote_application_program = Some(program.to_owned());
+        }
         if let Some(minutes) = ps.fake_events_interval() {
             self.fake_events_interval = Some(Duration::from_secs(u64::from(minutes) * 60));
         }
@@ -1290,14 +1817,48 @@ impl ConfigBuilder {
         if let Some(depth) = ps.color_depth() {
             self.color_depth = Some(depth);
         }
+        #[cfg(feature = "sound")]
+        match ps.audio_mode() {
+            Ok(Some(AudioMode::RedirectToClient)) => {
+                self.enable_audio_playback = Some(true);
+                self.channels.sound = true;
+            }
+            Ok(Some(AudioMode::PlayOnServer | AudioMode::Disabled)) => {
+                self.enable_audio_playback = Some(false);
+                self.channels.sound = false;
+            }
+            _ => {}
+        }
+        #[cfg(not(feature = "sound"))]
         match ps.audio_mode() {
             Ok(Some(AudioMode::PlayOnServer | AudioMode::Disabled)) => self.enable_audio_playback = Some(false),
             Ok(Some(AudioMode::RedirectToClient)) => self.enable_audio_playback = Some(true),
             _ => {}
         }
+        #[cfg(feature = "sound")]
+        match ps.audio_capture_mode() {
+            Ok(Some(AudioCaptureMode::CaptureFromClient)) => {
+                self.enable_audio_capture = Some(true);
+                self.channels.audio_capture = true;
+            }
+            Ok(Some(AudioCaptureMode::Disabled)) => {
+                self.enable_audio_capture = Some(false);
+                self.channels.audio_capture = false;
+            }
+            _ => {}
+        }
+        #[cfg(not(feature = "sound"))]
+        match ps.audio_capture_mode() {
+            Ok(Some(AudioCaptureMode::CaptureFromClient)) => self.enable_audio_capture = Some(true),
+            Ok(Some(AudioCaptureMode::Disabled)) => self.enable_audio_capture = Some(false),
+            _ => {}
+        }
 
-        // Transport: RDCleanPath > Gateway > Direct.
-        if let Some((url, token)) = ps.rdcleanpath_url().zip(ps.rdcleanpath_token()) {
+        // Transport: NamedPipe > RDCleanPath > Gateway > Direct.
+        #[cfg(windows)]
+        if let Some(path) = ps.named_pipe() {
+            self.transport = TransportKind::NamedPipe { path: path.to_owned() };
+        } else if let Some((url, token)) = ps.rdcleanpath_url().zip(ps.rdcleanpath_token()) {
             let url = Url::parse(url).context("invalid 'ironrdp_rdcleanpathurl'")?;
             self.transport = TransportKind::RDCleanPath { url };
             self.rdcleanpath_token = Some(token.to_owned());
@@ -1313,23 +1874,66 @@ impl ConfigBuilder {
 
                 let select_gateway_transport = match gateway_usage {
                     // Explicit gateway use.
-                    GatewayUsageMethod::UseAlways => true,
+                    GatewayUsageMethod::UseAlways => Some(false),
 
-                    // Approximation of Windows "try direct, then gateway" behavior.
-                    GatewayUsageMethod::Detect => gateway_hostname.is_some(),
+                    // Try direct first; fall back to gateway when a hostname is configured.
+                    GatewayUsageMethod::Detect if gateway_hostname.is_some() => Some(true),
+                    GatewayUsageMethod::Detect => None,
 
                     // IronRDP does not currently resolve MSTSC/client/GPO default gateway policy.
-                    GatewayUsageMethod::UseDefaultSettings => false,
+                    GatewayUsageMethod::UseDefaultSettings => None,
 
                     // Explicit no-gateway modes.
-                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => false,
+                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => None,
                 };
 
-                if select_gateway_transport {
+                if let Some(prefer_direct) = select_gateway_transport {
                     let endpoint = gateway_hostname.context("missing Gateway hostname")?;
 
                     self.transport = TransportKind::Gateway {
                         endpoint: endpoint.to_owned(),
+                        prefer_direct,
+                    };
+
+                    if let Some(user) = ps.gateway_username() {
+                        self.gateway_username = Some(user.to_owned());
+                    }
+
+                    if let Some(pass) = ps.gateway_password() {
+                        self.gateway_password = Some(pass.to_owned());
+                    }
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        if let Some((url, token)) = ps.rdcleanpath_url().zip(ps.rdcleanpath_token()) {
+            let url = Url::parse(url).context("invalid 'ironrdp_rdcleanpathurl'")?;
+            self.transport = TransportKind::RDCleanPath { url };
+            self.rdcleanpath_token = Some(token.to_owned());
+        } else {
+            #[cfg(feature = "gateway")]
+            {
+                let gateway_usage = ps
+                    .gateway_usage_method()
+                    .context("invalid Gateway usage method")?
+                    .unwrap_or_default();
+
+                let gateway_hostname = ps.gateway_hostname();
+
+                let select_gateway_transport = match gateway_usage {
+                    GatewayUsageMethod::UseAlways => Some(false),
+                    GatewayUsageMethod::Detect if gateway_hostname.is_some() => Some(true),
+                    GatewayUsageMethod::Detect => None,
+                    GatewayUsageMethod::UseDefaultSettings => None,
+                    GatewayUsageMethod::Direct | GatewayUsageMethod::DirectBypassLocal => None,
+                };
+
+                if let Some(prefer_direct) = select_gateway_transport {
+                    let endpoint = gateway_hostname.context("missing Gateway hostname")?;
+
+                    self.transport = TransportKind::Gateway {
+                        endpoint: endpoint.to_owned(),
+                        prefer_direct,
                     };
 
                     if let Some(user) = ps.gateway_username() {
@@ -1354,10 +1958,14 @@ impl ConfigBuilder {
             }
             let _ = redirect;
         }
-        #[cfg(feature = "sound")]
-        if matches!(ps.audio_mode(), Ok(Some(AudioMode::Disabled))) {
-            self.channels.sound = false;
+        if let Some(redirect) = ps.redirect_webauthn() {
+            #[cfg(feature = "webauthn")]
+            {
+                self.channels.webauthn = redirect;
+            }
+            let _ = redirect;
         }
+
         #[cfg(feature = "rdpdr")]
         if let Some(enabled) = ps.enable_rdpdr() {
             self.channels.rdpdr.enabled = enabled;
@@ -1443,4 +2051,223 @@ fn kerberos_config_from_properties(
             kdc_proxy_url: Some(url),
             hostname: client_name.to_owned(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_cfg::PropertySetExt as _;
+    use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
+
+    use super::{ConfigBuilder, Destination};
+    #[cfg(feature = "gateway")]
+    use super::{MissingField, Transport, TransportKind};
+
+    fn complete_builder() -> ConfigBuilder {
+        ConfigBuilder::new()
+            .with_destination(Destination::new("server.example:3389").unwrap())
+            .with_username("user")
+            .with_password("password")
+            .with_client_build(1)
+            .with_client_dir("C:\\")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+    }
+
+    #[cfg(feature = "gateway")]
+    fn gateway_builder() -> ConfigBuilder {
+        complete_builder().with_transport(TransportKind::Gateway {
+            endpoint: "gateway.example:443".to_owned(),
+            prefer_direct: false,
+        })
+    }
+
+    #[cfg(feature = "gateway")]
+    fn with_gateway_credentials_source(
+        builder: ConfigBuilder,
+        source: ironrdp_cfg::GatewayCredentialsSource,
+    ) -> ConfigBuilder {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_gateway_credentials_source(source);
+        builder
+            .with_property_set(&properties)
+            .expect("valid gateway credentials source")
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn gateway_server_credentials_fall_back_to_rdp_credentials() {
+        let config = with_gateway_credentials_source(
+            gateway_builder(),
+            ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials,
+        )
+        .build()
+        .expect("valid server credential configuration");
+
+        let Transport::Gateway(gateway) = config.transport() else {
+            panic!("gateway transport expected");
+        };
+        assert_eq!(gateway.username, "user");
+        assert_eq!(gateway.password, "password");
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn gateway_server_credentials_qualify_bare_username_with_domain() {
+        let config = with_gateway_credentials_source(
+            gateway_builder().with_domain("CONTOSO"),
+            ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials,
+        )
+        .build()
+        .expect("valid server credential configuration");
+
+        let Transport::Gateway(gateway) = config.transport() else {
+            panic!("gateway transport expected");
+        };
+        assert_eq!(gateway.username, "CONTOSO\\user");
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn explicit_gateway_credentials_take_precedence_over_server_credentials() {
+        let config = with_gateway_credentials_source(
+            gateway_builder()
+                .with_gateway_username("gateway-user")
+                .with_gateway_password("gateway-password"),
+            ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials,
+        )
+        .build()
+        .expect("valid server credential configuration");
+
+        let Transport::Gateway(gateway) = config.transport() else {
+            panic!("gateway transport expected");
+        };
+        assert_eq!(gateway.username, "gateway-user");
+        assert_eq!(gateway.password, "gateway-password");
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn gateway_user_credentials_require_explicit_credentials() {
+        let builder = with_gateway_credentials_source(
+            gateway_builder(),
+            ironrdp_cfg::GatewayCredentialsSource::UseUserCredentials,
+        );
+
+        assert_eq!(
+            builder.missing(),
+            [MissingField::GatewayUsername, MissingField::GatewayPassword]
+        );
+        assert_eq!(
+            builder
+                .build()
+                .expect_err("gateway credentials must be required")
+                .to_string(),
+            "missing required configuration: gateway username, gateway password"
+        );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn gateway_user_credentials_select_explicit_credentials() {
+        let config = with_gateway_credentials_source(
+            gateway_builder()
+                .with_gateway_username("gateway-user")
+                .with_gateway_password("gateway-password"),
+            ironrdp_cfg::GatewayCredentialsSource::UseUserCredentials,
+        )
+        .build()
+        .expect("valid user credential configuration");
+
+        let Transport::Gateway(gateway) = config.transport() else {
+            panic!("gateway transport expected");
+        };
+        assert_eq!(gateway.username, "gateway-user");
+        assert_eq!(gateway.password, "gateway-password");
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn unavailable_gateway_credential_sources_are_rejected() {
+        for (source, expected) in [
+            (
+                ironrdp_cfg::GatewayCredentialsSource::UseProfile,
+                "gateway credential source UseProfile requires an unavailable profile credential provider",
+            ),
+            (
+                ironrdp_cfg::GatewayCredentialsSource::Prompt,
+                "gateway credential source Prompt requires an unavailable interactive credential prompt provider",
+            ),
+            (
+                ironrdp_cfg::GatewayCredentialsSource::SmartCard,
+                "gateway credential source SmartCard requires an unavailable smart-card credential provider",
+            ),
+            (
+                ironrdp_cfg::GatewayCredentialsSource::UseLogonCredentials,
+                "gateway credential source UseLogonCredentials requires an unavailable OS logon credential provider",
+            ),
+        ] {
+            let error = with_gateway_credentials_source(
+                gateway_builder()
+                    .with_gateway_username("gateway-user")
+                    .with_gateway_password("gateway-password"),
+                source,
+            )
+            .build()
+            .expect_err("unavailable credential source must fail");
+
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn remote_application_program_queues_rail_execute_and_clears_client_info_shell() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_remote_application_mode(true);
+        properties.set_remote_application_program("notepad.exe");
+        properties.set_alternate_shell("fallback.exe");
+        properties.set_shell_working_directory("C:\\Temp");
+
+        let config = complete_builder()
+            .with_property_set(&properties)
+            .expect("valid properties")
+            .build()
+            .expect("valid RemoteApp configuration");
+
+        assert!(config.connector().alternate_shell.is_empty());
+        assert!(config.connector().work_dir.is_empty());
+        let execute = config.rail_initial_execute.expect("initial Execute PDU");
+        assert_eq!(execute.executable, "notepad.exe");
+        assert_eq!(execute.working_directory, "C:\\Temp");
+    }
+
+    #[cfg(feature = "webauthn")]
+    #[test]
+    fn with_webauthn_updates_the_channel_and_property() {
+        let builder = ConfigBuilder::new().with_webauthn(false);
+
+        assert!(!builder.channels.webauthn);
+        assert!(!builder.properties.redirect_webauthn().unwrap());
+    }
+
+    #[cfg(feature = "webauthn")]
+    #[test]
+    fn property_set_enables_webauthn_redirection() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_redirect_webauthn(true);
+
+        let builder = ConfigBuilder::from_property_set(&properties).expect("valid WebAuthn property");
+        assert!(builder.channels.webauthn);
+        assert!(builder.properties.redirect_webauthn().unwrap());
+    }
+
+    #[cfg(feature = "webauthn")]
+    #[test]
+    fn property_set_disables_webauthn_redirection() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_redirect_webauthn(false);
+
+        let builder = ConfigBuilder::from_property_set(&properties).expect("valid WebAuthn property");
+        assert!(!builder.channels.webauthn);
+        assert!(!builder.properties.redirect_webauthn().unwrap());
+    }
 }

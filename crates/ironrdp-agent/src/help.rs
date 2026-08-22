@@ -3,10 +3,12 @@
 /// Structured guide printed by `ironrdp-agent --help-agent`.
 pub(crate) const AGENT_GUIDE: &str = r#"# ironrdp-agent
 
-A CLI-driven, daemon-backed RDP client. One binary plays two roles:
+A CLI-driven, daemon-backed RDP client. One binary plays three roles:
 
 - DAEMON: `ironrdp-agent daemon-start` runs a long-lived foreground process that owns the RDP
   engine and one RDP session. Background it yourself (e.g. `ironrdp-agent daemon-start &`).
+- GATEWAY: `ironrdp-agent gw-forward` runs in the foreground and relays TCP through an RD Gateway
+  without an RDP session. It does not use the daemon or IPC.
 - CLI: every other subcommand opens the local IPC endpoint, sends one request, prints the
   response, and exits.
 
@@ -18,9 +20,18 @@ Unix: `$XDG_RUNTIME_DIR/ironrdp-agent-<uid>.sock` (falls back to `/tmp/ironrdp-a
 Windows: `\\.\pipe\ironrdp-agent-<user>`.
 Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
+## Backends
+
+- `--backend daemon` (default) uses `ironrdp-agent daemon-start` and its per-user endpoint.
+- `--backend active-x` attaches to an already-hosted ActiveX control at its per-user
+  `ironrdp-activex` endpoint. The host must set `IRONRDP_ACTIVEX_RPC=1` before creating the
+  control; the agent never starts an ActiveX host. Use `--endpoint` when the host uses
+  `IRONRDP_ACTIVEX_RPC_ENDPOINT`.
+  RAIL audit commands require the daemon backend.
+
 ## Lifecycle
 
-- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]...`
+- `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--skip-certificate-check] [--rdpdr-drive NAME=VOLUME_ROOT]... [--smartcard]`
                                  Start the daemon (foreground). Run this first. `--overlay`
                                  preloads a .rdp file as an overlay applied to every `connect`
                                  (overlay wins), letting an operator provision any setting out of
@@ -30,19 +41,47 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  file line (TYPE is `i` for integer or `s` for string), e.g.
                                  `--prop ironrdp_autologon:i:1`. Check `status` to see whether
                                  credentials are already loaded before supplying any yourself.
-- `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--log-directive D]`
+                                 On Windows, repeat `--rdpdr-drive NAME=VOLUME_ROOT` to opt in to
+                                 static filesystem redirection. Each root must be a unique existing
+                                 local volume root in the exact `C:\` form, and each one-to-seven-character
+                                 ASCII drive name must be unique (case-insensitive). The configured
+                                 set is fixed for the daemon lifetime; drive hot-plug and rescan are
+                                 not supported. On Windows, `--smartcard` enables WinSCard smartcard
+                                 redirection (same as overlay/connect `ironrdp_smartcard:i:1`).
+                                 Sandbox connects with `SmartCardRedirection` also set that property
+                                 at connect time, which can enable smartcard without `--smartcard`.
+                                 TLS certificate and hostname validation is strict by default.
+                                 `--skip-certificate-check` disables both for this daemon only.
+                                 Use it only for an explicitly authorized test endpoint because it accepts any certificate and is vulnerable to on-path attacks.
+- `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. Precedence (low to high): .rdp file -> `--prop`
-                                 overrides -> named flags (`--server`/`-u`/`-p`/`-d`). `--prop` is
-                                 repeatable and lets you set any property without a dedicated flag
-                                 existing for it, e.g. `--prop username:s:admin`. The config is
-                                 validated by the daemon, which replies with an error listing any
-                                 missing or invalid fields. If `status` reports
-                                 `credentials loaded: true`, omit `-p/--password` (and any other
-                                 preloaded secret) -- the daemon supplies it. `--log-directive`
-                                 refines this session's log capture (e.g. `ironrdp_connector=trace`)
-                                 on top of the default `debug` level; use it to troubleshoot a
-                                 connection, then read the result with `query-logs`.
+                                 overrides -> named flags (`--server`/`-u`/`-p`/`-d`). When those
+                                 flags are omitted, `RDP_HOSTNAME`, `RDP_USERNAME`, and
+                                 `RDP_PASSWORD` supply their respective values; explicit flags
+                                 override the environment. `--prop` is repeatable and lets you set
+                                 any property without a dedicated flag existing for it, e.g.
+                                 `--prop username:s:admin`. The selected backend validates the
+                                 config and replies with an error listing any missing or invalid fields.
+                                 If `status` reports `credentials loaded: true`, omit
+                                 `-p/--password` (and any other preloaded secret) -- the backend
+                                 supplies it. `--log-directive` refines this session's log capture
+                                 (e.g. `ironrdp_connector=trace`) on top of the default `debug`
+                                 level; use it to troubleshoot a connection, then read the result
+                                 with `query-logs`.
+                                 On Windows, `--sandbox-id` resolves NamedPipe RDP settings via
+                                 WindowsSandboxServer gRPC (create the VM first with `wsb start`).
+                                 Sandbox defaults are the base; explicit file/prop/flags override
+                                 them, except NamedPipe TLS/CredSSP stay forced off. Prefer
+                                 `--sandbox-id` over `--sandbox-pipe`; the pipe escape hatch needs
+                                 `-u`/`-p` (guest password from `sandbox config`).
+- `gw-forward --gateway HOST[:PORT] (--socks5 | --target HOST:PORT) [--listen ADDR]`
+                                 Forward TCP through an RD Gateway without an RDP session.
+                                 `--socks5` serves SOCKS5 CONNECT (no auth); `--target` is an
+                                 SSH `-L`-style fixed forward. Credentials come from
+                                 `--username`/`--password` or `RDG_USERNAME`/`RDG_PASSWORD`,
+                                 falling back to `RDP_USERNAME`/`RDP_PASSWORD`.
+                                 The listener defaults to `127.0.0.1`; do not expose unauthenticated SOCKS5 to untrusted networks.
 - `disconnect`                   Tear down the current session (daemon keeps running).
 - `status`                       Report connection state, destination, last frame size, and whether
                                  credentials are preloaded (`credentials loaded: true|false`). Query
@@ -50,6 +89,23 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Inspection
 
+  RAIL commands require the daemon backend.
+  Connect with `--prop remoteapplicationmode:i:1`; add
+  `--prop remoteapplicationprogram:s:<program>` to queue an initial launch.
+
+- `rail status`                     Show RAIL handshake and synchronization state plus agent-queued
+                                   launches.
+- `rail events [--after-sequence N]`
+                                   Show validated RAIL observations retained by the daemon.
+- `rail wait [--after-sequence N] [--timeout-ms MS]`
+                                   Return retained RAIL events newer than `--after-sequence`, waiting
+                                   up to the timeout only when none are available.
+- `rail execute EXECUTABLE [--working-directory DIR] [--arguments ARGS] [--flags FLAGS]`
+                                   Queue a bounded, validated RemoteApp launch.
+  All `rail` subcommands accept `--format human|json|ndjson` before the subcommand.
+  `json` prints one JSON document; `ndjson` prints one JSON object per returned event or response.
+  RAIL event history is bounded to 256 records per connection generation and returns an explicit
+  `gap` event after eviction.
 - `query-props [--filter SUBSTR] [--prefix PREFIX]`
                                  Print the live session property bag, one `key = value` per line.
                                  Secrets are stripped from the configuration before a session
@@ -75,7 +131,85 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 - `wheel --delta N [--horizontal]`               Rotate the wheel (negative N scrolls down/left).
 - `key-scancode --scancode <0x1D|29> --pressed <true|false>`
 - `key-unicode --char C --pressed <true|false>`  Type by Unicode character.
+- `type-unicode --text TEXT`                     Type at most 96 Unicode characters all-or-nothing.
+- `touch --x X --y Y --action <down|move|up|out-of-range|cancel|hover>
+    [--contact-id N] [--encode-time MS] [--frame-offset US]`
+                                                 Send one MS-RDPEI touch contact sample.
+- `touch-tap --x X --y Y [--contact-id N]`       DOWN then UP at the same point via RDPEI.
+- `touch-frame --contact id:x:y:action [...]`    One multi-contact MS-RDPEI touch frame.
+- `pen --x X --y Y --action <down|move|up|out-of-range|cancel|hover>
+    [--device-id N] [--pressure N] [--rotation N] [--tilt-x N] [--tilt-y N]
+    [--eraser] [--inverted] [--encode-time MS] [--frame-offset US]`
+                                                 Send one MS-RDPEI pen contact sample.
+- `pen-tap --x X --y Y [--device-id N] [--pressure N]`
+                                                 DOWN then UP pen tap via RDPEI.
+- `dismiss-hovering [--contact-id N]`            Dismiss a hovering touch contact.
 - `resize --width W --height H`                  Resize the remote desktop.
+
+## NOW remote execution (requires an active, connected RDP session)
+
+The daemon allocates one private `Devolutions::Now::Agent` DVC endpoint for each RDP session. It
+waits lazily for the endpoint only when a NOW request is made: up to 30 seconds for its first
+connection and up to 10 seconds after a worker/transport replacement. `status` and `disconnect`
+remain responsive while it waits.
+
+- `now capabilities`                 Negotiate and print the supported NOW styles.
+- `now run COMMAND [--directory DIR]`
+                                     Submit generic Run and return after local submission. Run is
+                                     intentionally untracked: it has no durable output or result.
+- `now powershell COMMAND [COMMON]`  Execute Windows PowerShell.
+- `now pwsh COMMAND [COMMON]`        Execute PowerShell 7.
+- `now exec process FILE [--parameters ARGS] [COMMON]`
+                                     Execute a Windows CreateProcess request.
+- `now exec batch COMMAND [COMMON]`  Execute a Windows batch request.
+
+`COMMON` is `--directory DIR`, `--stdin FILE` (use `-` for the CLI standard input), `--timeout
+SECONDS`, `--detached`, and `--operation-id-file FILE`. The operation-ID file is written after
+local submission and lets later CLI invocations attach, cancel, or send stdin. PowerShell and pwsh
+default to both `-NoProfile` and `-NonInteractive`; use `--profile` and/or `--interactive` only to
+explicitly opt out. Detached commands have no stdin, output, or terminal result.
+
+Tracked commands have one daemon-owned operation at a time. Their stdout and stderr chunks are
+forwarded as raw bytes (not line-buffered) and the CLI returns the remote nonzero exit code
+(1-255 directly; larger values as 255). Output is retained for `now attach`, `now list`, and `now
+status`: 8 MiB per operation, 32 terminal operations, and 32 MiB total. Use:
+
+- `now cancel OPERATION_ID`
+- `now stdin OPERATION_ID --input FILE [--last]`
+- `now attach OPERATION_ID [--after-sequence N]`
+- `now list`
+- `now status OPERATION_ID`
+- `now diagnostics`
+
+Live `now attach` output is bounded. If an attachment cannot keep up, it closes; attach again with
+the last sequence number to resume from retained output.
+
+Use `--format human|json|ndjson` with `now` for human-readable output, one JSON result, or JSON
+event lines. JSON output represents raw bytes as byte arrays and is bounded to 8,192 events and
+2 MiB of output. Use NDJSON for unbounded streaming.
+
+Shell execution is intentionally not exposed: there is no `now shell` command, IPC request,
+capability, or mapping, even if a peer advertises it.
+
+## Windows Sandbox (Windows only)
+
+Start the Windows Sandbox UI or `wsb` once to bootstrap WindowsSandboxServer.
+The agent can then create, inspect, and stop sandboxes over its per-user named pipe without a .NET helper.
+On retail builds that permit one active sandbox, stop that initial sandbox before using `sandbox start`; the agent reports server policy errors rather than bypassing them.
+
+- `sandbox start [--id GUID] [--config FILE]`
+                                  Start a sandbox and print its Id.
+                                  The server uses its default configuration when `--config` is omitted.
+- `sandbox list`                 List running sandbox Ids via WindowsSandboxServer.
+- `sandbox config <ID>`          Print a redacted RdpClientConfig summary (password shown as set/empty).
+- `sandbox stop <ID>`            Shut down a running sandbox via gRPC.
+- `connect --sandbox-id <ID>`    Fetch config + connect over `\\.\pipe\{VMId}` (PROTOCOL_RDP /
+                                 ENCRYPTION_LEVEL_NONE). Daemon must already be running.
+- `connect --sandbox-pipe PATH -u USER -p PASS`
+                                 Low-level NamedPipe connect when you already have the guest password.
+
+Default product transport is NamedPipe.
+Local (VMConnect :2179 + PCB) and guest TCP are not the primary path.
 
 ## Errors
 

@@ -34,6 +34,7 @@ use alloc::{format, string::String, vec, vec::Vec};
 use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_str::multi_sz::MultiSzString;
 use ironrdp_str::prefixed::Cch32String;
+use ironrdp_usb::BcdVersion;
 
 use crate::pdu::header::{InterfaceId, MessageId};
 use crate::pdu::sink::{
@@ -129,7 +130,7 @@ pub struct UsbDeviceDescriptorInfo {
     pub vendor_id: u16,
     pub product_id: u16,
     pub device_version: u16,
-    pub usb_version: UsbBcdVersion,
+    pub usb_version: BcdVersion,
     pub class_codes: UsbClassCodes,
     pub num_configurations: u8,
 }
@@ -160,33 +161,6 @@ impl UsbClassCodes {
         sub_class_code: 0x00,
         protocol_code: 0x00,
     };
-}
-
-/// Raw `bcdUSB` value from the USB device descriptor.
-///
-/// The value is preserved without BCD validation. RDPEUSB supports only
-/// USB 1.0, 1.1, and 2.0, so newer values are advertised as USB 2.0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UsbBcdVersion(u16);
-impl UsbBcdVersion {
-    /// Wraps a raw `bcdUSB` value without validating its BCD digits.
-    pub const fn from_bcd(value: u16) -> Self {
-        Self(value)
-    }
-
-    fn to_supported_usb_version(self) -> SupportedUsbVer {
-        if self.0 >= 0x0200 {
-            SupportedUsbVer::Usb20
-        } else if self.0 >= 0x0110 {
-            SupportedUsbVer::Usb11
-        } else {
-            SupportedUsbVer::Usb10
-        }
-    }
-
-    fn is_at_least_usb20(self) -> bool {
-        self.0 >= 0x0200
-    }
 }
 
 /// Connection speed reported by the USB backend.
@@ -292,8 +266,8 @@ fn usb_device_caps(info: &DeviceInfo) -> PduResult<UsbDeviceCaps> {
     // `urbdrc_send_add_device()`.
     Ok(UsbDeviceCaps {
         usb_bus_iface_ver: UsbBusIfaceVer::V2,
-        usbdi_ver: UsbdiVer::V0x600,
-        supported_usb_ver: info.descriptor.usb_version.to_supported_usb_version(),
+        usbdi_ver: UsbdiVer::V0X600,
+        supported_usb_ver: supported_usb_version(info.descriptor.usb_version),
         device_speed: device_speed(info)?,
         no_ack_isoch_write_jitter_buf_size: NoAckIsochWriteJitterBufSizeInMs::try_from(
             DEFAULT_NO_ACK_ISOCH_WRITE_JITTER_MS,
@@ -302,17 +276,34 @@ fn usb_device_caps(info: &DeviceInfo) -> PduResult<UsbDeviceCaps> {
     })
 }
 
+/// Map `bcdUSB` onto the RDPEUSB capability field.
+///
+/// The PDU enum models only USB 1.0, 1.1, and 2.0, so newer versions are advertised as USB 2.0.
+fn supported_usb_version(usb_version: BcdVersion) -> SupportedUsbVer {
+    if is_at_least_usb20(usb_version) {
+        SupportedUsbVer::USB_20
+    } else if usb_version.raw() >= 0x0110 {
+        SupportedUsbVer::USB_11
+    } else {
+        SupportedUsbVer::USB_10
+    }
+}
+
+fn is_at_least_usb20(usb_version: BcdVersion) -> bool {
+    usb_version.raw() >= 0x0200
+}
+
 fn device_speed(info: &DeviceInfo) -> PduResult<DeviceSpeed> {
     match info.speed {
-        UsbConnectionSpeed::Low | UsbConnectionSpeed::Full => Ok(DeviceSpeed::FullSpeed),
+        UsbConnectionSpeed::Low | UsbConnectionSpeed::Full => Ok(DeviceSpeed::FULL_SPEED),
         UsbConnectionSpeed::High | UsbConnectionSpeed::Super | UsbConnectionSpeed::SuperPlus => {
-            Ok(DeviceSpeed::HighSpeed)
+            Ok(DeviceSpeed::HIGH_SPEED)
         }
         UsbConnectionSpeed::Unknown => {
-            if info.descriptor.usb_version.is_at_least_usb20() {
-                Ok(DeviceSpeed::HighSpeed)
+            if is_at_least_usb20(info.descriptor.usb_version) {
+                Ok(DeviceSpeed::HIGH_SPEED)
             } else {
-                Ok(DeviceSpeed::FullSpeed)
+                Ok(DeviceSpeed::FULL_SPEED)
             }
         }
     }

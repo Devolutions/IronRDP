@@ -83,7 +83,14 @@ pub fn decode_rlex(data: &[u8]) -> DecodeResult<RlexData> {
         // Each byte is a run length factor for palette[0]
         decode_single_palette_segments(&mut src, &mut segments)?;
     } else {
-        decode_multi_palette_segments(remaining, &mut src, stop_index_bits, suite_depth_bits, &mut segments)?;
+        decode_multi_palette_segments(
+            remaining,
+            &mut src,
+            stop_index_bits,
+            suite_depth_bits,
+            palette_count,
+            &mut segments,
+        )?;
     }
 
     Ok(RlexData { palette, segments })
@@ -106,6 +113,7 @@ fn decode_multi_palette_segments(
     src: &mut ReadCursor<'_>,
     stop_index_bits: u8,
     suite_depth_bits: u8,
+    palette_count: u8,
     segments: &mut Vec<RlexSegment>,
 ) -> DecodeResult<()> {
     let stop_mask = (1u8 << stop_index_bits) - 1;
@@ -116,7 +124,16 @@ fn decode_multi_palette_segments(
         let stop_index = packed & stop_mask;
         let suite_depth = (packed >> stop_index_bits) & depth_mask;
 
-        let start_index = stop_index.saturating_sub(suite_depth);
+        if stop_index >= palette_count {
+            return Err(invalid_field_err!("rlexStopIndex", "stop_index exceeds palette count"));
+        }
+
+        // MS-RDPEGFX 2.2.4.1.1.3.1.1.2: startIndex is stopIndex - suiteDepth and is itself a
+        // palette entry, so a depth reaching below entry 0 describes no valid suite. Clamping
+        // it would render a shorter suite than the stream asked for instead of rejecting it.
+        let start_index = stop_index
+            .checked_sub(suite_depth)
+            .ok_or_else(|| invalid_field_err!("rlexSuiteDepth", "suite depth exceeds stop index"))?;
 
         let run_length = decode_run_length(src)?;
 
@@ -210,5 +227,64 @@ mod tests {
     fn reject_too_large_palette() {
         let data = [128]; // palette_count = 128 > 127
         assert!(decode_rlex(&data).is_err());
+    }
+
+    #[test]
+    fn reject_stop_index_beyond_palette() {
+        // palette_count=2, stop_index_bits=1, so valid stop_index is 0 or 1.
+        // Craft a packed byte with stop_index=1 (valid) then one with stop_index
+        // that exceeds palette_count by using a 4-palette setup where the mask
+        // allows index 3 but only 2 entries exist.
+        //
+        // palette_count=2, stop_index_bits = bit_length(1) = 1, stop_mask = 0x01
+        // Maximum stop_index from 1 bit = 1, which equals palette_count-1. Valid.
+        // So use palette_count=3 instead: stop_index_bits = bit_length(2) = 2,
+        // stop_mask = 0x03. Maximum stop_index = 3, but palette only has 3 entries
+        // (indices 0..2). stop_index=3 is invalid.
+        let mut data = Vec::new();
+        data.push(3); // palette_count
+        data.extend_from_slice(&[0, 0, 0]); // palette[0]
+        data.extend_from_slice(&[1, 1, 1]); // palette[1]
+        data.extend_from_slice(&[2, 2, 2]); // palette[2]
+        // packed byte: stop_index=3 (bits 1:0), suite_depth=0 (bits 7:2)
+        data.push(0x03);
+        data.push(1); // run_length
+        assert!(decode_rlex(&data).is_err());
+    }
+
+    /// MS-RDPEGFX 2.2.4.1.1.3.1.1.2: startIndex is stopIndex - suiteDepth and must itself be a
+    /// palette entry, so a suite reaching below entry 0 has no valid start.
+    #[test]
+    fn reject_suite_depth_past_palette_start() {
+        // palette_count=3 gives stop_index_bits=2 (mask 0x03) and suite_depth_bits=6 (mask 0x3F).
+        // packed=0x04 is stop_index=0 with suite_depth=1, so startIndex would be -1.
+        let mut data = Vec::new();
+        data.push(3); // palette_count
+        data.extend_from_slice(&[0, 0, 0]); // palette[0]
+        data.extend_from_slice(&[1, 1, 1]); // palette[1]
+        data.extend_from_slice(&[2, 2, 2]); // palette[2]
+        data.push(0x04); // packed: stop_index=0, suite_depth=1
+        data.push(5); // run_length
+        assert!(decode_rlex(&data).is_err());
+    }
+
+    #[test]
+    fn suite_depth_within_palette_sets_start_index() {
+        // Same layout, but packed=0x06 is stop_index=2 with suite_depth=1, so the suite spans
+        // palette entries 1 through 2. This is the valid counterpart of the case above and
+        // guards against rejecting legal depths.
+        let mut data = Vec::new();
+        data.push(3); // palette_count
+        data.extend_from_slice(&[0, 0, 0]); // palette[0]
+        data.extend_from_slice(&[1, 1, 1]); // palette[1]
+        data.extend_from_slice(&[2, 2, 2]); // palette[2]
+        data.push(0x06); // packed: stop_index=2, suite_depth=1
+        data.push(5); // run_length
+
+        let rlex = decode_rlex(&data).unwrap();
+        assert_eq!(rlex.segments.len(), 1);
+        assert_eq!(rlex.segments[0].start_index, 1);
+        assert_eq!(rlex.segments[0].stop_index, 2);
+        assert_eq!(rlex.segments[0].run_length, 5);
     }
 }

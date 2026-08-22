@@ -4,7 +4,7 @@ version = "0.10.0"
 readme = "README.md"
 description = "Provides `Future`s wrapping the IronRDP state machines conveniently"
 edition.workspace = true
-rust-version = "1.89"
+rust-version = "1.94"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -22,6 +22,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"]
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
 tracing = { version = "0.1", features = ["log"] }
 bytes = "1" # public
+web-time = "1.1"
 
 [lints]
 workspace = true

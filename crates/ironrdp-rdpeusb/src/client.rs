@@ -80,7 +80,7 @@ impl DvcChannelListener for UrbdrcListener {
         CHANNEL_NAME
     }
 
-    fn create(&mut self, channel_id: u32) -> Option<Box<dyn DvcProcessor>> {
+    fn create(&mut self, channel_id: u32) -> Option<Box<dyn DvcClientProcessor>> {
         if let Some(callback) = self.on_capability_exchanged.take() {
             self.device_man.control_channel_assigned(channel_id);
             Some(Box::new(UrbdrcControlClient::new(callback)))
@@ -89,7 +89,7 @@ impl DvcChannelListener for UrbdrcListener {
             #[expect(clippy::as_conversions)]
             self.device_man.take_device_for_channel(channel_id).map(|backend| {
                 Box::new(UrbdrcDeviceClient::new(udev_iface, backend).expect("invalid interface id"))
-                    as Box<dyn DvcProcessor>
+                    as Box<dyn DvcClientProcessor>
             })
         }
     }
@@ -215,7 +215,7 @@ pub trait UrbdrcDeviceBackend: Send {
     /// the message MUST match the RequestId in the QUERY_DEVICE_TEXT message.
     ///
     /// [3.3.5.3.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/834f56cc-cfed-4649-8952-0b6486638c28
-    fn query_device_text(&mut self, channel_id: u32, text_type: u32, locale_id: u32) -> PduResult<Option<DeviceText>>;
+    fn query_device_text(&mut self, channel_id: u32, text_type: u32, locale_id: u32) -> PduResult<DeviceText>;
 
     /// Process an `IoControl` request.
     ///
@@ -464,11 +464,16 @@ fn build_transfer_in_completion(
             output_buffer_size,
         }))
     } else {
+        let ts_urb_result = response
+            .ts_urb_result
+            .try_into_isoch()
+            .map_err(|_| pdu_other_err!("URB_COMPLETION result payload must be header-only or isochronous"))?;
+
         Ok(Box::new(UrbCompletion {
             msg_id: pending.msg_id,
             completion_iface,
             req_id,
-            ts_urb_result: response.ts_urb_result,
+            ts_urb_result,
             hresult: response.hresult,
             output_buffer: response.output_buffer,
         }))
@@ -579,19 +584,15 @@ impl DvcProcessor for UrbdrcDeviceClient {
                 if !self.ready_for_io || dev_text_pdu.udev_iface != self.udev_iface {
                     return Ok(Vec::new());
                 }
-                if let Some(device_text) =
+                let device_text =
                     self.backend
-                        .query_device_text(channel_id, dev_text_pdu.text_type, dev_text_pdu.locale_id)?
-                {
-                    Ok(vec![Box::new(QueryDeviceTextRsp {
-                        msg_id: dev_text_pdu.msg_id,
-                        udev_iface: dev_text_pdu.udev_iface,
-                        hresult: device_text.hresult,
-                        device_description: device_text.description.into(),
-                    })])
-                } else {
-                    Ok(Vec::new())
-                }
+                        .query_device_text(channel_id, dev_text_pdu.text_type, dev_text_pdu.locale_id)?;
+                Ok(vec![Box::new(QueryDeviceTextRsp {
+                    msg_id: dev_text_pdu.msg_id,
+                    udev_iface: dev_text_pdu.udev_iface,
+                    hresult: device_text.hresult,
+                    device_description: device_text.description.into(),
+                })])
             }
             IoCtl(io_ctl_pdu) => {
                 let msg_id = io_ctl_pdu.msg_id;

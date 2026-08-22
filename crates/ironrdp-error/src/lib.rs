@@ -31,10 +31,11 @@ struct ErrorMeta {
 /// # `no_alloc` platforms
 ///
 /// When compiled without the `alloc` feature, `Error<Kind>` retains `kind`,
-/// `context`, and `location` inline. The error source chain is unavailable.
-/// `no_alloc` targets are supported on a best-effort basis and are not a
-/// primary target of this crate. Do not add more inline fields here: the
-/// struct should stay lean for stack-constrained environments.
+/// `context`, and `location` inline. Sources exposed by `Kind` remain available,
+/// but [`Error::with_source`] cannot retain an additional source. `no_alloc`
+/// targets are supported on a best-effort basis and are not a primary target of
+/// this crate. Do not add more inline fields here: the struct should stay lean
+/// for stack-constrained environments.
 pub struct Error<Kind> {
     kind: Kind,
     /// Diagnostic metadata. Present only when `alloc` is available.
@@ -138,7 +139,10 @@ impl<Kind> Error<Kind> {
     }
 
     pub fn report(&self) -> ErrorReport<'_, Kind> {
-        ErrorReport(self)
+        ErrorReport {
+            error: self,
+            include_locations: false,
+        }
     }
 }
 
@@ -148,46 +152,36 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         #[cfg(feature = "alloc")]
-        {
-            write!(
-                f,
-                "[{} @ {}:{}] {}",
-                self.meta.context,
-                self.meta.location.file(),
-                self.meta.location.line(),
-                self.kind
-            )
-        }
+        let (context, location) = (self.meta.context, self.meta.location);
         #[cfg(not(feature = "alloc"))]
-        {
-            write!(
-                f,
-                "[{} @ {}:{}] {}",
-                self.context,
-                self.location.file(),
-                self.location.line(),
-                self.kind
-            )
+        let (context, location) = (self.context, self.location);
+
+        if f.alternate() {
+            write!(f, "[{context} @ {}:{}] {}", location.file(), location.line(), self.kind)
+        } else {
+            write!(f, "[{context}] {}", self.kind)
         }
     }
 }
 
-#[cfg(feature = "std")]
 impl<Kind> core::error::Error for Error<Kind>
 where
     Kind: core::error::Error,
 {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         if let Some(source) = self.kind.source() {
-            Some(source)
-        } else {
+            return Some(source);
+        }
+
+        #[cfg(feature = "alloc")]
+        {
             // NOTE: we can't use Option::as_ref here because of type inference
             if let Some(e) = &self.meta.source {
-                Some(e.as_ref())
-            } else {
-                None
+                return Some(e.as_ref());
             }
         }
+
+        None
     }
 }
 
@@ -201,7 +195,21 @@ where
     }
 }
 
-pub struct ErrorReport<'a, Kind>(&'a Error<Kind>);
+pub struct ErrorReport<'a, Kind> {
+    error: &'a Error<Kind>,
+    include_locations: bool,
+}
+
+impl<Kind> ErrorReport<'_, Kind> {
+    /// Includes source locations when formatting this error report.
+    ///
+    /// Alternate formatting (`{report:#}`) also includes source locations.
+    #[must_use]
+    pub fn with_locations(mut self) -> Self {
+        self.include_locations = true;
+        self
+    }
+}
 
 #[cfg(feature = "std")]
 impl<Kind> fmt::Display for ErrorReport<'_, Kind>
@@ -211,12 +219,22 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use core::error::Error as _;
 
-        write!(f, "{}", self.0)?;
+        let include_locations = self.include_locations || f.alternate();
 
-        let mut next_source = self.0.source();
+        if include_locations {
+            write!(f, "{:#}", self.error)?;
+        } else {
+            write!(f, "{}", self.error)?;
+        }
+
+        let mut next_source = self.error.source();
 
         while let Some(e) = next_source {
-            write!(f, ", caused by: {e}")?;
+            if include_locations {
+                write!(f, ", caused by: {e:#}")?;
+            } else {
+                write!(f, ", caused by: {e}")?;
+            }
             next_source = e.source();
         }
 
@@ -230,14 +248,104 @@ where
     E: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)?;
+        let include_locations = self.include_locations || f.alternate();
+
+        if include_locations {
+            write!(f, "{:#}", self.error)?;
+        } else {
+            write!(f, "{}", self.error)?;
+        }
 
         #[cfg(feature = "alloc")]
-        if let Some(source) = &self.0.meta.source {
-            write!(f, ", caused by: {source}")?;
+        if let Some(source) = &self.error.meta.source {
+            if include_locations {
+                write!(f, ", caused by: {source:#}")?;
+            } else {
+                write!(f, ", caused by: {source}")?;
+            }
         }
 
         Ok(())
+    }
+}
+
+/// Defines the canonical conversion from an inner error kind to this error kind.
+///
+/// Implement this trait explicitly for every supported inner kind. No blanket
+/// implementation is provided, so error-kind owners retain control over their
+/// cross-domain mappings.
+pub trait ErrorMapping<InnerKind>: Sized {
+    /// Converts an error with `InnerKind` into an error with this kind.
+    ///
+    /// The conversion is called by [`ResultExt::map_err_as`].
+    #[track_caller]
+    fn map_error(error: Error<InnerKind>) -> Error<Self>;
+}
+
+/// Extension methods for converting [`Error`] values across typed error boundaries.
+///
+/// Import this trait to use [`ResultExt::map_err_as`], [`ResultExt::map_err_kind`],
+/// and [`ResultExt::map_err_source`] on `Result<T, Error<InnerKind>>`.
+pub trait ResultExt<T, InnerKind> {
+    /// Converts an error using `OuterKind`'s canonical [`ErrorMapping`] implementation.
+    #[track_caller]
+    fn map_err_as<OuterKind>(self) -> Result<T, Error<OuterKind>>
+    where
+        OuterKind: ErrorMapping<InnerKind>;
+
+    /// Wraps the complete inner error in an explicitly selected outer error kind.
+    ///
+    /// Use this when the outer kind has a variant that carries `Error<InnerKind>`.
+    #[track_caller]
+    fn map_err_kind<OuterKind>(
+        self,
+        context: &'static str,
+        wrap: impl FnOnce(Error<InnerKind>) -> OuterKind,
+    ) -> Result<T, Error<OuterKind>>;
+
+    /// Converts an error to a coarse outer kind while retaining the inner error as its source.
+    ///
+    /// Source chaining follows [`Error::with_source`] behavior and is therefore unavailable
+    /// when `Error<InnerKind>` does not implement [`Source`].
+    #[track_caller]
+    fn map_err_source<OuterKind>(self, context: &'static str, kind: OuterKind) -> Result<T, Error<OuterKind>>
+    where
+        Error<InnerKind>: Source;
+}
+
+impl<T, InnerKind> ResultExt<T, InnerKind> for Result<T, Error<InnerKind>> {
+    #[track_caller]
+    fn map_err_as<OuterKind>(self) -> Result<T, Error<OuterKind>>
+    where
+        OuterKind: ErrorMapping<InnerKind>,
+    {
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(OuterKind::map_error(error)),
+        }
+    }
+
+    #[track_caller]
+    fn map_err_kind<OuterKind>(
+        self,
+        context: &'static str,
+        wrap: impl FnOnce(Error<InnerKind>) -> OuterKind,
+    ) -> Result<T, Error<OuterKind>> {
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(Error::new(context, wrap(error))),
+        }
+    }
+
+    #[track_caller]
+    fn map_err_source<OuterKind>(self, context: &'static str, kind: OuterKind) -> Result<T, Error<OuterKind>>
+    where
+        Error<InnerKind>: Source,
+    {
+        match self {
+            Ok(value) => Ok(value),
+            Err(error) => Err(Error::new(context, kind).with_source(error)),
+        }
     }
 }
 

@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteBuf, WriteCursor, cast_length, decode,
     ensure_fixed_part_size, ensure_size, invalid_field_err, not_enough_bytes_err, other_err, read_padding,
-    write_padding,
+    unsupported_value_err, write_padding,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive as _;
@@ -23,6 +23,9 @@ pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 pub const SHARE_DATA_HEADER_COMPRESSION_MASK: u8 = 0xF;
 const SHARE_CONTROL_HEADER_MASK: u16 = 0xF;
 const SHARE_CONTROL_HEADER_SIZE: usize = 2 * 3 + 4;
+/// On-the-wire Share Control Header per MS-RDPBCGR 2.2.8.1.1.1.1: totalLength,
+/// pduType and pduSource. shareId is part of the individual PDU bodies.
+const SHARE_CONTROL_HEADER_WIRE_SIZE: usize = 2 * 3;
 
 const PROTOCOL_VERSION: u16 = 0x10;
 
@@ -68,8 +71,10 @@ impl<'de> Decode<'de> for BasicSecurityHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let flags = BasicSecurityHeaderFlags::from_bits(src.read_u16())
-            .ok_or_else(|| invalid_field_err!("securityHeader", "invalid basic security header"))?;
+        // Use from_bits_truncate to tolerate unknown flag bits that some servers
+        // (e.g., Windows Server 2019 with RDS licensing) may set.
+        // This matches FreeRDP behavior which masks for known flags without rejecting the PDU.
+        let flags = BasicSecurityHeaderFlags::from_bits_truncate(src.read_u16());
         let _flags_hi = src.read_u16(); // unused
 
         Ok(Self { flags })
@@ -147,7 +152,32 @@ pub struct ShareDataCtx {
     pub channel_id: u16,
     pub share_id: u32,
     pub pdu_source: u16,
+    pub compression_flags: CompressionFlags,
+    pub compression_type: client_info::CompressionType,
     pub pdu: ShareDataPdu,
+}
+
+/// Format an unexpected `ShareControlPdu` for error context.
+///
+/// Drills into the `Data` wrapper to surface the inner `ShareDataPdu` variant
+/// name; for `ServerSetErrorInfo` the `ErrorInfo` description is appended so
+/// callers can see *why* the server rejected the session without resorting to
+/// substring matching on the `Reason` string.
+pub fn describe_unexpected_share_control_pdu(pdu: &ShareControlPdu) -> String {
+    let ShareControlPdu::Data(header) = pdu else {
+        return pdu.as_short_name().to_owned();
+    };
+
+    let inner = &header.share_data_pdu;
+    if let ShareDataPdu::ServerSetErrorInfo(payload) = inner {
+        format!(
+            "Data PDU wrapping {} ({})",
+            inner.as_short_name(),
+            payload.0.description(),
+        )
+    } else {
+        format!("Data PDU wrapping {}", inner.as_short_name())
+    }
 }
 
 /// Decodes a [`ShareDataHeader`] from the user data of a Send Data Indication.
@@ -155,9 +185,10 @@ pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<ShareDa
     let ctx = decode_share_control(ctx)?;
 
     let ShareControlPdu::Data(share_data_header) = ctx.pdu else {
-        return Err(other_err!(
+        return Err(unsupported_value_err!(
             "decode_share_data",
-            "received unexpected Share Control PDU (expected Data PDU)"
+            "Share Control PDU (expected Data PDU)",
+            describe_unexpected_share_control_pdu(&ctx.pdu)
         ));
     };
 
@@ -166,6 +197,8 @@ pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<ShareDa
         channel_id: ctx.channel_id,
         share_id: ctx.share_id,
         pdu_source: ctx.pdu_source,
+        compression_flags: share_data_header.compression_flags,
+        compression_type: share_data_header.compression_type,
         pdu: share_data_header.share_data_pdu,
     })
 }
@@ -212,14 +245,17 @@ pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<IoChann
                 channel_id: ctx.channel_id,
                 share_id: ctx.share_id,
                 pdu_source: ctx.pdu_source,
+                compression_flags: share_data_header.compression_flags,
+                compression_type: share_data_header.compression_type,
                 pdu: share_data_header.share_data_pdu,
             };
 
             Ok(IoChannelPdu::Data(share_data_ctx))
         }
-        _ => Err(other_err!(
+        other => Err(unsupported_value_err!(
             "decode_io_channel",
-            "received unexpected Share Control PDU (expected Data PDU or Server Deactivate All PDU)"
+            "Share Control PDU (expected Data PDU or Server Deactivate All PDU)",
+            describe_unexpected_share_control_pdu(&other)
         )),
     }
 }
@@ -266,12 +302,14 @@ impl Encode for ShareControlHeader {
 
 impl<'de> Decode<'de> for ShareControlHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        ensure_fixed_part_size!(in: src);
+        // The wire header is only 6 bytes (MS-RDPBCGR 2.2.8.1.1.1.1); shareId belongs
+        // to the PDU body. xrdp sends header-only Deactivate All PDUs without it.
+        ensure_size!(in: src, size: SHARE_CONTROL_HEADER_WIRE_SIZE);
 
         let total_length = usize::from(src.read_u16());
         let pdu_type_with_version = src.read_u16();
         let pdu_source = src.read_u16();
-        let share_id = src.read_u32();
+        let share_id = if src.len() >= 4 { src.read_u32() } else { 0 };
 
         let pdu_type = ShareControlPduType::from_u16(pdu_type_with_version & SHARE_CONTROL_HEADER_MASK)
             .ok_or_else(|| invalid_field_err!("pdu_type", "invalid pdu type"))?;
@@ -288,16 +326,22 @@ impl<'de> Decode<'de> for ShareControlHeader {
         };
 
         if pdu_type == ShareControlPduType::DataPdu {
-            // Some windows version have an issue where
-            // there is some padding not part of the inner unit.
-            // Consume that data
             let header_length = header.size();
 
-            if header_length != total_length {
+            let is_empty_output_pdu = matches!(
+                &header.share_control_pdu,
+                ShareControlPdu::Data(ShareDataHeader {
+                    share_data_pdu: ShareDataPdu::Update(data) | ShareDataPdu::Pointer(data),
+                    ..
+                }) if data.is_empty()
+            );
+
+            if header_length != total_length && !(total_length == 0 && is_empty_output_pdu) {
                 if total_length < header_length {
                     return Err(not_enough_bytes_err!(total_length, header_length));
                 }
 
+                // Some Windows versions append padding that is not part of the inner unit.
                 let padding = total_length - header_length;
                 ensure_size!(in: src, size: padding);
                 read_padding!(src, padding);
@@ -447,7 +491,14 @@ impl<'de> Decode<'de> for ShareDataHeader {
                 .ok_or_else(|| invalid_field_err!("compressionType", "Invalid compression type"))?;
         let _compressed_length = src.read_u16();
 
-        let share_data_pdu = ShareDataPdu::from_type(src, pdu_type)?;
+        let share_data_pdu = if compression_flags.is_empty() {
+            ShareDataPdu::from_type(src, pdu_type)?
+        } else {
+            ShareDataPdu::Compressed {
+                pdu_type,
+                data: src.read_remaining().to_vec(),
+            }
+        };
 
         Ok(Self {
             share_data_pdu,
@@ -486,6 +537,11 @@ pub enum ShareDataPdu {
     DrawGdiPusErrorPdu(Vec<u8>),
     ArcStatusPdu(Vec<u8>),
     StatusInfoPdu(Vec<u8>),
+    /// A compressed Share Data PDU body that must be decompressed before decoding.
+    Compressed {
+        pdu_type: ShareDataPduType,
+        data: Vec<u8>,
+    },
 }
 
 impl ShareDataPdu {
@@ -518,6 +574,7 @@ impl ShareDataPdu {
             ShareDataPdu::DrawGdiPusErrorPdu(_) => "Draw GDI PUS Error PDU",
             ShareDataPdu::ArcStatusPdu(_) => "Arc Status PDU",
             ShareDataPdu::StatusInfoPdu(_) => "Status Info PDU",
+            ShareDataPdu::Compressed { .. } => "Compressed Share Data PDU",
         }
     }
 
@@ -548,7 +605,14 @@ impl ShareDataPdu {
             ShareDataPdu::DrawGdiPusErrorPdu(_) => ShareDataPduType::DrawGdiPusErrorPdu,
             ShareDataPdu::ArcStatusPdu(_) => ShareDataPduType::ArcStatusPdu,
             ShareDataPdu::StatusInfoPdu(_) => ShareDataPduType::StatusInfoPdu,
+            ShareDataPdu::Compressed { pdu_type, .. } => *pdu_type,
         }
+    }
+
+    /// Decodes the body of a Share Data PDU after its `pduType2` has been read.
+    pub fn decode_with_type(data: &[u8], pdu_type: ShareDataPduType) -> DecodeResult<Self> {
+        let mut src = ReadCursor::new(data);
+        Self::from_type(&mut src, pdu_type)
     }
 
     fn from_type(src: &mut ReadCursor<'_>, share_type: ShareDataPduType) -> DecodeResult<Self> {
@@ -556,7 +620,15 @@ impl ShareDataPdu {
             ShareDataPduType::Synchronize => Ok(ShareDataPdu::Synchronize(SynchronizePdu::decode(src)?)),
             ShareDataPduType::Control => Ok(ShareDataPdu::Control(ControlPdu::decode(src)?)),
             ShareDataPduType::FontList => Ok(ShareDataPdu::FontList(FontPdu::decode(src)?)),
-            ShareDataPduType::FontMap => Ok(ShareDataPdu::FontMap(FontPdu::decode(src)?)),
+            ShareDataPduType::FontMap => {
+                let font_pdu = if src.is_empty() {
+                    FontPdu::default()
+                } else {
+                    FontPdu::decode(src)?
+                };
+
+                Ok(ShareDataPdu::FontMap(font_pdu))
+            }
             ShareDataPduType::MonitorLayoutPdu => Ok(ShareDataPdu::MonitorLayout(MonitorLayoutPdu::decode(src)?)),
             ShareDataPduType::SaveSessionInfo => Ok(ShareDataPdu::SaveSessionInfo(SaveSessionInfoPdu::decode(src)?)),
             ShareDataPduType::FrameAcknowledgePdu => {
@@ -606,6 +678,7 @@ impl Encode for ShareDataPdu {
             ShareDataPdu::ShutdownRequest | ShareDataPdu::ShutdownDenied => Ok(()),
             ShareDataPdu::SuppressOutput(pdu) => pdu.encode(dst),
             ShareDataPdu::RefreshRectangle(pdu) => pdu.encode(dst),
+            ShareDataPdu::Compressed { .. } => Err(other_err!("Encoding compressed Share Data PDU is not implemented")),
             _ => Err(other_err!("Encoding not implemented")),
         }
     }
@@ -638,7 +711,8 @@ impl Encode for ShareDataPdu {
             | ShareDataPdu::DrawNineGridErrorPdu(buffer)
             | ShareDataPdu::DrawGdiPusErrorPdu(buffer)
             | ShareDataPdu::ArcStatusPdu(buffer)
-            | ShareDataPdu::StatusInfoPdu(buffer) => buffer.len(),
+            | ShareDataPdu::StatusInfoPdu(buffer)
+            | ShareDataPdu::Compressed { data: buffer, .. } => buffer.len(),
         }
     }
 }
@@ -801,5 +875,201 @@ impl Encode for ServerDeactivateAll {
 
     fn size(&self) -> usize {
         Self::FIXED_PART_SIZE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use ironrdp_core::encode_vec;
+
+    use crate::mcs::{McsMessage, SendDataIndication};
+    use crate::rdp::client_info::CompressionType;
+    use crate::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode};
+    use crate::x224::X224;
+
+    use super::*;
+
+    fn zero_length_empty_data_pdu(pdu_type: u8) -> [u8; 18] {
+        [
+            0x00, 0x00, // totalLength
+            0x17, 0x00, // pduType (Data PDU) + protocolVersion
+            0xE9, 0x03, // pduSource
+            0xDD, 0xCC, 0xBB, 0xAA, // shareId
+            0x00, // pad1
+            0x04, // streamId (Medium)
+            0x00, 0x00,     // uncompressedLength
+            pdu_type, // pduType2
+            0x00,     // compressedType
+            0x00, 0x00, // compressedLength
+        ]
+    }
+
+    #[test]
+    fn decode_zero_length_empty_output_update() {
+        let encoded = zero_length_empty_data_pdu(0x02);
+
+        let decoded: ShareControlHeader = decode(&encoded).expect("empty output PDU is a no-op");
+
+        assert!(matches!(
+            decoded.share_control_pdu,
+            ShareControlPdu::Data(ShareDataHeader {
+                share_data_pdu: ShareDataPdu::Update(data),
+                ..
+            }) if data.is_empty()
+        ));
+    }
+
+    #[test]
+    fn decode_zero_length_empty_output_pointer() {
+        let encoded = zero_length_empty_data_pdu(0x1B);
+
+        let decoded: ShareControlHeader = decode(&encoded).expect("empty output PDU is a no-op");
+
+        assert!(matches!(
+            decoded.share_control_pdu,
+            ShareControlPdu::Data(ShareDataHeader {
+                share_data_pdu: ShareDataPdu::Pointer(data),
+                ..
+            }) if data.is_empty()
+        ));
+    }
+
+    #[test]
+    fn reject_zero_length_non_output_data_pdu() {
+        let encoded = zero_length_empty_data_pdu(0x25);
+
+        let error =
+            decode::<ShareControlHeader>(&encoded).expect_err("zero total length is only accepted for no-op output");
+
+        assert!(matches!(
+            error.kind(),
+            ironrdp_core::DecodeErrorKind::NotEnoughBytes {
+                received: 0,
+                expected: 18
+            }
+        ));
+    }
+
+    #[test]
+    fn decode_short_deactivate_all_pdu() {
+        let encoded = [
+            0x06, 0x00, // totalLength (6 - header only, no shareId)
+            0x16, 0x00, // pduType (Deactivate All) + protocolVersion
+            0xE9, 0x03, // pduSource
+        ];
+
+        let decoded: ShareControlHeader = decode(&encoded).expect("header-only Deactivate All PDU");
+
+        assert!(matches!(
+            decoded.share_control_pdu,
+            ShareControlPdu::ServerDeactivateAll(_)
+        ));
+        assert_eq!(decoded.share_id, 0);
+    }
+
+    #[test]
+    fn decode_deactivate_all_pdu_with_share_id() {
+        let encoded = [
+            0x0A, 0x00, // totalLength (10 - header with shareId)
+            0x16, 0x00, // pduType (Deactivate All) + protocolVersion
+            0xE9, 0x03, // pduSource
+            0xDD, 0xCC, 0xBB, 0xAA, // shareId
+        ];
+
+        let decoded: ShareControlHeader = decode(&encoded).expect("full-length Deactivate All PDU");
+
+        assert!(matches!(
+            decoded.share_control_pdu,
+            ShareControlPdu::ServerDeactivateAll(_)
+        ));
+        assert_eq!(decoded.share_id, 0xAABB_CCDD);
+    }
+
+    #[test]
+    fn share_data_context_retains_compression_metadata() {
+        let mut user_data = encode_vec(&ShareControlHeader {
+            share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
+                share_data_pdu: ShareDataPdu::ShutdownRequest,
+                stream_priority: StreamPriority::Medium,
+                compression_flags: CompressionFlags::empty(),
+                compression_type: CompressionType::K64,
+            }),
+            pdu_source: 1002,
+            share_id: 1,
+        })
+        .expect("encode Share Control PDU");
+        // ShareDataHeader does not encode compressed payloads. The decoder only
+        // needs the compression-control byte to verify metadata propagation.
+        const COMPRESSION_CONTROL_OFFSET: usize = SHARE_CONTROL_HEADER_SIZE
+            + PADDING_FIELD_SIZE
+            + STREAM_ID_FIELD_SIZE
+            + UNCOMPRESSED_LENGTH_FIELD_SIZE
+            + PDU_TYPE_FIELD_SIZE;
+        user_data[COMPRESSION_CONTROL_OFFSET] =
+            (CompressionFlags::COMPRESSED | CompressionFlags::FLUSHED).bits() | CompressionType::K64.as_u8();
+        let frame = encode_vec(&X224(McsMessage::SendDataIndication(SendDataIndication {
+            initiator_id: 1002,
+            channel_id: 1003,
+            user_data: Cow::Owned(user_data),
+        })))
+        .expect("encode SendDataIndication");
+
+        let data_ctx = crate::mcs::decode_send_data_indication(&frame).expect("decode SendDataIndication");
+        let share_data_ctx = decode_share_data(data_ctx).expect("decode Share Data PDU");
+
+        assert_eq!(
+            share_data_ctx.compression_flags,
+            CompressionFlags::COMPRESSED | CompressionFlags::FLUSHED
+        );
+        assert_eq!(share_data_ctx.compression_type, CompressionType::K64);
+        assert!(matches!(
+            share_data_ctx.pdu,
+            ShareDataPdu::Compressed {
+                pdu_type: ShareDataPduType::ShutdownRequest,
+                ..
+            }
+        ));
+    }
+
+    fn wrap_in_data(inner: ShareDataPdu) -> ShareControlPdu {
+        ShareControlPdu::Data(ShareDataHeader {
+            share_data_pdu: inner,
+            stream_priority: StreamPriority::Medium,
+            compression_flags: CompressionFlags::empty(),
+            compression_type: CompressionType::K8,
+        })
+    }
+
+    #[test]
+    fn non_data_variant_uses_outer_short_name() {
+        let pdu = ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll);
+        assert_eq!(describe_unexpected_share_control_pdu(&pdu), "Server Deactivate All PDU");
+    }
+
+    #[test]
+    fn data_wrapping_non_set_error_info_surfaces_inner_short_name() {
+        let pdu = wrap_in_data(ShareDataPdu::Update(Vec::new()));
+        assert_eq!(
+            describe_unexpected_share_control_pdu(&pdu),
+            "Data PDU wrapping Update PDU"
+        );
+    }
+
+    #[test]
+    fn data_wrapping_set_error_info_surfaces_description() {
+        let error = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerDeniedConnection);
+        let pdu = wrap_in_data(ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error)));
+        let described = describe_unexpected_share_control_pdu(&pdu);
+
+        assert!(
+            described.starts_with("Data PDU wrapping Server Set Error Info PDU ("),
+            "unexpected prefix: {described}",
+        );
+        assert!(
+            described.contains("Protocol independent error"),
+            "missing error category in description: {described}",
+        );
     }
 }

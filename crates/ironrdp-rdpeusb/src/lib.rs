@@ -9,6 +9,7 @@ pub mod client;
 pub mod io;
 pub mod pdu;
 pub mod server;
+pub mod usb;
 
 /// Error returned when a per-device USB interface ID conflicts with an RDPEUSB default interface.
 ///

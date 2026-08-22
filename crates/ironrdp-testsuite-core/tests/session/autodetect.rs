@@ -22,6 +22,11 @@ fn make_processor() -> Processor {
     )
 }
 
+fn process_frame(processor: &mut Processor, frame: &[u8]) -> Vec<ironrdp_session::x224::ProcessorOutput> {
+    let mut bulk_decompressor = None;
+    processor.process(frame, &mut bulk_decompressor).expect("process frame")
+}
+
 /// Encode an Auto-Detect Request as a server-to-client SendDataIndication on the
 /// MCS message channel ([MS-RDPBCGR] 2.2.14.3): the auto-detect data is framed by
 /// a Basic Security Header (SEC_AUTODETECT_REQ), not a Share Data header.
@@ -44,7 +49,7 @@ fn rtt_request_produces_response_frame() {
     let request = AutoDetectRequest::rtt_continuous(42);
     let frame = encode_server_autodetect(request);
 
-    let outputs = processor.process(&frame).unwrap();
+    let outputs = process_frame(&mut processor, &frame);
 
     assert_eq!(outputs.len(), 1);
     match &outputs[0] {
@@ -62,7 +67,7 @@ fn rtt_response_preserves_sequence_number() {
     let request = AutoDetectRequest::rtt_connect_time(sequence_number);
     let frame = encode_server_autodetect(request);
 
-    let outputs = processor.process(&frame).unwrap();
+    let outputs = process_frame(&mut processor, &frame);
 
     assert_eq!(outputs.len(), 1);
     let ironrdp_session::x224::ProcessorOutput::ResponseFrame(response_data) = &outputs[0] else {
@@ -97,7 +102,7 @@ fn network_characteristics_result_surfaces_as_autodetect() {
     let request = AutoDetectRequest::netchar_result(7, 10, 50000, 20);
     let frame = encode_server_autodetect(request.clone());
 
-    let outputs = processor.process(&frame).unwrap();
+    let outputs = process_frame(&mut processor, &frame);
 
     assert_eq!(outputs.len(), 1);
     match &outputs[0] {
@@ -114,7 +119,7 @@ fn bandwidth_measure_start_does_not_crash() {
     let request = AutoDetectRequest::bw_start_connect_time(100);
     let frame = encode_server_autodetect(request);
 
-    let outputs = processor.process(&frame).unwrap();
+    let outputs = process_frame(&mut processor, &frame);
     assert!(outputs.is_empty(), "BW start should produce no output");
 }
 
@@ -124,7 +129,7 @@ fn bandwidth_measure_stop_does_not_crash() {
     let request = AutoDetectRequest::bw_stop_continuous(200);
     let frame = encode_server_autodetect(request);
 
-    let outputs = processor.process(&frame).unwrap();
+    let outputs = process_frame(&mut processor, &frame);
     assert!(outputs.is_empty(), "BW stop should produce no output");
 }
 
@@ -134,6 +139,6 @@ fn bandwidth_measure_payload_does_not_crash() {
     let request = AutoDetectRequest::bw_payload(300, vec![0xAA; 64]);
     let frame = encode_server_autodetect(request);
 
-    let outputs = processor.process(&frame).unwrap();
+    let outputs = process_frame(&mut processor, &frame);
     assert!(outputs.is_empty(), "BW payload should produce no output");
 }

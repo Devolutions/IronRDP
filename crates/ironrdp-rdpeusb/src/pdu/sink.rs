@@ -101,7 +101,14 @@ impl AddDevice {
 
         ensure_size!(in: src, size: InterfaceId::FIXED_PART_SIZE);
         let usb_device = match src.read_u32() {
-            0x0..=0x3 => {
+            // `1..=3` are the RDPEUSB default Device Sink / Channel Notification
+            // interface IDs; a device announced with one collides with this crate's
+            // fixed dispatch paths (later completion PDUs would decode as the wrong
+            // message type), so keep them rejected. `0` is the deliberate exception:
+            // a real Windows client (mstsc) assigns `UsbDevice == 0` to a redirected
+            // device, addressed by its own per-device DVC, and rejecting it made every
+            // mstsc ADD_DEVICE fail to parse.
+            0x1..=0x3 => {
                 return Err(invalid_field_err!("UsbDevice", "conflict with default interfaces"));
             }
             value => InterfaceId::try_from(value)?,
@@ -219,7 +226,9 @@ impl UsbDeviceCaps {
         usb_bus_iface_ver: UsbBusIfaceVer,
         device_speed: DeviceSpeed,
     ) -> Result<(), &'static str> {
-        if matches!(usb_bus_iface_ver, UsbBusIfaceVer::V0) && matches!(device_speed, DeviceSpeed::HighSpeed) {
+        if usb_bus_iface_ver.to_u32() == UsbBusIfaceVer::V0.to_u32()
+            && device_speed.to_u32() != DeviceSpeed::FULL_SPEED.to_u32()
+        {
             Err("must be 0x00000000 when UsbBusInterfaceVersion is 0x00000000")
         } else {
             Ok(())
@@ -236,17 +245,13 @@ impl Encode for UsbDeviceCaps {
 
         dst.write_u32(Self::CB_SIZE);
 
-        #[expect(clippy::as_conversions)]
-        {
-            dst.write_u32(self.usb_bus_iface_ver as u32);
-            dst.write_u32(self.usbdi_ver as u32);
-            dst.write_u32(self.supported_usb_ver as u32);
-        }
+        dst.write_u32(self.usb_bus_iface_ver.to_u32());
+        dst.write_u32(self.usbdi_ver.to_u32());
+        dst.write_u32(self.supported_usb_ver.to_u32());
 
         dst.write_u32(Self::HCD_CAPS);
 
-        #[expect(clippy::as_conversions)]
-        dst.write_u32(self.device_speed as u32);
+        dst.write_u32(self.device_speed.to_u32());
 
         dst.write_u32(self.no_ack_isoch_write_jitter_buf_size.0);
 
@@ -270,32 +275,22 @@ impl Decode<'_> for UsbDeviceCaps {
         if cb_size != Self::CB_SIZE {
             return Err(unsupported_value_err!("CbSize", format!("{cb_size}")));
         }
-        let usb_bus_iface_ver = match src.read_u32() {
-            0x0 => UsbBusIfaceVer::V0,
-            0x1 => UsbBusIfaceVer::V1,
-            0x2 => UsbBusIfaceVer::V2,
-            value => return Err(unsupported_value_err!("UsbBusInterfaceVersion", format!("{value}"))),
-        };
-        let usbdi_ver = match src.read_u32() {
-            0x500 => UsbdiVer::V0x500,
-            0x600 => UsbdiVer::V0x600,
-            value => return Err(unsupported_value_err!("USBDI_Version", format!("{value}"))),
-        };
-        let supported_usb_ver = match src.read_u32() {
-            0x100 => SupportedUsbVer::Usb10,
-            0x110 => SupportedUsbVer::Usb11,
-            0x200 => SupportedUsbVer::Usb20,
-            value => return Err(unsupported_value_err!("SupportedUsbVersion", format!("{value}"))),
-        };
+        // These four fields are device-reported capability values that grow over
+        // time (USB 3.x, SuperSpeed, newer bus-interface revisions). Each is a
+        // newtype over the raw value, so an unrecognized value is preserved
+        // verbatim instead of failing the decode: rejecting it tears down the
+        // URBDRC channel for an otherwise-usable device (a real USB 3.2 device
+        // reports SupportedUsbVersion 0x320, which the named constants did not
+        // cover). The framing constants (`CbSize`, `HcdCapabilities`) stay strict
+        // — they validate the PDU layout, not device data.
+        let usb_bus_iface_ver = UsbBusIfaceVer::from_u32(src.read_u32());
+        let usbdi_ver = UsbdiVer::from_u32(src.read_u32());
+        let supported_usb_ver = SupportedUsbVer::from_u32(src.read_u32());
         let hcd_caps = src.read_u32();
         if hcd_caps != Self::HCD_CAPS {
             return Err(unsupported_value_err!("HcdCapabilities", format!("{hcd_caps}")));
         }
-        let device_speed = match src.read_u32() {
-            0x0 => DeviceSpeed::FullSpeed,
-            0x1 => DeviceSpeed::HighSpeed,
-            value => return Err(unsupported_value_err!("DeviceIsHighSpeed", format!("{value}"))),
-        };
+        let device_speed = DeviceSpeed::from_u32(src.read_u32());
         Self::check_device_speed(usb_bus_iface_ver, device_speed)
             .map_err(|reason| invalid_field_err!("USB_DEVICE_CAPABILITIES::DeviceIsHighSpeed", reason))?;
         let no_ack_isoch_write_jitter_buf_size = match src.read_u32() {
@@ -319,34 +314,100 @@ impl Decode<'_> for UsbDeviceCaps {
     }
 }
 
-#[repr(u32)]
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum UsbBusIfaceVer {
-    V0 = 0x0,
-    V1 = 0x1,
-    V2 = 0x2,
+/// USB bus interface version (`UsbBusInterfaceVersion`), a device-reported
+/// capability.
+///
+/// A newtype over the raw wire value (the `http::StatusCode` shape): the named
+/// constants cover the documented values, while any other device-reported value
+/// is preserved verbatim rather than rejected — so a newer device is not torn
+/// down (see [`UsbDeviceCaps::decode`]) and every value round-trips exactly.
+#[repr(transparent)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct UsbBusIfaceVer(u32);
+
+impl UsbBusIfaceVer {
+    pub const V0: Self = Self(0x0);
+    pub const V1: Self = Self(0x1);
+    pub const V2: Self = Self(0x2);
+
+    /// Wraps a raw device-reported value.
+    pub const fn from_u32(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// The raw wire value.
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
 }
 
-#[repr(u32)]
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum UsbdiVer {
-    V0x500 = 0x500,
-    V0x600 = 0x600,
+/// USBDI version (`USBDI_Version`), a device-reported capability. A newtype over
+/// the raw wire value — an unnamed value is preserved verbatim and round-trips.
+#[repr(transparent)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct UsbdiVer(u32);
+
+impl UsbdiVer {
+    pub const V0X500: Self = Self(0x500);
+    pub const V0X600: Self = Self(0x600);
+
+    /// Wraps a raw device-reported value.
+    pub const fn from_u32(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// The raw wire value.
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
 }
 
-#[repr(u32)]
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum SupportedUsbVer {
-    Usb10 = 0x100,
-    Usb11 = 0x110,
-    Usb20 = 0x200,
+/// Highest USB version the device supports (`bcdUSB`), a device-reported
+/// capability. A newtype over the raw wire value: named constants cover USB 1.0
+/// through 3.2, and any future value is preserved verbatim and round-trips.
+#[repr(transparent)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct SupportedUsbVer(u32);
+
+impl SupportedUsbVer {
+    pub const USB_10: Self = Self(0x100);
+    pub const USB_11: Self = Self(0x110);
+    pub const USB_20: Self = Self(0x200);
+    pub const USB_30: Self = Self(0x300);
+    pub const USB_31: Self = Self(0x310);
+    pub const USB_32: Self = Self(0x320);
+
+    /// Wraps a raw device-reported `bcdUSB` value.
+    pub const fn from_u32(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// The raw wire value.
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
 }
 
-#[repr(u32)]
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum DeviceSpeed {
-    FullSpeed = 0x0,
-    HighSpeed = 0x1,
+/// Device speed (`DeviceIsHighSpeed`), a device-reported capability. A newtype
+/// over the raw wire value — an unnamed value (e.g. a SuperSpeed encoding) is
+/// preserved verbatim and round-trips.
+#[repr(transparent)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct DeviceSpeed(u32);
+
+impl DeviceSpeed {
+    pub const FULL_SPEED: Self = Self(0x0);
+    pub const HIGH_SPEED: Self = Self(0x1);
+
+    /// Wraps a raw device-reported value.
+    pub const fn from_u32(value: u32) -> Self {
+        Self(value)
+    }
+
+    /// The raw wire value.
+    pub const fn to_u32(self) -> u32 {
+        self.0
+    }
 }
 
 #[repr(transparent)]

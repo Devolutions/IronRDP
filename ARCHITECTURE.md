@@ -102,6 +102,15 @@ RDPDR channel implementation.
 
 RDPSND static channel for audio output implemented as described in MS-RDPEA.
 
+#### [`crates/ironrdp-rdpeai`](./crates/ironrdp-rdpeai)
+
+AUDIO_INPUT dynamic channel for client microphone capture implemented as described in MS-RDPEAI.
+
+#### [`crates/ironrdp-rdpewa`](./crates/ironrdp-rdpewa)
+
+RDPEWA dynamic virtual channel for WebAuthn redirection as described in MS-RDPEWA.
+The Windows backend lives in [`crates/ironrdp-rdpewa-native`](./crates/ironrdp-rdpewa-native).
+
 #### [`crates/ironrdp-connector`](./crates/ironrdp-connector)
 
 State machines to drive an RDP connection sequence.
@@ -172,11 +181,24 @@ Reusable client engine library: holds the `Config`/`ConfigBuilder`, the `RdpClie
 input/output event types, and the WebSocket transport. Consumed by `ironrdp-viewer` and any
 other embedder (e.g. a headless agent).
 
+#### [`crates/ironrdp-vmconnect`](./crates/ironrdp-vmconnect)
+
+Hyper-V VM console front-end implementing the PCB → TLS → CredSSP → X.224 connection ordering.
+This crate is an **API Boundary**, exposed directly through the `ironrdp` meta crate's optional
+`vmconnect` feature and integrated into `ironrdp-client` through its optional `vmconnect` feature.
+
 #### [`crates/ironrdp-viewer`](./crates/ironrdp-viewer)
 
 Portable RDP client binary without GPU acceleration. A thin wrapper around `ironrdp-client`
 that adds the winit/softbuffer GUI event loop, the clap CLI, the inquire prompts and the
 `.rdp` file / PropertySet plumbing.
+
+#### [`crates/ironrdp-daemon`](./crates/ironrdp-daemon)
+
+Internal reusable persistent RDP-session support. It provides local RPC daemon lifecycle and
+server handling, retained framebuffer, input and screenshot handling, session log buffering, NOW
+endpoint management, and durable NOW operations. Its RPC schema and transport dependency is
+[`ironrdp-rpc`](./crates/ironrdp-rpc); it is not published.
 
 #### [`crates/ironrdp-web`](./crates/ironrdp-web)
 
@@ -269,6 +291,10 @@ Contains all integration tests for code living in the extra tier, in a single bi
 #### [`crates/ironrdp-fuzzing`](./crates/ironrdp-fuzzing)
 
 Provides test case generators and oracles for use with fuzzing.
+
+#### [`crates/ironrdp-capture-replay`](./crates/ironrdp-capture-replay)
+
+Offline direct-TCP RDP capture analysis that routes recovered plaintext and exports payload-free replay diagnostics with rendered framebuffer snapshots.
 
 #### [`fuzz`](./fuzz)
 

@@ -91,6 +91,22 @@ const CASES: &[FeatureCheckCase] = &[
         },
     },
     FeatureCheckCase {
+        name: "ironrdp-rail/no-std",
+        invocation: Invocation::CargoCheck {
+            package: "ironrdp-rail",
+            no_default_features: true,
+            features: &[],
+        },
+    },
+    FeatureCheckCase {
+        name: "ironrdp-rail/alloc",
+        invocation: Invocation::CargoCheck {
+            package: "ironrdp-rail",
+            no_default_features: true,
+            features: &["alloc"],
+        },
+    },
+    FeatureCheckCase {
         name: "ironrdp-egfx/arbitrary",
         invocation: Invocation::CargoCheck {
             package: "ironrdp-egfx",

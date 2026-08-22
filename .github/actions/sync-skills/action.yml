@@ -1,0 +1,157 @@
+name: Sync skills
+description: Mirror configured skills from public GitHub repositories
+
+inputs:
+  configuration-path:
+    description: Path to the YAML configuration file, relative to the repository root
+    required: false
+    default: .github/skills-sync.yml
+  destination-path:
+    description: Destination directory for mirrored skills, relative to the repository root
+    required: false
+    default: .agents/skills
+
+outputs:
+  changed:
+    description: Whether mirroring changed a configured skill directory
+    value: ${{ steps.sync.outputs.changed }}
+
+runs:
+  using: composite
+  steps:
+    - id: sync
+      name: Mirror configured skills
+      shell: bash
+      env:
+        CONFIGURATION_PATH: ${{ inputs.configuration-path }}
+        DESTINATION_PATH: ${{ inputs.destination-path }}
+      run: |
+        set -euo pipefail
+
+        validate_relative_path() {
+          local path="$1"
+
+          if [[ -z "$path" || "$path" == /* || "$path" == *'\'* || "$path" == *'*'* ||
+            "$path" == *'?'* || "$path" == *'['* || "/$path/" == *'//'* ||
+            "/$path/" == *'/./'* || "/$path/" == *'/../'* ]]; then
+            echo "Expected a non-empty relative path without '.' or '..' segments: $path" >&2
+            exit 1
+          fi
+        }
+
+        repository_root="$(git rev-parse --show-toplevel)"
+        validate_relative_path "$CONFIGURATION_PATH"
+        validate_relative_path "$DESTINATION_PATH"
+
+        configuration_path="$repository_root/$CONFIGURATION_PATH"
+        destination_path="$repository_root/$DESTINATION_PATH"
+
+        if [[ ! -f "$configuration_path" ]]; then
+          echo "Skills synchronization configuration does not exist: $CONFIGURATION_PATH" >&2
+          exit 1
+        fi
+
+        temporary_directory="$(mktemp -d)"
+        trap 'rm -rf "$temporary_directory"' EXIT
+
+        configuration_records="$temporary_directory/configuration.records"
+        CONFIGURATION_PATH="$configuration_path" ruby -r yaml -e '
+          configuration = YAML.safe_load_file(ENV.fetch("CONFIGURATION_PATH"), permitted_classes: [], aliases: false)
+          repositories = configuration.fetch("repositories")
+          raise "repositories must be an array" unless repositories.is_a?(Array)
+
+          selected_skills = {}
+          repositories.each do |entry|
+            raise "repository entry must be a mapping" unless entry.is_a?(Hash)
+
+            repository = entry.fetch("repository")
+            source_path = entry.fetch("source_path")
+            skills = entry.fetch("skills")
+            raise "repository must be a string" unless repository.is_a?(String)
+            raise "source_path must be a string" unless source_path.is_a?(String)
+            raise "skills must be an array" unless skills.is_a?(Array)
+            raise "skills must not be empty" if skills.empty?
+            raise "every skill name must be a string" unless skills.all?(String)
+
+            skills.each do |skill|
+              if selected_skills.key?(skill)
+                raise "skill #{skill.inspect} is configured more than once"
+              end
+
+              selected_skills[skill] = true
+            end
+
+            print repository, "\0", source_path, "\0", skills.length, "\0"
+            skills.each { |skill| print skill, "\0" }
+          end
+        ' > "$configuration_records"
+
+        changed=false
+
+        while IFS= read -r -d '' repository &&
+          IFS= read -r -d '' source_path &&
+          IFS= read -r -d '' skill_count; do
+          if [[ ! "$repository" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "Invalid GitHub repository name: $repository" >&2
+            exit 1
+          fi
+
+          validate_relative_path "$source_path"
+
+          if [[ ! "$skill_count" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Expected at least one skill for $repository" >&2
+            exit 1
+          fi
+
+          skills=()
+          for ((index = 0; index < skill_count; index++)); do
+            IFS= read -r -d '' skill
+
+            if [[ ! "$skill" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+              echo "Invalid skill name in $repository: $skill" >&2
+              exit 1
+            fi
+
+            skills+=("$skill")
+          done
+
+          clone_directory="$temporary_directory/${repository//\//__}"
+          git clone --quiet --depth 1 --filter=blob:none --sparse "https://github.com/$repository.git" "$clone_directory"
+
+          sparse_paths=()
+          for skill in "${skills[@]}"; do
+            sparse_paths+=("$source_path/$skill")
+          done
+
+          git -C "$clone_directory" sparse-checkout set --cone "${sparse_paths[@]}"
+
+          for skill in "${skills[@]}"; do
+            source_skill="$clone_directory/$source_path/$skill"
+            destination_skill="$destination_path/$skill"
+
+            if [[ ! -f "$source_skill/SKILL.md" ]]; then
+              echo "Configured skill is missing SKILL.md: $repository/$source_path/$skill" >&2
+              exit 1
+            fi
+
+            if [[ -d "$destination_skill" ]]; then
+              if git diff --no-index --quiet -- "$source_skill" "$destination_skill"; then
+                continue
+              else
+                comparison_status=$?
+              fi
+
+              if [[ "$comparison_status" -ne 1 ]]; then
+                echo "Unable to compare $source_skill with $destination_skill" >&2
+                exit "$comparison_status"
+              fi
+            fi
+
+            rm -rf "$destination_skill"
+            mkdir -p "$destination_path"
+            cp -a "$source_skill" "$destination_skill"
+            changed=true
+          done
+        done < "$configuration_records"
+
+        echo "changed=$changed" >> "$GITHUB_OUTPUT"

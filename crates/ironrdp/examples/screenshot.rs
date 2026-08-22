@@ -26,7 +26,7 @@ use anyhow::Context as _;
 use connector::Credentials;
 use ironrdp::connector;
 use ironrdp::connector::ConnectionResult;
-use ironrdp::pdu::gcc::KeyboardType;
+use ironrdp::pdu::gcc::{ConnectionType, KeyboardType};
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput};
@@ -224,16 +224,19 @@ fn build_config(
         domain,
         enable_tls: false, // This example does not expose any frontend.
         enable_credssp: true,
-        keyboard_type: KeyboardType::IbmEnhanced,
+        enable_standard_rdp_security: false,
+        keyboard_type: KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
         keyboard_layout: 0,
         keyboard_functional_keys_count: 12,
+        connection_type: ConnectionType::Lan,
         ime_file_name: String::new(),
         dig_product_id: String::new(),
         desktop_size: connector::DesktopSize {
             width: 1280,
             height: 1024,
         },
+        monitor_layout: None,
         bitmap: None,
         client_build: 0,
         client_name: "ironrdp-screenshot-example".to_owned(),
@@ -262,6 +265,7 @@ fn build_config(
         request_data: None,
         autologon: false,
         enable_audio_playback: false,
+        enable_audio_capture: false,
         compression_type,
         pointer_software_rendering: true,
         multitransport_flags: None,
@@ -272,6 +276,8 @@ fn build_config(
         timezone_info: TimezoneInfo::default(),
         alternate_shell: String::new(),
         work_dir: String::new(),
+        remote_application_mode: false,
+        rail_support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel::empty(),
     })
 }
 
@@ -435,11 +441,11 @@ fn extract_tls_server_public_key(cert: &[u8]) -> anyhow::Result<Vec<u8>> {
 
     let cert = x509_cert::Certificate::from_der(cert)?;
 
-    debug!(%cert.tbs_certificate.subject);
+    debug!(subject = %cert.tbs_certificate().subject());
 
     let server_public_key = cert
-        .tbs_certificate
-        .subject_public_key_info
+        .tbs_certificate()
+        .subject_public_key_info()
         .subject_public_key
         .as_bytes()
         .context("subject public key BIT STRING is not aligned")?

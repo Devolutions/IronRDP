@@ -511,10 +511,92 @@ impl Quant {
     const NAME: &'static str = "RfxFrameEnd";
 
     const FIXED_PART_SIZE: usize = 5 /* 10 * 4 bits */;
+
+    /// [2.2.2.1.5] encodes each quantization value as a 4-bit field. The valid
+    /// range is 6 to 15, same as documented on [`Quant`]'s [`Default`] impl.
+    ///
+    /// [2.2.2.1.5]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/3e9c8af4-7539-4c9d-95de-14b1558b902c
+    pub const VALID_RANGE: core::ops::RangeInclusive<u8> = 6..=15;
+
+    /// Builds a [`Quant`], rejecting any subband value outside [`Quant::VALID_RANGE`].
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one 4-bit field per DWT subband, matching TS_RFX_CODEC_QUANT"
+    )]
+    pub fn try_new(
+        ll3: u8,
+        lh3: u8,
+        hl3: u8,
+        hh3: u8,
+        lh2: u8,
+        hl2: u8,
+        hh2: u8,
+        lh1: u8,
+        hl1: u8,
+        hh1: u8,
+    ) -> EncodeResult<Self> {
+        let quant = Self {
+            ll3,
+            lh3,
+            hl3,
+            hh3,
+            lh2,
+            hl2,
+            hh2,
+            lh1,
+            hl1,
+            hh1,
+        };
+        quant.ensure_valid()?;
+        Ok(quant)
+    }
+
+    /// Rejects any subband value outside [`Quant::VALID_RANGE`].
+    ///
+    /// `try_new` runs this on construction, but [`Quant`]'s fields are public
+    /// and predate `try_new`, so a caller can still build one via a struct
+    /// literal and hand it to [`Encode::encode`] directly. Checked again
+    /// there rather than trusted, since a value that doesn't fit its 4-bit
+    /// wire slot panics `bit_field::BitField::set_bits` instead of erroring.
+    fn ensure_valid(&self) -> EncodeResult<()> {
+        for (field, value) in [
+            ("ll3", self.ll3),
+            ("lh3", self.lh3),
+            ("hl3", self.hl3),
+            ("hh3", self.hh3),
+            ("lh2", self.lh2),
+            ("hl2", self.hl2),
+            ("hh2", self.hh2),
+            ("lh1", self.lh1),
+            ("hl1", self.hl1),
+            ("hh1", self.hh1),
+        ] {
+            if !Self::VALID_RANGE.contains(&value) {
+                return Err(invalid_field_err!(
+                    field,
+                    "quantization value outside of the 6..=15 range"
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Rejects any subband value outside [`Quant::VALID_RANGE`].
+    ///
+    /// `try_new` already runs this check on construction. Use this to validate a
+    /// [`Quant`] built some other way, such as via its public struct-literal fields,
+    /// before using it anywhere the out-of-range case would be worse than an error
+    /// (e.g. as a pixel-domain quantization factor, where it's a shift amount rather
+    /// than a wire field, ahead of any [`Encode::encode`] call).
+    pub fn validate(&self) -> EncodeResult<()> {
+        self.ensure_valid()
+    }
 }
 
 impl Encode for Quant {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        self.ensure_valid()?;
         ensure_fixed_part_size!(in: dst);
 
         let mut level3 = 0;

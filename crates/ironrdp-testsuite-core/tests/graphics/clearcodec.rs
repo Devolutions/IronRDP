@@ -277,6 +277,41 @@ fn glyph_cache_store_then_hit() {
     assert_eq!(p2, bgra);
 }
 
+/// MS-RDPEGFX 4.1.1.5 stores a glyph as a dimensionless linear pixel stream, so the destination
+/// rectangle supplies the shape. A glyph cached at one shape may be hit at any other shape of the
+/// same area.
+#[test]
+fn glyph_hit_accepts_a_different_shape_of_the_same_area() {
+    let mut dec = ClearCodecDecoder::new();
+
+    // Cache 16 pixels as 2x8.
+    let residual = make_solid_residual(0x00, 0xFF, 0x00, 16);
+    let stream1 = make_residual_stream(0, FLAG_GLYPH_INDEX, Some(7), &residual);
+    let stored = dec.decode(&stream1, 2, 8).unwrap();
+    assert_eq!(stored, solid_bgra(0x00, 0xFF, 0x00, 16));
+
+    // Hit the same entry as 4x4.
+    let mut stream2 = vec![FLAG_GLYPH_INDEX | FLAG_GLYPH_HIT, 0x01];
+    stream2.extend_from_slice(&7u16.to_le_bytes());
+    let hit = dec.decode(&stream2, 4, 4).unwrap();
+    assert_eq!(hit, stored, "the pixel stream is shape-independent");
+}
+
+#[test]
+fn glyph_hit_rejects_a_different_area() {
+    let mut dec = ClearCodecDecoder::new();
+
+    // Cache 16 pixels as 2x8.
+    let residual = make_solid_residual(0x00, 0x00, 0xFF, 16);
+    let stream1 = make_residual_stream(0, FLAG_GLYPH_INDEX, Some(9), &residual);
+    dec.decode(&stream1, 2, 8).unwrap();
+
+    // 4x8 is 32 pixels, so this is not a reshape of the cached glyph.
+    let mut stream2 = vec![FLAG_GLYPH_INDEX | FLAG_GLYPH_HIT, 0x01];
+    stream2.extend_from_slice(&9u16.to_le_bytes());
+    assert!(dec.decode(&stream2, 4, 8).is_err());
+}
+
 #[test]
 fn glyph_cache_overwrite_at_same_index() {
     let mut dec = ClearCodecDecoder::new();
@@ -478,8 +513,8 @@ fn decode_stream_with_bands_layer_short_vbar_cache_miss() {
     bands_data.extend_from_slice(&[0x00, 0x00, 0x00]); // background BGR = black
 
     // V-bar: ShortCacheMiss with y_on=1, y_off=3 (2 pixels at rows 1-2)
-    // bits 13:6 = y_on (1), bits 5:0 = y_off (3)
-    let vbar_word: u16 = (1 << 6) | 3;
+    // bits 7:0 = y_on (1), bits 13:8 = y_off (3)
+    let vbar_word: u16 = (3 << 8) | 1;
     bands_data.extend_from_slice(&vbar_word.to_le_bytes());
     // 2 pixels * 3 bytes = 6 bytes of BGR pixel data (red)
     bands_data.extend_from_slice(&[0x00, 0x00, 0xFF]); // row 1: red
