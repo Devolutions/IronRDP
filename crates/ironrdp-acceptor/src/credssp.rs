@@ -5,7 +5,7 @@ use ironrdp_connector::sspi::credssp::{
 use ironrdp_connector::sspi::generator::{Generator, GeneratorState};
 use ironrdp_connector::sspi::{self, AuthIdentity, KerberosServerConfig, NegotiateConfig, NetworkRequest, Username};
 use ironrdp_connector::{
-    ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written, custom_err, general_err,
+    ConnectorError, ConnectorErrorKind, ConnectorResult, ResultExt as _, ServerName, Written, custom_err, general_err,
 };
 use ironrdp_core::{WriteBuf, other_err};
 use ironrdp_pdu::PduHint;
@@ -97,7 +97,9 @@ impl<'a> CredsspSequence<'a> {
         match &self.state {
             CredsspState::Ongoing => Ok(Some(&CREDSSP_TS_REQUEST_HINT)),
             CredsspState::Finished => Ok(None),
-            CredsspState::ServerError(err) => Err(custom_err!("Credssp server error", err.clone())),
+            CredsspState::ServerError(err) => {
+                Err(custom_err!("Credssp server error", err.clone())).map_err_as::<ConnectorErrorKind>()
+            }
         }
     }
 
@@ -135,13 +137,16 @@ impl<'a> CredsspSequence<'a> {
     pub fn decode_client_message(&mut self, input: &[u8]) -> ConnectorResult<Option<TsRequest>> {
         match self.state {
             CredsspState::Ongoing => {
-                let message = TsRequest::from_buffer(input).map_err(|e| custom_err!("TsRequest", e))?;
+                let message = TsRequest::from_buffer(input)
+                    .map_err(|e| custom_err!("TsRequest", e))
+                    .map_err_as::<ConnectorErrorKind>()?;
                 debug!(?message, "Received");
                 Ok(Some(message))
             }
             _ => Err(general_err!(
                 "attempted to feed client request to CredSSP sequence in an unexpected state"
-            )),
+            ))
+            .map_err_as::<ConnectorErrorKind>(),
         }
     }
 
@@ -171,11 +176,12 @@ impl<'a> CredsspSequence<'a> {
 
             ts_request
                 .encode_ts_request(unfilled_buffer)
-                .map_err(|e| custom_err!("TsRequest", e))?;
+                .map_err(|e| custom_err!("TsRequest", e))
+                .map_err_as::<ConnectorErrorKind>()?;
 
             output.advance(length);
 
-            Ok(Written::from_size(length)?)
+            Ok(Written::from_size(length).map_err_as::<ConnectorErrorKind>()?)
         } else {
             Ok(Written::Nothing)
         }

@@ -2,7 +2,7 @@ use std::io;
 
 use bytes::{Bytes, BytesMut};
 use ironrdp_connector::MonotonicInstant;
-use ironrdp_connector::{ConnectorResult, Sequence, Written};
+use ironrdp_connector::{Sequence, SequenceResult, Written};
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::PduHint;
 use tracing::{debug, trace};
@@ -245,7 +245,7 @@ pub async fn single_sequence_step<S>(
     framed: &mut Framed<S>,
     sequence: &mut dyn Sequence,
     buf: &mut WriteBuf,
-) -> ConnectorResult<()>
+) -> SequenceResult<()>
 where
     S: FramedWrite + FramedRead,
 {
@@ -258,7 +258,7 @@ pub async fn single_sequence_step_read<S>(
     framed: &mut Framed<S>,
     sequence: &mut dyn Sequence,
     buf: &mut WriteBuf,
-) -> ConnectorResult<Written>
+) -> SequenceResult<Written>
 where
     S: FramedRead,
 {
@@ -288,7 +288,7 @@ async fn single_sequence_step_write<S>(
     framed: &mut Framed<S>,
     buf: &mut WriteBuf,
     written: Written,
-) -> ConnectorResult<()>
+) -> SequenceResult<()>
 where
     S: FramedWrite,
 {

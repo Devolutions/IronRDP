@@ -10,9 +10,10 @@ use ironrdp_pdu::rdp::server_license::{self, LicenseInformation, LicensePdu, Ser
 use rand::RngCore as _;
 use tracing::{debug, error, info, trace};
 
-use super::{ConnectorError, ConnectorErrorExt as _, custom_err, general_err};
+use super::{SequenceError, SequenceErrorExt as _, custom_err, general_err};
 use crate::{
-    ConnectorResult, ConnectorResultExt as _, MonotonicInstant, Sequence, State, Written, encode_send_data_request,
+    ConnectorResult, MonotonicInstant, Sequence, SequenceResult, SequenceResultExt as _, State, Written,
+    encode_send_data_request,
 };
 
 #[derive(Default, Debug)]
@@ -124,7 +125,7 @@ impl Sequence for LicenseExchangeSequence {
         input: &[u8],
         _received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
+    ) -> SequenceResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             LicenseExchangeState::Consumed => {
                 return Err(general_err!(
@@ -134,10 +135,10 @@ impl Sequence for LicenseExchangeSequence {
 
             LicenseExchangeState::NewLicenseRequest => {
                 let send_data_indication_ctx =
-                    ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(ConnectorError::decode)?;
+                    ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(SequenceError::decode)?;
                 let license_pdu = send_data_indication_ctx
                     .decode_user_data::<LicensePdu>()
-                    .map_err(ConnectorError::decode)
+                    .map_err(SequenceError::decode)
                     .with_context("decode during LicenseExchangeState::NewLicenseRequest")?;
 
                 match license_pdu {
@@ -164,7 +165,8 @@ impl Sequence for LicenseExchangeSequence {
                                     .transpose()
                             })
                             .next()
-                            .transpose()?;
+                            .transpose()
+                            .map_err(|e| custom_err!("get_license", e))?;
 
                         if let Some(info) = license_info {
                             match server_license::ClientLicenseInfo::from_server_license_request(
@@ -268,11 +270,11 @@ impl Sequence for LicenseExchangeSequence {
 
             LicenseExchangeState::PlatformChallenge { encryption_data } => {
                 let send_data_indication_ctx =
-                    ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(ConnectorError::decode)?;
+                    ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(SequenceError::decode)?;
 
                 let license_pdu = send_data_indication_ctx
                     .decode_user_data::<LicensePdu>()
-                    .map_err(ConnectorError::decode)
+                    .map_err(SequenceError::decode)
                     .with_context("decode during LicenseExchangeState::PlatformChallenge")?;
 
                 match license_pdu {
@@ -322,11 +324,11 @@ impl Sequence for LicenseExchangeSequence {
 
             LicenseExchangeState::UpgradeLicense { encryption_data } => {
                 let send_data_indication_ctx =
-                    ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(ConnectorError::decode)?;
+                    ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(SequenceError::decode)?;
 
                 let license_pdu = send_data_indication_ctx
                     .decode_user_data::<LicensePdu>()
-                    .map_err(ConnectorError::decode)
+                    .map_err(SequenceError::decode)
                     .with_context("decode during SERVER_NEW_LICENSE/LicenseExchangeState::UpgradeLicense")?;
 
                 match license_pdu {
@@ -341,9 +343,11 @@ impl Sequence for LicenseExchangeSequence {
 
                         let license_info = upgrade_license
                             .new_license_info(&encryption_data)
-                            .map_err(ConnectorError::decode)?;
+                            .map_err(SequenceError::decode)?;
 
-                        self.license_cache.store_license(license_info)?
+                        self.license_cache
+                            .store_license(license_info)
+                            .map_err(|e| custom_err!("store_license", e))?
                     }
                     LicensePdu::LicensingErrorMessage(error_message) => {
                         if error_message.error_code != server_license::LicenseErrorCode::StatusValidClient {

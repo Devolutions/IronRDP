@@ -8,7 +8,8 @@ use sspi::{Secret, Username};
 use tracing::debug;
 
 use crate::{
-    ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written, custom_err, general_err,
+    ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ResultExt as _, ServerName, Written, custom_err,
+    general_err,
 };
 
 #[derive(Debug, Clone)]
@@ -22,7 +23,8 @@ impl KerberosConfig {
         let kdc_proxy_url = kdc_proxy_url
             .map(|url| url::Url::parse(&url))
             .transpose()
-            .map_err(|e| custom_err!("invalid KDC URL", e))?;
+            .map_err(|e| custom_err!("invalid KDC URL", e))
+            .map_err_as::<ConnectorErrorKind>()?;
         Ok(Self {
             kdc_proxy_url,
             hostname,
@@ -101,7 +103,9 @@ impl CredsspSequence {
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
         let credentials: sspi::Credentials = match &credentials {
             Credentials::UsernamePassword { username, password } => {
-                let username = Username::new(username, domain).map_err(|e| custom_err!("invalid username", e))?;
+                let username = Username::new(username, domain)
+                    .map_err(|e| custom_err!("invalid username", e))
+                    .map_err_as::<ConnectorErrorKind>()?;
 
                 sspi::AuthIdentity {
                     username,
@@ -112,9 +116,11 @@ impl CredsspSequence {
             Credentials::SmartCard { pin, config } => match config {
                 Some(config) => {
                     let cert: Certificate = picky_asn1_der::from_bytes(&config.certificate)
-                        .map_err(|_e| general_err!("can't parse certificate"))?;
+                        .map_err(|_e| general_err!("can't parse certificate"))
+                        .map_err_as::<ConnectorErrorKind>()?;
                     let key = PrivateKey::from_pkcs1(&config.private_key)
-                        .map_err(|_e| general_err!("can't parse private key"))?;
+                        .map_err(|_e| general_err!("can't parse private key"))
+                        .map_err_as::<ConnectorErrorKind>()?;
                     let identity = sspi::SmartCardIdentity {
                         username: extract_user_principal_name(&cert)
                             .or_else(|| extract_user_name(&cert))
@@ -133,7 +139,7 @@ impl CredsspSequence {
                     sspi::Credentials::SmartCard(Box::new(identity))
                 }
                 None => {
-                    return Err(general_err!("smart card configuration missing"));
+                    return Err(general_err!("smart card configuration missing")).map_err_as::<ConnectorErrorKind>();
                 }
             },
         };
@@ -180,13 +186,16 @@ impl CredsspSequence {
     pub fn decode_server_message(&mut self, input: &[u8]) -> ConnectorResult<Option<credssp::TsRequest>> {
         match self.state {
             CredsspState::Ongoing => {
-                let message = credssp::TsRequest::from_buffer(input).map_err(|e| custom_err!("TsRequest", e))?;
+                let message = credssp::TsRequest::from_buffer(input)
+                    .map_err(|e| custom_err!("TsRequest", e))
+                    .map_err_as::<ConnectorErrorKind>()?;
                 debug!(?message, "Received");
                 Ok(Some(message))
             }
             CredsspState::EarlyUserAuthResult => {
                 let early_user_auth_result = credssp::EarlyUserAuthResult::from_buffer(input)
-                    .map_err(|e| custom_err!("EarlyUserAuthResult", e))?;
+                    .map_err(|e| custom_err!("EarlyUserAuthResult", e))
+                    .map_err_as::<ConnectorErrorKind>()?;
 
                 debug!(message = ?early_user_auth_result, "Received");
 
@@ -202,7 +211,8 @@ impl CredsspSequence {
             }
             _ => Err(general_err!(
                 "attempted to feed server request to CredSSP sequence in an unexpected state"
-            )),
+            ))
+            .map_err_as::<ConnectorErrorKind>(),
         }
     }
 
@@ -229,11 +239,15 @@ impl CredsspSequence {
 
                 let written = write_credssp_request(ts_request_from_client, output)?;
 
-                Ok((Written::from_size(written)?, next_state))
+                Ok((
+                    Written::from_size(written).map_err_as::<ConnectorErrorKind>()?,
+                    next_state,
+                ))
             }
             CredsspState::EarlyUserAuthResult => Ok((Written::Nothing, CredsspState::Finished)),
             CredsspState::Finished => Err(general_err!("CredSSP sequence is already done")),
-        }?;
+        }
+        .map_err_as::<ConnectorErrorKind>()?;
 
         self.state = next_state;
 
@@ -268,7 +282,8 @@ fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut WriteBuf) 
 
     ts_request
         .encode_ts_request(unfilled_buffer)
-        .map_err(|e| custom_err!("TsRequest", e))?;
+        .map_err(|e| custom_err!("TsRequest", e))
+        .map_err_as::<ConnectorErrorKind>()?;
 
     output.advance(length);
 

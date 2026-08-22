@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use ironrdp_connector::{
-    ConnectorError, ConnectorErrorExt as _, ConnectorResult, MonotonicInstant, Sequence, State, Written, reason_err,
+    MonotonicInstant, Sequence, SequenceError, SequenceErrorExt as _, SequenceResult, State, Written, reason_err,
 };
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::mcs;
@@ -77,11 +77,11 @@ impl Sequence for ChannelConnectionSequence {
         input: &[u8],
         _received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
+    ) -> SequenceResult<Written> {
         let (written, next_state) = match core::mem::take(&mut self.state) {
             ChannelConnectionState::WaitErectDomainRequest => {
                 let erect_domain_request = ironrdp_core::decode::<X224<mcs::ErectDomainPdu>>(input)
-                    .map_err(ConnectorError::decode)
+                    .map_err(SequenceError::decode)
                     .map(|p| p.0)?;
 
                 debug!(message = ?erect_domain_request, "Received");
@@ -91,7 +91,7 @@ impl Sequence for ChannelConnectionSequence {
 
             ChannelConnectionState::WaitAttachUserRequest => {
                 let attach_user_request = ironrdp_core::decode::<X224<mcs::AttachUserRequest>>(input)
-                    .map_err(ConnectorError::decode)
+                    .map_err(SequenceError::decode)
                     .map(|p| p.0)?;
 
                 debug!(message = ?attach_user_request, "Received");
@@ -108,7 +108,7 @@ impl Sequence for ChannelConnectionSequence {
                 debug!(message = ?attach_user_confirm, "Send");
 
                 let written =
-                    ironrdp_core::encode_buf(&X224(attach_user_confirm), output).map_err(ConnectorError::encode)?;
+                    ironrdp_core::encode_buf(&X224(attach_user_confirm), output).map_err(SequenceError::encode)?;
 
                 let next_state = match self.channel_ids.take() {
                     Some(channel_ids) => ChannelConnectionState::WaitChannelJoinRequest { remaining: channel_ids },
@@ -120,7 +120,7 @@ impl Sequence for ChannelConnectionSequence {
 
             ChannelConnectionState::WaitChannelJoinRequest { mut remaining } => {
                 let channel_request = ironrdp_core::decode::<X224<mcs::ChannelJoinRequest>>(input)
-                    .map_err(ConnectorError::decode)
+                    .map_err(SequenceError::decode)
                     .map(|p| p.0)?;
 
                 debug!(message = ?channel_request, "Received");
@@ -156,7 +156,7 @@ impl Sequence for ChannelConnectionSequence {
                 debug!(message = ?channel_confirm, "Send");
 
                 let written =
-                    ironrdp_core::encode_buf(&X224(channel_confirm), output).map_err(ConnectorError::encode)?;
+                    ironrdp_core::encode_buf(&X224(channel_confirm), output).map_err(SequenceError::encode)?;
 
                 let next_state = if remaining.is_empty() {
                     ChannelConnectionState::AllJoined

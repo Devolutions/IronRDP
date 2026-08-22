@@ -1,5 +1,5 @@
 use iron_remote_desktop::{IronErrorKind, RDCleanPathDetails};
-use ironrdp::connector::{self, ConnectorErrorKind, sspi};
+use ironrdp::connector::{self, ConnectorErrorKind, SequenceError, SequenceErrorKind, sspi};
 
 pub(crate) struct IronError {
     kind: IronErrorKind,
@@ -51,7 +51,24 @@ impl From<connector::ConnectorError> for IronError {
                 ..
             }) => IronErrorKind::LogonFailure,
             ConnectorErrorKind::AccessDenied => IronErrorKind::AccessDenied,
-            ConnectorErrorKind::Negotiation(_) => IronErrorKind::NegotiationFailure,
+            ConnectorErrorKind::Sequence(seq_err) if matches!(seq_err.kind(), SequenceErrorKind::Negotiation(_)) => {
+                IronErrorKind::NegotiationFailure
+            }
+            _ => IronErrorKind::General,
+        };
+
+        Self {
+            kind,
+            source: anyhow::Error::new(e),
+            rdcleanpath_details: None,
+        }
+    }
+}
+
+impl From<SequenceError> for IronError {
+    fn from(e: SequenceError) -> Self {
+        let kind = match e.kind() {
+            SequenceErrorKind::Negotiation(_) => IronErrorKind::NegotiationFailure,
             _ => IronErrorKind::General,
         };
 

@@ -18,8 +18,8 @@ use ironrdp_async::{
 };
 use ironrdp_connector::credssp::{CredsspSequence, KerberosConfig};
 use ironrdp_connector::{
-    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorExt as _, ConnectorResult, Credentials,
-    ServerName, State as _, custom_err, reason_err,
+    ClientConnector, ClientConnectorState, ConnectorErrorKind, ConnectorResult, Credentials, ResultExt as _,
+    SequenceError, SequenceErrorExt as _, ServerName, State as _, custom_err, reason_err,
 };
 use ironrdp_core::{WriteBuf, encode_vec};
 use ironrdp_pdu::nego::SecurityProtocol;
@@ -68,7 +68,7 @@ pub fn encode_preconnection_blob(vm_id: &str, mode: Mode) -> ConnectorResult<Vec
 /// Build the Unicode PCB V2 payload used to select a VM and console mode.
 pub fn preconnection_blob_payload(vm_id: &str, mode: Mode) -> ConnectorResult<String> {
     if vm_id.trim().is_empty() {
-        return Err(reason_err!("vmconnect", "vmconnect VM ID is empty"));
+        return Err(reason_err!("vmconnect", "vmconnect VM ID is empty")).map_err_as::<ConnectorErrorKind>();
     }
 
     Ok(match mode {
@@ -84,7 +84,8 @@ pub fn encode_preconnection_blob_payload(payload: String) -> ConnectorResult<Vec
         version: PcbVersion::V2,
         v2_payload: Some(payload),
     })
-    .map_err(ConnectorError::encode)
+    .map_err(SequenceError::encode)
+    .map_err_as::<ConnectorErrorKind>()
 }
 
 /// Write the Preconnection Blob on a pre-TLS stream. Returns a [`PcbSent`] for [`connect_front`].
@@ -101,7 +102,8 @@ where
     framed
         .write_all(&bytes)
         .await
-        .map_err(|e| custom_err!("write preconnection blob", e))?;
+        .map_err(|e| custom_err!("write preconnection blob", e))
+        .map_err_as::<ConnectorErrorKind>()?;
 
     Ok(PcbSent)
 }
@@ -157,11 +159,14 @@ where
     connector.config.autologon = false;
 
     buf.clear();
-    connector.initiate_with_security_protocol(POST_CREDSSP_PROTOCOL, &mut buf)?;
+    connector
+        .initiate_with_security_protocol(POST_CREDSSP_PROTOCOL, &mut buf)
+        .map_err_as::<ConnectorErrorKind>()?;
     framed
         .write_all(buf.filled())
         .await
-        .map_err(|e| custom_err!("write X.224 connection request", e))?;
+        .map_err(|e| custom_err!("write X.224 connection request", e))
+        .map_err_as::<ConnectorErrorKind>()?;
 
     let should_upgrade = connect_begin(framed, connector).await?;
     ensure_selected_credssp(&connector.state)?;
@@ -181,10 +186,10 @@ where
 /// (for example FFI `CredsspSequence::init_with_protocol`).
 pub fn prepare_connector(connector: &ClientConnector) -> ConnectorResult<()> {
     if !connector.config.enable_tls {
-        return Err(reason_err!("vmconnect", "vmconnect requires TLS"));
+        return Err(reason_err!("vmconnect", "vmconnect requires TLS")).map_err_as::<ConnectorErrorKind>();
     }
     if !connector.config.enable_credssp {
-        return Err(reason_err!("vmconnect", "vmconnect requires CredSSP"));
+        return Err(reason_err!("vmconnect", "vmconnect requires CredSSP")).map_err_as::<ConnectorErrorKind>();
     }
     Ok(())
 }
@@ -198,7 +203,8 @@ pub fn ensure_selected_credssp(state: &ClientConnectorState) -> ConnectorResult<
                 "Initiation",
                 "expected EnhancedSecurityUpgrade after Hyper-V X.224 initiation, got {}",
                 other.name()
-            ));
+            ))
+            .map_err_as::<ConnectorErrorKind>();
         }
     };
 
@@ -209,5 +215,6 @@ pub fn ensure_selected_credssp(state: &ClientConnectorState) -> ConnectorResult<
             "Initiation",
             "server must select HYBRID for a Hyper-V console, but it selected {selected}",
         ))
+        .map_err_as::<ConnectorErrorKind>()
     }
 }

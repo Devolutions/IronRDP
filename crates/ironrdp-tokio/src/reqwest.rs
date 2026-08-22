@@ -1,7 +1,7 @@
 use core::net::{IpAddr, Ipv4Addr};
 
 use ironrdp_connector::sspi::{self, Error, ErrorKind};
-use ironrdp_connector::{ConnectorResult, custom_err, general_err};
+use ironrdp_connector::{ConnectorErrorKind, ConnectorResult, ResultExt as _, custom_err, general_err};
 use reqwest::Client;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpStream, UdpSocket};
@@ -43,34 +43,41 @@ impl ReqwestNetworkClient {
         let mut stream = TcpStream::connect(addr)
             .await
             .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
-            .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
+            .map_err(|e| custom_err!("failed to send KDC request over TCP", e))
+            .map_err_as::<ConnectorErrorKind>()?;
 
         stream
             .write(data)
             .await
             .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
-            .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
+            .map_err(|e| custom_err!("failed to send KDC request over TCP", e))
+            .map_err_as::<ConnectorErrorKind>()?;
 
         let len = stream
             .read_u32()
             .await
             .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
-            .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
+            .map_err(|e| custom_err!("failed to send KDC request over TCP", e))
+            .map_err_as::<ConnectorErrorKind>()?;
 
         let len = usize::try_from(len)
-            .map_err(|_| general_err!("invalid buffer length: out of range integral type conversion"))?;
+            .map_err(|_| general_err!("invalid buffer length: out of range integral type conversion"))
+            .map_err_as::<ConnectorErrorKind>()?;
 
         let mut buf = vec![0; len + 4];
         // Write the length prefix back as a big-endian u32 (matching the wire format).
         // `len` was originally read as a `u32` so this conversion cannot fail.
-        let len_u32 = u32::try_from(len).map_err(|_| general_err!("KDC TCP response length overflows u32"))?;
+        let len_u32 = u32::try_from(len)
+            .map_err(|_| general_err!("KDC TCP response length overflows u32"))
+            .map_err_as::<ConnectorErrorKind>()?;
         buf[0..4].copy_from_slice(&len_u32.to_be_bytes());
 
         stream
             .read_exact(&mut buf[4..])
             .await
             .map_err(|e| Error::new(ErrorKind::NoAuthenticatingAuthority, format!("{e:?}")))
-            .map_err(|e| custom_err!("failed to send KDC request over TCP", e))?;
+            .map_err(|e| custom_err!("failed to send KDC request over TCP", e))
+            .map_err_as::<ConnectorErrorKind>()?;
 
         Ok(buf)
     }
@@ -78,14 +85,16 @@ impl ReqwestNetworkClient {
     async fn send_udp(&self, url: &Url, data: &[u8]) -> ConnectorResult<Vec<u8>> {
         let udp_socket = UdpSocket::bind((IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
             .await
-            .map_err(|e| custom_err!("cannot bind UDP socket", e))?;
+            .map_err(|e| custom_err!("cannot bind UDP socket", e))
+            .map_err_as::<ConnectorErrorKind>()?;
 
         let addr = format!("{}:{}", url.host_str().unwrap_or_default(), url.port().unwrap_or(88));
 
         udp_socket
             .send_to(data, addr)
             .await
-            .map_err(|e| custom_err!("failed to send UDP request", e))?;
+            .map_err(|e| custom_err!("failed to send UDP request", e))
+            .map_err_as::<ConnectorErrorKind>()?;
 
         // 48 000 bytes: default maximum token len in Windows
         let mut buf = vec![0; 0xbb80];
@@ -93,11 +102,14 @@ impl ReqwestNetworkClient {
         let n = udp_socket
             .recv(&mut buf)
             .await
-            .map_err(|e| custom_err!("failed to receive UDP request", e))?;
+            .map_err(|e| custom_err!("failed to receive UDP request", e))
+            .map_err_as::<ConnectorErrorKind>()?;
         let buf = &buf[0..n];
 
         let mut reply_buf = Vec::with_capacity(n + 4);
-        let n = u32::try_from(n).map_err(|e| custom_err!("invalid length", e))?;
+        let n = u32::try_from(n)
+            .map_err(|e| custom_err!("invalid length", e))
+            .map_err_as::<ConnectorErrorKind>()?;
         reply_buf.extend_from_slice(&n.to_be_bytes());
         reply_buf.extend_from_slice(buf);
 
@@ -112,14 +124,17 @@ impl ReqwestNetworkClient {
             .body(data.to_vec())
             .send()
             .await
-            .map_err(|e| custom_err!("failed to send KDC request over proxy", e))?
+            .map_err(|e| custom_err!("failed to send KDC request over proxy", e))
+            .map_err_as::<ConnectorErrorKind>()?
             .error_for_status()
-            .map_err(|e| custom_err!("KdcProxy", e))?;
+            .map_err(|e| custom_err!("KdcProxy", e))
+            .map_err_as::<ConnectorErrorKind>()?;
 
         let body = response
             .bytes()
             .await
-            .map_err(|e| custom_err!("failed to receive KDC response", e))?;
+            .map_err(|e| custom_err!("failed to receive KDC response", e))
+            .map_err_as::<ConnectorErrorKind>()?;
 
         // The type bytes::Bytes has a special From implementation for Vec<u8>.
         let body = Vec::from(body);
