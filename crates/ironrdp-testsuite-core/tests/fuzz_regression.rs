@@ -71,3 +71,8 @@ fn check_egfx_multi_frame() {
 fn check_rdpeusb_decode() {
     check!(rdpeusb_decode);
 }
+
+#[test]
+fn check_egfx_zgfx_decompress() {
+    check!(egfx_zgfx_decompress);
+}
