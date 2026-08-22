@@ -11,6 +11,11 @@ repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+publish = false
+
+[lib]
+doctest = false
+test = false
 
 [lints]
 workspace = true
