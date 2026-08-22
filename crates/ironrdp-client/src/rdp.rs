@@ -584,6 +584,7 @@ impl RdpClient {
                     connect_direct(
                         &self.config,
                         &self.input_event_sender,
+                        &self.output_event_sender,
                         cliprdr_factory,
                         rdpdr_factory,
                         reconnect_cookie,
@@ -623,6 +624,7 @@ impl RdpClient {
                             connect_direct(
                                 &self.config,
                                 &self.input_event_sender,
+                                &self.output_event_sender,
                                 cliprdr_factory,
                                 rdpdr_factory,
                                 reconnect_cookie,
@@ -632,6 +634,7 @@ impl RdpClient {
                                     &self.config,
                                     gw,
                                     &self.input_event_sender,
+                                    &self.output_event_sender,
                                     cliprdr_factory,
                                     rdpdr_factory,
                                     reconnect_cookie,
@@ -645,6 +648,7 @@ impl RdpClient {
                                 &self.config,
                                 gw,
                                 &self.input_event_sender,
+                                &self.output_event_sender,
                                 cliprdr_factory,
                                 rdpdr_factory,
                                 reconnect_cookie,
@@ -684,6 +688,7 @@ impl RdpClient {
                         &self.config,
                         rdcp,
                         &self.input_event_sender,
+                        &self.output_event_sender,
                         cliprdr_factory,
                         rdpdr_factory,
                         reconnect_cookie,
@@ -721,6 +726,7 @@ impl RdpClient {
                         &self.config,
                         path,
                         &self.input_event_sender,
+                        &self.output_event_sender,
                         cliprdr_factory,
                         rdpdr_factory,
                         reconnect_cookie,
@@ -1108,6 +1114,7 @@ fn build_connector(
     config: &Config,
     client_addr: SocketAddr,
     input_sender: &RdpInputSender,
+    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
@@ -1125,11 +1132,36 @@ fn build_connector(
     let _ = cliprdr_factory;
     #[cfg(not(feature = "rdpdr"))]
     let _ = rdpdr_factory;
+    #[cfg(not(all(windows, feature = "vmconnect")))]
+    let _ = output_event_sender;
 
     let mut drdynvc = ironrdp_dvc::DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
         .with_dynamic_channel(EchoClient::new())
         .with_dynamic_channel(RdpeiClient::default());
+
+    #[cfg(all(windows, feature = "vmconnect"))]
+    if config.vmconnect_framebuffer_redirection() {
+        let output_event_sender = output_event_sender.clone();
+        drdynvc = drdynvc.with_dynamic_channel(ironrdp_vmconnect::FrameBufferClient::new(
+            move |buffer, width, height| {
+                let event = RdpOutputEvent::Image {
+                    buffer,
+                    width: NonZeroU16::new(width).expect("fbr validates nonzero width"),
+                    height: NonZeroU16::new(height).expect("fbr validates nonzero height"),
+                };
+                match output_event_sender.try_send(event) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        trace!("Dropping a Hyper-V FBR frame because the output queue is full");
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        debug!("Dropping a Hyper-V FBR frame because the output queue is closed");
+                    }
+                }
+            },
+        ));
+    }
 
     // Attach DVC pipe proxies.
     #[cfg(feature = "dvc-pipe-proxy")]
@@ -1415,6 +1447,7 @@ type UpgradedFramed = ironrdp_tokio::TokioFramed<Box<dyn AsyncReadWrite + Unpin 
 async fn connect_direct(
     config: &Config,
     input_sender: &RdpInputSender,
+    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
@@ -1434,6 +1467,7 @@ async fn connect_direct(
         config,
         client_addr,
         input_sender,
+        output_event_sender,
         cliprdr_factory,
         rdpdr_factory,
         auto_reconnect_cookie,
@@ -1454,6 +1488,7 @@ async fn connect_named_pipe(
     config: &Config,
     pipe_path: &str,
     input_sender: &RdpInputSender,
+    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
@@ -1481,6 +1516,7 @@ async fn connect_named_pipe(
         config,
         client_addr,
         input_sender,
+        output_event_sender,
         cliprdr_factory,
         rdpdr_factory,
         auto_reconnect_cookie,
@@ -1495,6 +1531,7 @@ async fn connect_gateway(
     config: &Config,
     gw: &crate::config::GatewayConfig,
     input_sender: &RdpInputSender,
+    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
@@ -1524,6 +1561,7 @@ async fn connect_gateway(
         config,
         client_addr,
         input_sender,
+        output_event_sender,
         cliprdr_factory,
         rdpdr_factory,
         auto_reconnect_cookie,
@@ -1543,6 +1581,7 @@ async fn connect_rdcleanpath_transport(
     config: &Config,
     rdcp: &RDCleanPathConfig,
     input_sender: &RdpInputSender,
+    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
@@ -1573,6 +1612,7 @@ async fn connect_rdcleanpath_transport(
         config,
         client_addr,
         input_sender,
+        output_event_sender,
         cliprdr_factory,
         rdpdr_factory,
         auto_reconnect_cookie,
@@ -1741,6 +1781,29 @@ where
 
     let mut network_client = ReqwestNetworkClient::new();
     let server_name = ironrdp_connector::ServerName::from(&config.destination);
+    #[cfg(windows)]
+    let upgraded = if config.vmconnect_current_user() {
+        ironrdp_vmconnect::connect_front_with_current_user(
+            pcb_sent,
+            &mut upgraded_framed,
+            &mut connector,
+            server_name.clone(),
+            &server_public_key,
+        )
+        .await?
+    } else {
+        ironrdp_vmconnect::connect_front(
+            pcb_sent,
+            &mut upgraded_framed,
+            &mut connector,
+            &mut network_client,
+            server_name.clone(),
+            &server_public_key,
+            config.kerberos_config.clone(),
+        )
+        .await?
+    };
+    #[cfg(not(windows))]
     let upgraded = ironrdp_vmconnect::connect_front(
         pcb_sent,
         &mut upgraded_framed,
@@ -3531,10 +3594,12 @@ mod tests {
         let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "fixtures".to_owned())]);
         let config = test_config();
         let (input_sender, _) = RdpInputSender::channel(1);
+        let (output_event_sender, _) = mpsc::channel(1);
         let mut connector = build_connector(
             &config,
             SocketAddr::from(([127, 0, 0, 1], 0)),
             &input_sender,
+            &output_event_sender,
             no_cliprdr_factory(),
             Some(&factory),
             None,

@@ -26,8 +26,33 @@ use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::pcb::{PcbVersion, PreconnectionBlob};
 use tracing::{debug, instrument};
 
+#[cfg(windows)]
+mod framebuffer;
+#[cfg(windows)]
+pub use framebuffer::{FRAME_BUFFER_CHANNEL_NAME, FrameBufferClient};
+#[cfg(windows)]
+mod native_credssp;
+
 /// TCP port a Hyper-V VM console listens on.
 pub const PORT: u16 = 2179;
+
+/// Reads the local RDP server instance ID used to prove a same-machine FBR connection.
+#[cfg(windows)]
+pub fn local_instance_id() -> ConnectorResult<String> {
+    let key = windows_registry::LOCAL_MACHINE
+        .open(r"System\CurrentControlSet\Control\Terminal Server")
+        .map_err(|error| custom_err!("open Terminal Server registry key", error))?;
+    let instance_id = key
+        .get_string("InstanceID")
+        .map_err(|error| custom_err!("read Terminal Server InstanceID", error))?;
+    if instance_id.encode_utf16().count() != 31 {
+        return Err(reason_err!(
+            "vmconnect",
+            "terminal server InstanceID has an invalid length"
+        ));
+    }
+    Ok(instance_id)
+}
 
 /// Upper bound for transmitting the Preconnection Blob after the TCP connection is established.
 ///
@@ -55,7 +80,7 @@ pub enum Mode {
 
 /// Receipt that the Preconnection Blob was written. Required by [`connect_front`].
 #[derive(Debug)]
-#[must_use = "pass this to connect_front after TLS"]
+#[must_use = "pass this to a connect_front function after TLS"]
 #[non_exhaustive]
 pub struct PcbSent;
 
@@ -146,6 +171,43 @@ where
     )?;
     perform_credssp(framed, network_client, &mut buf, sequence, ts_request).await?;
 
+    finish_front(framed, connector, &mut buf).await
+}
+
+/// After TLS, authenticate the Hyper-V host with the caller's current Windows logon token, then
+/// negotiate X.224.
+///
+/// This matches native VMConnect's implicit-credential path and never exposes or stores the
+/// current user's password.
+#[cfg(windows)]
+#[instrument(skip_all)]
+pub async fn connect_front_with_current_user<S>(
+    _pcb_sent: PcbSent,
+    framed: &mut Framed<S>,
+    connector: &mut ClientConnector,
+    server_name: ServerName,
+    server_public_key: &[u8],
+) -> ConnectorResult<Upgraded>
+where
+    S: FramedRead + FramedWrite,
+{
+    prepare_connector(connector)?;
+
+    debug!("Begin native CredSSP with current Windows credentials");
+    native_credssp::perform(framed, server_name, server_public_key).await?;
+
+    let mut buf = WriteBuf::new();
+    finish_front(framed, connector, &mut buf).await
+}
+
+async fn finish_front<S>(
+    framed: &mut Framed<S>,
+    connector: &mut ClientConnector,
+    buf: &mut WriteBuf,
+) -> ConnectorResult<Upgraded>
+where
+    S: FramedRead + FramedWrite,
+{
     // Host authentication is complete. Do not forward its identity or secret into the guest-facing
     // RDP sequence; Enhanced Session guest sign-in is a separate authentication seam. This happens
     // only after successful CredSSP, so a failed authentication leaves the connector reusable.
@@ -157,7 +219,7 @@ where
     connector.config.autologon = false;
 
     buf.clear();
-    connector.initiate_with_security_protocol(POST_CREDSSP_PROTOCOL, &mut buf)?;
+    connector.initiate_with_security_protocol(POST_CREDSSP_PROTOCOL, buf)?;
     framed
         .write_all(buf.filled())
         .await

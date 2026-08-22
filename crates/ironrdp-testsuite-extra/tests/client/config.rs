@@ -168,16 +168,68 @@ fn vmconnect_preserves_explicit_destination_port() {
 
 #[test]
 fn vmconnect_basic_flag_selects_basic_mode() {
+    const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
     let config = parse_config_from_rdp(
         "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
-        &[
-            "--vmconnect",
-            "efd1efab-c750-4262-b1bb-af0f7733bdd6",
-            "--vmconnect-basic",
-        ],
+        &["--vmconnect", VM_ID, "--vmconnect-basic"],
     );
 
     assert_eq!(config.vmconnect_mode(), Some(VmConnectMode::Basic));
+    assert_eq!(config.properties().vmconnect_id(), Some(VM_ID));
+    assert_eq!(config.properties().vmconnect_basic(), Some(true));
+}
+
+#[test]
+fn vmconnect_properties_restore_typed_config() {
+    const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
+    let config = parse_config_from_rdp(
+        &format!(
+            "full address:s:hyperv.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\nironrdp_vmconnect:s:{VM_ID}\nironrdp_vmconnect_basic:i:1\n"
+        ),
+        &[],
+    );
+
+    assert_eq!(config.vm_id(), Some(VM_ID));
+    assert_eq!(config.vmconnect_mode(), Some(VmConnectMode::Basic));
+    assert_eq!(config.destination().port(), 2179);
+}
+
+#[cfg(windows)]
+#[test]
+fn vmconnect_current_user_needs_no_password_and_enables_local_framebuffer() {
+    const INSTANCE_ID: &str = "0123456789abcdef0123456789abcde";
+    let config = parse_config_from([
+        "ironrdp-viewer",
+        "--vmconnect",
+        "efd1efab-c750-4262-b1bb-af0f7733bdd6",
+        "--vmconnect-basic",
+        "--vmconnect-current-user",
+        "--dig-product-id",
+        INSTANCE_ID,
+        "localhost",
+    ])
+    .expect("valid current-user VMConnect configuration");
+
+    assert!(config.vmconnect_current_user());
+    assert!(config.vmconnect_framebuffer_redirection());
+    assert_eq!(config.connector().dig_product_id, INSTANCE_ID);
+}
+
+#[cfg(windows)]
+#[test]
+fn remote_vmconnect_does_not_offer_local_framebuffer_redirection() {
+    let config = parse_config_from([
+        "ironrdp-viewer",
+        "--vmconnect",
+        "efd1efab-c750-4262-b1bb-af0f7733bdd6",
+        "--vmconnect-basic",
+        "--vmconnect-current-user",
+        "hyperv.example.com",
+    ])
+    .expect("valid remote current-user VMConnect configuration");
+
+    assert!(!config.vmconnect_framebuffer_redirection());
+    assert!(config.connector().dig_product_id.is_empty());
 }
 
 #[test]

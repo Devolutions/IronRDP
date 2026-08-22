@@ -3388,8 +3388,12 @@ dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
  "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
  "ironrdp-pdu",
+ "sha2 0.10.9",
  "tracing",
+ "windows",
+ "windows-registry",
 ]
 
 [[package]]

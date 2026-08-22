@@ -509,6 +509,18 @@ struct ConnectArgs {
     #[cfg(windows)]
     #[arg(long, value_name = "PIPE", conflicts_with = "server")]
     sandbox_pipe: Option<String>,
+    /// Connect to a Hyper-V VM console by VM ID. Defaults the Hyper-V host to localhost.
+    #[cfg(windows)]
+    #[arg(long, value_name = "VM_ID", conflicts_with_all = ["sandbox_id", "sandbox_pipe"])]
+    vmconnect: Option<String>,
+    /// Use the Hyper-V basic console instead of Enhanced Session mode.
+    #[cfg(windows)]
+    #[arg(long, requires = "vmconnect")]
+    vmconnect_basic: bool,
+    /// Authenticate the Hyper-V host with the current Windows logon token.
+    #[cfg(windows)]
+    #[arg(long, requires = "vmconnect")]
+    vmconnect_current_user: bool,
 }
 
 #[derive(Args, Debug)]
@@ -1088,6 +1100,20 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
 
     #[cfg(windows)]
     {
+        if let Some(vm_id) = args.vmconnect {
+            properties.set_vmconnect_id(vm_id);
+            properties.set_vmconnect_basic(args.vmconnect_basic);
+            properties.set_vmconnect_current_user(args.vmconnect_current_user);
+            if properties.full_address().context("invalid 'full address'")?.is_none()
+                && properties
+                    .alternate_full_address()
+                    .context("invalid 'alternate full address'")?
+                    .is_none()
+            {
+                properties.set_full_address(&"localhost".parse().expect("localhost is a valid target address"));
+            }
+        }
+
         // Sandbox defaults are the base; explicit .rdp / --prop / named flags win on conflict.
         // Transport/security invariants from the sandbox path are re-applied last so a file
         // cannot force TLS/CredSSP onto a NamedPipe session.
@@ -2163,10 +2189,16 @@ mod tests {
     use std::path::PathBuf;
 
     use clap::{CommandFactory as _, Parser as _};
+    #[cfg(windows)]
+    use ironrdp_cfg::PropertySetExt as _;
+    #[cfg(windows)]
+    use ironrdp_rpc::ipc::Request;
 
     use super::Command;
     #[cfg(windows)]
     use super::SandboxCommand;
+    #[cfg(windows)]
+    use super::build_connect_request;
     use super::{
         Backend, Cli, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, build_now_execution,
         endpoint_from_arg,
@@ -2245,6 +2277,39 @@ mod tests {
         };
         assert_eq!(id.as_deref(), Some("8825f947-7d05-46e5-9efb-317ca83500ec"));
         assert_eq!(config, Some(PathBuf::from("sandbox.wsb")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn vmconnect_defaults_to_localhost_and_basic_mode_is_explicit() {
+        const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
+        let cli = Cli::try_parse_from([
+            "ironrdp-agent",
+            "connect",
+            "--vmconnect",
+            VM_ID,
+            "--vmconnect-basic",
+            "--vmconnect-current-user",
+        ])
+        .expect("valid VMConnect arguments");
+        let Some(Command::Connect(args)) = cli.command else {
+            panic!("expected connect command");
+        };
+        let Request::Connect { properties, .. } = build_connect_request(args).expect("valid VMConnect request") else {
+            panic!("expected connect request");
+        };
+
+        assert_eq!(properties.vmconnect_id(), Some(VM_ID));
+        assert_eq!(properties.vmconnect_basic(), Some(true));
+        assert_eq!(properties.vmconnect_current_user(), Some(true));
+        assert_eq!(
+            properties
+                .full_address()
+                .expect("valid full address")
+                .expect("localhost default")
+                .to_string(),
+            "localhost"
+        );
     }
 
     #[test]
