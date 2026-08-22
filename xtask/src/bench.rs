@@ -1,4 +1,12 @@
+use std::path::PathBuf;
+
+use crate::NPM;
 use crate::prelude::*;
+use crate::target_directory;
+
+const RFX_DECODE_WASM_PATH: &str = "./benches/rfx-decode-wasm";
+const WASM_TARGET: &str = "wasm32-unknown-unknown";
+const RFX_DECODE_WASM_ARTIFACT: &str = "rfx_decode_wasm.wasm";
 
 pub fn corpus(sh: &Shell, command: &str) -> anyhow::Result<()> {
     cmd!(
@@ -6,5 +14,44 @@ pub fn corpus(sh: &Shell, command: &str) -> anyhow::Result<()> {
         "{CARGO} run --locked --package ironrdp-bench --bin corpus-bench -- {command}"
     )
     .run()?;
+    Ok(())
+}
+
+/// Runs the native RemoteFX decode benchmark.
+pub fn rfx_decode(sh: &Shell, args: Vec<String>) -> anyhow::Result<()> {
+    let _s = Section::new("BENCH-RFX-DECODE");
+
+    cmd!(sh, "{CARGO} bench -p benches --bench rfx-decode --")
+        .args(args)
+        .run()?;
+
+    Ok(())
+}
+
+/// Builds the RemoteFX decode benchmark for WASM and runs it under Node.
+pub fn rfx_decode_wasm(sh: &Shell, simd: bool) -> anyhow::Result<()> {
+    let _s = Section::new("BENCH-RFX-DECODE-WASM");
+
+    run_cmd_in!(sh, RFX_DECODE_WASM_PATH, "{NPM} install")?;
+
+    {
+        let _env_guard = simd.then(|| sh.push_env("RUSTFLAGS", "-C target-feature=+simd128"));
+        cmd!(sh, "{CARGO} build -p rfx-decode-wasm --release --target {WASM_TARGET}").run()?;
+    }
+
+    let build_dir = PathBuf::from(RFX_DECODE_WASM_PATH).join("build");
+    sh.create_dir(&build_dir)?;
+    let module = build_dir.join(RFX_DECODE_WASM_ARTIFACT);
+    sh.copy_file(
+        target_directory(sh)?
+            .join(WASM_TARGET)
+            .join("release")
+            .join(RFX_DECODE_WASM_ARTIFACT),
+        &module,
+    )?;
+
+    let _guard = sh.push_dir(RFX_DECODE_WASM_PATH);
+    cmd!(sh, "node run.mjs build/{RFX_DECODE_WASM_ARTIFACT}").run()?;
+
     Ok(())
 }

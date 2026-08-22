@@ -441,8 +441,10 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytesize",
+ "criterion",
  "ironrdp",
  "pico-args",
+ "rfx-decode-fixtures",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -5564,6 +5566,21 @@ checksum = "b4a459cddafb3fe76b31fd8f1108007566c40301feb64dc7b54656eb7388172b"
 dependencies = [
  "crypto-bigint",
  "hmac 0.13.0",
+]
+
+[[package]]
+name = "rfx-decode-fixtures"
+version = "0.0.0"
+dependencies = [
+ "ironrdp",
+]
+
+[[package]]
+name = "rfx-decode-wasm"
+version = "0.0.0"
+dependencies = [
+ "ironrdp",
+ "rfx-decode-fixtures",
 ]
 
 [[package]]

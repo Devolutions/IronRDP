@@ -43,6 +43,10 @@ TASKS:
                           List fuzz targets (fmt: human (default) | github-matrix)
   fuzz run [--duration <SECONDS>] [--target <NAME>]
                           Fuzz a specific target if any or all targets for a limited duration (default is 5s)
+  bench rfx-decode [--filter <REGEX>] [--save-baseline <NAME>] [--baseline <NAME>]
+                          Run the native RemoteFX decode benchmark
+  bench rfx-decode-wasm [--simd]
+                          Build the RemoteFX decode benchmark for WASM and run it under Node
   wasm check              Ensure WASM module is compatible for the web
   wasm install            Install dependencies required to build the WASM target
   web check               Ensure Web Client is building without error
@@ -130,6 +134,14 @@ pub enum Action {
         duration: Option<u32>,
         target: Option<String>,
     },
+    BenchRfxDecode {
+        filter: Option<String>,
+        save_baseline: Option<String>,
+        baseline: Option<String>,
+    },
+    BenchRfxDecodeWasm {
+        simd: bool,
+    },
     WasmCheck,
     WasmInstall,
     WebCheck,
@@ -213,6 +225,18 @@ pub fn parse_args() -> anyhow::Result<Args> {
                     target: None,
                 },
                 Some(unknown) => anyhow::bail!("unknown fuzz action: {unknown}"),
+            },
+            Some("bench") => match args.subcommand()?.as_deref() {
+                Some("rfx-decode") => Action::BenchRfxDecode {
+                    filter: args.opt_value_from_str("--filter")?,
+                    save_baseline: args.opt_value_from_str("--save-baseline")?,
+                    baseline: args.opt_value_from_str("--baseline")?,
+                },
+                Some("rfx-decode-wasm") => Action::BenchRfxDecodeWasm {
+                    simd: args.contains("--simd"),
+                },
+                Some(unknown) => anyhow::bail!("unknown bench action: {unknown}"),
+                None => Action::ShowHelp,
             },
             Some("wasm") => match args.subcommand()?.as_deref() {
                 Some("check") => Action::WasmCheck,
