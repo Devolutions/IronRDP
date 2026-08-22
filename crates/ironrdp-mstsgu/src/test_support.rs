@@ -3,7 +3,7 @@
 use hyper::body::Bytes;
 
 use crate::packet_io::{PacketIo, open_test_transport};
-use crate::{Error, GwConsentCallback};
+use crate::{Error, GwClient, GwConnectTarget, GwConsentCallback};
 
 /// In-memory gateway transport used by the registered integration tests.
 pub struct GatewayTransport(PacketIo);
@@ -34,12 +34,23 @@ impl GatewayTransport {
     pub async fn close(&mut self) -> Result<(), String> {
         self.0.close().await.map_err(|error| error.to_string())
     }
+
+    /// Establish a gateway tunnel through this test transport.
+    pub async fn connect_tunnel(
+        self,
+        target: GwConnectTarget,
+        client_name: &str,
+        server_port: u16,
+        consent_callback: Option<&mut GwConsentCallback<'_>>,
+    ) -> Result<GwClient, Error> {
+        GwClient::connect_ws(target, client_name, server_port, self.0, consent_callback).await
+    }
 }
 
 /// Evaluate a consent message received during tunnel creation.
 pub fn evaluate_consent_message(
     consent_message: &[u8],
-    consent_callback: Option<&mut GwConsentCallback>,
+    consent_callback: Option<&mut GwConsentCallback<'_>>,
 ) -> Result<(), Error> {
     crate::evaluate_consent_message(consent_message, consent_callback)
 }

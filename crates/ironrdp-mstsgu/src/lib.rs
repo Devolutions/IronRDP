@@ -118,7 +118,7 @@ pub struct GwTunnelPolicy {
 ///
 /// [MS-TSGU 2.2.10.21]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=72
 /// [MS-TSGU 2.2.10.22]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=73
-pub type GwConsentCallback = dyn FnMut(&str) -> bool + Send;
+pub type GwConsentCallback<'a> = dyn FnMut(&str) -> bool + 'a;
 
 type Error = ironrdp_error::Error<GwErrorKind>;
 
@@ -217,7 +217,7 @@ impl GwClient {
     pub async fn connect_with_consent(
         target: &GwConnectTarget,
         client_name: &str,
-        consent_callback: &mut GwConsentCallback,
+        consent_callback: &mut GwConsentCallback<'_>,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
         Self::connect_with_port_and_consent(target, client_name, 3389, consent_callback).await
     }
@@ -239,7 +239,7 @@ impl GwClient {
         target: &GwConnectTarget,
         client_name: &str,
         server_port: u16,
-        consent_callback: &mut GwConsentCallback,
+        consent_callback: &mut GwConsentCallback<'_>,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
         Self::connect_with_port_and_optional_consent(target, client_name, server_port, Some(consent_callback)).await
     }
@@ -248,7 +248,7 @@ impl GwClient {
         target: &GwConnectTarget,
         client_name: &str,
         server_port: u16,
-        consent_callback: Option<&mut GwConsentCallback>,
+        consent_callback: Option<&mut GwConsentCallback<'_>>,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
         let (io, client_addr) = open_gateway_transport(target).await?;
         Self::connect_ws(target.clone(), client_name, server_port, io, consent_callback)
@@ -261,7 +261,7 @@ impl GwClient {
         client_name: &str,
         server_port: u16,
         io: PacketIo,
-        consent_callback: Option<&mut GwConsentCallback>,
+        consent_callback: Option<&mut GwConsentCallback<'_>>,
     ) -> Result<GwClient, Error> {
         let mut gw = GwConn {
             client_name: client_name.to_owned(),
@@ -438,7 +438,7 @@ impl GwConn {
         Ok(())
     }
 
-    async fn tunnel(&mut self, consent_callback: Option<&mut GwConsentCallback>) -> Result<(), Error> {
+    async fn tunnel(&mut self, consent_callback: Option<&mut GwConsentCallback<'_>>) -> Result<(), Error> {
         let req = TunnelReqPkt {
             // Havent seen any server working without this.
             caps: HttpCapsTy::MessagingConsentSign.as_u32(),
@@ -517,7 +517,7 @@ fn decode_consent_message(bytes: &[u8]) -> Result<String, Error> {
 
 fn evaluate_consent_message(
     consent_message: &[u8],
-    consent_callback: Option<&mut GwConsentCallback>,
+    consent_callback: Option<&mut GwConsentCallback<'_>>,
 ) -> Result<(), Error> {
     if consent_message.is_empty() {
         return Ok(());

@@ -8,7 +8,7 @@ This crate
 - provides internal raw RPCH HTTP framing codecs, but no live RPC-over-HTTP gateway transport,
 - decodes HTTP control packets (`HTTP_SERVICE_MESSAGE`, `HTTP_REAUTH_MESSAGE`, and `HTTP_CLOSE_PACKET`) without performing mid-session reauthentication,
 - exposes decoded tunnel-authorization policy values without enforcing redirection rules or idle timeouts,
-- accepts gateway consent messages by default to preserve existing connection behavior,
+- accepts gateway consent messages by default,
 - lets applications inspect and accept or decline a consent message synchronously through [`GwClient::connect_with_consent`] or [`GwClient::connect_with_port_and_consent`],
 - does not implement reconnection, Detect, or a live UDP/DTLS side channel,
 - authenticates gateway setup with HTTP Negotiate (Kerberos then NTLM), NTLM, or Basic fallback,
