@@ -35,7 +35,7 @@ path = "tests/rpc_pdu.rs"
 
 [[test]]
 name = "rpc_tsgu_stubs"
-path = "src/rpc.rs"
+path = "tests/rpc_tsgu_stubs.rs"
 
 [[test]]
 name = "rpch_http"

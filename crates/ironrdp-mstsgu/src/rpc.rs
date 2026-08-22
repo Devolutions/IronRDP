@@ -1,5 +1,3 @@
-#![cfg_attr(test, allow(unused_crate_dependencies))]
-
 //! DCE/RPC common-header and fragment codecs.
 //!
 //! This module frames connection-oriented DCE/RPC PDUs.
@@ -804,6 +802,11 @@ mod tsgu {
     const TSG_PACKET_TYPE_RESPONSE: u32 = 0x0000_5052;
     const TSG_PACKET_TYPE_QUARENC_RESPONSE: u32 = 0x0000_4552;
     const TSG_CAPABILITY_TYPE_NAP: u32 = 1;
+    const TSG_NAP_CAPABILITY_QUAR_SOH: u32 = 0x0000_0001;
+    const TSG_NAP_CAPABILITY_IDLE_TIMEOUT: u32 = 0x0000_0002;
+    const SUPPORTED_CAPABILITIES: u32 = TSG_NAP_CAPABILITY_QUAR_SOH | TSG_NAP_CAPABILITY_IDLE_TIMEOUT;
+    const TSG_PROTOCOL_VERSION: u16 = 1;
+    const E_PROXY_QUARANTINE_ACCESSDENIED: u32 = 0x8007_59ed;
     const MAX_CAPABILITIES: usize = 32;
     const MAX_MACHINE_NAME_CHARS: usize = 513;
     const MAX_RESOURCE_NAME_CHARS: usize = 32_767;
@@ -857,13 +860,15 @@ mod tsgu {
     }
 
     /// Errors reported by the bounded NDR32 TS Gateway control-stub codecs.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
     pub(crate) enum RpcStubError {
         ContextHandleLength { actual: usize },
         NullContextHandle,
         EmptyResourceName,
         EmbeddedNulInResourceName,
+        EmbeddedNulInMachineName,
         ResourceNameTooLong { actual: usize, maximum: usize },
+        MachineNameTooLong { actual: usize, maximum: usize },
         StatementOfHealthTooLarge { actual: usize },
         ResponseDataTooLarge { actual: usize },
         CertificateChainTooLarge { actual: usize },
@@ -874,14 +879,20 @@ mod tsgu {
         UnexpectedPacketId { expected: u32, actual: u32 },
         UnexpectedPacketSwitch { expected: u32, actual: u32 },
         UnexpectedComponentId { expected: u16, actual: u16 },
+        UnexpectedProtocolVersion { major: u16, minor: u16 },
         UnexpectedCapabilityType { expected: u32, actual: u32 },
+        UnsupportedCapabilities { actual: u32 },
+        InvalidQuarantineCapabilities { actual: u16 },
+        MissingCertificateChain,
         InvalidNdrArrayLength { actual: u32, expected: u32 },
         InvalidNdrBoolean { value: u32 },
+        NonZeroReservedRedirectionFlag,
         ConflictingRedirectionFlags,
         InvalidQuarencFlags { actual: u32 },
         InvalidUtf16,
         UnterminatedNdrString,
         RpcStatus { value: u32 },
+        QuarantineAccessDenied { response_data: Vec<u8> },
     }
 
     impl fmt::Display for RpcStubError {
@@ -897,8 +908,12 @@ mod tsgu {
                 Self::NullContextHandle => f.write_str("rpc context handle must not be null"),
                 Self::EmptyResourceName => f.write_str("resource name must not be empty"),
                 Self::EmbeddedNulInResourceName => f.write_str("resource name must not contain a nul character"),
+                Self::EmbeddedNulInMachineName => f.write_str("machine name must not contain a nul character"),
                 Self::ResourceNameTooLong { actual, maximum } => {
                     write!(f, "resource name length {actual} exceeds {maximum}")
+                }
+                Self::MachineNameTooLong { actual, maximum } => {
+                    write!(f, "machine name length {actual} exceeds {maximum}")
                 }
                 Self::StatementOfHealthTooLarge { actual } => {
                     write!(
@@ -929,18 +944,32 @@ mod tsgu {
                 Self::UnexpectedComponentId { expected, actual } => {
                     write!(f, "unexpected component id 0x{actual:04x}, expected 0x{expected:04x}")
                 }
+                Self::UnexpectedProtocolVersion { major, minor } => {
+                    write!(f, "unexpected protocol version {major}.{minor}, expected 1.1")
+                }
                 Self::UnexpectedCapabilityType { expected, actual } => {
                     write!(f, "unexpected capability type {actual}, expected {expected}")
                 }
+                Self::UnsupportedCapabilities { actual } => {
+                    write!(f, "unsupported capabilities 0x{actual:08x}")
+                }
+                Self::InvalidQuarantineCapabilities { actual } => {
+                    write!(f, "invalid quarantine capabilities 0x{actual:04x}")
+                }
+                Self::MissingCertificateChain => f.write_str("quarantine support requires a certificate chain"),
                 Self::InvalidNdrArrayLength { actual, expected } => {
                     write!(f, "invalid ndr array length {actual}, expected {expected}")
                 }
                 Self::InvalidNdrBoolean { value } => write!(f, "invalid ndr boolean value {value}"),
+                Self::NonZeroReservedRedirectionFlag => f.write_str("reserved redirection flag must be zero"),
                 Self::ConflictingRedirectionFlags => f.write_str("enable-all and disable-all flags conflict"),
                 Self::InvalidQuarencFlags { actual } => write!(f, "invalid quarenc flags {actual}"),
                 Self::InvalidUtf16 => f.write_str("invalid utf-16 string"),
                 Self::UnterminatedNdrString => f.write_str("unterminated ndr string"),
                 Self::RpcStatus { value } => write!(f, "rpc operation returned hresult 0x{value:08x}"),
+                Self::QuarantineAccessDenied { .. } => {
+                    f.write_str("rpc operation denied access due to quarantine policy")
+                }
             }
         }
     }
@@ -960,7 +989,8 @@ mod tsgu {
             Self { capabilities }
         }
 
-        pub(crate) fn encode(self) -> Vec<u8> {
+        pub(crate) fn encode(self) -> Result<Vec<u8>, RpcStubError> {
+            validate_capabilities(self.capabilities)?;
             let mut output = Vec::with_capacity(48);
             output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // packetId
             output.extend_from_slice(&TSG_PACKET_TYPE_VERSIONCAPS.to_le_bytes()); // union switch
@@ -977,7 +1007,7 @@ mod tsgu {
             output.extend_from_slice(&TSG_CAPABILITY_TYPE_NAP.to_le_bytes()); // capabilityType
             output.extend_from_slice(&TSG_CAPABILITY_TYPE_NAP.to_le_bytes()); // union switch
             output.extend_from_slice(&self.capabilities.to_le_bytes()); // capabilities
-            output
+            Ok(output)
         }
     }
 
@@ -1005,7 +1035,7 @@ mod tsgu {
         }
 
         pub(crate) fn encode(&self) -> Result<Vec<u8>, RpcStubError> {
-            let machine_name = encode_ndr_string(self.machine_name, MAX_MACHINE_NAME_CHARS)?;
+            let machine_name = encode_ndr_machine_name(self.machine_name)?;
             if self.statement_of_health.len() > MAX_STATEMENT_OF_HEALTH_SIZE {
                 return Err(RpcStubError::StatementOfHealthTooLarge {
                     actual: self.statement_of_health.len(),
@@ -1059,7 +1089,7 @@ mod tsgu {
         }
 
         pub(crate) fn encode(&self) -> Result<Vec<u8>, RpcStubError> {
-            let resource_name = encode_ndr_string(self.resource_name, MAX_RESOURCE_NAME_CHARS)?;
+            let resource_name = encode_ndr_resource_name(self.resource_name)?;
             let mut output = Vec::with_capacity(48 + resource_name.len() * 2);
             output.extend_from_slice(&self.tunnel_context.as_bytes()); // tunnelContext
             encode_ndr_pointer(&mut output, 0); // resourceName
@@ -1090,6 +1120,10 @@ mod tsgu {
     pub(crate) fn decode_tsgu_create_tunnel_response(
         source: &[u8],
     ) -> Result<TsProxyCreateTunnelResponse, RpcStubError> {
+        const MINIMUM_RESPONSE_SIZE: usize =
+            4 /* TSGPacketResponse */ + RpcContextHandle::SIZE /* tunnelContext */ + 4 /* tunnelId */ + 4 /* HRESULT */;
+        validate_hresult(read_trailing_hresult(source, MINIMUM_RESPONSE_SIZE)?)?;
+
         const FIXED_SIZE: usize = 4 /* TSGPacketResponse */
             + 4 /* packetId */
             + 4 /* union switch */
@@ -1155,22 +1189,44 @@ mod tsgu {
                 actual: read_u16(version_caps, 0)?,
             });
         }
-        require_ndr_pointer(read_u32(version_caps, 4)?)?;
+        let capabilities_pointer = read_u32(version_caps, 4)?;
         let capability_count = read_u32(version_caps, 8)?;
         if usize::try_from(capability_count).map_err(|_| RpcStubError::LengthOverflow)? > MAX_CAPABILITIES {
             return Err(RpcStubError::CapabilityCountTooLarge {
                 actual: capability_count,
             });
         }
-        offset = version_caps_end;
-        let capability_array_count = read_u32(source, offset)?;
-        if capability_array_count != capability_count {
-            return Err(RpcStubError::InvalidNdrArrayLength {
-                actual: capability_array_count,
-                expected: capability_count,
+        let major_version = read_u16(version_caps, 12)?;
+        let minor_version = read_u16(version_caps, 14)?;
+        if major_version != TSG_PROTOCOL_VERSION || minor_version != TSG_PROTOCOL_VERSION {
+            return Err(RpcStubError::UnexpectedProtocolVersion {
+                major: major_version,
+                minor: minor_version,
             });
         }
-        offset = offset.checked_add(4).ok_or(RpcStubError::LengthOverflow)?;
+        let quarantine_capabilities = read_u16(version_caps, 16)?;
+        if quarantine_capabilities > 1 {
+            return Err(RpcStubError::InvalidQuarantineCapabilities {
+                actual: quarantine_capabilities,
+            });
+        }
+        if quarantine_capabilities == 1 && certificate_chain_len == 0 {
+            return Err(RpcStubError::MissingCertificateChain);
+        }
+        if capabilities_pointer == 0 && capability_count != 0 {
+            return Err(RpcStubError::RequiredNdrPointerIsNull);
+        }
+        offset = version_caps_end;
+        if capabilities_pointer != 0 {
+            let capability_array_count = read_u32(source, offset)?;
+            if capability_array_count != capability_count {
+                return Err(RpcStubError::InvalidNdrArrayLength {
+                    actual: capability_array_count,
+                    expected: capability_count,
+                });
+            }
+            offset = offset.checked_add(4).ok_or(RpcStubError::LengthOverflow)?;
+        }
 
         let mut capabilities = 0;
         for _ in 0..capability_count {
@@ -1188,7 +1244,9 @@ mod tsgu {
                     actual: capability_switch,
                 });
             }
-            capabilities |= read_u32(source, offset.checked_add(8).ok_or(RpcStubError::LengthOverflow)?)?;
+            let capability = read_u32(source, offset.checked_add(8).ok_or(RpcStubError::LengthOverflow)?)?;
+            validate_capabilities(capability)?;
+            capabilities |= capability;
             offset = offset.checked_add(12).ok_or(RpcStubError::LengthOverflow)?;
         }
 
@@ -1203,7 +1261,6 @@ mod tsgu {
         let tunnel_context =
             RpcContextHandle::from_bytes(&source[offset..offset + RpcContextHandle::SIZE])?.require_non_null()?;
         let tunnel_id = read_u32(source, offset + RpcContextHandle::SIZE)?;
-        validate_hresult(read_u32(source, offset + RpcContextHandle::SIZE + 4)?)?;
 
         Ok(TsProxyCreateTunnelResponse {
             tunnel_context,
@@ -1249,6 +1306,17 @@ mod tsgu {
             + 4 /* responseData */
             + 4 /* responseDataLen */
             + 8 * 4; /* redirectionFlags */
+        const MINIMUM_RESPONSE_SIZE: usize = 4 /* TSGPacketResponse */ + 4 /* HRESULT */;
+        let hresult = read_trailing_hresult(source, MINIMUM_RESPONSE_SIZE)?;
+        if hresult != 0 {
+            let has_quarantine_response = hresult == E_PROXY_QUARANTINE_ACCESSDENIED
+                && source.len() >= FIXED_SIZE + 4
+                && read_u32(source, 0)? != 0;
+            if !has_quarantine_response {
+                return Err(RpcStubError::RpcStatus { value: hresult });
+            }
+        }
+
         let fixed = source.get(..FIXED_SIZE).ok_or(RpcStubError::ResponseLength {
             actual: source.len(),
             expected: FIXED_SIZE,
@@ -1282,6 +1350,9 @@ mod tsgu {
             clipboard_disabled: decode_ndr_boolean(fixed, 56)?,
             pnp_disabled: decode_ndr_boolean(fixed, 60)?,
         };
+        if decode_ndr_boolean(fixed, 52)? {
+            return Err(RpcStubError::NonZeroReservedRedirectionFlag);
+        }
         if redirection_flags.enable_all && redirection_flags.disable_all {
             return Err(RpcStubError::ConflictingRedirectionFlags);
         }
@@ -1318,7 +1389,9 @@ mod tsgu {
                 expected: response_size,
             });
         }
-        validate_hresult(read_u32(source, offset)?)?;
+        if hresult == E_PROXY_QUARANTINE_ACCESSDENIED {
+            return Err(RpcStubError::QuarantineAccessDenied { response_data });
+        }
 
         Ok(TsProxyAuthorizeTunnelResponse {
             response_data,
@@ -1346,9 +1419,9 @@ mod tsgu {
                 expected: RESPONSE_SIZE,
             });
         }
+        validate_hresult(read_trailing_hresult(source, RESPONSE_SIZE)?)?;
         let channel_context = RpcContextHandle::from_bytes(&source[..RpcContextHandle::SIZE])?.require_non_null()?;
         let channel_id = read_u32(source, RpcContextHandle::SIZE)?;
-        validate_hresult(read_u32(source, RpcContextHandle::SIZE + 4)?)?;
         Ok(TsProxyCreateChannelResponse {
             channel_context,
             channel_id,
@@ -1359,7 +1432,7 @@ mod tsgu {
         output.extend_from_slice(&(NDR_REFERENT_ID + index * 4).to_le_bytes());
     }
 
-    fn encode_ndr_string(value: &str, maximum: usize) -> Result<Vec<u16>, RpcStubError> {
+    fn encode_ndr_resource_name(value: &str) -> Result<Vec<u16>, RpcStubError> {
         if value.is_empty() {
             return Err(RpcStubError::EmptyResourceName);
         }
@@ -1368,10 +1441,25 @@ mod tsgu {
         }
         let mut encoded: Vec<_> = value.encode_utf16().collect();
         encoded.push(0);
-        if encoded.len() > maximum {
+        if encoded.len() > MAX_RESOURCE_NAME_CHARS {
             return Err(RpcStubError::ResourceNameTooLong {
                 actual: encoded.len(),
-                maximum,
+                maximum: MAX_RESOURCE_NAME_CHARS,
+            });
+        }
+        Ok(encoded)
+    }
+
+    fn encode_ndr_machine_name(value: &str) -> Result<Vec<u16>, RpcStubError> {
+        if value.contains('\0') {
+            return Err(RpcStubError::EmbeddedNulInMachineName);
+        }
+        let mut encoded: Vec<_> = value.encode_utf16().collect();
+        encoded.push(0);
+        if encoded.len() > MAX_MACHINE_NAME_CHARS {
+            return Err(RpcStubError::MachineNameTooLong {
+                actual: encoded.len(),
+                maximum: MAX_MACHINE_NAME_CHARS,
             });
         }
         Ok(encoded)
@@ -1482,6 +1570,23 @@ mod tsgu {
         Ok(())
     }
 
+    fn read_trailing_hresult(source: &[u8], minimum_size: usize) -> Result<u32, RpcStubError> {
+        if source.len() < minimum_size {
+            return Err(RpcStubError::ResponseLength {
+                actual: source.len(),
+                expected: minimum_size,
+            });
+        }
+        read_u32(source, source.len() - 4)
+    }
+
+    fn validate_capabilities(capabilities: u32) -> Result<(), RpcStubError> {
+        if capabilities & !SUPPORTED_CAPABILITIES != 0 {
+            return Err(RpcStubError::UnsupportedCapabilities { actual: capabilities });
+        }
+        Ok(())
+    }
+
     fn read_u16(source: &[u8], offset: usize) -> Result<u16, RpcStubError> {
         let end = offset.checked_add(2).ok_or(RpcStubError::LengthOverflow)?;
         let bytes = source.get(offset..end).ok_or(RpcStubError::ResponseLength {
@@ -1515,7 +1620,9 @@ mod tsgu {
 
         #[test]
         fn requests_encode_bounded_ndr32_control_vectors() {
-            let create_tunnel = TsProxyCreateTunnelRequest::new(3).encode();
+            let create_tunnel = TsProxyCreateTunnelRequest::new(3)
+                .encode()
+                .expect("supported capabilities");
             assert_eq!(create_tunnel.len(), 48);
             assert_eq!(
                 create_tunnel,
@@ -1560,6 +1667,14 @@ mod tsgu {
                 u32::from_le_bytes(authorize[20..24].try_into().expect("packet id")),
                 TSG_PACKET_TYPE_QUARREQUEST
             );
+
+            let authorize = TsProxyAuthorizeTunnelRequest::new(context, "", &[])
+                .encode()
+                .expect("empty machine name");
+            assert_eq!(
+                u32::from_le_bytes(authorize[40..44].try_into().expect("name length")),
+                1
+            );
         }
 
         #[test]
@@ -1571,6 +1686,14 @@ mod tsgu {
             assert_eq!(
                 TsProxyCreateChannelRequest::new(context, "bad\0name", 3389).encode(),
                 Err(RpcStubError::EmbeddedNulInResourceName)
+            );
+            assert_eq!(
+                TsProxyAuthorizeTunnelRequest::new(context, "bad\0name", &[]).encode(),
+                Err(RpcStubError::EmbeddedNulInMachineName)
+            );
+            assert_eq!(
+                TsProxyCreateTunnelRequest::new(0x0000_0004).encode(),
+                Err(RpcStubError::UnsupportedCapabilities { actual: 0x0000_0004 })
             );
             assert_eq!(
                 TsProxyAuthorizeTunnelRequest::new(context, "host", &[0; MAX_STATEMENT_OF_HEALTH_SIZE + 1]).encode(),
@@ -1615,6 +1738,23 @@ mod tsgu {
                     actual: 0x0000_4350,
                 })
             );
+
+            let mut zero_capabilities = create_tunnel_response();
+            zero_capabilities[52..60].fill(0);
+            zero_capabilities.drain(68..84);
+            assert_eq!(
+                decode_tsgu_create_tunnel_response(&zero_capabilities)
+                    .expect("null capability pointer with zero count"),
+                TsProxyCreateTunnelResponse {
+                    tunnel_context: RpcContextHandle::from_bytes(&CONTEXT)
+                        .expect("valid handle")
+                        .require_non_null()
+                        .expect("non-null"),
+                    tunnel_id: 42,
+                    nonce: Uuid::from_u128(0x00112233_4455_6677_8899_aabbccddeeff),
+                    capabilities: 0,
+                }
+            );
         }
 
         #[test]
@@ -1642,6 +1782,34 @@ mod tsgu {
                 Err(RpcStubError::RequiredNdrPointerIsNull)
             );
 
+            let mut response = create_tunnel_response();
+            response[60..62].copy_from_slice(&2u16.to_le_bytes());
+            assert_eq!(
+                decode_tsgu_create_tunnel_response(&response),
+                Err(RpcStubError::UnexpectedProtocolVersion { major: 2, minor: 1 })
+            );
+
+            let mut response = create_tunnel_response();
+            response[80..84].copy_from_slice(&0x0000_0004u32.to_le_bytes());
+            assert_eq!(
+                decode_tsgu_create_tunnel_response(&response),
+                Err(RpcStubError::UnsupportedCapabilities { actual: 0x0000_0004 })
+            );
+
+            let mut response = create_tunnel_response();
+            response[64..66].copy_from_slice(&1u16.to_le_bytes());
+            assert_eq!(
+                decode_tsgu_create_tunnel_response(&response),
+                Err(RpcStubError::MissingCertificateChain)
+            );
+
+            let mut response = create_tunnel_response();
+            response[64..66].copy_from_slice(&2u16.to_le_bytes());
+            assert_eq!(
+                decode_tsgu_create_tunnel_response(&response),
+                Err(RpcStubError::InvalidQuarantineCapabilities { actual: 2 })
+            );
+
             let malformed_utf16 = [
                 2u32.to_le_bytes().as_slice(),
                 &0u32.to_le_bytes(),
@@ -1657,6 +1825,7 @@ mod tsgu {
 
             let mut response = create_tunnel_response();
             let hresult_offset = response.len() - 4;
+            response[..4].fill(0);
             response[hresult_offset..].copy_from_slice(&0x8007_59d8u32.to_le_bytes());
             assert_eq!(
                 decode_tsgu_create_tunnel_response(&response),
@@ -1699,12 +1868,38 @@ mod tsgu {
             );
 
             let mut response = authorize_response(&[]);
+            response[52..56].copy_from_slice(&1u32.to_le_bytes());
+            assert_eq!(
+                decode_tsgu_authorize_tunnel_response(&response),
+                Err(RpcStubError::NonZeroReservedRedirectionFlag)
+            );
+
+            let mut response = authorize_response(&[]);
             response[28..32].copy_from_slice(&u32::try_from(MAX_RESPONSE_DATA_SIZE + 1).expect("fits").to_le_bytes());
             assert_eq!(
                 decode_tsgu_authorize_tunnel_response(&response),
                 Err(RpcStubError::ResponseDataTooLarge {
                     actual: MAX_RESPONSE_DATA_SIZE + 1
                 })
+            );
+
+            let mut response = authorize_response(&[4, 5, 6]);
+            let hresult_offset = response.len() - 4;
+            response[hresult_offset..].copy_from_slice(&E_PROXY_QUARANTINE_ACCESSDENIED.to_le_bytes());
+            assert_eq!(
+                decode_tsgu_authorize_tunnel_response(&response),
+                Err(RpcStubError::QuarantineAccessDenied {
+                    response_data: vec![4, 5, 6]
+                })
+            );
+
+            let mut response = authorize_response(&[]);
+            let hresult_offset = response.len() - 4;
+            response[..4].fill(0);
+            response[hresult_offset..].copy_from_slice(&0x8007_59d8u32.to_le_bytes());
+            assert_eq!(
+                decode_tsgu_authorize_tunnel_response(&response),
+                Err(RpcStubError::RpcStatus { value: 0x8007_59d8 })
             );
         }
 
@@ -1733,6 +1928,7 @@ mod tsgu {
             let mut response = Vec::from(CONTEXT);
             response.extend_from_slice(&17u32.to_le_bytes());
             response.extend_from_slice(&0x8007_59d8u32.to_le_bytes());
+            response[..20].fill(0);
             assert_eq!(
                 decode_tsgu_create_channel_response(&response),
                 Err(RpcStubError::RpcStatus { value: 0x8007_59d8 })
