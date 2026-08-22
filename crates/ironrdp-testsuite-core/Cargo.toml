@@ -52,7 +52,7 @@ ironrdp-echo.path = "../ironrdp-echo"
 ironrdp-rdpei.path = "../ironrdp-rdpei"
 ironrdp-error = { path = "../ironrdp-error", features = ["std"] }
 ironrdp-fuzzing.path = "../ironrdp-fuzzing"
-ironrdp-graphics.path = "../ironrdp-graphics"
+ironrdp-graphics = { path = "../ironrdp-graphics", features = ["__test"] }
 ironrdp-str.path = "../ironrdp-str"
 ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-input.path = "../ironrdp-input"

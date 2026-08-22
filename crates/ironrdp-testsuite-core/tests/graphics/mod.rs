@@ -1,4 +1,5 @@
 mod alpha;
+mod bit_reader;
 mod clearcodec;
 mod color_conversion;
 mod dwt;
