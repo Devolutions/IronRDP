@@ -440,6 +440,8 @@ const CONNECT_E_CANNOTCONNECT: HRESULT = HRESULT(-2_147_220_990);
 const CONNECT_E_NOCONNECTION: HRESULT = HRESULT(-2_147_220_992);
 const CREDUI_MAX_USERNAME_LENGTH: usize = 513;
 const CREDUI_MAX_PASSWORD_LENGTH: usize = 256;
+const CREDUI_USERNAME_BUFFER_LENGTH: usize = CREDUI_MAX_USERNAME_LENGTH + 1;
+const CREDUI_PASSWORD_BUFFER_LENGTH: usize = CREDUI_MAX_PASSWORD_LENGTH + 1;
 const MSTSC_SEND_KEYS_MAX_KEYS: usize = 20;
 const CONTROL_RECONNECT_STARTED: i32 = 0;
 const CONTROL_RECONNECT_BLOCKED: i32 = 1;
@@ -7539,8 +7541,8 @@ impl Control {
         // the prompt, and CredUI's non-persistent flag prevents it from writing credential state.
         let initial_username = std::env::var("RDP_USERNAME").unwrap_or(configured_username);
         let initial_password = std::env::var("RDP_PASSWORD").unwrap_or_default();
-        let mut username = credential_prompt_buffer(&initial_username, CREDUI_MAX_USERNAME_LENGTH);
-        let mut password = credential_prompt_buffer(&initial_password, CREDUI_MAX_PASSWORD_LENGTH);
+        let mut username = credential_prompt_buffer(&initial_username, CREDUI_USERNAME_BUFFER_LENGTH);
+        let mut password = credential_prompt_buffer(&initial_password, CREDUI_PASSWORD_BUFFER_LENGTH);
         let mut save = windows_core::BOOL(0);
         let prompt = CREDUI_INFOW {
             cbSize: size_of::<CREDUI_INFOW>() as u32,
@@ -7627,8 +7629,8 @@ impl Control {
         } else {
             self.credential_parent.get()
         };
-        let mut username = credential_prompt_buffer("", CREDUI_MAX_USERNAME_LENGTH);
-        let mut password = credential_prompt_buffer("", CREDUI_MAX_PASSWORD_LENGTH);
+        let mut username = credential_prompt_buffer("", CREDUI_USERNAME_BUFFER_LENGTH);
+        let mut password = credential_prompt_buffer("", CREDUI_PASSWORD_BUFFER_LENGTH);
         let mut save = windows_core::BOOL(0);
         let prompt = CREDUI_INFOW {
             cbSize: size_of::<CREDUI_INFOW>() as u32,
@@ -16476,6 +16478,24 @@ mod tests {
             credential_prompt_buffer("long-name", 5),
             [u16::from(b'l'), u16::from(b'o'), u16::from(b'n'), u16::from(b'g'), 0]
         );
+        let username = credential_prompt_buffer(&"u".repeat(CREDUI_MAX_USERNAME_LENGTH), CREDUI_USERNAME_BUFFER_LENGTH);
+        assert_eq!(username.len(), CREDUI_USERNAME_BUFFER_LENGTH);
+        assert!(
+            username[..CREDUI_MAX_USERNAME_LENGTH]
+                .iter()
+                .all(|character| *character == u16::from(b'u'))
+        );
+        assert_eq!(username[CREDUI_MAX_USERNAME_LENGTH], 0);
+
+        let password = credential_prompt_buffer(&"p".repeat(CREDUI_MAX_PASSWORD_LENGTH), CREDUI_PASSWORD_BUFFER_LENGTH);
+        assert_eq!(password.len(), CREDUI_PASSWORD_BUFFER_LENGTH);
+        assert!(
+            password[..CREDUI_MAX_PASSWORD_LENGTH]
+                .iter()
+                .all(|character| *character == u16::from(b'p'))
+        );
+        assert_eq!(password[CREDUI_MAX_PASSWORD_LENGTH], 0);
+
         assert!(credential_prompt_buffer("ignored", 0).is_empty());
     }
 
