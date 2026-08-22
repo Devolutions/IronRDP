@@ -168,16 +168,105 @@ fn vmconnect_preserves_explicit_destination_port() {
 
 #[test]
 fn vmconnect_basic_flag_selects_basic_mode() {
+    const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
     let config = parse_config_from_rdp(
         "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
-        &[
-            "--vmconnect",
-            "efd1efab-c750-4262-b1bb-af0f7733bdd6",
-            "--vmconnect-basic",
-        ],
+        &["--vmconnect", VM_ID, "--vmconnect-basic"],
     );
 
     assert_eq!(config.vmconnect_mode(), Some(VmConnectMode::Basic));
+    assert_eq!(config.properties().vmconnect_id(), Some(VM_ID));
+    assert_eq!(config.properties().vmconnect_basic(), Some(true));
+}
+
+#[test]
+fn vmconnect_properties_restore_typed_config() {
+    const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
+    let config = parse_config_from_rdp(
+        &format!(
+            "full address:s:hyperv.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\nironrdp_vmconnect:s:{VM_ID}\nironrdp_vmconnect_basic:i:1\n"
+        ),
+        &[],
+    );
+
+    assert_eq!(config.vm_id(), Some(VM_ID));
+    assert_eq!(config.vmconnect_mode(), Some(VmConnectMode::Basic));
+    assert_eq!(config.destination().port(), 2179);
+}
+
+#[cfg(windows)]
+#[test]
+fn vmconnect_current_user_needs_no_password_and_preserves_explicit_product_id() {
+    const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
+    const INSTANCE_ID: &str = "0123456789abcdef0123456789abcde";
+    let config = parse_config_from_rdp(
+        &format!(
+            "full address:s:localhost\nironrdp_vmconnect:s:{VM_ID}\nironrdp_vmconnect_basic:i:1\nironrdp_vmconnect_current_user:i:1\n"
+        ),
+        &["--dig-product-id", INSTANCE_ID],
+    );
+
+    assert!(config.vmconnect_current_user());
+    assert_eq!(config.vmconnect_mode(), Some(VmConnectMode::Basic));
+    assert!(config.vmconnect_framebuffer_redirection());
+    assert_eq!(config.connector().dig_product_id, INSTANCE_ID);
+}
+
+#[cfg(windows)]
+#[test]
+fn vmconnect_current_user_rejects_rdcleanpath() {
+    const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
+    let error = parse_config_from_rdp_result(
+        &format!("full address:s:localhost\nironrdp_vmconnect:s:{VM_ID}\nironrdp_vmconnect_current_user:i:1\n"),
+        &[
+            "--rdcleanpath-url",
+            "wss://rdcleanpath.example.com",
+            "--rdcleanpath-token",
+            "test-token",
+        ],
+    )
+    .expect_err("current-user VMConnect must reject RDCleanPath");
+
+    assert!(
+        error
+            .to_string()
+            .contains("vmconnect current-user authentication is not supported with RDCleanPath"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn loopback_vmconnect_hosts_offer_framebuffer_redirection() {
+    const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
+    const INSTANCE_ID: &str = "0123456789abcdef0123456789abcde";
+    for host in ["localhost", "localhost.", ".", "127.0.0.1", "[::1]"] {
+        let config = parse_config_from_rdp(
+            &format!("full address:s:{host}\nironrdp_vmconnect:s:{VM_ID}\nironrdp_vmconnect_current_user:i:1\n"),
+            &["--dig-product-id", INSTANCE_ID],
+        );
+
+        assert!(
+            config.vmconnect_framebuffer_redirection(),
+            "{host} should be eligible for frame-buffer redirection"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn remote_vmconnect_does_not_offer_local_framebuffer_redirection() {
+    const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
+    let config = parse_config_from_rdp(
+        &format!(
+            "full address:s:hyperv.example.com\nironrdp_vmconnect:s:{VM_ID}\nironrdp_vmconnect_current_user:i:1\n"
+        ),
+        &[],
+    );
+
+    assert!(config.vmconnect_current_user());
+    assert!(!config.vmconnect_framebuffer_redirection());
+    assert!(config.connector().dig_product_id.is_empty());
 }
 
 #[test]
