@@ -851,4 +851,17 @@ mod tests {
         // HTTP_PACKET_HEADER is 8 bytes; the next two bytes are resources/alt_names counts.
         assert_eq!(&buf[10..12], &2179u16.to_le_bytes());
     }
+
+    #[test]
+    fn extended_auth_pkt_size_includes_header_and_blob() {
+        let pkt = ExtendedAuthPkt {
+            error_code: 0,
+            auth_blob: vec![0; 3],
+        };
+
+        assert_eq!(
+            pkt.size(),
+            PktHdr::FIXED_PART_SIZE + 4 /* error_code */ + 2 /* cb_blob_len */ + 3 /* auth_blob */
+        );
+    }
 }
