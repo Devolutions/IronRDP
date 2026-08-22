@@ -1,7 +1,21 @@
-#![allow(unused_crate_dependencies)]
+#![expect(
+    dead_code,
+    unreachable_pub,
+    unused_crate_dependencies,
+    reason = "tests import private protocol structures"
+)]
+
+#[path = "../src/proto.rs"]
+#[expect(
+    clippy::allow_attributes,
+    reason = "the imported protocol source contains an intentionally unfulfilled expectation"
+)]
+#[allow(unfulfilled_lint_expectations)]
+mod proto;
 
 use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
 use ironrdp_mstsgu::{ChannelClosePkt, ReauthMessagePkt, ServiceMessagePkt, gateway_code_label};
+use proto::TunnelReqPkt;
 
 fn encode_to_vec(payload: &impl Encode) -> Vec<u8> {
     let mut buf = vec![0u8; payload.size()];
@@ -17,6 +31,59 @@ fn decode_body<'a, T: Decode<'a>>(bytes: &'a [u8]) -> T {
     let decoded = T::decode(&mut cur).expect("decode");
     assert!(cur.eof());
     decoded
+}
+
+#[test]
+fn tunnel_request_without_reauth_context_preserves_existing_wire_format() {
+    let bytes = encode_to_vec(&TunnelReqPkt {
+        caps: 0x04,
+        fields_present: 0,
+        ..TunnelReqPkt::default()
+    });
+
+    assert_eq!(
+        bytes,
+        [
+            0x04, 0x00, 0x00, 0x00, // packetType, reserved
+            0x10, 0x00, 0x00, 0x00, // packet length
+            0x04, 0x00, 0x00, 0x00, // capsFlags
+            0x00, 0x00, // fieldsPresent
+            0x00, 0x00, // reserved
+        ]
+    );
+}
+
+#[test]
+fn tunnel_request_without_reauth_context_clears_reauth_field_bit() {
+    let bytes = encode_to_vec(&TunnelReqPkt {
+        fields_present: 0x2,
+        ..TunnelReqPkt::default()
+    });
+
+    assert_eq!(bytes.len(), 16);
+    assert_eq!(&bytes[12..14], &0u16.to_le_bytes());
+}
+
+#[test]
+fn tunnel_request_encodes_reauth_context() {
+    let reauth_tunnel_context = 0x1122_3344_5566_7788;
+    let bytes = encode_to_vec(&TunnelReqPkt {
+        caps: 0x04,
+        reauth_tunnel_context: Some(reauth_tunnel_context),
+        ..TunnelReqPkt::default()
+    });
+
+    assert_eq!(
+        bytes.len(),
+        8 /* HTTP_PACKET_HEADER */
+            + 4 /* capsFlags */
+            + 2 /* fieldsPresent */
+            + 2 /* reserved */
+            + 8 /* reauthTunnelContext */
+    );
+    assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 24);
+    assert_eq!(&bytes[12..14], &0x2u16.to_le_bytes());
+    assert_eq!(&bytes[16..24], &reauth_tunnel_context.to_le_bytes());
 }
 
 #[test]
