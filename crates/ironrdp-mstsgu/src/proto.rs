@@ -190,12 +190,16 @@ impl Decode<'_> for HandshakeRespPkt {
     }
 }
 
+/// 2.2.5.3.6 `HTTP_TUNNEL_PACKET_FIELD_REAUTH`.
+const HTTP_TUNNEL_PACKET_FIELD_REAUTH: u16 = 0x2;
+
 /// 2.2.10.18 HTTP_TUNNEL_PACKET
 #[derive(Default)]
 pub(crate) struct TunnelReqPkt {
     pub caps: u32,
     pub fields_present: u16,
     pub _reserved: u16,
+    pub reauth_tunnel_context: Option<u64>,
 }
 
 impl Encode for TunnelReqPkt {
@@ -209,9 +213,18 @@ impl Encode for TunnelReqPkt {
         };
         hdr.encode(dst)?;
 
+        let fields_present = if self.reauth_tunnel_context.is_some() {
+            self.fields_present | HTTP_TUNNEL_PACKET_FIELD_REAUTH
+        } else {
+            self.fields_present
+        };
+
         dst.write_u32(self.caps);
-        dst.write_u16(self.fields_present);
+        dst.write_u16(fields_present);
         dst.write_u16(self._reserved);
+        if let Some(tunnel_context) = self.reauth_tunnel_context {
+            dst.write_u64(tunnel_context);
+        }
         Ok(())
     }
 
@@ -220,7 +233,11 @@ impl Encode for TunnelReqPkt {
     }
 
     fn size(&self) -> usize {
-        PktHdr::default().size() + 8
+        PktHdr::FIXED_PART_SIZE
+            + 4 /* capsFlags */
+            + 2 /* fieldsPresent */
+            + 2 /* reserved */
+            + self.reauth_tunnel_context.map_or(0, |_| 8 /* reauthTunnelContext */)
     }
 }
 
