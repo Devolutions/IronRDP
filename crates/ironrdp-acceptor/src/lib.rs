@@ -15,7 +15,7 @@ mod finalization;
 mod util;
 
 pub use ironrdp_connector::DesktopSize;
-pub use ironrdp_connector::sspi::AuthIdentity as CredsspAuthIdentity;
+pub use ironrdp_connector::sspi::{AuthIdentity as CredsspAuthIdentity, UsernameParts};
 use ironrdp_pdu::nego;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
@@ -221,6 +221,6 @@ where
             }
         }
 
-        Ok(sequence.take_identity())
+        Ok(sequence.into_identity())
     }
 }

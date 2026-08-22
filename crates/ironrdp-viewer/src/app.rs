@@ -281,7 +281,7 @@ impl RpcApp {
 
     fn on_window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {

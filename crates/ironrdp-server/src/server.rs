@@ -399,7 +399,7 @@ impl RdpServerSecurity {
         match self {
             RdpServerSecurity::None => nego::SecurityProtocol::empty(),
             RdpServerSecurity::Tls(_) => nego::SecurityProtocol::SSL,
-            RdpServerSecurity::Hybrid(_) => nego::SecurityProtocol::SSL | nego::SecurityProtocol::HYBRID,
+            RdpServerSecurity::Hybrid(_) => nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX,
         }
     }
 }
@@ -756,7 +756,6 @@ pub enum PendingSession {
         framed: TokioFramed<TcpStream>,
         acceptor: Acceptor,
     },
-    Failed,
 }
 
 impl PendingSession {
@@ -1329,13 +1328,7 @@ impl RdpServer {
                         RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
                         RdpServerSecurity::None => unreachable!(),
                     };
-                    let accept = match tls_acceptor.accept(stream).await {
-                        Ok(accept) => accept,
-                        Err(e) => {
-                            warn!("Failed to TLS accept: {}", e);
-                            return Ok(());
-                        }
-                    };
+                    let accept = tls_acceptor.accept(stream).await.context("TLS accept failed")?;
                     self.finalize_after_upgrade(TokioFramed::new(accept), acceptor, "TLS connection")
                         .await?;
                 }
@@ -1383,13 +1376,7 @@ impl RdpServer {
                     RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
                     RdpServerSecurity::None => unreachable!(),
                 };
-                let accept = match tls_acceptor.accept(stream).await {
-                    Ok(accept) => accept,
-                    Err(e) => {
-                        warn!("Failed to TLS accept: {}", e);
-                        return Ok(PendingSession::Failed);
-                    }
-                };
+                let accept = tls_acceptor.accept(stream).await.context("TLS accept failed")?;
                 let mut framed = TokioFramed::new(accept);
 
                 acceptor.mark_security_upgrade_as_done();
@@ -1424,28 +1411,29 @@ impl RdpServer {
     /// Continues a pending session after the handshake: capabilities exchange,
     /// client loop, and graceful shutdown.
     pub async fn run_connection_session(&mut self, pending: PendingSession) -> Result<()> {
-        match pending {
+        let result = match pending {
             PendingSession::Tls {
                 framed,
                 acceptor,
                 captured_identity: _,
-            } => {
-                let framed = self.accept_finalize(framed, acceptor).await?;
-                debug!("Shutting down TLS connection");
-                let (mut tls_stream, _) = framed.into_inner();
-                if let Err(e) = tls_stream.shutdown().await {
-                    debug!(?e, "TLS shutdown error");
+            } => match self.accept_finalize(framed, acceptor).await {
+                Ok(framed) => {
+                    debug!("Shutting down TLS connection");
+                    let (mut tls_stream, _) = framed.into_inner();
+                    if let Err(e) = tls_stream.shutdown().await {
+                        debug!(?e, "TLS shutdown error");
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
+                Err(error) => Err(error),
+            },
 
-            PendingSession::Plain { framed, acceptor } => {
-                self.accept_finalize(framed, acceptor).await?;
-                Ok(())
-            }
+            PendingSession::Plain { framed, acceptor } => self.accept_finalize(framed, acceptor).await.map(drop),
+        };
 
-            PendingSession::Failed => Ok(()),
-        }
+        self.static_channels = StaticChannelSet::new();
+
+        result
     }
 
     /// Shared post-handshake tail for both [`TransportTls`] modes: mark the
@@ -2606,8 +2594,6 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
 
 #[cfg(test)]
 mod tests {
-    use core::time::Duration;
-
     use ironrdp_core::impl_as_any;
     use ironrdp_pdu::gcc::ChannelName;
     use ironrdp_svc::{SvcMessage, SvcServerProcessor};

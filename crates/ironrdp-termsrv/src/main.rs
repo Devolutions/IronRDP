@@ -18,10 +18,11 @@ mod windows_main {
     use core::net::{Ipv4Addr, SocketAddr};
     use core::num::{NonZeroI32, NonZeroU16, NonZeroUsize};
     use core::ptr::null_mut;
-    use core::sync::atomic::{fence, AtomicBool, AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
     use std::collections::{HashMap, HashSet, VecDeque};
     use std::io;
     use std::io::Write as _;
+    use std::os::windows::io::AsRawHandle as _;
     use std::sync::{Arc, Mutex as StdMutex, OnceLock};
     use std::time::Instant;
 
@@ -39,45 +40,53 @@ mod windows_main {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::windows::named_pipe;
     use tokio::net::{TcpListener, TcpStream};
-    use tokio::sync::{mpsc, watch, Mutex};
+    use tokio::sync::{Mutex, mpsc, watch};
     use tokio::task::JoinHandle;
     use tokio::time::{Duration, sleep, timeout};
     use tracing::{debug, error, info, warn};
     use tracing_subscriber::EnvFilter;
-    use windows::core::{w, BOOL, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{
-        GetLastError, LocalFree, SetLastError, ERROR_BAD_LENGTH, ERROR_NO_MORE_FILES, ERROR_NOT_ALL_ASSIGNED, HANDLE,
-        HLOCAL, LUID, WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR,
-    };
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+        CloseHandle, ERROR_BAD_LENGTH, ERROR_NO_MORE_FILES, ERROR_NOT_ALL_ASSIGNED, GetLastError, HANDLE, HLOCAL, LUID,
+        LocalFree, SetLastError, WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR,
     };
     use windows::Win32::Graphics::Gdi::{
-        BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
-        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
+        DeleteDC, DeleteObject, GetDC, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
     };
     use windows::Win32::Security::Cryptography::{
-        BCRYPT_RSA_ALGORITHM, CERT_CONTEXT, CERT_CREATE_SELFSIGN_FLAGS, CERT_FIND_SUBJECT_STR_W, CERT_NCRYPT_KEY_SPEC,
-        CERT_OPEN_STORE_FLAGS, CERT_QUERY_ENCODING_TYPE, CERT_STORE_ADD_REPLACE_EXISTING, CERT_STORE_PROV_SYSTEM_W,
+        BCRYPT_RSA_ALGORITHM, BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom, CERT_CONTEXT,
+        CERT_CREATE_SELFSIGN_FLAGS, CERT_FIND_SUBJECT_STR_W, CERT_NCRYPT_KEY_SPEC, CERT_OPEN_STORE_FLAGS,
+        CERT_QUERY_ENCODING_TYPE, CERT_STORE_ADD_REPLACE_EXISTING, CERT_STORE_PROV_SYSTEM_W,
         CERT_SYSTEM_STORE_LOCAL_MACHINE, CERT_X500_NAME_STR, CRYPT_INTEGER_BLOB, CRYPT_KEY_PROV_INFO,
         CertAddCertificateContextToStore, CertCloseStore, CertCreateSelfSignCertificate, CertFindCertificateInStore,
         CertFreeCertificateContext, CertOpenStore, CertStrToNameW, HCERTSTORE, MS_KEY_STORAGE_PROVIDER,
         NCRYPT_ALLOW_EXPORT_FLAG, NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG, NCRYPT_EXPORT_POLICY_PROPERTY, NCRYPT_FLAGS,
-        NCRYPT_HANDLE, NCRYPT_LENGTH_PROPERTY, NCRYPT_MACHINE_KEY_FLAG, NCRYPT_PROV_HANDLE, NCryptCreatePersistedKey,
-        NCryptFinalizeKey, NCryptFreeObject, NCryptOpenStorageProvider, NCryptSetProperty, PKCS_7_ASN_ENCODING,
-        X509_ASN_ENCODING,
+        NCRYPT_HANDLE, NCRYPT_KEY_HANDLE, NCRYPT_LENGTH_PROPERTY, NCRYPT_MACHINE_KEY_FLAG, NCRYPT_PROV_HANDLE,
+        NCryptCreatePersistedKey, NCryptFinalizeKey, NCryptFreeObject, NCryptOpenStorageProvider, NCryptSetProperty,
+        PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
+    };
+    use windows::Win32::Security::{
+        AdjustTokenPrivileges, DuplicateTokenEx, GetTokenInformation, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
+        RevertToSelf, SE_PRIVILEGE_ENABLED, SecurityImpersonation, SetTokenInformation, TOKEN_ADJUST_PRIVILEGES,
+        TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER,
+        TokenPrimary, TokenSessionId, TokenUser,
+    };
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
     };
     use windows::Win32::System::Memory::{
         CreateFileMappingW, FILE_MAP_READ, FILE_MAP_WRITE, MapViewOfFile, OpenFileMappingW, PAGE_READWRITE,
         UnmapViewOfFile,
     };
+    use windows::Win32::System::Pipes::{GetNamedPipeClientProcessId, ImpersonateNamedPipeClient};
     use windows::Win32::System::RemoteDesktop::{
         WTS_SESSION_INFOW, WTSEnumerateSessionsW, WTSFreeMemory, WTSGetActiveConsoleSessionId, WTSQueryUserToken,
     };
     use windows::Win32::System::Threading::{
-        CREATE_NO_WINDOW, CreateEventW, CreateProcessAsUserW, EVENT_MODIFY_STATE, GetCurrentProcess,
-        GetCurrentProcessId, OpenEventW, OpenProcess, OpenProcessToken, PROCESS_INFORMATION,
-        PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW, SetEvent, TerminateProcess, WaitForSingleObject,
+        CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessAsUserW, EVENT_MODIFY_STATE,
+        GetCurrentProcess, GetCurrentProcessId, GetCurrentThread, OpenEventW, OpenProcess, OpenProcessToken,
+        OpenThreadToken, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW, SetEvent,
+        TerminateProcess, WaitForSingleObject,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
@@ -85,20 +94,13 @@ mod windows_main {
         MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
         MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VIRTUAL_KEY,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SetCursorPos, SM_CXSCREEN, SM_CYSCREEN};
-    use windows::Win32::Security::{
-        AdjustTokenPrivileges, DuplicateTokenEx, GetTokenInformation, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
-        RevertToSelf, SE_PRIVILEGE_ENABLED, SecurityImpersonation, SetTokenInformation, TOKEN_ADJUST_PRIVILEGES,
-        TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY, TokenPrimary,
-        TokenSessionId,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN, SetCursorPos};
+    use windows::core::{BOOL, PCWSTR, PWSTR, w};
 
     use windows::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
-    use windows::Win32::Security::{
-        ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
-    };
+    use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
     use windows::Win32::System::RemoteDesktop::{WTS_PROCESS_INFOW, WTSEnumerateProcessesW};
 
@@ -124,6 +126,9 @@ mod windows_main {
     const PERSISTENT_BLANK_RESTART_GRACE: Duration = Duration::from_secs(3);
     const PERSISTENT_BLANK_RESTART_MIN_FRAMES: u32 = 20;
     const CAPTURE_HELPER_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+    const CAPTURE_HELPER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
+    const CAPTURE_HELPER_TOKEN_ENV: &str = "IRONRDP_CAPTURE_HELPER_TOKEN";
+    const CAPTURE_HELPER_TOKEN_LEN: usize = 64;
     const CAPTURE_HELPER_RETRY_DELAY: Duration = Duration::from_secs(5);
     const CAPTURE_IPC_ENV: &str = "IRONRDP_WTS_CAPTURE_IPC";
     const CAPTURE_SESSION_ID_ENV: &str = "IRONRDP_WTS_CAPTURE_SESSION_ID";
@@ -138,17 +143,10 @@ mod windows_main {
     const RDP_DOMAIN_ENV: &str = "IRONRDP_RDP_DOMAIN";
 
     fn control_pipe_security_attributes() -> anyhow::Result<(SECURITY_ATTRIBUTES, PSECURITY_DESCRIPTOR)> {
-        // Allow TermService (NetworkService) to connect to the control pipe.
-        //
-        // NOTE: we also include Everyone (WD) as a diagnostic escape hatch so we can
-        // confirm that the DACL is actually being applied and unblock integration on
-        // newer Windows builds where TermService may use additional restricted SIDs.
-        //
+        // Allow only the service identities that host TermService.
         // - SY: LocalSystem
-        // - BA: Builtin Administrators
         // - NS: NetworkService
-        // - WD: Everyone
-        let sddl = w!("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;NS)(A;;GA;;;WD)");
+        let sddl = w!("D:P(A;;GA;;;SY)(A;;GA;;;NS)");
 
         let mut sd = PSECURITY_DESCRIPTOR::default();
         let mut sd_len = 0u32;
@@ -168,6 +166,87 @@ mod windows_main {
         };
 
         Ok((attrs, sd))
+    }
+
+    struct PipeClientImpersonation;
+
+    impl Drop for PipeClientImpersonation {
+        fn drop(&mut self) {
+            // SAFETY: this guard is created only after impersonating the current thread.
+            if let Err(error) = unsafe { RevertToSelf() } {
+                warn!(%error, "Failed to revert control-pipe client impersonation");
+            }
+        }
+    }
+
+    struct OwnedHandle(HANDLE);
+
+    impl Drop for OwnedHandle {
+        fn drop(&mut self) {
+            // SAFETY: the handle is owned exclusively by this guard.
+            if let Err(error) = unsafe { CloseHandle(self.0) } {
+                warn!(%error, "Failed to close owned Windows handle");
+            }
+        }
+    }
+
+    fn authenticate_control_pipe_client(pipe: &named_pipe::NamedPipeServer) -> anyhow::Result<()> {
+        let pipe_handle = HANDLE(pipe.as_raw_handle());
+        let mut client_pid = 0u32;
+
+        // SAFETY: `pipe_handle` is a connected named-pipe server handle.
+        unsafe { GetNamedPipeClientProcessId(pipe_handle, &mut client_pid) }
+            .context("GetNamedPipeClientProcessId failed")?;
+
+        // SAFETY: `pipe_handle` is a connected named-pipe server handle.
+        unsafe { ImpersonateNamedPipeClient(pipe_handle) }.context("ImpersonateNamedPipeClient failed")?;
+        let _impersonation = PipeClientImpersonation;
+
+        let mut token = HANDLE::default();
+        // SAFETY: GetCurrentThread returns a pseudo-handle that must not be closed.
+        let current_thread = unsafe { GetCurrentThread() };
+        // SAFETY: the current thread is impersonating the connected client and `token` is a valid out-pointer.
+        unsafe { OpenThreadToken(current_thread, TOKEN_QUERY, true, &mut token) }
+            .context("OpenThreadToken failed for control-pipe client")?;
+        let token = OwnedHandle(token);
+
+        let mut len = 0u32;
+        // SAFETY: querying with no buffer retrieves the required TokenUser buffer length.
+        let _ = unsafe { GetTokenInformation(token.0, TokenUser, None, 0, &mut len) };
+        anyhow::ensure!(len != 0, "control-pipe client TokenUser length is zero");
+
+        let buffer_len = usize::try_from(len).context("control-pipe client TokenUser length overflow")?;
+        let mut buffer = vec![0u8; buffer_len];
+        // SAFETY: `buffer` has the size requested by the preceding TokenUser query.
+        unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenUser,
+                Some(buffer.as_mut_ptr().cast::<c_void>()),
+                len,
+                &mut len,
+            )
+        }
+        .context("GetTokenInformation(TokenUser) failed for control-pipe client")?;
+
+        // SAFETY: GetTokenInformation wrote a TOKEN_USER header into `buffer`.
+        let token_user = unsafe { core::ptr::read_unaligned(buffer.as_ptr().cast::<TOKEN_USER>()) };
+        let mut sid_text = PWSTR::null();
+        // SAFETY: `token_user.User.Sid` points inside the live TokenUser buffer and `sid_text` is a valid out-pointer.
+        unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_text) }
+            .context("ConvertSidToStringSidW failed for control-pipe client")?;
+        // SAFETY: `sid_text` is a NUL-terminated string allocated by ConvertSidToStringSidW.
+        let sid = unsafe { sid_text.to_string() }.context("decode control-pipe client SID")?;
+        // SAFETY: ConvertSidToStringSidW allocated `sid_text` with LocalAlloc.
+        let _ = unsafe { LocalFree(Some(HLOCAL(sid_text.as_ptr().cast::<c_void>()))) };
+
+        anyhow::ensure!(
+            matches!(sid.as_str(), "S-1-5-18" | "S-1-5-20"),
+            "unauthorized control-pipe client pid {client_pid} sid {sid}"
+        );
+
+        debug!(client_pid, client_sid = %sid, "Authenticated control-pipe client");
+        Ok(())
     }
 
     const INPUT_FRAME_MAGIC: [u8; 4] = *b"IRIN";
@@ -852,13 +931,11 @@ mod windows_main {
                             if *waiting_since == now {
                                 info!(
                                     connection_id = self.connection_id,
-                                    session_id,
-                                    "Waiting for interactive user token before starting capture helper"
+                                    session_id, "Waiting for interactive user token before starting capture helper"
                                 );
                                 info!(
                                     connection_id = self.connection_id,
-                                    session_id,
-                                    "SESSION_PROOF_TERMSRV_WAITING_FOR_USER_LOGON"
+                                    session_id, "SESSION_PROOF_TERMSRV_WAITING_FOR_USER_LOGON"
                                 );
                             }
 
@@ -880,8 +957,7 @@ mod windows_main {
                                 if try_send_sas("provider_wait_for_user_logon") {
                                     info!(
                                         connection_id = self.connection_id,
-                                        session_id,
-                                        "SESSION_PROOF_TERMSRV_SAS_SENT"
+                                        session_id, "SESSION_PROOF_TERMSRV_SAS_SENT"
                                     );
                                 }
                             }
@@ -984,9 +1060,10 @@ mod windows_main {
                                 )
                             } else {
                                 match capture_bitmap_update(self.desktop_size) {
-                                    Ok(bitmap) => {
-                                        (CapturedFrame::Raw(bitmap), CaptureOutputSource::GdiFrameAfterHelperError)
-                                    }
+                                    Ok(bitmap) => (
+                                        CapturedFrame::Raw(bitmap),
+                                        CaptureOutputSource::GdiFrameAfterHelperError,
+                                    ),
                                     Err(capture_error) => {
                                         warn!(
                                             connection_id = self.connection_id,
@@ -1028,9 +1105,10 @@ mod windows_main {
                                 )
                             } else {
                                 match capture_bitmap_update(self.desktop_size) {
-                                    Ok(bitmap) => {
-                                        (CapturedFrame::Raw(bitmap), CaptureOutputSource::GdiFrameAfterHelperTimeout)
-                                    }
+                                    Ok(bitmap) => (
+                                        CapturedFrame::Raw(bitmap),
+                                        CaptureOutputSource::GdiFrameAfterHelperTimeout,
+                                    ),
                                     Err(capture_error) => {
                                         warn!(
                                             connection_id = self.connection_id,
@@ -1185,7 +1263,6 @@ mod windows_main {
         }
     }
 
-    #[derive(Clone, Copy)]
     struct SendHandle(HANDLE);
 
     // SAFETY: Windows kernel object handles can be sent and used across threads.
@@ -1193,13 +1270,31 @@ mod windows_main {
     // SAFETY: Windows kernel object handles can be shared across threads.
     unsafe impl Sync for SendHandle {}
 
-    #[derive(Clone, Copy)]
+    impl Drop for SendHandle {
+        fn drop(&mut self) {
+            close_handle_best_effort(self.0);
+        }
+    }
+
     struct SendMappedView(windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS);
 
     // SAFETY: this wraps a process-local mapped view pointer; we only use it while the mapping is alive.
     unsafe impl Send for SendMappedView {}
     // SAFETY: access is coordinated by &mut self on the owning client; sharing the address is fine.
     unsafe impl Sync for SendMappedView {}
+
+    impl Drop for SendMappedView {
+        fn drop(&mut self) {
+            if self.0.Value.is_null() {
+                return;
+            }
+
+            // SAFETY: this guard exclusively owns the view returned by MapViewOfFile.
+            if let Err(error) = unsafe { UnmapViewOfFile(self.0) } {
+                warn!(%error, "Failed to unmap shared-memory capture view");
+            }
+        }
+    }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum CaptureIpc {
@@ -1219,6 +1314,92 @@ mod windows_main {
             "shm" | "sharedmem" | "shared-memory" => CaptureIpc::SharedMem,
             _ => CaptureIpc::Tcp,
         }
+    }
+
+    fn generate_capture_helper_token() -> anyhow::Result<String> {
+        let mut bytes = [0u8; CAPTURE_HELPER_TOKEN_LEN / 2];
+        // SAFETY: the system-preferred RNG does not require an algorithm handle and `bytes` is writable.
+        let status = unsafe { BCryptGenRandom(None, &mut bytes, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
+        anyhow::ensure!(status.0 >= 0, "BCryptGenRandom failed with status {status:?}");
+
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut token = String::with_capacity(CAPTURE_HELPER_TOKEN_LEN);
+        for byte in bytes {
+            token.push(char::from(HEX[usize::from(byte >> 4)]));
+            token.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+
+        Ok(token)
+    }
+
+    fn capture_helper_token_from_env() -> anyhow::Result<String> {
+        let token = std::env::var(CAPTURE_HELPER_TOKEN_ENV)
+            .with_context(|| format!("capture helper is missing {CAPTURE_HELPER_TOKEN_ENV}"))?;
+        anyhow::ensure!(
+            token.len() == CAPTURE_HELPER_TOKEN_LEN && token.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "capture helper token has invalid format"
+        );
+        Ok(token)
+    }
+
+    fn child_environment_with_capture_token(token: &str) -> Vec<u16> {
+        let mut entries: Vec<String> = std::env::vars()
+            .filter(|(name, _)| !name.eq_ignore_ascii_case(CAPTURE_HELPER_TOKEN_ENV))
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        entries.push(format!("{CAPTURE_HELPER_TOKEN_ENV}={token}"));
+        entries.sort_unstable_by_key(|entry| entry.to_ascii_uppercase());
+
+        let mut block = Vec::new();
+        for entry in entries {
+            block.extend(entry.encode_utf16());
+            block.push(0);
+        }
+        block.push(0);
+        block
+    }
+
+    async fn accept_capture_helper_connection(
+        listener: &TcpListener,
+        expected_token: &str,
+        connection_id: u32,
+        channel: &'static str,
+    ) -> anyhow::Result<TcpStream> {
+        let started = Instant::now();
+
+        loop {
+            let remaining = CAPTURE_HELPER_CONNECT_TIMEOUT
+                .checked_sub(started.elapsed())
+                .ok_or_else(|| anyhow!("capture helper {channel} connection timed out"))?;
+            let (mut stream, peer) = timeout(remaining, listener.accept())
+                .await
+                .map_err(|_| anyhow!("capture helper {channel} connection timed out"))?
+                .with_context(|| format!("failed to accept capture helper {channel} connection"))?;
+
+            let mut presented = [0u8; CAPTURE_HELPER_TOKEN_LEN];
+            let authenticated = matches!(
+                timeout(CAPTURE_HELPER_HANDSHAKE_TIMEOUT, stream.read_exact(&mut presented)).await,
+                Ok(Ok(_))
+            ) && presented.as_slice() == expected_token.as_bytes();
+
+            if authenticated {
+                info!(connection_id, %peer, channel, "Authenticated capture helper connection");
+                return Ok(stream);
+            }
+
+            warn!(connection_id, %peer, channel, "Rejected unauthenticated capture helper connection");
+        }
+    }
+
+    async fn authenticate_capture_helper_stream(
+        stream: &mut TcpStream,
+        token: &str,
+        channel: &'static str,
+    ) -> anyhow::Result<()> {
+        timeout(CAPTURE_HELPER_HANDSHAKE_TIMEOUT, stream.write_all(token.as_bytes()))
+            .await
+            .map_err(|_| anyhow!("capture helper {channel} authentication timed out"))?
+            .with_context(|| format!("failed to authenticate capture helper {channel} stream"))
     }
 
     enum CapturedFrame {
@@ -1340,10 +1521,11 @@ mod windows_main {
 
             info!(connection_id, input_addr = %input_addr, "Capture helper input listener bound");
 
+            let helper_token = generate_capture_helper_token()?;
             let helper = spawn_capture_helper_process_tcp(
                 local_addr,
                 input_addr,
-                true,
+                &helper_token,
                 session_id_override,
                 credentials,
                 allow_prelogon_fallback,
@@ -1356,50 +1538,9 @@ mod windows_main {
                 "Waiting for capture helper TCP connection"
             );
 
-            let (stream, _peer) = match timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, listener.accept()).await {
-                Ok(Ok(pair)) => {
-                    info!(connection_id, helper_pid = helper.pid, "Capture helper capture stream connected");
-                    pair
-                }
-                Ok(Err(accept_err)) => {
-                    // Check if the helper process has exited
-                    let mut exit_code = 0u32;
-                    let exited = unsafe {
-                        windows::Win32::System::Threading::GetExitCodeProcess(helper.process.0, &mut exit_code)
-                    };
-                    warn!(
-                        connection_id,
-                        helper_pid = helper.pid,
-                        exit_code,
-                        exited_ok = exited.is_ok(),
-                        still_active = (exit_code == 259), // STILL_ACTIVE
-                        error = %accept_err,
-                        "Capture helper: accept failed"
-                    );
-                    return Err(accept_err).context("failed to accept capture helper connection");
-                }
-                Err(_timeout) => {
-                    // Check if the helper process has exited
-                    let mut exit_code = 0u32;
-                    let exited = unsafe {
-                        windows::Win32::System::Threading::GetExitCodeProcess(helper.process.0, &mut exit_code)
-                    };
-                    warn!(
-                        connection_id,
-                        helper_pid = helper.pid,
-                        exit_code,
-                        exited_ok = exited.is_ok(),
-                        still_active = (exit_code == 259), // STILL_ACTIVE
-                        "Capture helper did not connect within timeout (process exit check)"
-                    );
-                    return Err(anyhow!("capture helper did not connect within timeout (pid={}, exit_code={exit_code}, still_active={})", helper.pid, exit_code == 259));
-                }
-            };
-
-            let (input_stream, _peer) = timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, input_listener.accept())
-                .await
-                .map_err(|_| anyhow!("capture helper input did not connect within timeout"))?
-                .context("failed to accept capture helper input connection")?;
+            let stream = accept_capture_helper_connection(&listener, &helper_token, connection_id, "capture").await?;
+            let input_stream =
+                accept_capture_helper_connection(&input_listener, &helper_token, connection_id, "input").await?;
 
             info!(connection_id, "Capture helper input channel connected");
 
@@ -1408,9 +1549,11 @@ mod windows_main {
                 *guard = Some(input_stream);
             }
 
+            let (helper_pid, helper_process) = helper.into_process();
+
             Ok(Self {
-                helper_pid: helper.pid,
-                helper_process: helper.process,
+                helper_pid,
+                helper_process,
                 input_stream_slot,
                 stream,
             })
@@ -1428,11 +1571,6 @@ mod windows_main {
             // SAFETY: handle was returned by CreateProcessAsUserW.
             unsafe {
                 let _ = TerminateProcess(self.helper_process.0, 1);
-            }
-
-            // SAFETY: handle was returned by CreateProcessAsUserW.
-            unsafe {
-                let _ = windows::Win32::Foundation::CloseHandle(self.helper_process.0);
             }
         }
 
@@ -1706,7 +1844,7 @@ mod windows_main {
         helper_pid: u32,
         helper_process: SendHandle,
         input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
-        mapping: SendHandle,
+        _mapping: SendHandle,
         frame_ready_event: SendHandle,
         view: SendMappedView,
         view_len: usize,
@@ -1794,10 +1932,6 @@ mod windows_main {
             let view = unsafe { MapViewOfFile(mapping.0, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, view_len) };
             let view = SendMappedView(view);
             if view.0.Value.is_null() {
-                // SAFETY: mapping handle is owned by us.
-                unsafe {
-                    let _ = windows::Win32::Foundation::CloseHandle(mapping.0);
-                }
                 return Err(anyhow!("MapViewOfFile returned null"));
             }
 
@@ -1811,20 +1945,20 @@ mod windows_main {
 
             let frame_ready_event = SendHandle(frame_ready_event);
 
+            let helper_token = generate_capture_helper_token()?;
             let helper = spawn_capture_helper_process_shared_mem(
                 &map_name,
                 &event_name,
                 input_addr,
+                &helper_token,
                 session_id_override,
                 credentials,
                 allow_prelogon_fallback,
             )
             .with_context(|| format!("failed to spawn shared-memory capture helper for connection {connection_id}"))?;
 
-            let (input_stream, _peer) = timeout(CAPTURE_HELPER_CONNECT_TIMEOUT, input_listener.accept())
-                .await
-                .map_err(|_| anyhow!("capture helper input did not connect within timeout"))?
-                .context("failed to accept capture helper input connection")?;
+            let input_stream =
+                accept_capture_helper_connection(&input_listener, &helper_token, connection_id, "input").await?;
 
             info!(connection_id, "Capture helper input channel connected");
 
@@ -1833,11 +1967,13 @@ mod windows_main {
                 *guard = Some(input_stream);
             }
 
+            let (helper_pid, helper_process) = helper.into_process();
+
             Ok(Self {
-                helper_pid: helper.pid,
-                helper_process: helper.process,
+                helper_pid,
+                helper_process,
                 input_stream_slot,
-                mapping,
+                _mapping: mapping,
                 frame_ready_event,
                 view,
                 view_len,
@@ -1861,26 +1997,6 @@ mod windows_main {
             // SAFETY: handle was returned by CreateProcessAsUserW.
             unsafe {
                 let _ = TerminateProcess(self.helper_process.0, 1);
-            }
-
-            // SAFETY: handle was returned by CreateProcessAsUserW.
-            unsafe {
-                let _ = windows::Win32::Foundation::CloseHandle(self.helper_process.0);
-            }
-
-            // SAFETY: view was mapped by MapViewOfFile.
-            unsafe {
-                let _ = UnmapViewOfFile(self.view.0);
-            }
-
-            // SAFETY: mapping/event handles are owned by us.
-            unsafe {
-                let _ = windows::Win32::Foundation::CloseHandle(self.mapping.0);
-            }
-
-            // SAFETY: mapping/event handles are owned by us.
-            unsafe {
-                let _ = windows::Win32::Foundation::CloseHandle(self.frame_ready_event.0);
             }
         }
 
@@ -1962,7 +2078,25 @@ mod windows_main {
 
     struct SpawnedProcess {
         pid: u32,
-        process: SendHandle,
+        process: Option<SendHandle>,
+    }
+
+    impl SpawnedProcess {
+        fn into_process(mut self) -> (u32, SendHandle) {
+            let process = self.process.take().expect("spawned process handle is present");
+            (self.pid, process)
+        }
+    }
+
+    impl Drop for SpawnedProcess {
+        fn drop(&mut self) {
+            let Some(process) = self.process.as_ref() else {
+                return;
+            };
+
+            // SAFETY: this guard owns the process handle and the child has not been handed off.
+            let _ = unsafe { TerminateProcess(process.0, 1) };
+        }
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1998,7 +2132,7 @@ mod windows_main {
 
         // SAFETY: handle is either valid or invalid; CloseHandle is safe to call.
         unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(handle);
+            let _ = CloseHandle(handle);
         }
     }
 
@@ -2091,14 +2225,14 @@ mod windows_main {
     fn spawn_capture_helper_process_tcp(
         connect_addr: SocketAddr,
         input_connect_addr: SocketAddr,
-        rfx_encode: bool,
+        helper_token: &str,
         session_id_override: Option<u32>,
         credentials: Option<StoredCredentials>,
         allow_prelogon_fallback: bool,
     ) -> anyhow::Result<SpawnedProcess> {
-        let rfx_flag = if rfx_encode { " --rfx-encode" } else { "" };
         spawn_capture_helper_process_with_args(
-            &format!("--connect {connect_addr} --input-connect {input_connect_addr}{rfx_flag}"),
+            &format!("--connect {connect_addr} --input-connect {input_connect_addr}"),
+            helper_token,
             session_id_override,
             credentials,
             allow_prelogon_fallback,
@@ -2109,12 +2243,14 @@ mod windows_main {
         map_name: &str,
         event_name: &str,
         input_connect_addr: SocketAddr,
+        helper_token: &str,
         session_id_override: Option<u32>,
         credentials: Option<StoredCredentials>,
         allow_prelogon_fallback: bool,
     ) -> anyhow::Result<SpawnedProcess> {
         spawn_capture_helper_process_with_args(
             &format!("--shm-map \"{map_name}\" --shm-event \"{event_name}\" --input-connect {input_connect_addr}"),
+            helper_token,
             session_id_override,
             credentials,
             allow_prelogon_fallback,
@@ -2123,6 +2259,7 @@ mod windows_main {
 
     fn spawn_capture_helper_process_with_args(
         extra_args: &str,
+        helper_token: &str,
         session_id_override: Option<u32>,
         credentials: Option<StoredCredentials>,
         allow_prelogon_fallback: bool,
@@ -2151,6 +2288,7 @@ mod windows_main {
         let desktop = acquired.desktop.as_lpdesktop();
         let mut cmd_line: Vec<u16> = args.encode_utf16().chain(Some(0)).collect();
         let mut desktop_w: Vec<u16> = desktop.encode_utf16().chain(Some(0)).collect();
+        let environment = child_environment_with_capture_token(helper_token);
 
         let startup_info = STARTUPINFOW {
             cb: u32::try_from(size_of::<STARTUPINFOW>()).map_err(|_| anyhow!("STARTUPINFOW size overflow"))?,
@@ -2176,8 +2314,8 @@ mod windows_main {
                 None,
                 None,
                 false,
-                CREATE_NO_WINDOW,
-                None,
+                CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                Some(environment.as_ptr().cast::<c_void>()),
                 None,
                 &startup_info,
                 &mut process_info,
@@ -2186,16 +2324,22 @@ mod windows_main {
 
         // SAFETY: close token handle from WTSQueryUserToken.
         unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(user_token);
+            let _ = CloseHandle(user_token);
         }
 
         create_ok.ok().context("CreateProcessAsUserW failed")?;
 
-        let helper_session_id = process_id_to_session_id(process_info.dwProcessId)
-            .ok_or_else(|| anyhow!("failed to resolve capture helper session id for pid {}", process_info.dwProcessId))?;
+        let _thread = SendHandle(process_info.hThread);
+        let helper = SpawnedProcess {
+            pid: process_info.dwProcessId,
+            process: Some(SendHandle(process_info.hProcess)),
+        };
+
+        let helper_session_id = process_id_to_session_id(helper.pid)
+            .ok_or_else(|| anyhow!("failed to resolve capture helper session id for pid {}", helper.pid))?;
 
         info!(
-            helper_pid = process_info.dwProcessId,
+            helper_pid = helper.pid,
             requested_session_id = session_id,
             helper_session_id,
             desktop,
@@ -2203,27 +2347,12 @@ mod windows_main {
         );
 
         if helper_session_id != session_id {
-            // SAFETY: handles were returned by CreateProcessAsUserW and are still owned here.
-            unsafe {
-                let _ = TerminateProcess(process_info.hProcess, 1);
-                let _ = windows::Win32::Foundation::CloseHandle(process_info.hThread);
-                let _ = windows::Win32::Foundation::CloseHandle(process_info.hProcess);
-            }
-
             return Err(anyhow!(
                 "capture helper launched in unexpected session {helper_session_id} (expected {session_id})"
             ));
         }
 
-        // SAFETY: close thread handle we don't need.
-        unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(process_info.hThread);
-        }
-
-        Ok(SpawnedProcess {
-            pid: process_info.dwProcessId,
-            process: SendHandle(process_info.hProcess),
-        })
+        Ok(helper)
     }
 
     fn try_start_explorer_process(
@@ -2272,16 +2401,15 @@ mod windows_main {
 
         // SAFETY: close token handle acquired for this launch attempt.
         unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(user_token);
+            let _ = CloseHandle(user_token);
         }
 
         create_ok.ok().context("CreateProcessAsUserW(explorer) failed")?;
 
-        // SAFETY: close thread/process handles from successful process creation.
-        unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(process_info.hThread);
-            let _ = windows::Win32::Foundation::CloseHandle(process_info.hProcess);
-        }
+        // SAFETY: `hThread` is owned by this successful process-creation result.
+        let _ = unsafe { CloseHandle(process_info.hThread) };
+        // SAFETY: `hProcess` is owned by this successful process-creation result.
+        let _ = unsafe { CloseHandle(process_info.hProcess) };
 
         Ok(process_info.dwProcessId)
     }
@@ -2301,7 +2429,7 @@ mod windows_main {
         if res.is_ok() {
             // SAFETY: close token handle from WTSQueryUserToken.
             unsafe {
-                let _ = windows::Win32::Foundation::CloseHandle(token);
+                let _ = CloseHandle(token);
             }
             true
         } else {
@@ -2515,12 +2643,7 @@ mod windows_main {
             match token_from_session_process_with_retries(session_id, "explorer.exe", process_lookup_retries) {
                 Ok(token) => {
                     debug!(session_id, "Using explorer.exe token (default desktop)");
-                    return finalize_acquired_session_token(
-                        session_id,
-                        token,
-                        HelperDesktop::Default,
-                        "explorer.exe",
-                    );
+                    return finalize_acquired_session_token(session_id, token, HelperDesktop::Default, "explorer.exe");
                 }
                 Err(error) => {
                     info!(
@@ -2587,12 +2710,7 @@ mod windows_main {
                         session_id,
                         "Using winlogon.exe token (winlogon desktop \u{2014} pre-login)"
                     );
-                    return finalize_acquired_session_token(
-                        session_id,
-                        token,
-                        HelperDesktop::Winlogon,
-                        "winlogon.exe",
-                    );
+                    return finalize_acquired_session_token(session_id, token, HelperDesktop::Winlogon, "winlogon.exe");
                 }
                 Err(error) => {
                     info!(
@@ -2611,12 +2729,7 @@ mod windows_main {
                         session_id,
                         "Using csrss.exe token (fallback for session-bound helper startup)"
                     );
-                    return finalize_acquired_session_token(
-                        session_id,
-                        token,
-                        HelperDesktop::Default,
-                        "csrss.exe",
-                    );
+                    return finalize_acquired_session_token(session_id, token, HelperDesktop::Default, "csrss.exe");
                 }
                 Err(error) => {
                     info!(
@@ -2666,12 +2779,7 @@ mod windows_main {
             }
         };
 
-        finalize_acquired_session_token(
-            session_id,
-            token,
-            HelperDesktop::Default,
-            "service_token_fallback",
-        )
+        finalize_acquired_session_token(session_id, token, HelperDesktop::Default, "service_token_fallback")
     }
 
     fn duplicate_primary_token(token: HANDLE) -> anyhow::Result<HANDLE> {
@@ -2801,7 +2909,8 @@ mod windows_main {
             process_count = 0;
 
             // SAFETY: WTSEnumerateProcessesW writes a buffer pointer into `process_info_ptr` on success.
-            let enumerate_result = unsafe { WTSEnumerateProcessesW(None, 0, 1, &mut process_info_ptr, &mut process_count) };
+            let enumerate_result =
+                unsafe { WTSEnumerateProcessesW(None, 0, 1, &mut process_info_ptr, &mut process_count) };
 
             match enumerate_result {
                 Ok(()) => {
@@ -2895,7 +3004,7 @@ mod windows_main {
             fn drop(&mut self) {
                 // SAFETY: handle is either valid or null; CloseHandle is safe to call.
                 unsafe {
-                    let _ = windows::Win32::Foundation::CloseHandle(self.0);
+                    let _ = CloseHandle(self.0);
                 }
             }
         }
@@ -2983,7 +3092,7 @@ mod windows_main {
 
         // SAFETY: close the original process token.
         unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(process_token);
+            let _ = CloseHandle(process_token);
         }
 
         let session_id_ptr = core::ptr::addr_of!(session_id).cast::<c_void>();
@@ -3056,7 +3165,7 @@ mod windows_main {
 
         // SAFETY: close the process token.
         unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(process_token);
+            let _ = CloseHandle(process_token);
         }
 
         adjust_result
@@ -3216,35 +3325,6 @@ mod windows_main {
         Ok(())
     }
 
-    async fn write_capture_frame_preencoded(
-        stream: &mut TcpStream,
-        width: u16,
-        height: u16,
-        codec_id: u8,
-        data: &[u8],
-    ) -> anyhow::Result<()> {
-        let payload_len_u32 = u32::try_from(data.len()).map_err(|_| anyhow!("pre-encoded payload too large"))?;
-
-        let mut header = [0u8; CAPTURE_FRAME_HEADER_LEN];
-        header[0..4].copy_from_slice(&CAPTURE_FRAME_MAGIC);
-        header[4..6].copy_from_slice(&2u16.to_le_bytes()); // version 2 = pre-encoded
-        header[6..8].copy_from_slice(&width.to_le_bytes());
-        header[8..10].copy_from_slice(&height.to_le_bytes());
-        header[14] = codec_id;
-        header[20..24].copy_from_slice(&payload_len_u32.to_le_bytes());
-
-        stream
-            .write_all(&header)
-            .await
-            .context("failed to write pre-encoded capture header")?;
-        stream
-            .write_all(data)
-            .await
-            .context("failed to write pre-encoded capture payload")?;
-
-        Ok(())
-    }
-
     static BITMAP_DUMP_DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
     static BITMAP_DUMP_SEQ: AtomicU64 = AtomicU64::new(0);
     static BITMAP_DUMP_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -3265,14 +3345,11 @@ mod windows_main {
 
         // SAFETY: `ProcessIdToSessionId` writes to `session_id` on success.
         let ok = unsafe { ProcessIdToSessionId(pid, &mut session_id) };
-        if ok.as_bool() {
-            Some(session_id)
-        } else {
-            None
-        }
+        if ok.as_bool() { Some(session_id) } else { None }
     }
 
     fn current_process_session_id() -> Option<u32> {
+        // SAFETY: GetCurrentProcessId has no preconditions.
         let pid = unsafe { GetCurrentProcessId() };
         process_id_to_session_id(pid)
     }
@@ -3280,7 +3357,7 @@ mod windows_main {
     fn now_unix_ms_best_effort() -> Option<u64> {
         let now = std::time::SystemTime::now();
         let dur = now.duration_since(std::time::UNIX_EPOCH).ok()?;
-        Some(dur.as_millis().min(u128::from(u64::MAX)) as u64)
+        Some(u64::try_from(dur.as_millis()).unwrap_or(u64::MAX))
     }
 
     fn bitmap_dump_dir() -> Option<&'static std::path::PathBuf> {
@@ -3923,7 +4000,8 @@ mod windows_main {
         let _snapshot_guard = SnapshotGuard(snapshot);
 
         let mut entry = PROCESSENTRY32W {
-            dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).map_err(|_| anyhow!("PROCESSENTRY32W size overflow"))?,
+            dwSize: u32::try_from(size_of::<PROCESSENTRY32W>())
+                .map_err(|_| anyhow!("PROCESSENTRY32W size overflow"))?,
             ..Default::default()
         };
 
@@ -4013,22 +4091,15 @@ mod windows_main {
                 info!(connection_id, session_id, "Set capture session id for connection");
                 info!(
                     connection_id,
-                    session_id,
-                    "SESSION_PROOF_TERMSRV_SET_CAPTURE_SESSION_ID_APPLIED"
+                    session_id, "SESSION_PROOF_TERMSRV_SET_CAPTURE_SESSION_ID_APPLIED"
                 );
                 info!(
                     connection_id,
-                    session_id,
-                    idd_loaded_for_session,
-                    "SESSION_PROOF_TERMSRV_IDD_SESSION_BIND"
+                    session_id, idd_loaded_for_session, "SESSION_PROOF_TERMSRV_IDD_SESSION_BIND"
                 );
 
                 if idd_loaded_for_session {
-                    info!(
-                        connection_id,
-                        session_id,
-                        "SESSION_PROOF_TERMSRV_IDD_READY_FOR_CAPTURE"
-                    );
+                    info!(connection_id, session_id, "SESSION_PROOF_TERMSRV_IDD_READY_FOR_CAPTURE");
                 }
             }
             ServiceEvent::Ack
@@ -4048,8 +4119,7 @@ mod windows_main {
 
                     info!(
                         connection_id = *connection_id,
-                        session_id,
-                        "SESSION_PROOF_TERMSRV_IDD_READY_FOR_CAPTURE"
+                        session_id, "SESSION_PROOF_TERMSRV_IDD_READY_FOR_CAPTURE"
                     );
                 }
             }
@@ -4298,8 +4368,15 @@ mod windows_main {
         // retrieve them via `GetConnectionCredentials` before the display loop
         // blocks.
         if let Some(identity) = pending.captured_identity() {
-            let username = identity.username.account_name().to_owned();
-            let domain = identity.username.domain_name().unwrap_or("").to_owned();
+            let (username, domain) = match identity.username.parts() {
+                ironrdp_server::ironrdp_acceptor::UsernameParts::UserPrincipalName(parts) => {
+                    (parts.upn().to_owned(), String::new())
+                }
+                ironrdp_server::ironrdp_acceptor::UsernameParts::DownLevelLogonName(parts) => (
+                    parts.account_name().to_owned(),
+                    parts.netbios_domain().unwrap_or("").to_owned(),
+                ),
+            };
             let password = identity.password.as_ref().to_owned();
 
             info!(
@@ -4479,7 +4556,43 @@ mod windows_main {
         Ok(())
     }
 
-    fn wincrypt_open_local_machine_my() -> anyhow::Result<HCERTSTORE> {
+    struct OwnedCertStore(HCERTSTORE);
+
+    impl Drop for OwnedCertStore {
+        fn drop(&mut self) {
+            // SAFETY: this guard exclusively owns the certificate store.
+            let _ = unsafe { CertCloseStore(Some(self.0), 0) };
+        }
+    }
+
+    struct OwnedCertContext(*const CERT_CONTEXT);
+
+    impl Drop for OwnedCertContext {
+        fn drop(&mut self) {
+            // SAFETY: this guard exclusively owns the certificate context.
+            let _ = unsafe { CertFreeCertificateContext(Some(self.0)) };
+        }
+    }
+
+    struct OwnedNCryptProvider(NCRYPT_PROV_HANDLE);
+
+    impl Drop for OwnedNCryptProvider {
+        fn drop(&mut self) {
+            // SAFETY: this guard exclusively owns the CNG provider handle.
+            let _ = unsafe { NCryptFreeObject(self.0.into()) };
+        }
+    }
+
+    struct OwnedNCryptKey(NCRYPT_KEY_HANDLE);
+
+    impl Drop for OwnedNCryptKey {
+        fn drop(&mut self) {
+            // SAFETY: this guard exclusively owns the CNG key handle.
+            let _ = unsafe { NCryptFreeObject(self.0.into()) };
+        }
+    }
+
+    fn wincrypt_open_local_machine_my() -> anyhow::Result<OwnedCertStore> {
         // SAFETY: `w!("MY")` is a valid null-terminated wide string.
         let store = unsafe {
             CertOpenStore(
@@ -4492,7 +4605,7 @@ mod windows_main {
         }
         .context("CertOpenStore(LocalMachine\\My) failed")?;
 
-        Ok(store)
+        Ok(OwnedCertStore(store))
     }
 
     fn wincrypt_find_cert_by_subject(subject_name: &str) -> anyhow::Result<bool> {
@@ -4503,7 +4616,7 @@ mod windows_main {
         // SAFETY: `store` is a valid store handle.
         let found: *const CERT_CONTEXT = unsafe {
             CertFindCertificateInStore(
-                store,
+                store.0,
                 X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
                 0,
                 CERT_FIND_SUBJECT_STR_W,
@@ -4513,15 +4626,7 @@ mod windows_main {
         };
 
         let exists = !found.is_null();
-        if exists {
-            // SAFETY: `found` was returned by WinCrypto and must be freed.
-            unsafe {
-                let _ = CertFreeCertificateContext(Some(found));
-            };
-        }
-
-        // SAFETY: `store` is owned by us.
-        let _ = unsafe { CertCloseStore(Some(store), 0) };
+        let _found = exists.then_some(OwnedCertContext(found));
 
         Ok(exists)
     }
@@ -4534,14 +4639,15 @@ mod windows_main {
         // SAFETY: `provider` is a valid out-pointer and `MS_KEY_STORAGE_PROVIDER` is a valid null-terminated string.
         unsafe { NCryptOpenStorageProvider(&mut provider, MS_KEY_STORAGE_PROVIDER, 0) }
             .context("NCryptOpenStorageProvider failed")?;
+        let provider = OwnedNCryptProvider(provider);
 
         let key_name_wide: Vec<u16> = TLS_KEY_NAME.encode_utf16().chain(Some(0)).collect();
-        let mut key = windows::Win32::Security::Cryptography::NCRYPT_KEY_HANDLE::default();
+        let mut key = NCRYPT_KEY_HANDLE::default();
 
         // SAFETY: all pointers are valid for the duration of the call; `key` is a valid out-handle.
         unsafe {
             NCryptCreatePersistedKey(
-                provider,
+                provider.0,
                 &mut key,
                 BCRYPT_RSA_ALGORITHM,
                 PCWSTR(key_name_wide.as_ptr()),
@@ -4550,12 +4656,13 @@ mod windows_main {
             )
         }
         .context("NCryptCreatePersistedKey failed")?;
+        let key = OwnedNCryptKey(key);
 
         let key_len: u32 = 2048;
         // SAFETY: `key` is a valid key handle and the property buffer is valid for the call.
         unsafe {
             NCryptSetProperty(
-                NCRYPT_HANDLE::from(key),
+                NCRYPT_HANDLE::from(key.0),
                 NCRYPT_LENGTH_PROPERTY,
                 &key_len.to_le_bytes(),
                 NCRYPT_FLAGS(0),
@@ -4568,7 +4675,7 @@ mod windows_main {
         // SAFETY: `key` is a valid key handle and the property buffer is valid for the call.
         unsafe {
             NCryptSetProperty(
-                NCRYPT_HANDLE::from(key),
+                NCRYPT_HANDLE::from(key.0),
                 NCRYPT_EXPORT_POLICY_PROPERTY,
                 &export_policy.to_le_bytes(),
                 NCRYPT_FLAGS(0),
@@ -4577,7 +4684,7 @@ mod windows_main {
         .context("NCryptSetProperty(NCRYPT_EXPORT_POLICY_PROPERTY) failed")?;
 
         // SAFETY: `key` is a valid key handle created above.
-        unsafe { NCryptFinalizeKey(key, NCRYPT_FLAGS(0)) }.context("NCryptFinalizeKey failed")?;
+        unsafe { NCryptFinalizeKey(key.0, NCRYPT_FLAGS(0)) }.context("NCryptFinalizeKey failed")?;
 
         let subject_x500 = format!("CN={subject_name}");
         let subject_wide: Vec<u16> = subject_x500.encode_utf16().chain(Some(0)).collect();
@@ -4649,29 +4756,13 @@ mod windows_main {
         };
 
         if cert_ctx.is_null() {
-            // SAFETY: release key/provider handles.
-            let _ = unsafe { NCryptFreeObject(key.into()) };
-            // SAFETY: `provider` is a valid provider handle created above.
-            let _ = unsafe { NCryptFreeObject(provider.into()) };
             anyhow::bail!("CertCreateSelfSignCertificate returned null");
         }
+        let cert_ctx = OwnedCertContext(cert_ctx.cast_const());
 
         // SAFETY: store and cert_ctx are valid.
-        unsafe { CertAddCertificateContextToStore(Some(store), cert_ctx, CERT_STORE_ADD_REPLACE_EXISTING, None) }
+        unsafe { CertAddCertificateContextToStore(Some(store.0), cert_ctx.0, CERT_STORE_ADD_REPLACE_EXISTING, None) }
             .context("CertAddCertificateContextToStore failed")?;
-
-        // SAFETY: `cert_ctx` was returned by WinCrypto and must be freed.
-        unsafe {
-            let _ = CertFreeCertificateContext(Some(cert_ctx.cast_const()));
-        };
-
-        // SAFETY: `store` is owned by us.
-        let _ = unsafe { CertCloseStore(Some(store), 0) };
-
-        // SAFETY: release key/provider handles.
-        let _ = unsafe { NCryptFreeObject(key.into()) };
-        // SAFETY: `provider` is a valid provider handle created above.
-        let _ = unsafe { NCryptFreeObject(provider.into()) };
 
         Ok(())
     }
@@ -4715,19 +4806,18 @@ mod windows_main {
         }
 
         if let Some(mode) = capture_helper_mode {
+            let helper_token = capture_helper_token_from_env()?;
             match mode {
                 CaptureHelperMode::Tcp {
                     connect_addr,
                     input_connect_addr,
-                    rfx_encode,
                 } => {
                     info!(
                         connect_addr = %connect_addr,
                         input_connect_addr = %input_connect_addr,
-                        rfx_encode,
                         "Starting capture helper mode (tcp)"
                     );
-                    return run_capture_helper_tcp(connect_addr, input_connect_addr, rfx_encode).await;
+                    return run_capture_helper_tcp(connect_addr, input_connect_addr, &helper_token).await;
                 }
                 CaptureHelperMode::SharedMem {
                     map_name,
@@ -4740,7 +4830,8 @@ mod windows_main {
                         input_connect_addr = %input_connect_addr,
                         "Starting capture helper mode (sharedmem)"
                     );
-                    return run_capture_helper_shared_mem(&map_name, &event_name, input_connect_addr).await;
+                    return run_capture_helper_shared_mem(&map_name, &event_name, input_connect_addr, &helper_token)
+                        .await;
                 }
             }
         }
@@ -4810,15 +4901,27 @@ mod windows_main {
 
         let full_pipe_name = pipe_path(&pipe_name);
         let empty_disconnects = Arc::new(AtomicU64::new(0));
+        let first_server =
+            create_control_pipe_server(&full_pipe_name, true).context("failed to claim control-pipe name")?;
 
         // Multiple pipe server instances reduce `ERROR_PIPE_BUSY` under concurrent provider calls.
         // Each instance independently serves one client connection at a time.
-        for _ in 0..CONTROL_PIPE_SERVER_INSTANCES {
+        {
             let control_plane = control_plane.clone();
             let full_pipe_name = full_pipe_name.clone();
             let empty_disconnects = Arc::clone(&empty_disconnects);
             tokio::task::spawn_local(async move {
-                run_control_pipe_instance_loop(&full_pipe_name, control_plane, empty_disconnects).await;
+                run_control_pipe_instance_loop(&full_pipe_name, control_plane, empty_disconnects, Some(first_server))
+                    .await;
+            });
+        }
+
+        for _ in 1..CONTROL_PIPE_SERVER_INSTANCES {
+            let control_plane = control_plane.clone();
+            let full_pipe_name = full_pipe_name.clone();
+            let empty_disconnects = Arc::clone(&empty_disconnects);
+            tokio::task::spawn_local(async move {
+                run_control_pipe_instance_loop(&full_pipe_name, control_plane, empty_disconnects, None).await;
             });
         }
 
@@ -4910,7 +5013,6 @@ mod windows_main {
         Tcp {
             connect_addr: SocketAddr,
             input_connect_addr: SocketAddr,
-            rfx_encode: bool,
         },
         SharedMem {
             map_name: String,
@@ -4927,15 +5029,11 @@ mod windows_main {
         let mut input_connect: Option<SocketAddr> = None;
         let mut map_name: Option<String> = None;
         let mut event_name: Option<String> = None;
-        let mut rfx_encode = false;
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--capture-helper" => {
                     capture_helper = true;
-                }
-                "--rfx-encode" => {
-                    rfx_encode = true;
                 }
                 "--connect" => {
                     let Some(value) = args.next() else {
@@ -4986,7 +5084,6 @@ mod windows_main {
             return Ok(Some(CaptureHelperMode::Tcp {
                 connect_addr: connect,
                 input_connect_addr,
-                rfx_encode,
             }));
         }
 
@@ -5319,11 +5416,13 @@ mod windows_main {
     }
 
     fn try_send_sas(source: &'static str) -> bool {
+        // SAFETY: SendSAS takes a plain BOOL-compatible flag and has no pointer preconditions.
         let ok = unsafe { SendSAS(0) };
         if ok != 0 {
             info!(source = %source, "Generated Secure Attention Sequence (SAS)");
             true
         } else {
+            // SAFETY: GetLastError reads the calling thread's last-error value.
             let err = unsafe { GetLastError() };
             warn!(error = ?err, source = %source, "SendSAS failed");
             false
@@ -5333,11 +5432,12 @@ mod windows_main {
     async fn run_capture_helper_tcp(
         connect_addr: SocketAddr,
         input_connect_addr: SocketAddr,
-        rfx_encode: bool,
+        helper_token: &str,
     ) -> anyhow::Result<()> {
         info!(
             pid = std::process::id(),
-            session_id = unsafe { windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId() },
+            // SAFETY: WTSGetActiveConsoleSessionId has no input parameters.
+            session_id = unsafe { WTSGetActiveConsoleSessionId() },
             connect_addr = %connect_addr,
             input_connect_addr = %input_connect_addr,
             "Capture helper TCP: starting connection"
@@ -5357,8 +5457,9 @@ mod windows_main {
                 return Err(error).with_context(|| format!("failed to connect to capture consumer at {connect_addr}"));
             }
         };
+        authenticate_capture_helper_stream(&mut stream, helper_token, "capture").await?;
 
-        let input_stream = match TcpStream::connect(input_connect_addr).await {
+        let mut input_stream = match TcpStream::connect(input_connect_addr).await {
             Ok(stream) => {
                 info!(input_connect_addr = %input_connect_addr, "Capture helper: connected to input consumer");
                 stream
@@ -5369,9 +5470,11 @@ mod windows_main {
                     error = %error,
                     "Capture helper: failed to connect to input consumer"
                 );
-                return Err(error).with_context(|| format!("failed to connect to input consumer at {input_connect_addr}"));
+                return Err(error)
+                    .with_context(|| format!("failed to connect to input consumer at {input_connect_addr}"));
             }
         };
+        authenticate_capture_helper_stream(&mut input_stream, helper_token, "input").await?;
 
         tokio::spawn(async move {
             if let Err(error) = run_input_injector(input_stream).await {
@@ -5395,59 +5498,15 @@ mod windows_main {
         info!(
             width = desktop_size.width,
             height = desktop_size.height,
-            rfx_encode,
             "Initialized capture helper desktop size"
         );
-
-        let mut rfx_encoder = if rfx_encode {
-            use ironrdp_pdu::rdp::capability_sets::EntropyBits;
-            Some(ironrdp_server::encoder::rfx::RfxEncoder::new(EntropyBits::Rlgr3))
-        } else {
-            None
-        };
-
-        let rfx_codec_id: u8 = 3; // CODEC_ID_REMOTEFX
-        let mut rfx_first_frame = true;
 
         loop {
             match capture_bitmap_update(desktop_size) {
                 Ok(bitmap) => {
-                    if let Some(encoder) = rfx_encoder.as_mut() {
-                        if is_probably_blank_bgra32(bitmap.data.as_ref()) {
-                            write_capture_frame(&mut stream, &bitmap).await?;
-                        } else {
-                            let ds = if rfx_first_frame {
-                                rfx_first_frame = false;
-                                Some(desktop_size)
-                            } else {
-                                None
-                            };
-
-                            let mut buf = vec![0u8; bitmap.data.len()];
-                            let encoded_len = loop {
-                                match encoder.encode(&bitmap, &mut buf, ds) {
-                                    Ok(len) => break len,
-                                    Err(e) => match e.kind() {
-                                        ironrdp_core::EncodeErrorKind::NotEnoughBytes { .. } => {
-                                            buf.resize(buf.len() * 2, 0);
-                                        }
-                                        _ => return Err(anyhow::anyhow!("RemoteFX encode error: {e}")),
-                                    },
-                                }
-                            };
-
-                            write_capture_frame_preencoded(
-                                &mut stream,
-                                desktop_size.width,
-                                desktop_size.height,
-                                rfx_codec_id,
-                                &buf[..encoded_len],
-                            )
-                            .await?;
-                        }
-                    } else {
-                        write_capture_frame(&mut stream, &bitmap).await?;
-                    }
+                    // RemoteFX encoding stays in the server process, where the
+                    // client-selected codec ID and entropy coder are available.
+                    write_capture_frame(&mut stream, &bitmap).await?;
                     sleep(CAPTURE_INTERVAL).await;
                 }
                 Err(error) => {
@@ -5469,6 +5528,7 @@ mod windows_main {
         map_name: &str,
         event_name: &str,
         input_connect_addr: SocketAddr,
+        helper_token: &str,
     ) -> anyhow::Result<()> {
         let map_name_w: Vec<u16> = map_name.encode_utf16().chain(Some(0)).collect();
         let event_name_w: Vec<u16> = event_name.encode_utf16().chain(Some(0)).collect();
@@ -5483,7 +5543,7 @@ mod windows_main {
             fn drop(&mut self) {
                 // SAFETY: handle is owned by this guard.
                 unsafe {
-                    let _ = windows::Win32::Foundation::CloseHandle(self.0);
+                    let _ = CloseHandle(self.0);
                 }
             }
         }
@@ -5505,9 +5565,10 @@ mod windows_main {
 
         let _event_guard = HandleGuard(frame_ready_event);
 
-        let input_stream = TcpStream::connect(input_connect_addr)
+        let mut input_stream = TcpStream::connect(input_connect_addr)
             .await
             .with_context(|| format!("failed to connect to input consumer at {input_connect_addr}"))?;
+        authenticate_capture_helper_stream(&mut input_stream, helper_token, "input").await?;
 
         tokio::spawn(async move {
             if let Err(error) = run_input_injector(input_stream).await {
@@ -5580,10 +5641,10 @@ mod windows_main {
                     seq = seq.wrapping_add(1);
                     slot_idx = (slot_idx + 1) % SHM_FB_SLOTS;
 
-                    unsafe {
-                        shm_publish_frame(view, view_len, slot_idx, slot_len, seq, bitmap.data.as_ref())?;
-                    }
+                    // SAFETY: `view` is the live mapped framebuffer and all lengths come from its validated header.
+                    unsafe { shm_publish_frame(view, view_len, slot_idx, slot_len, seq, bitmap.data.as_ref())? };
 
+                    // SAFETY: `frame_ready_event` is a live event handle opened above.
                     unsafe { SetEvent(frame_ready_event) }
                         .map_err(|set_event_error| anyhow!("SetEvent failed: {set_event_error}"))
                         .context("SetEvent failed")?;
@@ -5593,57 +5654,59 @@ mod windows_main {
         }
     }
 
+    fn create_control_pipe_server(
+        full_pipe_name: &str,
+        first_instance: bool,
+    ) -> anyhow::Result<named_pipe::NamedPipeServer> {
+        let mut opts = named_pipe::ServerOptions::new();
+        opts.access_inbound(true)
+            .access_outbound(true)
+            .in_buffer_size(PIPE_BUFFER_SIZE)
+            .out_buffer_size(PIPE_BUFFER_SIZE)
+            .pipe_mode(named_pipe::PipeMode::Byte);
+        if first_instance {
+            opts.first_pipe_instance(true);
+        }
+
+        let (mut attrs, sd) = control_pipe_security_attributes()?;
+        // SAFETY: `attrs` is valid for this synchronous call and CreateNamedPipe copies the descriptor.
+        let result = unsafe {
+            opts.create_with_security_attributes_raw(full_pipe_name, core::ptr::from_mut(&mut attrs).cast::<c_void>())
+        };
+        // SAFETY: frees the buffer allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
+        let _ = unsafe { LocalFree(Some(HLOCAL(sd.0))) };
+
+        result.context("create control-pipe server instance")
+    }
+
     #[expect(clippy::infinite_loop, reason = "pipe server instances run indefinitely")]
     async fn run_control_pipe_instance_loop(
         full_pipe_name: &str,
         control_plane: ControlPlane,
         empty_disconnects: Arc<AtomicU64>,
+        mut initial_server: Option<named_pipe::NamedPipeServer>,
     ) {
         loop {
-            let mut opts = named_pipe::ServerOptions::new();
-            opts.access_inbound(true)
-                .access_outbound(true)
-                .in_buffer_size(PIPE_BUFFER_SIZE)
-                .out_buffer_size(PIPE_BUFFER_SIZE)
-                .pipe_mode(named_pipe::PipeMode::Byte);
-
-            let (mut attrs, sd) = match control_pipe_security_attributes() {
-                Ok(values) => values,
-                Err(error) => {
-                    warn!(%error, "Failed to build control pipe security attributes; retrying");
-                    sleep(Duration::from_millis(200)).await;
-                    continue;
-                }
-            };
-
-            // Create the pipe with an explicit DACL so TermService can open it.
-            // SAFETY: attrs is a valid SECURITY_ATTRIBUTES for the duration of the call.
-            let mut server = match unsafe {
-                opts.create_with_security_attributes_raw(
-                    full_pipe_name,
-                    core::ptr::from_mut(&mut attrs).cast::<c_void>(),
-                )
-            } {
-                Ok(server) => server,
-                Err(error) => {
-                    // SAFETY: frees the buffer allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
-                    unsafe {
-                        let _ = LocalFree(Some(HLOCAL(sd.0)));
+            let mut server = match initial_server.take() {
+                Some(server) => server,
+                None => match create_control_pipe_server(full_pipe_name, false) {
+                    Ok(server) => server,
+                    Err(error) => {
+                        warn!(%error, pipe = %full_pipe_name, "Failed to create control pipe server instance; retrying");
+                        sleep(Duration::from_millis(200)).await;
+                        continue;
                     }
-                    warn!(%error, pipe = %full_pipe_name, "Failed to create control pipe server instance; retrying");
-                    sleep(Duration::from_millis(200)).await;
-                    continue;
-                }
+                },
             };
-
-            // SAFETY: frees the buffer allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
-            unsafe {
-                let _ = LocalFree(Some(HLOCAL(sd.0)));
-            }
 
             if let Err(error) = server.connect().await {
                 warn!(%error, pipe = %full_pipe_name, "Failed to accept control connection; retrying");
                 sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+
+            if let Err(error) = authenticate_control_pipe_client(&server) {
+                warn!(%error, pipe = %full_pipe_name, "Rejected unauthorized control-pipe client");
                 continue;
             }
 
@@ -5652,7 +5715,7 @@ mod windows_main {
             match handle_client(&mut server, &control_plane, &mut pending_wakeup_rx).await {
                 Ok(0) => {
                     let n = empty_disconnects.fetch_add(1, Ordering::Relaxed).saturating_add(1);
-                    if n == 1 || (n <= 10 && n % 5 == 0) || n % 100_000 == 0 {
+                    if n == 1 || (n <= 10 && n.is_multiple_of(5)) || n.is_multiple_of(100_000) {
                         info!(empty_disconnects = n, "Client disconnected without sending commands");
                     }
                 }

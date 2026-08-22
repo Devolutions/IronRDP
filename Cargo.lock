@@ -2612,9 +2612,6 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "ironrdp-svc",
- "picky-asn1",
- "picky-asn1-der",
- "picky-krb",
  "tracing",
 ]
 
@@ -3358,7 +3355,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "ironrdp-core 0.2.1",
  "ironrdp-pdu",
  "ironrdp-server",
  "ironrdp-wtsprotocol-ipc",
@@ -3581,9 +3577,6 @@ dependencies = [
 name = "ironrdp-wtsprotocol-provider"
 version = "0.1.0"
 dependencies = [
- "ironrdp-acceptor",
- "ironrdp-connector",
- "ironrdp-pdu",
  "ironrdp-wtsprotocol-ipc",
  "parking_lot",
  "tracing",

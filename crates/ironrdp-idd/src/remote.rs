@@ -1,11 +1,13 @@
-use crate::{ntstatus_to_u32, IDDCX_ADAPTER, IDDCX_MONITOR, NTSTATUS, STATUS_SUCCESS};
+#[cfg(ironrdp_idd_link)]
+use crate::ntstatus_to_u32;
+use crate::{IDDCX_ADAPTER, IDDCX_MONITOR, NTSTATUS, STATUS_SUCCESS};
 #[cfg(ironrdp_idd_link)]
 use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::time::Duration;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
 #[cfg(ironrdp_idd_link)]
 use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_2DREGION, DISPLAYCONFIG_RATIONAL, DISPLAYCONFIG_ROTATION_IDENTITY,
@@ -14,7 +16,7 @@ use windows::Win32::Devices::Display::{
 use windows::Win32::Foundation::POINT;
 
 #[derive(Debug, Clone, Default)]
-pub struct RuntimeConfig {
+pub(crate) struct RuntimeConfig {
     pub dump_dir: Option<PathBuf>,
     pub session_id: Option<u32>,
     pub wddm_idd_enabled: bool,
@@ -50,11 +52,14 @@ fn adapter_runtime_state() -> &'static Mutex<AdapterRuntimeState> {
 }
 
 fn optional_u32_text(value: Option<u32>) -> String {
-    value.map(|value| value.to_string()).unwrap_or_else(|| "none".to_owned())
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_owned())
 }
 
 fn optional_string_text(value: Option<&str>) -> String {
-    value.filter(|value| !value.is_empty())
+    value
+        .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| "none".to_owned())
 }
@@ -67,10 +72,7 @@ fn maybe_log_session_ready(config: &RuntimeConfig, state: &mut AdapterRuntimeSta
         if let Some(session_id) = config.session_id {
             crate::debug_trace(&format!(
                 "SESSION_PROOF_IDD_SESSION_READY_FOR_CAPTURE session_id={session_id} active_paths={} swapchain_assigned={} first_frame_logged={} driver_loaded={}",
-                state.last_active_paths,
-                state.swapchain_assigned,
-                state.first_frame_logged,
-                config.driver_loaded,
+                state.last_active_paths, state.swapchain_assigned, state.first_frame_logged, config.driver_loaded,
             ));
             tracing::info!(
                 session_id,
@@ -122,7 +124,7 @@ fn reset_display_config_state(config: &RuntimeConfig, state: &mut AdapterRuntime
     }
 }
 
-pub fn load_runtime_config() -> RuntimeConfig {
+pub(crate) fn load_runtime_config() -> RuntimeConfig {
     let Ok(content) = std::fs::read_to_string(crate::IDD_RUNTIME_STATE_FILE) else {
         return RuntimeConfig::default();
     };
@@ -161,15 +163,15 @@ pub fn load_runtime_config() -> RuntimeConfig {
     }
 }
 
-pub fn runtime_dump_dir() -> Option<PathBuf> {
+pub(crate) fn runtime_dump_dir() -> Option<PathBuf> {
     load_runtime_config().dump_dir
 }
 
-pub fn runtime_session_id() -> Option<u32> {
+pub(crate) fn runtime_session_id() -> Option<u32> {
     load_runtime_config().session_id
 }
 
-pub fn swapchain_dump_runtime() -> Result<RuntimeConfig, String> {
+pub(crate) fn swapchain_dump_runtime() -> Result<RuntimeConfig, String> {
     let config = load_runtime_config();
     if config.dump_dir.is_none() {
         return Err("dump_dir missing from runtime config".to_owned());
@@ -184,6 +186,10 @@ pub fn swapchain_dump_runtime() -> Result<RuntimeConfig, String> {
     Ok(config)
 }
 
+#[expect(
+    clippy::infinite_loop,
+    reason = "the driver state monitor runs for the process lifetime"
+)]
 fn ensure_remote_state_monitor_thread() {
     if REMOTE_STATE_MONITOR_RUNNING.swap(true, Ordering::AcqRel) {
         return;
@@ -191,15 +197,17 @@ fn ensure_remote_state_monitor_thread() {
 
     if let Err(error) = std::thread::Builder::new()
         .name("irdp-idd-remote-state".to_owned())
-        .spawn(|| loop {
-            let adapter_raw = ACTIVE_ADAPTER_RAW.load(Ordering::Acquire);
-            if adapter_raw != 0 {
-                let config = load_runtime_config();
-                let is_remote = config.wddm_idd_enabled && config.session_id.is_some();
-                handle_session_transition(adapter_raw as IDDCX_ADAPTER, is_remote);
-            }
+        .spawn(|| {
+            loop {
+                let adapter_raw = ACTIVE_ADAPTER_RAW.load(Ordering::Acquire);
+                if adapter_raw != 0 {
+                    let config = load_runtime_config();
+                    let is_remote = config.wddm_idd_enabled && config.session_id.is_some();
+                    handle_session_transition(adapter_raw as IDDCX_ADAPTER, is_remote);
+                }
 
-            std::thread::sleep(Duration::from_millis(250));
+                std::thread::sleep(Duration::from_millis(250));
+            }
         })
     {
         REMOTE_STATE_MONITOR_RUNNING.store(false, Ordering::Release);
@@ -326,7 +334,7 @@ fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
     }
 }
 
-pub fn note_adapter_init_finished(adapter: IDDCX_ADAPTER) {
+pub(crate) fn note_adapter_init_finished(adapter: IDDCX_ADAPTER) {
     ACTIVE_ADAPTER_RAW.store(adapter as usize, Ordering::Release);
     ensure_remote_state_monitor_thread();
 
@@ -355,7 +363,12 @@ pub fn note_adapter_init_finished(adapter: IDDCX_ADAPTER) {
     maybe_request_display_config_update(adapter, "adapter_init_ready");
 }
 
-pub fn note_monitor_arrival(adapter: IDDCX_ADAPTER, monitor: IDDCX_MONITOR, connector_index: u32, os_target_id: u32) {
+pub(crate) fn note_monitor_arrival(
+    adapter: IDDCX_ADAPTER,
+    monitor: IDDCX_MONITOR,
+    connector_index: u32,
+    os_target_id: u32,
+) {
     let _ = monitor;
     ensure_remote_state_monitor_thread();
 
@@ -398,7 +411,7 @@ pub fn note_monitor_arrival(adapter: IDDCX_ADAPTER, monitor: IDDCX_MONITOR, conn
     maybe_request_display_config_update(adapter, "monitor_arrival");
 }
 
-pub fn note_swapchain_assignment(session_id: Option<u32>) {
+pub(crate) fn note_swapchain_assignment(session_id: Option<u32>) {
     let config = load_runtime_config();
     let mut state = match adapter_runtime_state().lock() {
         Ok(guard) => guard,
@@ -412,10 +425,14 @@ pub fn note_swapchain_assignment(session_id: Option<u32>) {
         optional_u32_text(session_id),
         state.last_active_paths
     ));
-    tracing::info!(session_id, active_paths = state.last_active_paths, "SESSION_PROOF_IDD_SWAPCHAIN_ASSIGNED");
+    tracing::info!(
+        session_id,
+        active_paths = state.last_active_paths,
+        "SESSION_PROOF_IDD_SWAPCHAIN_ASSIGNED"
+    );
 }
 
-pub fn note_swapchain_unassignment(session_id: Option<u32>) {
+pub(crate) fn note_swapchain_unassignment(session_id: Option<u32>) {
     let config = load_runtime_config();
     let mut state = match adapter_runtime_state().lock() {
         Ok(guard) => guard,
@@ -429,10 +446,20 @@ pub fn note_swapchain_unassignment(session_id: Option<u32>) {
         optional_u32_text(session_id),
         state.last_active_paths
     ));
-    tracing::info!(session_id, active_paths = state.last_active_paths, "SESSION_PROOF_IDD_SWAPCHAIN_UNASSIGNED");
+    tracing::info!(
+        session_id,
+        active_paths = state.last_active_paths,
+        "SESSION_PROOF_IDD_SWAPCHAIN_UNASSIGNED"
+    );
 }
 
-pub fn note_first_frame(session_id: u32, presentation_frame_number: u32, width: usize, height: usize, path: &std::path::Path) {
+pub(crate) fn note_first_frame(
+    session_id: u32,
+    presentation_frame_number: u32,
+    width: usize,
+    height: usize,
+    path: &std::path::Path,
+) {
     let config = load_runtime_config();
     let mut state = match adapter_runtime_state().lock() {
         Ok(guard) => guard,
@@ -455,10 +482,7 @@ pub fn note_first_frame(session_id: u32, presentation_frame_number: u32, width: 
     );
 }
 
-pub fn set_display_config(
-    _adapter: IDDCX_ADAPTER,
-    paths: &[crate::adapter::IDDCX_PATH],
-) -> NTSTATUS {
+pub fn set_display_config(_adapter: IDDCX_ADAPTER, paths: &[crate::adapter::IDDCX_PATH]) -> NTSTATUS {
     let mut changed_paths = 0u32;
     let mut active_paths = 0u32;
 

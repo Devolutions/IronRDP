@@ -10,10 +10,6 @@ use ironrdp_connector::{
 };
 use ironrdp_core::{WriteBuf, other_err};
 use ironrdp_pdu::PduHint;
-use picky_asn1::wrapper::{ExplicitContextTag0, ExplicitContextTag1, ExplicitContextTag2, OctetStringAsn1, Optional};
-use picky_asn1_der::Asn1RawDer;
-use picky_krb::constants::gss_api::{ACCEPT_COMPLETE, ACCEPT_INCOMPLETE};
-use picky_krb::gss_api::{ApplicationTag0, GssApiNegInit, NegTokenTarg, NegTokenTarg1};
 use tracing::debug;
 
 #[derive(Debug)]
@@ -45,49 +41,6 @@ pub type CredsspProcessGenerator<'a> =
 pub struct CredsspSequence<'a> {
     server: CredSspServer<CredentialsProxyImpl<'a>>,
     state: CredsspState,
-    spnego_wrapped: bool,
-    spnego_shim: bool,
-}
-
-fn try_unwrap_spnego(token: &[u8]) -> Option<Vec<u8>> {
-    // `picky_krb`'s `ApplicationTag0` deserializer uses an internal `unwrap()` and may panic when
-    // fed non-GSSAPI bytes (e.g., raw NTLM tokens). Treat panics as a non-match.
-    let init = std::panic::catch_unwind(|| picky_asn1_der::from_bytes::<ApplicationTag0<GssApiNegInit>>(token));
-    if let Ok(Ok(init)) = init {
-        let mech_token = init.0.neg_token_init.0.mech_token.0?;
-        return Some(mech_token.0.0);
-    }
-
-    let targ = std::panic::catch_unwind(|| picky_asn1_der::from_bytes::<NegTokenTarg1>(token));
-    if let Ok(Ok(targ)) = targ {
-        let response_token = targ.0.response_token.0?;
-        return Some(response_token.0.0);
-    }
-
-    None
-}
-
-fn wrap_spnego_ntlm_reply(raw_token: Vec<u8>) -> std::io::Result<Vec<u8>> {
-    let neg_result = if raw_token.is_empty() {
-        ACCEPT_COMPLETE
-    } else {
-        ACCEPT_INCOMPLETE
-    };
-
-    let response_token = if raw_token.is_empty() {
-        Optional::from(None)
-    } else {
-        Optional::from(Some(ExplicitContextTag2::from(OctetStringAsn1::from(raw_token))))
-    };
-
-    let targ = ExplicitContextTag1::from(NegTokenTarg {
-        neg_result: Optional::from(Some(ExplicitContextTag0::from(Asn1RawDer(neg_result.to_vec())))),
-        supported_mech: Optional::from(None),
-        response_token,
-        mech_list_mic: Optional::from(None),
-    });
-
-    picky_asn1_der::to_vec(&targ).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 #[derive(Debug)]
@@ -178,18 +131,11 @@ impl<'a> CredsspSequence<'a> {
         }
     }
 
-    /// Take the [`AuthIdentity`] captured from the completed CredSSP handshake.
-    ///
-    /// Returns `Some` exactly once after the sequence finishes successfully.
-    /// Subsequent calls return `None`.
-    pub fn take_identity(&mut self) -> Option<AuthIdentity> {
-        if let CredsspState::Finished(identity) = &self.state {
-            let identity = identity.clone();
-            // Replace with a sentinel that signals "already taken".
-            self.state = CredsspState::Ongoing; // won't be re-entered; caller already called mark_credssp_as_done
-            Some(identity)
-        } else {
-            None
+    /// Consume the completed CredSSP sequence and return its captured identity.
+    pub fn into_identity(self) -> Option<AuthIdentity> {
+        match self.state {
+            CredsspState::Finished(identity) => Some(identity),
+            CredsspState::Ongoing | CredsspState::ServerError(_) => None,
         }
     }
 
@@ -202,33 +148,22 @@ impl<'a> CredsspSequence<'a> {
         let client_computer_name = client_computer_name.into_inner();
         let credentials = CredentialsProxyImpl::new(creds);
 
-        // NOTE: some RDP clients (notably mstsc in domain environments) will send GSS tokens that
-        // are not raw NTLM, even when NTLM is ultimately selected. Using the Negotiate path keeps
-        // the token format compatible (SPNEGO/GSS) and avoids rejecting valid client handshakes.
-        //
-        // We keep the SPNEGO unwrap/wrap shim only for the NTLM-only mode.
-        let (server_mode, spnego_shim) = if let Some(krb_config) = krb_config {
+        let server_mode = if let Some(krb_config) = krb_config {
             let credssp_config: Box<dyn ProtocolConfig> = Box::new(krb_config);
-            (
-                ServerMode::Negotiate(NegotiateConfig {
-                    protocol_config: credssp_config,
-                    package_list: None,
-                    client_computer_name,
-                }),
-                false,
-            )
+            ServerMode::Negotiate(NegotiateConfig {
+                protocol_config: credssp_config,
+                package_list: None,
+                client_computer_name,
+            })
         } else {
             let credssp_config: Box<dyn ProtocolConfig> = Box::new(sspi::ntlm::NtlmConfig::default());
-            (
-                ServerMode::Negotiate(NegotiateConfig {
-                    protocol_config: credssp_config,
-                    // Restrict to NTLM when no Kerberos server config is provided.
-                    // This avoids environment-dependent Kerberos negotiation.
-                    package_list: Some("!kerberos,!pku2u".to_owned()),
-                    client_computer_name,
-                }),
-                true,
-            )
+            ServerMode::Negotiate(NegotiateConfig {
+                protocol_config: credssp_config,
+                // Restrict to NTLM when no Kerberos server config is provided.
+                // This avoids environment-dependent Kerberos negotiation.
+                package_list: Some("!kerberos,!pku2u".to_owned()),
+                client_computer_name,
+            })
         };
 
         let server = CredSspServer::new(public_key, credentials, server_mode)
@@ -237,8 +172,6 @@ impl<'a> CredsspSequence<'a> {
         let sequence = Self {
             server,
             state: CredsspState::Ongoing,
-            spnego_wrapped: false,
-            spnego_shim,
         };
 
         Ok(sequence)
@@ -249,18 +182,7 @@ impl<'a> CredsspSequence<'a> {
         match self.state {
             CredsspState::Ongoing => {
                 let decode = || -> ConnectorResult<Option<TsRequest>> {
-                    let mut message = TsRequest::from_buffer(input).map_err(|e| custom_err!("TsRequest", e))?;
-
-                    if self.spnego_shim {
-                        if let Some(nego_tokens) = message.nego_tokens.take() {
-                            if let Some(inner) = try_unwrap_spnego(&nego_tokens) {
-                                self.spnego_wrapped = true;
-                                message.nego_tokens = Some(inner);
-                            } else {
-                                message.nego_tokens = Some(nego_tokens);
-                            }
-                        }
-                    }
+                    let message = TsRequest::from_buffer(input).map_err(|e| custom_err!("TsRequest", e))?;
 
                     debug!(?message, "Received");
                     Ok(Some(message))
@@ -308,15 +230,6 @@ impl<'a> CredsspSequence<'a> {
 
         self.state = next_state;
         if let Some(ts_request) = ts_request {
-            let mut ts_request = ts_request;
-
-            if self.spnego_shim && self.spnego_wrapped {
-                if let Some(nego_tokens) = ts_request.nego_tokens.take() {
-                    let wrapped = wrap_spnego_ntlm_reply(nego_tokens).map_err(|e| custom_err!("SPNEGO", e))?;
-                    ts_request.nego_tokens = Some(wrapped);
-                }
-            }
-
             debug!(?ts_request, "Send");
             let length = usize::from(ts_request.buffer_len());
             let unfilled_buffer = output.unfilled_to(length);

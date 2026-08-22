@@ -31,10 +31,6 @@ struct CredentialIdentity<'a> {
     domain: Option<&'a str>,
 }
 
-fn eq_ignore_ascii_case(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b)
-}
-
 fn split_down_level_logon_name(s: &str) -> Option<(&str, &str)> {
     let (domain, username) = s.split_once('\\')?;
     if domain.is_empty() || username.is_empty() {
@@ -78,13 +74,13 @@ fn credential_identities(creds: &Credentials) -> [Option<CredentialIdentity<'_>>
 }
 
 fn credential_identity_equal(a: CredentialIdentity<'_>, b: CredentialIdentity<'_>) -> bool {
-    if !eq_ignore_ascii_case(a.username, b.username) {
+    if !a.username.eq_ignore_ascii_case(b.username) {
         return false;
     }
 
     match (a.domain, b.domain) {
         (None, None) => true,
-        (Some(a), Some(b)) => eq_ignore_ascii_case(a, b),
+        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
         _ => false,
     }
 }
@@ -101,18 +97,6 @@ fn credentials_match(expected: &Credentials, actual: &Credentials) -> bool {
         for actual_id in actual_ids.into_iter().flatten() {
             if credential_identity_equal(expected_id, actual_id) {
                 return true;
-            }
-        }
-    }
-
-    // mstsc can send UPN in the username field while leaving the domain field empty.
-    // When that happens, tolerate domain mismatches and only match on the UPN username part.
-    if actual.domain.is_none() {
-        if let Some((actual_username, _actual_domain)) = split_upn(&actual.username) {
-            for expected_id in expected_ids.into_iter().flatten() {
-                if eq_ignore_ascii_case(expected_id.username, actual_username) {
-                    return true;
-                }
             }
         }
     }
@@ -1167,5 +1151,34 @@ fn create_gcc_blocks(
             mcs_message_channel_id: id,
         }),
         multi_transport_channel: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn credentials(username: &str, domain: Option<&str>) -> Credentials {
+        Credentials {
+            username: username.to_owned(),
+            password: "secret".to_owned(),
+            domain: domain.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn credentials_match_upn_with_same_realm() {
+        let expected = credentials("alice", Some("CORP"));
+        let actual = credentials("alice@corp", None);
+
+        assert!(credentials_match(&expected, &actual));
+    }
+
+    #[test]
+    fn credentials_reject_upn_with_different_realm() {
+        let expected = credentials("alice", Some("CORP"));
+        let actual = credentials("alice@evil.example", None);
+
+        assert!(!credentials_match(&expected, &actual));
     }
 }

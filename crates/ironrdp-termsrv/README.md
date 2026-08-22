@@ -62,7 +62,8 @@ powershell -NoProfile -ExecutionPolicy Bypass \
 
 Notes:
 
-- The deployment script does not embed the RDP password in the scheduled task definition. It writes the password to a restricted file on the VM, uses it once to start `ironrdp-termsrv`, then deletes it.
+- The deployment script does not embed the RDP password in the scheduled task definition.
+  It writes the password to a restricted file on the VM, uses it once to start `ironrdp-termsrv`, then deletes it.
 - If you omit `-RdpPassword`, the script attempts to read the password from `env:IRONRDP_TESTVM_RDP_PASSWORD` and falls back to `env:IRONRDP_TESTVM_PASSWORD` for convenience (override with `-RdpPasswordEnvVar`).
 - Prefer `env:IRONRDP_TESTVM_RDP_PASSWORD` over passing `-RdpPassword` on the command line to avoid leaking credentials via shell history.
 
@@ -76,8 +77,8 @@ target\debug\ironrdp-client.exe --log-file .\target\tmp\ironrdp-client.log \
 
 ## Local control-plane smoke test (no TermDD required)
 
-You can validate the control-pipe command flow without `TermService`/`mstsc` by running
-`ironrdp-termsrv` locally and driving commands directly through named-pipe IPC.
+You can validate the control-pipe command flow without `mstsc` by running `ironrdp-termsrv` and the smoke-test client under LocalSystem or NetworkService.
+The pipe rejects interactive user accounts because it transports delegated credentials.
 
 Example:
 

@@ -1,4 +1,4 @@
-use crate::wdf::{WDFDEVICE, WDFDEVICE_INIT, WDF_OBJECT_ATTRIBUTES};
+use crate::wdf::{WDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDEVICE_INIT};
 use crate::{IDDCX_ADAPTER, IDDCX_MONITOR, IDDCX_SWAPCHAIN, NTSTATUS};
 use core::ffi::c_void;
 use core::mem::size_of;
@@ -157,8 +157,7 @@ type PFN_IDDCX_MONITOR_ARRIVAL =
 
 type PFN_IDDCX_MONITOR_DEPARTURE = unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, IDDCX_MONITOR) -> NTSTATUS;
 
-type PFN_IDDCX_GET_VERSION =
-    unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, *mut IDARG_OUT_GETVERSION) -> NTSTATUS;
+type PFN_IDDCX_GET_VERSION = unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, *mut IDARG_OUT_GETVERSION) -> NTSTATUS;
 type PFN_IDDCX_ADAPTER_DISPLAY_CONFIG_UPDATE = unsafe extern "system" fn(
     *mut IDD_DRIVER_GLOBALS,
     IDDCX_ADAPTER,
@@ -518,7 +517,9 @@ pub(crate) struct IDARG_OUT_MONITORGETPHYSICALSIZE {
 // "IronRDP IDD" (11 chars + null = 12 elements)
 pub(crate) static ENDPOINT_MODEL_NAME_UTF16: [u16; 12] = [73, 114, 111, 110, 82, 68, 80, 32, 73, 68, 68, 0];
 // "IronRDP Indirect Display" (25 chars + null = 26 elements)
-pub(crate) static ENDPOINT_FRIENDLY_NAME_UTF16: [u16; 26] = [73, 114, 111, 110, 82, 68, 80, 32, 73, 110, 100, 105, 114, 101, 99, 116, 32, 68, 105, 115, 112, 108, 97, 121, 0, 0];
+pub(crate) static ENDPOINT_FRIENDLY_NAME_UTF16: [u16; 26] = [
+    73, 114, 111, 110, 82, 68, 80, 32, 73, 110, 100, 105, 114, 101, 99, 116, 32, 68, 105, 115, 112, 108, 97, 121, 0, 0,
+];
 // "Devolutions" (11 chars + null = 12 elements)
 pub(crate) static ENDPOINT_MANUFACTURER_UTF16: [u16; 12] = [68, 101, 118, 111, 108, 117, 116, 105, 111, 110, 115, 0];
 

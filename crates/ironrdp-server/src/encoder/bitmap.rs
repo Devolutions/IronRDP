@@ -1,6 +1,6 @@
 use core::num::NonZeroUsize;
 
-use ironrdp_core::{Encode as _, WriteCursor, cast_int, cast_length, invalid_field_err};
+use ironrdp_core::{Encode as _, WriteCursor, cast_int, cast_length};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::rdp6::{
     ABgrChannels, ARgbChannels, BgrAChannels, BitmapEncodeError, BitmapStreamEncoder, RgbAChannels,
@@ -24,17 +24,6 @@ impl BitmapEncoder {
     }
 
     pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate, output: &mut [u8]) -> Result<usize, BitmapEncodeError> {
-        // FIXME: support non-multiple of 4 widths.
-        //
-        // It’s not clear how to achieve that yet, but generally, server uses multiple of 4-widths,
-        // and client has surface capabilities, so this path is unlikely.
-        if !bitmap.width.get().is_multiple_of(4) {
-            return Err(BitmapEncodeError::Encode(invalid_field_err!(
-                "bitmap",
-                "Width must be a multiple of 4"
-            )));
-        }
-
         let bytes_per_pixel = u16::from(bitmap.format.bytes_per_pixel());
         let row_len = bitmap.width.get() * bytes_per_pixel;
         let chunk_height = u16::MAX / row_len;

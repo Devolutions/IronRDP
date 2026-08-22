@@ -4,7 +4,7 @@ use windows as _;
 use std::path::{Path, PathBuf};
 
 fn main() {
-    if !cfg!(target_os = "windows") {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
 
@@ -49,9 +49,7 @@ fn main() {
     // the original WDK function-table count intact.
     println!("cargo:rerun-if-env-changed=IRONRDP_WDF_USE_LOCAL_STUB");
     println!("cargo:rerun-if-changed=WdfDriverStubUm.lib");
-    let manifest_dir = std::path::PathBuf::from(
-        std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by Cargo"),
-    );
+    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by Cargo"));
     let local_wdf_lib = manifest_dir.join("WdfDriverStubUm.lib");
     let use_local = match std::env::var("IRONRDP_WDF_USE_LOCAL_STUB") {
         Ok(value) => {
@@ -62,21 +60,22 @@ fn main() {
     };
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR set by Cargo"));
     let kits_root = std::env::var_os("IRONRDP_WINDOWS_KITS_ROOT")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10"));
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10"));
 
-    let preferred_wdf_stub_version = std::env::var("IRONRDP_WDF_UMDF_STUB_VERSION")
-        .unwrap_or_else(|_| "2.33".to_owned());
+    let preferred_wdf_stub_version =
+        std::env::var("IRONRDP_WDF_UMDF_STUB_VERSION").unwrap_or_else(|_| "2.33".to_owned());
 
     if use_local && local_wdf_lib.is_file() {
-        link_wdf_stub_with_patch_or_fallback(&local_wdf_lib, &out_dir, &manifest_dir, "bundled");
+        link_wdf_stub_with_patch_or_fallback(&local_wdf_lib, &out_dir, &manifest_dir, "bundled", None);
     } else if !use_local {
         if let Some(wdf_dir) = resolve_wdf_umdf_stub_lib_dir(&kits_root, &preferred_wdf_stub_version) {
             let source_stub = wdf_dir.join("WdfDriverStubUm.lib");
-            link_wdf_stub_with_patch_or_fallback(&source_stub, &out_dir, &wdf_dir, "WDK");
+            let actual_version = wdf_dir.file_name().and_then(|name| name.to_str());
+            link_wdf_stub_with_patch_or_fallback(&source_stub, &out_dir, &wdf_dir, "WDK", actual_version);
         } else if local_wdf_lib.is_file() {
             println!("cargo:warning=Falling back to bundled WdfDriverStubUm.lib");
-            link_wdf_stub_with_patch_or_fallback(&local_wdf_lib, &out_dir, &manifest_dir, "bundled");
+            link_wdf_stub_with_patch_or_fallback(&local_wdf_lib, &out_dir, &manifest_dir, "bundled", None);
         } else {
             println!(
                 "cargo:warning=WdfDriverStubUm.lib not found. Set IRONRDP_WDF_UMDF_LIB_DIR, install the WDK, or add a bundled copy."
@@ -113,8 +112,7 @@ fn resolve_iddcx_stub_lib_dir() -> Option<PathBuf> {
     // Default to the 1.4 IddCx stub so the driver can use remote-IDD DDIs when the target OS
     // exposes them at runtime. This is independent from the INF's class-extension service name.
     // Can be overridden for diagnostics/experimentation.
-    let preferred_stub_version = std::env::var("IRONRDP_IDDCX_STUB_VERSION")
-        .unwrap_or_else(|_| "1.4".to_owned());
+    let preferred_stub_version = std::env::var("IRONRDP_IDDCX_STUB_VERSION").unwrap_or_else(|_| "1.4".to_owned());
 
     find_windows_kits_iddcx_stub_lib_dir(&kits_root, &preferred_stub_version)
 }
@@ -252,7 +250,7 @@ fn resolve_wdf_umdf_stub_lib_dir(kits_root: &Path, preferred_stub_version: &str)
     candidates.pop()
 }
 
-fn prepare_patched_wdf_stub_lib(source_stub: &Path, out_dir: &Path) -> Option<PathBuf> {
+fn prepare_patched_wdf_stub_lib(source_stub: &Path, out_dir: &Path, expected_version: Option<&str>) -> Option<PathBuf> {
     let bytes = std::fs::read(source_stub).ok()?;
     let mut patched = bytes;
     let build_number = std::env::var("IRONRDP_WDF_STUB_BUILD_NUMBER")
@@ -260,9 +258,14 @@ fn prepare_patched_wdf_stub_lib(source_stub: &Path, out_dir: &Path) -> Option<Pa
         .and_then(|value| value.trim().parse::<u32>().ok())
         .unwrap_or(26100);
 
-    let mut patched_entries = 0usize;
+    let expected_version = expected_version.and_then(|version| {
+        let (major, minor) = version.split_once('.')?;
+        Some((major.parse::<u32>().ok()?, minor.parse::<u32>().ok()?))
+    });
+
+    let mut matching_offsets = Vec::new();
     if patched.len() >= 16 {
-        for offset in 0..=(patched.len() - 16) {
+        for offset in (0..=(patched.len() - 16)).step_by(2) {
             let major = u32::from_le_bytes([
                 patched[offset],
                 patched[offset + 1],
@@ -288,25 +291,30 @@ fn prepare_patched_wdf_stub_lib(source_stub: &Path, out_dir: &Path) -> Option<Pa
                 patched[offset + 15],
             ]);
 
-            if major == 2 && (1..=99).contains(&minor) && build == 0 && (128..=1024).contains(&func_count) {
-                patched[offset + 8..offset + 12].copy_from_slice(&build_number.to_le_bytes());
-                patched_entries += 1;
+            if major == 2
+                && expected_version.is_none_or(|version| version == (major, minor))
+                && build == 0
+                && (128..=1024).contains(&func_count)
+            {
+                matching_offsets.push(offset);
             }
         }
     }
 
-    if patched_entries == 0 {
+    let expected_version_label = expected_version
+        .map(|(major, minor)| format!("{major}.{minor}"))
+        .unwrap_or_else(|| "2.x".to_owned());
+    let [offset] = matching_offsets.as_slice() else {
         println!(
-            "cargo:warning=did not find WDF bind-info build field to patch in {}",
-            source_stub.display()
+            "cargo:warning=expected exactly one WDF {expected_version_label} bind-info record in {}, found {}; refusing to patch",
+            source_stub.display(),
+            matching_offsets.len()
         );
-    } else {
-        println!(
-            "cargo:warning=patched {} WDF bind-info entry(ies) to build {}",
-            patched_entries,
-            build_number
-        );
-    }
+        return None;
+    };
+
+    patched[*offset + 8..*offset + 12].copy_from_slice(&build_number.to_le_bytes());
+    println!("cargo:warning=patched one WDF {expected_version_label} bind-info record to build {build_number}");
 
     let patched_dir = out_dir.join("wdf-patched");
     std::fs::create_dir_all(&patched_dir).ok()?;
@@ -320,8 +328,9 @@ fn link_wdf_stub_with_patch_or_fallback(
     out_dir: &Path,
     fallback_link_search_dir: &Path,
     source_label: &str,
+    expected_version: Option<&str>,
 ) {
-    if let Some(patched_dir) = prepare_patched_wdf_stub_lib(source_stub, out_dir) {
+    if let Some(patched_dir) = prepare_patched_wdf_stub_lib(source_stub, out_dir, expected_version) {
         println!("cargo:rustc-link-search=native={}", patched_dir.display());
         println!(
             "cargo:warning=Using patched {source_label} WdfDriverStubUm.lib from {}",

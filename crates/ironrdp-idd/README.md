@@ -1,6 +1,7 @@
 # ironrdp-idd
 
-`ironrdp-idd` is the IronRDP Indirect Display Driver (IDD) scaffold. It is intended to be loaded by Windows Remote Desktop Services (via the WTS protocol provider) in WDDM IDD mode.
+`ironrdp-idd` is the IronRDP Indirect Display Driver (IDD) scaffold.
+Windows Remote Desktop Services loads it through the WTS protocol provider in WDDM IDD mode.
 
 This crate is intentionally *safe-by-default* for normal workspace builds:
 
