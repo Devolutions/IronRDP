@@ -1012,6 +1012,51 @@ type RdpdrFactoryRef<'a> = Option<&'a (dyn RdpdrBackendFactory + Send)>;
 #[cfg(not(feature = "rdpdr"))]
 type RdpdrFactoryRef<'a> = core::marker::PhantomData<&'a ()>;
 
+#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
+const HTTP_TUNNEL_REDIR_DISABLE_ALL: u32 = 0x4000_0000;
+#[cfg(all(feature = "gateway", feature = "rdpdr"))]
+const HTTP_TUNNEL_REDIR_DISABLE_DRIVE: u32 = 0x0000_0001;
+#[cfg(all(feature = "gateway", feature = "clipboard"))]
+const HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD: u32 = 0x0000_0008;
+
+#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
+#[derive(Clone, Copy)]
+struct GatewayRedirectionPolicy {
+    flags: Option<u32>,
+}
+
+#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
+impl GatewayRedirectionPolicy {
+    fn from_flags(flags: Option<u32>) -> Self {
+        Self { flags }
+    }
+
+    #[cfg(feature = "clipboard")]
+    fn disables_clipboard(self) -> bool {
+        self.disables(HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD)
+    }
+
+    #[cfg(feature = "rdpdr")]
+    fn disables_drive(self) -> bool {
+        self.disables(HTTP_TUNNEL_REDIR_DISABLE_DRIVE)
+    }
+
+    #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
+    fn flags(self) -> Option<u32> {
+        self.flags
+    }
+
+    #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
+    fn disables_all(self) -> bool {
+        self.flags
+            .is_some_and(|flags| flags & HTTP_TUNNEL_REDIR_DISABLE_ALL != 0)
+    }
+
+    fn disables(self, disabled_flag: u32) -> bool {
+        self.flags.is_some_and(|flags| flags & disabled_flag != 0) || self.disables_all()
+    }
+}
+
 #[cfg(feature = "rdpdr")]
 #[derive(Debug)]
 struct RdpdrBackendBuildError(Box<dyn core::error::Error + Send + Sync>);
@@ -1034,6 +1079,7 @@ impl core::error::Error for RdpdrBackendBuildError {
 fn build_rdpdr_channel(
     factory: RdpdrFactoryRef<'_>,
     config: &crate::config::RdpdrConfig,
+    allow_drives: bool,
 ) -> ConnectorResult<Option<ironrdp_rdpdr::Rdpdr>> {
     if !config.enabled {
         return Ok(None);
@@ -1046,6 +1092,8 @@ fn build_rdpdr_channel(
         .build_rdpdr_backend()
         .map_err(|error| ironrdp_connector::custom_err!("build RDPDR backend", RdpdrBackendBuildError(error)))?
         .into_parts();
+    // Gateway drive restrictions do not apply to smartcard redirection, which shares RDPDR.
+    let initial_drives = if allow_drives { initial_drives } else { Vec::new() };
 
     #[cfg(feature = "smartcard")]
     let smartcard = config.smartcard;
@@ -1110,6 +1158,7 @@ fn build_connector(
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
+    rdpdr_drives_allowed: bool,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<ironrdp_connector::ClientConnector> {
     // `input_sender` is only consumed by the optional DVC wirings below, and `cliprdr_factory`
@@ -1124,7 +1173,7 @@ fn build_connector(
     #[cfg(not(feature = "clipboard"))]
     let _ = cliprdr_factory;
     #[cfg(not(feature = "rdpdr"))]
-    let _ = rdpdr_factory;
+    let _ = (rdpdr_factory, rdpdr_drives_allowed);
 
     let mut drdynvc = ironrdp_dvc::DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
@@ -1353,7 +1402,7 @@ fn build_connector(
     }
 
     #[cfg(feature = "rdpdr")]
-    let rdpdr_channel = build_rdpdr_channel(rdpdr_factory, &config.channels.rdpdr)?;
+    let rdpdr_channel = build_rdpdr_channel(rdpdr_factory, &config.channels.rdpdr, rdpdr_drives_allowed)?;
 
     // Windows servers only issue RDPDR traffic when RDPSND is also advertised.
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
@@ -1436,6 +1485,7 @@ async fn connect_direct(
         input_sender,
         cliprdr_factory,
         rdpdr_factory,
+        true,
         auto_reconnect_cookie,
     )?;
     #[cfg(feature = "vmconnect")]
@@ -1483,6 +1533,7 @@ async fn connect_named_pipe(
         input_sender,
         cliprdr_factory,
         rdpdr_factory,
+        true,
         auto_reconnect_cookie,
     )?;
 
@@ -1519,6 +1570,49 @@ async fn connect_gateway(
     .await
     .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
 
+    let tunnel_policy = gw_stream.tunnel_policy().clone();
+    #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
+    let gateway_redirection_policy = GatewayRedirectionPolicy::from_flags(tunnel_policy.redirection_flags);
+    #[cfg(feature = "clipboard")]
+    let cliprdr_factory = {
+        if gateway_redirection_policy.disables_clipboard() && cliprdr_factory.is_some() {
+            debug!(
+                redirection_flags = ?gateway_redirection_policy.flags(),
+                "Suppressing CLIPRDR due to gateway device-redirection policy"
+            );
+        }
+        (!gateway_redirection_policy.disables_clipboard())
+            .then_some(cliprdr_factory)
+            .flatten()
+    };
+    #[cfg(feature = "rdpdr")]
+    let rdpdr_drives_allowed = !gateway_redirection_policy.disables_drive();
+    #[cfg(feature = "rdpdr")]
+    let rdpdr_factory = {
+        if gateway_redirection_policy.disables_all() && rdpdr_factory.is_some() {
+            debug!(
+                redirection_flags = ?gateway_redirection_policy.flags(),
+                "Suppressing RDPDR due to gateway device-redirection policy"
+            );
+        }
+        if gateway_redirection_policy.disables_drive()
+            && !gateway_redirection_policy.disables_all()
+            && rdpdr_factory.is_some()
+        {
+            debug!(
+                redirection_flags = ?gateway_redirection_policy.flags(),
+                "Suppressing RDPDR drive redirection due to gateway device-redirection policy"
+            );
+        }
+        (!gateway_redirection_policy.disables_all())
+            .then_some(rdpdr_factory)
+            .flatten()
+    };
+    #[cfg(not(feature = "rdpdr"))]
+    let rdpdr_drives_allowed = true;
+    #[cfg(not(any(feature = "clipboard", feature = "rdpdr")))]
+    let _ = tunnel_policy;
+
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
     let connector = build_connector(
@@ -1527,6 +1621,7 @@ async fn connect_gateway(
         input_sender,
         cliprdr_factory,
         rdpdr_factory,
+        rdpdr_drives_allowed,
         auto_reconnect_cookie,
     )?;
     #[cfg(feature = "vmconnect")]
@@ -1576,6 +1671,7 @@ async fn connect_rdcleanpath_transport(
         input_sender,
         cliprdr_factory,
         rdpdr_factory,
+        true,
         auto_reconnect_cookie,
     )?;
 
@@ -3171,6 +3267,33 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "gateway", feature = "clipboard", feature = "rdpdr"))]
+    #[test]
+    fn gateway_redirection_policy_interprets_flags() {
+        let no_policy = GatewayRedirectionPolicy::from_flags(None);
+        assert!(!no_policy.disables_clipboard());
+        assert!(!no_policy.disables_drive());
+
+        let enable_all = GatewayRedirectionPolicy::from_flags(Some(0x8000_0000));
+        assert!(!enable_all.disables_clipboard());
+        assert!(!enable_all.disables_drive());
+
+        let disable_clipboard = GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD));
+        assert!(disable_clipboard.disables_clipboard());
+        assert!(!disable_clipboard.disables_drive());
+
+        let disable_drive = GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_DRIVE));
+        assert!(!disable_drive.disables_clipboard());
+        assert!(disable_drive.disables_drive());
+
+        let disable_all = GatewayRedirectionPolicy::from_flags(Some(
+            HTTP_TUNNEL_REDIR_DISABLE_ALL | HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD,
+        ));
+        assert!(disable_all.disables_clipboard());
+        assert!(disable_all.disables_drive());
+        assert!(disable_all.disables_all());
+    }
+
     #[test]
     fn resize_queue_coalesces_later_requests_until_reactivation() {
         let first = resize_request(1024, 768);
@@ -3305,7 +3428,7 @@ mod tests {
         };
 
         assert!(
-            build_rdpdr_channel(Some(&factory), &config)
+            build_rdpdr_channel(Some(&factory), &config, true)
                 .expect("disabled RDPDR should not fail")
                 .is_none()
         );
@@ -3325,8 +3448,26 @@ mod tests {
         };
 
         assert!(
-            build_rdpdr_channel(Some(&factory), &config)
+            build_rdpdr_channel(Some(&factory), &config, true)
                 .expect("empty RDPDR product should not fail")
+                .is_none()
+        );
+        assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn drive_restricted_rdpdr_without_smartcard_omits_the_channel() {
+        let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "fixtures".to_owned())]);
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+        };
+
+        assert!(
+            build_rdpdr_channel(Some(&factory), &config, false)
+                .expect("drive-restricted RDPDR should not fail")
                 .is_none()
         );
         assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
@@ -3334,15 +3475,15 @@ mod tests {
 
     #[cfg(all(feature = "rdpdr", feature = "smartcard"))]
     #[test]
-    fn smartcard_only_rdpdr_builds_without_drives() {
-        let factory = CountingRdpdrFactory::new(Vec::new());
+    fn drive_restricted_rdpdr_preserves_smartcard_redirection() {
+        let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "fixtures".to_owned())]);
         let config = crate::config::RdpdrConfig {
             enabled: true,
             smartcard: true,
         };
 
-        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config)
-            .expect("smartcard-only RDPDR should not fail")
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, false)
+            .expect("drive-restricted RDPDR should not fail")
             .expect("smartcard-only product should build a channel");
 
         assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
@@ -3434,10 +3575,10 @@ mod tests {
             smartcard: false,
         };
 
-        let first = build_rdpdr_channel(Some(&factory), &config)
+        let first = build_rdpdr_channel(Some(&factory), &config, true)
             .expect("first connection attempt should build")
             .expect("first product contains a filesystem device");
-        let second = build_rdpdr_channel(Some(&factory), &config)
+        let second = build_rdpdr_channel(Some(&factory), &config, true)
             .expect("second connection attempt should build")
             .expect("second product contains a filesystem device");
 
@@ -3467,7 +3608,7 @@ mod tests {
             #[cfg(feature = "smartcard")]
             smartcard: false,
         };
-        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config)
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, true)
             .expect("RDPDR channel should build")
             .expect("product contains a filesystem device");
         let client_id = 0x1234_5678;
@@ -3538,6 +3679,7 @@ mod tests {
             &input_sender,
             no_cliprdr_factory(),
             Some(&factory),
+            true,
             None,
         )
         .expect("RDPDR connector should build");
