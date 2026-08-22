@@ -8,7 +8,7 @@ bitflags! {
     /// 2.2.5.3.2 HTTP_EXTENDED_AUTH Enumeration
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub(crate) struct HttpExtendedAuth: u16 {
-        const HTTP_EXTENDED_AUTH_NONE = 0x01;
+        const HTTP_EXTENDED_AUTH_NONE = 0x00;
         const HTTP_EXTENDED_AUTH_SC = 0x01;
         const HTTP_EXTENDED_AUTH_PAA = 0x02;
         const HTTP_EXTENDED_AUTH_SSPI_NTLM = 0x04;
@@ -165,11 +165,16 @@ pub(crate) struct HandshakeRespPkt {
     pub ver_major: u8,
     pub ver_minor: u8,
     pub server_version: u16,
-    pub _extended_auth: HttpExtendedAuth,
+    #[expect(
+        dead_code,
+        reason = "authentication flow does not negotiate extended authentication yet"
+    )]
+    pub extended_auth: HttpExtendedAuth,
 }
 
 impl HandshakeRespPkt {
-    const FIXED_PART_SIZE: usize = 4 /* error_code */ + 1 /* ver_major */ + 1 /* ver_minor */ + 2 /* server_auth */ + 1 /*extended_auth*/;
+    const FIXED_PART_SIZE: usize =
+        4 /* error_code */ + 1 /* ver_major */ + 1 /* ver_minor */ + 2 /* server_version */ + 2 /* extended_auth */;
 }
 
 impl Decode<'_> for HandshakeRespPkt {
@@ -181,11 +186,7 @@ impl Decode<'_> for HandshakeRespPkt {
             ver_major: src.read_u8(),
             ver_minor: src.read_u8(),
             server_version: src.read_u16(),
-            _extended_auth: {
-                let raw = src.read_u16();
-                HttpExtendedAuth::from_bits(raw)
-                    .ok_or_else(|| unsupported_value_err("HandshakeResp", "extended_auth", format!("0x{raw:x}")))?
-            },
+            extended_auth: HttpExtendedAuth::from_bits_retain(src.read_u16()),
         })
     }
 }
@@ -345,10 +346,17 @@ impl Decode<'_> for TunnelRespPkt {
 }
 
 /// 2.2.10.7 HTTP_EXTENDED_AUTH_PACKET Structure
-#[expect(dead_code, reason = "defined for completeness per spec; not yet used")]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "authentication flow does not process extended authentication yet"
+    )
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExtendedAuthPkt {
-    error_code: u32,
-    blob: Vec<u8>,
+    pub(crate) error_code: u32,
+    pub(crate) auth_blob: Vec<u8>,
 }
 
 impl Encode for ExtendedAuthPkt {
@@ -363,9 +371,9 @@ impl Encode for ExtendedAuthPkt {
         hdr.encode(dst)?;
 
         dst.write_u32(self.error_code);
-        let blob_len: u16 = cast_int!("blob length", self.blob.len())?;
-        dst.write_u16(blob_len);
-        dst.write_slice(&self.blob);
+        let auth_blob_len: u16 = cast_int!("auth blob length", self.auth_blob.len())?;
+        dst.write_u16(auth_blob_len);
+        dst.write_slice(&self.auth_blob);
 
         Ok(())
     }
@@ -375,20 +383,20 @@ impl Encode for ExtendedAuthPkt {
     }
 
     fn size(&self) -> usize {
-        PktHdr::default().size() + 6 + self.blob.len()
+        PktHdr::FIXED_PART_SIZE + 4 /* error_code */ + 2 /* cb_blob_len */ + self.auth_blob.len()
     }
 }
 
 impl Decode<'_> for ExtendedAuthPkt {
     fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
-        ensure_size!(in: src, size: 4 + 2);
+        ensure_size!(in: src, size: 4 /* error_code */ + 2 /* cb_blob_len */);
         let error_code = src.read_u32();
-        let len = usize::from(src.read_u16());
-        ensure_size!(in: src, size: len);
+        let auth_blob_len = usize::from(src.read_u16());
+        ensure_size!(in: src, size: auth_blob_len);
 
         Ok(ExtendedAuthPkt {
             error_code,
-            blob: src.read_slice(len).to_vec(),
+            auth_blob: src.read_slice(auth_blob_len).to_vec(),
         })
     }
 }
