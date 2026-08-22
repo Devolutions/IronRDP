@@ -26,11 +26,24 @@ On Windows, `connect_front_with_current_user` uses native SSPI to authenticate t
 This path does not require or expose a reusable host password.
 It requires CredSSP version 5 or later for nonce-bound public-key verification.
 
+## Local frame-buffer redirection
+
+`FrameBufferClient` implements the private dynamic channel for local Windows VMConnect sessions.
+The Hyper-V host offers `Microsoft::Windows::RDS::Frame_Buffer::Control::v08.01` only when it recognizes a same-machine connection.
+The channel exchanges the caller's logon SID, opens three host-created `Global\Microsoft::Windows::RDS::FBR-*` objects, and reads the 32-bpp top-down DIB from shared memory.
+The mapping begins with a dirty `RECT` and `BITMAPINFOHEADER`; pixel data starts at the next Windows allocation-granularity boundary.
+The server serializes updates with a mutex and signals an auto-reset event after writing a dirty region.
+
+`local_instance_id` reads the Terminal Server instance ID used by the Hyper-V host's same-machine check.
+Applications supply it as the RDP digital product ID when establishing a local VMConnect session.
+
 | API | Role |
 | --- | --- |
 | `PORT` | 2179 |
 | `PCB_TRANSMIT_DEADLINE` | 10s bound for PCB after TCP connect |
 | `Mode` | Enhanced or basic console routing |
+| `FrameBufferClient` | Windows-only FBR DVC and shared-memory reader |
+| `local_instance_id` | Same-machine Terminal Server identity |
 | `preconnection_blob_payload` | Unicode payload for RDCleanPath VMConnect requests |
 | `encode_preconnection_blob` | PCB V2 bytes |
 | `send_preconnection_blob` | write PCB → `PcbSent` |

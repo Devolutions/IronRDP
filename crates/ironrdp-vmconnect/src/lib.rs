@@ -27,6 +27,10 @@ use ironrdp_pdu::pcb::{PcbVersion, PreconnectionBlob};
 use tracing::{debug, instrument};
 
 #[cfg(windows)]
+mod framebuffer;
+#[cfg(windows)]
+pub use framebuffer::{FRAME_BUFFER_CHANNEL_NAME, FrameBufferClient};
+#[cfg(windows)]
 mod native_credssp;
 
 #[cfg(all(windows, feature = "__test"))]
@@ -37,6 +41,24 @@ pub fn __test_binding_hash(magic: &[u8], nonce: &[u8; 32], public_key: &[u8]) ->
 
 /// TCP port a Hyper-V VM console listens on.
 pub const PORT: u16 = 2179;
+
+/// Reads the local RDP server instance ID used to prove a same-machine FBR connection.
+#[cfg(windows)]
+pub fn local_instance_id() -> ConnectorResult<String> {
+    let key = windows_registry::LOCAL_MACHINE
+        .open(r"System\CurrentControlSet\Control\Terminal Server")
+        .map_err(|error| custom_err!("open Terminal Server registry key", error))?;
+    let instance_id = key
+        .get_string("InstanceID")
+        .map_err(|error| custom_err!("read Terminal Server InstanceID", error))?;
+    if instance_id.encode_utf16().count() != 31 {
+        return Err(reason_err!(
+            "vmconnect",
+            "terminal server InstanceID has an invalid length"
+        ));
+    }
+    Ok(instance_id)
+}
 
 /// Upper bound for transmitting the Preconnection Blob after the TCP connection is established.
 ///
