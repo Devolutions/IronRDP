@@ -58,7 +58,7 @@ required-features = ["rustls", "test-support"]
 [[test]]
 name = "proxy"
 path = "tests/proxy.rs"
-required-features = ["test-support"]
+required-features = ["native-tls", "test-support"]
 
 [[test]]
 name = "consent"

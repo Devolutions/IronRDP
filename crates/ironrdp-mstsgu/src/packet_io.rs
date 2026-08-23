@@ -286,7 +286,7 @@ pub(crate) async fn open_gateway_transport(
 ) -> Result<(PacketIo, core::net::SocketAddr), Error> {
     let gateway = parse_gateway_endpoint(&target.gw_endpoint)?;
     let gw_host = gateway.host.clone();
-    let proxy = proxy_from_environment(&gateway.host)?;
+    let proxy = proxy_from_environment(&gateway)?;
 
     let (stream, client_addr) = open_gateway_tcp(&gateway, proxy.as_ref()).await?;
     let stream = upgrade_gateway_tls(
@@ -352,9 +352,14 @@ fn parse_gateway_endpoint(endpoint: &str) -> Result<GatewayEndpoint, Error> {
         .strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
         .unwrap_or(host);
-    if host.is_empty() {
+    if host.is_empty()
+        || host
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
         return Err(Error::new("connect", GwErrorKind::InvalidGwTarget));
     }
+
     let port = port
         .parse()
         .map_err(|_| Error::new("connect", GwErrorKind::InvalidGwTarget))?;
@@ -364,6 +369,10 @@ fn parse_gateway_endpoint(endpoint: &str) -> Result<GatewayEndpoint, Error> {
         port,
         endpoint: endpoint.to_owned(),
     })
+}
+
+pub(crate) fn gateway_endpoint_is_valid(endpoint: &str) -> bool {
+    parse_gateway_endpoint(endpoint).is_ok()
 }
 
 async fn open_gateway_tcp(
@@ -562,9 +571,10 @@ fn validate_http_connect_response(response: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-fn proxy_from_environment(gateway_host: &str) -> Result<Option<ProxyConfig>, Error> {
+fn proxy_from_environment(gateway: &GatewayEndpoint) -> Result<Option<ProxyConfig>, Error> {
     proxy_from_values(
-        gateway_host,
+        &gateway.host,
+        gateway.port,
         environment_value("HTTPS_PROXY", "https_proxy")?,
         environment_value("NO_PROXY", "no_proxy")?,
     )
@@ -588,6 +598,7 @@ fn environment_value(uppercase: &str, lowercase: &str) -> Result<Option<String>,
 
 pub(crate) fn proxy_from_values(
     gateway_host: &str,
+    gateway_port: u16,
     proxy: Option<String>,
     no_proxy: Option<String>,
 ) -> Result<Option<ProxyConfig>, Error> {
@@ -596,7 +607,7 @@ pub(crate) fn proxy_from_values(
     };
     if no_proxy
         .as_deref()
-        .is_some_and(|no_proxy| no_proxy_matches(gateway_host, no_proxy))
+        .is_some_and(|no_proxy| no_proxy_matches(gateway_host, gateway_port, no_proxy))
     {
         return Ok(None);
     }
@@ -630,11 +641,31 @@ pub(crate) fn parse_proxy_url(value: &str) -> Result<ProxyConfig, Error> {
         return Err(Error::new("invalid proxy URL", GwErrorKind::Connect));
     }
 
+    let port = proxy_port(authority.as_str(), scheme.default_port())?;
+
     Ok(ProxyConfig {
         scheme,
         host: host.to_owned(),
-        port: authority.port_u16().unwrap_or_else(|| scheme.default_port()),
+        port,
         credentials,
+    })
+}
+
+fn proxy_port(authority: &str, default_port: u16) -> Result<u16, Error> {
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, authority)| authority);
+    let port = if let Some(authority) = authority.strip_prefix('[') {
+        authority
+            .split_once(']')
+            .and_then(|(_, suffix)| suffix.strip_prefix(':'))
+    } else {
+        authority
+            .rsplit_once(':')
+            .filter(|(host, _)| !host.contains(':'))
+            .map(|(_, port)| port)
+    };
+    port.map_or(Ok(default_port), |port| {
+        port.parse()
+            .map_err(|_| Error::new("invalid proxy URL", GwErrorKind::Connect))
     })
 }
 
@@ -687,7 +718,7 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn no_proxy_matches(host: &str, no_proxy: &str) -> bool {
+fn no_proxy_matches(host: &str, port: u16, no_proxy: &str) -> bool {
     let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
     let is_ip = host.parse::<IpAddr>().is_ok();
     no_proxy.split(',').map(str::trim).any(|entry| {
@@ -695,6 +726,10 @@ fn no_proxy_matches(host: &str, no_proxy: &str) -> bool {
             return true;
         }
         if entry.is_empty() {
+            return false;
+        }
+        let (entry, entry_port) = split_no_proxy_port(entry);
+        if entry_port.is_some_and(|entry_port| entry_port != port) {
             return false;
         }
         if is_ip {
@@ -708,6 +743,27 @@ fn no_proxy_matches(host: &str, no_proxy: &str) -> bool {
         }
         host == entry || host.strip_suffix(&entry).is_some_and(|prefix| prefix.ends_with('.'))
     })
+}
+
+fn split_no_proxy_port(entry: &str) -> (&str, Option<u16>) {
+    if let Some(entry) = entry.strip_prefix('[') {
+        if let Some((host, port)) = entry.split_once("]:") {
+            return (host, port.parse().ok());
+        }
+    }
+    if entry.parse::<IpAddr>().is_ok() {
+        return (entry, None);
+    }
+    let Some((host, port)) = entry.rsplit_once(':') else {
+        return (entry, None);
+    };
+    if host.contains(':') {
+        return (entry, None);
+    }
+    match port.parse() {
+        Ok(port) => (host, Some(port)),
+        Err(_) => (entry, None),
+    }
 }
 
 enum GatewayTlsUpgrade {

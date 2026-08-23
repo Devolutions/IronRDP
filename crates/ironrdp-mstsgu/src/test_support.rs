@@ -5,8 +5,8 @@ use tokio::io::AsyncWriteExt as _;
 
 use crate::http_auth::basic_authorization;
 use crate::packet_io::{
-    PacketIo, open_gateway_transport, open_test_transport, parse_proxy_url, proxy_from_values,
-    read_http_connect_response,
+    PacketIo, gateway_endpoint_is_valid as endpoint_is_valid, open_gateway_transport, open_test_transport,
+    parse_proxy_url, proxy_from_values, read_http_connect_response,
 };
 use crate::{Error, GwClient, GwConnectTarget, GwConsentCallback};
 
@@ -81,6 +81,7 @@ pub fn proxy_summary(
 ) -> Result<Option<String>, String> {
     proxy_from_values(
         gateway_host,
+        443,
         https_proxy
             .map(str::to_owned)
             .or_else(|| https_proxy_lowercase.map(str::to_owned)),
@@ -90,6 +91,11 @@ pub fn proxy_summary(
     )
     .map(|proxy| proxy.map(|proxy| format!("{}://{}:{}", proxy.scheme.name(), proxy.host, proxy.port)))
     .map_err(|error| error.to_string())
+}
+
+/// Validate a gateway endpoint without opening a connection.
+pub fn gateway_endpoint_is_valid(endpoint: &str) -> bool {
+    endpoint_is_valid(endpoint)
 }
 
 /// Verify that a proxy URL can construct a Basic CONNECT authorization header.
