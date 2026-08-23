@@ -2261,6 +2261,7 @@ impl RdpServer {
 
         let mut update_codecs = UpdateEncoderCodecs::new();
         let mut surface_flags = CmdFlags::empty();
+        let mut pointer_cache_size: u16 = 0;
         for c in result.capabilities {
             match c {
                 CapabilitySet::General(c) => {
@@ -2344,12 +2345,28 @@ impl RdpServer {
                         }
                     }
                 }
+                CapabilitySet::Pointer(p) => {
+                    // MS-RDPBCGR 2.2.7.1.5: pointerCacheSize is the client's advertised cache
+                    // size for the New Pointer Update specifically (colorPointerCacheSize is
+                    // the separate, always-supported Color Pointer Update cache). A zero or
+                    // absent pointerCacheSize means the client did not advertise New Pointer
+                    // Update support at all, so `UpdateEncoder` must not emit RGBAPointer, and
+                    // must not reference a cache slot via CachedPointer either, since nothing
+                    // else in this crate populates that cache via the Color Pointer Update.
+                    pointer_cache_size = p.pointer_cache_size;
+                }
                 _ => {}
             }
         }
 
         let desktop_size = self.display.lock().await.size().await;
-        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs, self.opts.max_request_size)?;
+        let encoder = UpdateEncoder::new(
+            desktop_size,
+            surface_flags,
+            update_codecs,
+            self.opts.max_request_size,
+            pointer_cache_size,
+        )?;
 
         self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)
             .await?;
