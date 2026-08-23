@@ -18,7 +18,7 @@ use super::server::{
 use crate::error::ServerResult;
 #[cfg(feature = "usb")]
 use crate::urbdrc::DeviceFactory;
-use crate::{DisplayUpdate, RdpServerDisplayUpdates, RdpeiServerFactory, SoundServerFactory};
+use crate::{DisplayUpdate, RdpServerDisplayUpdates, RdpdrServerFactory, RdpeiServerFactory, SoundServerFactory};
 
 pub struct WantsAddr {}
 pub struct WantsSecurity {
@@ -44,6 +44,7 @@ pub struct BuilderDone {
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
+    rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     #[cfg(feature = "egfx")]
@@ -152,6 +153,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 sound_factory: None,
                 cliprdr_factory: None,
                 rdpei_factory: None,
+                rdpdr_factory: None,
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
@@ -183,6 +185,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 sound_factory: None,
                 cliprdr_factory: None,
                 rdpei_factory: None,
+                rdpdr_factory: None,
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
@@ -224,6 +227,11 @@ impl RdpServerBuilder<BuilderDone> {
     /// Configure MS-RDPEI (multitouch and pen input over a dynamic channel).
     pub fn with_rdpei_factory(mut self, rdpei_factory: Option<Box<dyn RdpeiServerFactory>>) -> Self {
         self.state.rdpei_factory = rdpei_factory;
+        self
+    }
+
+    pub fn with_rdpdr_factory(mut self, rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>) -> Self {
+        self.state.rdpdr_factory = rdpdr_factory;
         self
     }
 
@@ -441,6 +449,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.sound_factory,
             self.state.cliprdr_factory,
             self.state.rdpei_factory,
+            self.state.rdpdr_factory,
             self.state.connection_handler,
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,

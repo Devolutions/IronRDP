@@ -54,6 +54,7 @@ ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" } # public
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.10", features = ["reqwest"] }
 ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.10" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.9" } # public
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7" } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9" } # public
 ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" } # public
 ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.1", optional = true }
