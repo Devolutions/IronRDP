@@ -1101,6 +1101,7 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
     #[cfg(windows)]
     {
         if let Some(vm_id) = args.vmconnect {
+            properties.clear_named_pipe();
             properties.set_vmconnect_id(vm_id);
             properties.set_vmconnect_basic(args.vmconnect_basic);
             properties.set_vmconnect_current_user(args.vmconnect_current_user);
@@ -2290,6 +2291,8 @@ mod tests {
             VM_ID,
             "--vmconnect-basic",
             "--vmconnect-current-user",
+            "--prop",
+            r"ironrdp_named_pipe:s:\\.\pipe\lower-precedence",
         ])
         .expect("valid VMConnect arguments");
         let Some(Command::Connect(args)) = cli.command else {
@@ -2302,6 +2305,7 @@ mod tests {
         assert_eq!(properties.vmconnect_id(), Some(VM_ID));
         assert_eq!(properties.vmconnect_basic(), Some(true));
         assert_eq!(properties.vmconnect_current_user(), Some(true));
+        assert_eq!(properties.named_pipe(), None);
         assert_eq!(
             properties
                 .full_address()
