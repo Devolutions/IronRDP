@@ -13614,7 +13614,10 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
             if value.is_null() {
                 return Err(Error::from_hresult(E_POINTER));
             }
-            if !variant_bool(unsafe { &*value }, ptr::null_mut())? {
+            let disable_udp = variant_bool(unsafe { &*value }, ptr::null_mut())?;
+            let compatibility = self.compatibility.borrow();
+            active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
+            if !disable_udp {
                 return Err(Error::from_hresult(E_NOTIMPL));
             }
             // IronRDP's ActiveX client exposes no UDP transport, so the only truthful value is true.
@@ -21302,6 +21305,21 @@ mod tests {
                 .put_Property(BSTR::from("DisableUdpTransport").as_ptr(), &mut disable_udp)
                 .expect("confirm no UDP transport");
         }
+        let mut disable_udp = VARIANT::default();
+        unsafe {
+            extended
+                .get_Property(BSTR::from("DisableUdpTransport").as_ptr(), &mut disable_udp)
+                .expect("read UDP transport policy");
+        }
+        assert!(variant_bool(&disable_udp, ptr::null_mut()).expect("UDP policy boolean"));
+
+        let mut enable_udp = variant_bool_value(false);
+        assert_eq!(
+            unsafe { extended.put_Property(BSTR::from("DisableUdpTransport").as_ptr(), &mut enable_udp) }
+                .expect_err("UDP transport is not integrated")
+                .code(),
+            E_NOTIMPL
+        );
 
         let mut enable_tls = variant_bool_value(false);
         unsafe {
@@ -21392,6 +21410,21 @@ mod tests {
             .expect_err("unsupported extended setting");
         assert_eq!(error.code(), E_NOTIMPL);
         assert_eq!(variant_header(&unsupported).vt, VT_EMPTY);
+    }
+
+    #[test]
+    fn udp_transport_policy_is_immutable_after_connection_settings_are_sealed() {
+        let control = Control::new();
+        control.compatibility.borrow_mut().connection_settings_sealed = true;
+        let extended: IMsRdpExtendedSettings = control.into();
+        let mut disable_udp = variant_bool_value(true);
+
+        assert_eq!(
+            unsafe { extended.put_Property(BSTR::from("DisableUdpTransport").as_ptr(), &mut disable_udp) }
+                .expect_err("UDP policy is immutable after connection settings are sealed")
+                .code(),
+            E_UNEXPECTED
+        );
     }
 
     #[test]
