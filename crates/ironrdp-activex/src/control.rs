@@ -66,12 +66,12 @@ use windows::Win32::Security::Credentials::{
 use windows::Win32::Storage::FileSystem::GetLogicalDrives;
 use windows::Win32::System::Com::{
     CONNECTDATA, CoTaskMemAlloc, DATADIR_GET, DATADIR_SET, DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET,
-    DISPATCH_PROPERTYPUT, DISPPARAMS, DVASPECT, DVASPECT_CONTENT, DVTARGETDEVICE, EXCEPINFO, FORMATETC, IAdviseSink,
-    IConnectionPoint, IConnectionPoint_Impl, IConnectionPointContainer, IConnectionPointContainer_Impl, IDataObject,
-    IDataObject_Impl, IDispatch, IDispatch_Impl, IDispatch_Vtbl, IEnumConnectionPoints, IEnumConnectionPoints_Impl,
-    IEnumConnections, IEnumConnections_Impl, IEnumFORMATETC, IEnumFORMATETC_Impl, IEnumSTATDATA, IEnumSTATDATA_Impl,
-    IPersist_Impl, IPersistStreamInit, IPersistStreamInit_Impl, IStream, ITypeInfo, STATDATA, STGMEDIUM, STGMEDIUM_0,
-    TYMED_HGLOBAL,
+    DISPATCH_PROPERTYPUT, DISPID_UNKNOWN, DISPPARAMS, DVASPECT, DVASPECT_CONTENT, DVTARGETDEVICE, EXCEPINFO, FORMATETC,
+    IAdviseSink, IConnectionPoint, IConnectionPoint_Impl, IConnectionPointContainer, IConnectionPointContainer_Impl,
+    IDataObject, IDataObject_Impl, IDispatch, IDispatch_Impl, IDispatch_Vtbl, IEnumConnectionPoints,
+    IEnumConnectionPoints_Impl, IEnumConnections, IEnumConnections_Impl, IEnumFORMATETC, IEnumFORMATETC_Impl,
+    IEnumSTATDATA, IEnumSTATDATA_Impl, IPersist_Impl, IPersistStreamInit, IPersistStreamInit_Impl, IStream, ITypeInfo,
+    STATDATA, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
 };
 use windows::Win32::System::DataExchange::{
     CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
@@ -249,6 +249,9 @@ fn remote_program_execute(
     validate_remote_program_string(&working_directory, 259)?;
     validate_remote_program_string(&arguments, 8_000)?;
 
+    if !executable.is_empty() && !file.is_empty() || !file.is_empty() && !arguments.is_empty() {
+        return Err(Error::from_hresult(E_INVALIDARG));
+    }
     let (executable, file_flag) = if file.is_empty() {
         (executable, 0)
     } else {
@@ -1914,6 +1917,9 @@ unsafe extern "system" fn settings_get_ids_of_names<const SLOTS: usize>(
 
     if count == 0 {
         return S_OK;
+    }
+    unsafe {
+        slice::from_raw_parts_mut(ids, count as usize).fill(DISPID_UNKNOWN);
     }
     let member_name = match unsafe { (*names).to_string() } {
         Ok(name) => name,
@@ -8965,14 +8971,18 @@ impl Control {
                     }
                 }
                 WorkerEvent::RailExecuteResult { result, .. } => {
-                    let error = match result.result {
-                        ExecuteResult::Ok => 0,
-                        ExecuteResult::SessionLocked => 1,
-                        ExecuteResult::DecodeFailed => 2,
-                        ExecuteResult::NotInAllowlist => 3,
-                        ExecuteResult::FileNotFound => 5,
-                        ExecuteResult::Fail => 6,
-                        ExecuteResult::HookNotLoaded => 7,
+                    let error = if matches!(result.raw_result, 3 | 5 | 53 | 65 | 67) {
+                        4
+                    } else {
+                        match result.result {
+                            ExecuteResult::Ok => 0,
+                            ExecuteResult::SessionLocked => 1,
+                            ExecuteResult::DecodeFailed => 2,
+                            ExecuteResult::NotInAllowlist => 3,
+                            ExecuteResult::FileNotFound => 5,
+                            ExecuteResult::Fail => 6,
+                            ExecuteResult::HookNotLoaded => 7,
+                        }
                     };
                     self.fire_remote_program_result(result.executable, error, result.flags & ExecutePdu::FILE == 0);
                 }
@@ -11524,6 +11534,9 @@ impl IDispatch_Impl for Control_Impl {
             return Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND));
         }
 
+        unsafe {
+            slice::from_raw_parts_mut(dispids, count as usize).fill(DISPID_UNKNOWN);
+        }
         for index in 0..count as usize {
             let name =
                 unsafe { (*names.add(index)).to_string() }.map_err(|_| Error::from_hresult(DISP_E_UNKNOWNNAME))?;
@@ -20184,11 +20197,11 @@ mod tests {
     #[test]
     fn remote_program_builders_validate_public_contract_and_protocol_limits() {
         let execute = remote_program_execute(
-            "ignored.exe".to_owned(),
+            String::new(),
             "C:\\Docs\\report.txt".to_owned(),
             "%TEMP%".to_owned(),
             VARIANT_TRUE.0,
-            "%USERNAME%".to_owned(),
+            String::new(),
             VARIANT_TRUE.0,
         )
         .expect("file launch");
@@ -20197,6 +20210,21 @@ mod tests {
             ExecutePdu::FILE | ExecutePdu::EXPAND_WORKING_DIRECTORY | ExecutePdu::EXPAND_ARGUMENTS
         );
         assert_eq!(execute.executable, "C:\\Docs\\report.txt");
+
+        for (executable, file, arguments) in [
+            ("app.exe", "C:\\Docs\\report.txt", ""),
+            ("", "C:\\Docs\\report.txt", "--open"),
+        ] {
+            remote_program_execute(
+                executable.to_owned(),
+                file.to_owned(),
+                String::new(),
+                VARIANT_FALSE.0,
+                arguments.to_owned(),
+                VARIANT_FALSE.0,
+            )
+            .expect_err("invalid file launch arguments");
+        }
 
         let app = remote_program_app_execute(
             "Contoso.App_123!Main".to_owned(),
@@ -20427,6 +20455,15 @@ mod tests {
                 executable: "notepad.exe".to_owned(),
                 flags: 0,
             },
+            WorkerEvent::RailExecuteResult {
+                generation: 7,
+                result: ExecuteResultPdu {
+                    flags: 0,
+                    result: ExecuteResult::Fail,
+                    raw_result: 53,
+                    executable: "network.exe".to_owned(),
+                },
+            },
         ]);
 
         control.dispatch_pending_events();
@@ -20436,6 +20473,7 @@ mod tests {
             [
                 ("C:\\missing.txt".to_owned(), 5, false),
                 ("notepad.exe".to_owned(), 6, true),
+                ("network.exe".to_owned(), 4, true),
             ]
         );
     }
