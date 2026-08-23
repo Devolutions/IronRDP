@@ -50,6 +50,11 @@ name = "packet_io"
 path = "tests/packet_io.rs"
 required-features = ["native-tls", "test-support"]
 
+[[test]]
+name = "consent"
+path = "tests/consent.rs"
+required-features = ["native-tls", "test-support"]
+
 [features]
 default = []
 rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
