@@ -15,7 +15,7 @@ mod proto;
 
 use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
 use ironrdp_mstsgu::{ChannelClosePkt, ReauthMessagePkt, ServiceMessagePkt, gateway_code_label};
-use proto::TunnelReqPkt;
+use proto::{ExtendedAuthPkt, HandshakeRespPkt, HttpExtendedAuth, TunnelReqPkt};
 
 fn encode_to_vec(payload: &impl Encode) -> Vec<u8> {
     let mut buf = vec![0u8; payload.size()];
@@ -114,6 +114,82 @@ fn reauth_message_roundtrip() {
     );
     let decoded = decode_body::<ReauthMessagePkt>(&bytes);
     assert_eq!(decoded, pkt);
+}
+
+#[test]
+fn handshake_response_preserves_advertised_extended_auth_flags() {
+    assert_eq!(HttpExtendedAuth::HTTP_EXTENDED_AUTH_NONE.bits(), 0);
+
+    for flags in [0x0000u16, 0x0007, 0x8004] {
+        let mut bytes = [
+            0x02, 0x00, // packetType
+            0x00, 0x00, // reserved
+            0x12, 0x00, 0x00, 0x00, // packet length
+            0x00, 0x00, 0x00, 0x00, // errorCode
+            0x01, // verMajor
+            0x00, // verMinor
+            0x00, 0x00, // serverVersion
+            0x00, 0x00, // ExtendedAuth
+        ];
+        bytes[16..].copy_from_slice(&flags.to_le_bytes());
+        let response = decode_body::<HandshakeRespPkt>(&bytes);
+
+        assert_eq!(response.extended_auth.bits(), flags);
+    }
+}
+
+#[test]
+fn extended_auth_packet_roundtrip() {
+    let pkt = ExtendedAuthPkt {
+        error_code: 0x1122_3344,
+        auth_blob: vec![0xAA, 0xBB, 0xCC, 0xDD],
+    };
+    let bytes = encode_to_vec(&pkt);
+
+    assert_eq!(
+        bytes,
+        [
+            0x03, 0x00, // packetType
+            0x00, 0x00, // reserved
+            0x12, 0x00, 0x00, 0x00, // packet length
+            0x44, 0x33, 0x22, 0x11, // errorCode
+            0x04, 0x00, // cbBlobLen
+            0xAA, 0xBB, 0xCC, 0xDD, // authBlob
+        ]
+    );
+    assert_eq!(decode_body::<ExtendedAuthPkt>(&bytes), pkt);
+}
+
+#[test]
+fn extended_auth_packet_rejects_malformed_and_mismatched_blobs() {
+    let mut missing_length = ReadCursor::new(&[0x00; 5]);
+    assert!(ExtendedAuthPkt::decode(&mut missing_length).is_err());
+
+    let mut truncated_blob = ReadCursor::new(&[
+        0x00, 0x00, 0x00, 0x00, // errorCode
+        0x03, 0x00, // cbBlobLen
+        0xAA, 0xBB, // authBlob
+    ]);
+    assert!(ExtendedAuthPkt::decode(&mut truncated_blob).is_err());
+}
+
+#[test]
+fn extended_auth_packet_accepts_maximum_blob_and_rejects_larger_blobs() {
+    let pkt = ExtendedAuthPkt {
+        error_code: 0,
+        auth_blob: vec![0x5A; usize::from(u16::MAX)],
+    };
+    let bytes = encode_to_vec(&pkt);
+    assert_eq!(&bytes[12..14], &u16::MAX.to_le_bytes());
+    assert_eq!(decode_body::<ExtendedAuthPkt>(&bytes), pkt);
+
+    let oversized = ExtendedAuthPkt {
+        error_code: 0,
+        auth_blob: vec![0; usize::from(u16::MAX) + 1],
+    };
+    let mut bytes = vec![0; oversized.size()];
+    let mut cursor = WriteCursor::new(&mut bytes);
+    assert!(oversized.encode(&mut cursor).is_err());
 }
 
 #[test]
