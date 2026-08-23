@@ -42,7 +42,7 @@ use alloc::collections::btree_map::Entry;
 
 use ironrdp_core::invalid_field_err;
 use ironrdp_pdu::codecs::rfx::EntropyAlgorithm;
-use ironrdp_pdu::codecs::rfx::progressive::{ComponentCodecQuant, TILE_FLAG_DIFFERENCE};
+use ironrdp_pdu::codecs::rfx::progressive::{ComponentCodecQuant, ProgressiveCodecQuant, TILE_FLAG_DIFFERENCE};
 use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle};
 
 use crate::dwt_extrapolate::BandInfo;
@@ -1279,6 +1279,7 @@ pub struct ProgressiveDecoder {
     references: BTreeMap<SubBandDiffingTileKey, DecDwtQ>,
     frame_tiles: BTreeMap<(u16, u32), BTreeSet<(u16, u16)>>,
     frame_active: bool,
+    surface_context_flags: BTreeMap<u16, bool>,
 }
 
 impl ProgressiveDecoder {
@@ -1289,6 +1290,7 @@ impl ProgressiveDecoder {
             references: BTreeMap::new(),
             frame_tiles: BTreeMap::new(),
             frame_active: false,
+            surface_context_flags: BTreeMap::new(),
         }
     }
 
@@ -1338,20 +1340,26 @@ impl ProgressiveDecoder {
         // `MissingBlock("CONTEXT")`, freezing the image on the coarse first
         // pass.
         //
-        // Fall back to the value stored when the context was first created.
-        // Only error when neither source is available, i.e. the very first
-        // frame for a context arrived without a CONTEXT block.
-        let use_reduce_extrapolate = match blocks.iter().find_map(|block| match block {
+        // Fall back to the value stored when the context was first created, then to the last
+        // one this surface described: Windows opens a new codec context id mid-session,
+        // deletes the previous one, and never repeats SYNC + CONTEXT, so a per-context lookup
+        // alone rejects the new context. The retained value is scoped to its surface and
+        // released with it. Only error when no source is available at all.
+        let signalled = blocks.iter().find_map(|block| match block {
             ProgressiveBlock::Context(ctx) => Some(ctx.uses_reduce_extrapolate()),
             _ => None,
-        }) {
-            Some(v) => v,
-            None => self
-                .contexts
-                .get(&(surface_id, codec_context_id))
-                .map(|c| c.surface.use_reduce_extrapolate)
-                .ok_or(ProgressiveDecodeError::MissingBlock("CONTEXT"))?,
-        };
+        });
+        if let Some(flag) = signalled {
+            self.surface_context_flags.insert(surface_id, flag);
+        }
+        let use_reduce_extrapolate = signalled
+            .or_else(|| {
+                self.contexts
+                    .get(&(surface_id, codec_context_id))
+                    .map(|c| c.surface.use_reduce_extrapolate)
+            })
+            .or_else(|| self.surface_context_flags.get(&surface_id).copied())
+            .ok_or(ProgressiveDecodeError::MissingBlock("CONTEXT"))?;
 
         // Direct users of the decoder get one self-contained frame per call.
         // The EGFX client brackets multiple payloads with begin_frame/end_frame.
@@ -1526,6 +1534,7 @@ impl ProgressiveDecoder {
             .retain(|(reference_surface_id, _, _), _| *reference_surface_id != surface_id);
         self.frame_tiles
             .retain(|(context_surface_id, _), _| *context_surface_id != surface_id);
+        self.surface_context_flags.remove(&surface_id);
     }
 
     /// Reset codec-context state while retaining surface sub-band references.
@@ -1534,6 +1543,35 @@ impl ProgressiveDecoder {
         self.frame_tiles.clear();
         self.frame_active = false;
     }
+}
+
+/// Resolve the progressive quantization values a tile's `quality` byte selects.
+///
+/// Per [MS-RDPEGFX] 2.2.4.2.1.5.2 `quality` indexes the REGION's `quantProgVals`, except for
+/// the reserved value 0xFF, which selects full quality instead of indexing. Windows servers
+/// send 0xFF with an empty table, so treating it as an index rejects every tile they encode.
+fn progressive_quant_for(
+    quality: u8,
+    prog_quant_vals: &[ProgressiveCodecQuant],
+) -> Result<ProgressiveCodecQuant, ProgressiveDecodeError> {
+    const FULL_QUALITY: u8 = 0xFF;
+
+    if quality == FULL_QUALITY {
+        return Ok(ProgressiveCodecQuant {
+            quality,
+            y_quant: ComponentCodecQuant::LOSSLESS,
+            cb_quant: ComponentCodecQuant::LOSSLESS,
+            cr_quant: ComponentCodecQuant::LOSSLESS,
+        });
+    }
+
+    prog_quant_vals
+        .get(usize::from(quality))
+        .copied()
+        .ok_or(ProgressiveDecodeError::InvalidQuantIndex {
+            index: usize::from(quality),
+            table_len: prog_quant_vals.len(),
+        })
 }
 
 #[expect(
@@ -1546,7 +1584,7 @@ fn decode_tile_block(
     references: &mut BTreeMap<SubBandDiffingTileKey, DecDwtQ>,
     tile_block: &ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile<'_>,
     quant_vals: &[ComponentCodecQuant],
-    prog_quant_vals: &[ironrdp_pdu::codecs::rfx::progressive::ProgressiveCodecQuant],
+    prog_quant_vals: &[ProgressiveCodecQuant],
     use_reduce_extrapolate: bool,
 ) -> Result<Vec<DecodedTile>, ProgressiveDecodeError> {
     use ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile;
@@ -1645,14 +1683,7 @@ fn decode_tile_block(
                 });
             }
 
-            let pq_idx = usize::from(tile.quality);
-            if pq_idx >= prog_quant_vals.len() {
-                return Err(ProgressiveDecodeError::InvalidQuantIndex {
-                    index: pq_idx,
-                    table_len: prog_quant_vals.len(),
-                });
-            }
-            let pq = &prog_quant_vals[pq_idx];
+            let pq = progressive_quant_for(tile.quality, prog_quant_vals)?;
 
             tile_state.decode_first_with_difference(
                 [tile.y_data, tile.cb_data, tile.cr_data],
@@ -1691,14 +1722,7 @@ fn decode_tile_block(
                 return Ok(Vec::new());
             }
 
-            let pq_idx = usize::from(tile.quality);
-            if pq_idx >= prog_quant_vals.len() {
-                return Err(ProgressiveDecodeError::InvalidQuantIndex {
-                    index: pq_idx,
-                    table_len: prog_quant_vals.len(),
-                });
-            }
-            let pq = &prog_quant_vals[pq_idx];
+            let pq = progressive_quant_for(tile.quality, prog_quant_vals)?;
 
             tile_state.decode_upgrade(
                 [tile.y_srl_data, tile.cb_srl_data, tile.cr_srl_data],
@@ -2372,6 +2396,20 @@ mod tests {
         assert!(matches!(
             decoder.decode_bitmap(1, 11, 64, 64, &inside),
             Err(ProgressiveDecodeError::TileOutOfBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn full_quality_tiles_bypass_the_progressive_quant_table() {
+        let lossless = progressive_quant_for(0xFF, &[]).expect("0xFF selects full quality");
+        assert_eq!(lossless.y_quant, ComponentCodecQuant::LOSSLESS);
+        assert_eq!(lossless.cb_quant, ComponentCodecQuant::LOSSLESS);
+        assert_eq!(lossless.cr_quant, ComponentCodecQuant::LOSSLESS);
+
+        // Every other value still indexes the table the REGION carried.
+        assert!(matches!(
+            progressive_quant_for(0, &[]),
+            Err(ProgressiveDecodeError::InvalidQuantIndex { index: 0, table_len: 0 })
         ));
     }
 
@@ -3194,7 +3232,7 @@ mod tests {
     fn progressive_tile_stream(
         include_context: bool,
         quant_vals: Vec<ComponentCodecQuant>,
-        quant_prog_vals: Vec<ironrdp_pdu::codecs::rfx::progressive::ProgressiveCodecQuant>,
+        quant_prog_vals: Vec<ProgressiveCodecQuant>,
         tile: ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile<'_>,
     ) -> Vec<u8> {
         use ironrdp_pdu::codecs::rfx::RfxRectangle;
@@ -3266,7 +3304,7 @@ mod tests {
         progressive_quant: ComponentCodecQuant,
         include_context: bool,
     ) -> Vec<u8> {
-        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveCodecQuant, ProgressiveTile, TileFirst};
+        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileFirst};
 
         progressive_tile_stream(
             include_context,
@@ -3300,7 +3338,7 @@ mod tests {
         upgrade_progressive_quant: ComponentCodecQuant,
         include_context: bool,
     ) -> Vec<u8> {
-        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveCodecQuant, ProgressiveTile, TileUpgrade};
+        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileUpgrade};
 
         progressive_tile_stream(
             include_context,

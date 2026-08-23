@@ -693,7 +693,11 @@ impl GraphicsPipelineClient {
         if let Some(ref mut decoder) = self.h264_decoder {
             decoder.reset();
         }
-        self.progressive_decoder.reset();
+        // The Progressive decoder is deliberately NOT reset here either. Its context lifetime
+        // is driven by DeleteEncodingContext and DeleteSurface; MS-RDPEGFX 3.3.5.14 only
+        // resizes the Graphics Output Buffer. Windows establishes a codec context once and
+        // never re-sends SYNC + CONTEXT afterwards, so dropping it here makes every later
+        // payload fail with MissingBlock("CONTEXT").
         // The ClearCodec decoder is deliberately NOT reset here. MS-RDPEGFX 3.3.5.14 only
         // resizes the Graphics Output Buffer; cache lifetime is driven by the stream instead,
         // through CLEARCODEC_FLAG_CACHE_RESET (2.2.4.1), which ClearCodecDecoder::decode
@@ -2048,36 +2052,46 @@ mod tests {
     }
 
     #[test]
-    fn progressive_context_is_reset_with_graphics() {
-        assert_progressive_context_is_deleted(|client| {
-            client
-                .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
-                    width: 64,
-                    height: 64,
-                    monitors: vec![],
-                }))
-                .unwrap();
-            client
-                .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-                    surface_id: 1,
-                    width: 64,
-                    height: 64,
-                    pixel_format: PixelFormat::XRgb,
-                }))
-                .unwrap();
-        });
+    fn progressive_context_survives_graphics_reset() {
+        let mut client = progressive_client();
+        wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
+
+        client
+            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                width: 64,
+                height: 64,
+                monitors: vec![],
+            }))
+            .unwrap();
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 1,
+                width: 64,
+                height: 64,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .unwrap();
+
+        // Windows never re-sends SYNC + CONTEXT after a reset, so a CONTEXT-less
+        // continuation has to keep decoding.
+        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
     }
 
     #[test]
     fn progressive_context_is_deleted_with_encoding_context() {
-        assert_progressive_context_is_deleted(|client| {
-            client
-                .handle_pdu(GfxPdu::DeleteEncodingContext(DeleteEncodingContextPdu {
-                    surface_id: 1,
-                    codec_context_id: 7,
-                }))
-                .unwrap();
-        });
+        let mut client = progressive_client();
+        wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
+        client
+            .handle_pdu(GfxPdu::DeleteEncodingContext(DeleteEncodingContextPdu {
+                surface_id: 1,
+                codec_context_id: 7,
+            }))
+            .unwrap();
+
+        // The context's tiles are gone, but the surface survives and keeps the band layout it
+        // was given, so a payload reusing the id decodes from scratch. Windows deletes a codec
+        // context as it opens the next one and never repeats SYNC + CONTEXT.
+        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
     }
 
     #[test]
