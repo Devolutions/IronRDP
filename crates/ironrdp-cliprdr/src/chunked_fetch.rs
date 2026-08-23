@@ -65,6 +65,14 @@ pub struct ChunkedFetch {
     stream_id: u32,
     file_index: i32,
     chunk_size: u32,
+    /// Caller-supplied ceiling on `total_size`, independent of what the size itself claims to
+    /// be. `total_size` for [`Self::new`] and the `SIZE` response for
+    /// [`Self::new_with_size_query`] both ultimately trace back to remote-controlled metadata
+    /// (a `FileGroupDescriptorW` entry, or the peer's own `SIZE` answer), so without this a
+    /// peer can name an arbitrarily large file and this type will retain every byte of it
+    /// until allocation fails. Checked as soon as `total_size` is known; a fetch whose size
+    /// exceeds it fails before any `RANGE` request is ever issued.
+    max_total_size: u64,
     total_size: Option<u64>,
     received: Vec<u8>,
     next_offset: u64,
@@ -75,6 +83,13 @@ pub struct ChunkedFetch {
     /// `cbRequested` as the maximum a `RANGE` responder may return, so a response longer than
     /// this is a protocol violation, not extra data to accept.
     last_requested_size: Option<u32>,
+    /// `clipDataId` of the lock this fetch is bound to, sent explicitly on every request
+    /// instead of left for [`crate::Cliprdr::request_file_contents`] to fill in from
+    /// `current_lock_id`. A fetch spans multiple requests, and a `FormatList` between them
+    /// expires the old lock and can install a new one under the same field; auto-filling
+    /// would silently redirect a request already in flight to whatever lock happens to be
+    /// current at send time, splicing bytes from two different files into one buffer.
+    clip_data_id: Option<u32>,
 }
 
 impl ChunkedFetch {
@@ -82,39 +97,65 @@ impl ChunkedFetch {
     ///
     /// This is the common case: the size is usually already available from an earlier
     /// `FileGroupDescriptorW` exchange, so a `SIZE` round-trip is unnecessary overhead.
-    /// `chunk_size` must be greater than 0.
-    pub fn new(stream_id: u32, file_index: i32, total_size: u64, chunk_size: u32) -> Self {
+    /// `chunk_size` must be greater than 0. `clip_data_id` should be the id passed to
+    /// [`crate::backend::CliprdrBackend::on_remote_file_list`] alongside the file this fetch
+    /// targets, so every request in the sequence stays bound to that same locked snapshot.
+    /// The fetch fails immediately if `total_size` exceeds `max_total_size`.
+    pub fn new(
+        stream_id: u32,
+        file_index: i32,
+        total_size: u64,
+        chunk_size: u32,
+        clip_data_id: Option<u32>,
+        max_total_size: u64,
+    ) -> Self {
         Self {
             stream_id,
             file_index,
             chunk_size: chunk_size.max(1),
+            max_total_size,
             total_size: Some(total_size),
             received: Vec::new(),
             next_offset: 0,
-            state: if total_size == 0 {
+            state: if total_size > max_total_size {
+                State::Failed
+            } else if total_size == 0 {
                 State::Complete
             } else {
                 State::Fetching
             },
             awaiting_response: false,
             last_requested_size: None,
+            clip_data_id,
         }
     }
 
     /// Start a fetch that must first learn the file's size via a `SIZE` request.
     ///
-    /// `chunk_size` must be greater than 0.
-    pub fn new_with_size_query(stream_id: u32, file_index: i32, chunk_size: u32) -> Self {
+    /// `chunk_size` must be greater than 0. `clip_data_id` should be the id passed to
+    /// [`crate::backend::CliprdrBackend::on_remote_file_list`] alongside the file this fetch
+    /// targets, so every request in the sequence, including the `SIZE` request, stays bound
+    /// to that same locked snapshot. The fetch fails once the `SIZE` response arrives if the
+    /// reported size exceeds `max_total_size`.
+    pub fn new_with_size_query(
+        stream_id: u32,
+        file_index: i32,
+        chunk_size: u32,
+        clip_data_id: Option<u32>,
+        max_total_size: u64,
+    ) -> Self {
         Self {
             stream_id,
             file_index,
             chunk_size: chunk_size.max(1),
+            max_total_size,
             total_size: None,
             received: Vec::new(),
             next_offset: 0,
             state: State::AwaitingSize,
             awaiting_response: false,
             last_requested_size: None,
+            clip_data_id,
         }
     }
 
@@ -148,7 +189,7 @@ impl ChunkedFetch {
                 flags: FileContentsFlags::SIZE,
                 position: 0,
                 requested_size: 8,
-                data_id: None,
+                data_id: self.clip_data_id,
             },
             State::Fetching => {
                 let total_size = self.total_size?;
@@ -164,7 +205,7 @@ impl ChunkedFetch {
                     flags: FileContentsFlags::RANGE,
                     position: self.next_offset,
                     requested_size,
-                    data_id: None,
+                    data_id: self.clip_data_id,
                 }
             }
             State::Complete | State::Failed => return None,
@@ -187,7 +228,9 @@ impl ChunkedFetch {
             State::AwaitingSize => match response.data_as_size() {
                 Ok(total_size) => {
                     self.total_size = Some(total_size);
-                    self.state = if total_size == 0 {
+                    self.state = if total_size > self.max_total_size {
+                        State::Failed
+                    } else if total_size == 0 {
                         State::Complete
                     } else {
                         State::Fetching

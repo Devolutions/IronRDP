@@ -1,9 +1,13 @@
 use ironrdp_cliprdr::chunked_fetch::{ChunkedFetch, ChunkedFetchProgress};
 use ironrdp_cliprdr::pdu::{FileContentsFlags, FileContentsResponse};
 
+/// Generous enough to be a no-op against every file size used in these tests, so tests not
+/// about the cap itself don't have to think about it.
+const NO_EFFECTIVE_CAP: u64 = u64::MAX;
+
 #[test]
 fn known_size_skips_the_size_phase() {
-    let mut fetch = ChunkedFetch::new(1, 0, 10, 64);
+    let mut fetch = ChunkedFetch::new(1, 0, 10, 64, None, NO_EFFECTIVE_CAP);
 
     let request = fetch.next_request().expect("fetch not finished");
     assert_eq!(request.flags, FileContentsFlags::RANGE);
@@ -13,7 +17,7 @@ fn known_size_skips_the_size_phase() {
 
 #[test]
 fn zero_size_file_completes_immediately() {
-    let mut fetch = ChunkedFetch::new(1, 0, 0, 64);
+    let mut fetch = ChunkedFetch::new(1, 0, 0, 64, None, NO_EFFECTIVE_CAP);
     assert!(fetch.is_finished());
     assert!(fetch.next_request().is_none());
     assert_eq!(fetch.into_data(), Vec::<u8>::new());
@@ -21,7 +25,7 @@ fn zero_size_file_completes_immediately() {
 
 #[test]
 fn size_query_phase_then_fetching() {
-    let mut fetch = ChunkedFetch::new_with_size_query(1, 0, 4);
+    let mut fetch = ChunkedFetch::new_with_size_query(1, 0, 4, None, NO_EFFECTIVE_CAP);
 
     let size_request = fetch.next_request().expect("fetch not finished");
     assert_eq!(size_request.flags, FileContentsFlags::SIZE);
@@ -43,7 +47,7 @@ fn size_query_phase_then_fetching() {
 
 #[test]
 fn size_query_of_zero_completes_without_a_range_request() {
-    let mut fetch = ChunkedFetch::new_with_size_query(1, 0, 4);
+    let mut fetch = ChunkedFetch::new_with_size_query(1, 0, 4, None, NO_EFFECTIVE_CAP);
     let _ = fetch.next_request();
 
     let progress = fetch.on_response(&FileContentsResponse::new_size_response(1, 0));
@@ -54,7 +58,7 @@ fn size_query_of_zero_completes_without_a_range_request() {
 
 #[test]
 fn assembles_multiple_chunks_in_order() {
-    let mut fetch = ChunkedFetch::new(1, 0, 10, 4);
+    let mut fetch = ChunkedFetch::new(1, 0, 10, 4, None, NO_EFFECTIVE_CAP);
 
     let r1 = fetch.next_request().unwrap();
     assert_eq!((r1.position, r1.requested_size), (0, 4));
@@ -77,7 +81,7 @@ fn assembles_multiple_chunks_in_order() {
 
 #[test]
 fn next_request_returns_none_while_a_response_is_outstanding() {
-    let mut fetch = ChunkedFetch::new(1, 0, 10, 4);
+    let mut fetch = ChunkedFetch::new(1, 0, 10, 4, None, NO_EFFECTIVE_CAP);
 
     assert!(fetch.next_request().is_some());
     // A second call before on_response() must not produce a duplicate/overlapping request.
@@ -86,7 +90,7 @@ fn next_request_returns_none_while_a_response_is_outstanding() {
 
 #[test]
 fn error_response_fails_the_fetch() {
-    let mut fetch = ChunkedFetch::new(1, 0, 10, 4);
+    let mut fetch = ChunkedFetch::new(1, 0, 10, 4, None, NO_EFFECTIVE_CAP);
     let _ = fetch.next_request();
 
     let progress = fetch.on_response(&FileContentsResponse::new_error(1));
@@ -98,7 +102,7 @@ fn error_response_fails_the_fetch() {
 
 #[test]
 fn malformed_size_response_fails_the_fetch() {
-    let mut fetch = ChunkedFetch::new_with_size_query(1, 0, 4);
+    let mut fetch = ChunkedFetch::new_with_size_query(1, 0, 4, None, NO_EFFECTIVE_CAP);
     let _ = fetch.next_request();
 
     // Not exactly 8 bytes, per MS-RDPECLIP 2.2.5.4 SIZE response contract.
@@ -110,7 +114,7 @@ fn malformed_size_response_fails_the_fetch() {
 
 #[test]
 fn empty_data_before_completion_fails_rather_than_looping_forever() {
-    let mut fetch = ChunkedFetch::new(1, 0, 10, 4);
+    let mut fetch = ChunkedFetch::new(1, 0, 10, 4, None, NO_EFFECTIVE_CAP);
     let _ = fetch.next_request();
 
     let progress = fetch.on_response(&FileContentsResponse::new_data_response(1, Vec::<u8>::new()));
@@ -120,7 +124,7 @@ fn empty_data_before_completion_fails_rather_than_looping_forever() {
 
 #[test]
 fn response_exceeding_requested_size_fails_the_fetch() {
-    let mut fetch = ChunkedFetch::new(1, 0, 4, 64);
+    let mut fetch = ChunkedFetch::new(1, 0, 4, 64, None, NO_EFFECTIVE_CAP);
     let request = fetch.next_request().unwrap();
     assert_eq!(
         request.requested_size, 4,
@@ -139,7 +143,7 @@ fn response_within_requested_size_still_clamps_against_total_size_as_a_backstop(
     // Feeding a response with no prior next_request() call (so last_requested_size is
     // still None) exercises the defensive total_size clamp on its own, independent of
     // the cbRequested check above.
-    let mut fetch = ChunkedFetch::new(1, 0, 4, 64);
+    let mut fetch = ChunkedFetch::new(1, 0, 4, 64, None, NO_EFFECTIVE_CAP);
 
     let progress = fetch.on_response(&FileContentsResponse::new_data_response(1, b"abcdEXTRA".as_slice()));
 
@@ -149,6 +153,47 @@ fn response_within_requested_size_still_clamps_against_total_size_as_a_backstop(
 
 #[test]
 fn stream_id_is_stable_across_the_whole_fetch() {
-    let fetch = ChunkedFetch::new(42, 0, 10, 4);
+    let fetch = ChunkedFetch::new(42, 0, 10, 4, None, NO_EFFECTIVE_CAP);
     assert_eq!(fetch.stream_id(), 42);
+}
+
+#[test]
+fn clip_data_id_is_sent_on_every_request_instead_of_left_for_the_caller_to_default() {
+    // A FormatList between requests can change what current_lock_id would default to;
+    // ChunkedFetch must keep sending the id it was constructed with, not None.
+    let mut fetch = ChunkedFetch::new(1, 0, 8, 4, Some(7), NO_EFFECTIVE_CAP);
+
+    let r1 = fetch.next_request().unwrap();
+    assert_eq!(r1.data_id, Some(7));
+    let _ = fetch.on_response(&FileContentsResponse::new_data_response(1, b"abcd".as_slice()));
+
+    let r2 = fetch.next_request().unwrap();
+    assert_eq!(r2.data_id, Some(7));
+}
+
+#[test]
+fn clip_data_id_is_sent_on_the_size_request_too() {
+    let mut fetch = ChunkedFetch::new_with_size_query(1, 0, 4, Some(3), NO_EFFECTIVE_CAP);
+
+    let size_request = fetch.next_request().unwrap();
+    assert_eq!(size_request.data_id, Some(3));
+}
+
+#[test]
+fn known_size_over_the_cap_fails_before_any_request_is_issued() {
+    let mut fetch = ChunkedFetch::new(1, 0, 1_000_000, 64, None, 10);
+
+    assert!(fetch.is_finished());
+    assert!(fetch.next_request().is_none());
+}
+
+#[test]
+fn queried_size_over_the_cap_fails_before_any_range_request() {
+    let mut fetch = ChunkedFetch::new_with_size_query(1, 0, 64, None, 10);
+    let _ = fetch.next_request();
+
+    let progress = fetch.on_response(&FileContentsResponse::new_size_response(1, 1_000_000));
+
+    assert_eq!(progress, ChunkedFetchProgress::Failed);
+    assert!(fetch.next_request().is_none());
 }
