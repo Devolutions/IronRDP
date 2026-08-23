@@ -1,6 +1,9 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
+#[cfg(test)]
+use tokio_native_tls as _;
+
 #[macro_use]
 mod macros;
 
@@ -27,6 +30,7 @@ use std::io;
 use futures_util::FutureExt as _;
 use hyper::body::Bytes;
 use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor};
+use ironrdp_tls::{CertificateValidation, CertificateValidationCallback};
 use log::warn;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::PollSender;
@@ -126,6 +130,7 @@ type Error = ironrdp_error::Error<GwErrorKind>;
 #[non_exhaustive]
 pub enum GwErrorKind {
     InvalidGwTarget,
+    InvalidCertificateValidation,
     Connect,
     /// A nonzero HRESULT returned by the gateway during control setup.
     GatewayCode(u32),
@@ -158,6 +163,7 @@ impl Display for GwErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let x = match self {
             GwErrorKind::InvalidGwTarget => "invalid GW Target",
+            GwErrorKind::InvalidCertificateValidation => "invalid certificate validation configuration",
             GwErrorKind::Connect => "connection error",
             GwErrorKind::GatewayCode(code) => match gateway_code_label(*code) {
                 Some(label) => return write!(f, "gateway error 0x{code:08x} ({label})"),
@@ -213,7 +219,29 @@ impl GwClient {
         target: &GwConnectTarget,
         client_name: &str,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
-        Self::connect_with_port(target, client_name, 3389).await
+        Self::connect_with_certificate_validation(target, client_name, CertificateValidation::default(), None).await
+    }
+
+    /// Open an MS-TSGU tunnel with an explicit TLS certificate-validation configuration.
+    ///
+    /// This presents port `3389` to the gateway.
+    ///
+    /// Certificate-validation callbacks require the Rustls TLS backend and cannot be
+    /// combined with [`CertificateValidation::DangerouslyAcceptInvalidCertificate`].
+    pub async fn connect_with_certificate_validation(
+        target: &GwConnectTarget,
+        client_name: &str,
+        certificate_validation: CertificateValidation,
+        certificate_validation_callback: Option<CertificateValidationCallback>,
+    ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        Self::connect_with_port_and_certificate_validation(
+            target,
+            client_name,
+            3389,
+            certificate_validation,
+            certificate_validation_callback,
+        )
+        .await
     }
 
     /// Open an MS-TSGU tunnel and decide a gateway consent message synchronously.
@@ -234,7 +262,45 @@ impl GwClient {
         client_name: &str,
         server_port: u16,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
-        Self::connect_with_port_and_optional_consent(target, client_name, server_port, None).await
+        Self::connect_with_port_and_certificate_validation(
+            target,
+            client_name,
+            server_port,
+            CertificateValidation::default(),
+            None,
+        )
+        .await
+    }
+
+    /// Open an MS-TSGU tunnel with an explicit TLS certificate-validation configuration.
+    ///
+    /// Certificate-validation callbacks require the Rustls TLS backend and cannot be
+    /// combined with [`CertificateValidation::DangerouslyAcceptInvalidCertificate`].
+    pub async fn connect_with_port_and_certificate_validation(
+        target: &GwConnectTarget,
+        client_name: &str,
+        server_port: u16,
+        certificate_validation: CertificateValidation,
+        certificate_validation_callback: Option<CertificateValidationCallback>,
+    ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        if certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate
+            && certificate_validation_callback.is_some()
+        {
+            return Err(Error::new(
+                "certificate validation",
+                GwErrorKind::InvalidCertificateValidation,
+            ));
+        }
+
+        Self::connect_with_port_and_optional_consent(
+            target,
+            client_name,
+            server_port,
+            certificate_validation,
+            certificate_validation_callback,
+            None,
+        )
+        .await
     }
 
     /// Open an MS-TSGU tunnel and decide a gateway consent message synchronously.
@@ -247,16 +313,27 @@ impl GwClient {
         server_port: u16,
         consent_callback: &mut GwConsentCallback<'_>,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
-        Self::connect_with_port_and_optional_consent(target, client_name, server_port, Some(consent_callback)).await
+        Self::connect_with_port_and_optional_consent(
+            target,
+            client_name,
+            server_port,
+            CertificateValidation::default(),
+            None,
+            Some(consent_callback),
+        )
+        .await
     }
 
     async fn connect_with_port_and_optional_consent(
         target: &GwConnectTarget,
         client_name: &str,
         server_port: u16,
+        certificate_validation: CertificateValidation,
+        certificate_validation_callback: Option<CertificateValidationCallback>,
         consent_callback: Option<&mut GwConsentCallback<'_>>,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
-        let (io, client_addr) = open_gateway_transport(target).await?;
+        let (io, client_addr) =
+            open_gateway_transport(target, certificate_validation, certificate_validation_callback).await?;
         Self::connect_ws(target.clone(), client_name, server_port, io, consent_callback)
             .await
             .map(|x| (x, client_addr))

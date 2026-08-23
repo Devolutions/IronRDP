@@ -9073,11 +9073,10 @@ impl Control {
             let certificate_events = Arc::clone(&self.events);
             let certificate_event_posted = Arc::clone(&self.event_posted);
             let certificate_dispatcher = hwnd.0 as isize;
-            let endpoint = destination.to_string();
             let callback: ironrdp_tls::CertificateValidationCallback =
-                Arc::new(move |certificate_der, validation_reason| {
+                Arc::new(move |certificate_der, endpoint, validation_reason| {
                     let fingerprint = certificate_fingerprint(certificate_der);
-                    if !public_mode && certificate_exception_is_trusted(&endpoint, &fingerprint) {
+                    if !public_mode && certificate_exception_is_trusted(endpoint, &fingerprint) {
                         trace_host_call("RdpWorker::TlsCertificateValidation:TrustedException");
                         return true;
                     }
@@ -9089,7 +9088,7 @@ impl Control {
                         HWND(certificate_dispatcher as *mut c_void),
                         WorkerEvent::CertificateWarning {
                             generation,
-                            endpoint: endpoint.clone(),
+                            endpoint: endpoint.to_owned(),
                             fingerprint,
                             validation_reason: validation_reason.to_owned(),
                             public_mode,

@@ -294,8 +294,9 @@ fn certificate_validation_preserves_the_default_and_callbacks_are_explicit() {
         ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate
     );
 
-    let callback: ironrdp_tls::CertificateValidationCallback =
-        Arc::new(|certificate, reason| certificate == b"test certificate" && reason == "untrusted issuer");
+    let callback: ironrdp_tls::CertificateValidationCallback = Arc::new(|certificate, server_name, reason| {
+        certificate == b"test certificate" && server_name == "rdp.example.com" && reason == "untrusted issuer"
+    });
     let config = ConfigBuilder::new()
         .with_destination(Destination::from_parts("rdp.example.com", 3389))
         .with_username("test-user")
@@ -314,8 +315,8 @@ fn certificate_validation_preserves_the_default_and_callbacks_are_explicit() {
     let callback = config
         .certificate_validation_callback()
         .expect("certificate validation callback must be retained");
-    assert!(callback(b"test certificate", "untrusted issuer"));
-    assert!(!callback(b"other certificate", "untrusted issuer"));
+    assert!(callback(b"test certificate", "rdp.example.com", "untrusted issuer"));
+    assert!(!callback(b"other certificate", "rdp.example.com", "untrusted issuer"));
 }
 
 #[test]

@@ -2,7 +2,7 @@
 
 use hyper::body::Bytes;
 
-use crate::packet_io::{PacketIo, open_test_transport};
+use crate::packet_io::{PacketIo, open_gateway_transport, open_test_transport};
 use crate::{Error, GwClient, GwConnectTarget, GwConsentCallback};
 
 /// In-memory gateway transport used by the registered integration tests.
@@ -18,6 +18,17 @@ impl GatewayTransport {
             .await
             .map(Self)
             .map_err(|error| error.to_string())
+    }
+
+    /// Open an HTTPS gateway transport with the production TLS connection path.
+    pub async fn connect_tls(
+        target: &GwConnectTarget,
+        certificate_validation: ironrdp_tls::CertificateValidation,
+        certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
+    ) -> Result<Self, Error> {
+        open_gateway_transport(target, certificate_validation, certificate_validation_callback)
+            .await
+            .map(|(transport, _)| Self(transport))
     }
 
     /// Send one MS-TSGU packet to the mock gateway.
