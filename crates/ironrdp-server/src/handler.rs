@@ -38,10 +38,14 @@ pub enum MouseEvent {
         button: MouseButton,
         pressed: bool,
     },
-    /// A button press or release with no absolute position. `MouseRelPdu`
-    /// only carries relative motion deltas, so its buttons have nothing to
-    /// report a position with; position accumulates from `RelMove`.
+    /// A button press or release with a relative motion delta instead of an
+    /// absolute position. Per MS-RDPBCGR 2.2.8.1.1.3.1.1.7, a `MouseRelPdu`
+    /// button flag reports the press or release at the position produced by
+    /// applying `x`/`y` to the previous position, so the delta belongs to
+    /// this event and is not a separate `RelMove`.
     ButtonRel {
+        x: i32,
+        y: i32,
         button: MouseButton,
         pressed: bool,
     },
@@ -264,30 +268,46 @@ impl From<MouseXPdu> for MouseEvent {
 
 impl From<MouseRelPdu> for MouseEvent {
     fn from(value: MouseRelPdu) -> Self {
+        // Per MS-RDPBCGR 2.2.8.1.1.3.1.1.7, xDelta/yDelta are present on every
+        // relative event, including button events: PTRFLAGS_DOWN is defined as
+        // the press occurring at the position produced by applying this same
+        // delta to the previous position. So a button flag never discards it.
+        let x = value.x_delta.into();
+        let y = value.y_delta.into();
         let pressed = value.flags.contains(PointerRelFlags::DOWN);
 
         if value.flags.contains(PointerRelFlags::BUTTON1) {
             MouseEvent::ButtonRel {
+                x,
+                y,
                 button: MouseButton::Left,
                 pressed,
             }
         } else if value.flags.contains(PointerRelFlags::BUTTON2) {
             MouseEvent::ButtonRel {
+                x,
+                y,
                 button: MouseButton::Right,
                 pressed,
             }
         } else if value.flags.contains(PointerRelFlags::BUTTON3) {
             MouseEvent::ButtonRel {
+                x,
+                y,
                 button: MouseButton::Middle,
                 pressed,
             }
         } else if value.flags.contains(PointerRelFlags::XBUTTON1) {
             MouseEvent::ButtonRel {
+                x,
+                y,
                 button: MouseButton::X1,
                 pressed,
             }
         } else if value.flags.contains(PointerRelFlags::XBUTTON2) {
             MouseEvent::ButtonRel {
+                x,
+                y,
                 button: MouseButton::X2,
                 pressed,
             }
@@ -296,10 +316,7 @@ impl From<MouseRelPdu> for MouseEvent {
             // additive rather than a teleport, so applying whatever delta
             // the PDU carries is a safe default even for an unrecognized
             // flag combination.
-            MouseEvent::RelMove {
-                x: value.x_delta.into(),
-                y: value.y_delta.into(),
-            }
+            MouseEvent::RelMove { x, y }
         }
     }
 }
