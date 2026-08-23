@@ -14,6 +14,7 @@
 mod proto;
 
 use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
+use ironrdp_mstsgu::GwErrorKind;
 use ironrdp_mstsgu::{ChannelClosePkt, ReauthMessagePkt, ServiceMessagePkt, gateway_code_label};
 use proto::{ExtendedAuthPkt, HandshakeRespPkt, HttpExtendedAuth, TunnelReqPkt};
 
@@ -212,4 +213,16 @@ fn gateway_code_label_known_and_unknown() {
     assert_eq!(gateway_code_label(0x0000_59DD), Some("E_PROXY_TS_CONNECTFAILED"));
     assert_eq!(gateway_code_label(0x8007_59DD), Some("E_PROXY_TS_CONNECTFAILED"));
     assert_eq!(gateway_code_label(0xDEAD_BEEF), None);
+}
+
+#[test]
+fn gateway_error_kind_displays_fixed_width_raw_code() {
+    assert_eq!(
+        GwErrorKind::GatewayCode(0x8007_59DA).to_string(),
+        "gateway error 0x800759da (E_PROXY_RAP_ACCESSDENIED)"
+    );
+    assert_eq!(
+        GwErrorKind::GatewayCode(0xDEAD_BEEF).to_string(),
+        "gateway error 0xdeadbeef"
+    );
 }
