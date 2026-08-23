@@ -36,8 +36,10 @@ pub use helper::TlsIdentityCtx;
 pub use ironrdp_acceptor::Acceptor;
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 pub use rdpei::{
-    CsReadyPdu, DismissHoveringTouchContactPdu, PenEventPdu, RdpInputProtocolVersion, RdpeiHandler, RdpeiServer,
-    RdpeiServerFactory, ScReadyFeatures, TouchContact, TouchContactFlags, TouchEventPdu, TouchFrame,
+    CsReadyFlags, CsReadyPdu, DismissHoveringTouchContactPdu, PenContact, PenContactDataFlags, PenContactFields,
+    PenContactFlags, PenEventPdu, PenFlags, PenFrame, RdpInputProtocolVersion, RdpeiHandler, RdpeiServer,
+    RdpeiServerFactory, ScReadyFeatures, TouchContact, TouchContactDataFlags, TouchContactFields, TouchContactFlags,
+    TouchEventPdu, TouchFrame,
 };
 pub use server::{
     AutoReconnectCookieHandle, ConnectionHandler, ConnectionInfo, CredentialDecision, CredentialValidationError,

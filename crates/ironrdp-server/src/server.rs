@@ -48,7 +48,7 @@ use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
-use crate::rdpei::{RdpeiServer, RdpeiServerFactory};
+use crate::rdpei::RdpeiServerFactory;
 use crate::{SoundServerFactory, builder, capabilities};
 
 /// TCP listen backlog size for the RDP server socket.
@@ -1076,8 +1076,7 @@ impl RdpServer {
         };
 
         let dvc = if let Some(factory) = self.rdpei_factory.as_deref() {
-            let handler = factory.build_handler();
-            dvc.with_dynamic_channel(RdpeiServer::new(handler))
+            dvc.with_dynamic_channel(factory.build_server())
         } else {
             dvc
         };
