@@ -582,7 +582,15 @@ fn present_loop(stop_event: Arc<OwnedHandle>, mut shared: SharedBuffer, on_frame
         if wait_result == WAIT_OBJECT_0 {
             break;
         }
-        if wait_result != wait_index(WAIT_OBJECT_0, 1) && wait_result != wait_index(WAIT_ABANDONED_0, 1) {
+        if wait_result == wait_index(WAIT_ABANDONED_0, 1) {
+            warn!("FBR frame mutex was abandoned");
+            // SAFETY: an abandoned wait grants this thread ownership of the mutex.
+            if let Err(error) = unsafe { ReleaseMutex(shared.mutex.get()) } {
+                error!(%error, "Failed to release the abandoned FBR frame mutex");
+            }
+            break;
+        }
+        if wait_result != wait_index(WAIT_OBJECT_0, 1) {
             if wait_result == WAIT_FAILED {
                 error!(error = %windows::core::Error::from_thread(), "FBR mutex wait failed");
             } else {
@@ -595,7 +603,7 @@ fn present_loop(stop_event: Arc<OwnedHandle>, mut shared: SharedBuffer, on_frame
         }
 
         let frame = shared.take_frame();
-        // SAFETY: this thread owns the mutex after either successful or abandoned acquisition.
+        // SAFETY: the successful wait grants this thread ownership of the mutex.
         if let Err(error) = unsafe { ReleaseMutex(shared.mutex.get()) } {
             error!(%error, "Failed to release the FBR frame mutex");
             break;
