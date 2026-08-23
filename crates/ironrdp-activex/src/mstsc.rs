@@ -18,6 +18,33 @@ pub(crate) type Bstr = *const u16;
 pub(crate) type BstrOut = *mut *const u16;
 pub(crate) type InterfaceOut = *mut *mut c_void;
 
+#[interface("FDD029F9-467A-4C49-8529-64B521DBD1B4")]
+pub(crate) unsafe trait ITSRemoteProgram: IDispatch {
+    pub(crate) fn put_RemoteProgramMode(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_RemoteProgramMode(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn ServerStartProgram(
+        &self,
+        executable: Bstr,
+        file: Bstr,
+        working_directory: Bstr,
+        expand_working_directory: i16,
+        arguments: Bstr,
+        expand_arguments: i16,
+    ) -> Result<()>;
+}
+
+#[interface("92C38A7D-241A-418C-9936-099872C9AF20")]
+pub(crate) unsafe trait ITSRemoteProgram2: ITSRemoteProgram {
+    pub(crate) fn put_RemoteApplicationName(&self, value: Bstr) -> Result<()>;
+    pub(crate) fn put_RemoteApplicationProgram(&self, value: Bstr) -> Result<()>;
+    pub(crate) fn put_RemoteApplicationArgs(&self, value: Bstr) -> Result<()>;
+}
+
+#[interface("4B84EA77-ACEA-418C-881A-4A8C28AB1510")]
+pub(crate) unsafe trait ITSRemoteProgram3: ITSRemoteProgram2 {
+    pub(crate) fn ServerStartApp(&self, app_user_model_id: Bstr, arguments: Bstr, expand_arguments: i16) -> Result<()>;
+}
+
 #[interface("56540617-D281-488C-8738-6A8FDF64A118")]
 pub(crate) unsafe trait IMsRdpDeviceCollection: IUnknown {
     fn RescanDevices(&self, dynamic_redirection: i16) -> Result<()>;
@@ -267,7 +294,7 @@ pub(crate) unsafe trait IMsRdpClient5: IMsRdpClient4 {
     fn get_TransportSettings(&self, settings: InterfaceOut) -> Result<()>;
     fn get_AdvancedSettings6(&self, settings: InterfaceOut) -> Result<()>;
     fn GetErrorDescription(&self, disconnect_reason: u32, extended_reason: u32, message: BstrOut) -> Result<()>;
-    fn get_RemoteProgram(&self, program: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_RemoteProgram(&self, program: InterfaceOut) -> Result<()>;
     fn get_MsRdpClientShell(&self, shell: InterfaceOut) -> Result<()>;
 }
 
@@ -283,7 +310,7 @@ pub(crate) unsafe trait IMsRdpClient7: IMsRdpClient6 {
     fn get_TransportSettings3(&self, settings: InterfaceOut) -> Result<()>;
     fn GetStatusText(&self, status: u32, text: BstrOut) -> Result<()>;
     fn get_SecuredSettings3(&self, settings: InterfaceOut) -> Result<()>;
-    fn get_RemoteProgram2(&self, program: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_RemoteProgram2(&self, program: InterfaceOut) -> Result<()>;
 }
 
 #[interface("4247E044-9271-43A9-BC49-E2AD9E855D62")]
@@ -313,5 +340,5 @@ pub(crate) unsafe trait IMsRdpClient9: IMsRdpClient8 {
 
 #[interface("7ED92C39-EB38-4927-A70A-708AC5A59321")]
 pub(crate) unsafe trait IMsRdpClient10: IMsRdpClient9 {
-    fn get_RemoteProgram3(&self, program: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_RemoteProgram3(&self, program: InterfaceOut) -> Result<()>;
 }
