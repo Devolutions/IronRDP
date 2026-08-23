@@ -1562,10 +1562,12 @@ async fn connect_gateway(
         server: config.destination.name().to_owned(),
     };
 
-    let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect_with_port(
+    let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect_with_port_and_certificate_validation(
         &gw_target,
         &config.connector.client_name,
         config.destination.port(),
+        config.certificate_validation(),
+        config.certificate_validation_callback().cloned(),
     )
     .await
     .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;

@@ -15,6 +15,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use ironrdp_mstsgu::test_support::GatewayTransport;
+use ironrdp_tls::{CertificateValidation, CertificateValidationCallback};
 use tokio::sync::oneshot;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
@@ -27,6 +28,20 @@ const PACKET: &[u8] = &[
     0x00, 0x00, // reserved
     0x08, 0x00, 0x00, 0x00, // length
 ];
+
+#[test]
+fn gateway_tls_upgrade_uses_policy_or_callback() {
+    assert_eq!(
+        ironrdp_mstsgu::test_support::tls_upgrade_selection(CertificateValidation::Strict, None),
+        (CertificateValidation::Strict, false)
+    );
+
+    let callback: CertificateValidationCallback = Arc::new(|_, _| false);
+    assert_eq!(
+        ironrdp_mstsgu::test_support::tls_upgrade_selection(CertificateValidation::Strict, Some(Arc::clone(&callback))),
+        (CertificateValidation::Strict, true)
+    );
+}
 
 #[tokio::test]
 async fn switching_protocols_keeps_websocket_transport() {

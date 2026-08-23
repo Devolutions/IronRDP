@@ -2,7 +2,7 @@
 
 use hyper::body::Bytes;
 
-use crate::packet_io::{PacketIo, open_test_transport};
+use crate::packet_io::{PacketIo, open_test_transport, select_gateway_tls_upgrade_for_test};
 use crate::{Error, GwClient, GwConnectTarget, GwConsentCallback};
 
 /// In-memory gateway transport used by the registered integration tests.
@@ -53,4 +53,13 @@ pub fn evaluate_consent_message(
     consent_callback: Option<&mut GwConsentCallback<'_>>,
 ) -> Result<(), Error> {
     crate::evaluate_consent_message(consent_message, consent_callback)
+}
+
+/// Report which TLS upgrader a gateway connection selects.
+pub fn tls_upgrade_selection(
+    certificate_validation: ironrdp_tls::CertificateValidation,
+    certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
+) -> (ironrdp_tls::CertificateValidation, bool) {
+    let selection = select_gateway_tls_upgrade_for_test(certificate_validation, certificate_validation_callback);
+    (selection.certificate_validation, selection.uses_callback)
 }

@@ -10,6 +10,7 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt as _, Empty};
 use hyper::body::{Bytes, Incoming};
 use ironrdp_core::{Decode as _, ReadCursor};
+use ironrdp_tls::{CertificateValidation, CertificateValidationCallback};
 use log::error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -184,6 +185,8 @@ impl PacketIo {
 /// Open a TLS transport to the gateway, preferring a WebSocket upgrade and falling back to dual HTTP.
 pub(crate) async fn open_gateway_transport(
     target: &GwConnectTarget,
+    certificate_validation: CertificateValidation,
+    certificate_validation_callback: Option<CertificateValidationCallback>,
 ) -> Result<(PacketIo, core::net::SocketAddr), Error> {
     let gw_host = target
         .gw_endpoint
@@ -198,22 +201,86 @@ pub(crate) async fn open_gateway_transport(
     let client_addr = stream
         .local_addr()
         .map_err(|e| custom_err!("get socket local address", e))?;
-    let (stream, _) = ironrdp_tls::upgrade(stream, &gw_host)
-        .await
-        .map_err(|e| custom_err!("tls connect", e))?;
+    let stream = upgrade_gateway_tls(
+        stream,
+        &gw_host,
+        certificate_validation,
+        certificate_validation_callback.clone(),
+    )
+    .await?;
 
     let in_gw_host = gw_host.clone();
-    open_transport_with_out_stream(Box::new(stream), client_addr, &gw_host, target, move || async move {
+    open_transport_with_out_stream(stream, client_addr, &gw_host, target, move || async move {
         let stream = TcpStream::connect(&target.gw_endpoint)
             .await
             .map_err(|e| custom_err!("tcp connect", e))?;
-        let (stream, _) = ironrdp_tls::upgrade(stream, &in_gw_host)
-            .await
-            .map_err(|e| custom_err!("tls connect", e))?;
-        let stream: GatewayStream = Box::new(stream);
-        Ok(stream)
+        upgrade_gateway_tls(
+            stream,
+            &in_gw_host,
+            certificate_validation,
+            certificate_validation_callback,
+        )
+        .await
     })
     .await
+}
+
+async fn upgrade_gateway_tls(
+    stream: TcpStream,
+    gw_host: &str,
+    certificate_validation: CertificateValidation,
+    certificate_validation_callback: Option<CertificateValidationCallback>,
+) -> Result<GatewayStream, Error> {
+    let (stream, _) = match select_gateway_tls_upgrade(certificate_validation, certificate_validation_callback) {
+        GatewayTlsUpgrade::CertificateValidation(certificate_validation) => {
+            ironrdp_tls::upgrade_with_certificate_validation(stream, gw_host, certificate_validation).await
+        }
+        GatewayTlsUpgrade::CertificateValidationCallback(certificate_validation_callback) => {
+            ironrdp_tls::upgrade_with_certificate_validation_callback(stream, gw_host, certificate_validation_callback)
+                .await
+        }
+    }
+    .map_err(|e| custom_err!("tls connect", e))?;
+
+    Ok(Box::new(stream))
+}
+
+enum GatewayTlsUpgrade {
+    CertificateValidation(CertificateValidation),
+    CertificateValidationCallback(CertificateValidationCallback),
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) struct GatewayTlsUpgradeSelection {
+    pub(crate) certificate_validation: CertificateValidation,
+    pub(crate) uses_callback: bool,
+}
+
+fn select_gateway_tls_upgrade(
+    certificate_validation: CertificateValidation,
+    certificate_validation_callback: Option<CertificateValidationCallback>,
+) -> GatewayTlsUpgrade {
+    match certificate_validation_callback {
+        Some(certificate_validation_callback) => {
+            GatewayTlsUpgrade::CertificateValidationCallback(certificate_validation_callback)
+        }
+        None => GatewayTlsUpgrade::CertificateValidation(certificate_validation),
+    }
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn select_gateway_tls_upgrade_for_test(
+    certificate_validation: CertificateValidation,
+    certificate_validation_callback: Option<CertificateValidationCallback>,
+) -> GatewayTlsUpgradeSelection {
+    let uses_callback = matches!(
+        select_gateway_tls_upgrade(certificate_validation, certificate_validation_callback),
+        GatewayTlsUpgrade::CertificateValidationCallback(_)
+    );
+    GatewayTlsUpgradeSelection {
+        certificate_validation,
+        uses_callback,
+    }
 }
 
 async fn open_transport_with_out_stream<F, Fut>(
