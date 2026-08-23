@@ -9076,7 +9076,7 @@ impl Control {
             let callback: ironrdp_tls::CertificateValidationCallback =
                 Arc::new(move |certificate_der, endpoint, validation_reason| {
                     let fingerprint = certificate_fingerprint(certificate_der);
-                    if !public_mode && certificate_exception_is_trusted(&endpoint, &fingerprint) {
+                    if !public_mode && certificate_exception_is_trusted(endpoint, &fingerprint) {
                         trace_host_call("RdpWorker::TlsCertificateValidation:TrustedException");
                         return true;
                     }
