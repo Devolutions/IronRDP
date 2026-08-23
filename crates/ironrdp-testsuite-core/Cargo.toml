@@ -69,7 +69,7 @@ png = "0.18"
 pretty_assertions = "1.4"
 proptest.workspace = true
 rstest.workspace = true
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "io-util", "sync"] }
 
 [lints]
 workspace = true

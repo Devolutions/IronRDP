@@ -18,6 +18,7 @@ mod gfx;
 mod handler;
 #[cfg(feature = "helper")]
 mod helper;
+mod rdpei;
 mod server;
 mod sound;
 
@@ -29,11 +30,17 @@ pub use display::{
 pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoServerMessage};
 #[cfg(feature = "egfx")]
 pub use gfx::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle};
-pub use handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
+pub use handler::{KeyboardEvent, MouseButton, MouseEvent, RdpServerInputHandler};
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
 pub use ironrdp_acceptor::Acceptor;
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
+pub use rdpei::{
+    CsReadyFlags, CsReadyPdu, DismissHoveringTouchContactPdu, PenContact, PenContactDataFlags, PenContactFields,
+    PenContactFlags, PenEventPdu, PenFlags, PenFrame, RdpInputProtocolVersion, RdpeiHandler, RdpeiServer,
+    RdpeiServerFactory, ScReadyFeatures, TouchContact, TouchContactDataFlags, TouchContactFields, TouchContactFlags,
+    TouchEventPdu, TouchFrame,
+};
 pub use server::{
     AutoReconnectCookieHandle, ConnectionHandler, ConnectionInfo, CredentialDecision, CredentialValidationError,
     CredentialValidator, Credentials, ExactMatchCredentialValidator, PostConnectionAction, RdpServer, RdpServerOptions,

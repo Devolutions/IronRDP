@@ -87,13 +87,33 @@ pub async fn upgrade_with_certificate_validation_callback<S>(
 where
     S: Unpin + AsyncRead + AsyncWrite,
 {
+    upgrade_with_certificate_validation_callback_for_endpoint(stream, server_name, server_name, callback).await
+}
+
+/// Upgrades a stream with normal platform-root and server-name validation.
+///
+/// On validation failure, invokes `callback` with `endpoint` so callers can scope
+/// certificate exceptions to the configured connection endpoint.
+pub async fn upgrade_with_certificate_validation_callback_for_endpoint<S>(
+    stream: S,
+    server_name: &str,
+    endpoint: &str,
+    callback: CertificateValidationCallback,
+) -> io::Result<(TlsStream<S>, x509_cert::Certificate)>
+where
+    S: Unpin + AsyncRead + AsyncWrite,
+{
     let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(platform_root_certificates()?))
         .build()
         .map_err(io::Error::other)?;
     let verifier: Arc<dyn ServerCertVerifier> = verifier;
     let mut config = rustls::client::ClientConfig::builder()
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(CallbackVerifier { verifier, callback }))
+        .with_custom_certificate_verifier(Arc::new(CallbackVerifier {
+            verifier,
+            endpoint: endpoint.to_owned(),
+            callback,
+        }))
         .with_no_client_auth();
     config.key_log = Arc::new(rustls::KeyLogFile::new());
     // TLS resumption is incompatible with CredSSP.
@@ -147,6 +167,7 @@ fn platform_root_certificates() -> io::Result<rustls::RootCertStore> {
 
 struct CallbackVerifier {
     verifier: Arc<dyn ServerCertVerifier>,
+    endpoint: String,
     callback: CertificateValidationCallback,
 }
 
@@ -170,7 +191,7 @@ impl ServerCertVerifier for CallbackVerifier {
             .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
         {
             Ok(verified) => Ok(verified),
-            Err(error) if (self.callback)(end_entity.as_ref(), &error.to_string()) => {
+            Err(error) if (self.callback)(end_entity.as_ref(), &self.endpoint, &error.to_string()) => {
                 Ok(ServerCertVerified::assertion())
             }
             Err(error) => Err(error),

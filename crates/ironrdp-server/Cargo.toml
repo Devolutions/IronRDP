@@ -53,6 +53,7 @@ ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.10", features = ["reqw
 ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.10" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.9" } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9" } # public
+ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" } # public
 tracing = { version = "0.1", features = ["log"] }
 x509-cert = { version = "0.3", optional = true }
 rustls-pemfile = { version = "2.2", optional = true }

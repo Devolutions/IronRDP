@@ -532,6 +532,16 @@ impl TryFrom<u32> for ScardIoCtlCode {
     }
 }
 
+impl From<ScardIoCtlCode> for u32 {
+    #[expect(
+        clippy::as_conversions,
+        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
+    )]
+    fn from(io_ctl_code: ScardIoCtlCode) -> Self {
+        io_ctl_code as u32
+    }
+}
+
 /// Allow [`ScardIoCtlCode`] to be used as an [`IoCtlCode`].
 impl IoCtlCode for ScardIoCtlCode {}
 
