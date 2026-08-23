@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-displaycontrol-v0.8.0...ironrdp-displaycontrol-v0.8.1)] - 2026-08-23
+
+### <!-- 4 -->Bug Fixes
+
+- Decode the full headered DISPLAYCONTROL_CAPS_PDU ([#1442](https://github.com/Devolutions/IronRDP/issues/1442)) ([3b66961a8b](https://github.com/Devolutions/IronRDP/commit/3b66961a8b2ec5bb2d49175c6970e4a480348b3f)) 
+
+  ## Summary
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-displaycontrol-v0.7.0...ironrdp-displaycontrol-v0.8.0)] - 2026-07-10
 
 ### <!-- 7 -->Build
