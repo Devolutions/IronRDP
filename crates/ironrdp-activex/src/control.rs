@@ -5,6 +5,8 @@ use core::ptr;
 use core::slice;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
+use std::os::windows::ffi::OsStrExt as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -49,13 +51,22 @@ use ironrdp_svc::{SvcClientProcessor, SvcMessage, SvcProcessor, impl_as_any};
 use ironrdp_tls::CertificateValidation;
 use sha2::{Digest as _, Sha256};
 use tokio::sync::{mpsc, oneshot};
+use windows::Win32::Devices::DeviceAndDriverInstallation::{
+    CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_Get_DevNode_PropertyW, CM_Get_Device_ID_Size, CM_Get_Device_IDW,
+    CM_Get_Device_Interface_List_SizeW, CM_Get_Device_Interface_ListW, CM_Get_Device_Interface_PropertyW,
+    CM_Get_Parent, CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW, CM_MapCrToWin32Err, CONFIGRET, CR_BUFFER_SMALL,
+    CR_NO_SUCH_DEVNODE, CR_SUCCESS,
+};
+use windows::Win32::Devices::Properties::{
+    DEVPKEY_Device_DeviceDesc, DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_STRING,
+};
 use windows::Win32::Foundation::{
     DATA_S_SAMEFORMATETC, DISP_E_BADPARAMCOUNT, DISP_E_MEMBERNOTFOUND, DISP_E_TYPEMISMATCH, DISP_E_UNKNOWNNAME,
     DV_E_DVASPECT, DV_E_DVTARGETDEVICE, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_ABORT, E_FAIL, E_INVALIDARG,
-    E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, E_UNEXPECTED, ERROR_CANCELLED, ERROR_CLASS_DOES_NOT_EXIST, FreeLibrary,
-    GlobalFree, HGLOBAL, HMODULE, HWND, LPARAM, LRESULT, OLE_E_ADVISENOTSUPPORTED, OLE_E_NOCONNECTION,
-    OLE_E_NOTRUNNING, OLEOBJ_S_INVALIDVERB, POINT, RECT, RECTL, S_FALSE, S_OK, SIZE, SysStringLen, VARIANT_BOOL,
-    VARIANT_FALSE, VARIANT_TRUE, WPARAM,
+    E_OUTOFMEMORY, E_POINTER, E_UNEXPECTED, ERROR_CANCELLED, ERROR_CLASS_DOES_NOT_EXIST, ERROR_GEN_FAILURE,
+    ERROR_NOT_FOUND, FreeLibrary, GlobalFree, HGLOBAL, HMODULE, HWND, LPARAM, LRESULT, OLE_E_ADVISENOTSUPPORTED,
+    OLE_E_NOCONNECTION, OLE_E_NOTRUNNING, OLEOBJ_S_INVALIDVERB, POINT, RECT, RECTL, S_FALSE, S_OK, SIZE, SysStringLen,
+    VARIANT_BOOL, VARIANT_FALSE, VARIANT_TRUE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateRectRgn,
@@ -63,6 +74,7 @@ use windows::Win32::Graphics::Gdi::{
     HGDIOBJ, HMONITOR, InvalidateRect, MONITORINFO, PAINTSTRUCT, PatBlt, SRCCOPY, ScreenToClient, SelectObject,
     SetWindowRgn, StretchBlt, StretchDIBits,
 };
+use windows::Win32::Media::KernelStreaming::KSCATEGORY_VIDEO_CAMERA;
 use windows::Win32::Security::Credentials::{
     CREDUI_FLAGS_ALWAYS_SHOW_UI, CREDUI_FLAGS_DO_NOT_PERSIST, CREDUI_FLAGS_GENERIC_CREDENTIALS, CREDUI_INFOW,
     CredUIPromptForCredentialsW,
@@ -137,20 +149,20 @@ use windows_core::{
 
 use crate::com;
 use crate::mstsc::{
-    Bstr, BstrOut, IMsRdpCameraRedirConfigCollection, IMsRdpCameraRedirConfigCollection_Impl, IMsRdpClient,
-    IMsRdpClient_Impl, IMsRdpClient2, IMsRdpClient2_Impl, IMsRdpClient3, IMsRdpClient3_Impl, IMsRdpClient4,
-    IMsRdpClient4_Impl, IMsRdpClient5, IMsRdpClient5_Impl, IMsRdpClient6, IMsRdpClient6_Impl, IMsRdpClient7,
-    IMsRdpClient7_Impl, IMsRdpClient8, IMsRdpClient8_Impl, IMsRdpClient9, IMsRdpClient9_Impl, IMsRdpClient10,
-    IMsRdpClient10_Impl, IMsRdpClientNonScriptable, IMsRdpClientNonScriptable_Impl, IMsRdpClientNonScriptable2,
-    IMsRdpClientNonScriptable2_Impl, IMsRdpClientNonScriptable3, IMsRdpClientNonScriptable3_Impl,
-    IMsRdpClientNonScriptable4, IMsRdpClientNonScriptable4_Impl, IMsRdpClientNonScriptable5,
-    IMsRdpClientNonScriptable5_Impl, IMsRdpClientNonScriptable6, IMsRdpClientNonScriptable6_Impl,
-    IMsRdpClientNonScriptable7, IMsRdpClientNonScriptable7_Impl, IMsRdpClientNonScriptable8,
-    IMsRdpClientNonScriptable8_Impl, IMsRdpClipboard, IMsRdpClipboard_Impl, IMsRdpDeviceCollection,
-    IMsRdpDeviceCollection_Impl, IMsRdpDrive, IMsRdpDrive_Impl, IMsRdpDriveCollection, IMsRdpDriveCollection_Impl,
-    IMsRdpExtendedSettings, IMsRdpExtendedSettings_Impl, IMsRdpPreferredRedirectionInfo,
-    IMsRdpPreferredRedirectionInfo_Impl, IMsTscAx_Impl, IMsTscAx_Redist_Impl, IMsTscNonScriptable,
-    IMsTscNonScriptable_Impl, InterfaceOut,
+    Bstr, BstrOut, IMsRdpCameraRedirConfig, IMsRdpCameraRedirConfig_Impl, IMsRdpCameraRedirConfigCollection,
+    IMsRdpCameraRedirConfigCollection_Impl, IMsRdpClient, IMsRdpClient_Impl, IMsRdpClient2, IMsRdpClient2_Impl,
+    IMsRdpClient3, IMsRdpClient3_Impl, IMsRdpClient4, IMsRdpClient4_Impl, IMsRdpClient5, IMsRdpClient5_Impl,
+    IMsRdpClient6, IMsRdpClient6_Impl, IMsRdpClient7, IMsRdpClient7_Impl, IMsRdpClient8, IMsRdpClient8_Impl,
+    IMsRdpClient9, IMsRdpClient9_Impl, IMsRdpClient10, IMsRdpClient10_Impl, IMsRdpClientNonScriptable,
+    IMsRdpClientNonScriptable_Impl, IMsRdpClientNonScriptable2, IMsRdpClientNonScriptable2_Impl,
+    IMsRdpClientNonScriptable3, IMsRdpClientNonScriptable3_Impl, IMsRdpClientNonScriptable4,
+    IMsRdpClientNonScriptable4_Impl, IMsRdpClientNonScriptable5, IMsRdpClientNonScriptable5_Impl,
+    IMsRdpClientNonScriptable6, IMsRdpClientNonScriptable6_Impl, IMsRdpClientNonScriptable7,
+    IMsRdpClientNonScriptable7_Impl, IMsRdpClientNonScriptable8, IMsRdpClientNonScriptable8_Impl, IMsRdpClipboard,
+    IMsRdpClipboard_Impl, IMsRdpDeviceCollection, IMsRdpDeviceCollection_Impl, IMsRdpDrive, IMsRdpDrive_Impl,
+    IMsRdpDriveCollection, IMsRdpDriveCollection_Impl, IMsRdpExtendedSettings, IMsRdpExtendedSettings_Impl,
+    IMsRdpPreferredRedirectionInfo, IMsRdpPreferredRedirectionInfo_Impl, IMsTscAx_Impl, IMsTscAx_Redist_Impl,
+    IMsTscNonScriptable, IMsTscNonScriptable_Impl, InterfaceOut,
 };
 use crate::rpc::{self, ActiveXRpc, Command as RpcCommand};
 use crate::touch::{TouchContactTracker, TouchSample};
@@ -6342,58 +6354,565 @@ impl IMsRdpDriveCollection_Impl for DriveCollection_Impl {
     }
 }
 
-#[implement(IMsRdpCameraRedirConfigCollection)]
-struct EmptyCameraRedirConfigCollection {
-    _lifetime: ServerObjectLifetime,
+#[derive(Clone)]
+struct CameraDeviceInfo {
+    friendly_name: String,
+    symbolic_link: String,
+    instance_id: String,
+    parent_instance_id: Option<String>,
 }
 
-impl EmptyCameraRedirConfigCollection {
+struct CameraCatalogEntry {
+    friendly_name: RefCell<Option<String>>,
+    symbolic_link: String,
+    instance_id: RefCell<Option<String>>,
+    parent_instance_id: RefCell<Option<String>>,
+    redirected: Cell<bool>,
+    device_exists: Cell<bool>,
+}
+
+impl CameraCatalogEntry {
+    fn disconnected(symbolic_link: String) -> Self {
+        Self {
+            friendly_name: RefCell::new(None),
+            symbolic_link,
+            instance_id: RefCell::new(None),
+            parent_instance_id: RefCell::new(None),
+            redirected: Cell::new(false),
+            device_exists: Cell::new(false),
+        }
+    }
+
+    fn update(&self, device: CameraDeviceInfo) {
+        *self.friendly_name.borrow_mut() = Some(device.friendly_name);
+        *self.instance_id.borrow_mut() = Some(device.instance_id);
+        *self.parent_instance_id.borrow_mut() = device.parent_instance_id;
+        self.device_exists.set(true);
+    }
+}
+
+struct CameraCatalog {
+    entries: Vec<Rc<CameraCatalogEntry>>,
+    known_entries: BTreeMap<String, Rc<CameraCatalogEntry>>,
+}
+
+impl CameraCatalog {
     fn new() -> Self {
         Self {
-            _lifetime: ServerObjectLifetime::new(),
+            entries: Vec::new(),
+            known_entries: BTreeMap::new(),
+        }
+    }
+
+    fn add_config(&mut self, symbolic_link: String) -> Rc<CameraCatalogEntry> {
+        let key = camera_identity_key(&symbolic_link);
+        if let Some(entry) = self.known_entries.get(&key) {
+            return Rc::clone(entry);
+        }
+
+        let entry = Rc::new(CameraCatalogEntry::disconnected(symbolic_link));
+        self.entries.push(Rc::clone(&entry));
+        self.known_entries.insert(key, Rc::clone(&entry));
+        entry
+    }
+
+    fn rescan_from_devices(&mut self, devices: Vec<CameraDeviceInfo>) {
+        for entry in self.known_entries.values() {
+            entry.device_exists.set(false);
+        }
+
+        for device in devices {
+            let key = camera_identity_key(&device.symbolic_link);
+            let entry = match self.known_entries.get(&key) {
+                Some(entry) => Rc::clone(entry),
+                None => {
+                    let entry = Rc::new(CameraCatalogEntry::disconnected(device.symbolic_link.clone()));
+                    self.entries.push(Rc::clone(&entry));
+                    self.known_entries.insert(key, Rc::clone(&entry));
+                    entry
+                }
+            };
+            entry.update(device);
         }
     }
 }
 
-impl IMsRdpCameraRedirConfigCollection_Impl for EmptyCameraRedirConfigCollection_Impl {
+fn camera_identity_key(value: &str) -> String {
+    value.to_lowercase()
+}
+
+fn camera_not_found() -> Error {
+    Error::from_hresult(HRESULT::from_win32(ERROR_NOT_FOUND.0))
+}
+
+fn camera_settings_mutable(settings: &CompatibilitySettings) -> Result<()> {
+    if settings.connection_settings_sealed {
+        return Err(Error::from_hresult(E_FAIL));
+    }
+    Ok(())
+}
+
+fn config_manager_error(context: &str, status: CONFIGRET) -> Error {
+    let win32_error = unsafe { CM_MapCrToWin32Err(status, ERROR_GEN_FAILURE.0) };
+    Error::new(HRESULT::from_win32(win32_error), format!("{context} failed"))
+}
+
+fn config_manager_result(context: &str, status: CONFIGRET) -> Result<()> {
+    if status == CR_SUCCESS {
+        Ok(())
+    } else {
+        Err(config_manager_error(context, status))
+    }
+}
+
+fn wide_string(value: &str) -> Vec<u16> {
+    OsStr::new(value).encode_wide().chain(core::iter::once(0)).collect()
+}
+
+fn string_from_wide_buffer(buffer: &[u16]) -> Result<String> {
+    let length = buffer.iter().position(|unit| *unit == 0).unwrap_or(buffer.len());
+    String::from_utf16(&buffer[..length]).map_err(|_| Error::from_hresult(E_INVALIDARG))
+}
+
+fn camera_interface_string_property(
+    symbolic_link: &[u16],
+    property_key: &windows::Win32::Foundation::DEVPROPKEY,
+) -> Result<String> {
+    let mut property_type = Default::default();
+    let mut buffer_size = 0;
+    let status = unsafe {
+        CM_Get_Device_Interface_PropertyW(
+            PCWSTR(symbolic_link.as_ptr()),
+            property_key,
+            &mut property_type,
+            None,
+            &mut buffer_size,
+            0,
+        )
+    };
+    if status != CR_BUFFER_SMALL {
+        return Err(config_manager_error("query camera interface property size", status));
+    }
+    if property_type != DEVPROP_TYPE_STRING || buffer_size % 2 != 0 {
+        return Err(Error::from_hresult(E_FAIL));
+    }
+
+    let mut buffer = vec![0u16; usize::try_from(buffer_size / 2).map_err(|_| Error::from_hresult(E_OUTOFMEMORY))?];
+    let status = unsafe {
+        CM_Get_Device_Interface_PropertyW(
+            PCWSTR(symbolic_link.as_ptr()),
+            property_key,
+            &mut property_type,
+            Some(buffer.as_mut_ptr().cast()),
+            &mut buffer_size,
+            0,
+        )
+    };
+    config_manager_result("read camera interface property", status)?;
+    if property_type != DEVPROP_TYPE_STRING {
+        return Err(Error::from_hresult(E_FAIL));
+    }
+    string_from_wide_buffer(&buffer)
+}
+
+fn camera_devnode_string_property(
+    device_instance: u32,
+    property_key: &windows::Win32::Foundation::DEVPROPKEY,
+) -> Result<String> {
+    let mut property_type = Default::default();
+    let mut buffer_size = 0;
+    let status = unsafe {
+        CM_Get_DevNode_PropertyW(
+            device_instance,
+            property_key,
+            &mut property_type,
+            None,
+            &mut buffer_size,
+            0,
+        )
+    };
+    if status != CR_BUFFER_SMALL {
+        return Err(config_manager_error("query camera device property size", status));
+    }
+    if property_type != DEVPROP_TYPE_STRING || buffer_size % 2 != 0 {
+        return Err(Error::from_hresult(E_FAIL));
+    }
+
+    let mut buffer = vec![0u16; usize::try_from(buffer_size / 2).map_err(|_| Error::from_hresult(E_OUTOFMEMORY))?];
+    let status = unsafe {
+        CM_Get_DevNode_PropertyW(
+            device_instance,
+            property_key,
+            &mut property_type,
+            Some(buffer.as_mut_ptr().cast()),
+            &mut buffer_size,
+            0,
+        )
+    };
+    config_manager_result("read camera device property", status)?;
+    if property_type != DEVPROP_TYPE_STRING {
+        return Err(Error::from_hresult(E_FAIL));
+    }
+    string_from_wide_buffer(&buffer)
+}
+
+fn camera_parent_instance_id(device_instance: u32) -> Result<Option<String>> {
+    let mut parent = 0;
+    let status = unsafe { CM_Get_Parent(&mut parent, device_instance, 0) };
+    if status == CR_NO_SUCH_DEVNODE {
+        return Ok(None);
+    }
+    config_manager_result("locate camera parent device", status)?;
+
+    let mut length = 0;
+    config_manager_result("query camera parent instance ID size", unsafe {
+        CM_Get_Device_ID_Size(&mut length, parent, 0)
+    })?;
+    let capacity = usize::try_from(length)
+        .ok()
+        .and_then(|length| length.checked_add(1))
+        .ok_or_else(|| Error::from_hresult(E_OUTOFMEMORY))?;
+    let mut buffer = vec![0u16; capacity];
+    config_manager_result("read camera parent instance ID", unsafe {
+        CM_Get_Device_IDW(parent, &mut buffer, 0)
+    })?;
+    string_from_wide_buffer(&buffer).map(Some)
+}
+
+fn enumerate_camera_devices() -> Result<Vec<CameraDeviceInfo>> {
+    let mut interfaces = None;
+    for _ in 0..3 {
+        let mut required_length = 0;
+        config_manager_result("query camera device interface list size", unsafe {
+            CM_Get_Device_Interface_List_SizeW(
+                &mut required_length,
+                &KSCATEGORY_VIDEO_CAMERA,
+                PCWSTR::null(),
+                CM_GET_DEVICE_INTERFACE_LIST_PRESENT,
+            )
+        })?;
+
+        let mut buffer = vec![0u16; usize::try_from(required_length).map_err(|_| Error::from_hresult(E_OUTOFMEMORY))?];
+        let status = unsafe {
+            CM_Get_Device_Interface_ListW(
+                &KSCATEGORY_VIDEO_CAMERA,
+                PCWSTR::null(),
+                &mut buffer,
+                CM_GET_DEVICE_INTERFACE_LIST_PRESENT,
+            )
+        };
+        if status == CR_BUFFER_SMALL {
+            continue;
+        }
+        config_manager_result("enumerate camera device interfaces", status)?;
+        interfaces = Some(buffer);
+        break;
+    }
+    let interfaces = interfaces.ok_or_else(|| Error::new(E_FAIL, "camera device list changed repeatedly"))?;
+
+    let mut devices = Vec::new();
+    let mut offset = 0;
+    while offset < interfaces.len() && interfaces[offset] != 0 {
+        let relative_end = interfaces[offset..]
+            .iter()
+            .position(|unit| *unit == 0)
+            .ok_or_else(|| Error::from_hresult(E_FAIL))?;
+        let end = offset + relative_end;
+        let symbolic_link = String::from_utf16(&interfaces[offset..end]).map_err(|_| Error::from_hresult(E_FAIL))?;
+        let symbolic_link_wide = wide_string(&symbolic_link);
+        let instance_id = camera_interface_string_property(
+            &symbolic_link_wide,
+            &windows::Win32::Devices::Properties::DEVPKEY_Device_InstanceId,
+        )?;
+        let instance_id_wide = wide_string(&instance_id);
+        let mut device_instance = 0;
+        config_manager_result("locate camera device", unsafe {
+            CM_Locate_DevNodeW(
+                &mut device_instance,
+                PCWSTR(instance_id_wide.as_ptr()),
+                CM_LOCATE_DEVNODE_NORMAL,
+            )
+        })?;
+        let friendly_name =
+            camera_devnode_string_property(device_instance, &DEVPKEY_Device_FriendlyName).or_else(|error| {
+                if error.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0) {
+                    camera_devnode_string_property(device_instance, &DEVPKEY_Device_DeviceDesc)
+                } else {
+                    Err(error)
+                }
+            })?;
+        devices.push(CameraDeviceInfo {
+            friendly_name,
+            symbolic_link,
+            instance_id,
+            parent_instance_id: camera_parent_instance_id(device_instance)?,
+        });
+        offset = end + 1;
+    }
+
+    Ok(devices)
+}
+
+#[implement(IMsRdpCameraRedirConfig)]
+struct CameraRedirConfig {
+    _lifetime: ServerObjectLifetime,
+    entry: Rc<CameraCatalogEntry>,
+    settings: Rc<RefCell<CompatibilitySettings>>,
+}
+
+impl CameraRedirConfig {
+    fn new(entry: Rc<CameraCatalogEntry>, settings: Rc<RefCell<CompatibilitySettings>>) -> Self {
+        Self {
+            _lifetime: ServerObjectLifetime::new(),
+            entry,
+            settings,
+        }
+    }
+}
+
+impl IMsRdpCameraRedirConfig_Impl for CameraRedirConfig_Impl {
+    unsafe fn get_FriendlyName(&self, name: BstrOut) -> Result<()> {
+        let value = self.entry.friendly_name.borrow();
+        write_bstr(name, value.as_deref().ok_or_else(camera_not_found)?)
+    }
+
+    unsafe fn get_SymbolicLink(&self, link: BstrOut) -> Result<()> {
+        write_bstr(link, &self.entry.symbolic_link)
+    }
+
+    unsafe fn get_InstanceId(&self, id: BstrOut) -> Result<()> {
+        let value = self.entry.instance_id.borrow();
+        write_bstr(id, value.as_deref().ok_or_else(camera_not_found)?)
+    }
+
+    unsafe fn get_ParentInstanceId(&self, id: BstrOut) -> Result<()> {
+        let value = self.entry.parent_instance_id.borrow();
+        write_bstr(id, value.as_deref().ok_or_else(camera_not_found)?)
+    }
+
+    unsafe fn put_Redirected(&self, redirected: i16) -> Result<()> {
+        let redirected = normalize_variant_bool(redirected)? == VARIANT_TRUE.0;
+        if redirected {
+            return Err(Error::from_hresult(E_NOTIMPL));
+        }
+        camera_settings_mutable(&self.settings.borrow())?;
+        self.entry.redirected.set(false);
+        Ok(())
+    }
+
+    unsafe fn get_Redirected(&self, redirected: *mut i16) -> Result<()> {
+        write_out(
+            redirected,
+            if self.entry.redirected.get() {
+                VARIANT_TRUE.0
+            } else {
+                VARIANT_FALSE.0
+            },
+        )
+    }
+
+    unsafe fn get_DeviceExists(&self, exists: *mut i16) -> Result<()> {
+        write_out(
+            exists,
+            if self.entry.device_exists.get() {
+                VARIANT_TRUE.0
+            } else {
+                VARIANT_FALSE.0
+            },
+        )
+    }
+}
+
+#[implement(IMsRdpCameraRedirConfigCollection)]
+struct CameraRedirConfigCollection {
+    _lifetime: ServerObjectLifetime,
+    catalog: RefCell<CameraCatalog>,
+    configs: RefCell<BTreeMap<String, IMsRdpCameraRedirConfig>>,
+    settings: Rc<RefCell<CompatibilitySettings>>,
+    redirect_by_default: Cell<bool>,
+    encode_video: Cell<bool>,
+    encoding_quality: Cell<i32>,
+}
+
+impl CameraRedirConfigCollection {
+    fn new(settings: Rc<RefCell<CompatibilitySettings>>) -> Self {
+        Self {
+            _lifetime: ServerObjectLifetime::new(),
+            catalog: RefCell::new(CameraCatalog::new()),
+            configs: RefCell::new(BTreeMap::new()),
+            settings,
+            redirect_by_default: Cell::new(false),
+            encode_video: Cell::new(true),
+            encoding_quality: Cell::new(0),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_devices(settings: Rc<RefCell<CompatibilitySettings>>, devices: Vec<CameraDeviceInfo>) -> Self {
+        let collection = Self::new(settings);
+        collection.catalog.borrow_mut().rescan_from_devices(devices);
+        collection
+    }
+
+    fn config_for(&self, entry: Rc<CameraCatalogEntry>) -> IMsRdpCameraRedirConfig {
+        let key = camera_identity_key(&entry.symbolic_link);
+        if let Some(config) = self.configs.borrow().get(&key) {
+            return config.clone();
+        }
+
+        let config: IMsRdpCameraRedirConfig = CameraRedirConfig::new(entry, Rc::clone(&self.settings)).into();
+        self.configs.borrow_mut().insert(key, config.clone());
+        config
+    }
+
+    fn write_config(&self, entry: Rc<CameraCatalogEntry>, output: InterfaceOut) -> Result<()> {
+        if output.is_null() {
+            return Err(Error::from_hresult(E_POINTER));
+        }
+        let config = self.config_for(entry);
+        write_out(output, config.into_raw().cast())
+    }
+}
+
+impl IMsRdpCameraRedirConfigCollection_Impl for CameraRedirConfigCollection_Impl {
     unsafe fn Rescan(&self) -> Result<()> {
+        camera_settings_mutable(&self.settings.borrow())?;
+        let devices = enumerate_camera_devices()?;
+        self.catalog.borrow_mut().rescan_from_devices(devices);
         Ok(())
     }
+
     unsafe fn get_Count(&self, count: *mut u32) -> Result<()> {
-        write_out(count, 0)
+        write_out(
+            count,
+            u32::try_from(self.catalog.borrow().entries.len()).map_err(|_| Error::from_hresult(E_FAIL))?,
+        )
     }
-    unsafe fn get_ByIndex(&self, _: u32, output: InterfaceOut) -> Result<()> {
-        write_out(output, ptr::null_mut())?;
-        Err(Error::from_hresult(E_INVALIDARG))
+
+    unsafe fn get_ByIndex(&self, index: u32, output: InterfaceOut) -> Result<()> {
+        if output.is_null() {
+            return Err(Error::from_hresult(E_POINTER));
+        }
+        let entry = self
+            .catalog
+            .borrow()
+            .entries
+            .get(usize::try_from(index).map_err(|_| Error::from_hresult(E_INVALIDARG))?)
+            .cloned()
+            .ok_or_else(camera_not_found)?;
+        self.write_config(entry, output)
     }
-    unsafe fn get_BySymbolicLink(&self, _: Bstr, output: InterfaceOut) -> Result<()> {
-        write_out(output, ptr::null_mut())?;
-        Err(Error::from_hresult(E_INVALIDARG))
+
+    unsafe fn get_BySymbolicLink(&self, link: Bstr, output: InterfaceOut) -> Result<()> {
+        if link.is_null() {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+        if output.is_null() {
+            return Err(Error::from_hresult(E_POINTER));
+        }
+        let link = string_from_bstr(link)?;
+        let entry = self
+            .catalog
+            .borrow()
+            .known_entries
+            .get(&camera_identity_key(&link))
+            .cloned()
+            .ok_or_else(camera_not_found)?;
+        self.write_config(entry, output)
     }
-    unsafe fn get_ByInstanceId(&self, _: Bstr, output: InterfaceOut) -> Result<()> {
-        write_out(output, ptr::null_mut())?;
-        Err(Error::from_hresult(E_INVALIDARG))
+
+    unsafe fn get_ByInstanceId(&self, id: Bstr, output: InterfaceOut) -> Result<()> {
+        if id.is_null() {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+        if output.is_null() {
+            return Err(Error::from_hresult(E_POINTER));
+        }
+        let id = string_from_bstr(id)?;
+        let entry = self
+            .catalog
+            .borrow()
+            .entries
+            .iter()
+            .find(|entry| {
+                entry
+                    .instance_id
+                    .borrow()
+                    .as_deref()
+                    .is_some_and(|instance_id| instance_id.eq_ignore_ascii_case(&id))
+            })
+            .cloned()
+            .ok_or_else(camera_not_found)?;
+        self.write_config(entry, output)
     }
-    unsafe fn AddConfig(&self, _: Bstr, _: i16) -> Result<()> {
-        Err(Error::from_hresult(E_NOTIMPL))
-    }
-    unsafe fn put_RedirectByDefault(&self, _: i16) -> Result<()> {
+
+    unsafe fn AddConfig(&self, link: Bstr, redirected: i16) -> Result<()> {
+        if link.is_null() {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+        let link = string_from_bstr(link)?;
+        if link.is_empty() {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+        let redirected = normalize_variant_bool(redirected)? == VARIANT_TRUE.0;
+        if redirected {
+            return Err(Error::from_hresult(E_NOTIMPL));
+        }
+        camera_settings_mutable(&self.settings.borrow())?;
+        self.catalog.borrow_mut().add_config(link);
         Ok(())
     }
-    unsafe fn get_RedirectByDefault(&self, output: *mut i16) -> Result<()> {
-        write_out(output, VARIANT_FALSE.0)
-    }
-    unsafe fn put_EncodeVideo(&self, _: i16) -> Result<()> {
+
+    unsafe fn put_RedirectByDefault(&self, redirect: i16) -> Result<()> {
+        let redirect = normalize_variant_bool(redirect)? == VARIANT_TRUE.0;
+        if redirect {
+            return Err(Error::from_hresult(E_NOTIMPL));
+        }
+        camera_settings_mutable(&self.settings.borrow())?;
+        self.redirect_by_default.set(false);
         Ok(())
     }
-    unsafe fn get_EncodeVideo(&self, output: *mut i16) -> Result<()> {
-        write_out(output, VARIANT_FALSE.0)
+
+    unsafe fn get_RedirectByDefault(&self, redirect: *mut i16) -> Result<()> {
+        write_out(
+            redirect,
+            if self.redirect_by_default.get() {
+                VARIANT_TRUE.0
+            } else {
+                VARIANT_FALSE.0
+            },
+        )
     }
-    unsafe fn put_EncodingQuality(&self, _: i32) -> Result<()> {
+
+    unsafe fn put_EncodeVideo(&self, encode: i16) -> Result<()> {
+        let encode = normalize_variant_bool(encode)? == VARIANT_TRUE.0;
+        camera_settings_mutable(&self.settings.borrow())?;
+        self.encode_video.set(encode);
         Ok(())
     }
-    unsafe fn get_EncodingQuality(&self, output: *mut i32) -> Result<()> {
-        write_out(output, 0)
+
+    unsafe fn get_EncodeVideo(&self, encode: *mut i16) -> Result<()> {
+        write_out(
+            encode,
+            if self.encode_video.get() {
+                VARIANT_TRUE.0
+            } else {
+                VARIANT_FALSE.0
+            },
+        )
+    }
+
+    unsafe fn put_EncodingQuality(&self, quality: i32) -> Result<()> {
+        if !(0..=2).contains(&quality) {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+        camera_settings_mutable(&self.settings.borrow())?;
+        self.encoding_quality.set(quality);
+        Ok(())
+    }
+
+    unsafe fn get_EncodingQuality(&self, quality: *mut i32) -> Result<()> {
+        write_out(quality, self.encoding_quality.get())
     }
 }
 
@@ -6888,6 +7407,7 @@ pub(crate) struct Control {
     remote_application: RefCell<RemoteApplicationConfiguration>,
     device_collection: IMsRdpDeviceCollection,
     drive_collection: IMsRdpDriveCollection,
+    camera_collection: IMsRdpCameraRedirConfigCollection,
     state: Rc<Cell<ConnectionState>>,
     last_disconnect: Cell<DisconnectInfo>,
     clipboard_state: Rc<ClipboardState>,
@@ -7106,6 +7626,8 @@ impl Control {
             Rc::clone(&drive_session),
         )
         .into();
+        let camera_collection: IMsRdpCameraRedirConfigCollection =
+            CameraRedirConfigCollection::new(Rc::clone(&compatibility)).into();
         let input_database = Rc::new(RefCell::new(InputDatabase::new()));
         let frame = Rc::new(RefCell::new(None));
         let presentation_surface = Rc::new(RefCell::new(None));
@@ -7122,6 +7644,7 @@ impl Control {
             remote_application: RefCell::new(RemoteApplicationConfiguration::default()),
             device_collection,
             drive_collection,
+            camera_collection,
             state,
             last_disconnect: Cell::new(DisconnectInfo::no_info()),
             clipboard_state: Rc::new(ClipboardState {
@@ -12907,8 +13430,7 @@ impl IMsRdpClientNonScriptable7_Impl for Control_Impl {
         if output.is_null() {
             return Err(Error::from_hresult(E_POINTER));
         }
-        let collection: IMsRdpCameraRedirConfigCollection = EmptyCameraRedirConfigCollection::new().into();
-        write_out(output, collection.into_raw().cast())
+        write_out(output, self.camera_collection.clone().into_raw().cast())
     }
 
     unsafe fn DisableDpiCursorScalingForProcess(&self) -> Result<()> {
@@ -15992,9 +16514,10 @@ mod tests {
     use windows::Win32::UI::WindowsAndMessaging::WS_OVERLAPPEDWINDOW;
 
     use crate::mstsc::{
-        IMsRdpClient6_Vtbl, IMsRdpClient7_Vtbl, IMsRdpClient8_Vtbl, IMsRdpClient9_Vtbl, IMsRdpClient10_Vtbl,
-        IMsRdpClientNonScriptable7_Vtbl, IMsRdpClientNonScriptable8_Vtbl, IMsTscAx, ITSRemoteProgram,
-        ITSRemoteProgram_Vtbl, ITSRemoteProgram2, ITSRemoteProgram2_Vtbl, ITSRemoteProgram3, ITSRemoteProgram3_Vtbl,
+        IMsRdpCameraRedirConfig_Vtbl, IMsRdpClient6_Vtbl, IMsRdpClient7_Vtbl, IMsRdpClient8_Vtbl, IMsRdpClient9_Vtbl,
+        IMsRdpClient10_Vtbl, IMsRdpClientNonScriptable7_Vtbl, IMsRdpClientNonScriptable8_Vtbl, IMsTscAx,
+        ITSRemoteProgram, ITSRemoteProgram_Vtbl, ITSRemoteProgram2, ITSRemoteProgram2_Vtbl, ITSRemoteProgram3,
+        ITSRemoteProgram3_Vtbl,
     };
 
     #[test]
@@ -18080,7 +18603,7 @@ mod tests {
             Rc::new(DriveSessionState::default()),
         )
         .into();
-        let _cameras: IMsRdpCameraRedirConfigCollection = EmptyCameraRedirConfigCollection::new().into();
+        let _cameras: IMsRdpCameraRedirConfigCollection = CameraRedirConfigCollection::new(Rc::clone(&settings)).into();
         let _clipboard: IMsRdpClipboard = ClipboardCapabilities::new(Rc::new(ClipboardState {
             enabled_for_session: Cell::new(false),
             connected: Cell::new(false),
@@ -22224,6 +22747,178 @@ mod tests {
     }
 
     #[test]
+    fn camera_catalog_preserves_identity_and_marks_disconnected_devices() {
+        let original = CameraDeviceInfo {
+            friendly_name: "Camera A".to_owned(),
+            symbolic_link: r"\\?\usb#vid_0001".to_owned(),
+            instance_id: r"USB\VID_0001".to_owned(),
+            parent_instance_id: Some(r"USB\ROOT".to_owned()),
+        };
+        let mut catalog = CameraCatalog::new();
+        catalog.rescan_from_devices(vec![original.clone()]);
+        let entry = Rc::clone(&catalog.entries[0]);
+
+        catalog.rescan_from_devices(vec![CameraDeviceInfo {
+            friendly_name: "Renamed Camera".to_owned(),
+            ..original
+        }]);
+        assert!(Rc::ptr_eq(&entry, &catalog.entries[0]));
+        assert_eq!(entry.friendly_name.borrow().as_deref(), Some("Renamed Camera"));
+        assert!(entry.device_exists.get());
+
+        catalog.rescan_from_devices(Vec::new());
+        assert_eq!(catalog.entries.len(), 1);
+        assert!(!entry.device_exists.get());
+    }
+
+    #[test]
+    fn camera_collection_exposes_stable_metadata_and_rejects_redirection() {
+        let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
+        let collection: IMsRdpCameraRedirConfigCollection = CameraRedirConfigCollection::new_with_devices(
+            Rc::clone(&settings),
+            vec![CameraDeviceInfo {
+                friendly_name: "Camera A".to_owned(),
+                symbolic_link: r"\\?\usb#vid_0001".to_owned(),
+                instance_id: r"USB\VID_0001".to_owned(),
+                parent_instance_id: Some(r"USB\ROOT".to_owned()),
+            }],
+        )
+        .into();
+
+        let mut count = 0;
+        unsafe { collection.get_Count(&mut count) }.expect("get camera count");
+        assert_eq!(count, 1);
+
+        let mut by_index = ptr::null_mut();
+        let mut by_link = ptr::null_mut();
+        let mut by_instance_id = ptr::null_mut();
+        unsafe { collection.get_ByIndex(0, &mut by_index) }.expect("get camera by index");
+        let link = BSTR::from(r"\\?\USB#VID_0001");
+        unsafe { collection.get_BySymbolicLink(link.as_ptr(), &mut by_link) }.expect("get camera by symbolic link");
+        let instance_id_lookup = BSTR::from(r"usb\vid_0001");
+        unsafe { collection.get_ByInstanceId(instance_id_lookup.as_ptr(), &mut by_instance_id) }
+            .expect("get camera by instance ID");
+        assert_eq!(by_index, by_link);
+        assert_eq!(by_index, by_instance_id);
+
+        let config = unsafe { IMsRdpCameraRedirConfig::from_raw(by_index) };
+        drop(unsafe { IMsRdpCameraRedirConfig::from_raw(by_link) });
+        drop(unsafe { IMsRdpCameraRedirConfig::from_raw(by_instance_id) });
+        let mut friendly_name = ptr::null();
+        let mut symbolic_link = ptr::null();
+        let mut instance_id = ptr::null();
+        let mut parent_instance_id = ptr::null();
+        unsafe {
+            config
+                .get_FriendlyName(&mut friendly_name)
+                .expect("get camera friendly name");
+            config
+                .get_SymbolicLink(&mut symbolic_link)
+                .expect("get camera symbolic link");
+            config.get_InstanceId(&mut instance_id).expect("get camera instance ID");
+            config
+                .get_ParentInstanceId(&mut parent_instance_id)
+                .expect("get camera parent instance ID");
+        }
+        let friendly_name = unsafe { BSTR::from_raw(friendly_name) };
+        let symbolic_link = unsafe { BSTR::from_raw(symbolic_link) };
+        let instance_id = unsafe { BSTR::from_raw(instance_id) };
+        let parent_instance_id = unsafe { BSTR::from_raw(parent_instance_id) };
+        assert_eq!(
+            String::try_from(&friendly_name).expect("valid friendly name"),
+            "Camera A"
+        );
+        assert_eq!(
+            String::try_from(&symbolic_link).expect("valid symbolic link"),
+            r"\\?\usb#vid_0001"
+        );
+        assert_eq!(
+            String::try_from(&instance_id).expect("valid instance ID"),
+            r"USB\VID_0001"
+        );
+        assert_eq!(
+            String::try_from(&parent_instance_id).expect("valid parent instance ID"),
+            r"USB\ROOT"
+        );
+
+        assert_eq!(
+            unsafe { config.put_Redirected(VARIANT_TRUE.0) }
+                .expect_err("camera redirection has no backend")
+                .code(),
+            E_NOTIMPL
+        );
+        unsafe { config.put_Redirected(VARIANT_FALSE.0) }.expect("explicitly disable camera");
+        assert_eq!(
+            unsafe { collection.put_RedirectByDefault(VARIANT_TRUE.0) }
+                .expect_err("default camera redirection has no backend")
+                .code(),
+            E_NOTIMPL
+        );
+
+        let offline_link = BSTR::from(r"\\?\usb#vid_missing");
+        assert_eq!(
+            unsafe { collection.AddConfig(offline_link.as_ptr(), VARIANT_TRUE.0) }
+                .expect_err("enabled offline camera has no backend")
+                .code(),
+            E_NOTIMPL
+        );
+        unsafe { collection.AddConfig(offline_link.as_ptr(), VARIANT_FALSE.0) }.expect("add offline camera config");
+        unsafe { collection.get_Count(&mut count) }.expect("get updated camera count");
+        assert_eq!(count, 2);
+
+        let mut offline = ptr::null_mut();
+        unsafe { collection.get_BySymbolicLink(offline_link.as_ptr(), &mut offline) }.expect("get offline camera");
+        let offline = unsafe { IMsRdpCameraRedirConfig::from_raw(offline) };
+        let mut exists = VARIANT_TRUE.0;
+        unsafe { offline.get_DeviceExists(&mut exists) }.expect("get offline camera state");
+        assert_eq!(exists, VARIANT_FALSE.0);
+        let mut missing_name = ptr::dangling();
+        assert_eq!(
+            unsafe { offline.get_FriendlyName(&mut missing_name) }
+                .expect_err("offline config has no friendly name")
+                .code(),
+            HRESULT::from_win32(ERROR_NOT_FOUND.0)
+        );
+        assert_eq!(missing_name, ptr::dangling());
+
+        assert_eq!(
+            unsafe { collection.put_EncodingQuality(3) }
+                .expect_err("reject invalid encoding quality")
+                .code(),
+            E_INVALIDARG
+        );
+        unsafe { collection.put_EncodingQuality(2) }.expect("set high encoding quality");
+        let mut quality = 0;
+        unsafe { collection.get_EncodingQuality(&mut quality) }.expect("get encoding quality");
+        assert_eq!(quality, 2);
+
+        settings.borrow_mut().connection_settings_sealed = true;
+        assert_eq!(
+            unsafe { config.put_Redirected(VARIANT_TRUE.0) }
+                .expect_err("unsupported camera redirection stays explicit after sealing")
+                .code(),
+            E_NOTIMPL
+        );
+        assert_eq!(
+            unsafe { collection.put_EncodeVideo(VARIANT_FALSE.0) }
+                .expect_err("connection snapshot seals camera policy")
+                .code(),
+            E_FAIL
+        );
+    }
+
+    #[test]
+    fn camera_collection_rescan_enumerates_windows_device_interfaces() {
+        let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
+        let collection: IMsRdpCameraRedirConfigCollection =
+            CameraRedirConfigCollection::new(Rc::clone(&settings)).into();
+
+        unsafe { collection.Rescan() }.expect("enumerate Windows camera interfaces");
+        let mut count = 0;
+        unsafe { collection.get_Count(&mut count) }.expect("get enumerated camera count");
+    }
+
+    #[test]
     fn control_retains_its_drive_collection() {
         let control: IMsRdpClient10 = Control::new().into();
         let non_scriptable = control
@@ -22315,5 +23010,23 @@ mod tests {
                 .code(),
             E_INVALIDARG
         );
+    }
+
+    #[test]
+    fn control_retains_its_camera_collection() {
+        let control: IMsRdpClient10 = Control::new().into();
+        let non_scriptable = control
+            .cast::<IMsRdpClientNonScriptable7>()
+            .expect("control supports the camera collection contract");
+
+        let mut first = ptr::null_mut();
+        let mut second = ptr::null_mut();
+        unsafe { non_scriptable.get_CameraRedirConfigCollection(&mut first) }.expect("get first camera collection");
+        unsafe { non_scriptable.get_CameraRedirConfigCollection(&mut second) }.expect("get second camera collection");
+        assert_eq!(first, second);
+        drop(unsafe { IMsRdpCameraRedirConfigCollection::from_raw(first) });
+        drop(unsafe { IMsRdpCameraRedirConfigCollection::from_raw(second) });
+        assert_eq!(size_of::<IMsRdpCameraRedirConfig_Vtbl>(), 10 * size_of::<usize>());
+        assert_eq!(size_of::<IMsRdpCameraRedirConfig_Vtbl>(), 10 * size_of::<usize>());
     }
 }

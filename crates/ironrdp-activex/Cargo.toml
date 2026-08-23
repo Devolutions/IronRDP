@@ -44,20 +44,23 @@ tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sy
 tracing = { version = "0.1", features = ["log"] }
 url = "2.5"
 windows = { version = "0.62", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Media_KernelStreaming",
+    "Win32_Security_Credentials",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_LibraryLoader",
     "Win32_System_Ole",
     "Win32_System_Registry",
     "Win32_System_Variant",
-    "Win32_Storage_FileSystem",
-    "Win32_Security_Credentials",
-    "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_UI_Input_Pointer",
     "Win32_UI_Controls",
     "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_Pointer",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
