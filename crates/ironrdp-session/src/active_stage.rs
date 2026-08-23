@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
 use ironrdp_core::{ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
-use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelRef};
+use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::InclusiveRectangle;
@@ -419,6 +419,10 @@ impl ActiveStage {
 
     pub fn get_dvc<T: DvcClientProcessor + 'static>(&self) -> Option<DynamicChannelRef<'_, T>> {
         self.x224_processor.get_dvc::<T>()
+    }
+
+    pub fn get_dvc_mut<T: DvcClientProcessor + 'static>(&mut self) -> Option<DynamicChannelMut<'_, T>> {
+        self.x224_processor.get_dvc_mut::<T>()
     }
 
     pub fn get_dvc_by_channel_id<T: DvcClientProcessor + 'static>(

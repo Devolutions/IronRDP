@@ -323,6 +323,10 @@ pub struct ChannelConfig {
     /// Enable native MS-RDPEWA WebAuthn redirection.
     #[cfg(feature = "webauthn")]
     pub webauthn: bool,
+
+    /// Enable the MS-RDPEL location dynamic virtual channel.
+    #[cfg(feature = "location")]
+    pub location: bool,
 }
 
 #[cfg_attr(
@@ -355,6 +359,8 @@ impl Default for ChannelConfig {
             qoiz: true,
             #[cfg(feature = "webauthn")]
             webauthn: true,
+            #[cfg(feature = "location")]
+            location: false,
         }
     }
 }
@@ -1369,6 +1375,14 @@ impl ConfigBuilder {
     pub fn with_webauthn(mut self, enabled: bool) -> Self {
         self.channels.webauthn = enabled;
         self.properties.set_redirect_webauthn(enabled);
+        self
+    }
+
+    /// Enable or disable explicit caller-supplied location redirection.
+    #[cfg(feature = "location")]
+    #[must_use]
+    pub fn with_location_redirection(mut self, enabled: bool) -> Self {
+        self.channels.location = enabled;
         self
     }
 

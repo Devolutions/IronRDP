@@ -48,6 +48,7 @@ dvc-com-plugin = ["dep:ironrdp-dvc-com-plugin"]
 # Keep the pure-Rust RDPEWA path as a fallback when the COM plugin is unavailable.
 webauthn = ["dep:ironrdp-rdpewa", "dep:ironrdp-rdpewa-native", "dvc-com-plugin"]
 vmconnect = ["dep:ironrdp-vmconnect"]
+location = ["dep:ironrdp-rdpel"]
 
 all = [
     "sound",
@@ -59,6 +60,7 @@ all = [
     "dvc-com-plugin",
     "webauthn",
     "vmconnect",
+    "location",
 ]
 
 [dependencies]
@@ -86,6 +88,7 @@ ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7", optional = tru
 ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7", optional = true } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9", optional = true }
 ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.1", optional = true }
+ironrdp-rdpel = { path = "../ironrdp-rdpel", version = "0.0.0", optional = true }
 
 # Optional backend crates (activated by features above)
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.7", optional = true }

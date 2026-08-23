@@ -17,7 +17,8 @@ use ironrdp_client::config::{
 };
 use ironrdp_client::rail::RailInputEvent;
 use ironrdp_client::rdp::{
-    AutoReconnectDecision, CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent,
+    AutoReconnectDecision, CliprdrBackendFactory, LocationInputError, RdpClient, RdpInputEvent, RdpInputSender,
+    RdpOutputEvent,
 };
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp_cliprdr_format::bitmap::{validate_dib, validate_dibv5};
@@ -560,6 +561,7 @@ const SECURITY_WARNING_CONTINUE_BUTTON: i32 = 101;
 const INFORMATION_DIALOG_CLOSE_BUTTON: i32 = 102;
 const CONNECTION_BAR_DISCONNECT_BUTTON: i32 = 103;
 const CERTIFICATE_WARNING_TIMEOUT: Duration = Duration::from_secs(120);
+const LOCATION_DELIVERY_TIMEOUT: Duration = Duration::from_secs(2);
 const CERTIFICATE_EXCEPTION_REGISTRY_ROOT: &str = "Software\\Devolutions\\IronRDP\\ActiveX\\TrustedCertificates";
 const EXTENDED_DISCONNECT_REASON_NO_INFO: i32 = 0;
 const EXTENDED_DISCONNECT_REASON_API_INITIATED_DISCONNECT: i32 = 1;
@@ -6899,6 +6901,7 @@ pub(crate) struct Control {
     active_monitor_topology: RefCell<Option<MonitorTopology>>,
     input_sender: Rc<RefCell<Option<RdpInputSender>>>,
     drive_session: Rc<DriveSessionState>,
+    location_altitude: Cell<i32>,
     static_channels: RefCell<BTreeMap<String, ActiveXStaticChannelSpec>>,
     input_database: Rc<RefCell<InputDatabase>>,
     touch_tracker: RefCell<TouchContactTracker>,
@@ -7136,6 +7139,7 @@ impl Control {
             active_monitor_topology: RefCell::new(None),
             input_sender,
             drive_session,
+            location_altitude: Cell::new(0),
             static_channels: RefCell::new(BTreeMap::new()),
             input_database,
             touch_tracker: RefCell::new(TouchContactTracker::new()),
@@ -10173,6 +10177,7 @@ impl Control {
             // The GDI presenter has no hardware-cursor overlay, so cursor updates must be
             // composited into the decoded framebuffer before it receives image events.
             .with_pointer_software_rendering(true)
+            .with_location_redirection(true)
             .with_clipboard(if clipboard {
                 ClipboardType::Enable
             } else {
@@ -11619,6 +11624,34 @@ impl Control {
         self.send_input_operations(&mut operations)
     }
 
+    fn send_location(&self, latitude: f64, longitude: f64, altitude: i32) -> Result<()> {
+        if self.state.get() != ConnectionState::Connected {
+            return Err(Error::from_hresult(E_UNEXPECTED));
+        }
+        if !(-90.0..=90.0).contains(&latitude)
+            || !(-180.0..=180.0).contains(&longitude)
+            || !(-0x0FFF_FFFF..=0x0FFF_FFFF).contains(&altitude)
+        {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+        let sender = self
+            .input_sender
+            .borrow()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?;
+        let response = sender
+            .try_send_location(latitude, longitude, altitude)
+            .map_err(|_| Error::from_hresult(E_FAIL))?;
+        match response.recv_timeout(LOCATION_DELIVERY_TIMEOUT) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(LocationInputError::ChannelUnavailable | LocationInputError::ChannelNotReady)) => {
+                Err(Error::from_hresult(E_POINTER))
+            }
+            Ok(Err(LocationInputError::EncodingFailed)) | Err(_) => Err(Error::from_hresult(E_FAIL)),
+        }
+    }
+
     fn release_input(&self) {
         self.release_touch_contacts();
         let fast_path = self.input_database.borrow_mut().release_all();
@@ -12891,14 +12924,16 @@ impl IMsRdpClientNonScriptable5_Impl for Control_Impl {
 }
 
 impl IMsRdpClientNonScriptable6_Impl for Control_Impl {
-    unsafe fn SendLocation2D(&self, _latitude: f64, _longitude: f64) -> Result<()> {
-        // TODO(activex): forward client location through an IronRDP location-redirection implementation.
-        unsupported()
+    unsafe fn SendLocation2D(&self, latitude: f64, longitude: f64) -> Result<()> {
+        self.send_location(latitude, longitude, self.location_altitude.get())
     }
 
-    unsafe fn SendLocation3D(&self, _latitude: f64, _longitude: f64, _altitude: i32) -> Result<()> {
-        // TODO(activex): forward client location through an IronRDP location-redirection implementation.
-        unsupported()
+    unsafe fn SendLocation3D(&self, latitude: f64, longitude: f64, altitude: i32) -> Result<()> {
+        if self.state.get() != ConnectionState::Connected {
+            return Err(Error::from_hresult(E_UNEXPECTED));
+        }
+        self.location_altitude.set(altitude);
+        self.send_location(latitude, longitude, altitude)
     }
 }
 
@@ -18629,6 +18664,128 @@ mod tests {
                 .code(),
             E_UNEXPECTED
         );
+    }
+
+    #[test]
+    fn location_com_abi_forwards_3d_then_2d_with_cached_altitude() {
+        let control = Control::new();
+        let (sender, mut receiver) = RdpInputSender::channel(2);
+        *control.input_sender.borrow_mut() = Some(sender);
+        control.state.set(ConnectionState::Connected);
+        let worker = std::thread::spawn(move || {
+            for expected in [(45.50123, -73.56789, 123), (45.50124, -73.56788, 123)] {
+                let event = receiver.blocking_recv().expect("location request");
+                let RdpInputEvent::Location {
+                    latitude,
+                    longitude,
+                    altitude,
+                    response,
+                } = event
+                else {
+                    panic!("expected a location request");
+                };
+                assert_eq!((latitude, longitude, altitude), expected);
+                response.send(Ok(())).expect("return location delivery result");
+            }
+        });
+        let client: IMsRdpClient10 = control.into();
+        let location = client
+            .cast::<IMsRdpClientNonScriptable6>()
+            .expect("client exposes IMsRdpClientNonScriptable6");
+
+        unsafe {
+            location
+                .SendLocation3D(45.50123, -73.56789, 123)
+                .expect("forward 3D location");
+            location
+                .SendLocation2D(45.50124, -73.56788)
+                .expect("forward 2D location with cached altitude");
+        }
+        worker.join().expect("location worker");
+    }
+
+    #[test]
+    fn location_methods_validate_active_session_and_coordinate_bounds() {
+        let control = Control::new();
+        let client: IMsRdpClient10 = control.into();
+        let location = client
+            .cast::<IMsRdpClientNonScriptable6>()
+            .expect("client exposes IMsRdpClientNonScriptable6");
+        assert_eq!(
+            unsafe { location.SendLocation2D(91.0, 181.0) }
+                .expect_err("disconnected calls fail before validation")
+                .code(),
+            E_UNEXPECTED
+        );
+
+        let control = Control::new();
+        let (sender, _) = RdpInputSender::channel(1);
+        *control.input_sender.borrow_mut() = Some(sender);
+        control.state.set(ConnectionState::Connected);
+        let client: IMsRdpClient10 = control.into();
+        let location = client
+            .cast::<IMsRdpClientNonScriptable6>()
+            .expect("client exposes IMsRdpClientNonScriptable6");
+        for (latitude, longitude, altitude) in [
+            (f64::NAN, 0.0, 0),
+            (-90.00001, 0.0, 0),
+            (0.0, 180.00001, 0),
+            (0.0, 0.0, 0x1000_0000),
+            (0.0, 0.0, -0x1000_0000),
+        ] {
+            assert_eq!(
+                unsafe { location.SendLocation3D(latitude, longitude, altitude) }
+                    .expect_err("out-of-range location is rejected")
+                    .code(),
+                E_INVALIDARG
+            );
+        }
+        assert_eq!(
+            unsafe { location.SendLocation2D(0.0, 0.0) }
+                .expect_err("2D calls reuse the last 3D altitude even when that call failed")
+                .code(),
+            E_INVALIDARG
+        );
+    }
+
+    #[test]
+    fn location_methods_surface_queue_and_channel_failures() {
+        let control = Control::new();
+        let (sender, mut receiver) = RdpInputSender::channel(1);
+        sender
+            .try_send(RdpInputEvent::FastPath(Vec::new().into()))
+            .expect("fill bounded input queue");
+        *control.input_sender.borrow_mut() = Some(sender);
+        control.state.set(ConnectionState::Connected);
+        assert_eq!(
+            control
+                .send_location(0.0, 0.0, 0)
+                .expect_err("full input queue is surfaced")
+                .code(),
+            E_FAIL
+        );
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::FastPath(_))));
+
+        let control = Control::new();
+        let (sender, mut receiver) = RdpInputSender::channel(1);
+        *control.input_sender.borrow_mut() = Some(sender);
+        control.state.set(ConnectionState::Connected);
+        let worker = std::thread::spawn(move || {
+            let RdpInputEvent::Location { response, .. } = receiver.blocking_recv().expect("location request") else {
+                panic!("expected a location request");
+            };
+            response
+                .send(Err(LocationInputError::ChannelUnavailable))
+                .expect("return channel failure");
+        });
+        assert_eq!(
+            control
+                .send_location(0.0, 0.0, 0)
+                .expect_err("missing channel is surfaced")
+                .code(),
+            E_POINTER
+        );
+        worker.join().expect("location worker");
     }
 
     #[test]

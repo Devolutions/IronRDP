@@ -191,8 +191,8 @@ pub(crate) unsafe trait IMsRdpClientNonScriptable5: IMsRdpClientNonScriptable4 {
 
 #[interface("05293249-B28B-4BD8-BE64-1B2F496B910E")]
 pub(crate) unsafe trait IMsRdpClientNonScriptable6: IMsRdpClientNonScriptable5 {
-    fn SendLocation2D(&self, latitude: f64, longitude: f64) -> Result<()>;
-    fn SendLocation3D(&self, latitude: f64, longitude: f64, altitude: i32) -> Result<()>;
+    pub(crate) fn SendLocation2D(&self, latitude: f64, longitude: f64) -> Result<()>;
+    pub(crate) fn SendLocation3D(&self, latitude: f64, longitude: f64, altitude: i32) -> Result<()>;
 }
 
 #[interface("71B4A60A-FE21-46D8-A39B-8E32BA0C5ECC")]

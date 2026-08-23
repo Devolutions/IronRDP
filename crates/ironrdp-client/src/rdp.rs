@@ -5,6 +5,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::io;
 use std::sync::Arc;
+#[cfg(feature = "location")]
+use std::sync::mpsc as std_mpsc;
 
 #[cfg(feature = "clipboard")]
 pub use ironrdp_cliprdr::backend::CliprdrBackendFactory;
@@ -34,6 +36,8 @@ use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 pub use ironrdp_rdpdr::backend::{RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive};
 use ironrdp_rdpei::RdpeiClient;
 use ironrdp_rdpei::pdu::TouchEventPdu;
+#[cfg(feature = "location")]
+use ironrdp_rdpel::client::LocationClient;
 #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
 use ironrdp_session::ActiveStage;
 use ironrdp_session::image::DecodedImage;
@@ -186,6 +190,23 @@ pub enum AutoReconnectDecision {
     Stop,
 }
 
+/// Failure reported after a queued location update reaches the active session loop.
+#[cfg(feature = "location")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocationInputError {
+    ChannelUnavailable,
+    ChannelNotReady,
+    EncodingFailed,
+}
+
+/// Failure to enqueue a location update in the bounded session input queue.
+#[cfg(feature = "location")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocationQueueError {
+    Full,
+    Closed,
+}
+
 #[derive(Debug)]
 pub enum RdpInputEvent {
     Resize {
@@ -225,6 +246,13 @@ pub enum RdpInputEvent {
     #[cfg(feature = "rdpdr")]
     RemoveRdpdrDrive {
         device_id: u32,
+    },
+    #[cfg(feature = "location")]
+    Location {
+        latitude: f64,
+        longitude: f64,
+        altitude: i32,
+        response: std_mpsc::SyncSender<Result<(), LocationInputError>>,
     },
     /// Requests a RemoteApp launch over the RAIL static channel.
     RailExecute(ExecutePdu),
@@ -314,6 +342,29 @@ impl RdpInputSender {
     /// Queues a client-originated RAIL input event.
     pub fn try_send_rail_input(&self, event: RailInputEvent) -> Result<(), mpsc::error::TrySendError<RdpInputEvent>> {
         self.input_sender.try_send(RdpInputEvent::Rail(event))
+    }
+
+    /// Queues one explicit location update and returns its bounded completion receiver.
+    #[cfg(feature = "location")]
+    pub fn try_send_location(
+        &self,
+        latitude: f64,
+        longitude: f64,
+        altitude: i32,
+    ) -> Result<std_mpsc::Receiver<Result<(), LocationInputError>>, LocationQueueError> {
+        let (response, receiver) = std_mpsc::sync_channel(1);
+        self.input_sender
+            .try_send(RdpInputEvent::Location {
+                latitude,
+                longitude,
+                altitude,
+                response,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => LocationQueueError::Full,
+                mpsc::error::TrySendError::Closed(_) => LocationQueueError::Closed,
+            })?;
+        Ok(receiver)
     }
 
     /// Enqueues a clipboard protocol message independently of ordinary bounded input.
@@ -1208,6 +1259,11 @@ fn build_connector(
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
         .with_dynamic_channel(EchoClient::new())
         .with_dynamic_channel(RdpeiClient::default());
+
+    #[cfg(feature = "location")]
+    if config.channels.location {
+        drdynvc = drdynvc.with_dynamic_channel(LocationClient::new());
+    }
 
     // Attach DVC pipe proxies.
     #[cfg(feature = "dvc-pipe-proxy")]
@@ -2560,6 +2616,41 @@ async fn active_session(
                     #[cfg(feature = "rdpdr")]
                     RdpInputEvent::RemoveRdpdrDrive { device_id } => {
                         process_rdpdr_drive_change(&mut active_stage, device_id, None)?
+                    }
+                    #[cfg(feature = "location")]
+                    RdpInputEvent::Location {
+                        latitude,
+                        longitude,
+                        altitude,
+                        response,
+                    } => {
+                        let (mut result, messages) = match active_stage.get_dvc_mut::<LocationClient>() {
+                            None => (Err(LocationInputError::ChannelUnavailable), None),
+                            Some(dvc) if !dvc.processor().ready() => {
+                                (Err(LocationInputError::ChannelNotReady), None)
+                            }
+                            Some(mut dvc) => match dvc.processor_mut().send_location(latitude, longitude, altitude) {
+                                Ok(messages) => (Ok(()), Some(messages)),
+                                Err(error) => {
+                                    warn!(%error, "Unable to encode location update");
+                                    (Err(LocationInputError::EncodingFailed), None)
+                                }
+                            },
+                        };
+                        let outputs = if let Some(messages) = messages {
+                            match active_stage.encode_dvc_messages(messages) {
+                                Ok(frame) => vec![ActiveStageOutput::ResponseFrame(frame)],
+                                Err(error) => {
+                                    warn!(%error, "Unable to frame location update");
+                                    result = Err(LocationInputError::EncodingFailed);
+                                    Vec::new()
+                                }
+                            }
+                        } else {
+                            Vec::new()
+                        };
+                        let _ = response.send(result);
+                        outputs
                     }
                     RdpInputEvent::RailExecute(execute) => {
                         let executable = execute.executable.clone();

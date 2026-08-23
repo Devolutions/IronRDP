@@ -258,12 +258,31 @@ Held modifiers and shortcut keys are released before the action, then restored w
 | `RemoteSessionActionTaskManager` | 6 | `Ctrl+Shift+Esc` |
 
 `RemoteSessionActionSnap` (2) is deprecated by Microsoft and returns `E_NOTIMPL`.
+
 Unknown action values return `E_INVALIDARG`.
 An inactive session returns `E_UNEXPECTED`.
 `RemoteSessionActionType` contains remote shell UI actions only; it does not include session shutdown, reconnect, or other lifecycle requests.
 
 [RemoteSessionActionType]: https://learn.microsoft.com/windows/win32/termserv/remotesessionactiontype
 [MS-RDPBCGR 2.2.8.1.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+
+### `IMsRdpClientNonScriptable6` location redirection
+
+`SendLocation2D` and `SendLocation3D` forward coordinates supplied explicitly by the COM caller through the [MS-RDPEL] `Microsoft::Windows::RDS::Location` dynamic channel.
+The control never queries host geolocation services, logs coordinates, or persists location data.
+
+Both methods require an active session and accept finite latitude from -90 through 90 degrees and longitude from -180 through 180 degrees.
+`SendLocation3D` accepts altitude from -268435455 through 268435455 metres and caches it, including on a validation or delivery failure, while `SendLocation2D` reuses the most recently supplied altitude or zero before the first 3D call.
+
+The server must create the channel and complete the server-ready/client-ready exchange before either method can succeed.
+IronRDP advertises MS-RDPEL version 1 and supports latitude, longitude, and altitude; version 2 speed, heading, horizontal accuracy, and source fields are not exposed by this COM interface.
+Coordinates are encoded to five decimal places to match the Windows client behavior.
+The first accepted update uses an absolute 3D PDU, then unchanged-altitude updates use 2D deltas and changed-altitude updates use 3D deltas.
+
+Delivery uses the client's bounded input queue and waits up to two seconds for the session loop to encode the update.
+No active session returns `E_UNEXPECTED`, invalid coordinates return `E_INVALIDARG`, an absent or uninitialized location channel returns `E_POINTER`, and queue, timeout, or encoding failures return `E_FAIL`.
+
+[MS-RDPEL]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpel/
 
 For the native `mstsc.exe` host, `FullScreen` and `Ctrl`+`Alt`+`Break` (or `Pause`) return
 `E_NOTIMPL` without changing the outer `TscShellContainerClass` window. Directly manipulating that
