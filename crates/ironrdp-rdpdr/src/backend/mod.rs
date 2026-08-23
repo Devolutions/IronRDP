@@ -158,10 +158,12 @@ impl RdpdrDrive {
 
 /// Per-connection product created by an [`RdpdrBackendFactory`].
 ///
-/// The backend and drive list describe the same immutable device set.
+/// The initial list is announced during channel initialization.
+/// A backend that enables drive hotplug may also contain dormant filesystem devices.
 pub struct RdpdrBackendProduct {
     backend: Box<dyn RdpdrBackend>,
     initial_drives: Vec<RdpdrDrive>,
+    drive_hotplug: bool,
 }
 
 impl RdpdrBackendProduct {
@@ -170,12 +172,25 @@ impl RdpdrBackendProduct {
         Self {
             backend,
             initial_drives,
+            drive_hotplug: false,
         }
+    }
+
+    /// Enables drive capability negotiation even when no drive is announced initially.
+    #[must_use]
+    pub fn with_drive_hotplug(mut self, enabled: bool) -> Self {
+        self.drive_hotplug = enabled;
+        self
     }
 
     /// Returns the filesystem devices announced when the server accepts RDPDR.
     pub fn initial_drives(&self) -> &[RdpdrDrive] {
         &self.initial_drives
+    }
+
+    /// Returns whether the channel must remain available for later drive announcements.
+    pub fn drive_hotplug(&self) -> bool {
+        self.drive_hotplug
     }
 
     /// Consumes the product into its backend and matching announcement metadata.
