@@ -48,6 +48,35 @@ impl fmt::Debug for ExtensionRegistry {
 
 // ── Public configuration types ────────────────────────────────────────────────
 
+/// RDPSND quality policy sent to servers that support audio protocol version 6 or newer.
+#[cfg(any(feature = "sound", feature = "rdpdr"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AudioQualityMode {
+    Dynamic,
+    Medium,
+    #[default]
+    High,
+}
+
+#[cfg(any(feature = "sound", feature = "rdpdr"))]
+impl AudioQualityMode {
+    pub(crate) fn into_rdpsnd(self) -> ironrdp_rdpsnd::pdu::QualityMode {
+        match self {
+            Self::Dynamic => ironrdp_rdpsnd::pdu::QualityMode::Dynamic,
+            Self::Medium => ironrdp_rdpsnd::pdu::QualityMode::Medium,
+            Self::High => ironrdp_rdpsnd::pdu::QualityMode::High,
+        }
+    }
+
+    fn as_u32(self) -> u32 {
+        match self {
+            Self::Dynamic => 0,
+            Self::Medium => 1,
+            Self::High => 2,
+        }
+    }
+}
+
 /// Fully resolved client configuration.
 ///
 /// This is the typed surface consumed by [`crate::rdp::RdpClient`]. Build it with
@@ -73,6 +102,9 @@ pub struct Config {
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
+    pub(crate) administrative_session: bool,
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    pub(crate) audio_quality_mode: AudioQualityMode,
     pub(crate) rail_client_status_flags: Option<u32>,
     /// Initial RemoteApp launch queued after the RAIL handshake.
     pub(crate) rail_initial_execute: Option<ExecutePdu>,
@@ -156,6 +188,17 @@ impl Config {
         &self.channels
     }
 
+    /// Whether GCC requests the server's administrative session.
+    pub fn administrative_session(&self) -> bool {
+        self.administrative_session
+    }
+
+    /// RDPSND quality policy sent during audio format negotiation.
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    pub fn audio_quality_mode(&self) -> AudioQualityMode {
+        self.audio_quality_mode
+    }
+
     /// DVC named-pipe proxy mappings.
     #[cfg(feature = "dvc-pipe-proxy")]
     pub fn dvc_pipe_proxies(&self) -> &[DvcProxyInfo] {
@@ -199,6 +242,9 @@ impl fmt::Debug for Config {
         s.field("kerberos_config", &self.kerberos_config);
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
+        s.field("administrative_session", &self.administrative_session);
+        #[cfg(any(feature = "sound", feature = "rdpdr"))]
+        s.field("audio_quality_mode", &self.audio_quality_mode);
         s.field("rail_client_status_flags", &self.rail_client_status_flags);
         #[cfg(feature = "dvc-pipe-proxy")]
         s.field("dvc_pipe_proxies", &self.dvc_pipe_proxies);
@@ -666,6 +712,8 @@ pub struct ConfigBuilder {
     enable_audio_capture: Option<bool>,
     compression_type: Option<ironrdp_pdu::rdp::client_info::CompressionType>,
     compression_enabled: Option<bool>,
+    request_data: Option<ironrdp_pdu::nego::NegoRequestData>,
+    administrative_session: bool,
     alternate_shell: Option<String>,
     work_dir: Option<String>,
     remote_application_mode: Option<bool>,
@@ -682,6 +730,8 @@ pub struct ConfigBuilder {
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     fake_events_interval: Option<Duration>,
     channels: ChannelConfig,
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    audio_quality_mode: Option<AudioQualityMode>,
     #[cfg(feature = "dvc-pipe-proxy")]
     dvc_pipe_proxies: Vec<DvcProxyInfo>,
     #[cfg(all(windows, feature = "dvc-com-plugin"))]
@@ -902,6 +952,28 @@ impl ConfigBuilder {
     pub fn with_autologon(mut self, enabled: bool) -> Self {
         self.autologon = Some(enabled);
         self.properties.set_autologon(enabled);
+        self
+    }
+
+    /// Set the opaque load-balance routing token carried by the X.224 Connection Request PDU.
+    #[must_use]
+    pub fn with_load_balance_info(mut self, value: impl Into<String>) -> Self {
+        let value = value.into();
+        if value.is_empty() {
+            self.request_data = None;
+            self.properties.remove("loadbalanceinfo");
+        } else {
+            self.properties.insert("loadbalanceinfo", value.clone());
+            self.request_data = Some(ironrdp_pdu::nego::NegoRequestData::raw_routing_token(value));
+        }
+        self
+    }
+
+    /// Request the server's administrative session through GCC Client Cluster Data.
+    #[must_use]
+    pub fn with_administrative_session(mut self, enabled: bool) -> Self {
+        self.administrative_session = enabled;
+        self.properties.insert("administrative session", enabled);
         self
     }
 
@@ -1225,6 +1297,15 @@ impl ConfigBuilder {
         self
     }
 
+    /// Set the RDPSND quality policy sent to servers supporting audio protocol version 6 or newer.
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    #[must_use]
+    pub fn with_audio_quality_mode(mut self, mode: AudioQualityMode) -> Self {
+        self.audio_quality_mode = Some(mode);
+        self.properties.insert("audioqualitymode", mode.as_u32());
+        self
+    }
+
     /// Set the CLIPRDR (clipboard) redirection mode.
     #[cfg(feature = "clipboard")]
     #[must_use]
@@ -1439,6 +1520,15 @@ impl ConfigBuilder {
     pub fn build(mut self) -> anyhow::Result<Config> {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
         use ironrdp_pdu::rdp::client_info::TimezoneInfo;
+
+        if let Some(ironrdp_pdu::nego::NegoRequestData::RoutingToken(token)) = &self.request_data {
+            anyhow::ensure!(
+                token.0.len() <= 256
+                    && !token.0.is_empty()
+                    && token.0.as_bytes().iter().all(|byte| (0x20..=0x7E).contains(byte)),
+                "invalid load-balance routing token"
+            );
+        }
 
         #[cfg(feature = "gateway")]
         if matches!(self.transport, TransportKind::Gateway { .. }) {
@@ -1675,7 +1765,7 @@ impl ConfigBuilder {
             autologon: self.autologon.unwrap_or(false),
             enable_audio_playback: self.enable_audio_playback.unwrap_or(true),
             enable_audio_capture: self.enable_audio_capture.unwrap_or(false),
-            request_data: None,
+            request_data: self.request_data,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
             compression_type,
@@ -1719,6 +1809,9 @@ impl ConfigBuilder {
             kerberos_config,
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,
+            administrative_session: self.administrative_session,
+            #[cfg(any(feature = "sound", feature = "rdpdr"))]
+            audio_quality_mode: self.audio_quality_mode.unwrap_or_default(),
             rail_client_status_flags: self.rail_client_status_flags,
             rail_initial_execute,
             #[cfg(feature = "dvc-pipe-proxy")]
@@ -1783,6 +1876,14 @@ impl ConfigBuilder {
         }
         if let Some(autologon) = ps.autologon() {
             self.autologon = Some(autologon);
+        }
+        if let Some(administrative_session) = ps.get::<bool>("administrative session") {
+            self.administrative_session = administrative_session;
+        }
+        if let Some(load_balance_info) = ps.get::<&str>("loadbalanceinfo") {
+            self.request_data = Some(ironrdp_pdu::nego::NegoRequestData::raw_routing_token(
+                load_balance_info.to_owned(),
+            ));
         }
         if let Some(scale) = ps.desktop_scale_factor().ok().flatten() {
             self.desktop_scale_factor = Some(scale);
@@ -1852,6 +1953,15 @@ impl ConfigBuilder {
             Ok(Some(AudioCaptureMode::CaptureFromClient)) => self.enable_audio_capture = Some(true),
             Ok(Some(AudioCaptureMode::Disabled)) => self.enable_audio_capture = Some(false),
             _ => {}
+        }
+        #[cfg(any(feature = "sound", feature = "rdpdr"))]
+        if let Some(audio_quality_mode) = ps.get::<u32>("audioqualitymode") {
+            self.audio_quality_mode = Some(match audio_quality_mode {
+                0 => AudioQualityMode::Dynamic,
+                1 => AudioQualityMode::Medium,
+                2 => AudioQualityMode::High,
+                _ => anyhow::bail!("invalid 'audioqualitymode': {audio_quality_mode}"),
+            });
         }
 
         // Transport: NamedPipe > RDCleanPath > Gateway > Direct.

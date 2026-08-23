@@ -280,12 +280,12 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | --- | --- |
 | Legacy RDP 6.1 through 11 host selection | The six published `MsRdpClient*NotSafeForScripting` class identifiers are accepted by `DllGetClassObject` and preserve their requested `IPersist` class identity. They are explicit backend aliases, not global COM registrations. |
 | WinForms `AxHost` lifecycle | Windowed OLE activation, focus, sizing, the inherited `IMsRdpClient` through `IMsRdpClient10` raw interfaces, and the RDM virtual channels `RDMJump`, `RDMLog`, and `RDMCmd` are supported. |
-| Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio, clipboard, CredSSP, client-device name, RemoteApp, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
+| Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio and quality policy, clipboard, CredSSP, administrative session, load-balance routing token, client-device name, RemoteApp, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
 | Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, writable confirm-close, and worker-backed warning and auto-reconnect events are delivered on the creating apartment. |
 | Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. Non-filesystem device, camera, monitor, and preferred-redirection capabilities remain unavailable. |
 | Smartcard redirection | `IMsRdpClientAdvancedSettings::RedirectSmartCards` enables WinSCard RDPDR smartcard redirection (smartcard-only sessions are valid without redirected drives). |
 
-The audit also identified RDM settings that have no IronRDP ActiveX backend: input throttling, authentication policy, device/printer/port redirection, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
+The audit also identified settings that have no IronRDP ActiveX backend: input throttling, keepalive and idle policy, printer/port/generic-device redirection, persistent bitmap caching, video policy, PCB, super-pan, security-layer negotiation, and Microsoft workspace extensions.
 Their audited AdvancedSettings vtable slots use their exact published ABI signatures, initialize out parameters, and return `E_NOTIMPL`; the control does not report success for settings that cannot affect the connection.
 
 The control exposes a standard `IConnectionPointContainer` and an event connection point for the
@@ -459,12 +459,17 @@ has already been released. The currently mapped members are `SmartSizing`, `Enab
 `KeyboardHookMode`, keyboard type,
 subtype, and functional-key count, secured `StartProgram`/`WorkDir`, both public
 `AudioRedirectionMode` slots, both public `AudioCaptureRedirectionMode` slots,
+`AudioQualityMode`, `LoadBalanceInfo`, `ConnectToServerConsole`/`ConnectToAdministerServer`,
 `GrabFocusOnConnect`, `Compress`, `RDPPort`,
 `AuthenticationLevel`, and `PublicMode`,
 `RedirectClipboard`, `PerformanceFlags`, and RD Gateway transport selection.
 `StartProgram` and `WorkDir` retain their caller-owned BSTR values and configure IronRDP's next
 Client Info PDU alternate shell and working directory. The keyboard fields configure the next GCC
-Client Core Data block. Audio mode `0` enables the Windows-native RDPSND playback backend (CPAL) and
+Client Core Data block.
+`LoadBalanceInfo` accepts an ASCII routing token of at most 256 bytes and carries it in the next X.224 Connection Request.
+`ConnectToServerConsole` and `ConnectToAdministerServer` are aliases that request session ID zero through GCC Client Cluster Data.
+`AudioQualityMode` values `0`, `1`, and `2` select dynamic, medium, and high RDPSND quality.
+Audio mode `0` enables the Windows-native RDPSND playback backend (CPAL) and
 advertises the `rdpsnd` static channel for server-to-client wave data; modes
 `1` (play on server) and `2` (disabled) both clear local playback and set
 `INFO_NOAUDIOPLAYBACK` (a no-op RDPSND channel may still attach when RDPDR is

@@ -486,7 +486,22 @@ fn routing_token_decode() {
         .expect("read routing token")
         .expect("routing token");
 
-    assert_eq!(routing_token.0, "3640205228.15629.0000");
+    assert_eq!(routing_token.0, "Cookie: msts=3640205228.15629.0000");
+}
+
+#[test]
+fn raw_routing_token_roundtrip() {
+    let token = RoutingToken("tsv://MS Terminal Services Plugin.1.collection".to_owned());
+    let mut buffer = vec![0; token.size()];
+    token
+        .write(&mut WriteCursor::new(&mut buffer))
+        .expect("write raw routing token");
+    assert_eq!(buffer, b"tsv://MS Terminal Services Plugin.1.collection\r\n");
+
+    let decoded = RoutingToken::read(&mut ReadCursor::new(&buffer))
+        .expect("read raw routing token")
+        .expect("raw routing token");
+    assert_eq!(decoded, token);
 }
 
 #[test]

@@ -171,17 +171,24 @@ pub enum NegoRequestData {
 
 impl NegoRequestData {
     pub fn routing_token(value: String) -> Self {
-        Self::RoutingToken(RoutingToken(value))
+        Self::RoutingToken(RoutingToken(format!("Cookie: msts={value}")))
     }
 
     pub fn cookie(value: String) -> Self {
         Self::Cookie(Cookie(value))
     }
 
+    /// Creates an opaque load-balance routing token.
+    ///
+    /// Unlike [`Self::routing_token`], this does not add the legacy `Cookie: msts=` prefix.
+    pub fn raw_routing_token(value: String) -> Self {
+        Self::RoutingToken(RoutingToken(value))
+    }
+
     pub fn read(src: &mut ReadCursor<'_>) -> DecodeResult<Option<Self>> {
-        match RoutingToken::read(src)? {
-            Some(token) => Ok(Some(Self::RoutingToken(token))),
-            None => Cookie::read(src)?.map(Self::Cookie).pipe(Ok),
+        match Cookie::read(src)? {
+            Some(cookie) => Ok(Some(Self::Cookie(cookie))),
+            None => RoutingToken::read(src)?.map(Self::RoutingToken).pipe(Ok),
         }
     }
 
@@ -220,23 +227,42 @@ impl Cookie {
     }
 }
 
+/// Complete opaque ANSI routing token, excluding the terminating CRLF.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RoutingToken(pub String);
 
 impl RoutingToken {
-    const PREFIX: &'static str = "Cookie: msts=";
-
     pub fn read(src: &mut ReadCursor<'_>) -> DecodeResult<Option<Self>> {
-        read_nego_data(src, "RoutingToken", Self::PREFIX)?.map(Self).pipe(Ok)
+        let start = src.pos();
+        let Some(length) = src.inner()[start..].windows(2).position(|bytes| bytes == b"\r\n") else {
+            return Ok(None);
+        };
+        let bytes = &src.inner()[start..start + length];
+        if bytes.is_empty() || !bytes.iter().all(|byte| (0x20..=0x7E).contains(byte)) {
+            return Ok(None);
+        }
+
+        let value = core::str::from_utf8(bytes)
+            .map_err(|_| invalid_field_err("RoutingToken", "value", "not valid UTF-8"))?
+            .to_owned();
+        src.advance(length + 2);
+        Ok(Some(Self(value)))
     }
 
     pub fn write(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        write_nego_data(dst, "RoutingToken", Self::PREFIX, &self.0)
+        if self.0.is_empty() || !self.0.as_bytes().iter().all(|byte| (0x20..=0x7E).contains(byte)) {
+            return Err(invalid_field_err!(
+                "RoutingToken",
+                "value",
+                "must contain printable ANSI characters"
+            ));
+        }
+        write_nego_data(dst, "RoutingToken", "", &self.0)
     }
 
     pub fn size(&self) -> usize {
-        Self::PREFIX.len() + self.0.len() + 2
+        self.0.len() + 2
     }
 }
 

@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ironrdp_cfg::PropertySetExt as _;
-use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, Transport, VmConnectMode};
+use ironrdp_client::config::{AudioQualityMode, ClipboardType, ConfigBuilder, Destination, Transport, VmConnectMode};
 use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};
+use ironrdp_pdu::nego::NegoRequestData;
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 use ironrdp_viewer::cli::parse_config_from;
 use uuid::Uuid;
@@ -351,6 +352,9 @@ fn generic_builder_options_reach_connector_configuration() {
         .with_performance_flags(performance_flags)
         .with_alternate_shell("powershell.exe")
         .with_work_dir("C:\\Users\\test-user")
+        .with_load_balance_info("tsv://MS Terminal Services Plugin.1.collection")
+        .with_administrative_session(true)
+        .with_audio_quality_mode(AudioQualityMode::Dynamic)
         .build()
         .expect("valid generic configuration");
 
@@ -367,6 +371,40 @@ fn generic_builder_options_reach_connector_configuration() {
     assert_eq!(config.connector().performance_flags, performance_flags);
     assert_eq!(config.connector().alternate_shell, "powershell.exe");
     assert_eq!(config.connector().work_dir, "C:\\Users\\test-user");
+    assert!(matches!(
+        config.connector().request_data.as_ref(),
+        Some(NegoRequestData::RoutingToken(token))
+            if token.0 == "tsv://MS Terminal Services Plugin.1.collection"
+    ));
+    assert!(config.administrative_session());
+    assert_eq!(config.audio_quality_mode(), AudioQualityMode::Dynamic);
+    assert_eq!(
+        config.properties().get::<&str>("loadbalanceinfo"),
+        Some("tsv://MS Terminal Services Plugin.1.collection")
+    );
+    assert_eq!(config.properties().get::<bool>("administrative session"), Some(true));
+    assert_eq!(config.properties().get::<u32>("audioqualitymode"), Some(0));
+}
+
+#[test]
+fn rdp_file_maps_routing_admin_and_audio_quality_settings() {
+    let config = parse_config_from_rdp(
+        "full address:s:rdp.example.com\n\
+         username:s:test-user\n\
+         ClearTextPassword:s:test-pass\n\
+         loadbalanceinfo:s:tsv://MS Terminal Services Plugin.1.collection\n\
+         administrative session:i:1\n\
+         audioqualitymode:i:1\n",
+        &[],
+    );
+
+    assert!(matches!(
+        config.connector().request_data.as_ref(),
+        Some(NegoRequestData::RoutingToken(token))
+            if token.0 == "tsv://MS Terminal Services Plugin.1.collection"
+    ));
+    assert!(config.administrative_session());
+    assert_eq!(config.audio_quality_mode(), AudioQualityMode::Medium);
 }
 
 #[test]

@@ -317,6 +317,7 @@ pub struct ClientConnector {
     pub static_channels: StaticChannelSet,
     /// MCS message channel ID assigned by the server, once negotiated.
     pub message_channel_id: Option<u16>,
+    cluster_data: Option<gcc::ClientClusterData>,
     /// X.224 negotiation flags supplied by the server.
     response_flags: nego::ResponseFlags,
     /// Multitransport flags the server advertised in its GCC
@@ -351,6 +352,7 @@ impl ClientConnector {
             client_addr,
             static_channels: StaticChannelSet::new(),
             message_channel_id: None,
+            cluster_data: None,
             response_flags: nego::ResponseFlags::empty(),
             server_multitransport_flags: None,
             auto_reconnect_cookie: None,
@@ -375,6 +377,13 @@ impl ClientConnector {
     #[must_use]
     pub fn with_auto_reconnect_cookie(mut self, cookie: ServerAutoReconnect) -> Self {
         self.auto_reconnect_cookie = Some(cookie);
+        self
+    }
+
+    /// Add GCC Client Cluster Data to advertise or request server-session redirection.
+    #[must_use]
+    pub fn with_cluster_data(mut self, cluster_data: gcc::ClientClusterData) -> Self {
+        self.cluster_data = Some(cluster_data);
         self
     }
 
@@ -1099,6 +1108,7 @@ impl Sequence for ClientConnector {
 
                 let client_gcc_blocks = create_gcc_blocks(
                     &self.config,
+                    self.cluster_data.as_ref(),
                     selected_protocol,
                     self.response_flags
                         .contains(nego::ResponseFlags::EXTENDED_CLIENT_DATA_SUPPORTED),
@@ -1569,6 +1579,7 @@ pub fn encode_send_data_request<T: Encode>(
 #[expect(single_use_lifetimes)] // anonymous lifetimes in `impl Trait` are unstable
 fn create_gcc_blocks<'a>(
     config: &Config,
+    cluster_data: Option<&gcc::ClientClusterData>,
     selected_protocol: nego::SecurityProtocol,
     extended_client_data_supported: bool,
     static_channels: impl Iterator<Item = &'a StaticVirtualChannel>,
@@ -1672,8 +1683,7 @@ fn create_gcc_blocks<'a>(
         } else {
             Some(ClientNetworkData { channels })
         },
-        // TODO(#139): support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
-        cluster: None,
+        cluster: cluster_data.cloned(),
         monitor: extended_client_data_supported
             .then(|| config.monitor_layout.clone())
             .flatten(),
@@ -1973,8 +1983,14 @@ mod tests {
             multitransport_flags: None,
         };
 
-        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), true, core::iter::empty())
-            .expect("valid GCC Client Monitor Data");
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC Client Monitor Data");
 
         assert_eq!(blocks.monitor, config.monitor_layout);
         assert!(
@@ -1987,8 +2003,14 @@ mod tests {
         );
 
         config.monitor_layout = None;
-        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), true, core::iter::empty())
-            .expect("valid GCC Client Monitor Data");
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC Client Monitor Data");
 
         assert!(blocks.monitor.is_none());
         assert!(
@@ -2000,8 +2022,14 @@ mod tests {
                 .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
         );
 
-        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), false, core::iter::empty())
-            .expect("valid GCC Client Monitor Data");
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            false,
+            core::iter::empty(),
+        )
+        .expect("valid GCC Client Monitor Data");
 
         assert!(blocks.monitor.is_none());
         assert!(blocks.message_channel.is_none());
@@ -2014,5 +2042,20 @@ mod tests {
                 .expect("early capability flags are present")
                 .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
         );
+
+        let cluster_data = gcc::ClientClusterData {
+            flags: gcc::RedirectionFlags::REDIRECTION_SUPPORTED | gcc::RedirectionFlags::REDIRECTED_SESSION_FIELD_VALID,
+            redirection_version: gcc::RedirectionVersion::V6,
+            redirected_session_id: 0,
+        };
+        let blocks = create_gcc_blocks(
+            &config,
+            Some(&cluster_data),
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC Client Cluster Data");
+        assert_eq!(blocks.cluster, Some(cluster_data));
     }
 }
