@@ -204,6 +204,7 @@ pub(crate) async fn open_gateway_transport(
     let stream = upgrade_gateway_tls(
         stream,
         &gw_host,
+        &target.gw_endpoint,
         certificate_validation,
         certificate_validation_callback.clone(),
     )
@@ -217,6 +218,7 @@ pub(crate) async fn open_gateway_transport(
         upgrade_gateway_tls(
             stream,
             &in_gw_host,
+            &target.gw_endpoint,
             certificate_validation,
             certificate_validation_callback,
         )
@@ -228,6 +230,7 @@ pub(crate) async fn open_gateway_transport(
 async fn upgrade_gateway_tls(
     stream: TcpStream,
     gw_host: &str,
+    gw_endpoint: &str,
     certificate_validation: CertificateValidation,
     certificate_validation_callback: Option<CertificateValidationCallback>,
 ) -> Result<GatewayStream, Error> {
@@ -236,8 +239,13 @@ async fn upgrade_gateway_tls(
             ironrdp_tls::upgrade_with_certificate_validation(stream, gw_host, certificate_validation).await
         }
         GatewayTlsUpgrade::CertificateValidationCallback(certificate_validation_callback) => {
-            ironrdp_tls::upgrade_with_certificate_validation_callback(stream, gw_host, certificate_validation_callback)
-                .await
+            ironrdp_tls::upgrade_with_certificate_validation_callback_for_endpoint(
+                stream,
+                gw_host,
+                gw_endpoint,
+                certificate_validation_callback,
+            )
+            .await
         }
     }
     .map_err(|e| custom_err!("tls connect", e))?;
@@ -250,12 +258,6 @@ enum GatewayTlsUpgrade {
     CertificateValidationCallback(CertificateValidationCallback),
 }
 
-#[cfg(feature = "test-support")]
-pub(crate) struct GatewayTlsUpgradeSelection {
-    pub(crate) certificate_validation: CertificateValidation,
-    pub(crate) uses_callback: bool,
-}
-
 fn select_gateway_tls_upgrade(
     certificate_validation: CertificateValidation,
     certificate_validation_callback: Option<CertificateValidationCallback>,
@@ -265,21 +267,6 @@ fn select_gateway_tls_upgrade(
             GatewayTlsUpgrade::CertificateValidationCallback(certificate_validation_callback)
         }
         None => GatewayTlsUpgrade::CertificateValidation(certificate_validation),
-    }
-}
-
-#[cfg(feature = "test-support")]
-pub(crate) fn select_gateway_tls_upgrade_for_test(
-    certificate_validation: CertificateValidation,
-    certificate_validation_callback: Option<CertificateValidationCallback>,
-) -> GatewayTlsUpgradeSelection {
-    let uses_callback = matches!(
-        select_gateway_tls_upgrade(certificate_validation, certificate_validation_callback),
-        GatewayTlsUpgrade::CertificateValidationCallback(_)
-    );
-    GatewayTlsUpgradeSelection {
-        certificate_validation,
-        uses_callback,
     }
 }
 

@@ -15,8 +15,11 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use ironrdp_mstsgu::test_support::GatewayTransport;
+use ironrdp_mstsgu::{GwClient, GwConnectTarget};
 use ironrdp_tls::{CertificateValidation, CertificateValidationCallback};
 use tokio::sync::oneshot;
+use tokio_native_tls::TlsAcceptor;
+use tokio_native_tls::native_tls::{Identity, TlsAcceptor as NativeTlsAcceptor};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
@@ -29,17 +32,66 @@ const PACKET: &[u8] = &[
     0x08, 0x00, 0x00, 0x00, // length
 ];
 
-#[test]
-fn gateway_tls_upgrade_uses_policy_or_callback() {
-    assert_eq!(
-        ironrdp_mstsgu::test_support::tls_upgrade_selection(CertificateValidation::Strict, None),
-        (CertificateValidation::Strict, false)
+#[tokio::test]
+async fn strict_policy_rejects_self_signed_gateway_certificate() {
+    let (listener, acceptor) = tls_listener().await;
+    let target = gateway_target(listener.local_addr().expect("gateway listener address"));
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept strict TLS client");
+        let _ = acceptor.accept(stream).await;
+    });
+
+    let error = match GatewayTransport::connect_tls(&target, CertificateValidation::Strict, None).await {
+        Ok(_) => panic!("strict validation must reject the self-signed gateway certificate"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("tls connect"));
+
+    server.await.expect("TLS server task");
+}
+
+#[tokio::test]
+async fn native_tls_rejects_gateway_certificate_callback() {
+    let (listener, acceptor) = tls_listener().await;
+    let target = gateway_target(listener.local_addr().expect("gateway listener address"));
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept callback TLS client");
+        assert!(acceptor.accept(stream).await.is_err());
+    });
+    let callback: CertificateValidationCallback = Arc::new(|_, _, _| true);
+
+    let error = match GatewayTransport::connect_tls(&target, CertificateValidation::Strict, Some(callback)).await {
+        Ok(_) => panic!("native TLS must reject certificate callbacks"),
+        Err(error) => error,
+    };
+    assert!(
+        format!("{error:?}").contains("certificate validation callbacks require the rustls backend"),
+        "{error:?}"
     );
 
-    let callback: CertificateValidationCallback = Arc::new(|_, _| false);
-    assert_eq!(
-        ironrdp_mstsgu::test_support::tls_upgrade_selection(CertificateValidation::Strict, Some(Arc::clone(&callback))),
-        (CertificateValidation::Strict, true)
+    server.await.expect("TLS server task");
+}
+
+#[tokio::test]
+async fn dangerous_policy_with_gateway_callback_is_rejected() {
+    let target = gateway_target("127.0.0.1:1".parse().expect("socket address"));
+    let callback: CertificateValidationCallback = Arc::new(|_, _, _| true);
+
+    let error = match GwClient::connect_with_certificate_validation(
+        &target,
+        "test-client",
+        CertificateValidation::DangerouslyAcceptInvalidCertificate,
+        Some(callback),
+    )
+    .await
+    {
+        Ok(_) => panic!("dangerous policy and callback must be rejected"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("invalid certificate validation configuration")
     );
 }
 
@@ -384,4 +436,27 @@ fn response(status: StatusCode, headers: &[(&str, &str)], body: Bytes) -> Respon
         );
     }
     response
+}
+
+async fn tls_listener() -> (tokio::net::TcpListener, TlsAcceptor) {
+    let identity = Identity::from_pkcs8(
+        include_bytes!("../../ironrdp-tls/tests/certs/server-cert.pem"),
+        include_bytes!("../../ironrdp-tls/tests/certs/server-key.pem"),
+    )
+    .expect("create TLS identity");
+    let acceptor = TlsAcceptor::from(NativeTlsAcceptor::new(identity).expect("create TLS acceptor"));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind TLS gateway listener");
+    (listener, acceptor)
+}
+
+fn gateway_target(address: core::net::SocketAddr) -> GwConnectTarget {
+    GwConnectTarget {
+        gw_endpoint: format!("localhost:{}", address.port()),
+        gw_user: "user".to_owned(),
+        gw_pass: "pass".to_owned(),
+        smart_card: None,
+        server: "server.test".to_owned(),
+    }
 }

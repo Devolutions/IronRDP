@@ -3025,6 +3025,7 @@ dependencies = [
  "picky-asn1-x509",
  "sspi",
  "tokio",
+ "tokio-native-tls",
  "tokio-tungstenite",
  "tokio-util",
  "uuid",

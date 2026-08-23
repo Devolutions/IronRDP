@@ -127,6 +127,7 @@ type Error = ironrdp_error::Error<GwErrorKind>;
 #[non_exhaustive]
 pub enum GwErrorKind {
     InvalidGwTarget,
+    InvalidCertificateValidation,
     Connect,
     /// A nonzero HRESULT returned by the gateway during control setup.
     GatewayCode(u32),
@@ -159,6 +160,7 @@ impl Display for GwErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let x = match self {
             GwErrorKind::InvalidGwTarget => "invalid GW Target",
+            GwErrorKind::InvalidCertificateValidation => "invalid certificate validation configuration",
             GwErrorKind::Connect => "connection error",
             GwErrorKind::GatewayCode(code) => match gateway_code_label(*code) {
                 Some(label) => return write!(f, "gateway error 0x{code:08x} ({label})"),
@@ -221,7 +223,8 @@ impl GwClient {
     ///
     /// This presents port `3389` to the gateway.
     ///
-    /// Certificate-validation callbacks require the Rustls TLS backend.
+    /// Certificate-validation callbacks require the Rustls TLS backend and cannot be
+    /// combined with [`CertificateValidation::DangerouslyAcceptInvalidCertificate`].
     pub async fn connect_with_certificate_validation(
         target: &GwConnectTarget,
         client_name: &str,
@@ -268,7 +271,8 @@ impl GwClient {
 
     /// Open an MS-TSGU tunnel with an explicit TLS certificate-validation configuration.
     ///
-    /// Certificate-validation callbacks require the Rustls TLS backend.
+    /// Certificate-validation callbacks require the Rustls TLS backend and cannot be
+    /// combined with [`CertificateValidation::DangerouslyAcceptInvalidCertificate`].
     pub async fn connect_with_port_and_certificate_validation(
         target: &GwConnectTarget,
         client_name: &str,
@@ -276,6 +280,15 @@ impl GwClient {
         certificate_validation: CertificateValidation,
         certificate_validation_callback: Option<CertificateValidationCallback>,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        if certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate
+            && certificate_validation_callback.is_some()
+        {
+            return Err(Error::new(
+                "certificate validation",
+                GwErrorKind::InvalidCertificateValidation,
+            ));
+        }
+
         Self::connect_with_port_and_optional_consent(
             target,
             client_name,

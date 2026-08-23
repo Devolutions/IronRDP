@@ -1759,9 +1759,10 @@ where
     let (initial_stream, leftover_bytes) = framed.into_inner();
 
     let tls_upgrade = if let Some(callback) = config.certificate_validation_callback() {
-        ironrdp_tls::upgrade_with_certificate_validation_callback(
+        ironrdp_tls::upgrade_with_certificate_validation_callback_for_endpoint(
             initial_stream,
             config.destination.name(),
+            &config.destination.to_string(),
             Arc::clone(callback),
         )
         .await
