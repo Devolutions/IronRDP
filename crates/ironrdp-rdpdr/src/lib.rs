@@ -19,6 +19,7 @@ use tracing::{debug, trace, warn};
 
 pub mod backend;
 pub mod pdu;
+pub mod server;
 
 pub use self::backend::noop::NoopRdpdrBackend;
 pub use self::backend::{

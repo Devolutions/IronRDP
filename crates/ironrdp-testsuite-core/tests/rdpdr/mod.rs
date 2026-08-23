@@ -13,8 +13,8 @@ use ironrdp_rdpdr::pdu::efs::{
     Devices, FileAllocationInformation, FileAttributeTagInformation, FileAttributes, FileBasicInformation,
     FileBothDirectoryInformation, FileDirectoryInformation, FileEndOfFileInformation, FileFsSizeInformation,
     FileFullDirectoryInformation, FileInformationClass, FileInformationClassLevel, FileNamesInformation,
-    FileStandardInformation, FileSystemInformationClass, FileSystemInformationClassLevel, Information, MajorFunction,
-    MinorFunction, NtStatus, PRINTER_CAPABILITY_VERSION_01, RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER,
+    FileStandardInformation, FileSystemInformationClass, FileSystemInformationClassLevel, Information, LockOperation,
+    MajorFunction, MinorFunction, NtStatus, PRINTER_CAPABILITY_VERSION_01, RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER,
     RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER, RdpLockInfo, SecurityInformation, ServerDeviceAnnounceResponse,
     ServerDriveIoRequest, ServerDriveLockControlRequest, ServerDriveNotifyChangeDirectoryRequest,
     ServerDriveQueryDirectoryRequest, ServerDriveQueryInformationRequest, ServerDriveQuerySecurityRequest,
@@ -22,6 +22,7 @@ use ironrdp_rdpdr::pdu::efs::{
     SharedAccess, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
+use ironrdp_rdpdr::server::{NoopRdpdrServerBackend, RdpdrServer, RdpdrServerBackend};
 use ironrdp_rdpdr::{NoopRdpdrBackend, Rdpdr, RdpdrBackend};
 
 /// Encodes via a plain `Vec<u8>` buffer for the server-side types in this file, which have
@@ -1172,7 +1173,7 @@ fn server_drive_set_security_request_round_trips() {
 fn server_drive_lock_control_request_round_trips() {
     let original = ServerDriveLockControlRequest {
         device_io_request: some_device_io_request(MajorFunction::LockControl, MinorFunction::from(0)),
-        operation: ironrdp_rdpdr::pdu::efs::LockOperation::Exclusive,
+        operation: LockOperation::Exclusive,
         wait: true,
         locks: vec![RdpLockInfo { length: 100, offset: 0 }],
     };
@@ -1342,4 +1343,639 @@ fn decode_io_completion_rejects_set_volume_information() {
     )
     .unwrap_err();
     assert!(err.to_string().to_lowercase().contains("majorfunction"));
+}
+
+#[derive(Debug, Default)]
+struct TrackingServerBackend {
+    accepted: Vec<u32>,
+    rejected_device_ids: Vec<u32>,
+    removed: Vec<u32>,
+    client_name: Option<String>,
+    completions: Vec<&'static str>,
+}
+
+impl_as_any!(TrackingServerBackend);
+
+impl RdpdrServerBackend for TrackingServerBackend {
+    fn on_device_announce(&mut self, devices: &[DeviceAnnounceHeader]) -> Vec<(u32, bool)> {
+        devices
+            .iter()
+            .map(|device| {
+                let device_id = device.device_id();
+                let accepted = !self.rejected_device_ids.contains(&device_id);
+                if accepted {
+                    self.accepted.push(device_id);
+                }
+                (device_id, accepted)
+            })
+            .collect()
+    }
+
+    fn on_device_remove(&mut self, device_ids: &[u32]) {
+        self.removed.extend_from_slice(device_ids);
+    }
+
+    fn on_client_name(&mut self, computer_name: &str) {
+        self.client_name = Some(computer_name.to_owned());
+    }
+
+    fn on_create_complete(&mut self, _response: &DeviceCreateResponse) -> PduResult<()> {
+        self.completions.push("create");
+        Ok(())
+    }
+    fn on_close_complete(&mut self, _response: &DeviceCloseResponse) -> PduResult<()> {
+        self.completions.push("close");
+        Ok(())
+    }
+    fn on_read_complete(&mut self, _response: &DeviceReadResponse) -> PduResult<()> {
+        self.completions.push("read");
+        Ok(())
+    }
+    fn on_write_complete(&mut self, _response: &DeviceWriteResponse) -> PduResult<()> {
+        self.completions.push("write");
+        Ok(())
+    }
+    fn on_flush_buffers_complete(&mut self, _response: &DeviceFlushBuffersResponse) -> PduResult<()> {
+        self.completions.push("flush_buffers");
+        Ok(())
+    }
+    fn on_device_control_complete(&mut self, _response: &DeviceControlResponse) -> PduResult<()> {
+        self.completions.push("device_control");
+        Ok(())
+    }
+    fn on_query_information_complete(&mut self, _response: &ClientDriveQueryInformationResponse) -> PduResult<()> {
+        self.completions.push("query_information");
+        Ok(())
+    }
+    fn on_set_information_complete(&mut self, _response: &ClientDriveSetInformationResponse) -> PduResult<()> {
+        self.completions.push("set_information");
+        Ok(())
+    }
+    fn on_query_directory_complete(&mut self, _response: &ClientDriveQueryDirectoryResponse) -> PduResult<()> {
+        self.completions.push("query_directory");
+        Ok(())
+    }
+    fn on_notify_change_directory_complete(
+        &mut self,
+        _response: &ClientDriveNotifyChangeDirectoryResponse,
+    ) -> PduResult<()> {
+        self.completions.push("notify_change_directory");
+        Ok(())
+    }
+    fn on_query_volume_information_complete(
+        &mut self,
+        _response: &ClientDriveQueryVolumeInformationResponse,
+    ) -> PduResult<()> {
+        self.completions.push("query_volume_information");
+        Ok(())
+    }
+    fn on_lock_control_complete(&mut self, _response: &ClientDriveLockControlResponse) -> PduResult<()> {
+        self.completions.push("lock_control");
+        Ok(())
+    }
+    fn on_query_security_complete(&mut self, _response: &ClientDriveQuerySecurityResponse) -> PduResult<()> {
+        self.completions.push("query_security");
+        Ok(())
+    }
+    fn on_set_security_complete(&mut self, _response: &ClientDriveSetSecurityResponse) -> PduResult<()> {
+        self.completions.push("set_security");
+        Ok(())
+    }
+}
+
+/// Drives a fresh [`RdpdrServer`] through the full MS-RDPEFS initialization handshake
+/// (`start()` through `ClientCoreCapabilityResponse`), leaving it in the `Active` state.
+/// Returns the `client_id` the server generated so callers can build further
+/// server-perspective client replies if needed.
+fn handshake_to_active(server: &mut RdpdrServer) -> u32 {
+    let started = server.start().unwrap();
+    assert_eq!(started.len(), 1);
+    let client_id = read_u32(&started[0].encode_unframed_pdu().unwrap()[4..]);
+
+    let announce_reply = encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+        version_major: 1,
+        version_minor: VERSION_MINOR_RDP51,
+        client_id,
+        kind: VersionAndIdPduKind::ClientAnnounceReply,
+    }))
+    .unwrap();
+    assert!(server.process(&announce_reply).unwrap().is_empty());
+
+    let name_request = encode_vec(&RdpdrPdu::ClientNameRequest(ClientNameRequest::new(
+        "test-client".to_owned(),
+        ClientNameRequestUnicodeFlag::Unicode,
+    )))
+    .unwrap();
+    let capability_and_confirm = server.process(&name_request).unwrap();
+    assert_eq!(capability_and_confirm.len(), 2);
+
+    let capability_response = encode_vec(&RdpdrPdu::CoreCapability(CoreCapability {
+        capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_drive()],
+        kind: CoreCapabilityKind::ClientCoreCapabilityResponse,
+    }))
+    .unwrap();
+    assert!(server.process(&capability_response).unwrap().is_empty());
+
+    client_id
+}
+
+/// Extracts the `CompletionId` a `drive_*` method embedded in a sent
+/// `PAKID_CORE_DEVICE_IOREQUEST` (`SharedHeader` at bytes 0..4, then `DeviceIoRequest`'s
+/// `DeviceId`/`FileId`/`CompletionId` at 4..8/8..12/12..16).
+fn completion_id_of(message: &SvcMessage) -> u32 {
+    read_u32(&message.encode_unframed_pdu().unwrap()[12..])
+}
+
+fn some_completion(device_id: u32, completion_id: u32) -> DeviceIoResponse {
+    DeviceIoResponse {
+        device_id,
+        completion_id,
+        io_status: NtStatus::SUCCESS,
+    }
+}
+
+#[test]
+fn server_start_sends_server_announce_request() {
+    let mut server = RdpdrServer::new(Box::new(NoopRdpdrServerBackend));
+    let started = server.start().unwrap();
+    assert_eq!(started.len(), 1);
+    let encoded = started[0].encode_unframed_pdu().unwrap();
+    // Component::RdpdrCtypCore (0x4472) + PacketId::CoreServerAnnounce (0x496E), both LE u16.
+    assert_eq!(&encoded[..4], &[0x72, 0x44, 0x6E, 0x49]);
+}
+
+#[test]
+fn full_handshake_reaches_active_state() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    // Only reachable once the handshake landed the server in `Active`: earlier states
+    // reject drive I/O outright (see `drive_io_before_active_is_rejected` below).
+    assert!(server.drive_close(1, 1).is_ok());
+    assert_eq!(
+        server
+            .downcast_backend::<TrackingServerBackend>()
+            .unwrap()
+            .client_name
+            .as_deref(),
+        Some("test-client")
+    );
+}
+
+#[test]
+fn drive_io_before_active_is_rejected() {
+    let mut server = RdpdrServer::new(Box::new(NoopRdpdrServerBackend));
+    let err = server.drive_close(1, 1).unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("active"));
+}
+
+#[test]
+fn duplicate_client_announce_reply_while_active_reinitializes() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    // A stale in-flight IRP from before the re-init must not reach the backend once
+    // its (now-cleared) CompletionId shows up in a completion.
+    let stale = server.drive_close(1, 1).unwrap();
+    let stale_completion_id = completion_id_of(&stale[0]);
+
+    let duplicate_announce = encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+        version_major: 1,
+        version_minor: VERSION_MINOR_RDP51,
+        client_id: 0,
+        kind: VersionAndIdPduKind::ClientAnnounceReply,
+    }))
+    .unwrap();
+    assert!(server.process(&duplicate_announce).unwrap().is_empty());
+
+    // Back in AwaitingAnnounce: drive I/O is rejected again until the handshake redoes.
+    assert!(server.drive_close(1, 1).is_err());
+
+    // Re-run the handshake from ClientNameRequest onward (the ClientAnnounceReply above
+    // already landed) and confirm the session is usable again.
+    let name_request = encode_vec(&RdpdrPdu::ClientNameRequest(ClientNameRequest::new(
+        "test-client".to_owned(),
+        ClientNameRequestUnicodeFlag::Unicode,
+    )))
+    .unwrap();
+    server.process(&name_request).unwrap();
+    let capability_response = encode_vec(&RdpdrPdu::CoreCapability(CoreCapability {
+        capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_drive()],
+        kind: CoreCapabilityKind::ClientCoreCapabilityResponse,
+    }))
+    .unwrap();
+    server.process(&capability_response).unwrap();
+    assert!(server.drive_close(1, 1).is_ok());
+
+    // The stale completion is now orphaned: ignored, not routed to the backend.
+    let stale_completion = encode_vec(&RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
+        device_io_response: some_completion(1, stale_completion_id),
+    }))
+    .unwrap();
+    assert!(server.process(&stale_completion).unwrap().is_empty());
+    assert!(
+        !server
+            .downcast_backend::<TrackingServerBackend>()
+            .unwrap()
+            .completions
+            .contains(&"close")
+    );
+}
+
+#[test]
+fn device_announce_accepts_and_rejects_per_backend_decision() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend {
+        rejected_device_ids: vec![2],
+        ..Default::default()
+    }));
+    handshake_to_active(&mut server);
+
+    let announce = encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
+        device_list: vec![
+            DeviceAnnounceHeader::new_smartcard(1),
+            DeviceAnnounceHeader::new_smartcard(2),
+        ],
+    }))
+    .unwrap();
+    let responses = server.process(&announce).unwrap();
+    assert_eq!(responses.len(), 2);
+
+    for response in &responses {
+        let encoded = response.encode_unframed_pdu().unwrap();
+        let device_id = read_u32(&encoded[4..]);
+        let result_code = ntstatus_at(&encoded, 8);
+        if device_id == 1 {
+            assert_eq!(result_code, NtStatus::SUCCESS);
+        } else {
+            assert_eq!(device_id, 2);
+            assert_eq!(result_code, NtStatus::ACCESS_DENIED);
+        }
+    }
+
+    let backend = server.downcast_backend::<TrackingServerBackend>().unwrap();
+    assert_eq!(backend.accepted, vec![1]);
+}
+
+#[test]
+fn device_list_remove_notifies_backend() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let announce = encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
+        device_list: vec![DeviceAnnounceHeader::new_smartcard(1)],
+    }))
+    .unwrap();
+    server.process(&announce).unwrap();
+
+    let remove = encode_vec(&RdpdrPdu::ClientDeviceListRemove(ClientDeviceListRemove {
+        device_list: vec![1],
+    }))
+    .unwrap();
+    assert!(server.process(&remove).unwrap().is_empty());
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().removed,
+        vec![1]
+    );
+}
+
+#[test]
+fn orphaned_completion_id_is_ignored() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let orphan = encode_vec(&RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
+        device_io_response: some_completion(1, 0xDEAD_BEEF),
+    }))
+    .unwrap();
+    assert!(server.process(&orphan).unwrap().is_empty());
+    assert!(
+        server
+            .downcast_backend::<TrackingServerBackend>()
+            .unwrap()
+            .completions
+            .is_empty()
+    );
+}
+
+#[test]
+fn drive_create_completion_round_trips_response_data() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server
+        .drive_create(
+            1,
+            "\\subdir\\file.txt",
+            DesiredAccess::FILE_READ_DATA_OR_FILE_LIST_DIRECTORY,
+            CreateDisposition::FILE_OPEN,
+            CreateOptions::empty(),
+        )
+        .unwrap();
+    assert_eq!(sent.len(), 1);
+    let completion_id = completion_id_of(&sent[0]);
+
+    let completion = encode_vec(&RdpdrPdu::DeviceCreateResponse(DeviceCreateResponse {
+        device_io_reply: some_completion(1, completion_id),
+        file_id: 7,
+        information: Information::FILE_OPENED,
+    }))
+    .unwrap();
+    assert!(server.process(&completion).unwrap().is_empty());
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["create"]
+    );
+}
+
+#[test]
+fn drive_close_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server.drive_close(1, 7).unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let completion = encode_vec(&RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
+        device_io_response: some_completion(1, completion_id),
+    }))
+    .unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["close"]
+    );
+}
+
+#[test]
+fn drive_read_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server.drive_read(1, 7, 4096, 0).unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let completion = encode_vec(&RdpdrPdu::DeviceReadResponse(DeviceReadResponse {
+        device_io_reply: some_completion(1, completion_id),
+        read_data: vec![1, 2, 3],
+    }))
+    .unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["read"]
+    );
+}
+
+#[test]
+fn drive_write_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server.drive_write(1, 7, vec![1, 2, 3], 0).unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let completion = encode_vec(&RdpdrPdu::DeviceWriteResponse(DeviceWriteResponse {
+        device_io_reply: some_completion(1, completion_id),
+        length: 3,
+    }))
+    .unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["write"]
+    );
+}
+
+#[test]
+fn drive_flush_buffers_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server.drive_flush_buffers(1, 7).unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let completion = encode_vec(&RdpdrPdu::DeviceFlushBuffersResponse(DeviceFlushBuffersResponse {
+        device_io_response: some_completion(1, completion_id),
+    }))
+    .unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["flush_buffers"]
+    );
+}
+
+#[test]
+fn drive_device_control_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server.drive_device_control(1, 7, 0x1234, vec![1, 2, 3], 0).unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let completion = encode_vec(&RdpdrPdu::DeviceControlResponse(DeviceControlResponse {
+        device_io_reply: some_completion(1, completion_id),
+        output_buffer: None,
+    }))
+    .unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["device_control"]
+    );
+}
+
+#[test]
+fn drive_query_information_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server
+        .drive_query_information(1, 7, FileInformationClassLevel::FILE_BASIC_INFORMATION)
+        .unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let completion = encode_vec(&RdpdrPdu::ClientDriveQueryInformationResponse(
+        ClientDriveQueryInformationResponse {
+            device_io_response: some_completion(1, completion_id),
+            buffer: None,
+        },
+    ))
+    .unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["query_information"]
+    );
+}
+
+#[test]
+fn drive_set_information_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server
+        .drive_set_information(
+            1,
+            7,
+            FileInformationClass::EndOfFile(FileEndOfFileInformation { end_of_file: 0 }),
+        )
+        .unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let request = ServerDriveSetInformationRequest {
+        device_io_request: DeviceIoRequest {
+            device_id: 1,
+            file_id: 7,
+            completion_id,
+            major_function: MajorFunction::SetInformation,
+            minor_function: MinorFunction::from(0),
+        },
+        set_buffer: FileInformationClass::EndOfFile(FileEndOfFileInformation { end_of_file: 0 }),
+    };
+    let response = ClientDriveSetInformationResponse::new(&request, NtStatus::SUCCESS).unwrap();
+    let completion = encode_vec(&RdpdrPdu::ClientDriveSetInformationResponse(response)).unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["set_information"]
+    );
+}
+
+#[test]
+fn drive_query_directory_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server
+        .drive_query_directory(
+            1,
+            7,
+            FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION,
+            "*",
+            true,
+        )
+        .unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let completion = encode_vec(&RdpdrPdu::ClientDriveQueryDirectoryResponse(
+        ClientDriveQueryDirectoryResponse {
+            device_io_reply: some_completion(1, completion_id),
+            buffer: None,
+        },
+    ))
+    .unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["query_directory"]
+    );
+}
+
+#[test]
+fn drive_notify_change_directory_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server.drive_notify_change_directory(1, 7, true, 0x1).unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let completion = encode_vec(&RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(
+        ClientDriveNotifyChangeDirectoryResponse {
+            device_io_reply: some_completion(1, completion_id),
+            buffer: Vec::new(),
+        },
+    ))
+    .unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["notify_change_directory"]
+    );
+}
+
+#[test]
+fn drive_query_volume_information_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server
+        .drive_query_volume_information(1, 7, FileSystemInformationClassLevel::FILE_FS_SIZE_INFORMATION)
+        .unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let completion = encode_vec(&RdpdrPdu::ClientDriveQueryVolumeInformationResponse(
+        ClientDriveQueryVolumeInformationResponse {
+            device_io_reply: some_completion(1, completion_id),
+            buffer: None,
+        },
+    ))
+    .unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["query_volume_information"]
+    );
+}
+
+#[test]
+fn drive_lock_control_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server
+        .drive_lock_control(
+            1,
+            7,
+            LockOperation::Exclusive,
+            true,
+            vec![RdpLockInfo { length: 10, offset: 0 }],
+        )
+        .unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let completion = encode_vec(&RdpdrPdu::ClientDriveLockControlResponse(
+        ClientDriveLockControlResponse {
+            device_io_reply: some_completion(1, completion_id),
+        },
+    ))
+    .unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["lock_control"]
+    );
+}
+
+#[test]
+fn drive_query_security_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server.drive_query_security(1, 7, SecurityInformation::OWNER).unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let completion = encode_vec(&RdpdrPdu::ClientDriveQuerySecurityResponse(
+        ClientDriveQuerySecurityResponse {
+            device_io_response: some_completion(1, completion_id),
+            security_descriptor: None,
+        },
+    ))
+    .unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["query_security"]
+    );
+}
+
+#[test]
+fn drive_set_security_completion_round_trips() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server
+        .drive_set_security(1, 7, SecurityInformation::DACL, vec![0x01, 0x02])
+        .unwrap();
+    let completion_id = completion_id_of(&sent[0]);
+    let completion = encode_vec(&RdpdrPdu::ClientDriveSetSecurityResponse(
+        ClientDriveSetSecurityResponse {
+            device_io_response: some_completion(1, completion_id),
+            length: 0,
+        },
+    ))
+    .unwrap();
+    server.process(&completion).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
+        vec!["set_security"]
+    );
 }
