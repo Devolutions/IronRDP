@@ -48,6 +48,7 @@ use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
+use crate::rdpei::{RdpeiServer, RdpeiServerFactory};
 use crate::{SoundServerFactory, builder, capabilities};
 
 /// TCP listen backlog size for the RDP server socket.
@@ -544,6 +545,7 @@ pub struct RdpServer {
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+    rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
@@ -699,6 +701,7 @@ impl RdpServer {
         static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+        mut rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
         display_suppressed: Option<Arc<AtomicBool>>,
@@ -712,6 +715,9 @@ impl RdpServer {
         if let Some(snd) = sound_factory.as_mut() {
             snd.set_sender(ev_sender.clone());
         }
+        if let Some(rdpei) = rdpei_factory.as_mut() {
+            rdpei.set_sender(ev_sender.clone());
+        }
         #[cfg(feature = "egfx")]
         if let Some(gfx) = gfx_factory.as_mut() {
             gfx.set_sender(ev_sender.clone());
@@ -724,6 +730,7 @@ impl RdpServer {
             static_channel_factories,
             sound_factory,
             cliprdr_factory,
+            rdpei_factory,
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
             gfx_factory,
@@ -1066,6 +1073,13 @@ impl RdpServer {
         let dvc = {
             let echo_handle = self.echo_handle.clone();
             dvc.with_dynamic_channel(EchoDvcBridge::new(echo_handle))
+        };
+
+        let dvc = if let Some(factory) = self.rdpei_factory.as_deref() {
+            let handler = factory.build_handler();
+            dvc.with_dynamic_channel(RdpeiServer::new(handler))
+        } else {
+            dvc
         };
 
         #[cfg(feature = "egfx")]

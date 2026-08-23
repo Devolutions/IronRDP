@@ -18,6 +18,7 @@ mod gfx;
 mod handler;
 #[cfg(feature = "helper")]
 mod helper;
+mod rdpei;
 mod server;
 mod sound;
 
@@ -34,6 +35,10 @@ pub use handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 pub use helper::TlsIdentityCtx;
 pub use ironrdp_acceptor::Acceptor;
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
+pub use rdpei::{
+    CsReadyPdu, DismissHoveringTouchContactPdu, PenEventPdu, RdpInputProtocolVersion, RdpeiHandler, RdpeiServer,
+    RdpeiServerFactory, ScReadyFeatures, TouchContact, TouchContactFlags, TouchEventPdu, TouchFrame,
+};
 pub use server::{
     AutoReconnectCookieHandle, ConnectionHandler, ConnectionInfo, CredentialDecision, CredentialValidationError,
     CredentialValidator, Credentials, ExactMatchCredentialValidator, PostConnectionAction, RdpServer, RdpServerOptions,
