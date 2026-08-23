@@ -73,8 +73,8 @@ async fn callback_rejection_stops_before_tunnel_authorization() {
     let (in_client, in_server) = tokio::io::duplex(4096);
     let consent = consent_message("Accept");
     let mut out_response = Vec::from([0; 10]);
-    out_response.extend(packet(2, &handshake_response()));
-    out_response.extend(packet(5, &tunnel_response(&consent)));
+    out_response.extend(packet(2, &handshake_response(0)));
+    out_response.extend(packet(5, &tunnel_response(0, &consent)));
 
     let out_server = tokio::spawn(async move {
         let service = service_fn(move |request: Request<hyper::body::Incoming>| {
@@ -144,6 +144,114 @@ async fn callback_rejection_stops_before_tunnel_authorization() {
     in_server.await.expect("IN task");
 }
 
+#[tokio::test]
+async fn control_errors_preserve_gateway_hresult() {
+    for (expected_packet_types, error_code, context, label) in [
+        (&[1][..], 0x8007_59DA, "Handshake", "E_PROXY_RAP_ACCESSDENIED"),
+        (&[1, 4][..], 0x8007_59DD, "Tunnel", "E_PROXY_TS_CONNECTFAILED"),
+        (&[1, 4, 6][..], 0x8009_030C, "TunnelAuth", "SEC_E_LOGON_DENIED"),
+        (&[1, 4, 6, 8][..], 0x0000_59E8, "ChannelCreate", "E_PROXY_NOTSUPPORTED"),
+    ] {
+        let (out_client, out_server) = tokio::io::duplex(4096);
+        let (in_client, in_server) = tokio::io::duplex(4096);
+        let mut out_response = Vec::from([0; 10]);
+        out_response.extend(packet(
+            2,
+            &handshake_response(if expected_packet_types.len() == 1 {
+                error_code
+            } else {
+                0
+            }),
+        ));
+        if 1 < expected_packet_types.len() {
+            out_response.extend(packet(
+                5,
+                &tunnel_response(
+                    if expected_packet_types.len() == 2 {
+                        error_code
+                    } else {
+                        0
+                    },
+                    &[],
+                ),
+            ));
+        }
+        if 2 < expected_packet_types.len() {
+            out_response.extend(packet(
+                7,
+                &control_response(if expected_packet_types.len() == 3 {
+                    error_code
+                } else {
+                    0
+                }),
+            ));
+        }
+        if 3 < expected_packet_types.len() {
+            out_response.extend(packet(9, &control_response(error_code)));
+        }
+
+        let out_server = tokio::spawn(async move {
+            let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+                let out_response = out_response.clone();
+                async move {
+                    assert_eq!(request.method(), "RDG_OUT_DATA");
+                    Ok::<_, Infallible>(response(StatusCode::OK, Bytes::from(out_response)))
+                }
+            });
+            http1::Builder::new()
+                .serve_connection(TokioIo::new(out_server), service)
+                .await
+                .expect("serve OUT");
+        });
+
+        let in_server = tokio::spawn(async move {
+            let service = service_fn(move |mut request: Request<hyper::body::Incoming>| {
+                let expected_packet_types = expected_packet_types.to_vec();
+                async move {
+                    assert_eq!(request.method(), "RDG_IN_DATA");
+                    if request.headers().get("content-type").is_none() {
+                        return Ok::<_, Infallible>(response(StatusCode::OK, Bytes::new()));
+                    }
+
+                    for expected_packet_type in expected_packet_types {
+                        let frame = request
+                            .body_mut()
+                            .frame()
+                            .await
+                            .expect("IN request frame")
+                            .expect("IN request frame result")
+                            .into_data()
+                            .expect("IN request data frame");
+                        assert_eq!(packet_type(&frame), expected_packet_type);
+                    }
+
+                    Ok::<_, Infallible>(response(StatusCode::OK, Bytes::new()))
+                }
+            });
+            http1::Builder::new()
+                .serve_connection(TokioIo::new(in_server), service)
+                .await
+                .expect("serve IN");
+        });
+
+        let transport = GatewayTransport::connect(out_client, in_client)
+            .await
+            .expect("connect transport");
+        let error = match transport.connect_tunnel(test_target(), "client.test", 3389, None).await {
+            Ok(_) => panic!("gateway error"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error.kind(), GwErrorKind::GatewayCode(code) if *code == error_code));
+        assert_eq!(
+            error.to_string(),
+            format!("[{context}] gateway error 0x{error_code:08x} ({label})")
+        );
+        out_server.await.expect("OUT task");
+        in_server.await.expect("IN task");
+    }
+}
+
 #[test]
 fn malformed_consent_payload_is_rejected_before_callback() {
     let callback_count = Arc::new(Mutex::new(0));
@@ -182,19 +290,29 @@ fn packet_type(packet: &[u8]) -> u16 {
     u16::from_le_bytes([packet[0], packet[1]])
 }
 
-fn handshake_response() -> [u8; 10] {
-    [0, 0, 0, 0, 1, 0, 0, 0, 1, 0]
+fn handshake_response(error_code: u32) -> [u8; 10] {
+    let mut response = [0, 0, 0, 0, 1, 0, 0, 0, 1, 0];
+    response[..4].copy_from_slice(&error_code.to_le_bytes());
+    response
 }
 
-fn tunnel_response(consent: &[u8]) -> Vec<u8> {
+fn tunnel_response(status_code: u32, consent: &[u8]) -> Vec<u8> {
     let consent_length = u16::try_from(consent.len()).expect("consent length");
     let mut response = Vec::with_capacity(12 + consent.len());
     response.extend([0, 0]);
-    response.extend([0; 4]);
-    response.extend([0x10, 0]);
+    response.extend(status_code.to_le_bytes());
+    response.extend(if consent.is_empty() { [0, 0] } else { [0x10, 0] });
     response.extend([0; 2]);
-    response.extend(consent_length.to_le_bytes());
-    response.extend(consent);
+    if !consent.is_empty() {
+        response.extend(consent_length.to_le_bytes());
+        response.extend(consent);
+    }
+    response
+}
+
+fn control_response(error_code: u32) -> [u8; 8] {
+    let mut response = [0; 8];
+    response[..4].copy_from_slice(&error_code.to_le_bytes());
     response
 }
 

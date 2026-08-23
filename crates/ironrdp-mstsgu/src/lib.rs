@@ -127,6 +127,8 @@ type Error = ironrdp_error::Error<GwErrorKind>;
 pub enum GwErrorKind {
     InvalidGwTarget,
     Connect,
+    /// A nonzero HRESULT returned by the gateway during control setup.
+    GatewayCode(u32),
     HttpStatus(u16),
     PacketEof,
     UnsupportedFeature,
@@ -157,6 +159,10 @@ impl Display for GwErrorKind {
         let x = match self {
             GwErrorKind::InvalidGwTarget => "invalid GW Target",
             GwErrorKind::Connect => "connection error",
+            GwErrorKind::GatewayCode(code) => match gateway_code_label(*code) {
+                Some(label) => return write!(f, "gateway error 0x{code:08x} ({label})"),
+                None => return write!(f, "gateway error 0x{code:08x}"),
+            },
             GwErrorKind::HttpStatus(status) => return write!(f, "unexpected http status {status}"),
             GwErrorKind::PacketEof => "PacketEOF",
             GwErrorKind::UnsupportedFeature => "unsupported feature",
@@ -432,7 +438,10 @@ impl GwConn {
 
         let mut cur = ReadCursor::new(&bytes);
         let resp = HandshakeRespPkt::decode(&mut cur).map_err(|_| Error::new("Handshake", GwErrorKind::Decode))?;
-        if resp.error_code != 0 || resp.ver_major != 1 || resp.ver_minor != 0 || resp.server_version != 0 {
+        if resp.error_code != 0 {
+            return Err(Error::new("Handshake", GwErrorKind::GatewayCode(resp.error_code)));
+        }
+        if resp.ver_major != 1 || resp.ver_minor != 0 || resp.server_version != 0 {
             return Err(Error::new("Handshake", GwErrorKind::Connect));
         }
         Ok(())
@@ -452,7 +461,7 @@ impl GwConn {
 
         let resp = TunnelRespPkt::decode(&mut cur).map_err(|_| Error::new("TunnelDecode", GwErrorKind::Decode))?;
         if resp.status_code != 0 {
-            return Err(Error::new("Tunnel", GwErrorKind::Connect));
+            return Err(Error::new("Tunnel", GwErrorKind::GatewayCode(resp.status_code)));
         }
         assert!(cur.eof());
         evaluate_consent_message(&resp.consent_msg, consent_callback)?;
@@ -472,7 +481,7 @@ impl GwConn {
             TunnelAuthRespPkt::decode(&mut cur).map_err(|_| Error::new("TunnelAuth", GwErrorKind::Decode))?;
 
         if resp.error_code != 0 {
-            return Err(Error::new("TunnelAuth", GwErrorKind::Connect));
+            return Err(Error::new("TunnelAuth", GwErrorKind::GatewayCode(resp.error_code)));
         }
         Ok(GwTunnelPolicy {
             redirection_flags: resp.redirection_flags,
@@ -495,7 +504,7 @@ impl GwConn {
         let resp: ChannelResp =
             ChannelResp::decode(&mut cur).map_err(|_| Error::new("ChannelResp", GwErrorKind::Decode))?;
         if resp.error_code() != 0 {
-            return Err(Error::new("ChannelCreate", GwErrorKind::Connect));
+            return Err(Error::new("ChannelCreate", GwErrorKind::GatewayCode(resp.error_code())));
         }
         assert!(cur.eof());
         Ok(resp)
