@@ -22,6 +22,7 @@ doctest = false
 anyhow = "1"
 ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["clipboard", "dvc-com-plugin", "gateway", "rdpdr", "rustls", "smartcard", "sound", "webauthn"] }
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7" }
+ironrdp-cliprdr-format = { path = "../ironrdp-cliprdr-format", version = "0.2.0" }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.7" }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.10" }

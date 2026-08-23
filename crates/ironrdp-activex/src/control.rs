@@ -18,6 +18,8 @@ use ironrdp_client::rdp::{
     AutoReconnectDecision, CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent,
 };
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
+use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png};
+use ironrdp_cliprdr_format::html::cf_html_to_plain_html;
 use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
 use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, encode_vec};
@@ -45,11 +47,11 @@ use sha2::{Digest as _, Sha256};
 use tokio::sync::{mpsc, oneshot};
 use windows::Win32::Foundation::{
     DATA_S_SAMEFORMATETC, DISP_E_BADPARAMCOUNT, DISP_E_MEMBERNOTFOUND, DISP_E_TYPEMISMATCH, DISP_E_UNKNOWNNAME,
-    DV_E_DVASPECT, DV_E_DVTARGETDEVICE, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_FAIL, E_INVALIDARG, E_NOTIMPL,
-    E_OUTOFMEMORY, E_POINTER, E_UNEXPECTED, ERROR_CANCELLED, ERROR_CLASS_DOES_NOT_EXIST, FreeLibrary, GlobalFree,
-    HGLOBAL, HMODULE, HWND, LPARAM, LRESULT, OLE_E_ADVISENOTSUPPORTED, OLE_E_NOCONNECTION, OLE_E_NOTRUNNING,
-    OLEOBJ_S_INVALIDVERB, POINT, RECT, RECTL, S_FALSE, S_OK, SIZE, SysStringLen, VARIANT_BOOL, VARIANT_FALSE,
-    VARIANT_TRUE, WPARAM,
+    DV_E_DVASPECT, DV_E_DVTARGETDEVICE, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_ABORT, E_FAIL, E_INVALIDARG,
+    E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, E_UNEXPECTED, ERROR_CANCELLED, ERROR_CLASS_DOES_NOT_EXIST, FreeLibrary,
+    GlobalFree, HGLOBAL, HMODULE, HWND, LPARAM, LRESULT, OLE_E_ADVISENOTSUPPORTED, OLE_E_NOCONNECTION,
+    OLE_E_NOTRUNNING, OLEOBJ_S_INVALIDVERB, POINT, RECT, RECTL, S_FALSE, S_OK, SIZE, SysStringLen, VARIANT_BOOL,
+    VARIANT_FALSE, VARIANT_TRUE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateRectRgn,
@@ -72,17 +74,19 @@ use windows::Win32::System::Com::{
     TYMED_HGLOBAL,
 };
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    CloseClipboard, GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
+    RegisterClipboardFormatW,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::{
-    CF_UNICODETEXT, CONTROLINFO, DVEXTENTINFO, HITRESULT_HIT, HITRESULT_OUTSIDE, IEnumOLEVERB, IEnumOLEVERB_Impl,
-    IOleClientSite, IOleControl, IOleControl_Impl, IOleControlSite, IOleControlSite_Vtbl, IOleInPlaceActiveObject,
-    IOleInPlaceActiveObject_Impl, IOleInPlaceObject, IOleInPlaceObject_Impl, IOleInPlaceSite, IOleInPlaceUIWindow,
-    IOleObject, IOleObject_Impl, IOleWindow_Impl, IViewObject, IViewObject_Impl, IViewObject2, IViewObject2_Impl,
-    IViewObjectEx, IViewObjectEx_Impl, KEYMODIFIERS, OLECLOSE, OLEGETMONIKER, OLEMISC, OLEVERB, OLEVERB_PRIMARY,
-    OLEVERBATTRIB_NEVERDIRTIES, OLEWHICHMK, USERCLASSTYPE, VIEWSTATUS_OPAQUE, VIEWSTATUS_SOLIDBKGND,
+    CF_DIB, CF_DIBV5, CF_LOCALE, CF_OEMTEXT, CF_TEXT, CF_UNICODETEXT, CONTROLINFO, DVEXTENTINFO, HITRESULT_HIT,
+    HITRESULT_OUTSIDE, IEnumOLEVERB, IEnumOLEVERB_Impl, IOleClientSite, IOleControl, IOleControl_Impl, IOleControlSite,
+    IOleControlSite_Vtbl, IOleInPlaceActiveObject, IOleInPlaceActiveObject_Impl, IOleInPlaceObject,
+    IOleInPlaceObject_Impl, IOleInPlaceSite, IOleInPlaceUIWindow, IOleObject, IOleObject_Impl, IOleWindow_Impl,
+    IViewObject, IViewObject_Impl, IViewObject2, IViewObject2_Impl, IViewObjectEx, IViewObjectEx_Impl, KEYMODIFIERS,
+    OLECLOSE, OLEGETMONIKER, OLEMISC, OLEVERB, OLEVERB_PRIMARY, OLEVERBATTRIB_NEVERDIRTIES, OLEWHICHMK, USERCLASSTYPE,
+    VIEWSTATUS_OPAQUE, VIEWSTATUS_SOLIDBKGND,
 };
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_BINARY, REG_OPTION_NON_VOLATILE, RegCloseKey, RegCreateKeyExW,
@@ -5250,6 +5254,8 @@ struct ClipboardState {
 }
 
 const MAX_OLE_CLIPBOARD_TEXT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_OLE_CLIPBOARD_BINARY_BYTES: usize = 64 * 1024 * 1024;
+const MAX_OLE_CLIPBOARD_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
 impl ClipboardState {
     fn is_available(&self) -> bool {
@@ -5699,16 +5705,16 @@ impl IMsRdpClipboard_Impl for ClipboardCapabilities_Impl {
 #[implement(IEnumFORMATETC)]
 struct ClipboardFormatEnumerator {
     _lifetime: ServerObjectLifetime,
-    has_unicode_text: bool,
-    consumed: Cell<bool>,
+    formats: Vec<u16>,
+    position: Cell<usize>,
 }
 
 impl ClipboardFormatEnumerator {
-    fn new(has_unicode_text: bool, consumed: bool) -> Self {
+    fn new(formats: Vec<u16>, position: usize) -> Self {
         Self {
             _lifetime: ServerObjectLifetime::new(),
-            has_unicode_text,
-            consumed: Cell::new(consumed),
+            formats,
+            position: Cell::new(position),
         }
     }
 }
@@ -5726,35 +5732,30 @@ impl IEnumFORMATETC_Impl for ClipboardFormatEnumerator_Impl {
                 fetched.write(0);
             }
         }
-        if celt == 0 {
-            return S_OK;
-        }
-        if self.consumed.get() || !self.has_unicode_text {
-            return S_FALSE;
-        }
 
-        unsafe {
-            formats.write(unicode_text_format());
-        }
-        self.consumed.set(true);
-        if !fetched.is_null() {
+        let requested = usize::try_from(celt).expect("u32 fits in usize on Windows");
+        let position = self.position.get();
+        let copied = requested.min(self.formats.len().saturating_sub(position));
+        for (offset, format_id) in self.formats[position..position + copied].iter().enumerate() {
             unsafe {
-                fetched.write(1);
+                formats.add(offset).write(clipboard_format(*format_id));
             }
         }
-        if celt == 1 { S_OK } else { S_FALSE }
+        self.position.set(position + copied);
+        if !fetched.is_null() {
+            unsafe {
+                fetched.write(u32::try_from(copied).expect("copied count is bounded by celt"));
+            }
+        }
+        if copied == requested { S_OK } else { S_FALSE }
     }
 
     fn Skip(&self, celt: u32) -> Result<()> {
-        if celt == 0 {
-            return Ok(());
-        }
-        if self.consumed.get() || !self.has_unicode_text {
-            return Err(Error::from_hresult(S_FALSE));
-        }
-
-        self.consumed.set(true);
-        if celt == 1 {
+        let requested = usize::try_from(celt).expect("u32 fits in usize on Windows");
+        let position = self.position.get();
+        let skipped = requested.min(self.formats.len().saturating_sub(position));
+        self.position.set(position + skipped);
+        if skipped == requested {
             Ok(())
         } else {
             Err(Error::from_hresult(S_FALSE))
@@ -5762,82 +5763,92 @@ impl IEnumFORMATETC_Impl for ClipboardFormatEnumerator_Impl {
     }
 
     fn Reset(&self) -> Result<()> {
-        self.consumed.set(false);
+        self.position.set(0);
         Ok(())
     }
 
     fn Clone(&self) -> Result<IEnumFORMATETC> {
-        Ok(ClipboardFormatEnumerator::new(self.has_unicode_text, self.consumed.get()).into())
+        Ok(ClipboardFormatEnumerator::new(self.formats.clone(), self.position.get()).into())
     }
+}
+
+#[derive(Clone, Copy)]
+enum ClipboardSnapshotKind {
+    UnicodeText,
+    NullTerminatedText,
+    Locale,
+    Dib,
+    DibV5,
+    Html,
+}
+
+struct ClipboardSnapshotFormat {
+    id: u16,
+    data: Vec<u8>,
 }
 
 #[implement(IDataObject)]
 struct ClipboardDataObject {
     _lifetime: ServerObjectLifetime,
-    unicode_text: Option<Vec<u8>>,
+    formats: Vec<ClipboardSnapshotFormat>,
 }
 
 impl ClipboardDataObject {
     fn snapshot() -> Result<Self> {
-        let unicode_text = if unsafe { IsClipboardFormatAvailable(u32::from(CF_UNICODETEXT.0)) }.is_ok() {
-            unsafe {
-                OpenClipboard(None)?;
+        let html_format = u16::try_from(unsafe { RegisterClipboardFormatW(w!("HTML Format")) })
+            .ok()
+            .filter(|format| *format != 0);
+
+        let mut candidates = vec![
+            (CF_UNICODETEXT.0, ClipboardSnapshotKind::UnicodeText),
+            (CF_TEXT.0, ClipboardSnapshotKind::NullTerminatedText),
+            (CF_OEMTEXT.0, ClipboardSnapshotKind::NullTerminatedText),
+            (CF_LOCALE.0, ClipboardSnapshotKind::Locale),
+            (CF_DIB.0, ClipboardSnapshotKind::Dib),
+            (CF_DIBV5.0, ClipboardSnapshotKind::DibV5),
+        ];
+        if let Some(html_format) = html_format {
+            candidates.push((html_format, ClipboardSnapshotKind::Html));
+        }
+
+        let mut clipboard_sequence = unsafe { GetClipboardSequenceNumber() };
+        let mut total_bytes = 0usize;
+        let mut formats = Vec::with_capacity(candidates.len());
+        for (format_id, kind) in candidates {
+            let (data, next_sequence) = snapshot_clipboard_format(format_id, kind, clipboard_sequence)?;
+            clipboard_sequence = next_sequence;
+            let Some(data) = data else {
+                continue;
+            };
+            let Some(next_total) = total_bytes.checked_add(data.len()) else {
+                continue;
+            };
+            if next_total > MAX_OLE_CLIPBOARD_TOTAL_BYTES {
+                continue;
             }
-
-            let result = (|| {
-                let handle = match unsafe { GetClipboardData(u32::from(CF_UNICODETEXT.0)) } {
-                    Ok(handle) => HGLOBAL(handle.0),
-                    Err(_) => return Ok(None),
-                };
-                let byte_count = unsafe { GlobalSize(handle) };
-                if !(2..=MAX_OLE_CLIPBOARD_TEXT_BYTES).contains(&byte_count) || byte_count % 2 != 0 {
-                    return Ok(None);
-                }
-
-                let source = unsafe { GlobalLock(handle) }.cast::<u8>();
-                if source.is_null() {
-                    return Ok(None);
-                }
-                let snapshot = {
-                    let data = unsafe { slice::from_raw_parts(source, byte_count) };
-                    validated_unicode_text_snapshot(data)
-                };
-                match (snapshot, unlock_global_memory(handle)) {
-                    (Err(error), _) => Err(error),
-                    (Ok(_), Err(error)) => Err(error),
-                    (Ok(data), Ok(())) => Ok(data),
-                }
-            })();
-
-            let close_result = unsafe { CloseClipboard() };
-            match (result, close_result) {
-                (Ok(data), Ok(())) => data,
-                (Ok(_), Err(error)) => return Err(error),
-                (Err(error), _) => return Err(error),
-            }
-        } else {
-            None
-        };
+            total_bytes = next_total;
+            formats.push(ClipboardSnapshotFormat { id: format_id, data });
+        }
 
         Ok(Self {
             _lifetime: ServerObjectLifetime::new(),
-            unicode_text,
+            formats,
         })
     }
 
     #[cfg(test)]
-    fn from_unicode_text(unicode_text: Option<Vec<u8>>) -> Self {
+    fn from_formats(formats: Vec<(u16, Vec<u8>)>) -> Self {
         Self {
             _lifetime: ServerObjectLifetime::new(),
-            unicode_text,
+            formats: formats
+                .into_iter()
+                .map(|(id, data)| ClipboardSnapshotFormat { id, data })
+                .collect(),
         }
     }
 
-    fn validate_format(&self, format: *const FORMATETC) -> Result<()> {
+    fn validate_format(&self, format: *const FORMATETC) -> Result<&ClipboardSnapshotFormat> {
         let format = unsafe { format.as_ref() }.ok_or_else(|| Error::from_hresult(E_POINTER))?;
-        if format.cfFormat != CF_UNICODETEXT.0 {
-            return Err(Error::from_hresult(DV_E_FORMATETC));
-        }
         if !format.ptd.is_null() {
             return Err(Error::from_hresult(DV_E_DVTARGETDEVICE));
         }
@@ -5850,20 +5861,16 @@ impl ClipboardDataObject {
         if format.tymed & TYMED_HGLOBAL.0 as u32 == 0 {
             return Err(Error::from_hresult(DV_E_TYMED));
         }
-        if self.unicode_text.is_none() {
-            return Err(Error::from_hresult(DV_E_FORMATETC));
-        }
-        Ok(())
+        self.formats
+            .iter()
+            .find(|snapshot| snapshot.id == format.cfFormat)
+            .ok_or_else(|| Error::from_hresult(DV_E_FORMATETC))
     }
 }
 
 impl IDataObject_Impl for ClipboardDataObject_Impl {
     fn GetData(&self, format: *const FORMATETC) -> Result<STGMEDIUM> {
-        self.validate_format(format)?;
-        let data = self
-            .unicode_text
-            .as_ref()
-            .ok_or_else(|| Error::from_hresult(DV_E_FORMATETC))?;
+        let data = &self.validate_format(format)?.data;
 
         let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, data.len()) }?;
         let destination = unsafe { GlobalLock(memory) }.cast::<u8>();
@@ -5901,7 +5908,7 @@ impl IDataObject_Impl for ClipboardDataObject_Impl {
 
     fn QueryGetData(&self, format: *const FORMATETC) -> HRESULT {
         match self.validate_format(format) {
-            Ok(()) => S_OK,
+            Ok(_) => S_OK,
             Err(error) => error.code(),
         }
     }
@@ -5942,7 +5949,7 @@ impl IDataObject_Impl for ClipboardDataObject_Impl {
 
     fn EnumFormatEtc(&self, direction: u32) -> Result<IEnumFORMATETC> {
         if direction == DATADIR_GET.0 as u32 {
-            Ok(ClipboardFormatEnumerator::new(self.unicode_text.is_some(), false).into())
+            Ok(ClipboardFormatEnumerator::new(self.formats.iter().map(|format| format.id).collect(), 0).into())
         } else if direction == DATADIR_SET.0 as u32 {
             Err(Error::from_hresult(E_NOTIMPL))
         } else {
@@ -5963,14 +5970,158 @@ impl IDataObject_Impl for ClipboardDataObject_Impl {
     }
 }
 
-fn unicode_text_format() -> FORMATETC {
+fn clipboard_format(format_id: u16) -> FORMATETC {
     FORMATETC {
-        cfFormat: CF_UNICODETEXT.0,
+        cfFormat: format_id,
         ptd: ptr::null_mut(),
         dwAspect: DVASPECT_CONTENT.0,
         lindex: -1,
         tymed: TYMED_HGLOBAL.0 as u32,
     }
+}
+
+fn snapshot_clipboard_format(
+    format_id: u16,
+    kind: ClipboardSnapshotKind,
+    expected_sequence: u32,
+) -> Result<(Option<Vec<u8>>, u32)> {
+    unsafe {
+        OpenClipboard(None)?;
+    }
+
+    let result = (|| {
+        let opened_sequence = unsafe { GetClipboardSequenceNumber() };
+        if expected_sequence != 0 && opened_sequence != 0 && opened_sequence != expected_sequence {
+            return Err(Error::from_hresult(E_ABORT));
+        }
+        if unsafe { IsClipboardFormatAvailable(u32::from(format_id)) }.is_err() {
+            return Ok((None, opened_sequence));
+        }
+
+        let handle = match unsafe { GetClipboardData(u32::from(format_id)) } {
+            Ok(handle) => HGLOBAL(handle.0),
+            Err(_) => return Ok((None, unsafe { GetClipboardSequenceNumber() })),
+        };
+        let byte_count = unsafe { GlobalSize(handle) };
+        let max_bytes = match kind {
+            ClipboardSnapshotKind::UnicodeText
+            | ClipboardSnapshotKind::NullTerminatedText
+            | ClipboardSnapshotKind::Html => MAX_OLE_CLIPBOARD_TEXT_BYTES,
+            ClipboardSnapshotKind::Locale => size_of::<u32>() * 4,
+            ClipboardSnapshotKind::Dib | ClipboardSnapshotKind::DibV5 => MAX_OLE_CLIPBOARD_BINARY_BYTES,
+        };
+        if byte_count == 0 || byte_count > max_bytes {
+            return Ok((None, unsafe { GetClipboardSequenceNumber() }));
+        }
+
+        let source = unsafe { GlobalLock(handle) }.cast::<u8>();
+        if source.is_null() {
+            return Ok((None, unsafe { GetClipboardSequenceNumber() }));
+        }
+        let snapshot = {
+            let data = unsafe { slice::from_raw_parts(source, byte_count) };
+            validated_clipboard_snapshot(kind, data)
+        };
+        match (snapshot, unlock_global_memory(handle)) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Ok(data), Ok(())) => Ok((data, unsafe { GetClipboardSequenceNumber() })),
+        }
+    })();
+
+    match (result, unsafe { CloseClipboard() }) {
+        (Ok(data), Ok(())) => Ok(data),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), _) => Err(error),
+    }
+}
+
+fn validated_clipboard_snapshot(kind: ClipboardSnapshotKind, data: &[u8]) -> Result<Option<Vec<u8>>> {
+    match kind {
+        ClipboardSnapshotKind::UnicodeText => validated_unicode_text_snapshot(data),
+        ClipboardSnapshotKind::NullTerminatedText => Ok(data
+            .iter()
+            .position(|byte| *byte == 0)
+            .and_then(|terminator| terminator.checked_add(1))
+            .map(|length| data[..length].to_vec())),
+        ClipboardSnapshotKind::Locale => {
+            Ok((data.len() >= size_of::<u32>()).then(|| data[..size_of::<u32>()].to_vec()))
+        }
+        ClipboardSnapshotKind::Dib => Ok(validated_dib_snapshot(data, false)),
+        ClipboardSnapshotKind::DibV5 => Ok(validated_dib_snapshot(data, true)),
+        ClipboardSnapshotKind::Html => Ok(validated_html_snapshot(data)),
+    }
+}
+
+fn validated_dib_snapshot(data: &[u8], v5: bool) -> Option<Vec<u8>> {
+    let header_size = if v5 { 124usize } else { 40usize };
+    if data.len() < header_size || usize::try_from(u32_at(data, 0)?).ok()? != header_size {
+        return None;
+    }
+
+    let width = i32::from_le_bytes(data.get(4..8)?.try_into().ok()?);
+    let height = i32::from_le_bytes(data.get(8..12)?.try_into().ok()?);
+    let width = usize::try_from(width).ok()?;
+    let height = usize::try_from(height.checked_abs()?).ok()?;
+    if width == 0 || width > 10_000 || height == 0 || height > 10_000 {
+        return None;
+    }
+
+    let bit_count = usize::from(u16_at(data, 14)?);
+    let bits_per_row = width.checked_mul(bit_count)?;
+    let stride = bits_per_row.checked_add(31)?.checked_div(32)?.checked_mul(4)?;
+    let image_bytes = stride.checked_mul(height)?;
+    let declared_image_bytes = usize::try_from(u32_at(data, 20)?).ok()?;
+    if declared_image_bytes != 0 && declared_image_bytes != image_bytes {
+        return None;
+    }
+    if v5 && (u32_at(data, 112)? != 0 || u32_at(data, 116)? != 0) {
+        return None;
+    }
+
+    let payload_bytes = header_size.checked_add(image_bytes)?;
+    if payload_bytes > MAX_OLE_CLIPBOARD_BINARY_BYTES || payload_bytes > data.len() {
+        return None;
+    }
+    let payload = &data[..payload_bytes];
+    let valid = if v5 {
+        dibv5_to_png(payload).is_ok()
+    } else {
+        dib_to_png(payload).is_ok()
+    };
+    valid.then(|| payload.to_vec())
+}
+
+fn validated_html_snapshot(data: &[u8]) -> Option<Vec<u8>> {
+    const END_HTML: &[u8] = b"EndHTML:";
+    const MAX_HTML_HEADER_BYTES: usize = 4096;
+
+    let header = &data[..data.len().min(MAX_HTML_HEADER_BYTES)];
+    let marker = header.windows(END_HTML.len()).position(|window| window == END_HTML)?;
+    let value = &header[marker + END_HTML.len()..];
+    let value_end = value.iter().position(|byte| matches!(byte, b'\r' | b'\n'))?;
+    let end_html = core::str::from_utf8(&value[..value_end])
+        .ok()?
+        .trim()
+        .parse::<usize>()
+        .ok()?;
+    if end_html == 0 || end_html > data.len() {
+        return None;
+    }
+    cf_html_to_plain_html(&data[..end_html]).ok()?;
+    Some(data[..end_html].to_vec())
+}
+
+fn u16_at(data: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        data.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
+    ))
+}
+
+fn u32_at(data: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        data.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+    ))
 }
 
 fn unlock_global_memory(memory: HGLOBAL) -> Result<()> {
@@ -17878,23 +18029,49 @@ mod tests {
     }
 
     #[test]
-    fn ole_clipboard_data_object_is_a_unicode_text_snapshot() {
-        let data_object: IDataObject =
-            ClipboardDataObject::from_unicode_text(Some(vec![b'i', 0, b'r', 0, b'o', 0, b'n', 0, 0, 0])).into();
-        let format = unicode_text_format();
+    fn ole_clipboard_data_object_enumerates_and_copies_rich_snapshot_formats() {
+        let unicode_text = vec![b'i', 0, b'r', 0, b'o', 0, b'n', 0, 0, 0];
+        let ansi_text = b"iron\0".to_vec();
+        let html_format = 0xC123;
+        let html = ironrdp_cliprdr_format::html::plain_html_to_cf_html("<b>iron</b>").into_bytes();
+        let data_object: IDataObject = ClipboardDataObject::from_formats(vec![
+            (CF_UNICODETEXT.0, unicode_text.clone()),
+            (CF_TEXT.0, ansi_text.clone()),
+            (html_format, html.clone()),
+        ])
+        .into();
+        let format = clipboard_format(CF_UNICODETEXT.0);
 
         assert_eq!(unsafe { data_object.QueryGetData(&format) }, S_OK);
 
         let enumerator =
             unsafe { data_object.EnumFormatEtc(DATADIR_GET.0 as u32) }.expect("enumerate source clipboard formats");
-        let mut formats = [FORMATETC::default()];
+        let mut formats = [FORMATETC::default(); 2];
         let mut fetched = 0;
         assert_eq!(unsafe { enumerator.Next(&mut formats, Some(&mut fetched)) }, S_OK);
-        assert_eq!(fetched, 1);
+        assert_eq!(fetched, 2);
         assert_eq!(formats[0].cfFormat, CF_UNICODETEXT.0);
+        assert_eq!(formats[1].cfFormat, CF_TEXT.0);
         assert_eq!(formats[0].tymed, TYMED_HGLOBAL.0 as u32);
-        assert_eq!(unsafe { enumerator.Next(&mut formats, Some(&mut fetched)) }, S_FALSE);
+        let clone = unsafe { enumerator.Clone() }.expect("clone format enumerator at its current position");
+        assert_eq!(unsafe { enumerator.Next(&mut formats[..1], Some(&mut fetched)) }, S_OK);
+        assert_eq!(formats[0].cfFormat, html_format);
+        assert_eq!(unsafe { clone.Next(&mut formats[..1], Some(&mut fetched)) }, S_OK);
+        assert_eq!(formats[0].cfFormat, html_format);
+        assert_eq!(
+            unsafe { enumerator.Next(&mut formats[..1], Some(&mut fetched)) },
+            S_FALSE
+        );
         assert_eq!(fetched, 0);
+        unsafe { enumerator.Reset() }.expect("reset format enumerator");
+        unsafe { enumerator.Skip(2) }.expect("skip available formats");
+        assert_eq!(unsafe { enumerator.Next(&mut formats[..1], Some(&mut fetched)) }, S_OK);
+        assert_eq!(formats[0].cfFormat, html_format);
+        unsafe { enumerator.Skip(1) }.expect("S_FALSE remains a successful COM status");
+        assert_eq!(
+            unsafe { enumerator.Next(&mut formats[..1], Some(&mut fetched)) },
+            S_FALSE
+        );
 
         let alternate_tymed = FORMATETC {
             tymed: TYMED_HGLOBAL.0 as u32 | windows::Win32::System::Com::TYMED_FILE.0 as u32,
@@ -17917,20 +18094,69 @@ mod tests {
         assert_eq!(aliasing_format.tymed, alternate_tymed.tymed);
         assert!(aliasing_format.ptd.is_null());
 
-        let mut medium = unsafe { data_object.GetData(&format) }.expect("retrieve clipboard snapshot");
-        assert_eq!(medium.tymed, TYMED_HGLOBAL.0 as u32);
-        let memory = unsafe { medium.u.hGlobal };
-        let source = unsafe { GlobalLock(memory) }.cast::<u8>();
+        let mut first_medium = unsafe { data_object.GetData(&format) }.expect("retrieve first clipboard snapshot copy");
+        let mut second_medium =
+            unsafe { data_object.GetData(&format) }.expect("retrieve second clipboard snapshot copy");
+        assert_eq!(first_medium.tymed, TYMED_HGLOBAL.0 as u32);
+        assert!(first_medium.pUnkForRelease.is_none());
+        let first_memory = unsafe { first_medium.u.hGlobal };
+        let second_memory = unsafe { second_medium.u.hGlobal };
+        assert_ne!(first_memory, second_memory);
+        let source = unsafe { GlobalLock(first_memory) }.cast::<u8>();
         assert!(!source.is_null());
-        let copied = unsafe { slice::from_raw_parts(source, GlobalSize(memory)) };
-        assert_eq!(copied, [b'i', 0, b'r', 0, b'o', 0, b'n', 0, 0, 0]);
-        unlock_global_memory(memory).expect("unlock returned clipboard medium");
+        let copied = unsafe { slice::from_raw_parts(source, GlobalSize(first_memory)) };
+        assert_eq!(copied, unicode_text);
+        unlock_global_memory(first_memory).expect("unlock returned clipboard medium");
+        let source = unsafe { GlobalLock(second_memory) }.cast::<u8>();
+        assert!(!source.is_null());
+        let copied = unsafe { slice::from_raw_parts(source, GlobalSize(second_memory)) };
+        assert_eq!(copied, unicode_text);
+        unlock_global_memory(second_memory).expect("unlock independently returned clipboard medium");
         unsafe {
-            ReleaseStgMedium(&mut medium);
+            ReleaseStgMedium(&mut first_medium);
+            ReleaseStgMedium(&mut second_medium);
+        }
+
+        let ansi_format = clipboard_format(CF_TEXT.0);
+        let mut ansi_medium = unsafe { data_object.GetData(&ansi_format) }.expect("retrieve ANSI clipboard snapshot");
+        let ansi_memory = unsafe { ansi_medium.u.hGlobal };
+        let source = unsafe { GlobalLock(ansi_memory) }.cast::<u8>();
+        assert_eq!(
+            unsafe { slice::from_raw_parts(source, GlobalSize(ansi_memory)) },
+            ansi_text
+        );
+        unlock_global_memory(ansi_memory).expect("unlock ANSI clipboard medium");
+        unsafe {
+            ReleaseStgMedium(&mut ansi_medium);
+        }
+
+        let html_formatetc = clipboard_format(html_format);
+        let mut html_medium =
+            unsafe { data_object.GetData(&html_formatetc) }.expect("retrieve HTML clipboard snapshot");
+        let html_memory = unsafe { html_medium.u.hGlobal };
+        let source = unsafe { GlobalLock(html_memory) }.cast::<u8>();
+        assert_eq!(unsafe { slice::from_raw_parts(source, GlobalSize(html_memory)) }, html);
+        unlock_global_memory(html_memory).expect("unlock HTML clipboard medium");
+        unsafe {
+            ReleaseStgMedium(&mut html_medium);
         }
 
         let invalid_tymed = FORMATETC { tymed: 0, ..format };
         assert_eq!(unsafe { data_object.QueryGetData(&invalid_tymed) }, DV_E_TYMED);
+        let invalid_format = FORMATETC {
+            cfFormat: CF_DIB.0,
+            ..format
+        };
+        assert_eq!(unsafe { data_object.QueryGetData(&invalid_format) }, DV_E_FORMATETC);
+        let mut target_device = DVTARGETDEVICE::default();
+        let targeted_format = FORMATETC {
+            ptd: &mut target_device,
+            ..format
+        };
+        assert_eq!(
+            unsafe { data_object.QueryGetData(&targeted_format) },
+            DV_E_DVTARGETDEVICE
+        );
         let mut caller_medium = STGMEDIUM::default();
         assert_eq!(
             unsafe { data_object.GetDataHere(&format, &mut caller_medium) }
@@ -17954,7 +18180,7 @@ mod tests {
     }
 
     #[test]
-    fn ole_clipboard_snapshot_validation_rejects_malformed_text() {
+    fn ole_clipboard_snapshot_validation_rejects_hostile_formats_and_trims_payloads() {
         assert_eq!(
             validated_unicode_text_snapshot(&[0]).expect("reject undersized text"),
             None
@@ -17975,15 +18201,81 @@ mod tests {
             validated_unicode_text_snapshot(&[0, 0xd8, 0, 0]).expect("reject invalid UTF-16"),
             None
         );
-    }
-
-    #[test]
-    fn ole_clipboard_snapshot_stops_at_first_terminator() {
-        let snapshot = validated_unicode_text_snapshot(&[b'i', 0, 0, 0, b'r', 0])
+        let unicode_snapshot = validated_unicode_text_snapshot(&[b'i', 0, 0, 0, b'r', 0])
             .expect("accept valid Unicode text")
             .expect("return the text before the terminator");
+        assert_eq!(unicode_snapshot, [b'i', 0, 0, 0]);
 
-        assert_eq!(snapshot, [b'i', 0, 0, 0]);
+        let ansi_snapshot = validated_clipboard_snapshot(ClipboardSnapshotKind::NullTerminatedText, b"iron\0private")
+            .expect("validate ANSI text")
+            .expect("return ANSI text before allocator padding");
+        assert_eq!(ansi_snapshot, b"iron\0");
+        assert_eq!(
+            validated_clipboard_snapshot(ClipboardSnapshotKind::NullTerminatedText, b"unterminated")
+                .expect("reject unterminated ANSI text"),
+            None
+        );
+
+        let html = ironrdp_cliprdr_format::html::plain_html_to_cf_html("<b>iron</b>");
+        let mut padded_html = html.as_bytes().to_vec();
+        padded_html.extend_from_slice(b"private");
+        assert_eq!(
+            validated_html_snapshot(&padded_html).expect("accept valid CF_HTML"),
+            html.as_bytes()
+        );
+        let mut invalid_html = html.into_bytes();
+        let marker = invalid_html
+            .windows(b"EndHTML:".len())
+            .position(|window| window == b"EndHTML:")
+            .expect("generated CF_HTML has EndHTML");
+        invalid_html[marker + b"EndHTML:".len()..marker + b"EndHTML:".len() + 10].copy_from_slice(b"9999999999");
+        assert_eq!(validated_html_snapshot(&invalid_html), None);
+
+        let mut dib = vec![0u8; 44];
+        dib[0..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&1i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&1i32.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&32u16.to_le_bytes());
+        dib[20..24].copy_from_slice(&4u32.to_le_bytes());
+        dib[40..44].copy_from_slice(&[0x10, 0x20, 0x30, 0xFF]);
+        let mut padded_dib = dib.clone();
+        padded_dib.extend_from_slice(b"private");
+        let dib_snapshot = validated_dib_snapshot(&padded_dib, false).expect("accept bounded DIB");
+        assert_eq!(dib_snapshot, dib);
+        let data_object: IDataObject = ClipboardDataObject::from_formats(vec![(CF_DIB.0, dib_snapshot.clone())]).into();
+        let mut medium =
+            unsafe { data_object.GetData(&clipboard_format(CF_DIB.0)) }.expect("round-trip validated DIB snapshot");
+        let memory = unsafe { medium.u.hGlobal };
+        let source = unsafe { GlobalLock(memory) }.cast::<u8>();
+        assert_eq!(
+            unsafe { slice::from_raw_parts(source, GlobalSize(memory)) },
+            dib_snapshot
+        );
+        unlock_global_memory(memory).expect("unlock DIB clipboard medium");
+        unsafe {
+            ReleaseStgMedium(&mut medium);
+        }
+        assert_eq!(validated_dib_snapshot(&dib[..43], false), None);
+        let mut oversized_dib = dib.clone();
+        oversized_dib[4..8].copy_from_slice(&10_001i32.to_le_bytes());
+        assert_eq!(validated_dib_snapshot(&oversized_dib, false), None);
+        let mut inconsistent_dib = dib;
+        inconsistent_dib[20..24].copy_from_slice(&8u32.to_le_bytes());
+        assert_eq!(validated_dib_snapshot(&inconsistent_dib, false), None);
+
+        let mut dibv5 = vec![0u8; 128];
+        dibv5[0..4].copy_from_slice(&124u32.to_le_bytes());
+        dibv5[4..8].copy_from_slice(&1i32.to_le_bytes());
+        dibv5[8..12].copy_from_slice(&(-1i32).to_le_bytes());
+        dibv5[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dibv5[14..16].copy_from_slice(&32u16.to_le_bytes());
+        dibv5[20..24].copy_from_slice(&4u32.to_le_bytes());
+        dibv5[56..60].copy_from_slice(&0x7352_4742u32.to_le_bytes());
+        dibv5[124..128].copy_from_slice(&[0x10, 0x20, 0x30, 0xFF]);
+        assert_eq!(validated_dib_snapshot(&dibv5, true), Some(dibv5.clone()));
+        dibv5[116..120].copy_from_slice(&4u32.to_le_bytes());
+        assert_eq!(validated_dib_snapshot(&dibv5, true), None);
     }
 
     #[test]

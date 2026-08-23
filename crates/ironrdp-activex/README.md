@@ -646,11 +646,31 @@ connection while the RDP worker owns the protocol backend; shutdown removes the 
 activation; its explicit sync methods succeed at that point because the backend performs
 synchronization automatically. They return `E_UNEXPECTED` before connection or when clipboard
 redirection was disabled for the session.
-For the same active state, `IOleObject::GetClipboardData(0)` returns an immutable OLE `IDataObject` snapshot of the current Windows clipboard's valid `CF_UNICODETEXT` payload.
+For the same active state, `IOleObject::GetClipboardData(0)` returns an immutable OLE `IDataObject` snapshot of each currently available, valid payload in this allowlist:
+
+| Format | Snapshot validation |
+| --- | --- |
+| `CF_UNICODETEXT` | Even-sized, null-terminated valid UTF-16, trimmed at the first terminator |
+| `CF_TEXT`, `CF_OEMTEXT` | Null-terminated bytes, trimmed at the first terminator |
+| `CF_LOCALE` | Exactly the first four-byte locale identifier |
+| `CF_DIB`, `CF_DIBV5` | Bounded 24/32-bpp DIB accepted by `ironrdp-cliprdr-format`; embedded V5 profiles are rejected |
+| Registered `HTML Format` | Bounded CF_HTML with valid offsets and UTF-8 fragment, trimmed at `EndHTML` |
+
+Text and HTML clipboard allocations are limited to 16 MiB each.
+DIB allocations and the complete retained snapshot are limited to 64 MiB.
+Invalid, oversized, truncated, or unsupported payloads are omitted rather than advertised.
+
 The object supports source retrieval only (`DATADIR_GET`) with `DVASPECT_CONTENT`, `lindex = -1`, no target device, and `TYMED_HGLOBAL`.
-It validates those `FORMATETC` fields and returns a newly allocated `STGMEDIUM` for each `GetData` call, so the caller owns and must release that medium.
-Delayed rendering remains in the STA-bound native CLIPRDR backend while the snapshot is created; after creation the object has no live clipboard or RDP-worker dependency.
-No other clipboard format, conversion, inbound `SetData`, destination enumeration, `GetDataHere`, or data-advisory contract is claimed.
+`EnumFormatEtc` lists exactly the retained formats, and `QueryGetData` accepts exactly those formats and constraints.
+Each `GetData` call returns a separate `GMEM_MOVEABLE` allocation with `pUnkForRelease = NULL`.
+The caller owns that `STGMEDIUM` and must pass it to `ReleaseStgMedium`.
+
+Snapshot creation resolves native CLIPRDR delayed rendering on the ActiveX STA.
+It opens the Windows clipboard only around one format retrieval, closes it on every result path before trying another format, and aborts if the clipboard sequence changes between retrievals.
+Each remote delayed format can require a synchronous CLIPRDR round trip, so `GetClipboardData` can take one native-backend timeout per candidate format even though the clipboard lock is released between attempts.
+After creation, the object has no live clipboard or RDP-worker dependency.
+The snapshot does not expose `CF_HDROP`, `FileGroupDescriptorW`, file contents, RTF, arbitrary registered formats, GDI-handle formats, inbound `SetData`, destination enumeration, `GetDataHere`, or data advisories.
+File formats stay excluded because a correct OLE surface would also require path-safe descriptors, stream-index lifetime, CLIPRDR lock/unlock sequencing, bounded range reads, and explicit user-authorized file disclosure.
 `GetClipboardData` rejects a nonzero reserved value and reports `OLE_E_NOTRUNNING` before clipboard redirection is active.
 
 `IMsRdpClientNonScriptable5::UseMultimon` is disabled by default and can be changed only while the connection settings are mutable.
@@ -766,6 +786,6 @@ The worker translates supported Automation settings into `ironrdp-client::Config
 Connection points retain sinks through `Advise`/`Unadvise`, enumerate correctly, and query the supplied
 sink for the event interface IID before retaining its `IDispatch`.
 
-This is an Automation, lifecycle, hosting, framebuffer, basic input, RemoteApp projection, persistence, static virtual-channel, and Unicode-text OLE clipboard-snapshot foundation.
-It does not implement non-text or writable OLE clipboard exchange, monikers, non-filesystem RDPDR device redirection, or arbitrary persisted designer state.
+This is an Automation, lifecycle, hosting, framebuffer, basic input, RemoteApp projection, persistence, static virtual-channel, and bounded read-only OLE clipboard-snapshot foundation.
+It does not implement writable or file-backed OLE clipboard exchange, monikers, non-filesystem RDPDR device redirection, or arbitrary persisted designer state.
 Those contracts must be added as exact ABI implementations before advertising their individual methods as supported.
