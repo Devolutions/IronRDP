@@ -92,7 +92,7 @@ struct SessionBuilderInner {
     use_display_control: bool,
     enable_credssp: bool,
     outbound_message_size_limit: Option<usize>,
-    // tdmanh1 28/03/2026 expose các option này cho bên ngoài thiết lập
+    // tdmanh1 24/08/2026 expose more flag for wasm app
     enable_server_pointer: bool,
     pointer_software_rendering: bool,
     enable_audio_playback: bool,
@@ -140,7 +140,7 @@ impl Default for SessionBuilderInner {
             enable_credssp: true,
             outbound_message_size_limit: None,
 
-            // tdmanh1 28/03/2026 expose các option này cho bên ngoài thiết lập
+            // tdmanh1 24/08/2026 expose more flag for wasm app
             enable_server_pointer: false,
             pointer_software_rendering: false,
             enable_audio_playback: false,
@@ -209,7 +209,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         self.clone()
     }
 
-    // tdmanh1 28/03/2026 expose thêm 1 số hàm để set các thông tin từ web
+    // tdmanh1 24/08/2026 expose more function for wasm app
     /// Optional
     fn set_enable_server_pointer(&self, enable_server_pointer: bool) -> Self {
         self.0.borrow_mut().enable_server_pointer = enable_server_pointer;
@@ -393,7 +393,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_device_id,
             printer_driver_name,
             outbound_message_size_limit,
-            // tdmanh1 28/03/2026 expose các option này cho bên ngoài thiết lập
+            // tdmanh1 24/08/2026 expose more flag for wasm app
             enable_server_pointer,
             pointer_software_rendering,
             enable_audio_playback,
@@ -414,7 +414,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             kdc_proxy_url = inner.kdc_proxy_url.clone();
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size;
-            // tdmanh1 28/03/2026 expose các option này cho bên ngoài thiết lập
+            // tdmanh1 24/08/2026 expose more flag for wasm app
             enable_server_pointer = inner.enable_server_pointer;
             pointer_software_rendering = inner.pointer_software_rendering;
             enable_audio_playback = inner.enable_audio_playback;
@@ -458,7 +458,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             server_domain, 
             client_name.clone(), 
             desktop_size,
-            // tdmanh1 28/03/2026 expose các option này cho bên ngoài thiết lập
+            // tdmanh1 24/08/2026 expose more flag for wasm app
             enable_server_pointer,
             pointer_software_rendering,
             enable_audio_playback,
@@ -1496,7 +1496,7 @@ fn build_config(
     domain: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
-    // tdmanh1 28/03/2026 expose các option này cho bên ngoài thiết lập
+    // tdmanh1 24/08/2026 expose more flag for wasm app
     enable_server_pointer: bool,
     pointer_software_rendering: bool,
     enable_audio_playback: bool,
@@ -1540,18 +1540,16 @@ fn build_config(
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         compression_type: None,
-        // tdmanh1 28/03/2026 expose các option này cho bên ngoài thiết lập
+        // tdmanh1 24/08/2026 expose more flag for wasm app
         enable_server_pointer: enable_server_pointer,
         autologon: false,
-        // tdmanh1 28/03/2026 expose các option này cho bên ngoài thiết lập
         enable_audio_playback: enable_audio_playback,
         enable_audio_capture: false,
         request_data: None,
-        // tdmanh1 28/03/2026 expose các option này cho bên ngoài thiết lập
         pointer_software_rendering: pointer_software_rendering,
         multitransport_flags: None,
         performance_flags: PerformanceFlags::default(),
-        // tdmanh1 28/03/2026 expose các option này cho bên ngoài thiết lập
+        // tdmanh1 24/08/2026 expose more flag for wasm app
         desktop_scale_factor: desktop_scale_factor,
         hardware_id: None,
         license_cache: None,

@@ -243,7 +243,7 @@ macro_rules! make_bridge {
                 Self($crate::SessionBuilder::render_canvas(&self.0, canvas))
             }
 
-            // tdmanh1 28/03/2026 expose thêm 1 số hàm để set các thông tin từ web
+            // tdmanh1 24/08/2026 expose more function for wasm app
             #[wasm_bindgen(js_name = setEnableServerPointer)]
             pub fn set_enable_server_pointer(&self, enable_server_pointer: bool) -> Self {
                 Self($crate::SessionBuilder::set_enable_server_pointer(

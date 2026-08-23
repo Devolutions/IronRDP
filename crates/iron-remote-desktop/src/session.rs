@@ -36,7 +36,7 @@ pub trait SessionBuilder {
     #[must_use]
     fn render_canvas(&self, canvas: HtmlCanvasElement) -> Self;
 
-    // tdmanh1 28/03/2026 expose thêm 1 số hàm để set các thông tin từ web
+    // tdmanh1 24/08/2026 expose more function for wasm app
     #[must_use]
     fn set_enable_server_pointer(&self, enable_server_pointer: bool) -> Self;
 
