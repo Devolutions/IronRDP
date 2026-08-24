@@ -398,7 +398,11 @@ enum ClientState {
 pub struct GraphicsPipelineClient {
     handler: Box<dyn GraphicsPipelineHandler>,
     h264_decoder: Option<Box<dyn H264Decoder>>,
-    clearcodec_decoder: ClearCodecDecoder,
+    /// Built on first use via [`Self::decode_clearcodec`]. `None` means no ClearCodec
+    /// frame has arrived yet, not that the codec is unsupported: keeping the ~1.37 MiB
+    /// V-bar and glyph cache spine (see `ClearCodecDecoder::new`) unallocated saves that
+    /// much per session for the common case of a server that never sends ClearCodec.
+    clearcodec_decoder: Option<ClearCodecDecoder>,
     planar_decoder: BitmapStreamDecoder,
     progressive_decoder: ProgressiveDecoder,
 
@@ -420,12 +424,14 @@ impl GraphicsPipelineClient {
     /// Create a new `GraphicsPipelineClient`
     ///
     /// If `h264_decoder` is `None`, AVC420 frames are logged and skipped.
-    /// ClearCodec decoding is always available (no external decoder required).
+    /// ClearCodec decoding is always available (no external decoder required)
+    /// and its cache spine is allocated lazily, on the first ClearCodec frame,
+    /// rather than up front for a codec the session may never use.
     pub fn new(handler: Box<dyn GraphicsPipelineHandler>, h264_decoder: Option<Box<dyn H264Decoder>>) -> Self {
         Self {
             handler,
             h264_decoder,
-            clearcodec_decoder: ClearCodecDecoder::new(),
+            clearcodec_decoder: None,
             planar_decoder: BitmapStreamDecoder::default(),
             progressive_decoder: ProgressiveDecoder::new(),
             decompressor: zgfx::Decompressor::new(),
@@ -602,6 +608,7 @@ impl GraphicsPipelineClient {
             }
             GfxPdu::MapSurfaceToScaledOutput(pdu) => {
                 trace!(surface_id = pdu.surface_id, "MapSurfaceToScaledOutput");
+                self.handle_map_surface_to_scaled_output(&pdu);
                 self.handler.on_map_surface_to_scaled_output(&pdu);
                 Ok(vec![])
             }
@@ -740,6 +747,36 @@ impl GraphicsPipelineClient {
             self.handler.on_surface_mapped(surface_id, origin_x, origin_y);
         } else {
             warn!(surface_id, "MapSurfaceToOutput for unknown surface");
+        }
+    }
+
+    fn handle_map_surface_to_scaled_output(&mut self, pdu: &MapSurfaceToScaledOutputPdu) {
+        if let Some(surface) = self.surfaces.get_mut(&pdu.surface_id) {
+            surface.is_mapped = true;
+            surface.output_origin_x = pdu.output_origin_x;
+            surface.output_origin_y = pdu.output_origin_y;
+            self.compositor.map_surface_scaled(
+                pdu.surface_id,
+                pdu.output_origin_x,
+                pdu.output_origin_y,
+                pdu.target_width,
+                pdu.target_height,
+            );
+            debug!(
+                surface_id = pdu.surface_id,
+                origin_x = pdu.output_origin_x,
+                origin_y = pdu.output_origin_y,
+                target_width = pdu.target_width,
+                target_height = pdu.target_height,
+                "Surface mapped to scaled output"
+            );
+            self.handler
+                .on_surface_mapped(pdu.surface_id, pdu.output_origin_x, pdu.output_origin_y);
+        } else {
+            warn!(
+                surface_id = pdu.surface_id,
+                "MapSurfaceToScaledOutput for unknown surface"
+            );
         }
     }
 
@@ -921,6 +958,7 @@ impl GraphicsPipelineClient {
 
         let bgra = self
             .clearcodec_decoder
+            .get_or_insert_with(ClearCodecDecoder::new)
             .decode(bitmap_data, dest_width, dest_height)
             .map_err(|e| pdu_other_err!("ClearCodec decode", source: e))?;
 
@@ -1236,6 +1274,8 @@ mod tests {
     /// `(codec_id, width, height, rgba)` extracted from each update, since
     /// `BitmapUpdate` is not `Clone` and does not need to be.
     type CapturedUpdate = (Codec1Type, u16, u16, Vec<u8>);
+    type SurfaceMapping = (u16, u32, u32);
+    type ScaledOutputMapping = (u16, u32, u32, u32, u32);
 
     struct CapturingHandler {
         updates: Arc<Mutex<Vec<CapturedUpdate>>>,
@@ -1260,6 +1300,120 @@ mod tests {
         fn on_unhandled_pdu(&mut self, _pdu: &GfxPdu) {
             *self.unhandled.lock().expect("unhandled lock") += 1;
         }
+    }
+
+    struct ScaledOutputHandler {
+        mappings: Arc<Mutex<Vec<ScaledOutputMapping>>>,
+        surface_mappings: Arc<Mutex<Vec<SurfaceMapping>>>,
+    }
+
+    impl GraphicsPipelineHandler for ScaledOutputHandler {
+        fn on_capabilities_confirmed(&mut self, _caps: &CapabilitySet) {}
+        fn on_reset_graphics(&mut self, _width: u32, _height: u32) {}
+        fn on_surface_created(&mut self, _surface: &Surface) {}
+        fn on_surface_deleted(&mut self, _surface_id: u16) {}
+        fn on_surface_mapped(&mut self, surface_id: u16, x: u32, y: u32) {
+            self.surface_mappings
+                .lock()
+                .expect("surface mappings lock")
+                .push((surface_id, x, y));
+        }
+        fn on_bitmap_updated(&mut self, _update: &BitmapUpdate) {}
+        fn on_frame_complete(&mut self, _frame_id: u32) {}
+        fn on_close(&mut self) {}
+        fn on_unhandled_pdu(&mut self, _pdu: &GfxPdu) {}
+
+        fn on_map_surface_to_scaled_output(&mut self, pdu: &MapSurfaceToScaledOutputPdu) {
+            self.mappings.lock().expect("mappings lock").push((
+                pdu.surface_id,
+                pdu.output_origin_x,
+                pdu.output_origin_y,
+                pdu.target_width,
+                pdu.target_height,
+            ));
+        }
+    }
+
+    #[test]
+    fn map_surface_to_scaled_output_dispatches_to_compositor_and_handler() {
+        let mappings = Arc::new(Mutex::new(Vec::new()));
+        let surface_mappings = Arc::new(Mutex::new(Vec::new()));
+        let mut client = GraphicsPipelineClient::new(
+            Box::new(ScaledOutputHandler {
+                mappings: Arc::clone(&mappings),
+                surface_mappings: Arc::clone(&surface_mappings),
+            }),
+            None,
+        );
+        client
+            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
+                width: 12,
+                height: 12,
+                monitors: vec![],
+            }))
+            .unwrap();
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 1,
+                width: 2,
+                height: 2,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .unwrap();
+        client
+            .handle_pdu(GfxPdu::MapSurfaceToScaledOutput(MapSurfaceToScaledOutputPdu {
+                surface_id: 1,
+                output_origin_x: 3,
+                output_origin_y: 4,
+                target_width: 4,
+                target_height: 4,
+            }))
+            .unwrap();
+
+        assert!(client.drain_output().is_empty());
+        client
+            .handle_pdu(GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id: 1 }))
+            .unwrap();
+
+        assert_eq!(*mappings.lock().expect("mappings lock"), vec![(1, 3, 4, 4, 4)]);
+        assert_eq!(
+            *surface_mappings.lock().expect("surface mappings lock"),
+            vec![(1, 3, 4)]
+        );
+        assert!(client.surfaces[&1].is_mapped);
+        assert_eq!(
+            (client.surfaces[&1].output_origin_x, client.surfaces[&1].output_origin_y),
+            (3, 4)
+        );
+
+        let output = client.drain_output();
+        assert_eq!(output.len(), 1);
+        assert_eq!(
+            output[0].region,
+            ExclusiveRectangle {
+                left: 3,
+                top: 4,
+                right: 7,
+                bottom: 8,
+            }
+        );
+    }
+
+    #[test]
+    fn map_surface_to_scaled_output_ignores_unknown_surface() {
+        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        client
+            .handle_pdu(GfxPdu::MapSurfaceToScaledOutput(MapSurfaceToScaledOutputPdu {
+                surface_id: 1,
+                output_origin_x: 0,
+                output_origin_y: 0,
+                target_width: 2,
+                target_height: 2,
+            }))
+            .unwrap();
+
+        assert!(client.surfaces.is_empty());
+        assert!(client.drain_output().is_empty());
     }
 
     /// A Planar `WireToSurface1` decodes to the pixels that were encoded, rather

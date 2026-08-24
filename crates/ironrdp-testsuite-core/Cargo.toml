@@ -58,6 +58,7 @@ ironrdp-rdpeai.path = "../ironrdp-rdpeai"
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", features = ["std"] }
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", features = ["std"] }
 ironrdp-rdpeusb.path = "../ironrdp-rdpeusb"
+ironrdp-usb.path = "../ironrdp-usb"
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", features = ["__test"] }
 ironrdp-server.path = "../ironrdp-server"
 ironrdp-session = { path = "../ironrdp-session", features = ["qoi"] }
@@ -68,7 +69,7 @@ png = "0.18"
 pretty_assertions = "1.4"
 proptest.workspace = true
 rstest.workspace = true
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "io-util", "sync"] }
 
 [lints]
 workspace = true

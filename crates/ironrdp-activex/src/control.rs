@@ -440,6 +440,8 @@ const CONNECT_E_CANNOTCONNECT: HRESULT = HRESULT(-2_147_220_990);
 const CONNECT_E_NOCONNECTION: HRESULT = HRESULT(-2_147_220_992);
 const CREDUI_MAX_USERNAME_LENGTH: usize = 513;
 const CREDUI_MAX_PASSWORD_LENGTH: usize = 256;
+const CREDUI_USERNAME_BUFFER_LENGTH: usize = CREDUI_MAX_USERNAME_LENGTH + 1;
+const CREDUI_PASSWORD_BUFFER_LENGTH: usize = CREDUI_MAX_PASSWORD_LENGTH + 1;
 const MSTSC_SEND_KEYS_MAX_KEYS: usize = 20;
 const CONTROL_RECONNECT_STARTED: i32 = 0;
 const CONTROL_RECONNECT_BLOCKED: i32 = 1;
@@ -661,7 +663,7 @@ fn trace_decode_failure(error: &DecodeError) {
     let location = error.location();
     let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
     let marker = match error.kind() {
-        DecodeErrorKind::NotEnoughBytes { received, expected } => {
+        DecodeErrorKind::NotEnoughBytes { received, expected, .. } => {
             format!("Decode:NotEnoughBytes:received_{received}:expected_{expected}")
         }
         DecodeErrorKind::InvalidField { .. } => "Decode:InvalidField".to_owned(),
@@ -1294,7 +1296,7 @@ impl Default for CompatibilitySettings {
             warn_about_sending_credentials: false,
             warn_about_clipboard_redirection: false,
             performance_flags: PerformanceFlags::default(),
-            keyboard_type: KeyboardType::IbmEnhanced,
+            keyboard_type: KeyboardType::IBM_ENHANCED,
             keyboard_subtype: 0,
             keyboard_functional_keys_count: 12,
             keyboard_layout: 0,
@@ -2504,16 +2506,13 @@ unsafe extern "system" fn advanced_get_rdp_port(this: *mut c_void, value: *mut i
 }
 
 fn keyboard_type_from_raw(value: i32) -> Result<KeyboardType> {
-    match value {
-        1 => Ok(KeyboardType::IbmPcXt),
-        2 => Ok(KeyboardType::OlivettiIco),
-        3 => Ok(KeyboardType::IbmPcAt),
-        4 => Ok(KeyboardType::IbmEnhanced),
-        5 => Ok(KeyboardType::Nokia1050),
-        6 => Ok(KeyboardType::Nokia9140),
-        7 => Ok(KeyboardType::Japanese),
-        _ => Err(Error::from_hresult(E_INVALIDARG)),
-    }
+    // The wire field is an unsigned 32-bit value with a growing set of assigned meanings
+    // (MS-RDPBCGR 2.2.1.3.2 now documents up to KOREAN=8, and Windows' own GetKeyboardType
+    // additionally returns 0x51 for generic HID keyboards); only a negative COM input, which can
+    // never be a valid keyboardType, is rejected.
+    u32::try_from(value)
+        .map(KeyboardType)
+        .map_err(|_| Error::from_hresult(E_INVALIDARG))
 }
 
 unsafe extern "system" fn advanced_put_keyboard_type(this: *mut c_void, value: i32) -> HRESULT {
@@ -2528,7 +2527,7 @@ unsafe extern "system" fn advanced_put_keyboard_type(this: *mut c_void, value: i
 
 unsafe extern "system" fn advanced_get_keyboard_type(this: *mut c_void, out: *mut i32) -> HRESULT {
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
-    let value = match i32::try_from(object.settings.borrow().keyboard_type.as_u32()) {
+    let value = match i32::try_from(object.settings.borrow().keyboard_type.0) {
         Ok(value) => value,
         Err(_) => return E_FAIL,
     };
@@ -2883,7 +2882,9 @@ fn domain_qualified_username(domain: &str, username: &str) -> String {
     }
 }
 
-fn active_x_transport(settings: &Settings, compatibility: &CompatibilitySettings) -> Result<ActiveXTransport> {
+fn active_x_gateway_credentials_source(
+    compatibility: &CompatibilitySettings,
+) -> Result<Option<GatewayCredentialsSource>> {
     let usage_method = GatewayUsageMethod::try_from(i64::from(compatibility.gateway_usage_method))
         .map_err(|error| Error::new(E_INVALIDARG, error.to_string()))?;
     let use_gateway = match usage_method {
@@ -2897,7 +2898,7 @@ fn active_x_transport(settings: &Settings, compatibility: &CompatibilitySettings
         }
     };
     if !use_gateway {
-        return Ok(ActiveXTransport::Direct);
+        return Ok(None);
     }
 
     if compatibility.gateway_hostname.trim().is_empty() {
@@ -2909,6 +2910,18 @@ fn active_x_transport(settings: &Settings, compatibility: &CompatibilitySettings
 
     let credentials_source = GatewayCredentialsSource::try_from(i64::from(compatibility.gateway_creds_source))
         .map_err(|error| Error::new(E_INVALIDARG, error.to_string()))?;
+    Ok(Some(credentials_source))
+}
+
+fn active_x_transport(
+    settings: &Settings,
+    compatibility: &CompatibilitySettings,
+    prompted_gateway_credentials: Option<(String, String)>,
+) -> Result<Option<ActiveXTransport>> {
+    let Some(credentials_source) = active_x_gateway_credentials_source(compatibility)? else {
+        return Ok(Some(ActiveXTransport::Direct));
+    };
+
     let (username, password) = match credentials_source {
         GatewayCredentialsSource::UseServerCredentials => (
             domain_qualified_username(&settings.domain, &settings.username),
@@ -2921,8 +2934,19 @@ fn active_x_transport(settings: &Settings, compatibility: &CompatibilitySettings
             domain_qualified_username(&compatibility.gateway_domain, &compatibility.gateway_username),
             compatibility.gateway_password.clone(),
         ),
+        GatewayCredentialsSource::Prompt => {
+            let Some((username, password)) = prompted_gateway_credentials else {
+                return Ok(None);
+            };
+            if password.is_empty() {
+                return Ok(None);
+            }
+            (
+                domain_qualified_username(&compatibility.gateway_domain, &username),
+                password,
+            )
+        }
         GatewayCredentialsSource::UseProfile
-        | GatewayCredentialsSource::Prompt
         | GatewayCredentialsSource::SmartCard
         | GatewayCredentialsSource::UseLogonCredentials => return Err(Error::from_hresult(E_NOTIMPL)),
     };
@@ -2933,11 +2957,11 @@ fn active_x_transport(settings: &Settings, compatibility: &CompatibilitySettings
         ));
     }
 
-    Ok(ActiveXTransport::Gateway {
+    Ok(Some(ActiveXTransport::Gateway {
         endpoint: compatibility.gateway_hostname.clone(),
         username,
         password,
-    })
+    }))
 }
 
 unsafe extern "system" fn advanced_put_audio_redirection(this: *mut c_void, value: u32) -> HRESULT {
@@ -7517,8 +7541,8 @@ impl Control {
         // the prompt, and CredUI's non-persistent flag prevents it from writing credential state.
         let initial_username = std::env::var("RDP_USERNAME").unwrap_or(configured_username);
         let initial_password = std::env::var("RDP_PASSWORD").unwrap_or_default();
-        let mut username = credential_prompt_buffer(&initial_username, CREDUI_MAX_USERNAME_LENGTH);
-        let mut password = credential_prompt_buffer(&initial_password, CREDUI_MAX_PASSWORD_LENGTH);
+        let mut username = credential_prompt_buffer(&initial_username, CREDUI_USERNAME_BUFFER_LENGTH);
+        let mut password = credential_prompt_buffer(&initial_password, CREDUI_PASSWORD_BUFFER_LENGTH);
         let mut save = windows_core::BOOL(0);
         let prompt = CREDUI_INFOW {
             cbSize: size_of::<CREDUI_INFOW>() as u32,
@@ -7593,6 +7617,74 @@ impl Control {
         trace_host_call("ActiveXCredentialPrompt::CredentialsAccepted");
         self.start_connection()?;
         Ok(self.state.get() != ConnectionState::Disconnected)
+    }
+
+    fn prompt_for_gateway_credentials(&self, endpoint: &str) -> Result<Option<(String, String)>> {
+        trace_host_call("ActiveXGatewayCredentialPrompt::Prompt");
+        let target = HSTRING::from(format!("IronRDP Gateway:{endpoint}"));
+        let message = HSTRING::from(format!("Enter credentials for RD Gateway {endpoint}"));
+        let caption = HSTRING::from("IronRDP RD Gateway Credentials");
+        let parent = if self.credential_parent.get().0.is_null() {
+            self.activex_window.get()
+        } else {
+            self.credential_parent.get()
+        };
+        let mut username = credential_prompt_buffer("", CREDUI_USERNAME_BUFFER_LENGTH);
+        let mut password = credential_prompt_buffer("", CREDUI_PASSWORD_BUFFER_LENGTH);
+        let mut save = windows_core::BOOL(0);
+        let prompt = CREDUI_INFOW {
+            cbSize: size_of::<CREDUI_INFOW>() as u32,
+            hwndParent: parent,
+            pszMessageText: PCWSTR(message.as_ptr()),
+            pszCaptionText: PCWSTR(caption.as_ptr()),
+            hbmBanner: Default::default(),
+        };
+        let result = unsafe {
+            CredUIPromptForCredentialsW(
+                Some(&prompt),
+                PCWSTR(target.as_ptr()),
+                None,
+                0,
+                &mut username,
+                &mut password,
+                Some(&mut save),
+                CREDUI_FLAGS_GENERIC_CREDENTIALS | CREDUI_FLAGS_ALWAYS_SHOW_UI | CREDUI_FLAGS_DO_NOT_PERSIST,
+            )
+        };
+
+        if result == ERROR_CANCELLED {
+            trace_host_call("ActiveXGatewayCredentialPrompt::Cancelled");
+            username.fill(0);
+            password.fill(0);
+            return Ok(None);
+        }
+        if result.0 != 0 {
+            trace_host_call("ActiveXGatewayCredentialPrompt::PromptFailed");
+            username.fill(0);
+            password.fill(0);
+            return Err(Error::new(
+                E_FAIL,
+                format!("gateway credential prompt failed with Win32 error {}", result.0),
+            ));
+        }
+
+        let prompted_username = String::from_utf16_lossy(
+            &username[..username
+                .iter()
+                .position(|character| *character == 0)
+                .unwrap_or(username.len())],
+        );
+        let prompted_password = String::from_utf16_lossy(
+            &password[..password
+                .iter()
+                .position(|character| *character == 0)
+                .unwrap_or(password.len())],
+        );
+        username.fill(0);
+        password.fill(0);
+
+        trace_host_call("ActiveXGatewayCredentialPrompt::CredentialsAccepted");
+        Ok(Some((prompted_username, prompted_password)))
     }
 
     fn native_mstsc_server_from_host_ui(&self) -> Option<String> {
@@ -8826,6 +8918,29 @@ impl Control {
             return Ok(());
         }
         drop(settings);
+        let transport_override = match self.rpc_transport.borrow_mut().take() {
+            Some(transport) => Some(transport),
+            None => self.rdcleanpath_transport()?,
+        };
+        let gateway_prompt_endpoint = if transport_override.is_none() {
+            let compatibility = self.compatibility.borrow();
+            matches!(
+                active_x_gateway_credentials_source(&compatibility)?,
+                Some(GatewayCredentialsSource::Prompt)
+            )
+            .then(|| compatibility.gateway_hostname.clone())
+        } else {
+            None
+        };
+        let prompted_gateway_credentials = match gateway_prompt_endpoint {
+            Some(endpoint) => {
+                let Some(credentials) = self.prompt_for_gateway_credentials(&endpoint)? else {
+                    return Ok(());
+                };
+                Some(credentials)
+            }
+            None => None,
+        };
         let hwnd = self.ensure_dispatcher()?;
         let settings = self.settings.borrow();
         let destination = Destination::new(settings.server.clone())
@@ -8866,12 +8981,12 @@ impl Control {
         let keyboard_functional_keys_count = compatibility.keyboard_functional_keys_count;
         let alternate_shell = compatibility.secured_start_program.clone();
         let work_dir = compatibility.secured_work_dir.clone();
-        let transport = match self.rpc_transport.borrow_mut().take() {
-            Some(transport) => transport,
-            None => match self.rdcleanpath_transport()? {
-                Some(transport) => transport,
-                None => active_x_transport(&settings, &compatibility)?,
-            },
+        let transport = match transport_override {
+            Some(transport) => Some(transport),
+            None => active_x_transport(&settings, &compatibility, prompted_gateway_credentials)?,
+        };
+        let Some(transport) = transport else {
+            return Ok(());
         };
         let performance_flags = compatibility.performance_flags;
         let keyboard_layout = compatibility.keyboard_layout;
@@ -8958,11 +9073,10 @@ impl Control {
             let certificate_events = Arc::clone(&self.events);
             let certificate_event_posted = Arc::clone(&self.event_posted);
             let certificate_dispatcher = hwnd.0 as isize;
-            let endpoint = destination.to_string();
             let callback: ironrdp_tls::CertificateValidationCallback =
-                Arc::new(move |certificate_der, validation_reason| {
+                Arc::new(move |certificate_der, endpoint, validation_reason| {
                     let fingerprint = certificate_fingerprint(certificate_der);
-                    if !public_mode && certificate_exception_is_trusted(&endpoint, &fingerprint) {
+                    if !public_mode && certificate_exception_is_trusted(endpoint, &fingerprint) {
                         trace_host_call("RdpWorker::TlsCertificateValidation:TrustedException");
                         return true;
                     }
@@ -8974,7 +9088,7 @@ impl Control {
                         HWND(certificate_dispatcher as *mut c_void),
                         WorkerEvent::CertificateWarning {
                             generation,
-                            endpoint: endpoint.clone(),
+                            endpoint: endpoint.to_owned(),
                             fingerprint,
                             validation_reason: validation_reason.to_owned(),
                             public_mode,
@@ -9123,7 +9237,10 @@ impl Control {
                 username,
                 password,
             } => builder
-                .with_transport(TransportKind::Gateway { endpoint })
+                .with_transport(TransportKind::Gateway {
+                    endpoint,
+                    prefer_direct: false,
+                })
                 .with_gateway_username(username)
                 .with_gateway_password(password),
             ActiveXTransport::RDCleanPath(rdcleanpath) => builder
@@ -15544,7 +15661,9 @@ mod tests {
             endpoint,
             username,
             password,
-        } = active_x_transport(&settings, &compatibility).expect("explicit gateway is supported")
+        } = active_x_transport(&settings, &compatibility, None)
+            .expect("explicit gateway is supported")
+            .expect("explicit gateway creates a transport")
         else {
             panic!("expected gateway transport");
         };
@@ -15556,8 +15675,9 @@ mod tests {
         compatibility.gateway_domain = "GATEWAY".to_owned();
         compatibility.gateway_username = "gateway-user".to_owned();
         compatibility.gateway_password = "gateway-password".to_owned();
-        let ActiveXTransport::Gateway { username, password, .. } =
-            active_x_transport(&settings, &compatibility).expect("gateway user credentials are supported")
+        let ActiveXTransport::Gateway { username, password, .. } = active_x_transport(&settings, &compatibility, None)
+            .expect("gateway user credentials are supported")
+            .expect("gateway user credentials create a transport")
         else {
             panic!("expected gateway transport");
         };
@@ -15565,7 +15685,7 @@ mod tests {
         assert_eq!(password, "gateway-password");
 
         compatibility.gateway_usage_method = GatewayUsageMethod::UseDefaultSettings.as_i64() as u32;
-        let system_policy_error = match active_x_transport(&settings, &compatibility) {
+        let system_policy_error = match active_x_transport(&settings, &compatibility, None) {
             Ok(_) => panic!("system policy must not be silently approximated"),
             Err(error) => error,
         };
@@ -15573,11 +15693,36 @@ mod tests {
 
         compatibility.gateway_usage_method = GatewayUsageMethod::UseAlways.as_i64() as u32;
         compatibility.gateway_creds_source = GatewayCredentialsSource::Prompt.as_i64() as u32;
-        let prompt_error = match active_x_transport(&settings, &compatibility) {
-            Ok(_) => panic!("gateway prompting is not implemented"),
-            Err(error) => error,
+        compatibility.gateway_domain = "GATEWAY".to_owned();
+        let ActiveXTransport::Gateway {
+            endpoint,
+            username,
+            password,
+        } = active_x_transport(
+            &settings,
+            &compatibility,
+            Some(("prompted-user".to_owned(), "prompted-password".to_owned())),
+        )
+        .expect("gateway prompting is supported")
+        .expect("accepted gateway prompt creates a transport")
+        else {
+            panic!("expected gateway transport");
         };
-        assert_eq!(prompt_error.code(), E_NOTIMPL);
+        assert_eq!(endpoint, "gateway.example.test:443");
+        assert_eq!(username, "GATEWAY\\prompted-user");
+        assert_eq!(password, "prompted-password");
+
+        let cancelled =
+            active_x_transport(&settings, &compatibility, None).expect("gateway prompt cancellation is not an error");
+        assert!(cancelled.is_none());
+
+        let empty_password = active_x_transport(
+            &settings,
+            &compatibility,
+            Some(("prompted-user".to_owned(), String::new())),
+        )
+        .expect("an empty gateway prompt password is not an error");
+        assert!(empty_password.is_none());
     }
 
     #[test]
@@ -15947,7 +16092,12 @@ mod tests {
         let mut keyboard_type = 0;
         assert_eq!(unsafe { advanced_get_keyboard_type(this, &mut keyboard_type) }, S_OK);
         assert_eq!(keyboard_type, 7);
-        assert_eq!(unsafe { advanced_put_keyboard_type(this, 8) }, E_INVALIDARG);
+        // Korean (8, MS-RDPBCGR 2.2.1.3.2) and other values the closed enum used to reject are
+        // now accepted and round-trip faithfully; only a negative COM input is invalid.
+        assert_eq!(unsafe { advanced_put_keyboard_type(this, 8) }, S_OK);
+        assert_eq!(unsafe { advanced_get_keyboard_type(this, &mut keyboard_type) }, S_OK);
+        assert_eq!(keyboard_type, 8);
+        assert_eq!(unsafe { advanced_put_keyboard_type(this, -1) }, E_INVALIDARG);
 
         assert_eq!(unsafe { advanced_put_keyboard_subtype(this, 42) }, S_OK);
         let mut keyboard_subtype = 0;
@@ -16327,6 +16477,24 @@ mod tests {
             credential_prompt_buffer("long-name", 5),
             [u16::from(b'l'), u16::from(b'o'), u16::from(b'n'), u16::from(b'g'), 0]
         );
+        let username = credential_prompt_buffer(&"u".repeat(CREDUI_MAX_USERNAME_LENGTH), CREDUI_USERNAME_BUFFER_LENGTH);
+        assert_eq!(username.len(), CREDUI_USERNAME_BUFFER_LENGTH);
+        assert!(
+            username[..CREDUI_MAX_USERNAME_LENGTH]
+                .iter()
+                .all(|character| *character == u16::from(b'u'))
+        );
+        assert_eq!(username[CREDUI_MAX_USERNAME_LENGTH], 0);
+
+        let password = credential_prompt_buffer(&"p".repeat(CREDUI_MAX_PASSWORD_LENGTH), CREDUI_PASSWORD_BUFFER_LENGTH);
+        assert_eq!(password.len(), CREDUI_PASSWORD_BUFFER_LENGTH);
+        assert!(
+            password[..CREDUI_MAX_PASSWORD_LENGTH]
+                .iter()
+                .all(|character| *character == u16::from(b'p'))
+        );
+        assert_eq!(password[CREDUI_MAX_PASSWORD_LENGTH], 0);
+
         assert!(credential_prompt_buffer("ignored", 0).is_empty());
     }
 

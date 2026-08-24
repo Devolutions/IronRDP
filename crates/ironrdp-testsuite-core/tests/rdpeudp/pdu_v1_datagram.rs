@@ -167,6 +167,72 @@ fn v1_encode_rejects_ack_vector_on_a_syn() {
     encode_vec(&datagram).expect_err("a SYN datagram cannot carry an ACK vector");
 }
 
+/// A cookie hash carried alongside fields that mean the datagram is not
+/// actually a client SYN (no `syn_data`, an ACK vector present) is rejected
+/// rather than silently dropped on decode. Structure-aware fuzzing found this:
+/// the wire flags are computed from which fields are populated, so `SYN`
+/// never gets set when `syn_data` is absent even though `syn_data_ex` is
+/// present, and the decoder's `is_client_syn` gate then reads the hash back
+/// as absent, producing a round-trip mismatch instead of a decode error.
+#[test]
+fn v1_encode_rejects_cookie_hash_without_a_client_syn() {
+    let datagram = V1Datagram {
+        header: FecHeader {
+            sn_source_ack: 100,
+            receive_window_size: 64,
+            flags: V1Flags::empty(),
+        },
+        ack_vector: Some(V1AckVectorHeader {
+            elements: vec![V1AckVectorElement {
+                state: VectorElementState::DatagramReceived,
+                length: 1,
+            }],
+        }),
+        ack_of_acks: None,
+        syn_data: None,
+        correlation_id: None,
+        syn_data_ex: Some(SynDataExPayload {
+            syn_ex_flags: SynExFlags::VERSION_INFO_VALID,
+            udp_ver: UdpVersion::V3,
+            cookie_hash: Some([0xAA; 32]),
+        }),
+    };
+
+    encode_vec(&datagram).expect_err("cookieHash is only carried on a client-to-server SYN");
+}
+
+/// The symmetric case: a version 3 client SYN missing its cookie hash is
+/// rejected at encode time rather than left to fail decode. Structure-aware
+/// fuzzing found this too: `decode_directional` unconditionally requires 32
+/// more bytes whenever it sees a client SYN advertising V3, regardless of
+/// whether the encoder actually wrote them, so encoding this combination
+/// produces bytes that can never be decoded back.
+#[test]
+fn v1_encode_rejects_a_v3_client_syn_missing_its_cookie_hash() {
+    let datagram = V1Datagram {
+        header: FecHeader {
+            sn_source_ack: 0,
+            receive_window_size: 64,
+            flags: V1Flags::SYN | V1Flags::SYNEX,
+        },
+        ack_vector: None,
+        ack_of_acks: None,
+        syn_data: Some(SynDataPayload {
+            initial_sequence_number: 1,
+            upstream_mtu: 1232,
+            downstream_mtu: 1232,
+        }),
+        correlation_id: None,
+        syn_data_ex: Some(SynDataExPayload {
+            syn_ex_flags: SynExFlags::VERSION_INFO_VALID,
+            udp_ver: UdpVersion::V3,
+            cookie_hash: None,
+        }),
+    };
+
+    encode_vec(&datagram).expect_err("a version 3 client SYN must carry a cookieHash");
+}
+
 /// Client final ACK: header + ack_vector + ack_of_acks.
 #[test]
 fn v1_ack_datagram_roundtrip() {

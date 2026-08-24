@@ -2,8 +2,8 @@ use core::any::TypeId;
 use core::mem;
 
 use ironrdp_connector::{
-    ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State, Written, encode_x224_packet,
-    general_err, reason_err,
+    ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, MonotonicInstant, Sequence, State, Written,
+    encode_x224_packet, general_err, reason_err,
 };
 use ironrdp_core::{WriteBuf, decode};
 use ironrdp_pdu as pdu;
@@ -33,6 +33,8 @@ pub struct Acceptor {
     message_channel_id: Option<u16>,
     desktop_size: DesktopSize,
     keyboard_layout: u32,
+    keyboard_type: gcc::KeyboardType,
+    ime_file_name: String,
     multitransport_flags: gcc::MultiTransportFlags,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
@@ -99,6 +101,18 @@ pub struct AcceptorResult {
     /// announce one. Servers can use it to pick a server-side keyboard layout
     /// matching the client without changing any local input state.
     pub keyboard_layout: u32,
+    /// Keyboard type announced by the client in its GCC Client Core Data
+    /// (section 2.2.1.3.2, `keyboardType`).
+    ///
+    /// `KeyboardType(0)` when the client did not announce one (0 is not among the
+    /// documented values, so it doubles as "unset" the same way `keyboard_layout`'s
+    /// `0` does).
+    pub keyboard_type: gcc::KeyboardType,
+    /// Input method editor file name announced by the client in its GCC Client Core
+    /// Data (section 2.2.1.3.2, `imeFileName`).
+    ///
+    /// Populated for East Asian IME-based input locales; empty otherwise.
+    pub ime_file_name: String,
     /// Multitransport (MS-RDPEMT) capability flags announced by the client in
     /// its GCC `MultiTransportChannelData` block (section 2.2.1.3.8).
     ///
@@ -139,6 +153,8 @@ impl Acceptor {
             message_channel_id: None,
             desktop_size,
             keyboard_layout: 0,
+            keyboard_type: gcc::KeyboardType(0),
+            ime_file_name: String::new(),
             multitransport_flags: gcc::MultiTransportFlags::empty(),
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
@@ -225,6 +241,8 @@ impl Acceptor {
             message_channel_id: consumed.message_channel_id,
             desktop_size,
             keyboard_layout: consumed.keyboard_layout,
+            keyboard_type: consumed.keyboard_type,
+            ime_file_name: consumed.ime_file_name,
             multitransport_flags: consumed.multitransport_flags,
             server_capabilities: consumed.server_capabilities,
             static_channels,
@@ -287,7 +305,8 @@ impl Acceptor {
     /// Panics if state is not [AcceptorState::SecurityUpgrade].
     pub fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.reached_security_upgrade().is_some());
-        self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
+        self.step(&[], None, &mut WriteBuf::new())
+            .expect("transition to next state");
         debug_assert!(self.reached_security_upgrade().is_none());
     }
 
@@ -300,7 +319,9 @@ impl Acceptor {
     /// Panics if state is not [AcceptorState::Credssp].
     pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
-        let res = self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
+        let res = self
+            .step(&[], None, &mut WriteBuf::new())
+            .expect("transition to next state");
         debug_assert!(!self.should_perform_credssp());
         assert_eq!(res, Written::Nothing);
     }
@@ -319,6 +340,8 @@ impl Acceptor {
                 io_channel_id: self.io_channel_id,
                 message_channel_id: self.message_channel_id,
                 keyboard_layout: self.keyboard_layout,
+                keyboard_type: self.keyboard_type,
+                ime_file_name: self.ime_file_name.clone(),
                 multitransport_flags: self.multitransport_flags,
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),
@@ -458,7 +481,12 @@ impl Sequence for Acceptor {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
+    fn step(
+        &mut self,
+        input: &[u8],
+        received_at: Option<MonotonicInstant>,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written> {
         let prev_state = mem::take(&mut self.state);
 
         let (written, next_state) = match prev_state {
@@ -579,6 +607,8 @@ impl Sequence for Acceptor {
                 let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
                 let client_wants_message_channel = gcc_blocks.message_channel.is_some();
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
+                self.keyboard_type = gcc_blocks.core.keyboard_type;
+                self.ime_file_name.clone_from(&gcc_blocks.core.ime_file_name);
                 self.multitransport_flags = gcc_blocks
                     .multi_transport_channel
                     .as_ref()
@@ -724,7 +754,7 @@ impl Sequence for Acceptor {
                 channels,
                 mut connection,
             } => {
-                let written = connection.step(input, output)?;
+                let written = connection.step(input, received_at, output)?;
                 let state = if connection.is_done() {
                     AcceptorState::RdpSecurityCommencement {
                         protocol,
@@ -964,7 +994,7 @@ impl Sequence for Acceptor {
                 channels,
                 client_capabilities,
             } => {
-                let written = finalization.step(input, output)?;
+                let written = finalization.step(input, received_at, output)?;
 
                 let state = if finalization.is_done() {
                     AcceptorState::Accepted {

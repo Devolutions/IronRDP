@@ -616,41 +616,68 @@ impl RdpClient {
                 },
 
                 #[cfg(feature = "gateway")]
-                Transport::Gateway(gw) => match Box::pin(cancelable_operation(
-                    connect_gateway(
-                        &self.config,
-                        gw,
-                        &self.input_event_sender,
-                        cliprdr_factory,
-                        rdpdr_factory,
-                        reconnect_cookie,
-                    ),
-                    &mut self.close_receiver,
-                ))
-                .await
-                {
-                    Some(Ok(result)) => result,
-                    Some(Err(error)) => {
-                        if self
-                            .try_auto_reconnect(
-                                auto_reconnect_policy,
-                                &mut reconnect_attempt,
-                                auto_reconnect_cookie.as_ref(),
-                            )
-                            .await
-                        {
-                            continue;
+                Transport::Gateway(gw) => {
+                    let connect_result = if gw.prefer_direct {
+                        connect_preferring_direct(
+                            &mut self.close_receiver,
+                            connect_direct(
+                                &self.config,
+                                &self.input_event_sender,
+                                cliprdr_factory,
+                                rdpdr_factory,
+                                reconnect_cookie,
+                            ),
+                            || {
+                                connect_gateway(
+                                    &self.config,
+                                    gw,
+                                    &self.input_event_sender,
+                                    cliprdr_factory,
+                                    rdpdr_factory,
+                                    reconnect_cookie,
+                                )
+                            },
+                        )
+                        .await
+                    } else {
+                        Box::pin(cancelable_operation(
+                            connect_gateway(
+                                &self.config,
+                                gw,
+                                &self.input_event_sender,
+                                cliprdr_factory,
+                                rdpdr_factory,
+                                reconnect_cookie,
+                            ),
+                            &mut self.close_receiver,
+                        ))
+                        .await
+                    };
+
+                    match connect_result {
+                        Some(Ok(result)) => result,
+                        Some(Err(error)) => {
+                            if self
+                                .try_auto_reconnect(
+                                    auto_reconnect_policy,
+                                    &mut reconnect_attempt,
+                                    auto_reconnect_cookie.as_ref(),
+                                )
+                                .await
+                            {
+                                continue;
+                            }
+                            if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
+                                self.emit_user_initiated_termination();
+                            }
+                            break;
                         }
-                        if !self.send_output_event(RdpOutputEvent::ConnectionFailure(error)).await {
+                        None => {
                             self.emit_user_initiated_termination();
+                            break;
                         }
-                        break;
                     }
-                    None => {
-                        self.emit_user_initiated_termination();
-                        break;
-                    }
-                },
+                }
 
                 Transport::RDCleanPath(rdcp) => match Box::pin(cancelable_operation(
                     connect_rdcleanpath_transport(
@@ -922,6 +949,33 @@ async fn cancelable_operation<T>(
     }
 }
 
+/// Detect-mode connection: try a direct RDP connection, then the gateway.
+///
+/// Returns `None` if the session is cancelled before a connection result is
+/// produced. A cancelled direct attempt does not start the gateway.
+#[doc(hidden)]
+pub async fn connect_preferring_direct<T, E, GFut>(
+    close_receiver: &mut watch::Receiver<bool>,
+    connect_direct: impl Future<Output = Result<T, E>>,
+    connect_gateway: impl FnOnce() -> GFut,
+) -> Option<Result<T, E>>
+where
+    E: core::fmt::Display,
+    GFut: Future<Output = Result<T, E>>,
+{
+    match Box::pin(cancelable_operation(connect_direct, close_receiver)).await {
+        Some(Ok(result)) => Some(Ok(result)),
+        Some(Err(direct_error)) => {
+            info!(
+                error = %direct_error,
+                "Direct connection failed; falling back to RD Gateway"
+            );
+            Box::pin(cancelable_operation(connect_gateway(), close_receiver)).await
+        }
+        None => None,
+    }
+}
+
 async fn send_cancellable_output_event(
     output_event_sender: &mpsc::Sender<RdpOutputEvent>,
     event: RdpOutputEvent,
@@ -958,6 +1012,51 @@ type RdpdrFactoryRef<'a> = Option<&'a (dyn RdpdrBackendFactory + Send)>;
 #[cfg(not(feature = "rdpdr"))]
 type RdpdrFactoryRef<'a> = core::marker::PhantomData<&'a ()>;
 
+#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
+const HTTP_TUNNEL_REDIR_DISABLE_ALL: u32 = 0x4000_0000;
+#[cfg(all(feature = "gateway", feature = "rdpdr"))]
+const HTTP_TUNNEL_REDIR_DISABLE_DRIVE: u32 = 0x0000_0001;
+#[cfg(all(feature = "gateway", feature = "clipboard"))]
+const HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD: u32 = 0x0000_0008;
+
+#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
+#[derive(Clone, Copy)]
+struct GatewayRedirectionPolicy {
+    flags: Option<u32>,
+}
+
+#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr")))]
+impl GatewayRedirectionPolicy {
+    fn from_flags(flags: Option<u32>) -> Self {
+        Self { flags }
+    }
+
+    #[cfg(feature = "clipboard")]
+    fn disables_clipboard(self) -> bool {
+        self.disables(HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD)
+    }
+
+    #[cfg(feature = "rdpdr")]
+    fn disables_drive(self) -> bool {
+        self.disables(HTTP_TUNNEL_REDIR_DISABLE_DRIVE)
+    }
+
+    #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
+    fn flags(self) -> Option<u32> {
+        self.flags
+    }
+
+    #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
+    fn disables_all(self) -> bool {
+        self.flags
+            .is_some_and(|flags| flags & HTTP_TUNNEL_REDIR_DISABLE_ALL != 0)
+    }
+
+    fn disables(self, disabled_flag: u32) -> bool {
+        self.flags.is_some_and(|flags| flags & disabled_flag != 0) || self.disables_all()
+    }
+}
+
 #[cfg(feature = "rdpdr")]
 #[derive(Debug)]
 struct RdpdrBackendBuildError(Box<dyn core::error::Error + Send + Sync>);
@@ -980,6 +1079,7 @@ impl core::error::Error for RdpdrBackendBuildError {
 fn build_rdpdr_channel(
     factory: RdpdrFactoryRef<'_>,
     config: &crate::config::RdpdrConfig,
+    allow_drives: bool,
 ) -> ConnectorResult<Option<ironrdp_rdpdr::Rdpdr>> {
     if !config.enabled {
         return Ok(None);
@@ -992,6 +1092,8 @@ fn build_rdpdr_channel(
         .build_rdpdr_backend()
         .map_err(|error| ironrdp_connector::custom_err!("build RDPDR backend", RdpdrBackendBuildError(error)))?
         .into_parts();
+    // Gateway drive restrictions do not apply to smartcard redirection, which shares RDPDR.
+    let initial_drives = if allow_drives { initial_drives } else { Vec::new() };
 
     #[cfg(feature = "smartcard")]
     let smartcard = config.smartcard;
@@ -1056,6 +1158,7 @@ fn build_connector(
     input_sender: &RdpInputSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
+    rdpdr_drives_allowed: bool,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<ironrdp_connector::ClientConnector> {
     // `input_sender` is only consumed by the optional DVC wirings below, and `cliprdr_factory`
@@ -1070,7 +1173,7 @@ fn build_connector(
     #[cfg(not(feature = "clipboard"))]
     let _ = cliprdr_factory;
     #[cfg(not(feature = "rdpdr"))]
-    let _ = rdpdr_factory;
+    let _ = (rdpdr_factory, rdpdr_drives_allowed);
 
     let mut drdynvc = ironrdp_dvc::DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
@@ -1299,7 +1402,14 @@ fn build_connector(
     }
 
     #[cfg(feature = "rdpdr")]
-    let rdpdr_channel = build_rdpdr_channel(rdpdr_factory, &config.channels.rdpdr)?;
+    let rdpdr_channel =
+        build_rdpdr_channel(rdpdr_factory, &config.channels.rdpdr, rdpdr_drives_allowed)?.or_else(|| {
+            config
+                .channels
+                .rdpdr
+                .enabled
+                .then(|| ironrdp_rdpdr::Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), "IronRDP".to_owned()))
+        });
 
     // Windows servers only issue RDPDR traffic when RDPSND is also advertised.
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
@@ -1382,6 +1492,7 @@ async fn connect_direct(
         input_sender,
         cliprdr_factory,
         rdpdr_factory,
+        true,
         auto_reconnect_cookie,
     )?;
     #[cfg(feature = "vmconnect")]
@@ -1429,6 +1540,7 @@ async fn connect_named_pipe(
         input_sender,
         cliprdr_factory,
         rdpdr_factory,
+        true,
         auto_reconnect_cookie,
     )?;
 
@@ -1447,26 +1559,68 @@ async fn connect_gateway(
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     use ironrdp_mstsgu::GwConnectTarget;
 
-    // VMConnect needs destination port 2179; GwConnectTarget does not carry it yet (TODO below).
-    #[cfg(feature = "vmconnect")]
-    if config.vm_id().is_some() {
-        return Err(ironrdp_connector::general_err!(
-            "vmconnect cannot be used over an RDS gateway until the target port is propagated"
-        ));
-    }
-
-    // Build the GwConnectTarget.  `server` is the RDP target derived from `config.destination`.
-    // TODO: preserve the destination port; ironrdp-mstsgu may currently hard-code 3389.
+    // Target resource host/port come from Config::destination and are forwarded in the
+    // MS-TSGU channel-create packet (enables non-3389 RDP and VMConnect port 2179).
     let gw_target = GwConnectTarget {
         gw_endpoint: gw.endpoint.clone(),
         gw_user: gw.username.clone(),
         gw_pass: gw.password.clone(),
+        smart_card: None,
         server: config.destination.name().to_owned(),
     };
 
-    let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect(&gw_target, &config.connector.client_name)
-        .await
-        .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
+    let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect_with_port_and_certificate_validation(
+        &gw_target,
+        &config.connector.client_name,
+        config.destination.port(),
+        config.certificate_validation(),
+        config.certificate_validation_callback().cloned(),
+    )
+    .await
+    .map_err(|e| ironrdp_connector::custom_err!("GW connect", e))?;
+
+    let tunnel_policy = gw_stream.tunnel_policy().clone();
+    #[cfg(any(feature = "clipboard", feature = "rdpdr"))]
+    let gateway_redirection_policy = GatewayRedirectionPolicy::from_flags(tunnel_policy.redirection_flags);
+    #[cfg(feature = "clipboard")]
+    let cliprdr_factory = {
+        if gateway_redirection_policy.disables_clipboard() && cliprdr_factory.is_some() {
+            debug!(
+                redirection_flags = ?gateway_redirection_policy.flags(),
+                "Suppressing CLIPRDR due to gateway device-redirection policy"
+            );
+        }
+        (!gateway_redirection_policy.disables_clipboard())
+            .then_some(cliprdr_factory)
+            .flatten()
+    };
+    #[cfg(feature = "rdpdr")]
+    let rdpdr_drives_allowed = !gateway_redirection_policy.disables_drive();
+    #[cfg(feature = "rdpdr")]
+    let rdpdr_factory = {
+        if gateway_redirection_policy.disables_all() && rdpdr_factory.is_some() {
+            debug!(
+                redirection_flags = ?gateway_redirection_policy.flags(),
+                "Suppressing RDPDR due to gateway device-redirection policy"
+            );
+        }
+        if gateway_redirection_policy.disables_drive()
+            && !gateway_redirection_policy.disables_all()
+            && rdpdr_factory.is_some()
+        {
+            debug!(
+                redirection_flags = ?gateway_redirection_policy.flags(),
+                "Suppressing RDPDR drive redirection due to gateway device-redirection policy"
+            );
+        }
+        (!gateway_redirection_policy.disables_all())
+            .then_some(rdpdr_factory)
+            .flatten()
+    };
+    #[cfg(not(feature = "rdpdr"))]
+    let rdpdr_drives_allowed = true;
+    #[cfg(not(any(feature = "clipboard", feature = "rdpdr")))]
+    let _ = tunnel_policy;
 
     let framed = ironrdp_tokio::TokioFramed::new(gw_stream);
 
@@ -1476,8 +1630,16 @@ async fn connect_gateway(
         input_sender,
         cliprdr_factory,
         rdpdr_factory,
+        rdpdr_drives_allowed,
         auto_reconnect_cookie,
     )?;
+    #[cfg(feature = "vmconnect")]
+    if config.vm_id().is_some() {
+        // The Hyper-V TCP connection is created by the gateway during channel-create, so
+        // the MS-RDPEPS PCB deadline starts once that channel is established.
+        let pcb_deadline = tokio::time::Instant::now() + ironrdp_vmconnect::PCB_TRANSMIT_DEADLINE;
+        return vmconnect_handshake_and_finalize(framed, connector, config, pcb_deadline).await;
+    }
     security_upgrade_and_finalize(framed, connector, config).await
 }
 
@@ -1518,6 +1680,7 @@ async fn connect_rdcleanpath_transport(
         input_sender,
         cliprdr_factory,
         rdpdr_factory,
+        true,
         auto_reconnect_cookie,
     )?;
 
@@ -1603,9 +1766,10 @@ where
     let (initial_stream, leftover_bytes) = framed.into_inner();
 
     let tls_upgrade = if let Some(callback) = config.certificate_validation_callback() {
-        ironrdp_tls::upgrade_with_certificate_validation_callback(
+        ironrdp_tls::upgrade_with_certificate_validation_callback_for_endpoint(
             initial_stream,
             config.destination.name(),
+            &config.destination.to_string(),
             Arc::clone(callback),
         )
         .await
@@ -1896,7 +2060,7 @@ where
                 debug_assert!(connector.next_pdu_hint().is_some());
 
                 buf.clear();
-                let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
+                let written = connector.step(x224_connection_response.as_bytes(), None, &mut buf)?;
                 debug_assert!(written.is_nothing());
 
                 let should_upgrade = ironrdp_tokio::skip_connect_begin(connector);
@@ -3113,6 +3277,33 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "gateway", feature = "clipboard", feature = "rdpdr"))]
+    #[test]
+    fn gateway_redirection_policy_interprets_flags() {
+        let no_policy = GatewayRedirectionPolicy::from_flags(None);
+        assert!(!no_policy.disables_clipboard());
+        assert!(!no_policy.disables_drive());
+
+        let enable_all = GatewayRedirectionPolicy::from_flags(Some(0x8000_0000));
+        assert!(!enable_all.disables_clipboard());
+        assert!(!enable_all.disables_drive());
+
+        let disable_clipboard = GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD));
+        assert!(disable_clipboard.disables_clipboard());
+        assert!(!disable_clipboard.disables_drive());
+
+        let disable_drive = GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_DRIVE));
+        assert!(!disable_drive.disables_clipboard());
+        assert!(disable_drive.disables_drive());
+
+        let disable_all = GatewayRedirectionPolicy::from_flags(Some(
+            HTTP_TUNNEL_REDIR_DISABLE_ALL | HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD,
+        ));
+        assert!(disable_all.disables_clipboard());
+        assert!(disable_all.disables_drive());
+        assert!(disable_all.disables_all());
+    }
+
     #[test]
     fn resize_queue_coalesces_later_requests_until_reactivation() {
         let first = resize_request(1024, 768);
@@ -3236,22 +3427,6 @@ mod tests {
         assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::Resize { .. })));
     }
 
-    #[test]
-    fn input_sender_reservation_prevents_state_changes_without_queue_capacity() {
-        let (sender, mut receiver) = RdpInputSender::channel(1);
-        let permit = sender.try_reserve().expect("the empty queue has capacity");
-        assert!(sender.try_reserve().is_err());
-
-        permit.send(RdpInputEvent::Resize {
-            width: 1024,
-            height: 768,
-            scale_factor: 100,
-            physical_size: None,
-        });
-
-        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::Resize { .. })));
-    }
-
     #[cfg(feature = "rdpdr")]
     #[test]
     fn disabled_rdpdr_does_not_build_a_backend() {
@@ -3263,7 +3438,7 @@ mod tests {
         };
 
         assert!(
-            build_rdpdr_channel(Some(&factory), &config)
+            build_rdpdr_channel(Some(&factory), &config, true)
                 .expect("disabled RDPDR should not fail")
                 .is_none()
         );
@@ -3283,8 +3458,26 @@ mod tests {
         };
 
         assert!(
-            build_rdpdr_channel(Some(&factory), &config)
+            build_rdpdr_channel(Some(&factory), &config, true)
                 .expect("empty RDPDR product should not fail")
+                .is_none()
+        );
+        assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn drive_restricted_rdpdr_without_smartcard_omits_the_channel() {
+        let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "fixtures".to_owned())]);
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+        };
+
+        assert!(
+            build_rdpdr_channel(Some(&factory), &config, false)
+                .expect("drive-restricted RDPDR should not fail")
                 .is_none()
         );
         assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
@@ -3292,15 +3485,15 @@ mod tests {
 
     #[cfg(all(feature = "rdpdr", feature = "smartcard"))]
     #[test]
-    fn smartcard_only_rdpdr_builds_without_drives() {
-        let factory = CountingRdpdrFactory::new(Vec::new());
+    fn drive_restricted_rdpdr_preserves_smartcard_redirection() {
+        let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "fixtures".to_owned())]);
         let config = crate::config::RdpdrConfig {
             enabled: true,
             smartcard: true,
         };
 
-        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config)
-            .expect("smartcard-only RDPDR should not fail")
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, false)
+            .expect("drive-restricted RDPDR should not fail")
             .expect("smartcard-only product should build a channel");
 
         assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
@@ -3392,10 +3585,10 @@ mod tests {
             smartcard: false,
         };
 
-        let first = build_rdpdr_channel(Some(&factory), &config)
+        let first = build_rdpdr_channel(Some(&factory), &config, true)
             .expect("first connection attempt should build")
             .expect("first product contains a filesystem device");
-        let second = build_rdpdr_channel(Some(&factory), &config)
+        let second = build_rdpdr_channel(Some(&factory), &config, true)
             .expect("second connection attempt should build")
             .expect("second product contains a filesystem device");
 
@@ -3425,7 +3618,7 @@ mod tests {
             #[cfg(feature = "smartcard")]
             smartcard: false,
         };
-        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config)
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, true)
             .expect("RDPDR channel should build")
             .expect("product contains a filesystem device");
         let client_id = 0x1234_5678;
@@ -3496,6 +3689,7 @@ mod tests {
             &input_sender,
             no_cliprdr_factory(),
             Some(&factory),
+            true,
             None,
         )
         .expect("RDPDR connector should build");

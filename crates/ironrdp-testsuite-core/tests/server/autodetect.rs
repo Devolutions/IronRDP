@@ -96,6 +96,53 @@ fn snapshot_reflects_measurements() {
     assert_eq!(snap.avg_ms, 20);
 }
 
+/// A caller whose clock ran backwards between the request and the response must
+/// produce a zero sample. Wrapping subtraction here would yield a value near
+/// `u32::MAX` and poison every statistic drawn from the window.
+#[test]
+fn backwards_clock_yields_a_zero_sample() {
+    let mut mgr = AutoDetectManager::new();
+    let req = mgr.send_rtt_request(1000);
+
+    let response = AutoDetectResponse::RttResponse {
+        sequence_number: req.sequence_number(),
+    };
+    assert_eq!(mgr.handle_response(&response, 400), Some(0));
+
+    // The zero has to reach the window, not just the return value, since the
+    // snapshot is what the peer eventually sees.
+    let snap = mgr.snapshot().expect("one measurement was recorded");
+    assert_eq!(snap.min_ms, 0);
+    assert_eq!(snap.max_ms, 0);
+    assert_eq!(snap.avg_ms, 0);
+}
+
+/// The same backwards clock reaches expiry, where the saturation has the opposite
+/// shape: an age of zero is below any maximum, so the probe stays pending.
+/// Wrapping subtraction would make it look older than any limit and drop a probe
+/// whose response is still in flight.
+#[test]
+fn backwards_clock_keeps_the_probe_pending() {
+    let mut mgr = AutoDetectManager::new();
+    let _ = mgr.send_rtt_request(1000);
+
+    mgr.expire_stale_probes(400, 100);
+    assert_eq!(mgr.pending_count(), 1, "a probe from the future is not stale");
+}
+
+/// A gap wider than `u32::MAX` milliseconds (about 49.7 days) clamps rather than
+/// truncating to the low 32 bits, which would report a small RTT for an enormous one.
+#[test]
+fn an_enormous_gap_clamps_to_u32_max() {
+    let mut mgr = AutoDetectManager::new();
+    let req = mgr.send_rtt_request(0);
+
+    let response = AutoDetectResponse::RttResponse {
+        sequence_number: req.sequence_number(),
+    };
+    assert_eq!(mgr.handle_response(&response, u64::from(u32::MAX) + 1), Some(u32::MAX));
+}
+
 #[test]
 fn netchar_result_none_without_measurements() {
     let mut mgr = AutoDetectManager::new();
@@ -336,6 +383,54 @@ fn with_autodetect_rtt_handle_round_trips_the_same_arc() {
 }
 
 #[test]
+fn autodetect_baseline_rtt_handle_defaults_to_sentinel() {
+    use core::net::{Ipv4Addr, SocketAddr};
+    use core::sync::atomic::Ordering;
+
+    use ironrdp_server::RdpServer;
+
+    let server = RdpServer::builder()
+        .with_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .build();
+
+    assert_eq!(
+        server.autodetect_baseline_rtt_handle().load(Ordering::Relaxed),
+        u32::MAX
+    );
+}
+
+#[test]
+fn with_autodetect_baseline_rtt_handle_round_trips_the_same_arc() {
+    use core::net::{Ipv4Addr, SocketAddr};
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    use ironrdp_server::RdpServer;
+
+    let handle = Arc::new(AtomicU32::new(42));
+    let server = RdpServer::builder()
+        .with_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .with_autodetect_baseline_rtt_handle(Arc::clone(&handle))
+        .build();
+
+    assert!(Arc::ptr_eq(&handle, &server.autodetect_baseline_rtt_handle()));
+    // The server resets an injected handle to the sentinel at construction.
+    assert_eq!(
+        server.autodetect_baseline_rtt_handle().load(Ordering::Relaxed),
+        u32::MAX
+    );
+    // The Arc is shared: mutating the original is visible through the server's handle.
+    handle.store(42, Ordering::Relaxed);
+    assert_eq!(server.autodetect_baseline_rtt_handle().load(Ordering::Relaxed), 42);
+}
+
+#[test]
 fn stale_probe_expiry() {
     let mut mgr = AutoDetectManager::new();
     let _ = mgr.send_rtt_request(0);
@@ -491,6 +586,43 @@ fn base_rtt_is_the_session_low_not_the_window_low() {
         }
         other => panic!("expected NetworkCharacteristicsResult, got {other:?}"),
     }
+}
+
+/// The same session-lifetime-low property `base_rtt_is_the_session_low_not_the_window_low`
+/// pins on the wire result, but on the public getter directly rather than through
+/// `build_netchar_result`.
+#[test]
+fn baseline_rtt_ms_reflects_the_session_low_not_the_window_low() {
+    let mut mgr = AutoDetectManager::new();
+    assert!(mgr.baseline_rtt_ms().is_none(), "nothing measured yet");
+
+    let sample = |mgr: &mut AutoDetectManager, rtt: u64| {
+        let req = mgr.send_rtt_request(0);
+        let _ = mgr.handle_response(
+            &AutoDetectResponse::RttResponse {
+                sequence_number: req.sequence_number(),
+            },
+            rtt,
+        );
+    };
+
+    sample(&mut mgr, 5);
+    assert_eq!(mgr.baseline_rtt_ms(), Some(5));
+
+    for _ in 0..RTT_WINDOW {
+        sample(&mut mgr, 100);
+    }
+
+    assert_eq!(
+        mgr.snapshot().expect("samples recorded").min_ms,
+        100,
+        "the 5 ms sample has aged out of the window"
+    );
+    assert_eq!(
+        mgr.baseline_rtt_ms(),
+        Some(5),
+        "the session-lifetime low does not age out with it"
+    );
 }
 
 /// Pins which measured quantity lands in which wire field.

@@ -94,14 +94,14 @@ fn decode_single_band<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<Band<'a>> {
     let height = y_end
         .checked_sub(y_start)
         .and_then(|h| h.checked_add(1))
-        .ok_or_else(|| invalid_field_err!("yEnd", "yEnd < yStart"))?;
+        .ok_or_else(|| invalid_field_err!("yEnd", "yEnd < yStart", in: src))?;
 
     if height > MAX_BAND_HEIGHT {
-        return Err(invalid_field_err!("bandHeight", "band height exceeds 52"));
+        return Err(invalid_field_err!("bandHeight", "band height exceeds 52", in: src));
     }
 
     if x_end < x_start {
-        return Err(invalid_field_err!("xEnd", "xEnd < xStart"));
+        return Err(invalid_field_err!("xEnd", "xEnd < xStart", in: src));
     }
 
     // `x_end - x_start` is at most u16::MAX (when x_end = u16::MAX and
@@ -146,20 +146,21 @@ fn decode_vbar<'a>(src: &mut ReadCursor<'a>, band_height: u16) -> DecodeResult<V
 
     // Both top bits clear: short V-bar cache miss
     // Per MS-RDPEGFX 2.2.4.1.1.2.1.1.3 (SHORT_VBAR_CACHE_MISS):
-    //   bits 13:6 = shortVBarYOn (8 bits): row where Short V-Bar begins
-    //   bits 5:0  = shortVBarYOff (6 bits): row where Short V-Bar ends
+    //   bits 7:0  = shortVBarYOn (8 bits): row where Short V-Bar begins
+    //   bits 13:8 = shortVBarYOff (6 bits): row where Short V-Bar ends
     // Pixel count = shortVBarYOff - shortVBarYOn
-    let y_on = u8::try_from(first_word >> 6).expect("top 2 bits are clear, so shifted value fits in u8");
-    let y_off = u8::try_from(first_word & 0x3F).expect("masked to 6 bits, always fits in u8");
+    let y_on = u8::try_from(first_word & 0xFF).expect("masked to 8 bits, always fits in u8");
+    let y_off = u8::try_from(first_word >> 8).expect("top 2 bits are clear, so shifted value fits in u8");
 
     if y_off < y_on {
-        return Err(invalid_field_err!("shortVBarCacheMiss", "shortVBarYOff < shortVBarYOn"));
+        return Err(invalid_field_err!("shortVBarCacheMiss", "shortVBarYOff < shortVBarYOn", in: src));
     }
 
     if u16::from(y_off) > band_height {
         return Err(invalid_field_err!(
             "shortVBarCacheMiss",
-            "shortVBarYOff exceeds band height"
+            "shortVBarYOff exceeds band height",
+            in: src
         ));
     }
 
@@ -210,10 +211,10 @@ mod tests {
 
     #[test]
     fn decode_vbar_short_cache_miss() {
-        // Both top bits clear: y_on=2, y_off=5, pixel_count = y_off - y_on = 3
+        // Both top bits clear: y_on=2 in bits 7:0 and y_off=5 in bits 13:8.
         let y_on: u16 = 2;
         let y_off: u16 = 5;
-        let first_word = (y_on << 6) | y_off;
+        let first_word = (y_off << 8) | y_on;
         let mut data = Vec::new();
         data.extend_from_slice(&first_word.to_le_bytes());
         // 3 pixels * 3 bytes = 9 bytes BGR data

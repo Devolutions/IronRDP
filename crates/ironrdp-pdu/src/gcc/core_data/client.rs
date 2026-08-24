@@ -115,7 +115,7 @@ impl Encode for ClientCoreData {
         dst.write_u32(self.client_build);
         dst.write_slice(client_name_dst.as_ref());
         dst.write_u16(0); // client name UTF-16 null terminator
-        dst.write_u32(self.keyboard_type.as_u32());
+        dst.write_u32(self.keyboard_type.0);
         dst.write_u32(self.keyboard_subtype);
         dst.write_u32(self.keyboard_functional_keys_count);
         dst.write_slice(ime_file_name_dst.as_ref());
@@ -143,11 +143,11 @@ impl<'de> Decode<'de> for ClientCoreData {
         let color_depth = src
             .read_u16()
             .pipe(ColorDepth::from_u16)
-            .ok_or_else(|| invalid_field_err!("colorDepth", "invalid color depth"))?;
+            .ok_or_else(|| invalid_field_err!("colorDepth", "invalid color depth", in: src))?;
         let sec_access_sequence = src
             .read_u16()
             .pipe(SecureAccessSequence::from_u16)
-            .ok_or_else(|| invalid_field_err!("secAccessSequence", "invalid secure access sequence"))?;
+            .ok_or_else(|| invalid_field_err!("secAccessSequence", "invalid secure access sequence", in: src))?;
         let keyboard_layout = src.read_u32();
         let client_build = src.read_u32();
 
@@ -156,10 +156,7 @@ impl<'de> Decode<'de> for ClientCoreData {
             .trim_end_matches('\u{0}')
             .into();
 
-        let keyboard_type = src
-            .read_u32()
-            .pipe(KeyboardType::from_u32)
-            .ok_or_else(|| invalid_field_err!("keyboardType", "invalid keyboard type"))?;
+        let keyboard_type = src.read_u32().pipe(KeyboardType);
         let keyboard_subtype = src.read_u32();
         let keyboard_functional_keys_count = src.read_u32();
 
@@ -230,51 +227,45 @@ impl Encode for ClientCoreOptionalData {
 
         if let Some(value) = self.client_product_id {
             if self.post_beta2_color_depth.is_none() {
-                return Err(invalid_field_err!(
-                    "postBeta2ColorDepth",
-                    "postBeta2ColorDepth must be present"
-                ));
+                return Err(invalid_field_err!( "postBeta2ColorDepth",
+                    "postBeta2ColorDepth must be present", in: dst));
             }
             dst.write_u16(value);
         }
 
         if let Some(value) = self.serial_number {
             if self.client_product_id.is_none() {
-                return Err(invalid_field_err!("clientProductId", "clientProductId must be present"));
+                return Err(invalid_field_err!("clientProductId", "clientProductId must be present", in: dst));
             }
             dst.write_u32(value);
         }
 
         if let Some(value) = self.high_color_depth {
             if self.serial_number.is_none() {
-                return Err(invalid_field_err!("serialNumber", "serialNumber must be present"));
+                return Err(invalid_field_err!("serialNumber", "serialNumber must be present", in: dst));
             }
             dst.write_u16(value.as_u16());
         }
 
         if let Some(value) = self.supported_color_depths {
             if self.high_color_depth.is_none() {
-                return Err(invalid_field_err!("highColorDepth", "highColorDepth must be present"));
+                return Err(invalid_field_err!("highColorDepth", "highColorDepth must be present", in: dst));
             }
             dst.write_u16(value.bits());
         }
 
         if let Some(value) = self.early_capability_flags {
             if self.supported_color_depths.is_none() {
-                return Err(invalid_field_err!(
-                    "supportedColorDepths",
-                    "supportedColorDepths must be present"
-                ));
+                return Err(invalid_field_err!( "supportedColorDepths",
+                    "supportedColorDepths must be present", in: dst));
             }
             dst.write_u16(value.bits());
         }
 
         if let Some(ref value) = self.dig_product_id {
             if self.early_capability_flags.is_none() {
-                return Err(invalid_field_err!(
-                    "earlyCapabilityFlags",
-                    "earlyCapabilityFlags must be present"
-                ));
+                return Err(invalid_field_err!( "earlyCapabilityFlags",
+                    "earlyCapabilityFlags must be present", in: dst));
             }
             let mut dig_product_id_buffer = utils::to_utf16_bytes(value);
             dig_product_id_buffer.resize(DIG_PRODUCT_ID_SIZE - 2, 0);
@@ -285,7 +276,7 @@ impl Encode for ClientCoreOptionalData {
 
         if let Some(value) = self.connection_type {
             if self.dig_product_id.is_none() {
-                return Err(invalid_field_err!("digProductId", "digProductId must be present"));
+                return Err(invalid_field_err!("digProductId", "digProductId must be present", in: dst));
             }
             dst.write_u8(value.as_u8());
             write_padding!(dst, 1);
@@ -293,57 +284,47 @@ impl Encode for ClientCoreOptionalData {
 
         if let Some(value) = self.server_selected_protocol {
             if self.connection_type.is_none() {
-                return Err(invalid_field_err!("connectionType", "connectionType must be present"));
+                return Err(invalid_field_err!("connectionType", "connectionType must be present", in: dst));
             }
             dst.write_u32(value.bits())
         }
 
         if let Some(value) = self.desktop_physical_width {
             if self.server_selected_protocol.is_none() {
-                return Err(invalid_field_err!(
-                    "serverSelectedProtocol",
-                    "serverSelectedProtocol must be present"
-                ));
+                return Err(invalid_field_err!( "serverSelectedProtocol",
+                    "serverSelectedProtocol must be present", in: dst));
             }
             dst.write_u32(value);
         }
 
         if let Some(value) = self.desktop_physical_height {
             if self.desktop_physical_width.is_none() {
-                return Err(invalid_field_err!(
-                    "desktopPhysicalWidth",
-                    "desktopPhysicalWidth must be present"
-                ));
+                return Err(invalid_field_err!( "desktopPhysicalWidth",
+                    "desktopPhysicalWidth must be present", in: dst));
             }
             dst.write_u32(value);
         }
 
         if let Some(value) = self.desktop_orientation {
             if self.desktop_physical_height.is_none() {
-                return Err(invalid_field_err!(
-                    "desktopPhysicalHeight",
-                    "desktopPhysicalHeight must be present"
-                ));
+                return Err(invalid_field_err!( "desktopPhysicalHeight",
+                    "desktopPhysicalHeight must be present", in: dst));
             }
             dst.write_u16(value);
         }
 
         if let Some(value) = self.desktop_scale_factor {
             if self.desktop_orientation.is_none() {
-                return Err(invalid_field_err!(
-                    "desktopOrientation",
-                    "desktopOrientation must be present"
-                ));
+                return Err(invalid_field_err!( "desktopOrientation",
+                    "desktopOrientation must be present", in: dst));
             }
             dst.write_u32(value);
         }
 
         if let Some(value) = self.device_scale_factor {
             if self.desktop_scale_factor.is_none() {
-                return Err(invalid_field_err!(
-                    "desktopScaleFactor",
-                    "desktopScaleFactor must be present"
-                ));
+                return Err(invalid_field_err!( "desktopScaleFactor",
+                    "desktopScaleFactor must be present", in: dst));
             }
             dst.write_u32(value);
         }
@@ -420,7 +401,7 @@ impl<'de> Decode<'de> for ClientCoreOptionalData {
 
         optional_data.post_beta2_color_depth = Some(
             ColorDepth::from_u16(try_or_return!(src.try_read_u16(), optional_data))
-                .ok_or_else(|| invalid_field_err!("postBeta2ColorDepth", "invalid color depth"))?,
+                .ok_or_else(|| invalid_field_err!("postBeta2ColorDepth", "invalid color depth", in: src))?,
         );
 
         optional_data.client_product_id = Some(try_or_return!(src.try_read_u16(), optional_data));
@@ -428,17 +409,17 @@ impl<'de> Decode<'de> for ClientCoreOptionalData {
 
         optional_data.high_color_depth = Some(
             HighColorDepth::from_u16(try_or_return!(src.try_read_u16(), optional_data))
-                .ok_or_else(|| invalid_field_err!("highColorDepth", "invalid color depth"))?,
+                .ok_or_else(|| invalid_field_err!("highColorDepth", "invalid color depth", in: src))?,
         );
 
         optional_data.supported_color_depths = Some(
             SupportedColorDepths::from_bits(try_or_return!(src.try_read_u16(), optional_data))
-                .ok_or_else(|| invalid_field_err!("supportedColorDepths", "invalid supported color depths"))?,
+                .ok_or_else(|| invalid_field_err!("supportedColorDepths", "invalid supported color depths", in: src))?,
         );
 
         optional_data.early_capability_flags = Some(
             ClientEarlyCapabilityFlags::from_bits(try_or_return!(src.try_read_u16(), optional_data))
-                .ok_or_else(|| invalid_field_err!("earlyCapabilityFlags", "invalid early capability flags"))?,
+                .ok_or_else(|| invalid_field_err!("earlyCapabilityFlags", "invalid early capability flags", in: src))?,
         );
 
         if src.len() < DIG_PRODUCT_ID_SIZE {
@@ -450,14 +431,14 @@ impl<'de> Decode<'de> for ClientCoreOptionalData {
 
         optional_data.connection_type = Some(
             ConnectionType::from_u8(try_or_return!(src.try_read_u8(), optional_data))
-                .ok_or_else(|| invalid_field_err!("connectionType", "invalid connection type"))?,
+                .ok_or_else(|| invalid_field_err!("connectionType", "invalid connection type", in: src))?,
         );
 
         try_or_return!(src.try_read_u8(), optional_data);
 
         optional_data.server_selected_protocol = Some(
             SecurityProtocol::from_bits(try_or_return!(src.try_read_u32(), optional_data))
-                .ok_or_else(|| invalid_field_err!("serverSelectedProtocol", "invalid security protocol"))?,
+                .ok_or_else(|| invalid_field_err!("serverSelectedProtocol", "invalid security protocol", in: src))?,
         );
 
         optional_data.desktop_physical_width = Some(try_or_return!(src.try_read_u32(), optional_data));
@@ -567,26 +548,39 @@ impl SecureAccessSequence {
     }
 }
 
-#[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
+/// 2.2.1.3.2 Client Core Data (TS_UD_CS_CORE) `keyboardType` field.
+///
+/// MS-RDPBCGR documents this as a value table that has grown across revisions (the copy in this
+/// section already lists `KOREAN`, a value absent from the older copy in 2.2.7.1.6); Windows'
+/// `GetKeyboardType` additionally documents `0x51` for generic HID keyboards. Represented
+/// permissively rather than as a closed enum so an unrecognized value round-trips instead of
+/// failing the whole Client Core Data parse, matching `RdpVersion` immediately above this field
+/// in the same structure.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-pub enum KeyboardType {
-    IbmPcXt = 1,
-    OlivettiIco = 2,
-    IbmPcAt = 3,
-    IbmEnhanced = 4,
-    Nokia1050 = 5,
-    Nokia9140 = 6,
-    Japanese = 7,
-}
+pub struct KeyboardType(pub u32);
 
 impl KeyboardType {
-    #[expect(
-        clippy::as_conversions,
-        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
-    )]
-    pub fn as_u32(self) -> u32 {
-        self as u32
+    pub const IBM_PC_XT: Self = Self(1);
+    pub const OLIVETTI_ICO: Self = Self(2);
+    pub const IBM_PC_AT: Self = Self(3);
+    pub const IBM_ENHANCED: Self = Self(4);
+    pub const NOKIA_1050: Self = Self(5);
+    pub const NOKIA_9140: Self = Self(6);
+    pub const JAPANESE: Self = Self(7);
+    pub const KOREAN: Self = Self(8);
+}
+
+impl From<u32> for KeyboardType {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<KeyboardType> for u32 {
+    fn from(keyboard_type: KeyboardType) -> Self {
+        keyboard_type.0
     }
 }
 

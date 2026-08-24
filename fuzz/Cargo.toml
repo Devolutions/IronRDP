@@ -111,3 +111,57 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "rdpeudp_pdu_decode"
+path = "fuzz_targets/rdpeudp_pdu_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "rdpemt_pdu_decode"
+path = "fuzz_targets/rdpemt_pdu_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "rdpeudp_pdu_round_trip"
+path = "fuzz_targets/rdpeudp_pdu_round_trip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "rdpemt_pdu_round_trip"
+path = "fuzz_targets/rdpemt_pdu_round_trip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "rdpeudp_prefix_transform"
+path = "fuzz_targets/rdpeudp_prefix_transform.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "rdpeudp_connection"
+path = "fuzz_targets/rdpeudp_connection.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "rdpemt_tunnel"
+path = "fuzz_targets/rdpemt_tunnel.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "rdpeudp_ack_vector"
+path = "fuzz_targets/rdpeudp_ack_vector.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "rdpeusb_decode"
+path = "fuzz_targets/rdpeusb_decode.rs"
+test = false
+doc = false
+bench = false

@@ -244,6 +244,6 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
 }
 
 module.exports = {
-  StaleHeadError, applyLabels, assertCurrentHead, deleteMarkedComment, escapeMarkdown, markerBody,
-  upsertMarkedComment, writeState,
+  StaleHeadError, applyLabels, assertCurrentHead, deleteMarkedComment, dispatchClassificationComplete,
+  escapeMarkdown, markerBody, upsertMarkedComment, writeState,
 };

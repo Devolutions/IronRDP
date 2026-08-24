@@ -480,7 +480,7 @@ impl Encode for MultiSzString {
         let total_cch: u32 = cast_length!(
             "cch",
             self.checked_total_cch()
-                .ok_or_else(|| invalid_field_err!("cch", "MULTI_SZ total length overflow"))?
+                .ok_or_else(|| invalid_field_err!("cch", "MULTI_SZ total length overflow", in: dst))?, in: dst
         )?;
 
         ensure_size!(in: dst, size: self.size());
@@ -536,16 +536,16 @@ impl Encode for MultiSzString {
 impl DecodeOwned for MultiSzString {
     fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4);
-        let total_cch: usize = cast_length!("cch", src.read_u32())?;
+        let total_cch: usize = cast_length!("cch", src.read_u32(), in: src)?;
 
         // The minimum valid total_cch is 1 (just the final sentinel null).
         if total_cch == 0 {
-            return Err(invalid_field_err!("cch", "zero cch for MULTI_SZ is invalid"));
+            return Err(invalid_field_err!("cch", "zero cch for MULTI_SZ is invalid", in: src));
         }
 
         let byte_count = total_cch
             .checked_mul(2)
-            .ok_or_else(|| invalid_field_err!("cch", "MULTI_SZ byte length overflow"))?;
+            .ok_or_else(|| invalid_field_err!("cch", "MULTI_SZ byte length overflow", in: src))?;
         ensure_size!(in: src, size: byte_count);
 
         // One allocation: read all bytes and reinterpret as u16 code units.
@@ -556,7 +556,7 @@ impl DecodeOwned for MultiSzString {
         if let Some(&unit) = all_units.last()
             && unit != 0
         {
-            return Err(invalid_field_err!("content", "MULTI_SZ must end with a null sentinel"));
+            return Err(invalid_field_err!("content", "MULTI_SZ must end with a null sentinel", in: src));
         }
 
         // Strip the sentinel null; per-string null terminators are retained in storage.
@@ -567,10 +567,8 @@ impl DecodeOwned for MultiSzString {
         // Without this check, a last segment without its own null would be silently dropped
         // by the null-scanning iterators.
         if !all_units.is_empty() && all_units.last() != Some(&0) {
-            return Err(invalid_field_err!(
-                "content",
-                "MULTI_SZ last segment is missing its null terminator"
-            ));
+            return Err(invalid_field_err!( "content",
+                "MULTI_SZ last segment is missing its null terminator", in: src));
         }
 
         Ok(Self(MultiSzStringRepr::Wire(all_units)))

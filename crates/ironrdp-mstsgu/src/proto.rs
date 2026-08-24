@@ -8,7 +8,7 @@ bitflags! {
     /// 2.2.5.3.2 HTTP_EXTENDED_AUTH Enumeration
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub(crate) struct HttpExtendedAuth: u16 {
-        const HTTP_EXTENDED_AUTH_NONE = 0x01;
+        const HTTP_EXTENDED_AUTH_NONE = 0x00;
         const HTTP_EXTENDED_AUTH_SC = 0x01;
         const HTTP_EXTENDED_AUTH_PAA = 0x02;
         const HTTP_EXTENDED_AUTH_SSPI_NTLM = 0x04;
@@ -31,6 +31,7 @@ pub(crate) enum PktTy {
     ChannelCreate = 0x08,
     ChannelResp = 0x09,
     ChannelClose = 0x10,
+    ChannelCloseResponse = 0x11,
     Data = 0x0A,
     ServiceMessage = 0x0B,
     ReauthMessage = 0x0C,
@@ -66,6 +67,7 @@ impl TryFrom<u16> for PktTy {
             0x0C => PktTy::ReauthMessage,
             0x0D => PktTy::Keepalive,
             0x10 => PktTy::ChannelClose,
+            0x11 => PktTy::ChannelCloseResponse,
             _ => return Err(()),
         };
         Ok(mapped)
@@ -109,7 +111,8 @@ impl<'a> Decode<'a> for PktHdr {
         ensure_fixed_part_size!(in: src);
 
         let ty = src.read_u16();
-        let mty = PktTy::try_from(ty).map_err(|_| unsupported_value_err("PktHdr::ty", "ty", format!("0x{ty:x}")))?;
+        let mty = PktTy::try_from(ty)
+            .map_err(|_| unsupported_value_err("PktHdr::ty", "ty", format!("0x{ty:x}"), Some(src.pos())))?;
 
         Ok(PktHdr {
             ty: mty,
@@ -163,11 +166,16 @@ pub(crate) struct HandshakeRespPkt {
     pub ver_major: u8,
     pub ver_minor: u8,
     pub server_version: u16,
-    pub _extended_auth: HttpExtendedAuth,
+    #[expect(
+        dead_code,
+        reason = "authentication flow does not negotiate extended authentication yet"
+    )]
+    pub extended_auth: HttpExtendedAuth,
 }
 
 impl HandshakeRespPkt {
-    const FIXED_PART_SIZE: usize = 4 /* error_code */ + 1 /* ver_major */ + 1 /* ver_minor */ + 2 /* server_auth */ + 1 /*extended_auth*/;
+    const FIXED_PART_SIZE: usize =
+        4 /* error_code */ + 1 /* ver_major */ + 1 /* ver_minor */ + 2 /* server_version */ + 2 /* extended_auth */;
 }
 
 impl Decode<'_> for HandshakeRespPkt {
@@ -179,14 +187,13 @@ impl Decode<'_> for HandshakeRespPkt {
             ver_major: src.read_u8(),
             ver_minor: src.read_u8(),
             server_version: src.read_u16(),
-            _extended_auth: {
-                let raw = src.read_u16();
-                HttpExtendedAuth::from_bits(raw)
-                    .ok_or_else(|| unsupported_value_err("HandshakeResp", "extended_auth", format!("0x{raw:x}")))?
-            },
+            extended_auth: HttpExtendedAuth::from_bits_retain(src.read_u16()),
         })
     }
 }
+
+/// 2.2.5.3.6 `HTTP_TUNNEL_PACKET_FIELD_REAUTH`.
+const HTTP_TUNNEL_PACKET_FIELD_REAUTH: u16 = 0x2;
 
 /// 2.2.10.18 HTTP_TUNNEL_PACKET
 #[derive(Default)]
@@ -194,6 +201,7 @@ pub(crate) struct TunnelReqPkt {
     pub caps: u32,
     pub fields_present: u16,
     pub _reserved: u16,
+    pub reauth_tunnel_context: Option<u64>,
 }
 
 impl Encode for TunnelReqPkt {
@@ -207,9 +215,19 @@ impl Encode for TunnelReqPkt {
         };
         hdr.encode(dst)?;
 
+        let fields_present = self.fields_present & !HTTP_TUNNEL_PACKET_FIELD_REAUTH
+            | if self.reauth_tunnel_context.is_some() {
+                HTTP_TUNNEL_PACKET_FIELD_REAUTH
+            } else {
+                0
+            };
+
         dst.write_u32(self.caps);
-        dst.write_u16(self.fields_present);
+        dst.write_u16(fields_present);
         dst.write_u16(self._reserved);
+        if let Some(tunnel_context) = self.reauth_tunnel_context {
+            dst.write_u64(tunnel_context);
+        }
         Ok(())
     }
 
@@ -218,7 +236,11 @@ impl Encode for TunnelReqPkt {
     }
 
     fn size(&self) -> usize {
-        PktHdr::default().size() + 8
+        PktHdr::FIXED_PART_SIZE
+            + 4 /* capsFlags */
+            + 2 /* fieldsPresent */
+            + 2 /* reserved */
+            + self.reauth_tunnel_context.map_or(0, |_| 8 /* reauthTunnelContext */)
     }
 }
 
@@ -325,10 +347,17 @@ impl Decode<'_> for TunnelRespPkt {
 }
 
 /// 2.2.10.7 HTTP_EXTENDED_AUTH_PACKET Structure
-#[expect(dead_code, reason = "defined for completeness per spec; not yet used")]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "authentication flow does not process extended authentication yet"
+    )
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExtendedAuthPkt {
-    error_code: u32,
-    blob: Vec<u8>,
+    pub(crate) error_code: u32,
+    pub(crate) auth_blob: Vec<u8>,
 }
 
 impl Encode for ExtendedAuthPkt {
@@ -337,15 +366,15 @@ impl Encode for ExtendedAuthPkt {
 
         let hdr = PktHdr {
             ty: PktTy::ExtendedAuth,
-            length: cast_int!("packet length", self.size())?,
+            length: cast_int!("packet length", self.size(), in: dst)?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
 
         dst.write_u32(self.error_code);
-        let blob_len: u16 = cast_int!("blob length", self.blob.len())?;
-        dst.write_u16(blob_len);
-        dst.write_slice(&self.blob);
+        let auth_blob_len: u16 = cast_int!("auth blob length", self.auth_blob.len(), in: dst)?;
+        dst.write_u16(auth_blob_len);
+        dst.write_slice(&self.auth_blob);
 
         Ok(())
     }
@@ -355,20 +384,20 @@ impl Encode for ExtendedAuthPkt {
     }
 
     fn size(&self) -> usize {
-        PktHdr::default().size() + 6 + self.blob.len()
+        PktHdr::FIXED_PART_SIZE + 4 /* error_code */ + 2 /* cb_blob_len */ + self.auth_blob.len()
     }
 }
 
 impl Decode<'_> for ExtendedAuthPkt {
     fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
-        ensure_size!(in: src, size: 4 + 2);
+        ensure_size!(in: src, size: 4 /* error_code */ + 2 /* cb_blob_len */);
         let error_code = src.read_u32();
-        let len = usize::from(src.read_u16());
-        ensure_size!(in: src, size: len);
+        let auth_blob_len = usize::from(src.read_u16());
+        ensure_size!(in: src, size: auth_blob_len);
 
         Ok(ExtendedAuthPkt {
             error_code,
-            blob: src.read_slice(len).to_vec(),
+            auth_blob: src.read_slice(auth_blob_len).to_vec(),
         })
     }
 }
@@ -385,7 +414,7 @@ impl Encode for TunnelAuthPkt {
 
         let hdr = PktHdr {
             ty: PktTy::TunnelAuth,
-            length: cast_int!("packet length", self.size())?,
+            length: cast_int!("packet length", self.size(), in: dst)?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
@@ -393,7 +422,7 @@ impl Encode for TunnelAuthPkt {
         dst.write_u16(self.fields_present);
 
         let client_name_len = self.client_name.encode_utf16().count() * 2 + 2; // Add 2 to account for a null terminator (0x0000).
-        let client_name_len: u16 = cast_int!("client name length", client_name_len)?;
+        let client_name_len: u16 = cast_int!("client name length", client_name_len, in: dst)?;
         dst.write_u16(client_name_len);
 
         for c in self.client_name.encode_utf16() {
@@ -414,31 +443,58 @@ impl Encode for TunnelAuthPkt {
     }
 }
 
-/// 2.2.10.16 HTTP_TUNNEL_AUTH_RESPONSE Structure
-#[derive(Debug)]
+/// [2.2.5.3.5] `HTTP_TUNNEL_AUTH_RESPONSE_FIELDS_PRESENT_FLAGS`.
+///
+/// [2.2.5.3.5]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=42
+const HTTP_TUNNEL_AUTH_RESPONSE_FIELD_REDIR_FLAGS: u16 = 0x1;
+const HTTP_TUNNEL_AUTH_RESPONSE_FIELD_IDLE_TIMEOUT: u16 = 0x2;
+const HTTP_TUNNEL_AUTH_RESPONSE_FIELD_SOH_RESPONSE: u16 = 0x4;
+
+/// [2.2.10.16] `HTTP_TUNNEL_AUTH_RESPONSE` structure and [2.2.10.17] optional fields.
+///
+/// [2.2.10.16]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=70
+/// [2.2.10.17]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=70
+#[derive(Debug, Default)]
 pub(crate) struct TunnelAuthRespPkt {
-    error_code: u32,
-    _fields_present: u16,
+    pub(crate) error_code: u32,
+    fields_present: u16,
     _reserved: u16,
+    pub(crate) redirection_flags: Option<u32>,
+    pub(crate) idle_timeout_minutes: Option<u32>,
+    pub(crate) soh_response: Option<Vec<u8>>,
 }
 
 impl TunnelAuthRespPkt {
     const FIXED_PART_SIZE: usize = 4 /* error_code */ + 2 /* fields_present */ + 2 /* _reserved */;
-
-    pub(crate) fn error_code(&self) -> u32 {
-        self.error_code
-    }
 }
 
 impl Decode<'_> for TunnelAuthRespPkt {
     fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        Ok(TunnelAuthRespPkt {
+        let mut pkt = TunnelAuthRespPkt {
             error_code: src.read_u32(),
-            _fields_present: src.read_u16(),
+            fields_present: src.read_u16(),
             _reserved: src.read_u16(),
-        })
+            ..TunnelAuthRespPkt::default()
+        };
+
+        if pkt.fields_present & HTTP_TUNNEL_AUTH_RESPONSE_FIELD_REDIR_FLAGS != 0 {
+            ensure_size!(in: src, size: 4 /* redirFlags */);
+            pkt.redirection_flags = Some(src.read_u32());
+        }
+        if pkt.fields_present & HTTP_TUNNEL_AUTH_RESPONSE_FIELD_IDLE_TIMEOUT != 0 {
+            ensure_size!(in: src, size: 4 /* idleTimeout */);
+            pkt.idle_timeout_minutes = Some(src.read_u32());
+        }
+        if pkt.fields_present & HTTP_TUNNEL_AUTH_RESPONSE_FIELD_SOH_RESPONSE != 0 {
+            ensure_size!(in: src, size: 2 /* cbLen */);
+            let soh_response_len = usize::from(src.read_u16());
+            ensure_size!(in: src, size: soh_response_len);
+            pkt.soh_response = Some(src.read_slice(soh_response_len).to_vec());
+        }
+
+        Ok(pkt)
     }
 }
 
@@ -455,12 +511,12 @@ impl Encode for ChannelPkt {
 
         let hdr = PktHdr {
             ty: PktTy::ChannelCreate,
-            length: cast_int!("packet length", self.size())?,
+            length: cast_int!("packet length", self.size(), in: dst)?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
 
-        let resources_count: u8 = cast_length!("resources count", self.resources.len())?;
+        let resources_count: u8 = cast_length!("resources count", self.resources.len(), in: dst)?;
         dst.write_u8(resources_count);
         dst.write_u8(0); // alt_names
         dst.write_u16(self.port);
@@ -469,7 +525,7 @@ impl Encode for ChannelPkt {
         // 2.2.10.3 HTTP_CHANNEL_PACKET_VARIABLE
         for res in &self.resources {
             let res_utf16_len = res.encode_utf16().count() * 2 + 2; // Add 2 to account for a null terminator (0x0000).
-            let res_len: u16 = cast_int!("resource name UTF-16 length", res_utf16_len)?;
+            let res_len: u16 = cast_int!("resource name UTF-16 length", res_utf16_len, in: dst)?;
             dst.write_u16(res_len);
             for b in res.encode_utf16() {
                 dst.write_u16(b);
@@ -549,11 +605,11 @@ impl Encode for DataPkt<'_> {
 
         let hdr = PktHdr {
             ty: PktTy::Data,
-            length: cast_int!("packet length", self.size())?,
+            length: cast_int!("packet length", self.size(), in: dst)?,
             ..PktHdr::default()
         };
         hdr.encode(dst)?;
-        let data_len: u16 = cast_int!("data payload length", self.data.len())?;
+        let data_len: u16 = cast_int!("data payload length", self.data.len(), in: dst)?;
         dst.write_u16(data_len);
         dst.write_slice(self.data);
         Ok(())
@@ -597,5 +653,216 @@ impl Encode for KeepalivePkt {
 
     fn size(&self) -> usize {
         PktHdr::default().size()
+    }
+}
+
+/// [2.2.10.13] `HTTP_SERVICE_MESSAGE` structure (body only; header stripped).
+///
+/// [2.2.10.13]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceMessagePkt {
+    pub message: String,
+}
+
+impl Encode for ServiceMessagePkt {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        let hdr = PktHdr {
+            ty: PktTy::ServiceMessage,
+            length: cast_int!("packet length", self.size())?,
+            ..PktHdr::default()
+        };
+        hdr.encode(dst)?;
+
+        let utf16_len = self.message.encode_utf16().count() * 2 + 2 /* NUL */;
+        let utf16_len = cast_int!("cbMessageLen", utf16_len)?;
+        dst.write_u16(utf16_len);
+        for c in self.message.encode_utf16() {
+            dst.write_u16(c);
+        }
+        dst.write_u16(0);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "HTTP_SERVICE_MESSAGE"
+    }
+
+    fn size(&self) -> usize {
+        PktHdr::FIXED_PART_SIZE + 2 /* cbMessageLen */ + 2 * (self.message.encode_utf16().count() + 1 /* NUL */)
+    }
+}
+
+impl Decode<'_> for ServiceMessagePkt {
+    fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
+        ensure_size!(in: src, size: 2 /* cbMessageLen */);
+        let cb_message = usize::from(src.read_u16());
+        ensure_size!(in: src, size: cb_message);
+        let raw = src.read_slice(cb_message);
+        let message = String::from_utf16_lossy(
+            &raw.chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .trim_end_matches('\0')
+        .to_owned();
+        Ok(Self { message })
+    }
+}
+
+/// [2.2.10.12] `HTTP_REAUTH_MESSAGE` structure (body only; header stripped).
+///
+/// [2.2.10.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReauthMessagePkt {
+    pub reauth_tunnel_context: u64,
+}
+
+impl Encode for ReauthMessagePkt {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        let hdr = PktHdr {
+            ty: PktTy::ReauthMessage,
+            length: cast_int!("packet length", self.size())?,
+            ..PktHdr::default()
+        };
+        hdr.encode(dst)?;
+
+        dst.write_u64(self.reauth_tunnel_context);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "HTTP_REAUTH_MESSAGE"
+    }
+
+    fn size(&self) -> usize {
+        PktHdr::FIXED_PART_SIZE + 8 /* reauthTunnelContext */
+    }
+}
+
+impl Decode<'_> for ReauthMessagePkt {
+    fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
+        ensure_size!(in: src, size: 8 /* reauthTunnelContext */);
+        Ok(Self {
+            reauth_tunnel_context: src.read_u64(),
+        })
+    }
+}
+
+/// [2.2.10.23] `HTTP_CLOSE_PACKET` structure (body only; header stripped).
+///
+/// [2.2.10.23]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelClosePkt {
+    pub status_code: u32,
+}
+
+impl ChannelClosePkt {
+    pub(crate) fn encode_as(&self, ty: PktTy, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        let hdr = PktHdr {
+            ty,
+            length: cast_int!("packet length", self.size())?,
+            ..PktHdr::default()
+        };
+        hdr.encode(dst)?;
+        dst.write_u32(self.status_code);
+        Ok(())
+    }
+}
+
+impl Encode for ChannelClosePkt {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        self.encode_as(PktTy::ChannelClose, dst)
+    }
+
+    fn name(&self) -> &'static str {
+        "HTTP_CLOSE_PACKET"
+    }
+
+    fn size(&self) -> usize {
+        PktHdr::FIXED_PART_SIZE + 4 /* statusCode */
+    }
+}
+
+impl Decode<'_> for ChannelClosePkt {
+    fn decode(src: &mut ReadCursor<'_>) -> ironrdp_core::DecodeResult<Self> {
+        ensure_size!(in: src, size: 4 /* statusCode */);
+        Ok(Self {
+            status_code: src.read_u32(),
+        })
+    }
+}
+
+/// Human-readable label for common MS-TSGU HRESULTs ([2.2.6]).
+///
+/// [2.2.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
+pub fn gateway_code_label(code: u32) -> Option<&'static str> {
+    Some(match code {
+        0x0000_0000 => "ERROR_SUCCESS",
+        0x0000_0005 => "ERROR_ACCESS_DENIED",
+        0x0000_00A0 => "ERROR_BAD_ARGUMENTS",
+        0x0000_04CA => "ERROR_GRACEFUL_DISCONNECT",
+        0x0000_04D4 => "E_PROXY_CONNECTIONABORTED",
+        0x0000_59D8 | 0x8007_59D8 => "E_PROXY_INTERNALERROR",
+        0x0000_59DA | 0x8007_59DA => "E_PROXY_RAP_ACCESSDENIED",
+        0x0000_59DB | 0x8007_59DB => "E_PROXY_NAP_ACCESSDENIED",
+        0x0000_59DD | 0x8007_59DD => "E_PROXY_TS_CONNECTFAILED",
+        0x0000_59DF | 0x8007_59DF => "E_PROXY_ALREADYDISCONNECTED",
+        0x0000_59E6 => "E_PROXY_MAXCONNECTIONSREACHED",
+        0x0000_59E8 => "E_PROXY_NOTSUPPORTED",
+        0x0000_59E9 | 0x8007_59E9 => "E_PROXY_CAPABILITYMISMATCH",
+        0x0000_59ED | 0x8007_59ED => "E_PROXY_QUARANTINE_ACCESSDENIED",
+        0x0000_59EE | 0x8007_59EE => "E_PROXY_NOCERTAVAILABLE",
+        0x0000_59F6 => "E_PROXY_SESSIONTIMEOUT",
+        0x0000_59F7 | 0x8007_59F7 => "E_PROXY_COOKIE_BADPACKET",
+        0x0000_59F8 | 0x8007_59F8 => "E_PROXY_COOKIE_AUTHENTICATION_ACCESS_DENIED",
+        0x0000_59F9 | 0x8007_59F9 => "E_PROXY_UNSUPPORTED_AUTHENTICATION_METHOD",
+        0x0000_59FA => "E_PROXY_REAUTH_AUTHN_FAILED",
+        0x0000_59FB => "E_PROXY_REAUTH_CAP_FAILED",
+        0x0000_59FC => "E_PROXY_REAUTH_RAP_FAILED",
+        0x0000_59FD => "E_PROXY_SDR_NOT_SUPPORTED_BY_TS",
+        0x0000_5A00 => "E_PROXY_REAUTH_NAP_FAILED",
+        0x8009_030C => "SEC_E_LOGON_DENIED",
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_pkt_encodes_requested_port() {
+        let pkt = ChannelPkt {
+            resources: vec!["rdp.example.com".to_owned()],
+            port: 2179,
+            protocol: 3,
+        };
+        let mut buf = vec![0; pkt.size()];
+        let mut dst = WriteCursor::new(&mut buf);
+        pkt.encode(&mut dst).expect("encode");
+
+        // HTTP_PACKET_HEADER is 8 bytes; the next two bytes are resources/alt_names counts.
+        assert_eq!(&buf[10..12], &2179u16.to_le_bytes());
+    }
+
+    #[test]
+    fn extended_auth_pkt_size_includes_header_and_blob() {
+        let pkt = ExtendedAuthPkt {
+            error_code: 0,
+            auth_blob: vec![0; 3],
+        };
+
+        assert_eq!(
+            pkt.size(),
+            PktHdr::FIXED_PART_SIZE + 4 /* error_code */ + 2 /* cb_blob_len */ + 3 /* auth_blob */
+        );
     }
 }

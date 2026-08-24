@@ -1,3 +1,4 @@
+mod chunked_fetch;
 mod delayed_rendering;
 mod delayed_rendering_integration;
 mod file_contents_state_machine;

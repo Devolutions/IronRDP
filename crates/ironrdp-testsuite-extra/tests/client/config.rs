@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 use std::sync::Arc;
 
+use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, Transport, VmConnectMode};
+use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};
+use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 use ironrdp_viewer::cli::parse_config_from;
 use uuid::Uuid;
 
@@ -80,6 +83,21 @@ fn gateway_is_enabled_with_usage_method_one_and_file_credentials() {
     assert_eq!(gw.endpoint, "gw.example.com:443");
     assert_eq!(gw.username, "gw-user");
     assert_eq!(gw.password, "gw-pass");
+    assert!(!gw.prefer_direct);
+}
+
+#[test]
+fn gateway_detect_prefers_direct_when_hostname_is_set() {
+    let config = parse_config_from_rdp(
+        "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\ngatewayhostname:s:gw.example.com:443\ngatewayusagemethod:i:2\ngatewayusername:s:gw-user\nGatewayPassword:s:gw-pass\n",
+        &[],
+    );
+
+    let Transport::Gateway(gw) = config.transport() else {
+        panic!("gateway should be configured");
+    };
+    assert_eq!(gw.endpoint, "gw.example.com:443");
+    assert!(gw.prefer_direct);
 }
 
 #[test]
@@ -163,8 +181,10 @@ fn vmconnect_basic_flag_selects_basic_mode() {
 }
 
 #[test]
-fn vmconnect_rejects_rds_gateway() {
-    let err = parse_config_from_rdp_result(
+fn vmconnect_accepts_rds_gateway() {
+    // The gateway channel-create now forwards the destination port, so
+    // VMConnect (port 2179) can be tunneled through an RD Gateway.
+    let config = parse_config_from_rdp(
         "full address:s:hyperv.example.com:2179\nusername:s:test-user\nClearTextPassword:s:test-pass\n",
         &[
             "--vmconnect",
@@ -176,10 +196,10 @@ fn vmconnect_rejects_rds_gateway() {
             "--gw-pass",
             "gw-pass",
         ],
-    )
-    .expect_err("vmconnect + RDS gateway must fail");
+    );
 
-    assert!(err.to_string().contains("gateway"), "unexpected error: {err:#}");
+    assert!(matches!(config.transport(), Transport::Gateway(_)));
+    assert_eq!(config.destination().port(), 2179);
 }
 
 #[test]
@@ -274,8 +294,9 @@ fn certificate_validation_preserves_the_default_and_callbacks_are_explicit() {
         ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate
     );
 
-    let callback: ironrdp_tls::CertificateValidationCallback =
-        Arc::new(|certificate, reason| certificate == b"test certificate" && reason == "untrusted issuer");
+    let callback: ironrdp_tls::CertificateValidationCallback = Arc::new(|certificate, server_name, reason| {
+        certificate == b"test certificate" && server_name == "rdp.example.com" && reason == "untrusted issuer"
+    });
     let config = ConfigBuilder::new()
         .with_destination(Destination::from_parts("rdp.example.com", 3389))
         .with_username("test-user")
@@ -283,7 +304,7 @@ fn certificate_validation_preserves_the_default_and_callbacks_are_explicit() {
         .with_client_build(1)
         .with_client_dir("C:\\Windows\\System32")
         .with_client_name("ironrdp-tests")
-        .with_platform(ironrdp::pdu::rdp::capability_sets::MajorPlatformType::WINDOWS)
+        .with_platform(MajorPlatformType::WINDOWS)
         .with_certificate_validation_callback(Arc::clone(&callback))
         .build()
         .expect("valid callback configuration");
@@ -294,8 +315,8 @@ fn certificate_validation_preserves_the_default_and_callbacks_are_explicit() {
     let callback = config
         .certificate_validation_callback()
         .expect("certificate validation callback must be retained");
-    assert!(callback(b"test certificate", "untrusted issuer"));
-    assert!(!callback(b"other certificate", "untrusted issuer"));
+    assert!(callback(b"test certificate", "rdp.example.com", "untrusted issuer"));
+    assert!(!callback(b"other certificate", "rdp.example.com", "untrusted issuer"));
 }
 
 #[test]
@@ -323,7 +344,7 @@ fn generic_builder_options_reach_connector_configuration() {
         .with_client_build(1)
         .with_client_dir("C:\\Windows\\System32")
         .with_client_name("ironrdp-tests")
-        .with_platform(ironrdp::pdu::rdp::capability_sets::MajorPlatformType::WINDOWS)
+        .with_platform(MajorPlatformType::WINDOWS)
         .with_keyboard_layout(0x0000_0409)
         .with_connection_type(ConnectionType::BroadbandHigh)
         .with_lossy_compression(false)
@@ -366,5 +387,139 @@ fn out_of_range_desktop_dimensions_fall_back_to_defaults() {
     assert_eq!(
         invalid_config.connector().desktop_size.height,
         default_config.connector().desktop_size.height
+    );
+}
+
+fn complete_builder() -> ConfigBuilder {
+    ConfigBuilder::new()
+        .with_destination(Destination::new("server.example:3389").unwrap())
+        .with_username("user")
+        .with_password("password")
+        .with_client_build(1)
+        .with_client_dir("C:\\")
+        .with_platform(MajorPlatformType::WINDOWS)
+        .with_client_name("client")
+}
+
+#[test]
+fn remote_application_mode_requires_remote_programs_support() {
+    let error = complete_builder()
+        .with_remote_application_mode(true)
+        .with_rail_support_level(RailSupportLevel::empty())
+        .build()
+        .expect_err("RemoteApp must require remote programs support");
+
+    assert!(error.to_string().contains("RAIL support level"), "{error:?}");
+}
+
+#[test]
+fn remote_application_mode_is_preserved_in_properties() {
+    let config = complete_builder()
+        .with_remote_application_mode(true)
+        .build()
+        .expect("valid RemoteApp configuration");
+
+    assert!(config.connector().remote_application_mode);
+    assert_eq!(config.properties().remote_application_mode(), Some(true));
+}
+
+#[test]
+fn monitor_layout_is_preserved_in_connector_configuration() {
+    let monitor_layout = ClientMonitorData {
+        monitors: vec![Monitor {
+            left: 0,
+            top: 0,
+            right: 1_919,
+            bottom: 1_079,
+            flags: MonitorFlags::PRIMARY,
+        }],
+    };
+    let config = complete_builder()
+        .with_desktop_width(1_920)
+        .with_desktop_height(1_080)
+        .with_monitor_layout(monitor_layout.clone())
+        .build()
+        .expect("valid monitor layout configuration");
+
+    assert_eq!(config.connector().monitor_layout.as_ref(), Some(&monitor_layout));
+}
+
+#[test]
+fn with_audio_mode_redirect_enables_playback_channel() {
+    use ironrdp_cfg::AudioMode;
+
+    let config = complete_builder()
+        .with_audio_mode(AudioMode::RedirectToClient)
+        .build()
+        .expect("valid configuration");
+
+    assert!(config.connector().enable_audio_playback);
+    assert!(config.channels().sound);
+    assert_eq!(
+        config.properties().audio_mode().unwrap(),
+        Some(AudioMode::RedirectToClient)
+    );
+}
+
+#[test]
+fn with_audio_mode_play_on_server_disables_local_playback() {
+    use ironrdp_cfg::AudioMode;
+
+    let config = complete_builder()
+        .with_audio_mode(AudioMode::PlayOnServer)
+        .build()
+        .expect("valid configuration");
+
+    assert!(!config.connector().enable_audio_playback);
+    assert!(!config.channels().sound);
+    assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::PlayOnServer));
+}
+
+#[test]
+fn with_audio_mode_disabled_suppresses_sound_channel() {
+    use ironrdp_cfg::AudioMode;
+
+    let config = complete_builder()
+        .with_audio_mode(AudioMode::Disabled)
+        .build()
+        .expect("valid configuration");
+
+    assert!(!config.connector().enable_audio_playback);
+    assert!(!config.channels().sound);
+    assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::Disabled));
+}
+
+#[test]
+fn with_audio_capture_enables_client_info_flag_and_channel() {
+    use ironrdp_cfg::AudioCaptureMode;
+
+    let config = complete_builder()
+        .with_audio_capture(true)
+        .build()
+        .expect("valid configuration");
+
+    assert!(config.connector().enable_audio_capture);
+    assert!(config.channels().audio_capture);
+    assert_eq!(
+        config.properties().audio_capture_mode().unwrap(),
+        Some(AudioCaptureMode::CaptureFromClient)
+    );
+}
+
+#[test]
+fn with_audio_capture_disabled_clears_channel() {
+    use ironrdp_cfg::AudioCaptureMode;
+
+    let config = complete_builder()
+        .with_audio_capture(true)
+        .with_audio_capture(false)
+        .build()
+        .expect("valid configuration");
+
+    assert!(!config.connector().enable_audio_capture);
+    assert!(!config.channels().audio_capture);
+    assert_eq!(
+        config.properties().audio_capture_mode().unwrap(),
+        Some(AudioCaptureMode::Disabled)
     );
 }

@@ -170,13 +170,32 @@ impl Encode for V1Datagram {
             ));
         }
 
+        let flags = self.compute_flags();
+
+        // `cookie_hash` must be present if and only if `decode_directional`
+        // will look for it: on a client-to-server SYN (SYN set, ACK clear)
+        // advertising version 3. Anything else is a mismatch that decode
+        // cannot recover from either way: a hash written outside that
+        // predicate gets silently dropped (the decoder never looks for it),
+        // and version 3 without one leaves the decoder expecting 32 bytes
+        // that were never written, which is a hard decode error rather than
+        // a mismatch it could plausibly paper over.
+        if let Some(syn_data_ex) = &self.syn_data_ex {
+            let is_client_syn = flags.contains(V1Flags::SYN) && !flags.contains(V1Flags::ACK);
+            let decoder_expects_cookie_hash = is_client_syn && syn_data_ex.udp_ver == UdpVersion::V3;
+            if syn_data_ex.cookie_hash.is_some() != decoder_expects_cookie_hash {
+                return Err(ironrdp_core::invalid_field_err!(
+                    Self::NAME,
+                    "syn_data_ex",
+                    "cookieHash must be present if and only if this is a version 3 client-to-server SYN"
+                ));
+            }
+        }
+
         ironrdp_core::ensure_size!(in: dst, size: self.size());
 
         // Write header with auto-computed flags
-        let header = FecHeader {
-            flags: self.compute_flags(),
-            ..self.header
-        };
+        let header = FecHeader { flags, ..self.header };
         header.encode(dst)?;
 
         // Write payloads in spec-mandated order (MS-RDPEUDP Section 2.2.2)

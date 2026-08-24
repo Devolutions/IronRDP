@@ -355,15 +355,52 @@ impl Written {
     }
 }
 
+/// A point on a monotonic millisecond clock owned by the I/O driver.
+///
+/// Lives in `ironrdp-core`, shared with `ironrdp-rdpeudp`, and re-exported
+/// here. The epoch is arbitrary and carries no meaning; only differences
+/// between two instants do. All instants passed to one connector across its
+/// lifetime must come from the same clock: comparing instants from two
+/// different epochs produces a meaningless delta rather than an error, either
+/// saturating to zero or landing on a huge value with no diagnostic.
+///
+/// The clock deliberately lives outside the sans-I/O sequences, because a
+/// sequence reading a clock itself would measure how quickly it drained an
+/// already-filled buffer rather than how long the bytes took to arrive. Only
+/// the driver that performed the read knows the latter, which is what the
+/// `None` in [`Sequence::step`] is for: a driver with no reading to pass on.
+/// `ironrdp-blocking` and `ironrdp-async` each stamp with their own
+/// driver-owned epoch; the FFI connector, which has no read loop of its own to
+/// time, stamps on entry to its `step` binding instead.
+pub use ironrdp_core::MonotonicInstant;
+
 pub trait Sequence: Send {
     fn next_pdu_hint(&self) -> Option<&dyn PduHint>;
 
     fn state(&self) -> &dyn State;
 
-    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written>;
+    /// Advances the sequence.
+    ///
+    /// `received_at` is when `input` arrived on the wire, as observed by the I/O
+    /// driver, or `None` from a driver that does not observe arrival times. The
+    /// absence of a reading is deliberately not expressible as an instant: a
+    /// driver that cannot measure has taken no measurement, which is a different
+    /// thing from one that measured no elapsed time, and only the sequence
+    /// knows which of the two its reply may be derived from.
+    ///
+    /// A driver that always passes `None` never opens a connect-time bandwidth
+    /// window, so the Bandwidth Measure Results it sends report only the Stop's
+    /// own payload against the untimed floor. See `connection::counted_len`'s doc
+    /// for why the byte count is measurement-gated rather than reported in full.
+    fn step(
+        &mut self,
+        input: &[u8],
+        received_at: Option<MonotonicInstant>,
+        output: &mut WriteBuf,
+    ) -> ConnectorResult<Written>;
 
     fn step_no_input(&mut self, output: &mut WriteBuf) -> ConnectorResult<Written> {
-        self.step(&[], output)
+        self.step(&[], None, output)
     }
 }
 

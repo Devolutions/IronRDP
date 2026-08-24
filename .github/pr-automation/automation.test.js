@@ -827,6 +827,7 @@ test("only the persistent oversized-review label starts automation from a label 
   const requested = await resolve(OVERSIZED_REVIEW_LABEL);
   assert.equal(requested.ok, true);
   assert.equal(requested.classificationRequested, true);
+  assert.equal(requested.reviewRequested, true);
   assert.equal(requested.force, false);
   assert.equal((await resolve("size/XXL")).reason, "unrelated pull request label");
 });
@@ -1478,7 +1479,17 @@ test("writer upgrades a neutral automated review check instead of creating a dup
   assert.equal(update.output.title, "Automated review complete");
 });
 
-test("writer dispatches automatic but not forced completed classifications", async () => {
+test("oversized opt-in dispatches review from a cached classification", async () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  const requestReview = workflowJob(workflow, "request-review");
+  assert.match(requestReview, /needs: \[resolve-pr, classification-gate\]/);
+  assert.match(requestReview, /needs\.resolve-pr\.outputs\.review-requested == 'true'/);
+  assert.match(requestReview, /needs\.classification-gate\.outputs\.available == 'true'/);
+  assert.match(requestReview, /needs\.classification-gate\.outputs\.required == 'false'/);
+  assert.match(requestReview, /dispatchClassificationComplete/);
+});
+
+test("writer dispatches new but not forced completed classifications", async () => {
   const writeClassification = async (dispatchReview) => {
     let dispatches = 0;
     const github = {

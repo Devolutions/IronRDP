@@ -3,7 +3,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::Arc;
 
 use anyhow::Result;
-use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, server_codecs_capabilities};
+use ironrdp_pdu::codecs::rfx::Quant;
+use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, EntropyBits, server_codecs_capabilities};
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use tokio_rustls::TlsAcceptor;
 
@@ -15,7 +16,9 @@ use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{
     ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity, StaticChannelFactory,
 };
-use crate::{DisplayUpdate, RdpServerDisplayUpdates, SoundServerFactory};
+#[cfg(feature = "usb")]
+use crate::urbdrc::DeviceFactory;
+use crate::{DisplayUpdate, RdpServerDisplayUpdates, RdpeiServerFactory, SoundServerFactory};
 
 pub struct WantsAddr {}
 pub struct WantsSecurity {
@@ -40,14 +43,20 @@ pub struct BuilderDone {
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
+    rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
+    #[cfg(feature = "usb")]
+    usb_factory: Option<Box<dyn DeviceFactory>>,
     display_suppressed: Option<Arc<AtomicBool>>,
     autodetect_rtt: Option<Arc<AtomicU32>>,
+    autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
+    remotefx_quant: Quant,
+    remotefx_entropy_coder: Option<EntropyBits>,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -141,16 +150,22 @@ impl RdpServerBuilder<WantsDisplay> {
                 static_channel_factories: Vec::new(),
                 sound_factory: None,
                 cliprdr_factory: None,
+                rdpei_factory: None,
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
+                #[cfg(feature = "usb")]
+                usb_factory: None,
                 display_suppressed: None,
                 autodetect_rtt: None,
+                autodetect_baseline_rtt: None,
                 honor_client_desktop_size: None,
                 auto_reconnect_cookie: None,
+                remotefx_quant: Quant::default(),
+                remotefx_entropy_coder: None,
             },
         }
     }
@@ -165,16 +180,22 @@ impl RdpServerBuilder<WantsDisplay> {
                 static_channel_factories: Vec::new(),
                 sound_factory: None,
                 cliprdr_factory: None,
+                rdpei_factory: None,
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
+                #[cfg(feature = "usb")]
+                usb_factory: None,
                 display_suppressed: None,
                 autodetect_rtt: None,
+                autodetect_baseline_rtt: None,
                 honor_client_desktop_size: None,
                 auto_reconnect_cookie: None,
+                remotefx_quant: Quant::default(),
+                remotefx_entropy_coder: None,
             },
         }
     }
@@ -197,10 +218,22 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Configure MS-RDPEI (multitouch and pen input over a dynamic channel).
+    pub fn with_rdpei_factory(mut self, rdpei_factory: Option<Box<dyn RdpeiServerFactory>>) -> Self {
+        self.state.rdpei_factory = rdpei_factory;
+        self
+    }
+
     /// Configure EGFX (Graphics Pipeline Extension) for H.264 video streaming.
     #[cfg(feature = "egfx")]
     pub fn with_gfx_factory(mut self, gfx_factory: Option<Box<dyn GfxServerFactory>>) -> Self {
         self.state.gfx_factory = gfx_factory;
+        self
+    }
+
+    #[cfg(feature = "usb")]
+    pub fn with_usb_factory(mut self, usb_factory: Option<Box<dyn DeviceFactory>>) -> Self {
+        self.state.usb_factory = usb_factory;
         self
     }
 
@@ -316,6 +349,20 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Inject a shared session-lifetime baseline RTT handle (milliseconds,
+    /// `u32::MAX` until the first measurement; see
+    /// [`RdpServer::autodetect_baseline_rtt_handle`] for what distinguishes
+    /// this from [`Self::with_autodetect_rtt_handle`]). The server writes the
+    /// latest baseline to the same instance the backend reads. When not
+    /// called, the server allocates its own (still readable via
+    /// [`RdpServer::autodetect_baseline_rtt_handle`]). The value stays
+    /// `u32::MAX` unless auto-detect is enabled via
+    /// [`RdpServer::enable_autodetect`].
+    pub fn with_autodetect_baseline_rtt_handle(mut self, handle: Arc<AtomicU32>) -> Self {
+        self.state.autodetect_baseline_rtt = Some(handle);
+        self
+    }
+
     /// Provision the Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`) handed to the client during logon.
     ///
@@ -334,6 +381,34 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Set the quantization values the RemoteFX encoder uses once selected.
+    /// Defaults to [`Quant::default`], the same values Windows RDP servers
+    /// send. Build a validated [`Quant`] with [`Quant::try_new`].
+    ///
+    /// Has no effect unless the client and server negotiate RemoteFX; this
+    /// only changes the quantization RemoteFX uses when it is picked.
+    pub fn with_remotefx_quant(mut self, quant: Quant) -> Self {
+        self.state.remotefx_quant = quant;
+        self
+    }
+
+    /// State a preferred RemoteFX entropy coder (RLGR1 or RLGR3). If the
+    /// client's advertised TS_RFX_ICAP array includes it, the server uses
+    /// it; otherwise the server falls back to whichever coder the client
+    /// offered first.
+    ///
+    /// `None` (the default) always uses whichever coder the client offered
+    /// first: [MS-RDPRFX] 3.1.5.1 has the server arbitrarily pick one
+    /// supported TS_RFX_ICAP element rather than rank the array as a
+    /// preference order. Has no effect unless the client and server
+    /// negotiate RemoteFX.
+    ///
+    /// [MS-RDPRFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/
+    pub fn with_remotefx_entropy_coder(mut self, coder: Option<EntropyBits>) -> Self {
+        self.state.remotefx_entropy_coder = coder;
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         let mut server = RdpServer::new(
             RdpServerOptions {
@@ -342,17 +417,23 @@ impl RdpServerBuilder<BuilderDone> {
                 codecs: self.state.codecs,
                 max_request_size: self.state.max_request_size,
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
+                remotefx_quant: self.state.remotefx_quant,
+                remotefx_entropy_coder: self.state.remotefx_entropy_coder,
             },
             self.state.handler,
             self.state.display,
             self.state.static_channel_factories,
             self.state.sound_factory,
             self.state.cliprdr_factory,
+            self.state.rdpei_factory,
             self.state.connection_handler,
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,
             self.state.display_suppressed,
+            #[cfg(feature = "usb")]
+            self.state.usb_factory,
             self.state.autodetect_rtt,
+            self.state.autodetect_baseline_rtt,
         );
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);

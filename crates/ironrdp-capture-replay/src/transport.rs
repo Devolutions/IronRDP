@@ -41,8 +41,30 @@ pub struct Flow {
 pub struct Capture {
     /// Direct TCP RDP flow selected from the pcapng input.
     pub flow: Flow,
+    /// Other TLS flows to TCP port 443, tried when the primary flow is not a
+    /// complete RD Gateway tunnel (one WebSocket flow, or paired RPCH IN+OUT).
+    pub gateway_alternates: Vec<Flow>,
     /// NSS-compatible TLS key-log entries embedded in the capture.
     pub tls_key_log: TlsKeyLog,
+}
+
+impl Capture {
+    /// Merge additional NSS-compatible TLS key-log entries.
+    ///
+    /// Capture exports include secrets only for TLS flows the exporter sees.
+    /// Supply the original key log for a TLS session unwrapped from a gateway.
+    pub fn add_tls_key_log(&mut self, key_log: &str) {
+        if key_log.is_empty() {
+            return;
+        }
+        if !self.tls_key_log.0.is_empty() && !self.tls_key_log.0.ends_with('\n') {
+            self.tls_key_log.0.push('\n');
+        }
+        self.tls_key_log.0.push_str(key_log);
+        if !key_log.ends_with('\n') {
+            self.tls_key_log.0.push('\n');
+        }
+    }
 }
 
 impl core::fmt::Debug for Capture {
@@ -152,8 +174,10 @@ pub fn read_capture(path: &Path) -> Result<Capture, ReplayError> {
         return Err(ReplayError::UnsupportedTransport);
     }
 
+    let (flow, gateway_alternates) = assemble_flow(segments)?;
     Ok(Capture {
-        flow: assemble_flow(segments)?,
+        flow,
+        gateway_alternates,
         tls_key_log: TlsKeyLog::new(tls_key_log),
     })
 }
@@ -243,9 +267,10 @@ fn parse_tcp_packet(packet: usize, bytes: &[u8]) -> Option<Segment> {
     })
 }
 
-fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
+fn assemble_flow(mut segments: Vec<Segment>) -> Result<(Flow, Vec<Flow>), ReplayError> {
     segments.retain(|segment| !segment.data.is_empty() || segment.syn || segment.fin || segment.rst);
     let mut missing_tcp_flow = false;
+    let mut gateways = Vec::new();
     for (start, syn) in segments
         .iter()
         .enumerate()
@@ -306,13 +331,29 @@ fn assemble_flow(mut segments: Vec<Segment>) -> Result<Flow, ReplayError> {
             continue;
         };
         if has_x224_connection_initiation(&client_stream, &server_stream) {
-            return Ok(Flow {
+            return Ok((
+                Flow {
+                    client,
+                    server,
+                    client_stream,
+                    server_stream,
+                },
+                Vec::new(),
+            ));
+        }
+        if server.port == 443 {
+            gateways.push(Flow {
                 client,
                 server,
                 client_stream,
                 server_stream,
             });
         }
+    }
+
+    let mut gateways = gateways.into_iter();
+    if let Some(flow) = gateways.next() {
+        return Ok((flow, gateways.collect()));
     }
 
     Err(if missing_tcp_flow {
@@ -520,12 +561,97 @@ mod tests {
     }
 
     #[test]
+    fn selects_a_gateway_port_flow_without_x224() {
+        let client = endpoint(1);
+        let server = endpoint(443);
+        let (flow, alternates) = assemble_flow(vec![
+            segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
+            segment_between(client.clone(), server.clone(), 101, 2, false, true, b"CLIENT"),
+            segment_between(server, client, 200, 3, false, true, b"SERVER"),
+        ])
+        .unwrap();
+
+        assert_eq!(flow.server.port, 443);
+        assert!(alternates.is_empty());
+        assert_eq!(flatten(&flow.client_stream), b"CLIENT");
+        assert_eq!(flatten(&flow.server_stream), b"SERVER");
+    }
+
+    #[test]
+    fn prefers_an_x224_flow_over_a_gateway_port_flow() {
+        let gateway_client = endpoint(1);
+        let gateway_server = endpoint(443);
+        let rdp_client = endpoint(3);
+        let rdp_server = endpoint(4);
+        let (flow, alternates) = assemble_flow(vec![
+            segment_between(gateway_client.clone(), gateway_server.clone(), 100, 1, true, false, &[]),
+            segment_between(
+                gateway_client.clone(),
+                gateway_server.clone(),
+                101,
+                2,
+                false,
+                true,
+                b"HTTPS",
+            ),
+            segment_between(gateway_server, gateway_client, 200, 3, false, true, b"HTTPS"),
+            segment_between(rdp_client.clone(), rdp_server.clone(), 300, 4, true, false, &[]),
+            segment_between(
+                rdp_client.clone(),
+                rdp_server.clone(),
+                301,
+                5,
+                false,
+                true,
+                &connection_request(),
+            ),
+            segment_between(rdp_server, rdp_client, 400, 6, false, true, &connection_confirm()),
+        ])
+        .unwrap();
+
+        assert_eq!(flow.client.port, 3);
+        assert_eq!(flow.server.port, 4);
+        assert!(alternates.is_empty());
+    }
+
+    #[test]
+    fn keeps_later_gateway_port_flows_as_alternates() {
+        let first_client = endpoint(1);
+        let first_server = endpoint(443);
+        let second_client = endpoint(2);
+        let second_server = endpoint(443);
+        let (flow, alternates) = assemble_flow(vec![
+            segment_between(first_client.clone(), first_server.clone(), 100, 1, true, false, &[]),
+            segment_between(first_client.clone(), first_server.clone(), 101, 2, false, true, b"KDC"),
+            segment_between(first_server, first_client, 200, 3, false, true, b"KDC"),
+            segment_between(second_client.clone(), second_server.clone(), 300, 4, true, false, &[]),
+            segment_between(
+                second_client.clone(),
+                second_server.clone(),
+                301,
+                5,
+                false,
+                true,
+                b"RDG",
+            ),
+            segment_between(second_server, second_client, 400, 6, false, true, b"RDG"),
+        ])
+        .unwrap();
+
+        assert_eq!(flow.client.port, 1);
+        assert_eq!(flatten(&flow.client_stream), b"KDC");
+        assert_eq!(alternates.len(), 1);
+        assert_eq!(alternates[0].client.port, 2);
+        assert_eq!(flatten(&alternates[0].client_stream), b"RDG");
+    }
+
+    #[test]
     fn skips_incomplete_flows_before_a_valid_rdp_connection() {
         let first_client = endpoint(1);
         let first_server = endpoint(2);
         let second_client = endpoint(3);
         let second_server = endpoint(4);
-        let flow = assemble_flow(vec![
+        let (flow, _) = assemble_flow(vec![
             segment_between(first_client.clone(), first_server.clone(), 100, 1, true, false, &[]),
             segment_between(first_client.clone(), first_server.clone(), 101, 2, false, true, b"bad"),
             segment_between(first_client, first_server, 101, 3, false, true, b"XX"),
@@ -574,7 +700,7 @@ mod tests {
     fn separates_connections_that_reuse_a_tcp_tuple() {
         let client = endpoint(1);
         let server = endpoint(2);
-        let flow = assemble_flow(vec![
+        let (flow, _) = assemble_flow(vec![
             segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
             segment_between(client.clone(), server.clone(), 101, 2, false, true, b"old"),
             segment_between(server.clone(), client.clone(), 300, 3, false, true, b"old"),
@@ -622,7 +748,7 @@ mod tests {
             &[],
         );
         server_fin.fin = true;
-        let flow = assemble_flow(vec![
+        let (flow, _) = assemble_flow(vec![
             segment_between(client.clone(), server.clone(), 100, 1, true, false, &[]),
             segment_between(client.clone(), server.clone(), 101, 2, false, true, &request),
             client_fin,

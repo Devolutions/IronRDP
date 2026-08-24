@@ -42,13 +42,13 @@ pub enum KeyboardType {
 impl KeyboardType {
     fn into_pdu(self) -> ironrdp::pdu::gcc::KeyboardType {
         match self {
-            KeyboardType::IbmEnhanced => ironrdp::pdu::gcc::KeyboardType::IbmEnhanced,
-            KeyboardType::IbmPcAt => ironrdp::pdu::gcc::KeyboardType::IbmPcAt,
-            KeyboardType::IbmPcXt => ironrdp::pdu::gcc::KeyboardType::IbmPcXt,
-            KeyboardType::OlivettiIco => ironrdp::pdu::gcc::KeyboardType::OlivettiIco,
-            KeyboardType::Nokia1050 => ironrdp::pdu::gcc::KeyboardType::Nokia1050,
-            KeyboardType::Nokia9140 => ironrdp::pdu::gcc::KeyboardType::Nokia9140,
-            KeyboardType::Japanese => ironrdp::pdu::gcc::KeyboardType::Japanese,
+            KeyboardType::IbmEnhanced => ironrdp::pdu::gcc::KeyboardType::IBM_ENHANCED,
+            KeyboardType::IbmPcAt => ironrdp::pdu::gcc::KeyboardType::IBM_PC_AT,
+            KeyboardType::IbmPcXt => ironrdp::pdu::gcc::KeyboardType::IBM_PC_XT,
+            KeyboardType::OlivettiIco => ironrdp::pdu::gcc::KeyboardType::OLIVETTI_ICO,
+            KeyboardType::Nokia1050 => ironrdp::pdu::gcc::KeyboardType::NOKIA_1050,
+            KeyboardType::Nokia9140 => ironrdp::pdu::gcc::KeyboardType::NOKIA_9140,
+            KeyboardType::Japanese => ironrdp::pdu::gcc::KeyboardType::JAPANESE,
         }
     }
 }
@@ -194,6 +194,13 @@ struct Args {
     /// Disable native MS-RDPEWA WebAuthn redirection.
     #[clap(long = "no-webauthn", action = clap::ArgAction::SetTrue, overrides_with = "webauthn")]
     no_webauthn: bool,
+
+    /// Audio input (microphone)
+    ///
+    /// Enables the AUDIO_INPUT (MS-RDPEAI) dynamic virtual channel so the local microphone is
+    /// redirected to the remote session. Disabled by default.
+    #[clap(long)]
+    microphone: bool,
 
     /// The bitmap codecs to use (remotefx:on, ...)
     #[clap(long, num_args = 1.., value_delimiter = ',')]
@@ -447,7 +454,10 @@ fn apply_cli_to_builder(
             builder = builder.with_rdcleanpath_token(token);
         }
     } else if let Some(endpoint) = args.gw_endpoint {
-        builder = builder.with_transport(TransportKind::Gateway { endpoint });
+        builder = builder.with_transport(TransportKind::Gateway {
+            endpoint,
+            prefer_direct: false,
+        });
 
         if let Some(username) = args.gw_user {
             builder = builder.with_gateway_username(username);
@@ -468,6 +478,10 @@ fn apply_cli_to_builder(
         redirect_webauthn
     };
     builder = builder.with_webauthn(webauthn);
+
+    if args.microphone {
+        builder = builder.with_audio_capture(true);
+    }
 
     // CLI-only knobs that are not representable as `.rdp` properties.
     // TODO/FIXME: Some of these, we may want to add support for storing in .rdp files (e.g.: IME file name can be reasonably seen as a connection option)

@@ -31,8 +31,23 @@ pub struct Plaintext {
 /// TLS key-log entries are used only in memory and are not retained by the
 /// returned streams.
 pub fn decrypt_tls(capture: &Capture) -> Result<Plaintext, ReplayError> {
-    let client_records = collect_tls_records(&capture.flow.client_stream, 0xe0)?;
-    let server_records = collect_tls_records(&capture.flow.server_stream, 0xd0)?;
+    decrypt_tls_streams(
+        &capture.flow.client_stream,
+        &capture.flow.server_stream,
+        capture.tls_key_log.as_str(),
+    )
+}
+
+/// Decrypt TLS application data from a pair of directional byte streams.
+///
+/// Used after gateway unwrap, when the inner RDP session is itself TLS.
+pub(crate) fn decrypt_tls_streams(
+    client_stream: &PacketStream,
+    server_stream: &PacketStream,
+    key_log: &str,
+) -> Result<Plaintext, ReplayError> {
+    let client_records = collect_tls_records(client_stream, 0xe0)?;
+    let server_records = collect_tls_records(server_stream, 0xd0)?;
     let (client_records, server_records) = match (client_records, server_records) {
         (Some(client_records), Some(server_records)) => (client_records, server_records),
         (None, None) => return Err(ReplayError::StandardSecurity),
@@ -41,7 +56,7 @@ pub fn decrypt_tls(capture: &Capture) -> Result<Plaintext, ReplayError> {
     if client_records.is_empty() && server_records.is_empty() {
         return Err(ReplayError::StandardSecurity);
     }
-    let tls = Tls::from_records(&client_records, &server_records, capture.tls_key_log.as_str())?;
+    let tls = Tls::from_records(&client_records, &server_records, key_log)?;
 
     Ok(Plaintext {
         client: tls.decrypt(Direction::Client, &client_records)?,
@@ -372,7 +387,7 @@ fn parse_master_secret(key_log: &str, client_random: &[u8]) -> Option<Vec<u8>> {
     let client_random = hex(client_random);
     key_log.lines().find_map(|line| {
         let mut fields = line.split_ascii_whitespace();
-        (fields.next()? == "CLIENT_RANDOM" && fields.next()? == client_random)
+        (fields.next()? == "CLIENT_RANDOM" && fields.next()?.eq_ignore_ascii_case(&client_random))
             .then(|| decode_hex(fields.next()?))
             .flatten()
             .filter(|secret| secret.len() == 48)
@@ -385,7 +400,8 @@ fn parse_tls13_secret(key_log: &str, label: &str, client_random: &[u8]) -> Resul
         .lines()
         .find_map(|line| {
             let mut fields = line.split_ascii_whitespace();
-            (fields.next()? == label && fields.next()? == client_random).then(|| decode_hex(fields.next()?))
+            (fields.next()? == label && fields.next()?.eq_ignore_ascii_case(&client_random))
+                .then(|| decode_hex(fields.next()?))
         })
         .flatten()
         .ok_or(ReplayError::MissingTlsSecret)
@@ -646,6 +662,7 @@ mod tests {
                 client_stream: vec![(1, client_records.into_iter().flat_map(|(_, record)| record).collect())],
                 server_stream: vec![(4, server_records.into_iter().flat_map(|(_, record)| record).collect())],
             },
+            gateway_alternates: Vec::new(),
             tls_key_log: TlsKeyLog::new(key_log),
         };
 
@@ -678,6 +695,7 @@ mod tests {
                 client_stream: vec![(1, x224_connection(0xe0))],
                 server_stream: vec![(2, x224_connection(0xd0))],
             },
+            gateway_alternates: Vec::new(),
             tls_key_log: TlsKeyLog::new(String::new()),
         };
 

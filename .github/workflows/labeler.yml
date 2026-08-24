@@ -165,6 +165,39 @@ jobs:
               }));
             }
 
+  request-review:
+    name: Request automated review
+    needs: [resolve-pr, classification-gate]
+    if: >-
+      needs.resolve-pr.outputs.ok == 'true' &&
+      needs.resolve-pr.outputs.review-requested == 'true' &&
+      needs.classification-gate.outputs.available == 'true' &&
+      needs.classification-gate.outputs.required == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+        with:
+          script: |
+            const { dispatchClassificationComplete } = require("./.github/pr-automation/write-state");
+            await dispatchClassificationComplete(
+              github,
+              context.repo.owner,
+              context.repo.repo,
+              Number(process.env.PULL_REQUEST_NUMBER),
+              process.env.HEAD_SHA,
+            );
+
   deterministic-analysis:
     name: Calculate deterministic labels
     needs: resolve-pr
