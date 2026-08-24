@@ -251,6 +251,7 @@ impl Decode<'_> for ConnectPkt {
                 "CONNECT_PKT::pkt_id",
                 "pkt_id",
                 format!("0x{:x}", hdr.pkt_id),
+                None,
             ));
         }
         let body_len = usize::from(hdr.pkt_len);
@@ -260,6 +261,7 @@ impl Decode<'_> for ConnectPkt {
                 "CONNECT_PKT::pkt_len",
                 "pkt_len",
                 format!("{body_len}"),
+                None,
             ));
         }
         let target_port = src.read_u16();
@@ -269,6 +271,7 @@ impl Decode<'_> for ConnectPkt {
                 "CONNECT_PKT::pkt_len",
                 "pkt_len",
                 format!("{body_len}"),
+                None,
             ));
         }
         let syn_data = AaSynData::decode(src)?;
@@ -326,6 +329,7 @@ impl Decode<'_> for ConnectPktResp {
                 "CONNECT_PKT_RESP::pkt_id",
                 "pkt_id",
                 format!("0x{:x}", hdr.pkt_id),
+                None,
             ));
         }
         if usize::from(hdr.pkt_len) != Self::BODY_SIZE {
@@ -333,6 +337,7 @@ impl Decode<'_> for ConnectPktResp {
                 "CONNECT_PKT_RESP::pkt_len",
                 "pkt_len",
                 format!("{}", hdr.pkt_len),
+                None,
             ));
         }
         let syn_response = AaSynDataResp::decode(src)?;
@@ -379,6 +384,7 @@ impl Decode<'_> for DataPkt {
                 "DATA_PKT::pkt_id",
                 "pkt_id",
                 format!("0x{:x}", hdr.pkt_id),
+                None,
             ));
         }
         let data_len = usize::from(hdr.pkt_len);
@@ -431,6 +437,7 @@ impl Decode<'_> for DiscPkt {
                 "DISC_PKT::pkt_id",
                 "pkt_id",
                 format!("0x{:x}", hdr.pkt_id),
+                None,
             ));
         }
         if usize::from(hdr.pkt_len) != Self::BODY_SIZE {
@@ -438,6 +445,7 @@ impl Decode<'_> for DiscPkt {
                 "DISC_PKT::pkt_len",
                 "pkt_len",
                 format!("{}", hdr.pkt_len),
+                None,
             ));
         }
         ensure_size!(in: src, size: Self::BODY_SIZE);
@@ -496,6 +504,7 @@ impl Decode<'_> for UdpCorrelationInfo {
                 "UDP_CORRELATION_INFO::uSignature1",
                 "sig1",
                 format!("0x{sig1:x}"),
+                None,
             ));
         }
         let correlation_id = src.read_array();
@@ -505,6 +514,7 @@ impl Decode<'_> for UdpCorrelationInfo {
                 "UDP_CORRELATION_INFO::uSignature2",
                 "sig2",
                 format!("0x{sig2:x}"),
+                None,
             ));
         }
         let cb = src.read_u16();
@@ -513,6 +523,7 @@ impl Decode<'_> for UdpCorrelationInfo {
                 "UDP_CORRELATION_INFO::uCbStruct",
                 "cb",
                 format!("{cb}"),
+                None,
             ));
         }
         Ok(Self { correlation_id })

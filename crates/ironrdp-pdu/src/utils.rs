@@ -179,7 +179,7 @@ pub fn encode_string(
 
     let len = buffer.len();
 
-    ensure_size!(ctx: ctx, in: dst, size: len);
+    ensure_size!(ctx: ctx, slice: dst, size: len);
     dst[..len].copy_from_slice(&buffer);
 
     Ok(len)

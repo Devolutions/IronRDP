@@ -95,6 +95,7 @@ impl Decode<'_> for TunnelCreateResponse {
             return Err(ironrdp_core::DecodeError::unexpected_message_type(
                 Self::NAME,
                 header.action.to_u8(),
+                Some(src.pos()),
             ));
         }
 
@@ -103,6 +104,7 @@ impl Decode<'_> for TunnelCreateResponse {
                 Self::NAME,
                 "HeaderLength",
                 "must be 4 for CreateResponse",
+                Some(src.pos()),
             ));
         }
 
@@ -115,6 +117,7 @@ impl Decode<'_> for TunnelCreateResponse {
                 Self::NAME,
                 "PayloadLength",
                 "must be 4 for CreateResponse",
+                Some(src.pos()),
             ));
         }
 

@@ -109,7 +109,8 @@ impl<'de> Decode<'de> for DisplayControlPdu {
         if !src.is_empty() {
             return Err(invalid_field_err!(
                 "Length",
-                "trailing bytes after display control PDU body"
+                "trailing bytes after display control PDU body",
+                in: src
             ));
         }
 
@@ -232,7 +233,7 @@ impl DisplayControlMonitorLayout {
 
     pub fn new(monitors: &[MonitorLayoutEntry]) -> EncodeResult<Self> {
         if monitors.len() > MAX_SUPPORTED_MONITORS.into() {
-            return Err(invalid_field_err!("NumMonitors", "Too many monitors",));
+            return Err(invalid_field_err!("NumMonitors", "Too many monitors"));
         }
 
         let primary_monitors_count = monitors.iter().filter(|monitor| monitor.is_primary()).count();
