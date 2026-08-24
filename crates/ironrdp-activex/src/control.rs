@@ -66,7 +66,7 @@ use windows::Win32::Security::Credentials::{
 use windows::Win32::Storage::FileSystem::GetLogicalDrives;
 use windows::Win32::System::Com::{
     CONNECTDATA, CoTaskMemAlloc, DATADIR_GET, DATADIR_SET, DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET,
-    DISPATCH_PROPERTYPUT, DISPID_UNKNOWN, DISPPARAMS, DVASPECT, DVASPECT_CONTENT, DVTARGETDEVICE, EXCEPINFO, FORMATETC,
+    DISPATCH_PROPERTYPUT, DISPPARAMS, DVASPECT, DVASPECT_CONTENT, DVTARGETDEVICE, EXCEPINFO, FORMATETC,
     IAdviseSink, IConnectionPoint, IConnectionPoint_Impl, IConnectionPointContainer, IConnectionPointContainer_Impl,
     IDataObject, IDataObject_Impl, IDispatch, IDispatch_Impl, IDispatch_Vtbl, IEnumConnectionPoints,
     IEnumConnectionPoints_Impl, IEnumConnections, IEnumConnections_Impl, IEnumFORMATETC, IEnumFORMATETC_Impl,
@@ -441,6 +441,7 @@ fn translate_control_site_accelerator(
     unsafe { ((*vtable).TranslateAccelerator)(site.as_raw(), message, KEYMODIFIERS(modifiers)) }
 }
 
+const DISPID_UNKNOWN: i32 = -1;
 const DISPID_SERVER: i32 = 1;
 const DISPID_DOMAIN: i32 = 2;
 const DISPID_USERNAME: i32 = 3;
