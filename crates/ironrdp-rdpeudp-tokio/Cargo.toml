@@ -25,10 +25,10 @@ rustls-aws-lc-rs = ["tokio-rustls/aws_lc_rs"]
 rustls-ring = ["tokio-rustls/ring"]
 
 [dependencies]
-ironrdp-async = { path = "../ironrdp-async", version = "0.10" } # public
-ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["std"] } # public
+ironrdp-async = { path = "../ironrdp-async", version = "0.11" } # public
+ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["std"] } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", features = ["std"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.10", features = ["std"] } # public
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", version = "0.1", features = ["std"] } # public
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", version = "0.1", features = ["std"] } # public
 bytes = "1"

@@ -6,6 +6,92 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.7.0...ironrdp-cliprdr-v0.8.0)] - 2026-08-24
+
+### <!-- 1 -->Features
+
+- Add a chunked file-contents fetch primitive ([#1742](https://github.com/Devolutions/IronRDP/issues/1742)) ([58bcbaf572](https://github.com/Devolutions/IronRDP/commit/58bcbaf572d1c75c40daec3921ec217a811c25a4)) 
+
+  ## Summary
+  
+  - MS-RDPECLIP's file-contents protocol is receiver-driven: fetching a
+    file means sending a sequence of byte-range FileContentsRequests and
+    reassembling the FileContentsResponses. Nothing in this crate helps
+    with that sequencing, so every consumer that wants a whole file ends
+    up writing its own request/response loop by hand.
+  - Adds ChunkedFetch: a small state machine that produces the next
+    request to send and consumes each response, tracking offset and
+    buffered bytes so the caller doesn't have to. The size phase is
+    optional: construct with a known size (the common case, since it's
+    usually already available from an earlier FileGroupDescriptorW
+    exchange) to skip straight to range requests, or without one to
+    query it first.
+  - Every request carries an explicit clip_data_id, the id
+    CliprdrBackend::on_remote_file_list already hands the caller for the
+    file's locked snapshot. request_file_contents can auto-fill this from
+    current_lock_id when left unset, but a fetch spans multiple requests
+    and a FormatList between them can expire the old lock and install a
+    new one under the same field, so auto-filling would let a fetch
+    already in flight silently retarget to whichever lock happens to be
+    current at send time.
+  - A caller-provided max_total_size bounds how large a file this type
+    will try to buffer in memory, checked as soon as the size is known
+    (either the caller-supplied total_size, or the peer's own SIZE
+    response), independent of what that size claims to be.
+  - Two defensive cases beyond the happy path: an empty range response
+    before the file is complete fails the fetch rather than
+    re-requesting the same range forever, since the protocol has no
+    "not ready yet" signal that would legitimately produce one, and a
+    response longer than what's left is clamped rather than trusted,
+    since accepting it as-is would grow the buffer past the file's
+    total size.
+  
+  ## Validation
+  
+  `cargo xtask check fmt/lints/tests/typos/locks` all pass. Tests live
+  in ironrdp-testsuite-core since this crate sets [lib] test = false.
+  
+  ## Notes
+  
+  No public API break: this is a new module with entirely new public
+  types, no existing signature changes.
+
+- [**breaking**] Populate decode/encode error offsets from cursor positions ([#1275](https://github.com/Devolutions/IronRDP/issues/1275)) ([8607ac5d1c](https://github.com/Devolutions/IronRDP/commit/8607ac5d1c2ea14efcac02921e54d951ab1045ec)) 
+
+  ## Summary
+  
+  The workspace sweep that follows #1266. Decode and encode error
+  construction sites now pass the cursor, so the reported position is the
+  byte the decoder or encoder actually stopped at.
+  
+  Stacked on #1266 and merges after it.
+  
+  ## What "no position" means here
+  
+  #1266 makes `offset` an `Option<usize>` where `None` means the error has
+  no position in the input stream at all, rather than a position that
+  happened to be unavailable. This PR is the other half of that: it walks
+  the workspace and gives a real position to every site that has one, so
+  the sites left reporting `None` are the ones that genuinely never had
+  one.
+  
+  Those are constructors validating their arguments, integer conversions,
+  cache lookups that missed, accessors on already-decoded structures, and
+  the declared-size checks described below. They report nothing rather
+  than byte zero, and that is now their permanent answer rather than a gap
+  awaiting another sweep.
+  
+  There are no `at: 0` sites left anywhere in the workspace.
+  
+  ## The rule
+  
+  The position is attached where the cursor identifies the bytes being
+  complained about. It is omitted where the complaint is about a size the
+  peer declared, computed from data already consumed, because there the
+  cursor points at a byte that is not the problem.
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-v0.6.0...ironrdp-cliprdr-v0.7.0)] - 2026-07-10
 
 ### <!-- 1 -->Features

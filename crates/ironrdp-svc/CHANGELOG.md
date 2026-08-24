@@ -6,6 +6,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.8.0...ironrdp-svc-v0.9.0)] - 2026-08-24
+
+### <!-- 1 -->Features
+
+- Support runtime-defined static virtual channels ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba)) 
+
+  ## Summary
+  - add keyed runtime-defined static-channel registration, lookup, and
+  negotiated ID attachment
+  - enforce the static-channel limit and reject malformed SVC fragment
+  sequences
+  - wire generic connector, acceptor, and session name-based dispatch
+  support
+  
+  ## Testing
+  - `cargo test -p ironrdp-testsuite-core --test integration_tests_core
+  svc::`
+  - `cargo clippy -p ironrdp-testsuite-core --test integration_tests_core
+  -- -D warnings`
+  
+  ---------
+
+- Negotiate static channel chunk sizing ([#1622](https://github.com/Devolutions/IronRDP/issues/1622)) ([4e3903fbbe](https://github.com/Devolutions/IronRDP/commit/4e3903fbbef2904505f35e3437a7106807ac5987)) 
+
+  Use the validated server VCChunkSize for outgoing static virtual channel
+  data and retain 1600-byte chunks when it is absent or invalid.
+  
+  Apply refreshed values after reactivation across native, web, and FFI
+  active stages while preserving channel flags.
+
+- [**breaking**] Record byte offset on decode and encode error variants ([#1266](https://github.com/Devolutions/IronRDP/issues/1266)) ([a1f9189c30](https://github.com/Devolutions/IronRDP/commit/a1f9189c307516361a8faff6ecb7c1690b267998)) 
+
+  ## Summary
+  
+  Records a byte offset on every `DecodeErrorKind` and `EncodeErrorKind`
+  variant that can know one, so decode and encode errors surface the
+  position in the input stream where the failure was detected. Reshaped
+  twice after review; see "Review history" below if you reviewed an
+  earlier shape.
+  
+  Contributes to the structured-fuzzing roadmap in #1120 by giving
+  crash-replay analysis and Wireshark-style malformed-PDU reporting the
+  byte-offset dimension that source `Location` ([#1262](https://github.com/Devolutions/IronRDP/issues/1262)) alone does not
+  provide.
+  
+  ## API
+  
+  Variants that gain `offset: Option<usize>`:
+  
+  - `DecodeErrorKind::NotEnoughBytes { received, expected, offset }`
+  - `DecodeErrorKind::InvalidField { field, reason, offset }`
+  - `DecodeErrorKind::UnexpectedMessageType { got, offset }`
+  - `DecodeErrorKind::UnsupportedVersion { got, offset }`
+  - `DecodeErrorKind::UnsupportedValue { name, value, offset }`
+  - `EncodeErrorKind` mirrors the same shape for the encode side
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.7.0...ironrdp-svc-v0.8.0)] - 2026-07-10
 
 ### <!-- 7 -->Build
