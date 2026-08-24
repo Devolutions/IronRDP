@@ -16,6 +16,8 @@ use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{
     ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity, StaticChannelFactory,
 };
+#[cfg(feature = "usb")]
+use crate::urbdrc::DeviceFactory;
 use crate::{DisplayUpdate, RdpServerDisplayUpdates, RdpeiServerFactory, SoundServerFactory};
 
 pub struct WantsAddr {}
@@ -46,6 +48,8 @@ pub struct BuilderDone {
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
+    #[cfg(feature = "usb")]
+    usb_factory: Option<Box<dyn DeviceFactory>>,
     display_suppressed: Option<Arc<AtomicBool>>,
     autodetect_rtt: Option<Arc<AtomicU32>>,
     autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
@@ -153,6 +157,8 @@ impl RdpServerBuilder<WantsDisplay> {
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
+                #[cfg(feature = "usb")]
+                usb_factory: None,
                 display_suppressed: None,
                 autodetect_rtt: None,
                 autodetect_baseline_rtt: None,
@@ -181,6 +187,8 @@ impl RdpServerBuilder<WantsDisplay> {
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
+                #[cfg(feature = "usb")]
+                usb_factory: None,
                 display_suppressed: None,
                 autodetect_rtt: None,
                 autodetect_baseline_rtt: None,
@@ -220,6 +228,12 @@ impl RdpServerBuilder<BuilderDone> {
     #[cfg(feature = "egfx")]
     pub fn with_gfx_factory(mut self, gfx_factory: Option<Box<dyn GfxServerFactory>>) -> Self {
         self.state.gfx_factory = gfx_factory;
+        self
+    }
+
+    #[cfg(feature = "usb")]
+    pub fn with_usb_factory(mut self, usb_factory: Option<Box<dyn DeviceFactory>>) -> Self {
+        self.state.usb_factory = usb_factory;
         self
     }
 
@@ -416,6 +430,8 @@ impl RdpServerBuilder<BuilderDone> {
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,
             self.state.display_suppressed,
+            #[cfg(feature = "usb")]
+            self.state.usb_factory,
             self.state.autodetect_rtt,
             self.state.autodetect_baseline_rtt,
         );
