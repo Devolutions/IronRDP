@@ -20,6 +20,8 @@ use ironrdp_dvc as dvc;
 #[cfg(feature = "usb")]
 use ironrdp_dvc::DynamicChannelId;
 use ironrdp_error::ResultExt as _;
+#[cfg(feature = "usb")]
+use ironrdp_pdu::PduError;
 use ironrdp_pdu::codecs::rfx::Quant;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
@@ -1742,35 +1744,41 @@ impl RdpServer {
                                 continue;
                             };
 
-                            drdynvc.create_channel_with(|dvc_id| {
-                                let lifecycle = Arc::new(UsbDeviceLifecycle::new());
-                                let handle =
-                                    UsbDeviceHandle::new(self.ev_sender.clone(), dvc_id, Arc::clone(&lifecycle));
-                                let device = ServerUsbDevice {
-                                    lifecycle,
-                                    handle: handle.clone(),
-                                    pending: HashMap::new(),
-                                };
-                                if usb_man.router.insert(dvc_id, device).is_some() {
-                                    warn!(dvc_id = dvc_id, "Replacing USB device pending-request map");
-                                }
-                                Ok::<_, anyhow::Error>(
-                                    UrbdrcDeviceServer::new(
-                                        Box::new(UsbRedirServer::new(device_backend, handle)),
-                                        comp_iface,
+                            drdynvc
+                                .create_channel_with(|dvc_id| {
+                                    let lifecycle = Arc::new(UsbDeviceLifecycle::new());
+                                    let handle =
+                                        UsbDeviceHandle::new(self.ev_sender.clone(), dvc_id, Arc::clone(&lifecycle));
+                                    let device = ServerUsbDevice {
+                                        lifecycle,
+                                        handle: handle.clone(),
+                                        pending: HashMap::new(),
+                                    };
+                                    if usb_man.router.insert(dvc_id, device).is_some() {
+                                        warn!(dvc_id = dvc_id, "Replacing USB device pending-request map");
+                                    }
+                                    Ok::<_, PduError>(
+                                        UrbdrcDeviceServer::new(
+                                            Box::new(UsbRedirServer::new(device_backend, handle)),
+                                            comp_iface,
+                                        )
+                                        .expect("interface ID allocated by InterfaceAlloc must be valid"),
                                     )
-                                    .expect("interface ID allocated by InterfaceAlloc must be valid"),
-                                )
-                            })?
+                                })
+                                .map_err_kind("create URBDRC device channel", ServerErrorKind::Pdu)?
                         };
 
                         let drdynvc_channel_id = self
                             .get_channel_id_by_type::<dvc::DrdynvcServer>()
-                            .context("DRDYNVC channel not found")?;
+                            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
                         let data =
-                            server_encode_svc_messages(vec![create_dvc_msg], drdynvc_channel_id, user_channel_id)?;
+                            server_encode_svc_messages(vec![create_dvc_msg], drdynvc_channel_id, user_channel_id)
+                                .map_err(ServerError::encode)?;
 
-                        writer.write_all(&data).await?;
+                        writer
+                            .write_all(&data)
+                            .await
+                            .map_err(|e| ServerError::io("write_all", e))?;
                     }
                     UrbdrcServerMessage::Device { dvc_id, dev_msg } => {
                         let Some(lifecycle) = self
@@ -1805,7 +1813,10 @@ impl RdpServer {
 
                             match dev_msg {
                                 UrbdrcDeviceServerMessage::QueryDeviceText { text_type, locale_id } => {
-                                    (vec![processor.query_device_text(text_type, locale_id)?], None, false)
+                                    let text = processor
+                                        .query_device_text(text_type, locale_id)
+                                        .map_err_kind("query USB device text", ServerErrorKind::Pdu)?;
+                                    (vec![text], None, false)
                                 }
                                 UrbdrcDeviceServerMessage::IoComp { request_id, completion } => {
                                     let Some(usb_man) = self.usb_man.as_mut() else {
@@ -1838,7 +1849,8 @@ impl RdpServer {
                                         }
                                         ServerDeviceIoReq::TransferOut(packet) => processor.transfer_out(packet),
                                         ServerDeviceIoReq::TransferIn(packet) => processor.transfer_in(packet),
-                                    }?;
+                                    }
+                                    .map_err_kind("USB I/O request", ServerErrorKind::Pdu)?;
 
                                     let pending = if request.expects_completion {
                                         let Some(usb_man) = self.usb_man.as_mut() else {
@@ -1871,12 +1883,16 @@ impl RdpServer {
                                     (vec![request.message], Some((tx, pending)), false)
                                 }
                                 UrbdrcDeviceServerMessage::Retract(reason) => {
-                                    let request = processor.retract_device(reason)?;
+                                    let request = processor
+                                        .retract_device(reason)
+                                        .map_err_kind("retract USB device", ServerErrorKind::Pdu)?;
                                     lifecycle.mark_retracting();
                                     (vec![request], None, true)
                                 }
                                 UrbdrcDeviceServerMessage::CancelRequest(request_id) => {
-                                    let request = processor.cancel_request(request_id)?;
+                                    let request = processor
+                                        .cancel_request(request_id)
+                                        .map_err_kind("cancel USB I/O request", ServerErrorKind::Pdu)?;
                                     let Some(usb_man) = self.usb_man.as_mut() else {
                                         warn!("Missing USB device factory");
                                         continue;
@@ -1898,23 +1914,30 @@ impl RdpServer {
                             }
                         };
 
-                        let mut messages = dvc::encode_dvc_messages(dvc_id, dvc_msgs, ChannelFlags::SHOW_PROTOCOL)?;
+                        let mut messages = dvc::encode_dvc_messages(dvc_id, dvc_msgs, ChannelFlags::SHOW_PROTOCOL)
+                            .map_err(ServerError::encode)?;
 
                         if close_dev {
                             let close_message = self
                                 .get_svc_processor::<dvc::DrdynvcServer>()
                                 .and_then(|drdynvc| drdynvc.close_channel(dvc_id))
-                                .context("URBDRC dynamic channel disappeared before close")?;
+                                .ok_or_else(|| {
+                                    ServerError::channel("URBDRC dynamic channel disappeared before close")
+                                })?;
                             self.remove_usb_device(dvc_id);
                             messages.push(close_message);
                         }
 
                         let drdynvc_channel_id = self
                             .get_channel_id_by_type::<dvc::DrdynvcServer>()
-                            .context("DRDYNVC channel not found")?;
+                            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
 
-                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
-                        writer.write_all(&data).await?;
+                        let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)
+                            .map_err(ServerError::encode)?;
+                        writer
+                            .write_all(&data)
+                            .await
+                            .map_err(|e| ServerError::io("write_all", e))?;
 
                         if let Some((tx, pending)) = io_reply {
                             if let Err(pending) = tx.send(pending) {
