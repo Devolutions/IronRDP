@@ -66,12 +66,12 @@ use windows::Win32::Security::Credentials::{
 use windows::Win32::Storage::FileSystem::GetLogicalDrives;
 use windows::Win32::System::Com::{
     CONNECTDATA, CoTaskMemAlloc, DATADIR_GET, DATADIR_SET, DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET,
-    DISPATCH_PROPERTYPUT, DISPPARAMS, DVASPECT, DVASPECT_CONTENT, DVTARGETDEVICE, EXCEPINFO, FORMATETC,
-    IAdviseSink, IConnectionPoint, IConnectionPoint_Impl, IConnectionPointContainer, IConnectionPointContainer_Impl,
-    IDataObject, IDataObject_Impl, IDispatch, IDispatch_Impl, IDispatch_Vtbl, IEnumConnectionPoints,
-    IEnumConnectionPoints_Impl, IEnumConnections, IEnumConnections_Impl, IEnumFORMATETC, IEnumFORMATETC_Impl,
-    IEnumSTATDATA, IEnumSTATDATA_Impl, IPersist_Impl, IPersistStreamInit, IPersistStreamInit_Impl, IStream, ITypeInfo,
-    STATDATA, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
+    DISPATCH_PROPERTYPUT, DISPPARAMS, DVASPECT, DVASPECT_CONTENT, DVTARGETDEVICE, EXCEPINFO, FORMATETC, IAdviseSink,
+    IConnectionPoint, IConnectionPoint_Impl, IConnectionPointContainer, IConnectionPointContainer_Impl, IDataObject,
+    IDataObject_Impl, IDispatch, IDispatch_Impl, IDispatch_Vtbl, IEnumConnectionPoints, IEnumConnectionPoints_Impl,
+    IEnumConnections, IEnumConnections_Impl, IEnumFORMATETC, IEnumFORMATETC_Impl, IEnumSTATDATA, IEnumSTATDATA_Impl,
+    IPersist_Impl, IPersistStreamInit, IPersistStreamInit_Impl, IStream, ITypeInfo, STATDATA, STGMEDIUM, STGMEDIUM_0,
+    TYMED_HGLOBAL,
 };
 use windows::Win32::System::DataExchange::{
     CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
