@@ -964,7 +964,9 @@ impl ConfigBuilder {
             self.properties.remove("loadbalanceinfo");
         } else {
             self.properties.insert("loadbalanceinfo", value.clone());
-            self.request_data = Some(ironrdp_pdu::nego::NegoRequestData::raw_routing_token(value));
+            self.request_data = Some(ironrdp_pdu::nego::NegoRequestData::raw_routing_token(
+                value.strip_suffix("\r\n").unwrap_or(&value).to_owned(),
+            ));
         }
         self
     }
@@ -1521,9 +1523,9 @@ impl ConfigBuilder {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
         use ironrdp_pdu::rdp::client_info::TimezoneInfo;
 
-        if let Some(ironrdp_pdu::nego::NegoRequestData::RoutingToken(token)) = &self.request_data {
+        if let Some(ironrdp_pdu::nego::NegoRequestData::OpaqueRoutingToken(token)) = &self.request_data {
             anyhow::ensure!(
-                token.0.len() <= 256
+                token.0.len() <= ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH
                     && !token.0.is_empty()
                     && token.0.as_bytes().iter().all(|byte| (0x20..=0x7E).contains(byte)),
                 "invalid load-balance routing token"
@@ -1882,7 +1884,10 @@ impl ConfigBuilder {
         }
         if let Some(load_balance_info) = ps.get::<&str>("loadbalanceinfo") {
             self.request_data = Some(ironrdp_pdu::nego::NegoRequestData::raw_routing_token(
-                load_balance_info.to_owned(),
+                load_balance_info
+                    .strip_suffix("\r\n")
+                    .unwrap_or(load_balance_info)
+                    .to_owned(),
             ));
         }
         if let Some(scale) = ps.desktop_scale_factor().ok().flatten() {
@@ -1955,7 +1960,7 @@ impl ConfigBuilder {
             _ => {}
         }
         #[cfg(any(feature = "sound", feature = "rdpdr"))]
-        if let Some(audio_quality_mode) = ps.get::<u32>("audioqualitymode") {
+        if let Some(audio_quality_mode) = ps.get::<i64>("audioqualitymode") {
             self.audio_quality_mode = Some(match audio_quality_mode {
                 0 => AudioQualityMode::Dynamic,
                 1 => AudioQualityMode::Medium,

@@ -373,7 +373,7 @@ fn generic_builder_options_reach_connector_configuration() {
     assert_eq!(config.connector().work_dir, "C:\\Users\\test-user");
     assert!(matches!(
         config.connector().request_data.as_ref(),
-        Some(NegoRequestData::RoutingToken(token))
+        Some(NegoRequestData::OpaqueRoutingToken(token))
             if token.0 == "tsv://MS Terminal Services Plugin.1.collection"
     ));
     assert!(config.administrative_session());
@@ -400,7 +400,7 @@ fn rdp_file_maps_routing_admin_and_audio_quality_settings() {
 
     assert!(matches!(
         config.connector().request_data.as_ref(),
-        Some(NegoRequestData::RoutingToken(token))
+        Some(NegoRequestData::OpaqueRoutingToken(token))
             if token.0 == "tsv://MS Terminal Services Plugin.1.collection"
     ));
     assert!(config.administrative_session());

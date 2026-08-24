@@ -11,6 +11,8 @@ use crate::tpkt::TpktHeader;
 use crate::x224::X224Pdu;
 use crate::{DecodeResult, EncodeResult, Pdu as _, impl_x224_pdu_pod};
 
+pub const MAX_ROUTING_TOKEN_LENGTH: usize = 238;
+
 bitflags! {
     /// A 32-bit, unsigned integer that contains flags indicating the supported security protocols.
     ///
@@ -166,6 +168,7 @@ impl fmt::Display for FailureCode {
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum NegoRequestData {
     RoutingToken(RoutingToken),
+    OpaqueRoutingToken(OpaqueRoutingToken),
     Cookie(Cookie),
 }
 
@@ -174,27 +177,28 @@ impl NegoRequestData {
         Self::RoutingToken(RoutingToken(format!("Cookie: msts={value}")))
     }
 
+    pub fn raw_routing_token(value: String) -> Self {
+        Self::OpaqueRoutingToken(OpaqueRoutingToken(value))
+    }
+
     pub fn cookie(value: String) -> Self {
         Self::Cookie(Cookie(value))
     }
 
-    /// Creates an opaque load-balance routing token.
-    ///
-    /// Unlike [`Self::routing_token`], this does not add the legacy `Cookie: msts=` prefix.
-    pub fn raw_routing_token(value: String) -> Self {
-        Self::RoutingToken(RoutingToken(value))
-    }
-
     pub fn read(src: &mut ReadCursor<'_>) -> DecodeResult<Option<Self>> {
-        match Cookie::read(src)? {
-            Some(cookie) => Ok(Some(Self::Cookie(cookie))),
-            None => RoutingToken::read(src)?.map(Self::RoutingToken).pipe(Ok),
+        if let Some(token) = RoutingToken::read(src)? {
+            return Ok(Some(Self::RoutingToken(token)));
         }
+        if let Some(cookie) = Cookie::read(src)? {
+            return Ok(Some(Self::Cookie(cookie)));
+        }
+        OpaqueRoutingToken::read(src)?.map(Self::OpaqueRoutingToken).pipe(Ok)
     }
 
     pub fn write(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             NegoRequestData::RoutingToken(token) => token.write(dst),
+            NegoRequestData::OpaqueRoutingToken(token) => token.write(dst),
             NegoRequestData::Cookie(cookie) => cookie.write(dst),
         }
     }
@@ -202,6 +206,7 @@ impl NegoRequestData {
     pub fn size(&self) -> usize {
         match self {
             NegoRequestData::RoutingToken(token) => token.size(),
+            NegoRequestData::OpaqueRoutingToken(token) => token.size(),
             NegoRequestData::Cookie(cookie) => cookie.size(),
         }
     }
@@ -227,12 +232,32 @@ impl Cookie {
     }
 }
 
-/// Complete opaque ANSI routing token, excluding the terminating CRLF.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RoutingToken(pub String);
 
 impl RoutingToken {
+    const PREFIX: &'static str = "Cookie: msts=";
+
+    pub fn read(src: &mut ReadCursor<'_>) -> DecodeResult<Option<Self>> {
+        read_nego_data(src, "RoutingToken", Self::PREFIX)?.map(Self).pipe(Ok)
+    }
+
+    pub fn write(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        write_nego_data(dst, "RoutingToken", Self::PREFIX, &self.0)
+    }
+
+    pub fn size(&self) -> usize {
+        Self::PREFIX.len() + self.0.len() + 2
+    }
+}
+
+/// Complete opaque ANSI routing token, excluding the terminating CRLF.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct OpaqueRoutingToken(pub String);
+
+impl OpaqueRoutingToken {
     pub fn read(src: &mut ReadCursor<'_>) -> DecodeResult<Option<Self>> {
         let start = src.pos();
         let Some(length) = src.inner()[start..].windows(2).position(|bytes| bytes == b"\r\n") else {

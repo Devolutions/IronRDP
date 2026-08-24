@@ -2098,15 +2098,15 @@ advanced_get_not_implemented!(
     (180, advanced_get_negotiate_security_layer, i16),
 );
 
-const MAX_LOAD_BALANCE_INFO_BYTES: usize = 256;
+const MAX_LOAD_BALANCE_INFO_BYTES: usize = ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH;
 
 unsafe extern "system" fn advanced_put_load_balance_info(this: *mut c_void, value: Bstr) -> HRESULT {
     let value = match string_from_bstr(value) {
-        Ok(value) if value.len() <= MAX_LOAD_BALANCE_INFO_BYTES && value.is_ascii() => value,
+        Ok(value) if value.is_ascii() => value,
         Ok(_) | Err(_) => return E_INVALIDARG,
     };
-    let value = value.strip_suffix("\r\n").unwrap_or(&value);
-    if value.contains(['\r', '\n']) {
+    let normalized = value.strip_suffix("\r\n").unwrap_or(&value);
+    if normalized.len() > MAX_LOAD_BALANCE_INFO_BYTES || normalized.contains(['\r', '\n']) {
         return E_INVALIDARG;
     }
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
@@ -2114,7 +2114,7 @@ unsafe extern "system" fn advanced_put_load_balance_info(this: *mut c_void, valu
     if settings.connection_settings_sealed {
         return E_FAIL;
     }
-    settings.load_balance_info = value.to_owned();
+    settings.load_balance_info = value;
     S_OK
 }
 

@@ -466,7 +466,7 @@ subtype, and functional-key count, secured `StartProgram`/`WorkDir`, both public
 `StartProgram` and `WorkDir` retain their caller-owned BSTR values and configure IronRDP's next
 Client Info PDU alternate shell and working directory. The keyboard fields configure the next GCC
 Client Core Data block.
-`LoadBalanceInfo` accepts an ASCII routing token of at most 256 bytes and carries it in the next X.224 Connection Request.
+`LoadBalanceInfo` accepts an ASCII routing token of at most 238 bytes and carries it in the next X.224 Connection Request.
 `ConnectToServerConsole` and `ConnectToAdministerServer` are aliases that request session ID zero through GCC Client Cluster Data.
 `AudioQualityMode` values `0`, `1`, and `2` select dynamic, medium, and high RDPSND quality.
 Audio mode `0` enables the Windows-native RDPSND playback backend (CPAL) and
