@@ -24,7 +24,7 @@ pub fn opt_string_size(value: Option<&str>) -> usize {
 
 pub fn write_string(dst: &mut WriteCursor<'_>, value: &str) -> EncodeResult<()> {
     ensure_size!(in: dst, size: string_size(value));
-    let len: u32 = cast_length!("string length", value.len())?;
+    let len: u32 = cast_length!("string length", value.len(), in: dst)?;
     dst.write_u32(len);
     dst.write_slice(value.as_bytes());
     Ok(())
@@ -48,7 +48,7 @@ pub fn bytes_size(value: &[u8]) -> usize {
 
 pub fn write_bytes(dst: &mut WriteCursor<'_>, value: &[u8]) -> EncodeResult<()> {
     ensure_size!(in: dst, size: bytes_size(value));
-    let len: u32 = cast_length!("bytes length", value.len())?;
+    let len: u32 = cast_length!("bytes length", value.len(), in: dst)?;
     dst.write_u32(len);
     dst.write_slice(value);
     Ok(())
@@ -115,7 +115,7 @@ pub fn read_char(src: &mut ReadCursor<'_>) -> DecodeResult<char> {
 
 pub fn write_mouse_button(dst: &mut WriteCursor<'_>, button: MouseButton) -> EncodeResult<()> {
     ensure_size!(in: dst, size: 1);
-    let idx: u8 = cast_length!("mouse button index", button.as_idx())?;
+    let idx: u8 = cast_length!("mouse button index", button.as_idx(), in: dst)?;
     dst.write_u8(idx);
     Ok(())
 }

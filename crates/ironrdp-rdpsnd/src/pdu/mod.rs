@@ -275,7 +275,7 @@ impl Encode for AudioFormat {
         dst.write_u16(self.n_block_align);
         dst.write_u16(self.bits_per_sample);
         let len = self.data.as_ref().map_or(0, |d| d.len());
-        dst.write_u16(cast_length!("AudioFormat::cbSize", len)?);
+        dst.write_u16(cast_length!("AudioFormat::cbSize", len, in: dst)?);
         if let Some(data) = &self.data {
             dst.write_slice(data);
         }
@@ -304,7 +304,7 @@ impl<'de> Decode<'de> for AudioFormat {
         let n_avg_bytes_per_sec = src.read_u32();
         let n_block_align = src.read_u16();
         let bits_per_sample = src.read_u16();
-        let cb_size = cast_length!("cbSize", src.read_u16())?;
+        let cb_size = cast_length!("cbSize", src.read_u16(), in: src)?;
 
         ensure_size!(in: src, size: cb_size);
         let data = if cb_size > 0 {
@@ -353,7 +353,7 @@ impl Encode for ServerAudioFormatPdu {
         write_padding!(dst, 4); /* volume */
         write_padding!(dst, 4); /* pitch */
         write_padding!(dst, 2); /* DGramPort */
-        dst.write_u16(cast_length!("AudioFormatPdu::n_formats", self.formats.len())?);
+        dst.write_u16(cast_length!("AudioFormatPdu::n_formats", self.formats.len(), in: dst)?);
         write_padding!(dst, 1); /* blockNo */
         dst.write_u16(self.version.into());
         write_padding!(dst, 1);
@@ -447,7 +447,7 @@ impl Encode for ClientAudioFormatPdu {
         dst.write_u32(volume);
         dst.write_u32(self.pitch);
         dst.write_u16_be(self.dgram_port);
-        dst.write_u16(cast_length!("AudioFormatPdu::n_formats", self.formats.len())?);
+        dst.write_u16(cast_length!("AudioFormatPdu::n_formats", self.formats.len(), in: dst)?);
         dst.write_u8(0); /* blockNo */
         dst.write_u16(self.version.into());
         write_padding!(dst, 1);
@@ -639,7 +639,7 @@ impl Encode for TrainingPdu {
         } else {
             self.size() + ServerAudioOutputPdu::FIXED_PART_SIZE
         };
-        dst.write_u16(cast_length!("TrainingPdu::wPackSize", len)?);
+        dst.write_u16(cast_length!("TrainingPdu::wPackSize", len, in: dst)?);
         dst.write_slice(&self.data);
 
         Ok(())
@@ -664,7 +664,7 @@ impl<'de> Decode<'de> for TrainingPdu {
         let len = usize::from(src.read_u16());
         let data = if len != 0 {
             if len < Self::FIXED_PART_SIZE + ServerAudioOutputPdu::FIXED_PART_SIZE {
-                return Err(invalid_field_err!("TrainingPdu::wPackSize", "too small"));
+                return Err(invalid_field_err!("TrainingPdu::wPackSize", "too small", in: src));
             }
             let len = len - Self::FIXED_PART_SIZE - ServerAudioOutputPdu::FIXED_PART_SIZE;
             ensure_size!(in: src, size: len);
@@ -819,11 +819,12 @@ impl WavePdu {
         let info = WaveInfoPdu::decode(src)?;
         let audio_length = body_size
             .checked_sub(8)
-            .ok_or_else(|| invalid_field_err!("BodySize", "WaveInfo body_size is too small"))?;
+            .ok_or_else(|| invalid_field_err!("BodySize", "WaveInfo body_size is too small", in: src))?;
         if audio_length < Self::MIN_AUDIO_LENGTH {
             return Err(invalid_field_err!(
                 "BodySize",
-                "WaveInfo audio length is smaller than the Data prefix"
+                "WaveInfo audio length is smaller than the Data prefix",
+                in: src
             ));
         }
 
@@ -1224,7 +1225,7 @@ impl Encode for ServerAudioOutputPdu<'_> {
 
         dst.write_u8(msg_type);
         write_padding!(dst, 1);
-        dst.write_u16(cast_length!("ServerAudioOutputPdu::bodySize", pdu_size)?);
+        dst.write_u16(cast_length!("ServerAudioOutputPdu::bodySize", pdu_size, in: dst)?);
 
         match self {
             Self::AudioFormat(pdu) => pdu.encode(dst),
@@ -1305,10 +1306,8 @@ impl<'de> Decode<'de> for ServerAudioOutputPdu<'_> {
                 let pdu = PitchPdu::decode(src)?;
                 Ok(Self::Pitch(pdu))
             }
-            _ => Err(invalid_field_err!(
-                "ServerAudioOutputPdu::msgType",
-                "Unknown audio output PDU type"
-            )),
+            _ => Err(invalid_field_err!( "ServerAudioOutputPdu::msgType",
+                "Unknown audio output PDU type", in: src)),
         }
     }
 }
@@ -1343,7 +1342,7 @@ impl Encode for ClientAudioOutputPdu {
 
         dst.write_u8(msg_type);
         write_padding!(dst, 1);
-        dst.write_u16(cast_length!("ClientAudioOutputPdu::bodySize", body_size)?);
+        dst.write_u16(cast_length!("ClientAudioOutputPdu::bodySize", body_size, in: dst)?);
 
         match self {
             Self::AudioFormat(pdu) => pdu.encode(dst),
@@ -1396,10 +1395,8 @@ impl<'de> Decode<'de> for ClientAudioOutputPdu {
                 let pdu = WaveConfirmPdu::decode(src)?;
                 Ok(Self::WaveConfirm(pdu))
             }
-            _ => Err(invalid_field_err!(
-                "ClientAudioOutputPdu::msgType",
-                "Unknown audio output PDU type"
-            )),
+            _ => Err(invalid_field_err!( "ClientAudioOutputPdu::msgType",
+                "Unknown audio output PDU type", in: src)),
         }
     }
 }

@@ -122,7 +122,7 @@ impl Encode for PreconnectionBlob {
                 Self::NAME,
                 "version",
                 "there is no string payload in Preconnection PDU V1",
-                None,
+                Some(dst.pos()),
             ));
         }
 
@@ -130,7 +130,7 @@ impl Encode for PreconnectionBlob {
 
         ensure_size!(in: dst, size: pcb_size);
 
-        dst.write_u32(cast_length!("cbSize", pcb_size)?); // cbSize
+        dst.write_u32(cast_length!("cbSize", pcb_size, in: dst)?); // cbSize
         write_padding!(dst, 4); // flags
         dst.write_u32(self.version.0); // version
         dst.write_u32(self.id); // id
@@ -138,7 +138,7 @@ impl Encode for PreconnectionBlob {
         if let Some(v2_payload) = &self.v2_payload {
             // cchPCB
             let utf16_character_count = v2_payload.encode_utf16().count() + 1; // +1 for null terminator
-            dst.write_u16(cast_length!("cchPCB", utf16_character_count)?);
+            dst.write_u16(cast_length!("cchPCB", utf16_character_count, in: dst)?);
 
             // wszPCB
             v2_payload.encode_utf16().for_each(|c| dst.write_u16(c));
