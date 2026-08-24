@@ -387,7 +387,7 @@ fn parse_master_secret(key_log: &str, client_random: &[u8]) -> Option<Vec<u8>> {
     let client_random = hex(client_random);
     key_log.lines().find_map(|line| {
         let mut fields = line.split_ascii_whitespace();
-        (fields.next()? == "CLIENT_RANDOM" && fields.next()? == client_random)
+        (fields.next()? == "CLIENT_RANDOM" && fields.next()?.eq_ignore_ascii_case(&client_random))
             .then(|| decode_hex(fields.next()?))
             .flatten()
             .filter(|secret| secret.len() == 48)
@@ -400,7 +400,8 @@ fn parse_tls13_secret(key_log: &str, label: &str, client_random: &[u8]) -> Resul
         .lines()
         .find_map(|line| {
             let mut fields = line.split_ascii_whitespace();
-            (fields.next()? == label && fields.next()? == client_random).then(|| decode_hex(fields.next()?))
+            (fields.next()? == label && fields.next()?.eq_ignore_ascii_case(&client_random))
+                .then(|| decode_hex(fields.next()?))
         })
         .flatten()
         .ok_or(ReplayError::MissingTlsSecret)

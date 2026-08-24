@@ -411,9 +411,9 @@ async fn tls_validation_preserves_the_default_and_strict_is_explicit() {
 
     let callback_called = Arc::new(AtomicBool::new(false));
     let callback_called_for_callback = Arc::clone(&callback_called);
-    let callback: ironrdp_tls::CertificateValidationCallback = Arc::new(move |certificate, reason| {
+    let callback: ironrdp_tls::CertificateValidationCallback = Arc::new(move |certificate, server_name, reason| {
         callback_called_for_callback.store(true, Ordering::Relaxed);
-        !certificate.is_empty() && !reason.is_empty()
+        !certificate.is_empty() && server_name == "localhost" && !reason.is_empty()
     });
     let (tls_stream, _) = ironrdp_tls::upgrade_with_certificate_validation_callback(
         TcpStream::connect(address).await.expect("connect callback TLS client"),

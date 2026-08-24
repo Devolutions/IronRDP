@@ -41,7 +41,7 @@ pub trait DeviceManagerBackend: Send {
 pub struct UrbdrcListener {
     on_capability_exchanged: Option<OnCapabilityExchanged>,
     device_man: Box<dyn DeviceManagerBackend>,
-    iface_man: InterfaceAlloc,
+    iface_man: crate::InterfaceAlloc,
 }
 
 impl UrbdrcListener {
@@ -49,28 +49,7 @@ impl UrbdrcListener {
         Self {
             on_capability_exchanged: Some(callback),
             device_man,
-            iface_man: InterfaceAlloc::new(),
-        }
-    }
-}
-
-struct InterfaceAlloc {
-    id: u32,
-}
-
-impl InterfaceAlloc {
-    #[inline]
-    const fn new() -> Self {
-        Self { id: 3 }
-    }
-
-    #[inline]
-    const fn alloc(&mut self) -> Option<InterfaceId> {
-        self.id += 1;
-        if self.id > 0x3F_FF_FF_FF {
-            None
-        } else {
-            Some(InterfaceId::from_raw(self.id))
+            iface_man: crate::InterfaceAlloc::default(),
         }
     }
 }

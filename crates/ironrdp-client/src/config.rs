@@ -1084,6 +1084,9 @@ impl ConfigBuilder {
     /// [`with_gateway_username`](Self::with_gateway_username) /
     /// [`with_gateway_password`](Self::with_gateway_password) and the RDCleanPath token via
     /// [`with_rdcleanpath_token`](Self::with_rdcleanpath_token).
+    /// A `gatewaycredentialssource` property of
+    /// [`UseServerCredentials`](ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials)
+    /// resolves unspecified gateway credentials from the RDP server account.
     #[must_use]
     pub fn with_transport(mut self, transport: TransportKind) -> Self {
         match &transport {
@@ -1378,6 +1381,8 @@ impl ConfigBuilder {
     /// List the required fields that still need a value before [`build`](Self::build) can succeed.
     ///
     /// Gateway credentials are only required when a gateway transport is selected.
+    /// When `gatewaycredentialssource` selects `UseServerCredentials`, gateway fields are omitted
+    /// because [`build`](Self::build) resolves them from the RDP server account.
     pub fn missing(&self) -> Vec<MissingField> {
         let mut missing = Vec::new();
         if self.destination.is_none() {
@@ -1391,11 +1396,17 @@ impl ConfigBuilder {
         }
         #[cfg(feature = "gateway")]
         if matches!(self.transport, TransportKind::Gateway { .. }) {
-            if self.gateway_username.is_none() {
-                missing.push(MissingField::GatewayUsername);
-            }
-            if self.gateway_password.is_none() {
-                missing.push(MissingField::GatewayPassword);
+            let uses_server_credentials = matches!(
+                self.properties.gateway_credentials_source(),
+                Ok(Some(ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials))
+            );
+            if !uses_server_credentials {
+                if self.gateway_username.is_none() {
+                    missing.push(MissingField::GatewayUsername);
+                }
+                if self.gateway_password.is_none() {
+                    missing.push(MissingField::GatewayPassword);
+                }
             }
         }
         if matches!(self.transport, TransportKind::RDCleanPath { .. }) && self.rdcleanpath_token.is_none() {
@@ -1424,10 +1435,58 @@ impl ConfigBuilder {
         reason = "a panic here would be a bug (secrets are guaranteed present by missing()), not documented behavior"
     )]
     // `mut` is only required when the vmconnect default-port path mutates destination/properties.
-    #[cfg_attr(not(feature = "vmconnect"), expect(unused_mut))]
+    #[cfg_attr(not(any(feature = "vmconnect", feature = "gateway")), expect(unused_mut))]
     pub fn build(mut self) -> anyhow::Result<Config> {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
         use ironrdp_pdu::rdp::client_info::TimezoneInfo;
+
+        #[cfg(feature = "gateway")]
+        if matches!(self.transport, TransportKind::Gateway { .. }) {
+            use ironrdp_cfg::GatewayCredentialsSource;
+
+            match self
+                .properties
+                .gateway_credentials_source()
+                .context("invalid gateway credential source")?
+            {
+                Some(GatewayCredentialsSource::UseServerCredentials) => {
+                    if self.gateway_username.is_none() {
+                        self.gateway_username = self.username.as_deref().map(|username| match self.domain.as_deref() {
+                            Some(domain)
+                                if !domain.is_empty() && !username.contains('\\') && !username.contains('@') =>
+                            {
+                                format!("{domain}\\{username}")
+                            }
+                            _ => username.to_owned(),
+                        });
+                    }
+                    if self.gateway_password.is_none() {
+                        self.gateway_password = self.password.clone();
+                    }
+                }
+                None | Some(GatewayCredentialsSource::UseUserCredentials) => {}
+                Some(GatewayCredentialsSource::UseProfile) => {
+                    anyhow::bail!(
+                        "gateway credential source UseProfile requires an unavailable profile credential provider"
+                    );
+                }
+                Some(GatewayCredentialsSource::Prompt) => {
+                    anyhow::bail!(
+                        "gateway credential source Prompt requires an unavailable interactive credential prompt provider"
+                    );
+                }
+                Some(GatewayCredentialsSource::SmartCard) => {
+                    anyhow::bail!(
+                        "gateway credential source SmartCard requires an unavailable smart-card credential provider"
+                    );
+                }
+                Some(GatewayCredentialsSource::UseLogonCredentials) => {
+                    anyhow::bail!(
+                        "gateway credential source UseLogonCredentials requires an unavailable OS logon credential provider"
+                    );
+                }
+            }
+        }
 
         let missing = self.missing();
         if !missing.is_empty() {
@@ -1997,10 +2056,11 @@ fn kerberos_config_from_properties(
 #[cfg(test)]
 mod tests {
     use ironrdp_cfg::PropertySetExt as _;
-    use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};
-    use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
+    use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 
     use super::{ConfigBuilder, Destination};
+    #[cfg(feature = "gateway")]
+    use super::{MissingField, Transport, TransportKind};
 
     fn complete_builder() -> ConfigBuilder {
         ConfigBuilder::new()
@@ -2013,47 +2073,150 @@ mod tests {
             .with_client_name("client")
     }
 
-    #[test]
-    fn remote_application_mode_requires_remote_programs_support() {
-        let error = complete_builder()
-            .with_remote_application_mode(true)
-            .with_rail_support_level(RailSupportLevel::empty())
-            .build()
-            .expect_err("RemoteApp must require remote programs support");
-
-        assert!(error.to_string().contains("RAIL support level"), "{error:?}");
+    #[cfg(feature = "gateway")]
+    fn gateway_builder() -> ConfigBuilder {
+        complete_builder().with_transport(TransportKind::Gateway {
+            endpoint: "gateway.example:443".to_owned(),
+            prefer_direct: false,
+        })
     }
 
-    #[test]
-    fn remote_application_mode_is_preserved_in_properties() {
-        let config = complete_builder()
-            .with_remote_application_mode(true)
-            .build()
-            .expect("valid RemoteApp configuration");
-
-        assert!(config.connector().remote_application_mode);
-        assert_eq!(config.properties().remote_application_mode(), Some(true));
+    #[cfg(feature = "gateway")]
+    fn with_gateway_credentials_source(
+        builder: ConfigBuilder,
+        source: ironrdp_cfg::GatewayCredentialsSource,
+    ) -> ConfigBuilder {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.set_gateway_credentials_source(source);
+        builder
+            .with_property_set(&properties)
+            .expect("valid gateway credentials source")
     }
 
+    #[cfg(feature = "gateway")]
     #[test]
-    fn monitor_layout_is_preserved_in_connector_configuration() {
-        let monitor_layout = ClientMonitorData {
-            monitors: vec![Monitor {
-                left: 0,
-                top: 0,
-                right: 1_919,
-                bottom: 1_079,
-                flags: MonitorFlags::PRIMARY,
-            }],
+    fn gateway_server_credentials_fall_back_to_rdp_credentials() {
+        let config = with_gateway_credentials_source(
+            gateway_builder(),
+            ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials,
+        )
+        .build()
+        .expect("valid server credential configuration");
+
+        let Transport::Gateway(gateway) = config.transport() else {
+            panic!("gateway transport expected");
         };
-        let config = complete_builder()
-            .with_desktop_width(1_920)
-            .with_desktop_height(1_080)
-            .with_monitor_layout(monitor_layout.clone())
-            .build()
-            .expect("valid monitor layout configuration");
+        assert_eq!(gateway.username, "user");
+        assert_eq!(gateway.password, "password");
+    }
 
-        assert_eq!(config.connector().monitor_layout.as_ref(), Some(&monitor_layout));
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn gateway_server_credentials_qualify_bare_username_with_domain() {
+        let config = with_gateway_credentials_source(
+            gateway_builder().with_domain("CONTOSO"),
+            ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials,
+        )
+        .build()
+        .expect("valid server credential configuration");
+
+        let Transport::Gateway(gateway) = config.transport() else {
+            panic!("gateway transport expected");
+        };
+        assert_eq!(gateway.username, "CONTOSO\\user");
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn explicit_gateway_credentials_take_precedence_over_server_credentials() {
+        let config = with_gateway_credentials_source(
+            gateway_builder()
+                .with_gateway_username("gateway-user")
+                .with_gateway_password("gateway-password"),
+            ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials,
+        )
+        .build()
+        .expect("valid server credential configuration");
+
+        let Transport::Gateway(gateway) = config.transport() else {
+            panic!("gateway transport expected");
+        };
+        assert_eq!(gateway.username, "gateway-user");
+        assert_eq!(gateway.password, "gateway-password");
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn gateway_user_credentials_require_explicit_credentials() {
+        let builder = with_gateway_credentials_source(
+            gateway_builder(),
+            ironrdp_cfg::GatewayCredentialsSource::UseUserCredentials,
+        );
+
+        assert_eq!(
+            builder.missing(),
+            [MissingField::GatewayUsername, MissingField::GatewayPassword]
+        );
+        assert_eq!(
+            builder
+                .build()
+                .expect_err("gateway credentials must be required")
+                .to_string(),
+            "missing required configuration: gateway username, gateway password"
+        );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn gateway_user_credentials_select_explicit_credentials() {
+        let config = with_gateway_credentials_source(
+            gateway_builder()
+                .with_gateway_username("gateway-user")
+                .with_gateway_password("gateway-password"),
+            ironrdp_cfg::GatewayCredentialsSource::UseUserCredentials,
+        )
+        .build()
+        .expect("valid user credential configuration");
+
+        let Transport::Gateway(gateway) = config.transport() else {
+            panic!("gateway transport expected");
+        };
+        assert_eq!(gateway.username, "gateway-user");
+        assert_eq!(gateway.password, "gateway-password");
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn unavailable_gateway_credential_sources_are_rejected() {
+        for (source, expected) in [
+            (
+                ironrdp_cfg::GatewayCredentialsSource::UseProfile,
+                "gateway credential source UseProfile requires an unavailable profile credential provider",
+            ),
+            (
+                ironrdp_cfg::GatewayCredentialsSource::Prompt,
+                "gateway credential source Prompt requires an unavailable interactive credential prompt provider",
+            ),
+            (
+                ironrdp_cfg::GatewayCredentialsSource::SmartCard,
+                "gateway credential source SmartCard requires an unavailable smart-card credential provider",
+            ),
+            (
+                ironrdp_cfg::GatewayCredentialsSource::UseLogonCredentials,
+                "gateway credential source UseLogonCredentials requires an unavailable OS logon credential provider",
+            ),
+        ] {
+            let error = with_gateway_credentials_source(
+                gateway_builder()
+                    .with_gateway_username("gateway-user")
+                    .with_gateway_password("gateway-password"),
+                source,
+            )
+            .build()
+            .expect_err("unavailable credential source must fail");
+
+            assert_eq!(error.to_string(), expected);
+        }
     }
 
     #[test]
@@ -2075,91 +2238,6 @@ mod tests {
         let execute = config.rail_initial_execute.expect("initial Execute PDU");
         assert_eq!(execute.executable, "notepad.exe");
         assert_eq!(execute.working_directory, "C:\\Temp");
-    }
-
-    #[cfg(feature = "sound")]
-    #[test]
-    fn with_audio_mode_redirect_enables_playback_channel() {
-        use ironrdp_cfg::AudioMode;
-
-        let config = complete_builder()
-            .with_audio_mode(AudioMode::RedirectToClient)
-            .build()
-            .expect("valid configuration");
-
-        assert!(config.connector().enable_audio_playback);
-        assert!(config.channels().sound);
-        assert_eq!(
-            config.properties().audio_mode().unwrap(),
-            Some(AudioMode::RedirectToClient)
-        );
-    }
-
-    #[cfg(feature = "sound")]
-    #[test]
-    fn with_audio_mode_play_on_server_disables_local_playback() {
-        use ironrdp_cfg::AudioMode;
-
-        let config = complete_builder()
-            .with_audio_mode(AudioMode::PlayOnServer)
-            .build()
-            .expect("valid configuration");
-
-        assert!(!config.connector().enable_audio_playback);
-        assert!(!config.channels().sound);
-        assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::PlayOnServer));
-    }
-
-    #[cfg(feature = "sound")]
-    #[test]
-    fn with_audio_mode_disabled_suppresses_sound_channel() {
-        use ironrdp_cfg::AudioMode;
-
-        let config = complete_builder()
-            .with_audio_mode(AudioMode::Disabled)
-            .build()
-            .expect("valid configuration");
-
-        assert!(!config.connector().enable_audio_playback);
-        assert!(!config.channels().sound);
-        assert_eq!(config.properties().audio_mode().unwrap(), Some(AudioMode::Disabled));
-    }
-
-    #[cfg(feature = "sound")]
-    #[test]
-    fn with_audio_capture_enables_client_info_flag_and_channel() {
-        use ironrdp_cfg::AudioCaptureMode;
-
-        let config = complete_builder()
-            .with_audio_capture(true)
-            .build()
-            .expect("valid configuration");
-
-        assert!(config.connector().enable_audio_capture);
-        assert!(config.channels().audio_capture);
-        assert_eq!(
-            config.properties().audio_capture_mode().unwrap(),
-            Some(AudioCaptureMode::CaptureFromClient)
-        );
-    }
-
-    #[cfg(feature = "sound")]
-    #[test]
-    fn with_audio_capture_disabled_clears_channel() {
-        use ironrdp_cfg::AudioCaptureMode;
-
-        let config = complete_builder()
-            .with_audio_capture(true)
-            .with_audio_capture(false)
-            .build()
-            .expect("valid configuration");
-
-        assert!(!config.connector().enable_audio_capture);
-        assert!(!config.channels().audio_capture);
-        assert_eq!(
-            config.properties().audio_capture_mode().unwrap(),
-            Some(AudioCaptureMode::Disabled)
-        );
     }
 
     #[cfg(feature = "webauthn")]

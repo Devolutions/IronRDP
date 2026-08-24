@@ -58,7 +58,7 @@ impl ClientTemporaryDirectory<'_> {
 
 impl Encode for ClientTemporaryDirectory<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        let header = PartialHeader::new(cast_int!("dataLen", Self::INNER_SIZE)?);
+        let header = PartialHeader::new(cast_int!("dataLen", Self::INNER_SIZE, in: dst)?);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: Self::INNER_SIZE);

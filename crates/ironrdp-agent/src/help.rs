@@ -3,10 +3,12 @@
 /// Structured guide printed by `ironrdp-agent --help-agent`.
 pub(crate) const AGENT_GUIDE: &str = r#"# ironrdp-agent
 
-A CLI-driven, daemon-backed RDP client. One binary plays two roles:
+A CLI-driven, daemon-backed RDP client. One binary plays three roles:
 
 - DAEMON: `ironrdp-agent daemon-start` runs a long-lived foreground process that owns the RDP
   engine and one RDP session. Background it yourself (e.g. `ironrdp-agent daemon-start &`).
+- GATEWAY: `ironrdp-agent gw-forward` runs in the foreground and relays TCP through an RD Gateway
+  without an RDP session. It does not use the daemon or IPC.
 - CLI: every other subcommand opens the local IPC endpoint, sends one request, prints the
   response, and exits.
 
@@ -73,6 +75,13 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  them, except NamedPipe TLS/CredSSP stay forced off. Prefer
                                  `--sandbox-id` over `--sandbox-pipe`; the pipe escape hatch needs
                                  `-u`/`-p` (guest password from `sandbox config`).
+- `gw-forward --gateway HOST[:PORT] (--socks5 | --target HOST:PORT) [--listen ADDR]`
+                                 Forward TCP through an RD Gateway without an RDP session.
+                                 `--socks5` serves SOCKS5 CONNECT (no auth); `--target` is an
+                                 SSH `-L`-style fixed forward. Credentials come from
+                                 `--username`/`--password` or `RDG_USERNAME`/`RDG_PASSWORD`,
+                                 falling back to `RDP_USERNAME`/`RDP_PASSWORD`.
+                                 The listener defaults to `127.0.0.1`; do not expose unauthenticated SOCKS5 to untrusted networks.
 - `disconnect`                   Tear down the current session (daemon keeps running).
 - `status`                       Report connection state, destination, last frame size, and whether
                                  credentials are preloaded (`credentials loaded: true|false`). Query

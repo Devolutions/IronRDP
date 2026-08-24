@@ -17,8 +17,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use clap::{Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
-use ironrdp_cfg::{PropertySetExt as _, TargetAddr};
+use clap::{ArgGroup, Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
+use ironrdp_cfg::{PropertySetExt as _, TargetAddr, TargetHost};
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
@@ -55,6 +55,9 @@ enum Command {
     DaemonStart(DaemonArgs),
     /// Open an RDP session from a .rdp file and/or CLI overrides.
     Connect(ConnectArgs),
+    /// Forward TCP through an RD Gateway tunnel without an RDP session: a fixed local
+    /// port forward (SSH `-L`-style) or a SOCKS5 proxy a generic program can use.
+    GwForward(GwForwardArgs),
     /// Tear down the current RDP session (the daemon keeps running).
     Disconnect,
     /// Report the current session status.
@@ -509,6 +512,38 @@ struct ConnectArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(group(ArgGroup::new("forward_mode").required(true).args(["socks5", "target"])))]
+struct GwForwardArgs {
+    /// Local listen address (host:port) for the forwarder / proxy.
+    #[arg(long, default_value = "127.0.0.1:1080")]
+    listen: String,
+    /// SOCKS5 proxy mode: each client CONNECT names its own destination. Conflicts
+    /// with `--target`.
+    #[arg(long)]
+    socks5: bool,
+    /// Fixed forward target (host:port). Conflicts with `--socks5`. IPv6 must be
+    /// bracketed (`[2001:db8::1]:22`).
+    #[arg(long, value_name = "HOST:PORT")]
+    target: Option<String>,
+    /// RD Gateway server address (host[:port]). Enables the gateway tunnel.
+    #[arg(long, env = "RDG_HOSTNAME")]
+    gateway: Option<String>,
+    /// RD Gateway user name. Defaults to the RDP username when unset, matching mstsc's
+    /// shared-credential behavior.
+    #[arg(long, env = "RDG_USERNAME")]
+    gateway_username: Option<String>,
+    /// RD Gateway password. Defaults to the RDP password when unset.
+    #[arg(long, env = "RDG_PASSWORD", hide_env_values = true)]
+    gateway_password: Option<String>,
+    /// RDP account user name, used as the default gateway username.
+    #[arg(short, long, env = "RDP_USERNAME")]
+    username: Option<String>,
+    /// RDP account password, used as the default gateway password.
+    #[arg(short, long, env = "RDP_PASSWORD", hide_env_values = true)]
+    password: Option<String>,
+}
+
+#[derive(Args, Debug)]
 struct QueryPropsArgs {
     /// Only show keys containing this substring (case-insensitive).
     #[arg(long, conflicts_with = "prefix")]
@@ -780,7 +815,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    if cli.backend == Backend::ActiveX && !matches!(&command, Command::DaemonStart(_)) {
+    if cli.backend == Backend::ActiveX && !matches!(&command, Command::DaemonStart(_) | Command::GwForward(_)) {
         ensure_activex_backend(&endpoint).await?;
     }
 
@@ -835,6 +870,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             return Ok(());
         }
         Command::Connect(args) => build_connect_request(args)?,
+        Command::GwForward(args) => {
+            return run_gw_forward(args).await;
+        }
         #[cfg(windows)]
         Command::Sandbox(args) => {
             return run_sandbox_command(args);
@@ -1123,6 +1161,68 @@ fn run_sandbox_command(args: SandboxArgs) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+/// Forward TCP through an RD Gateway tunnel without an RDP session: a fixed local port
+/// forward, or a SOCKS5 proxy that opens a tunnel per requested destination.
+async fn run_gw_forward(args: GwForwardArgs) -> anyhow::Result<()> {
+    use crate::gw_forward::{GatewayTunnelConfig, run_port_forward, run_socks5};
+
+    let gateway = args
+        .gateway
+        .context("gateway endpoint: set RDG_HOSTNAME or pass --gateway")?;
+    // Reuse the RDP credentials for the gateway by default (mstsc shared-credential
+    // behavior); explicit RDG_USERNAME / RDG_PASSWORD win.
+    let username = args
+        .gateway_username
+        .or(args.username)
+        .context("gateway username: set RDG_USERNAME or RDP_USERNAME")?;
+    let password = args
+        .gateway_password
+        .or(args.password)
+        .context("gateway password: set RDG_PASSWORD or RDP_PASSWORD")?;
+    let config = GatewayTunnelConfig {
+        gateway_endpoint: gateway,
+        username,
+        password,
+        client_name: "ironrdp-agent".to_owned(),
+    };
+
+    if args.socks5 {
+        println!(
+            "socks5 proxy listening on {} (RD Gateway {})",
+            args.listen, config.gateway_endpoint
+        );
+        run_socks5(config, &args.listen).await?;
+    } else {
+        let target = args
+            .target
+            .context("fixed forward requires --target HOST:PORT (or use --socks5)")?;
+        let (host, port) = parse_host_port(&target)?;
+        println!(
+            "forwarding {} to {}:{} via RD Gateway {}",
+            args.listen, host, port, config.gateway_endpoint
+        );
+        run_port_forward(config, &args.listen, &host, port).await?;
+    }
+    Ok(())
+}
+
+/// Parse a required `HOST:PORT` target.
+///
+/// Reuses [`TargetAddr`] so bare IPv6 is not split on the last colon and bracketed
+/// IPv6 is accepted. The host passed to the gateway is unbracketed.
+fn parse_host_port(target: &str) -> anyhow::Result<(String, u16)> {
+    let addr = TargetAddr::from_str(target).context("invalid target address")?;
+    let port = addr.port.context("target requires an explicit port (HOST:PORT)")?;
+    let host = match addr.host {
+        TargetHost::Ip(ip) => ip.to_string(),
+        TargetHost::Domain(host) => host,
+    };
+    if host.is_empty() {
+        anyhow::bail!("target host is empty");
+    }
+    Ok((host, port))
 }
 
 async fn run_rail(endpoint: &Endpoint, args: RailArgs) -> anyhow::Result<()> {

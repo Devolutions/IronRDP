@@ -1,15 +1,37 @@
-use ironrdp_core::{encode_vec, impl_as_any};
+use ironrdp_core::{ReadCursor, WriteCursor, encode_vec, impl_as_any};
 use ironrdp_pdu::PduResult;
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::{
-    Capabilities, CapabilityMessage, ClientDeviceListAnnounce, CoreCapability, CoreCapabilityKind,
-    DEFAULT_PRINTER_DRIVER_NAME, DeviceAnnounceHeader, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices,
-    MajorFunction, MinorFunction, NtStatus, PRINTER_CAPABILITY_VERSION_01, RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER,
-    RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER, ServerDeviceAnnounceResponse, ServerDriveIoRequest,
-    VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
+    AnyIoCtlCode, Boolean, Capabilities, CapabilityMessage, ClientDeviceListAnnounce, ClientDeviceListRemove,
+    ClientDriveLockControlResponse, ClientDriveNotifyChangeDirectoryResponse, ClientDriveQueryDirectoryResponse,
+    ClientDriveQueryInformationResponse, ClientDriveQuerySecurityResponse, ClientDriveQueryVolumeInformationResponse,
+    ClientDriveSetInformationResponse, ClientDriveSetSecurityResponse, ClientNameRequest, ClientNameRequestUnicodeFlag,
+    CoreCapability, CoreCapabilityKind, CreateDisposition, CreateOptions, DEFAULT_PRINTER_DRIVER_NAME, DesiredAccess,
+    DeviceAnnounceHeader, DeviceCloseRequest, DeviceCloseResponse, DeviceControlRequest, DeviceControlResponse,
+    DeviceCreateRequest, DeviceCreateResponse, DeviceFlushBuffersRequest, DeviceFlushBuffersResponse, DeviceIoRequest,
+    DeviceIoResponse, DeviceReadRequest, DeviceReadResponse, DeviceType, DeviceWriteRequest, DeviceWriteResponse,
+    Devices, FileAllocationInformation, FileAttributeTagInformation, FileAttributes, FileBasicInformation,
+    FileBothDirectoryInformation, FileDirectoryInformation, FileEndOfFileInformation, FileFsSizeInformation,
+    FileFullDirectoryInformation, FileInformationClass, FileInformationClassLevel, FileNamesInformation,
+    FileStandardInformation, FileSystemInformationClass, FileSystemInformationClassLevel, Information, MajorFunction,
+    MinorFunction, NtStatus, PRINTER_CAPABILITY_VERSION_01, RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER,
+    RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER, RdpLockInfo, SecurityInformation, ServerDeviceAnnounceResponse,
+    ServerDriveIoRequest, ServerDriveLockControlRequest, ServerDriveNotifyChangeDirectoryRequest,
+    ServerDriveQueryDirectoryRequest, ServerDriveQueryInformationRequest, ServerDriveQuerySecurityRequest,
+    ServerDriveQueryVolumeInformationRequest, ServerDriveSetInformationRequest, ServerDriveSetSecurityRequest,
+    SharedAccess, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::{NoopRdpdrBackend, Rdpdr, RdpdrBackend};
+
+/// Encodes via a plain `Vec<u8>` buffer for the server-side types in this file, which have
+/// their own inherent `encode`/`size` rather than implementing the crate-wide `Encode` trait
+/// (their `decode` takes caller-supplied context `encode_vec` above has no way to provide).
+fn encode_to_vec(size: usize, f: impl FnOnce(&mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()>) -> Vec<u8> {
+    let mut buf = vec![0u8; size];
+    f(&mut WriteCursor::new(&mut buf)).unwrap();
+    buf
+}
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
 #[derive(Debug, Default)]
@@ -376,6 +398,25 @@ fn client_announce_reply_uses_minor_version_13() {
 }
 
 #[test]
+fn version_and_id_pdu_decode_client_announce_reply_tags_the_reply_not_the_confirm() {
+    let original = VersionAndIdPdu {
+        version_major: 1,
+        version_minor: 13,
+        client_id: 0x1234,
+        // The value written by encode() doesn't depend on kind: it's only a decode-side tag.
+        kind: VersionAndIdPduKind::ClientAnnounceReply,
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+
+    let decoded = VersionAndIdPdu::decode_client_announce_reply(&mut ReadCursor::new(&encoded)).unwrap();
+
+    assert_eq!(decoded.kind, VersionAndIdPduKind::ClientAnnounceReply);
+    assert_eq!(decoded.version_major, original.version_major);
+    assert_eq!(decoded.version_minor, original.version_minor);
+    assert_eq!(decoded.client_id, original.client_id);
+}
+
+#[test]
 fn devices_add_printer_appends_printer_entry() {
     let mut devices = Devices::new();
     devices.add_printer(9, "Lobby Printer".to_owned());
@@ -487,4 +528,818 @@ fn printer_cache_pdu_is_ignored_before_decode() {
     let pdu = [0x72, 0x44, 0x43, 0x50, 1, 2, 3, 4]; // RDPDR + PAKID_PRN_CACHE_DATA + ignored body
 
     assert!(rdpdr.process(&pdu).unwrap().is_empty());
+}
+
+// ─── Server-side decode / encode round-trips ──────────────────────────────
+//
+// The tests above exercise the existing client-side `Rdpdr` processor. These cover the new
+// server-side PDU codec surface: decode() on what a client sends (responses, device lists,
+// name/capability requests) and encode() on what a server sends (I/O requests). Each type is
+// round-tripped through its own encode/decode rather than through `RdpdrPdu`, except where the
+// dispatch itself (`RdpdrPdu::decode` / `RdpdrPdu::decode_io_completion`) is what's under test.
+
+fn some_device_io_response() -> DeviceIoResponse {
+    DeviceIoResponse {
+        device_id: 7,
+        completion_id: 99,
+        io_status: NtStatus::SUCCESS,
+    }
+}
+
+#[test]
+fn client_name_request_round_trips_ascii_and_unicode() {
+    for (kind, name) in [
+        (ClientNameRequestUnicodeFlag::Ascii, "workstation1"),
+        (ClientNameRequestUnicodeFlag::Unicode, "\u{5DE5}\u{4F5C}\u{7AD9}"),
+    ] {
+        let original = ClientNameRequest::new(name.to_owned(), kind);
+        let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+        let decoded = ClientNameRequest::decode(&mut ReadCursor::new(&encoded)).unwrap();
+        assert_eq!(decoded, original);
+    }
+}
+
+#[test]
+fn core_capability_decodes_both_server_and_client_packet_ids() {
+    let response = RdpdrPdu::CoreCapability(CoreCapability::new_response(vec![CapabilityMessage::new_general(0)]));
+    let encoded = encode_vec(&response).unwrap();
+    let RdpdrPdu::CoreCapability(decoded) = ironrdp_core::decode(&encoded).unwrap() else {
+        panic!("expected CoreCapability");
+    };
+    assert_eq!(decoded.kind, CoreCapabilityKind::ClientCoreCapabilityResponse);
+    assert_eq!(decoded.capabilities.len(), 1);
+}
+
+#[test]
+fn client_device_list_announce_round_trips() {
+    let original = ClientDeviceListAnnounce {
+        device_list: vec![
+            DeviceAnnounceHeader::new_smartcard(1),
+            DeviceAnnounceHeader::new_printer(2, "Lobby".to_owned()),
+        ],
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDeviceListAnnounce::decode(&mut ReadCursor::new(&encoded)).unwrap();
+
+    assert_eq!(decoded.device_list.len(), 2);
+    assert_eq!(decoded.device_list[0].device_id(), 1);
+    assert_eq!(decoded.device_list[0].preferred_dos_name(), "SCARD");
+    assert_eq!(decoded.device_list[1].device_id(), 2);
+}
+
+#[test]
+fn client_device_list_remove_round_trips() {
+    let original = ClientDeviceListRemove {
+        device_list: vec![1, 2, 3],
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDeviceListRemove::decode(&mut ReadCursor::new(&encoded)).unwrap();
+    assert_eq!(decoded, original);
+}
+
+#[test]
+fn device_create_response_round_trips() {
+    let original = DeviceCreateResponse {
+        device_io_reply: some_device_io_response(),
+        file_id: 5,
+        information: Information::file_opened(),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded =
+        DeviceCreateResponse::decode(some_device_io_response(), &mut ReadCursor::new(&encoded[12..])).unwrap();
+    assert_eq!(decoded.file_id, original.file_id);
+    assert_eq!(decoded.information, original.information);
+}
+
+#[test]
+fn device_read_response_round_trips() {
+    let original = DeviceReadResponse {
+        device_io_reply: some_device_io_response(),
+        read_data: b"hello, drive".to_vec(),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = DeviceReadResponse::decode(some_device_io_response(), &mut ReadCursor::new(&encoded[12..])).unwrap();
+    assert_eq!(decoded.read_data, original.read_data);
+}
+
+#[test]
+fn device_write_response_round_trips() {
+    let original = DeviceWriteResponse {
+        device_io_reply: some_device_io_response(),
+        length: 4096,
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = DeviceWriteResponse::decode(some_device_io_response(), &mut ReadCursor::new(&encoded[12..])).unwrap();
+    assert_eq!(decoded.length, original.length);
+}
+
+#[test]
+fn device_control_response_decodes_output_buffer_as_raw_bytes() {
+    // DeviceControlResponse::new's output_buffer is a generic rpce::Encode trait object with no
+    // decode counterpart (see DeviceControlResponse::decode's doc comment), so this constructs
+    // the wire bytes directly rather than round-tripping through encode().
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&4u32.to_le_bytes()); // OutputBufferLength
+    encoded.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+
+    let decoded = DeviceControlResponse::decode(some_device_io_response(), &mut ReadCursor::new(&encoded)).unwrap();
+    let output_buffer = decoded.output_buffer.expect("non-empty output buffer");
+    assert_eq!(output_buffer.size(), 4);
+
+    // Re-encoding the decoded raw buffer must reproduce the exact bytes read.
+    let re_encoded = encode_to_vec(output_buffer.size(), |dst| output_buffer.encode(dst));
+    assert_eq!(re_encoded, [0xAA, 0xBB, 0xCC, 0xDD]);
+}
+
+#[test]
+fn device_control_response_decodes_empty_output_buffer() {
+    let encoded = 0u32.to_le_bytes();
+    let decoded = DeviceControlResponse::decode(some_device_io_response(), &mut ReadCursor::new(&encoded)).unwrap();
+    assert!(decoded.output_buffer.is_none());
+}
+
+#[test]
+fn client_drive_query_information_response_round_trips_basic_class() {
+    let original = ClientDriveQueryInformationResponse {
+        device_io_response: some_device_io_response(),
+        buffer: Some(FileInformationClass::Basic(FileBasicInformation {
+            creation_time: 1,
+            last_access_time: 2,
+            last_write_time: 3,
+            change_time: 4,
+            file_attributes: FileAttributes::empty(),
+        })),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDriveQueryInformationResponse::decode_for_class(
+        FileInformationClassLevel::FILE_BASIC_INFORMATION,
+        some_device_io_response(),
+        &mut ReadCursor::new(&encoded[12..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.buffer, original.buffer);
+}
+
+#[test]
+fn client_drive_query_information_response_round_trips_standard_class() {
+    let original = ClientDriveQueryInformationResponse {
+        device_io_response: some_device_io_response(),
+        buffer: Some(FileInformationClass::Standard(FileStandardInformation {
+            allocation_size: 4096,
+            end_of_file: 1234,
+            number_of_links: 1,
+            delete_pending: Boolean::False,
+            directory: Boolean::True,
+        })),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDriveQueryInformationResponse::decode_for_class(
+        FileInformationClassLevel::FILE_STANDARD_INFORMATION,
+        some_device_io_response(),
+        &mut ReadCursor::new(&encoded[12..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.buffer, original.buffer);
+}
+
+#[test]
+fn client_drive_query_information_response_round_trips_attribute_tag_class() {
+    let original = ClientDriveQueryInformationResponse {
+        device_io_response: some_device_io_response(),
+        buffer: Some(FileInformationClass::AttributeTag(FileAttributeTagInformation {
+            file_attributes: FileAttributes::FILE_ATTRIBUTE_DIRECTORY,
+            reparse_tag: 0,
+        })),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDriveQueryInformationResponse::decode_for_class(
+        FileInformationClassLevel::FILE_ATTRIBUTE_TAG_INFORMATION,
+        some_device_io_response(),
+        &mut ReadCursor::new(&encoded[12..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.buffer, original.buffer);
+}
+
+#[test]
+fn client_drive_query_information_response_round_trips_no_buffer() {
+    let original = ClientDriveQueryInformationResponse {
+        device_io_response: some_device_io_response(),
+        buffer: None,
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDriveQueryInformationResponse::decode_for_class(
+        FileInformationClassLevel::FILE_BASIC_INFORMATION,
+        some_device_io_response(),
+        &mut ReadCursor::new(&encoded[12..]),
+    )
+    .unwrap();
+    assert!(decoded.buffer.is_none());
+}
+
+#[test]
+fn client_drive_query_directory_response_round_trips_both_directory_class() {
+    let original = ClientDriveQueryDirectoryResponse {
+        device_io_reply: some_device_io_response(),
+        buffer: Some(FileInformationClass::BothDirectory(FileBothDirectoryInformation::new(
+            10,
+            20,
+            30,
+            40,
+            4096,
+            FileAttributes::FILE_ATTRIBUTE_ARCHIVE,
+            "example.txt".to_owned(),
+        ))),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDriveQueryDirectoryResponse::decode_for_class(
+        FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION,
+        some_device_io_response(),
+        &mut ReadCursor::new(&encoded[12..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.buffer, original.buffer);
+}
+
+#[test]
+fn client_drive_query_directory_response_round_trips_full_directory_class() {
+    let original = ClientDriveQueryDirectoryResponse {
+        device_io_reply: some_device_io_response(),
+        buffer: Some(FileInformationClass::FullDirectory(FileFullDirectoryInformation::new(
+            10,
+            20,
+            30,
+            40,
+            4096,
+            FileAttributes::FILE_ATTRIBUTE_ARCHIVE,
+            "example.txt".to_owned(),
+        ))),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDriveQueryDirectoryResponse::decode_for_class(
+        FileInformationClassLevel::FILE_FULL_DIRECTORY_INFORMATION,
+        some_device_io_response(),
+        &mut ReadCursor::new(&encoded[12..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.buffer, original.buffer);
+}
+
+#[test]
+fn client_drive_query_directory_response_round_trips_directory_class() {
+    let original = ClientDriveQueryDirectoryResponse {
+        device_io_reply: some_device_io_response(),
+        buffer: Some(FileInformationClass::Directory(FileDirectoryInformation::new(
+            10,
+            20,
+            30,
+            40,
+            4096,
+            FileAttributes::FILE_ATTRIBUTE_ARCHIVE,
+            "example.txt".to_owned(),
+        ))),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDriveQueryDirectoryResponse::decode_for_class(
+        FileInformationClassLevel::FILE_DIRECTORY_INFORMATION,
+        some_device_io_response(),
+        &mut ReadCursor::new(&encoded[12..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.buffer, original.buffer);
+}
+
+#[test]
+fn client_drive_query_directory_response_round_trips_names_class() {
+    let original = ClientDriveQueryDirectoryResponse {
+        device_io_reply: some_device_io_response(),
+        buffer: Some(FileInformationClass::Names(FileNamesInformation::new(
+            "example.txt".to_owned(),
+        ))),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDriveQueryDirectoryResponse::decode_for_class(
+        FileInformationClassLevel::FILE_NAMES_INFORMATION,
+        some_device_io_response(),
+        &mut ReadCursor::new(&encoded[12..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.buffer, original.buffer);
+}
+
+#[test]
+fn client_drive_query_security_response_round_trips() {
+    let original = ClientDriveQuerySecurityResponse {
+        device_io_response: some_device_io_response(),
+        security_descriptor: Some(vec![1, 2, 3, 4]),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded =
+        ClientDriveQuerySecurityResponse::decode(some_device_io_response(), &mut ReadCursor::new(&encoded[12..]))
+            .unwrap();
+    assert_eq!(decoded.security_descriptor, original.security_descriptor);
+}
+
+#[test]
+fn client_drive_set_security_response_round_trips() {
+    let set_request = ServerDriveSetSecurityRequest {
+        device_io_request: some_device_io_request(MajorFunction::SetSecurity, MinorFunction::from(0)),
+        security_information: SecurityInformation::DACL,
+        security_descriptor: vec![1, 2, 3, 4, 5, 6],
+    };
+    let original = ClientDriveSetSecurityResponse::new(&set_request, NtStatus::SUCCESS).unwrap();
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded =
+        ClientDriveSetSecurityResponse::decode(some_device_io_response(), &mut ReadCursor::new(&encoded[12..]))
+            .unwrap();
+    assert_eq!(decoded.length, original.length);
+}
+
+#[test]
+fn device_flush_buffers_response_decodes() {
+    let decoded = DeviceFlushBuffersResponse::decode(some_device_io_response());
+    assert_eq!(decoded.size(), some_device_io_response().size());
+}
+
+#[test]
+fn device_close_response_round_trips() {
+    let original = DeviceCloseResponse {
+        device_io_response: some_device_io_response(),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = DeviceCloseResponse::decode(some_device_io_response(), &mut ReadCursor::new(&encoded[12..])).unwrap();
+    assert_eq!(decoded, original);
+}
+
+#[test]
+fn client_drive_query_directory_response_round_trips_basic_class() {
+    let original = ClientDriveQueryDirectoryResponse {
+        device_io_reply: some_device_io_response(),
+        buffer: Some(FileInformationClass::Basic(FileBasicInformation {
+            creation_time: 10,
+            last_access_time: 20,
+            last_write_time: 30,
+            change_time: 40,
+            file_attributes: FileAttributes::empty(),
+        })),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDriveQueryDirectoryResponse::decode_for_class(
+        FileInformationClassLevel::FILE_BASIC_INFORMATION,
+        some_device_io_response(),
+        &mut ReadCursor::new(&encoded[12..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.buffer, original.buffer);
+}
+
+#[test]
+fn client_drive_query_directory_response_round_trips_empty_buffer() {
+    let original = ClientDriveQueryDirectoryResponse {
+        device_io_reply: some_device_io_response(),
+        buffer: None,
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDriveQueryDirectoryResponse::decode_for_class(
+        FileInformationClassLevel::FILE_BASIC_INFORMATION,
+        some_device_io_response(),
+        &mut ReadCursor::new(&encoded[12..]),
+    )
+    .unwrap();
+    assert!(decoded.buffer.is_none());
+}
+
+#[test]
+fn client_drive_query_volume_information_response_round_trips() {
+    let original = ClientDriveQueryVolumeInformationResponse {
+        device_io_reply: some_device_io_response(),
+        buffer: Some(FileSystemInformationClass::from(FileFsSizeInformation {
+            total_alloc_units: 1000,
+            available_alloc_units: 500,
+            sectors_per_alloc_unit: 8,
+            bytes_per_sector: 512,
+        })),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDriveQueryVolumeInformationResponse::decode_for_class(
+        FileSystemInformationClassLevel::FILE_FS_SIZE_INFORMATION,
+        some_device_io_response(),
+        &mut ReadCursor::new(&encoded[12..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.buffer, original.buffer);
+}
+
+#[test]
+fn client_drive_set_information_response_round_trips() {
+    let set_request = ServerDriveSetInformationRequest {
+        device_io_request: DeviceIoRequest {
+            device_id: 1,
+            file_id: 2,
+            completion_id: 3,
+            major_function: MajorFunction::SetInformation,
+            minor_function: MinorFunction::from(0),
+        },
+        set_buffer: FileInformationClass::EndOfFile(FileEndOfFileInformation { end_of_file: 42 }),
+    };
+    let original = ClientDriveSetInformationResponse::new(&set_request, NtStatus::SUCCESS).unwrap();
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded =
+        ClientDriveSetInformationResponse::decode(some_device_io_response(), &mut ReadCursor::new(&encoded[12..]))
+            .unwrap();
+    // Fields are private; encoding both and comparing bytes is the round-trip check.
+    let re_encoded = encode_to_vec(decoded.size(), |dst| decoded.encode(dst));
+    assert_eq!(re_encoded[12..], encoded[12..]);
+}
+
+#[test]
+fn client_drive_notify_change_directory_response_round_trips() {
+    let original = ClientDriveNotifyChangeDirectoryResponse::new(
+        DeviceIoRequest {
+            device_id: 1,
+            file_id: 2,
+            completion_id: 3,
+            major_function: MajorFunction::DirectoryControl,
+            minor_function: MinorFunction::IRP_MN_NOTIFY_CHANGE_DIRECTORY,
+        },
+        NtStatus::SUCCESS,
+        vec![9, 9, 9],
+    );
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ClientDriveNotifyChangeDirectoryResponse::decode(
+        some_device_io_response(),
+        &mut ReadCursor::new(&encoded[12..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.buffer, original.buffer);
+}
+
+#[test]
+fn client_drive_lock_control_response_round_trips() {
+    let original = ClientDriveLockControlResponse::new(
+        DeviceIoRequest {
+            device_id: 1,
+            file_id: 2,
+            completion_id: 3,
+            major_function: MajorFunction::LockControl,
+            minor_function: MinorFunction::from(0),
+        },
+        NtStatus::SUCCESS,
+    );
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded =
+        ClientDriveLockControlResponse::decode(original.device_io_reply.clone(), &mut ReadCursor::new(&encoded[12..]))
+            .unwrap();
+    assert_eq!(decoded, original);
+}
+
+fn some_device_io_request(major_function: MajorFunction, minor_function: MinorFunction) -> DeviceIoRequest {
+    DeviceIoRequest {
+        device_id: 1,
+        file_id: 2,
+        completion_id: 3,
+        major_function,
+        minor_function,
+    }
+}
+
+#[test]
+fn device_create_request_round_trips() {
+    let original = DeviceCreateRequest {
+        device_io_request: some_device_io_request(MajorFunction::Create, MinorFunction::from(0)),
+        desired_access: DesiredAccess::empty(),
+        allocation_size: 0,
+        file_attributes: FileAttributes::empty(),
+        shared_access: SharedAccess::empty(),
+        create_disposition: CreateDisposition::FILE_OPEN,
+        create_options: CreateOptions::empty(),
+        path: "\\subdir\\file.txt".to_owned(),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ServerDriveIoRequest::decode(
+        some_device_io_request(MajorFunction::Create, MinorFunction::from(0)),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    let ServerDriveIoRequest::ServerCreateDriveRequest(decoded) = decoded else {
+        panic!("expected ServerCreateDriveRequest");
+    };
+    assert_eq!(decoded.path, original.path);
+}
+
+#[test]
+fn server_drive_query_information_request_round_trips() {
+    let original = ServerDriveQueryInformationRequest {
+        device_io_request: some_device_io_request(MajorFunction::QueryInformation, MinorFunction::from(0)),
+        file_info_class_lvl: FileInformationClassLevel::FILE_BASIC_INFORMATION,
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ServerDriveQueryInformationRequest::decode(
+        some_device_io_request(MajorFunction::QueryInformation, MinorFunction::from(0)),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.file_info_class_lvl, original.file_info_class_lvl);
+}
+
+#[test]
+fn server_drive_query_directory_request_round_trips_with_path() {
+    let original = ServerDriveQueryDirectoryRequest {
+        device_io_request: some_device_io_request(
+            MajorFunction::DirectoryControl,
+            MinorFunction::IRP_MN_QUERY_DIRECTORY,
+        ),
+        file_info_class_lvl: FileInformationClassLevel::FILE_DIRECTORY_INFORMATION,
+        initial_query: 1,
+        path: "*".to_owned(),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ServerDriveQueryDirectoryRequest::decode(
+        some_device_io_request(MajorFunction::DirectoryControl, MinorFunction::IRP_MN_QUERY_DIRECTORY),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.path, original.path);
+    assert_eq!(decoded.initial_query, original.initial_query);
+}
+
+#[test]
+fn server_drive_query_directory_request_round_trips_continuation() {
+    let original = ServerDriveQueryDirectoryRequest {
+        device_io_request: some_device_io_request(
+            MajorFunction::DirectoryControl,
+            MinorFunction::IRP_MN_QUERY_DIRECTORY,
+        ),
+        file_info_class_lvl: FileInformationClassLevel::FILE_DIRECTORY_INFORMATION,
+        initial_query: 0,
+        path: String::new(),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ServerDriveQueryDirectoryRequest::decode(
+        some_device_io_request(MajorFunction::DirectoryControl, MinorFunction::IRP_MN_QUERY_DIRECTORY),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.initial_query, 0);
+    assert_eq!(decoded.path, "");
+}
+
+#[test]
+fn server_drive_query_volume_information_request_round_trips() {
+    let original = ServerDriveQueryVolumeInformationRequest {
+        device_io_request: some_device_io_request(MajorFunction::QueryVolumeInformation, MinorFunction::from(0)),
+        fs_info_class_lvl: FileSystemInformationClassLevel::FILE_FS_SIZE_INFORMATION,
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ServerDriveQueryVolumeInformationRequest::decode(
+        some_device_io_request(MajorFunction::QueryVolumeInformation, MinorFunction::from(0)),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.fs_info_class_lvl, original.fs_info_class_lvl);
+}
+
+#[test]
+fn server_drive_set_information_request_round_trips() {
+    let original = ServerDriveSetInformationRequest {
+        device_io_request: some_device_io_request(MajorFunction::SetInformation, MinorFunction::from(0)),
+        set_buffer: FileInformationClass::Allocation(FileAllocationInformation { allocation_size: 8192 }),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ServerDriveSetInformationRequest::decode(
+        some_device_io_request(MajorFunction::SetInformation, MinorFunction::from(0)),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.set_buffer, original.set_buffer);
+}
+
+#[test]
+fn server_drive_notify_change_directory_request_round_trips() {
+    let original = ServerDriveNotifyChangeDirectoryRequest {
+        device_io_request: some_device_io_request(
+            MajorFunction::DirectoryControl,
+            MinorFunction::IRP_MN_NOTIFY_CHANGE_DIRECTORY,
+        ),
+        watch_tree: 1,
+        completion_filter: 0x17,
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ServerDriveNotifyChangeDirectoryRequest::decode(
+        some_device_io_request(
+            MajorFunction::DirectoryControl,
+            MinorFunction::IRP_MN_NOTIFY_CHANGE_DIRECTORY,
+        ),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.watch_tree, original.watch_tree);
+    assert_eq!(decoded.completion_filter, original.completion_filter);
+}
+
+#[test]
+fn server_drive_query_security_request_round_trips() {
+    let original = ServerDriveQuerySecurityRequest {
+        device_io_request: some_device_io_request(MajorFunction::QuerySecurity, MinorFunction::from(0)),
+        security_information: SecurityInformation::OWNER | SecurityInformation::DACL,
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ServerDriveQuerySecurityRequest::decode(
+        some_device_io_request(MajorFunction::QuerySecurity, MinorFunction::from(0)),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.security_information, original.security_information);
+}
+
+#[test]
+fn server_drive_set_security_request_round_trips() {
+    let original = ServerDriveSetSecurityRequest {
+        device_io_request: some_device_io_request(MajorFunction::SetSecurity, MinorFunction::from(0)),
+        security_information: SecurityInformation::DACL,
+        security_descriptor: vec![1, 2, 3, 4, 5],
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ServerDriveSetSecurityRequest::decode(
+        some_device_io_request(MajorFunction::SetSecurity, MinorFunction::from(0)),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.security_descriptor, original.security_descriptor);
+}
+
+#[test]
+fn server_drive_lock_control_request_round_trips() {
+    let original = ServerDriveLockControlRequest {
+        device_io_request: some_device_io_request(MajorFunction::LockControl, MinorFunction::from(0)),
+        operation: ironrdp_rdpdr::pdu::efs::LockOperation::Exclusive,
+        wait: true,
+        locks: vec![RdpLockInfo { length: 100, offset: 0 }],
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = ServerDriveLockControlRequest::decode(
+        some_device_io_request(MajorFunction::LockControl, MinorFunction::from(0)),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.locks, original.locks);
+    assert_eq!(decoded.wait, original.wait);
+}
+
+#[test]
+fn device_read_request_round_trips() {
+    let original = DeviceReadRequest {
+        device_io_request: some_device_io_request(MajorFunction::Read, MinorFunction::from(0)),
+        length: 4096,
+        offset: 1024,
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = DeviceReadRequest::decode(
+        some_device_io_request(MajorFunction::Read, MinorFunction::from(0)),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.length, original.length);
+    assert_eq!(decoded.offset, original.offset);
+}
+
+#[test]
+fn device_write_request_round_trips() {
+    let original = DeviceWriteRequest {
+        device_io_request: some_device_io_request(MajorFunction::Write, MinorFunction::from(0)),
+        offset: 2048,
+        write_data: b"payload".to_vec(),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = DeviceWriteRequest::decode(
+        some_device_io_request(MajorFunction::Write, MinorFunction::from(0)),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.write_data, original.write_data);
+    assert_eq!(decoded.offset, original.offset);
+}
+
+#[test]
+fn device_control_request_round_trips_any_io_ctl_code() {
+    let original = DeviceControlRequest {
+        header: some_device_io_request(MajorFunction::DeviceControl, MinorFunction::from(0)),
+        output_buffer_length: 1024,
+        input_buffer_length: 4,
+        io_control_code: AnyIoCtlCode(0x0009_0014),
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = DeviceControlRequest::<AnyIoCtlCode>::decode(
+        some_device_io_request(MajorFunction::DeviceControl, MinorFunction::from(0)),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.output_buffer_length, original.output_buffer_length);
+    assert_eq!(decoded.input_buffer_length, original.input_buffer_length);
+    assert_eq!(decoded.io_control_code, original.io_control_code);
+}
+
+#[test]
+fn device_control_request_round_trips_scard_io_ctl_code() {
+    let original = DeviceControlRequest {
+        header: some_device_io_request(MajorFunction::DeviceControl, MinorFunction::from(0)),
+        output_buffer_length: 256,
+        input_buffer_length: 0,
+        io_control_code: ScardIoCtlCode::EstablishContext,
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let decoded = DeviceControlRequest::<ScardIoCtlCode>::decode(
+        some_device_io_request(MajorFunction::DeviceControl, MinorFunction::from(0)),
+        &mut ReadCursor::new(&encoded[20..]),
+    )
+    .unwrap();
+    assert_eq!(decoded.output_buffer_length, original.output_buffer_length);
+    assert_eq!(decoded.io_control_code, original.io_control_code);
+}
+
+#[test]
+fn device_close_request_encodes_full_fixed_size() {
+    let original = DeviceCloseRequest::decode(some_device_io_request(MajorFunction::Close, MinorFunction::from(0)));
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    assert_eq!(encoded.len(), original.size());
+}
+
+#[test]
+fn device_flush_buffers_request_encodes() {
+    let original = DeviceFlushBuffersRequest::decode(some_device_io_request(
+        MajorFunction::FlushBuffers,
+        MinorFunction::from(0),
+    ));
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    assert_eq!(encoded.len(), original.size());
+}
+
+#[test]
+fn decode_io_completion_dispatches_create() {
+    let decoded = RdpdrPdu::decode_io_completion(
+        MajorFunction::Create,
+        MinorFunction::from(0),
+        None,
+        None,
+        some_device_io_response(),
+        &mut ReadCursor::new(&[5, 0, 0, 0, 1]), // file_id=5, information=FILE_OPENED
+    )
+    .unwrap();
+    assert!(matches!(decoded, RdpdrPdu::DeviceCreateResponse(_)));
+}
+
+#[test]
+fn decode_io_completion_dispatches_directory_control_by_minor_function() {
+    let query_dir = RdpdrPdu::decode_io_completion(
+        MajorFunction::DirectoryControl,
+        MinorFunction::IRP_MN_QUERY_DIRECTORY,
+        Some(FileInformationClassLevel::FILE_BASIC_INFORMATION),
+        None,
+        some_device_io_response(),
+        &mut ReadCursor::new(&0u32.to_le_bytes()),
+    )
+    .unwrap();
+    assert!(matches!(query_dir, RdpdrPdu::ClientDriveQueryDirectoryResponse(_)));
+
+    let notify_change = RdpdrPdu::decode_io_completion(
+        MajorFunction::DirectoryControl,
+        MinorFunction::IRP_MN_NOTIFY_CHANGE_DIRECTORY,
+        None,
+        None,
+        some_device_io_response(),
+        &mut ReadCursor::new(&0u32.to_le_bytes()),
+    )
+    .unwrap();
+    assert!(matches!(
+        notify_change,
+        RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(_)
+    ));
+}
+
+#[test]
+fn decode_io_completion_requires_info_class_for_query_information() {
+    let err = RdpdrPdu::decode_io_completion(
+        MajorFunction::QueryInformation,
+        MinorFunction::from(0),
+        None,
+        None,
+        some_device_io_response(),
+        &mut ReadCursor::new(&0u32.to_le_bytes()),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("info_class"));
+}
+
+#[test]
+fn decode_io_completion_rejects_set_volume_information() {
+    let err = RdpdrPdu::decode_io_completion(
+        MajorFunction::SetVolumeInformation,
+        MinorFunction::from(0),
+        None,
+        None,
+        some_device_io_response(),
+        &mut ReadCursor::new(&[]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("majorfunction"));
 }
