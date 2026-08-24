@@ -148,9 +148,7 @@ impl UpdateEncoder {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
             match codecs {
                 #[cfg(feature = "qoiz")]
-                UpdateEncoderCodecs { qoiz: Some(id), .. } => {
-                    BitmapUpdater::Qoiz(QoizHandler::new(id).with_context("failed to initialize qoiz handler")?)
-                }
+                UpdateEncoderCodecs { qoiz: Some(id), .. } => BitmapUpdater::Qoiz(QoizHandler::new(id)?),
                 #[cfg(feature = "qoi")]
                 UpdateEncoderCodecs { qoi: Some(id), .. } => BitmapUpdater::Qoi(QoiHandler::new(id)),
                 UpdateEncoderCodecs {
