@@ -384,6 +384,16 @@ impl ReplayRouter {
                         pixels: self.image.data().to_vec(),
                     })?;
                 }
+                // The EGFX client drops an update whose codec rejected it instead of failing
+                // the channel, so an unsupported codec has to be read from the decoder.
+                if self.take_unsupported_egfx_codec() {
+                    report.gaps.push(ReplayGap {
+                        packet: message.packet,
+                        direction: ReplayDirection::Server,
+                        kind: ReplayGapKind::Unsupported,
+                        skipped_bytes: 0,
+                    });
+                }
                 self.drain_egfx_output(message.packet, report, frame_sink)?;
                 Ok((
                     route,
