@@ -195,6 +195,13 @@ struct Args {
     #[clap(long = "no-webauthn", action = clap::ArgAction::SetTrue, overrides_with = "webauthn")]
     no_webauthn: bool,
 
+    /// Audio input (microphone)
+    ///
+    /// Enables the AUDIO_INPUT (MS-RDPEAI) dynamic virtual channel so the local microphone is
+    /// redirected to the remote session. Disabled by default.
+    #[clap(long)]
+    microphone: bool,
+
     /// The bitmap codecs to use (remotefx:on, ...)
     #[clap(long, num_args = 1.., value_delimiter = ',')]
     codecs: Vec<String>,
@@ -471,6 +478,10 @@ fn apply_cli_to_builder(
         redirect_webauthn
     };
     builder = builder.with_webauthn(webauthn);
+
+    if args.microphone {
+        builder = builder.with_audio_capture(true);
+    }
 
     // CLI-only knobs that are not representable as `.rdp` properties.
     // TODO/FIXME: Some of these, we may want to add support for storing in .rdp files (e.g.: IME file name can be reasonably seen as a connection option)
