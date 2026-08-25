@@ -1,5 +1,7 @@
 use core::net::SocketAddr;
 use core::num::NonZeroU16;
+#[cfg(feature = "rdpdr")]
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::io;
 use std::sync::Arc;
@@ -247,6 +249,8 @@ pub struct RdpInputSender {
     clipboard_sender: mpsc::UnboundedSender<RdpInputEvent>,
     close_sender: watch::Sender<bool>,
     graceful_close_sender: watch::Sender<bool>,
+    #[cfg(feature = "rdpdr")]
+    rdpdr_drive_hotplug_available: Arc<AtomicBool>,
 }
 
 impl RdpInputSender {
@@ -279,6 +283,8 @@ impl RdpInputSender {
                 clipboard_sender,
                 close_sender,
                 graceful_close_sender,
+                #[cfg(feature = "rdpdr")]
+                rdpdr_drive_hotplug_available: Arc::new(AtomicBool::new(false)),
             },
             input_receiver,
             clipboard_receiver,
@@ -331,6 +337,17 @@ impl RdpInputSender {
     /// immediately cancel a connection attempt or active session instead.
     pub fn request_graceful_close(&self) {
         self.graceful_close_sender.send_replace(true);
+    }
+
+    /// Returns whether the active session negotiated support for RDPDR drive hotplug.
+    #[cfg(feature = "rdpdr")]
+    pub fn rdpdr_drive_hotplug_available(&self) -> bool {
+        self.rdpdr_drive_hotplug_available.load(Ordering::Acquire)
+    }
+
+    #[cfg(feature = "rdpdr")]
+    fn set_rdpdr_drive_hotplug_available(&self, available: bool) {
+        self.rdpdr_drive_hotplug_available.store(available, Ordering::Release);
     }
 }
 
@@ -1435,6 +1452,12 @@ fn build_connector(
                 .enabled
                 .then(|| ironrdp_rdpdr::Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), "IronRDP".to_owned()))
         });
+    #[cfg(feature = "rdpdr")]
+    input_sender.set_rdpdr_drive_hotplug_available(
+        rdpdr_channel
+            .as_ref()
+            .is_some_and(ironrdp_rdpdr::Rdpdr::drive_hotplug_available),
+    );
 
     // Windows servers only issue RDPDR traffic when RDPSND is also advertised.
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
@@ -3212,7 +3235,7 @@ mod tests {
     #[cfg(feature = "rdpdr")]
     use core::any::TypeId;
     #[cfg(feature = "rdpdr")]
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::sync::atomic::AtomicUsize;
 
     #[cfg(feature = "rdpdr")]
     use ironrdp_core::encode_vec;
@@ -3811,6 +3834,7 @@ mod tests {
         )
         .expect("RDPDR connector should build");
 
+        assert!(input_sender.rdpdr_drive_hotplug_available());
         assert!(
             connector
                 .get_static_channel_processor::<ironrdp_rdpdr::Rdpdr>()
@@ -3819,6 +3843,30 @@ mod tests {
         assert!(
             connector
                 .get_static_channel_processor::<ironrdp_rdpsnd::client::Rdpsnd>()
+                .is_some()
+        );
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn noop_rdpdr_fallback_does_not_report_drive_hotplug() {
+        let config = test_config();
+        let (input_sender, _) = RdpInputSender::channel(1);
+        let mut connector = build_connector(
+            &config,
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            &input_sender,
+            no_cliprdr_factory(),
+            None,
+            true,
+            None,
+        )
+        .expect("Noop RDPDR connector should build");
+
+        assert!(!input_sender.rdpdr_drive_hotplug_available());
+        assert!(
+            connector
+                .get_static_channel_processor::<ironrdp_rdpdr::Rdpdr>()
                 .is_some()
         );
     }

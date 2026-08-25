@@ -135,16 +135,16 @@ impl WindowsRdpdrBackendFactory {
         let mut device_ids = HashSet::with_capacity(drives.len());
         for drive in &drives {
             if !device_ids.insert(drive.device_id()) {
-                return Err(RedirectedDriveFactoryError::ConfiguredIdCollision(drive.device_id()));
+                return Err(RedirectedDriveFactoryError::DuplicateDeviceId(drive.device_id()));
             }
         }
         let mut selected_ids = HashSet::with_capacity(initial_drive_ids.len());
         for device_id in &initial_drive_ids {
             if !selected_ids.insert(*device_id) {
-                return Err(RedirectedDriveFactoryError::InitialIdDuplicate(*device_id));
+                return Err(RedirectedDriveFactoryError::RepeatedInitialSelection(*device_id));
             }
             if !device_ids.contains(device_id) {
-                return Err(RedirectedDriveFactoryError::InitialIdUnknown(*device_id));
+                return Err(RedirectedDriveFactoryError::UnconfiguredInitialSelection(*device_id));
             }
         }
 
@@ -227,19 +227,19 @@ impl RdpdrBackendFactory for WindowsRdpdrBackendFactory {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RedirectedDriveFactoryError {
     /// More than one selected drive used the same RDPDR device ID.
-    ConfiguredIdCollision(u32),
+    DuplicateDeviceId(u32),
     /// An initial drive ID was listed more than once.
-    InitialIdDuplicate(u32),
+    RepeatedInitialSelection(u32),
     /// An initial drive ID has no matching configured logical volume.
-    InitialIdUnknown(u32),
+    UnconfiguredInitialSelection(u32),
 }
 
 impl fmt::Display for RedirectedDriveFactoryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ConfiguredIdCollision(device_id) => write!(f, "duplicate RDPDR device ID {device_id}"),
-            Self::InitialIdDuplicate(device_id) => write!(f, "duplicate initial RDPDR device ID {device_id}"),
-            Self::InitialIdUnknown(device_id) => {
+            Self::DuplicateDeviceId(device_id) => write!(f, "duplicate RDPDR device ID {device_id}"),
+            Self::RepeatedInitialSelection(device_id) => write!(f, "duplicate initial RDPDR device ID {device_id}"),
+            Self::UnconfiguredInitialSelection(device_id) => {
                 write!(f, "initial RDPDR device ID {device_id} is not configured")
             }
         }
@@ -340,10 +340,7 @@ mod tests {
             RedirectedDrive::new(1, "Data", r"D:\", false).expect("valid data drive"),
         ]);
 
-        assert!(matches!(
-            result,
-            Err(RedirectedDriveFactoryError::ConfiguredIdCollision(1))
-        ));
+        assert!(matches!(result, Err(RedirectedDriveFactoryError::DuplicateDeviceId(1))));
     }
 
     #[test]
@@ -352,11 +349,11 @@ mod tests {
 
         assert!(matches!(
             WindowsRdpdrBackendFactory::from_drive_configuration(vec![drive.clone()], vec![1, 1]),
-            Err(RedirectedDriveFactoryError::InitialIdDuplicate(1))
+            Err(RedirectedDriveFactoryError::RepeatedInitialSelection(1))
         ));
         assert!(matches!(
             WindowsRdpdrBackendFactory::from_drive_configuration(vec![drive], vec![2]),
-            Err(RedirectedDriveFactoryError::InitialIdUnknown(2))
+            Err(RedirectedDriveFactoryError::UnconfiguredInitialSelection(2))
         ));
     }
 }

@@ -5981,6 +5981,7 @@ struct DriveCatalogEntry {
     name: String,
     root_path: PathBuf,
     redirection_state: Cell<bool>,
+    observed: Cell<bool>,
 }
 
 impl DriveCatalogEntry {
@@ -6018,18 +6019,26 @@ impl DriveCatalog {
     fn rescan_from_roots(&mut self, roots: Vec<PathBuf>, redirect_new_drives: bool) {
         self.entries = roots
             .into_iter()
-            .map(|root_path| self.get_or_insert(root_path, redirect_new_drives))
+            .map(|root_path| self.get_or_insert(root_path, redirect_new_drives, true))
             .collect();
     }
 
     fn reserve_logical_volume_roots(&mut self) {
         for root_path in possible_logical_volume_roots() {
-            self.get_or_insert(root_path, false);
+            self.get_or_insert(root_path, false, false);
         }
     }
 
-    fn get_or_insert(&mut self, root_path: PathBuf, redirect_new_drives: bool) -> Rc<DriveCatalogEntry> {
+    fn get_or_insert(
+        &mut self,
+        root_path: PathBuf,
+        redirect_new_drives: bool,
+        observed: bool,
+    ) -> Rc<DriveCatalogEntry> {
         if let Some(entry) = self.known_entries.get(&root_path) {
+            if observed && !entry.observed.replace(true) {
+                entry.redirection_state.set(redirect_new_drives);
+            }
             return Rc::clone(entry);
         }
 
@@ -6043,6 +6052,7 @@ impl DriveCatalog {
             name: logical_volume_name(&root_path),
             root_path: root_path.clone(),
             redirection_state: Cell::new(redirect_new_drives),
+            observed: Cell::new(observed),
         });
         self.known_entries.insert(root_path, Rc::clone(&entry));
         entry
@@ -6111,7 +6121,8 @@ fn logical_volume_name(root_path: &Path) -> String {
 #[derive(Default)]
 struct DriveSessionState {
     drive_hotplug_enabled: Cell<bool>,
-    drive_ids: RefCell<BTreeSet<u32>>,
+    // ActiveX exposes the desired selection; RDPDR owns pending and acknowledged protocol state.
+    desired_drive_ids: RefCell<BTreeSet<u32>>,
 }
 
 fn queue_drive_change(
@@ -6121,8 +6132,8 @@ fn queue_drive_change(
     name: &str,
     redirected: bool,
 ) -> Result<()> {
-    let is_active = session.drive_ids.borrow().contains(&device_id);
-    if is_active == redirected {
+    let is_desired = session.desired_drive_ids.borrow().contains(&device_id);
+    if !redirected && !is_desired {
         return Ok(());
     }
     if !session.drive_hotplug_enabled.get() {
@@ -6148,9 +6159,9 @@ fn queue_drive_change(
         .try_send(event)
         .map_err(|error| Error::new(E_FAIL, format!("unable to queue RDPDR drive change: {error}")))?;
     if redirected {
-        session.drive_ids.borrow_mut().insert(device_id);
+        session.desired_drive_ids.borrow_mut().insert(device_id);
     } else {
-        session.drive_ids.borrow_mut().remove(&device_id);
+        session.desired_drive_ids.borrow_mut().remove(&device_id);
     }
     Ok(())
 }
@@ -6284,12 +6295,12 @@ impl IMsRdpDriveCollection_Impl for DriveCollection_Impl {
         catalog.rescan(redirect_new_drives);
         if self.connection_state.get() == ConnectionState::Connected {
             let desired_ids = catalog.selected_drive_ids().into_iter().collect::<BTreeSet<_>>();
-            let active_ids = self.session.drive_ids.borrow().clone();
-            for &device_id in active_ids.difference(&desired_ids) {
+            let previous_desired_ids = self.session.desired_drive_ids.borrow().clone();
+            for &device_id in previous_desired_ids.difference(&desired_ids) {
                 queue_drive_change(&self.session, &self.input_sender, device_id, "", false)?;
             }
             for entry in &catalog.entries {
-                if entry.redirection_state.get() && !active_ids.contains(&entry.device_id) {
+                if entry.redirection_state.get() {
                     queue_drive_change(&self.session, &self.input_sender, entry.device_id, &entry.name, true)?;
                 }
             }
@@ -9257,6 +9268,12 @@ impl Control {
                     let _ = response.send(decision);
                 }
                 WorkerEvent::Connected { .. } => {
+                    self.drive_session.drive_hotplug_enabled.set(
+                        self.input_sender
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(RdpInputSender::rdpdr_drive_hotplug_available),
+                    );
                     if self.state.get() == ConnectionState::Connecting {
                         self.state.set(ConnectionState::Connected);
                         if let Some(rpc) = &self.rpc {
@@ -9417,7 +9434,7 @@ impl Control {
                     self.stop_clipboard_redirection();
                     self.input_sender.borrow_mut().take();
                     self.drive_session.drive_hotplug_enabled.set(false);
-                    self.drive_session.drive_ids.borrow_mut().clear();
+                    self.drive_session.desired_drive_ids.borrow_mut().clear();
                     self.remote_size.set(None);
                     self.active_monitor_topology.borrow_mut().take();
                     self.configured_monitor_topology.borrow_mut().take();
@@ -10601,10 +10618,8 @@ impl Control {
         if consume_initial_execute {
             self.remote_application.borrow_mut().initial_execute = None;
         }
-        self.drive_session
-            .drive_hotplug_enabled
-            .set(rdpdr_enabled && (redirect_dynamic_drives || !initial_drive_ids.is_empty()));
-        *self.drive_session.drive_ids.borrow_mut() = initial_drive_ids.into_iter().collect();
+        self.drive_session.drive_hotplug_enabled.set(false);
+        *self.drive_session.desired_drive_ids.borrow_mut() = initial_drive_ids.into_iter().collect();
         self.rail_windows.borrow_mut().start(
             remote_program_mode
                 .then(|| self.input_sender.borrow().as_ref().cloned())
@@ -22057,6 +22072,15 @@ mod tests {
         catalog.reserve_logical_volume_roots();
         assert_eq!(catalog.configured_drives().expect("valid drive catalog").len(), 26);
         assert_eq!(catalog.entries[0].device_id, system_device_id);
+
+        let future_root = PathBuf::from(r"Z:\");
+        let future_entry = Rc::clone(catalog.known_entries.get(&future_root).expect("reserved future drive"));
+        let future_device_id = future_entry.device_id;
+        assert!(!future_entry.observed.get());
+        catalog.rescan_from_roots(vec![future_root], true);
+        assert_eq!(catalog.entries[0].device_id, future_device_id);
+        assert!(catalog.entries[0].observed.get());
+        assert!(catalog.entries[0].redirection_state.get());
     }
 
     #[test]
@@ -22142,7 +22166,7 @@ mod tests {
             ..Default::default()
         }));
         let connection_state = Rc::new(Cell::new(ConnectionState::Connected));
-        let (sender, mut receiver) = RdpInputSender::channel(2);
+        let (sender, mut receiver) = RdpInputSender::channel(3);
         let input_sender = Rc::new(RefCell::new(Some(sender)));
         let session = Rc::new(DriveSessionState::default());
         session.drive_hotplug_enabled.set(true);
@@ -22164,14 +22188,20 @@ mod tests {
             receiver.try_recv(),
             Ok(RdpInputEvent::AddRdpdrDrive { device_id: 1, name }) if name == "E:"
         ));
-        assert!(session.drive_ids.borrow().contains(&1));
+        assert!(session.desired_drive_ids.borrow().contains(&1));
+
+        unsafe { drive.put_RedirectionState(VARIANT_TRUE.0) }.expect("retry desired dynamic drive");
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(RdpInputEvent::AddRdpdrDrive { device_id: 1, name }) if name == "E:"
+        ));
 
         unsafe { drive.put_RedirectionState(VARIANT_FALSE.0) }.expect("queue drive removal");
         assert!(matches!(
             receiver.try_recv(),
             Ok(RdpInputEvent::RemoveRdpdrDrive { device_id: 1 })
         ));
-        assert!(!session.drive_ids.borrow().contains(&1));
+        assert!(!session.desired_drive_ids.borrow().contains(&1));
     }
 
     #[test]
@@ -22190,7 +22220,7 @@ mod tests {
                 .code(),
             E_FAIL
         );
-        assert!(session.drive_ids.borrow().is_empty());
+        assert!(session.desired_drive_ids.borrow().is_empty());
     }
 
     #[test]
@@ -22239,6 +22269,19 @@ mod tests {
                 .expect_err("invalid VARIANT_BOOL is rejected")
                 .code(),
             E_INVALIDARG
+        );
+
+        let connected_control = Control::new();
+        connected_control.state.set(ConnectionState::Connected);
+        let connected_control: IMsRdpClient10 = connected_control.into();
+        let connected_non_scriptable = connected_control
+            .cast::<IMsRdpClientNonScriptable3>()
+            .expect("connected control supports dynamic redirection settings");
+        assert_eq!(
+            unsafe { connected_non_scriptable.put_RedirectDynamicDrives(VARIANT_TRUE.0) }
+                .expect_err("unavailable connected hotplug is rejected")
+                .code(),
+            E_FAIL
         );
     }
 
