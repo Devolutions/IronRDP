@@ -1194,6 +1194,11 @@ impl RdpServer {
     /// Run a single RDP connection over `stream`, performing the
     /// IronRDP-managed TLS handshake on `ShouldUpgrade` (standard TCP+TLS).
     ///
+    /// Socket options on `stream` are the caller's to set. In particular RDP
+    /// is a stream of small, latency-sensitive writes, so a TCP stream should
+    /// have `TCP_NODELAY` set; [`RdpServer::run`] does that for the
+    /// connections it accepts itself.
+    ///
     /// Equivalent to [`run_connection_with`](Self::run_connection_with) with
     /// [`TransportTls::Managed`].
     pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
@@ -1205,6 +1210,9 @@ impl RdpServer {
 
     /// Run a single RDP connection over `stream`, choosing who performs the TLS
     /// handshake with `tls`.
+    ///
+    /// Socket options on `stream` are the caller's to set; see
+    /// [`run_connection`](Self::run_connection).
     ///
     /// With [`TransportTls::Managed`], IronRDP performs the TLS accept on
     /// `ShouldUpgrade`, exactly as [`run_connection`](Self::run_connection).
@@ -1473,6 +1481,15 @@ impl RdpServer {
                         debug!(?peer, "Connection rejected by handler");
                         drop(stream);
                     } else {
+                        // RDP output is small writes the peer is waiting on: a
+                        // frame, a pointer update, a channel PDU. Nagle holds
+                        // the trailing partial segment of each until the
+                        // previous is acknowledged, which against a peer using
+                        // delayed acknowledgements is dead time on every one.
+                        // Not worth refusing a connection over, though.
+                        if let Err(error) = stream.set_nodelay(true) {
+                            warn!(?peer, %error, "Failed to set TCP_NODELAY; interactive latency may suffer");
+                        }
                         let started = tokio::time::Instant::now();
                         let result = self.run_connection(stream).await;
                         let duration = started.elapsed();
