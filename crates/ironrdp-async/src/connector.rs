@@ -2,8 +2,8 @@ use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, Kerbe
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, ServerName, State as _,
-    general_err,
+    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorErrorKind, ConnectorResult,
+    ResultExt as _, ServerName, State as _, general_err,
 };
 use ironrdp_core::WriteBuf;
 use tracing::{debug, info, instrument, trace};
@@ -24,7 +24,9 @@ where
     info!("Begin connection procedure");
 
     while !connector.should_perform_security_upgrade() {
-        single_sequence_step(framed, connector, &mut buf).await?;
+        single_sequence_step(framed, connector, &mut buf)
+            .await
+            .map_err_as::<ConnectorErrorKind>()?;
     }
 
     Ok(ShouldUpgrade)
@@ -86,17 +88,22 @@ where
             // using `ClientConnector::complete_multitransport()` instead of
             // calling `connect_finalize`.
             buf.clear();
-            let written = connector.skip_multitransport(&mut buf)?;
+            let written = connector
+                .skip_multitransport(&mut buf)
+                .map_err_as::<ConnectorErrorKind>()?;
             if written.size().is_some() {
                 framed
                     .write_all(buf.filled())
                     .await
-                    .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+                    .map_err(|e| ironrdp_connector::custom_err!("write all", e))
+                    .map_err_as::<ConnectorErrorKind>()?;
             }
             continue;
         }
 
-        single_sequence_step(framed, &mut connector, &mut buf).await?;
+        single_sequence_step(framed, &mut connector, &mut buf)
+            .await
+            .map_err_as::<ConnectorErrorKind>()?;
 
         if let ClientConnectorState::Connected { result } = connector.state {
             break result;
@@ -121,8 +128,7 @@ async fn resolve_generator(
                 state = generator.resume(Ok(response));
             }
             GeneratorState::Completed(client_state) => {
-                break client_state
-                    .map_err(|e| ConnectorError::new("CredSSP", ironrdp_connector::ConnectorErrorKind::Credssp(e)));
+                break client_state.map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)));
             }
         }
     }
@@ -160,7 +166,8 @@ where
             framed
                 .write_all(response)
                 .await
-                .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+                .map_err(|e| ironrdp_connector::custom_err!("write all", e))
+                .map_err_as::<ConnectorErrorKind>()?;
         }
 
         let Some(next_pdu_hint) = sequence.next_pdu_hint() else {
@@ -172,7 +179,8 @@ where
         let pdu = framed
             .read_by_hint(next_pdu_hint)
             .await
-            .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
+            .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))
+            .map_err_as::<ConnectorErrorKind>()?;
 
         trace!(length = pdu.len(), "PDU received");
 
@@ -204,7 +212,10 @@ where
 
     let selected_protocol = match connector.state {
         ClientConnectorState::Credssp { selected_protocol, .. } => selected_protocol,
-        _ => return Err(general_err!("invalid connector state for CredSSP sequence")),
+        _ => {
+            return Err(general_err!("invalid connector state for CredSSP sequence"))
+                .map_err_as::<ConnectorErrorKind>();
+        }
     };
 
     debug!(connector.state = connector.state.name(), "Begin CredSSP");

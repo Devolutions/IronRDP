@@ -1,6 +1,6 @@
 use ironrdp::connector::sspi::generator::NetworkRequest;
 use ironrdp::connector::sspi::network_client::NetworkProtocol;
-use ironrdp::connector::{ConnectorResult, custom_err, reason_err};
+use ironrdp::connector::{ConnectorErrorKind, ConnectorResult, ResultExt as _, custom_err, reason_err};
 use ironrdp_futures::NetworkClient;
 use tracing::debug;
 
@@ -18,10 +18,12 @@ impl NetworkClient for WasmNetworkClient {
                 let response = gloo_net::http::Request::post(network_request.url.as_str())
                     .header("keep-alive", "true")
                     .body(body)
-                    .map_err(|e| custom_err!("failed to send KDC request", e))?
+                    .map_err(|e| custom_err!("failed to send KDC request", e))
+                    .map_err_as::<ConnectorErrorKind>()?
                     .send()
                     .await
-                    .map_err(|e| custom_err!("failed to send KDC request", e))?;
+                    .map_err(|e| custom_err!("failed to send KDC request", e))
+                    .map_err_as::<ConnectorErrorKind>()?;
 
                 if !response.ok() {
                     return Err(reason_err!(
@@ -29,17 +31,21 @@ impl NetworkClient for WasmNetworkClient {
                         "HTTP status error ({} {})",
                         response.status(),
                         response.status_text(),
-                    ));
+                    ))
+                    .map_err_as::<ConnectorErrorKind>();
                 }
 
                 let body = response
                     .binary()
                     .await
-                    .map_err(|e| custom_err!("failed to retrieve HTTP response", e))?;
+                    .map_err(|e| custom_err!("failed to retrieve HTTP response", e))
+                    .map_err_as::<ConnectorErrorKind>()?;
 
                 Ok(body)
             }
-            unsupported => Err(reason_err!("CredSSP", "unsupported protocol: {unsupported:?}")),
+            unsupported => {
+                Err(reason_err!("CredSSP", "unsupported protocol: {unsupported:?}")).map_err_as::<ConnectorErrorKind>()
+            }
         }
     }
 }

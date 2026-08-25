@@ -2,7 +2,7 @@ use core::any::TypeId;
 use core::mem;
 
 use ironrdp_connector::{
-    ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, MonotonicInstant, Sequence, State, Written,
+    DesktopSize, MonotonicInstant, Sequence, SequenceError, SequenceErrorExt as _, SequenceResult, State, Written,
     encode_x224_packet, general_err, reason_err,
 };
 use ironrdp_core::{WriteBuf, decode};
@@ -215,7 +215,7 @@ impl Acceptor {
         mut consumed: Acceptor,
         static_channels: StaticChannelSet,
         desktop_size: DesktopSize,
-    ) -> ConnectorResult<Self> {
+    ) -> SequenceResult<Self> {
         let AcceptorState::CapabilitiesSendServer {
             early_capability,
             channels,
@@ -486,13 +486,13 @@ impl Sequence for Acceptor {
         input: &[u8],
         received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
+    ) -> SequenceResult<Written> {
         let prev_state = mem::take(&mut self.state);
 
         let (written, next_state) = match prev_state {
             AcceptorState::InitiationWaitRequest => {
                 let connection_request = decode::<X224<nego::ConnectionRequest>>(input)
-                    .map_err(ConnectorError::decode)
+                    .map_err(SequenceError::decode)
                     .map(|p| p.0)?;
 
                 debug!(message = ?connection_request, "Received");
@@ -533,7 +533,7 @@ impl Sequence for Acceptor {
 
                     debug!(message = ?failure, "Send");
 
-                    ironrdp_core::encode_buf(&X224(failure), output).map_err(ConnectorError::encode)?;
+                    ironrdp_core::encode_buf(&X224(failure), output).map_err(SequenceError::encode)?;
 
                     return Err(reason_err!(
                         "security protocol mismatch",
@@ -550,7 +550,7 @@ impl Sequence for Acceptor {
                 debug!(message = ?connection_confirm, "Send");
 
                 let written =
-                    ironrdp_core::encode_buf(&X224(connection_confirm), output).map_err(ConnectorError::encode)?;
+                    ironrdp_core::encode_buf(&X224(connection_confirm), output).map_err(SequenceError::encode)?;
 
                 (
                     Written::from_size(written)?,
@@ -596,10 +596,10 @@ impl Sequence for Acceptor {
                 protocol,
             } => {
                 let x224_payload = decode::<X224<pdu::x224::X224Data<'_>>>(input)
-                    .map_err(ConnectorError::decode)
+                    .map_err(SequenceError::decode)
                     .map(|p| p.0)?;
                 let settings_initial =
-                    decode::<mcs::ConnectInitial>(x224_payload.data.as_ref()).map_err(ConnectorError::decode)?;
+                    decode::<mcs::ConnectInitial>(x224_payload.data.as_ref()).map_err(SequenceError::decode)?;
 
                 debug!(message = ?settings_initial, "Received");
 
@@ -721,7 +721,7 @@ impl Sequence for Acceptor {
 
                 let settings_response = mcs::ConnectResponse {
                     conference_create_response: gcc::ConferenceCreateResponse::new(self.user_channel_id, server_blocks)
-                        .map_err(ConnectorError::decode)?,
+                        .map_err(SequenceError::decode)?,
                     called_connect_id: 1,
                     domain_parameters: mcs::DomainParameters::target(),
                 };
@@ -792,10 +792,9 @@ impl Sequence for Acceptor {
                 early_capability,
                 channels,
             } => {
-                let data: X224<mcs::SendDataRequest<'_>> = decode(input).map_err(ConnectorError::decode)?;
+                let data: X224<mcs::SendDataRequest<'_>> = decode(input).map_err(SequenceError::decode)?;
                 let data = data.0;
-                let client_info: rdp::ClientInfoPdu =
-                    decode(data.user_data.as_ref()).map_err(ConnectorError::decode)?;
+                let client_info: rdp::ClientInfoPdu = decode(data.user_data.as_ref()).map_err(SequenceError::decode)?;
 
                 let auto_reconnect = client_info
                     .client_info
@@ -824,7 +823,7 @@ impl Sequence for Acceptor {
 
                             util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &info, output)?;
 
-                            return Err(ConnectorError::general("invalid credentials"));
+                            return Err(general_err!("invalid credentials"));
                         }
                     }
 
@@ -846,7 +845,7 @@ impl Sequence for Acceptor {
                 channels,
             } => {
                 let license: LicensePdu = LicensingErrorMessage::new_valid_client()
-                    .map_err(ConnectorError::encode)?
+                    .map_err(SequenceError::encode)?
                     .into();
 
                 debug!(message = ?license, "Send");
@@ -929,7 +928,7 @@ impl Sequence for Acceptor {
 
             AcceptorState::CapabilitiesWaitConfirm { ref channels } => {
                 let message = decode::<X224<mcs::McsMessage<'_>>>(input)
-                    .map_err(ConnectorError::decode)
+                    .map_err(SequenceError::decode)
                     .map(|p| p.0);
                 let message = match message {
                     Ok(msg) => msg,
@@ -946,7 +945,7 @@ impl Sequence for Acceptor {
                 match message {
                     mcs::McsMessage::SendDataRequest(data) => {
                         let capabilities_confirm = decode::<rdp::headers::ShareControlHeader>(data.user_data.as_ref())
-                            .map_err(ConnectorError::decode);
+                            .map_err(SequenceError::decode);
                         let capabilities_confirm = match capabilities_confirm {
                             Ok(capabilities_confirm) => capabilities_confirm,
                             Err(e) => {
@@ -964,7 +963,7 @@ impl Sequence for Acceptor {
 
                         let ShareControlPdu::ClientConfirmActive(confirm) = capabilities_confirm.share_control_pdu
                         else {
-                            return Err(ConnectorError::general("expected client confirm active"));
+                            return Err(general_err!("expected client confirm active"));
                         };
 
                         (

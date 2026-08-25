@@ -7,8 +7,8 @@ use ironrdp_pdu::rdp::capability_sets::{
 use tracing::{debug, warn};
 
 use crate::{
-    Config, ConnectionFinalizationSequence, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize,
-    MonotonicInstant, Sequence, State, Written, general_err, reason_err,
+    Config, ConnectionFinalizationSequence, DesktopSize, MonotonicInstant, Sequence, SequenceError,
+    SequenceErrorExt as _, SequenceResult, State, Written, general_err, reason_err,
 };
 
 /// Represents the Capability Exchange and Connection Finalization phases
@@ -130,7 +130,7 @@ impl Sequence for ConnectionActivationSequence {
         input: &[u8],
         received_at: Option<MonotonicInstant>,
         output: &mut ironrdp_core::WriteBuf,
-    ) -> ConnectorResult<Written> {
+    ) -> SequenceResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             ConnectionActivationState::Consumed | ConnectionActivationState::Finalized { .. } => {
                 return Err(general_err!(
@@ -141,9 +141,9 @@ impl Sequence for ConnectionActivationSequence {
                 debug!("Capabilities Exchange");
 
                 let send_data_indication_ctx =
-                    ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(ConnectorError::decode)?;
+                    ironrdp_pdu::mcs::decode_send_data_indication(input).map_err(SequenceError::decode)?;
                 let share_control_ctx =
-                    rdp::headers::decode_share_control(send_data_indication_ctx).map_err(ConnectorError::decode)?;
+                    rdp::headers::decode_share_control(send_data_indication_ctx).map_err(SequenceError::decode)?;
 
                 debug!(message = ?share_control_ctx.pdu, "Received");
 
@@ -296,7 +296,7 @@ impl Sequence for ConnectionActivationSequence {
                     client_confirm_active,
                     output,
                 )
-                .map_err(ConnectorError::encode)?;
+                .map_err(SequenceError::encode)?;
 
                 (
                     Written::from_size(written)?,
@@ -449,7 +449,7 @@ fn remote_app_rail_capability(
     rail_support_level: RailSupportLevel,
     server_capability_sets: &[CapabilitySet],
     window_list: Option<&WindowList>,
-) -> ConnectorResult<Option<Rail>> {
+) -> SequenceResult<Option<Rail>> {
     if !remote_application_mode {
         return Ok(None);
     }
@@ -485,7 +485,7 @@ fn create_client_confirm_active(
     mut server_capability_sets: Vec<CapabilitySet>,
     desktop_size: DesktopSize,
     window_list: Option<WindowList>,
-) -> ConnectorResult<rdp::capability_sets::ClientConfirmActive> {
+) -> SequenceResult<rdp::capability_sets::ClientConfirmActive> {
     use ironrdp_pdu::rdp::capability_sets::{
         BITMAP_CACHE_ENTRIES_NUM, Bitmap, BitmapCache, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry,
         ClientConfirmActive, CmdFlags, DemandActive, FrameAcknowledge, GLYPH_CACHE_NUM, General, GeneralExtraFlags,
@@ -637,7 +637,7 @@ fn create_client_confirm_active(
 /// Bitmap Capability Set permits the server to select RDP 6.0 bitmap compression instead.
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/49e7bcb9-a8d7-46f5-987e-46c63c44b2c4
-fn requested_bitmap_color_depth(bitmap: Option<&crate::BitmapConfig>) -> ConnectorResult<u16> {
+fn requested_bitmap_color_depth(bitmap: Option<&crate::BitmapConfig>) -> SequenceResult<u16> {
     match bitmap.map_or(32, |bitmap| bitmap.color_depth) {
         15 => Ok(15),
         16 => Ok(16),

@@ -1,34 +1,34 @@
-/// Creates a `ConnectorError` with `General` kind
+/// Creates a `SequenceError` with `General` kind
 ///
 /// Shorthand for
 /// ```rust
-/// <ironrdp_connector::ConnectorError as ironrdp_connector::ConnectorErrorExt>::general(context)
+/// <ironrdp_connector::SequenceError as ironrdp_connector::SequenceErrorExt>::general(context)
 /// ```
 #[macro_export]
 macro_rules! general_err {
-    ( $context:expr $(,)? ) => {{ <$crate::ConnectorError as $crate::ConnectorErrorExt>::general($context) }};
+    ( $context:expr $(,)? ) => {{ <$crate::SequenceError as $crate::SequenceErrorExt>::general($context) }};
 }
 
-/// Creates a `ConnectorError` with `Reason` kind
+/// Creates a `SequenceError` with `Reason` kind
 ///
 /// Shorthand for
 /// ```rust
-/// <ironrdp_connector::ConnectorError as ironrdp_connector::ConnectorErrorExt>::reason(context, reason)
+/// <ironrdp_connector::SequenceError as ironrdp_connector::SequenceErrorExt>::reason(context, reason)
 /// ```
 #[macro_export]
 macro_rules! reason_err {
     ( $context:expr, $($arg:tt)* ) => {{
-        <$crate::ConnectorError as $crate::ConnectorErrorExt>::reason($context, format!($($arg)*))
+        <$crate::SequenceError as $crate::SequenceErrorExt>::reason($context, format!($($arg)*))
     }};
 }
 
-/// Creates a `ConnectorError` with `Custom` kind and a source error attached to it
+/// Creates a `SequenceError` with `Custom` kind and a source error attached to it
 ///
 /// Shorthand for
 /// ```rust
-/// <ironrdp_connector::ConnectorError as ironrdp_connector::ConnectorErrorExt>::custom(context, source)
+/// <ironrdp_connector::SequenceError as ironrdp_connector::SequenceErrorExt>::custom(context, source)
 /// ```
 #[macro_export]
 macro_rules! custom_err {
-    ( $context:expr, $source:expr $(,)? ) => {{ <$crate::ConnectorError as $crate::ConnectorErrorExt>::custom($context, $source) }};
+    ( $context:expr, $source:expr $(,)? ) => {{ <$crate::SequenceError as $crate::SequenceErrorExt>::custom($context, $source) }};
 }

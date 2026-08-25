@@ -19,7 +19,7 @@ use ironrdp_client::rdp::{
 };
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp_cliprdr_native::WinClipboard;
-use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
+use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials, SequenceErrorKind};
 use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, encode_vec};
 use ironrdp_input::{Database as InputDatabase, MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::PduResult;
@@ -641,14 +641,17 @@ fn certificate_prompt_enabled(
 
 fn trace_connection_failure(error: &ConnectorError) {
     let category = match error.kind() {
-        ConnectorErrorKind::Encode(_) => "Encode",
-        ConnectorErrorKind::Decode(_) => "Decode",
+        ConnectorErrorKind::Sequence(seq_err) => match seq_err.kind() {
+            SequenceErrorKind::Encode(_) => "Encode",
+            SequenceErrorKind::Decode(_) => "Decode",
+            SequenceErrorKind::Reason(_) => "Reason",
+            SequenceErrorKind::General => "General",
+            SequenceErrorKind::Custom => "Custom",
+            SequenceErrorKind::Negotiation(_) => "Negotiation",
+            _ => "Sequence",
+        },
         ConnectorErrorKind::Credssp(_) => "CredSsp",
-        ConnectorErrorKind::Reason(_) => "Reason",
         ConnectorErrorKind::AccessDenied => "AccessDenied",
-        ConnectorErrorKind::General => "General",
-        ConnectorErrorKind::Custom => "Custom",
-        ConnectorErrorKind::Negotiation(_) => "Negotiation",
         _ => "Unknown",
     };
     let location = error.location();
@@ -762,13 +765,18 @@ impl DisconnectInfo {
 
     fn from_connection_failure(error: &ConnectorError) -> Self {
         let description = match error.kind() {
-            ConnectorErrorKind::Encode(_) => "The RDP client could not encode a protocol message.",
-            ConnectorErrorKind::Decode(_) => "The RDP client received an invalid protocol message.",
+            ConnectorErrorKind::Sequence(seq_err) => match seq_err.kind() {
+                SequenceErrorKind::Encode(_) => "The RDP client could not encode a protocol message.",
+                SequenceErrorKind::Decode(_) => "The RDP client received an invalid protocol message.",
+                SequenceErrorKind::Reason(_) => "The RDP connection ended with a protocol reason.",
+                SequenceErrorKind::General | SequenceErrorKind::Custom => {
+                    "The RDP client encountered an internal error."
+                }
+                SequenceErrorKind::Negotiation(_) => "RDP security negotiation failed.",
+                _ => "The RDP client encountered an unknown error.",
+            },
             ConnectorErrorKind::Credssp(_) => "CredSSP authentication failed.",
-            ConnectorErrorKind::Reason(_) => "The RDP connection ended with a protocol reason.",
             ConnectorErrorKind::AccessDenied => "The RDP server denied access.",
-            ConnectorErrorKind::General | ConnectorErrorKind::Custom => "The RDP client encountered an internal error.",
-            ConnectorErrorKind::Negotiation(_) => "RDP security negotiation failed.",
             _ => "The RDP client encountered an unknown error.",
         };
         Self {
@@ -16571,7 +16579,13 @@ mod tests {
         let _ = std::fs::remove_file(&trace_path);
 
         let trace_guard = TestHostTracePath::install(trace_path.clone());
-        trace_connection_failure(&ConnectorError::new("must not be traced", ConnectorErrorKind::Custom));
+        trace_connection_failure(&ConnectorError::new(
+            "must not be traced",
+            ConnectorErrorKind::Sequence(ironrdp_connector::SequenceError::new(
+                "must not be traced",
+                SequenceErrorKind::Custom,
+            )),
+        ));
         drop(trace_guard);
         let trace = std::fs::read_to_string(&trace_path).expect("connection failure trace must be written");
         let _ = std::fs::remove_file(trace_path);

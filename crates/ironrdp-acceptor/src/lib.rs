@@ -4,7 +4,7 @@
 use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper, single_sequence_step};
 use ironrdp_connector::sspi::credssp::EarlyUserAuthResult;
 use ironrdp_connector::sspi::{AuthIdentity, KerberosServerConfig, Username};
-use ironrdp_connector::{ConnectorResult, ServerName, custom_err, general_err};
+use ironrdp_connector::{ConnectorErrorKind, ConnectorResult, ResultExt as _, ServerName, custom_err, general_err};
 use ironrdp_core::WriteBuf;
 use tracing::{debug, instrument, trace};
 
@@ -47,7 +47,9 @@ where
             return Ok(result);
         }
 
-        single_sequence_step(&mut framed, acceptor, &mut buf).await?;
+        single_sequence_step(&mut framed, acceptor, &mut buf)
+            .await
+            .map_err_as::<ConnectorErrorKind>()?;
     }
 }
 
@@ -94,7 +96,9 @@ where
         if let Some(result) = acceptor.get_result() {
             return Ok((framed, result));
         }
-        single_sequence_step(&mut framed, acceptor, &mut buf).await?;
+        single_sequence_step(&mut framed, acceptor, &mut buf)
+            .await
+            .map_err_as::<ConnectorErrorKind>()?;
     }
 }
 
@@ -140,12 +144,14 @@ where
         buf.clear();
         result
             .to_buffer(&mut *buf)
-            .map_err(|e| ironrdp_connector::custom_err!("to_buffer", e))?;
+            .map_err(|e| ironrdp_connector::custom_err!("to_buffer", e))
+            .map_err_as::<ConnectorErrorKind>()?;
         let response = &buf[..result.buffer_len()];
         framed
             .write_all(response)
             .await
-            .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+            .map_err(|e| ironrdp_connector::custom_err!("write all", e))
+            .map_err_as::<ConnectorErrorKind>()?;
     }
 
     result?;
@@ -170,8 +176,11 @@ where
         let creds = acceptor
             .creds
             .as_ref()
-            .ok_or_else(|| general_err!("no credentials while doing credssp"))?;
-        let username = Username::new(&creds.username, None).map_err(|e| custom_err!("invalid username", e))?;
+            .ok_or_else(|| general_err!("no credentials while doing credssp"))
+            .map_err_as::<ConnectorErrorKind>()?;
+        let username = Username::new(&creds.username, None)
+            .map_err(|e| custom_err!("invalid username", e))
+            .map_err_as::<ConnectorErrorKind>()?;
         let identity = AuthIdentity {
             username,
             password: creds.password.clone().into(),
@@ -194,7 +203,8 @@ where
             let pdu = framed
                 .read_by_hint(next_pdu_hint)
                 .await
-                .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
+                .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))
+                .map_err_as::<ConnectorErrorKind>()?;
 
             trace!(length = pdu.len(), "PDU received");
 
@@ -216,7 +226,8 @@ where
                 framed
                     .write_all(response)
                     .await
-                    .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+                    .map_err(|e| ironrdp_connector::custom_err!("write all", e))
+                    .map_err_as::<ConnectorErrorKind>()?;
             }
         }
 
