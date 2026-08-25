@@ -4,7 +4,7 @@ use alloc::{boxed::Box, vec, vec::Vec};
 
 use ironrdp_core::{decode, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
-use ironrdp_pdu::{PduResult, decode_err, encode_err, pdu_other_err};
+use ironrdp_pdu::{PduResult, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, warn};
 
@@ -20,6 +20,12 @@ struct Location {
     longitude: i32,
     altitude: i32,
 }
+
+/// Opaque location state produced alongside encoded channel messages.
+///
+/// Commit this value only after the caller has accepted the encoded messages for delivery.
+#[derive(Debug)]
+pub struct PreparedLocation(Location);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -49,21 +55,26 @@ impl LocationClient {
         self.state == State::Ready
     }
 
-    /// Encodes one explicit caller-supplied location update for the active channel.
+    /// Prepares one explicit caller-supplied location update for the active channel.
     ///
     /// The first update is absolute.
     /// Later updates use the 2D delta PDU while altitude is unchanged and the 3D delta PDU otherwise.
-    /// The previous-location store advances only after encoding succeeds.
-    pub fn send_location(&mut self, latitude: f64, longitude: f64, altitude: i32) -> PduResult<Vec<SvcMessage>> {
+    /// The previous-location store is unchanged until [`Self::commit_location`] is called.
+    pub fn prepare_location(
+        &self,
+        latitude: f64,
+        longitude: f64,
+        altitude: i32,
+    ) -> PduResult<(PreparedLocation, Vec<SvcMessage>)> {
         if !self.ready() {
             return Err(pdu_other_err!(
-                "LocationClient::send_location",
+                "LocationClient::prepare_location",
                 "location channel is not ready"
             ));
         }
         let channel_id = self.channel_id.ok_or_else(|| {
             pdu_other_err!(
-                "LocationClient::send_location",
+                "LocationClient::prepare_location",
                 "location channel has no assigned dynamic channel id"
             )
         })?;
@@ -72,7 +83,7 @@ impl LocationClient {
             || !(-0x0FFF_FFFF..=0x0FFF_FFFF).contains(&altitude)
         {
             return Err(pdu_other_err!(
-                "LocationClient::send_location",
+                "LocationClient::prepare_location",
                 "location coordinates are out of range"
             ));
         }
@@ -110,7 +121,18 @@ impl LocationClient {
         };
         let messages = encode_dvc_messages(channel_id, vec![Box::new(pdu)], ChannelFlags::empty())
             .map_err(|error| encode_err!(error))?;
-        self.previous = Some(current);
+        Ok((PreparedLocation(current), messages))
+    }
+
+    /// Advances the delta base after the prepared messages are accepted for delivery.
+    pub fn commit_location(&mut self, prepared: PreparedLocation) {
+        self.previous = Some(prepared.0);
+    }
+
+    /// Encodes and immediately commits one location update.
+    pub fn send_location(&mut self, latitude: f64, longitude: f64, altitude: i32) -> PduResult<Vec<SvcMessage>> {
+        let (prepared, messages) = self.prepare_location(latitude, longitude, altitude)?;
+        self.commit_location(prepared);
         Ok(messages)
     }
 }
@@ -137,7 +159,13 @@ impl DvcProcessor for LocationClient {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        let pdu: LocationPdu = decode(payload).map_err(|error| decode_err!(error))?;
+        let pdu: LocationPdu = match decode(payload) {
+            Ok(pdu) => pdu,
+            Err(error) => {
+                warn!(%error, "Ignoring malformed location PDU");
+                return Ok(Vec::new());
+            }
+        };
         match pdu {
             LocationPdu::ServerReady(server_ready) if self.state == State::WaitingServerReady => {
                 debug!(version = ?server_ready.protocol_version, "Location server ready");

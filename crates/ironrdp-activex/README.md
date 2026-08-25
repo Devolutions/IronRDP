@@ -279,7 +279,8 @@ IronRDP advertises MS-RDPEL version 1 and supports latitude, longitude, and alti
 Coordinates are encoded to five decimal places to match the Windows client behavior.
 The first accepted update uses an absolute 3D PDU, then unchanged-altitude updates use 2D deltas and changed-altitude updates use 3D deltas.
 
-Delivery uses the client's bounded input queue and waits up to two seconds for the session loop to encode the update.
+Delivery uses the client's bounded input queue and waits up to two seconds for the session loop to encode and commit the update.
+Expired requests are cancelled before they can change the location delta state or produce a frame.
 No active session returns `E_UNEXPECTED`, invalid coordinates return `E_INVALIDARG`, an absent or uninitialized location channel returns `E_POINTER`, and queue, timeout, or encoding failures return `E_FAIL`.
 
 [MS-RDPEL]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpel/

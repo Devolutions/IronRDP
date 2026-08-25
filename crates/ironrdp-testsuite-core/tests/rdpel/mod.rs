@@ -174,9 +174,55 @@ fn client_requires_ready_exchange_and_selects_delta_dimension() {
 }
 
 #[test]
+fn uncommitted_location_does_not_advance_delta_state() {
+    let mut client = LocationClient::new();
+    client.start(7).expect("start location channel");
+    let server_ready = LocationPdu::ServerReady(ReadyPdu::v1());
+    client
+        .process(7, &encode_vec(&server_ready).expect("encode server ready"))
+        .expect("process server ready");
+
+    let (_, first_messages) = client
+        .prepare_location(45.5, -73.5, 100)
+        .expect("prepare first location");
+    assert!(matches!(
+        decode_svc_message(&first_messages[0]),
+        LocationPdu::BaseLocation3d(_)
+    ));
+
+    let (second, second_messages) = client
+        .prepare_location(45.6, -73.6, 100)
+        .expect("prepare replacement location");
+    assert!(matches!(
+        decode_svc_message(&second_messages[0]),
+        LocationPdu::BaseLocation3d(_)
+    ));
+
+    client.commit_location(second);
+    let (_, third_messages) = client
+        .prepare_location(45.7, -73.7, 100)
+        .expect("prepare delta location");
+    assert!(matches!(
+        decode_svc_message(&third_messages[0]),
+        LocationPdu::Location2dDelta(_)
+    ));
+}
+
+#[test]
 fn location_decoder_rejects_mismatched_pdu_length() {
     let mut encoded = encode_vec(&LocationPdu::ServerReady(ReadyPdu::v1())).expect("encode ready PDU");
     encoded[2] = 0x0D;
 
     assert!(LocationPdu::decode(&mut ironrdp_core::ReadCursor::new(&encoded)).is_err());
+}
+
+#[test]
+fn client_ignores_malformed_server_pdu() {
+    let mut client = LocationClient::new();
+    client.start(7).expect("start location channel");
+    let mut encoded = encode_vec(&LocationPdu::ServerReady(ReadyPdu::v1())).expect("encode ready PDU");
+    encoded[2] = 0x0D;
+
+    assert!(client.process(7, &encoded).expect("ignore malformed PDU").is_empty());
+    assert!(!client.ready());
 }

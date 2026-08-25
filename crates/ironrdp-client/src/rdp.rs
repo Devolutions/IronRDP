@@ -2,11 +2,15 @@ use core::net::SocketAddr;
 use core::num::NonZeroU16;
 #[cfg(feature = "rdpdr")]
 use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "location")]
+use core::sync::atomic::{AtomicU8, Ordering as LocationOrdering};
 use core::time::Duration;
 use std::io;
 use std::sync::Arc;
 #[cfg(feature = "location")]
 use std::sync::mpsc as std_mpsc;
+#[cfg(feature = "location")]
+use std::time::Instant;
 
 #[cfg(feature = "clipboard")]
 pub use ironrdp_cliprdr::backend::CliprdrBackendFactory;
@@ -207,6 +211,118 @@ pub enum LocationQueueError {
     Closed,
 }
 
+/// Failure while waiting for a queued location request to finish.
+#[cfg(feature = "location")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocationDeliveryError {
+    Timeout,
+    Closed,
+}
+
+#[cfg(feature = "location")]
+const LOCATION_REQUEST_PENDING: u8 = 0;
+#[cfg(feature = "location")]
+const LOCATION_REQUEST_COMMITTED: u8 = 1;
+#[cfg(feature = "location")]
+const LOCATION_REQUEST_CANCELLED: u8 = 2;
+
+/// Completion handle for one bounded location request.
+#[cfg(feature = "location")]
+#[derive(Debug)]
+pub struct LocationDelivery {
+    deadline: Instant,
+    state: Arc<AtomicU8>,
+    response: std_mpsc::Receiver<Result<(), LocationInputError>>,
+}
+
+#[cfg(feature = "location")]
+impl LocationDelivery {
+    /// Waits until the session loop commits or rejects this request.
+    pub fn wait(self) -> Result<Result<(), LocationInputError>, LocationDeliveryError> {
+        match self
+            .response
+            .recv_timeout(self.deadline.saturating_duration_since(Instant::now()))
+        {
+            Ok(result) => Ok(result),
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => Err(LocationDeliveryError::Closed),
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                match self.state.compare_exchange(
+                    LOCATION_REQUEST_PENDING,
+                    LOCATION_REQUEST_CANCELLED,
+                    LocationOrdering::AcqRel,
+                    LocationOrdering::Acquire,
+                ) {
+                    Ok(_) => Err(LocationDeliveryError::Timeout),
+                    Err(LOCATION_REQUEST_COMMITTED) => self.response.recv().map_err(|_| LocationDeliveryError::Closed),
+                    Err(_) => Err(LocationDeliveryError::Timeout),
+                }
+            }
+        }
+    }
+}
+
+/// One caller-supplied location request queued for the active session loop.
+#[cfg(feature = "location")]
+pub struct LocationRequest {
+    latitude: f64,
+    longitude: f64,
+    altitude: i32,
+    deadline: Instant,
+    state: Arc<AtomicU8>,
+    response: std_mpsc::SyncSender<Result<(), LocationInputError>>,
+}
+
+#[cfg(feature = "location")]
+impl core::fmt::Debug for LocationRequest {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LocationRequest").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "location")]
+impl LocationRequest {
+    /// Returns the explicitly supplied coordinates without logging or persistence.
+    pub fn coordinates(&self) -> (f64, f64, i32) {
+        (self.latitude, self.longitude, self.altitude)
+    }
+
+    /// Completes a request in tests or alternate session-loop integrations.
+    pub fn complete(self, result: Result<(), LocationInputError>) {
+        if self.try_commit() {
+            let _ = self.response.send(result);
+        }
+    }
+
+    fn is_cancelled_or_expired(&self) -> bool {
+        if Instant::now() >= self.deadline {
+            let _ = self.state.compare_exchange(
+                LOCATION_REQUEST_PENDING,
+                LOCATION_REQUEST_CANCELLED,
+                LocationOrdering::AcqRel,
+                LocationOrdering::Acquire,
+            );
+        }
+        self.state.load(LocationOrdering::Acquire) == LOCATION_REQUEST_CANCELLED
+    }
+
+    fn try_commit(&self) -> bool {
+        !self.is_cancelled_or_expired()
+            && self
+                .state
+                .compare_exchange(
+                    LOCATION_REQUEST_PENDING,
+                    LOCATION_REQUEST_COMMITTED,
+                    LocationOrdering::AcqRel,
+                    LocationOrdering::Acquire,
+                )
+                .is_ok()
+    }
+
+    fn send_response(self, result: Result<(), LocationInputError>) {
+        let _ = self.response.send(result);
+    }
+}
+
 #[derive(Debug)]
 pub enum RdpInputEvent {
     Resize {
@@ -248,12 +364,7 @@ pub enum RdpInputEvent {
         device_id: u32,
     },
     #[cfg(feature = "location")]
-    Location {
-        latitude: f64,
-        longitude: f64,
-        altitude: i32,
-        response: std_mpsc::SyncSender<Result<(), LocationInputError>>,
-    },
+    Location(LocationRequest),
     /// Requests a RemoteApp launch over the RAIL static channel.
     RailExecute(ExecutePdu),
     /// Queues a client-originated RAIL input event.
@@ -351,20 +462,30 @@ impl RdpInputSender {
         latitude: f64,
         longitude: f64,
         altitude: i32,
-    ) -> Result<std_mpsc::Receiver<Result<(), LocationInputError>>, LocationQueueError> {
+        timeout: Duration,
+    ) -> Result<LocationDelivery, LocationQueueError> {
+        let now = Instant::now();
+        let deadline = now.checked_add(timeout).unwrap_or(now);
+        let state = Arc::new(AtomicU8::new(LOCATION_REQUEST_PENDING));
         let (response, receiver) = std_mpsc::sync_channel(1);
         self.input_sender
-            .try_send(RdpInputEvent::Location {
+            .try_send(RdpInputEvent::Location(LocationRequest {
                 latitude,
                 longitude,
                 altitude,
+                deadline,
+                state: Arc::clone(&state),
                 response,
-            })
+            }))
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => LocationQueueError::Full,
                 mpsc::error::TrySendError::Closed(_) => LocationQueueError::Closed,
             })?;
-        Ok(receiver)
+        Ok(LocationDelivery {
+            deadline,
+            state,
+            response: receiver,
+        })
     }
 
     /// Enqueues a clipboard protocol message independently of ordinary bounded input.
@@ -2618,39 +2739,48 @@ async fn active_session(
                         process_rdpdr_drive_change(&mut active_stage, device_id, None)?
                     }
                     #[cfg(feature = "location")]
-                    RdpInputEvent::Location {
-                        latitude,
-                        longitude,
-                        altitude,
-                        response,
-                    } => {
-                        let (mut result, messages) = match active_stage.get_dvc_mut::<LocationClient>() {
-                            None => (Err(LocationInputError::ChannelUnavailable), None),
-                            Some(dvc) if !dvc.processor().ready() => {
-                                (Err(LocationInputError::ChannelNotReady), None)
-                            }
-                            Some(mut dvc) => match dvc.processor_mut().send_location(latitude, longitude, altitude) {
-                                Ok(messages) => (Ok(()), Some(messages)),
+                    RdpInputEvent::Location(request) => {
+                        if request.is_cancelled_or_expired() {
+                            Vec::new()
+                        } else {
+                            let (latitude, longitude, altitude) = request.coordinates();
+                            let prepared = match active_stage.get_dvc::<LocationClient>() {
+                                None => Err(LocationInputError::ChannelUnavailable),
+                                Some(dvc) if !dvc.processor().ready() => Err(LocationInputError::ChannelNotReady),
+                                Some(dvc) => dvc
+                                    .processor()
+                                    .prepare_location(latitude, longitude, altitude)
+                                    .map_err(|error| {
+                                        warn!(%error, "Unable to encode location update");
+                                        LocationInputError::EncodingFailed
+                                    }),
+                            };
+
+                            match prepared {
                                 Err(error) => {
-                                    warn!(%error, "Unable to encode location update");
-                                    (Err(LocationInputError::EncodingFailed), None)
-                                }
-                            },
-                        };
-                        let outputs = if let Some(messages) = messages {
-                            match active_stage.encode_dvc_messages(messages) {
-                                Ok(frame) => vec![ActiveStageOutput::ResponseFrame(frame)],
-                                Err(error) => {
-                                    warn!(%error, "Unable to frame location update");
-                                    result = Err(LocationInputError::EncodingFailed);
+                                    request.complete(Err(error));
                                     Vec::new()
                                 }
+                                Ok((prepared, messages)) => match active_stage.encode_dvc_messages(messages) {
+                                    Err(error) => {
+                                        warn!(%error, "Unable to frame location update");
+                                        request.complete(Err(LocationInputError::EncodingFailed));
+                                        Vec::new()
+                                    }
+                                    Ok(frame) if request.try_commit() => {
+                                        if let Some(mut dvc) = active_stage.get_dvc_mut::<LocationClient>() {
+                                            dvc.processor_mut().commit_location(prepared);
+                                            request.send_response(Ok(()));
+                                            vec![ActiveStageOutput::ResponseFrame(frame)]
+                                        } else {
+                                            request.send_response(Err(LocationInputError::ChannelUnavailable));
+                                            Vec::new()
+                                        }
+                                    }
+                                    Ok(_) => Vec::new(),
+                                },
                             }
-                        } else {
-                            Vec::new()
-                        };
-                        let _ = response.send(result);
-                        outputs
+                        }
                     }
                     RdpInputEvent::RailExecute(execute) => {
                         let executable = execute.executable.clone();
@@ -3343,6 +3473,36 @@ mod tests {
     use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
     #[cfg(feature = "rdpdr")]
     use ironrdp_svc::{StaticChannelSet, SvcProcessor as _};
+
+    #[cfg(feature = "location")]
+    #[test]
+    fn location_delivery_timeout_cancels_queued_request() {
+        let (sender, mut receiver) = RdpInputSender::channel(1);
+        let delivery = sender
+            .try_send_location(45.5, -73.5, 100, Duration::ZERO)
+            .expect("queue location request");
+
+        assert_eq!(delivery.wait(), Err(LocationDeliveryError::Timeout));
+        let RdpInputEvent::Location(request) = receiver.try_recv().expect("queued location request") else {
+            panic!("expected location request");
+        };
+        assert!(request.is_cancelled_or_expired());
+    }
+
+    #[cfg(feature = "location")]
+    #[test]
+    fn committed_location_delivery_wins_timeout_race() {
+        let (sender, mut receiver) = RdpInputSender::channel(1);
+        let delivery = sender
+            .try_send_location(45.5, -73.5, 100, Duration::from_secs(1))
+            .expect("queue location request");
+        let RdpInputEvent::Location(request) = receiver.try_recv().expect("queued location request") else {
+            panic!("expected location request");
+        };
+        request.complete(Ok(()));
+
+        assert_eq!(delivery.wait(), Ok(Ok(())));
+    }
 
     #[cfg(feature = "rdpdr")]
     #[derive(Debug)]

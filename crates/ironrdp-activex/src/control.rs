@@ -11640,10 +11640,10 @@ impl Control {
             .as_ref()
             .cloned()
             .ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?;
-        let response = sender
-            .try_send_location(latitude, longitude, altitude)
+        let delivery = sender
+            .try_send_location(latitude, longitude, altitude, LOCATION_DELIVERY_TIMEOUT)
             .map_err(|_| Error::from_hresult(E_FAIL))?;
-        match response.recv_timeout(LOCATION_DELIVERY_TIMEOUT) {
+        match delivery.wait() {
             Ok(Ok(())) => Ok(()),
             Ok(Err(LocationInputError::ChannelUnavailable | LocationInputError::ChannelNotReady)) => {
                 Err(Error::from_hresult(E_POINTER))
@@ -18675,17 +18675,11 @@ mod tests {
         let worker = std::thread::spawn(move || {
             for expected in [(45.50123, -73.56789, 123), (45.50124, -73.56788, 123)] {
                 let event = receiver.blocking_recv().expect("location request");
-                let RdpInputEvent::Location {
-                    latitude,
-                    longitude,
-                    altitude,
-                    response,
-                } = event
-                else {
+                let RdpInputEvent::Location(request) = event else {
                     panic!("expected a location request");
                 };
-                assert_eq!((latitude, longitude, altitude), expected);
-                response.send(Ok(())).expect("return location delivery result");
+                assert_eq!(request.coordinates(), expected);
+                request.complete(Ok(()));
             }
         });
         let client: IMsRdpClient10 = control.into();
@@ -18771,12 +18765,10 @@ mod tests {
         *control.input_sender.borrow_mut() = Some(sender);
         control.state.set(ConnectionState::Connected);
         let worker = std::thread::spawn(move || {
-            let RdpInputEvent::Location { response, .. } = receiver.blocking_recv().expect("location request") else {
+            let RdpInputEvent::Location(request) = receiver.blocking_recv().expect("location request") else {
                 panic!("expected a location request");
             };
-            response
-                .send(Err(LocationInputError::ChannelUnavailable))
-                .expect("return channel failure");
+            request.complete(Err(LocationInputError::ChannelUnavailable));
         });
         assert_eq!(
             control
