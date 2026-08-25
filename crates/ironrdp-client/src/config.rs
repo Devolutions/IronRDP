@@ -2213,7 +2213,7 @@ mod tests {
     #[test]
     fn property_set_rejects_out_of_range_audio_quality() {
         let mut properties = ironrdp_propertyset::PropertySet::new();
-        properties.insert("audioqualitymode", -1_i64);
+        properties.insert("audioqualitymode", -1i64);
         assert!(ConfigBuilder::from_property_set(&properties).is_err());
     }
 
