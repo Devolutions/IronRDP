@@ -35,7 +35,9 @@ use ironrdp_pdu::rdp::{
 };
 use ironrdp_pdu::window::try_decode_slow_path_windowing_orders;
 use ironrdp_propertyset::PropertySet;
-use ironrdp_rail::pdu::{ActivatePdu, ExecutePdu, RailPdu, SystemCommand, SystemCommandPdu};
+use ironrdp_rail::pdu::{
+    ActivatePdu, ExecutePdu, ExecuteResult, ExecuteResultPdu, RailPdu, SystemCommand, SystemCommandPdu,
+};
 use ironrdp_rdpei::pdu::{
     PenContact, PenContactDataFlags, PenContactFlags, PenEventPdu, PenFlags, PenFrame, TouchContact, TouchContactFlags,
     TouchEventPdu, TouchFrame,
@@ -189,18 +191,20 @@ struct RemoteApplicationConfiguration {
     enabled: bool,
     program: String,
     arguments: String,
+    initial_execute: Option<ExecutePdu>,
 }
 
 fn configured_remote_application_execute(configuration: &RemoteApplicationConfiguration) -> Result<Option<ExecutePdu>> {
     if !configuration.enabled {
         return Ok(None);
     }
-    if configuration.program.is_empty() {
-        return Err(Error::new(
-            E_INVALIDARG,
-            "set IronRdpRemoteApplicationProgram before connecting in RemoteApp mode",
-        ));
+    if let Some(execute) = &configuration.initial_execute {
+        return Ok(Some(execute.clone()));
     }
+    if configuration.program.is_empty() {
+        return Ok(None);
+    }
+
     Ok(Some(ExecutePdu {
         flags: 0,
         executable: configuration.program.clone(),
@@ -209,10 +213,95 @@ fn configured_remote_application_execute(configuration: &RemoteApplicationConfig
     }))
 }
 
+struct RemoteProgramBridge {
+    // The COM reference keeps `control` valid while a Remote Program interface remains live.
+    _owner: IUnknown,
+    control: *const Control_Impl,
+}
+
+impl RemoteProgramBridge {
+    fn control(&self) -> Result<&Control_Impl> {
+        unsafe { self.control.as_ref() }.ok_or_else(|| Error::from_hresult(E_FAIL))
+    }
+}
+
 fn validate_rail_execute(execute: &ExecutePdu) -> Result<()> {
     encode_vec(&RailPdu::Execute(execute.clone()))
         .map(|_| ())
         .map_err(|error| Error::new(E_INVALIDARG, error.to_string()))
+}
+
+fn validate_remote_program_string(value: &str, maximum_utf16_units: usize) -> Result<()> {
+    if value.encode_utf16().count() > maximum_utf16_units || value.contains('\0') {
+        return Err(Error::from_hresult(E_INVALIDARG));
+    }
+    Ok(())
+}
+
+fn remote_program_execute(
+    executable: String,
+    file: String,
+    working_directory: String,
+    expand_working_directory: i16,
+    arguments: String,
+    expand_arguments: i16,
+) -> Result<ExecutePdu> {
+    let expand_working_directory = normalize_variant_bool(expand_working_directory)? == VARIANT_TRUE.0;
+    let expand_arguments = normalize_variant_bool(expand_arguments)? == VARIANT_TRUE.0;
+    validate_remote_program_string(&executable, 259)?;
+    validate_remote_program_string(&file, 259)?;
+    validate_remote_program_string(&working_directory, 259)?;
+    validate_remote_program_string(&arguments, 8_000)?;
+
+    if !executable.is_empty() && !file.is_empty() || !file.is_empty() && !arguments.is_empty() {
+        return Err(Error::from_hresult(E_INVALIDARG));
+    }
+    let (executable, file_flag) = if file.is_empty() {
+        (executable, 0)
+    } else {
+        (file, ExecutePdu::FILE)
+    };
+    let execute = ExecutePdu {
+        flags: file_flag
+            | if expand_working_directory {
+                ExecutePdu::EXPAND_WORKING_DIRECTORY
+            } else {
+                0
+            }
+            | if expand_arguments {
+                ExecutePdu::EXPAND_ARGUMENTS
+            } else {
+                0
+            },
+        executable,
+        working_directory,
+        arguments,
+    };
+    validate_rail_execute(&execute)?;
+    Ok(execute)
+}
+
+fn remote_program_app_execute(
+    app_user_model_id: String,
+    arguments: String,
+    expand_arguments: i16,
+) -> Result<ExecutePdu> {
+    let expand_arguments = normalize_variant_bool(expand_arguments)? == VARIANT_TRUE.0;
+    validate_remote_program_string(&app_user_model_id, 259)?;
+    validate_remote_program_string(&arguments, 8_000)?;
+    let execute = ExecutePdu {
+        flags: ExecutePdu::APP_USER_MODEL_ID
+            | if expand_arguments {
+                ExecutePdu::EXPAND_ARGUMENTS
+            } else {
+                0
+            },
+        executable: app_user_model_id,
+        working_directory: String::new(),
+        arguments,
+    };
+    validate_rail_execute(&execute)?;
+    Ok(execute)
 }
 
 fn rail_window_input_event(window_id: u32, message: u32, wparam: WPARAM) -> Option<RailInputEvent> {
@@ -356,6 +445,9 @@ fn translate_control_site_accelerator(
     unsafe { ((*vtable).TranslateAccelerator)(site.as_raw(), message, KEYMODIFIERS(modifiers)) }
 }
 
+const DISPID_UNKNOWN: i32 = -1;
+const DISP_E_UNKNOWNINTERFACE_HRESULT: HRESULT = HRESULT(0x8002_0001u32 as i32);
+const DISP_E_PARAMNOTFOUND_HRESULT: HRESULT = HRESULT(0x8002_0004u32 as i32);
 const DISPID_SERVER: i32 = 1;
 const DISPID_DOMAIN: i32 = 2;
 const DISPID_USERNAME: i32 = 3;
@@ -377,6 +469,12 @@ const DISPID_COLOR_DEPTH: i32 = 100;
 const DISPID_EXTENDED_DISCONNECT_REASON: i32 = 103;
 const DISPID_FULLSCREEN: i32 = 104;
 const DISPID_CONNECTED_STATUS_TEXT: i32 = 201;
+const DISPID_REMOTE_PROGRAM_MODE: i32 = 200;
+const DISPID_SERVER_START_PROGRAM: i32 = 201;
+const DISPID_REMOTE_APPLICATION_NAME: i32 = 202;
+const DISPID_REMOTE_APPLICATION_PROGRAM: i32 = 203;
+const DISPID_REMOTE_APPLICATION_ARGS: i32 = 204;
+const DISPID_SERVER_START_APP: i32 = 205;
 const DISPID_IRONRDP_PASSWORD: i32 = 0x10000;
 const DISPID_PROPERTYPUT: i32 = -3;
 const REMOTE_SESSION_ACTION_CHARMS: i32 = 0;
@@ -412,6 +510,7 @@ const DISPID_ON_CONFIRM_CLOSE: i32 = 15;
 const DISPID_ON_AUTO_RECONNECTING: i32 = 17;
 const DISPID_ON_AUTHENTICATION_WARNING_DISPLAYED: i32 = 18;
 const DISPID_ON_AUTHENTICATION_WARNING_DISMISSED: i32 = 19;
+const DISPID_ON_REMOTE_PROGRAM_RESULT: i32 = 20;
 const DISPID_ON_AUTO_RECONNECTED: i32 = 33;
 const DISPID_ON_AUTO_RECONNECTING2: i32 = 34;
 
@@ -1610,6 +1709,7 @@ struct CompatibilitySettingsObject<const SLOTS: usize> {
     references: AtomicU32,
     settings: Rc<RefCell<CompatibilitySettings>>,
     native_mstsc_credential_bridge: Option<NativeMstscCredentialBridge>,
+    remote_program_bridge: Option<RemoteProgramBridge>,
     server_object: bool,
 }
 
@@ -1806,27 +1906,310 @@ unsafe extern "system" fn settings_get_type_info<const SLOTS: usize>(
 
 unsafe extern "system" fn settings_get_ids_of_names<const SLOTS: usize>(
     _this: *mut c_void,
-    _iid: *const GUID,
-    _names: *const PCWSTR,
-    _count: u32,
+    iid: *const GUID,
+    names: *const PCWSTR,
+    count: u32,
     _lcid: u32,
-    _ids: *mut i32,
+    ids: *mut i32,
 ) -> HRESULT {
-    DISP_E_MEMBERNOTFOUND
+    if SLOTS != 7 {
+        return DISP_E_MEMBERNOTFOUND;
+    }
+    if names.is_null() || ids.is_null() {
+        return E_POINTER;
+    }
+    if !iid.is_null() && unsafe { *iid } != GUID::zeroed() {
+        return DISP_E_UNKNOWNINTERFACE_HRESULT;
+    }
+
+    if count == 0 {
+        return S_OK;
+    }
+    unsafe {
+        slice::from_raw_parts_mut(ids, count as usize).fill(DISPID_UNKNOWN);
+    }
+    let member_name = match unsafe { (*names).to_string() } {
+        Ok(name) => name,
+        Err(_) => return DISP_E_UNKNOWNNAME,
+    };
+    let Some(member_id) = remote_program_member_dispid(&member_name) else {
+        return DISP_E_UNKNOWNNAME;
+    };
+    unsafe {
+        ids.write(member_id);
+    }
+    for index in 1..count as usize {
+        let parameter_name = match unsafe { (*names.add(index)).to_string() } {
+            Ok(name) => name,
+            Err(_) => return DISP_E_UNKNOWNNAME,
+        };
+        let Some(parameter_id) = remote_program_parameter_dispid(member_id, &parameter_name) else {
+            return DISP_E_UNKNOWNNAME;
+        };
+        unsafe {
+            ids.add(index).write(parameter_id);
+        }
+    }
+
+    S_OK
 }
 
 unsafe extern "system" fn settings_invoke<const SLOTS: usize>(
-    _this: *mut c_void,
-    _dispid: i32,
-    _iid: *const GUID,
+    this: *mut c_void,
+    dispid: i32,
+    iid: *const GUID,
     _lcid: u32,
-    _flags: DISPATCH_FLAGS,
-    _params: *const DISPPARAMS,
-    _result: *mut VARIANT,
+    flags: DISPATCH_FLAGS,
+    params: *const DISPPARAMS,
+    result: *mut VARIANT,
     _exception: *mut EXCEPINFO,
-    _argument_error: *mut u32,
+    argument_error: *mut u32,
 ) -> HRESULT {
-    DISP_E_MEMBERNOTFOUND
+    if SLOTS != 7 {
+        return DISP_E_MEMBERNOTFOUND;
+    }
+    if params.is_null() {
+        return E_POINTER;
+    }
+    if !iid.is_null() && unsafe { *iid } != GUID::zeroed() {
+        return DISP_E_UNKNOWNINTERFACE_HRESULT;
+    }
+    let params = unsafe { &*params };
+
+    if flags.contains(DISPATCH_PROPERTYGET) {
+        if dispid != DISPID_REMOTE_PROGRAM_MODE {
+            return DISP_E_MEMBERNOTFOUND;
+        }
+        if params.cArgs != 0 || params.cNamedArgs != 0 {
+            return DISP_E_BADPARAMCOUNT;
+        }
+        if result.is_null() {
+            return E_POINTER;
+        }
+        let mut value = VARIANT_FALSE.0;
+        let status = unsafe { remote_program_get_mode(this, &mut value) };
+        if status.is_err() {
+            return status;
+        }
+        return write_out(result, variant_bool_value(value == VARIANT_TRUE.0))
+            .map_or_else(|error| error.code(), |_| S_OK);
+    }
+
+    if flags.contains(DISPATCH_PROPERTYPUT) {
+        let value = match property_put_value(params) {
+            Ok(value) => value,
+            Err(error) => return error.code(),
+        };
+        let argument = BoundDispatchArgument { value, raw_index: 0 };
+        return match dispid {
+            DISPID_REMOTE_PROGRAM_MODE => match dispatch_variant_bool(&argument, argument_error) {
+                Ok(value) => unsafe { remote_program_put_mode(this, value) },
+                Err(error) => error.code(),
+            },
+            DISPID_REMOTE_APPLICATION_NAME | DISPID_REMOTE_APPLICATION_PROGRAM | DISPID_REMOTE_APPLICATION_ARGS => {
+                let value = match dispatch_variant_string(&argument, argument_error) {
+                    Ok(value) => BSTR::from(value),
+                    Err(error) => return error.code(),
+                };
+                match dispid {
+                    DISPID_REMOTE_APPLICATION_NAME => unsafe {
+                        remote_program_put_application_name(this, value.as_ptr())
+                    },
+                    DISPID_REMOTE_APPLICATION_PROGRAM => unsafe {
+                        remote_program_put_application_program(this, value.as_ptr())
+                    },
+                    DISPID_REMOTE_APPLICATION_ARGS => unsafe {
+                        remote_program_put_application_args(this, value.as_ptr())
+                    },
+                    _ => unreachable!(),
+                }
+            }
+            _ => DISP_E_MEMBERNOTFOUND,
+        };
+    }
+
+    if !flags.contains(DISPATCH_METHOD) {
+        return DISP_E_MEMBERNOTFOUND;
+    }
+    let expected_arguments = match dispid {
+        DISPID_SERVER_START_PROGRAM => 6,
+        DISPID_SERVER_START_APP => 3,
+        _ => return DISP_E_MEMBERNOTFOUND,
+    };
+    let object = unsafe { &*(this.cast::<CompatibilitySettingsObject<7>>()) };
+    let Some(bridge) = &object.remote_program_bridge else {
+        return E_UNEXPECTED;
+    };
+    let control = match bridge.control() {
+        Ok(control) => control,
+        Err(error) => return error.code(),
+    };
+    let status = control.remote_program_launch_status();
+    if status != S_OK {
+        return status;
+    }
+    let arguments = match bind_dispatch_arguments(params, expected_arguments, argument_error) {
+        Ok(arguments) => arguments,
+        Err(error) => return error.code(),
+    };
+
+    let execute = match dispid {
+        DISPID_SERVER_START_PROGRAM => (|| {
+            remote_program_execute(
+                dispatch_variant_string(&arguments[0], argument_error)?,
+                dispatch_variant_string(&arguments[1], argument_error)?,
+                dispatch_variant_string(&arguments[2], argument_error)?,
+                dispatch_variant_bool(&arguments[3], argument_error)?,
+                dispatch_variant_string(&arguments[4], argument_error)?,
+                dispatch_variant_bool(&arguments[5], argument_error)?,
+            )
+        })(),
+        DISPID_SERVER_START_APP => (|| {
+            remote_program_app_execute(
+                dispatch_variant_string(&arguments[0], argument_error)?,
+                dispatch_variant_string(&arguments[1], argument_error)?,
+                dispatch_variant_bool(&arguments[2], argument_error)?,
+            )
+        })(),
+        _ => return DISP_E_MEMBERNOTFOUND,
+    };
+    match execute {
+        Ok(execute) => control.queue_remote_program_execute(execute),
+        Err(error) => error.code(),
+    }
+}
+
+fn remote_program_member_dispid(name: &str) -> Option<i32> {
+    if name.eq_ignore_ascii_case("RemoteProgramMode") {
+        Some(DISPID_REMOTE_PROGRAM_MODE)
+    } else if name.eq_ignore_ascii_case("ServerStartProgram") {
+        Some(DISPID_SERVER_START_PROGRAM)
+    } else if name.eq_ignore_ascii_case("RemoteApplicationName") {
+        Some(DISPID_REMOTE_APPLICATION_NAME)
+    } else if name.eq_ignore_ascii_case("RemoteApplicationProgram") {
+        Some(DISPID_REMOTE_APPLICATION_PROGRAM)
+    } else if name.eq_ignore_ascii_case("RemoteApplicationArgs") {
+        Some(DISPID_REMOTE_APPLICATION_ARGS)
+    } else if name.eq_ignore_ascii_case("ServerStartApp") {
+        Some(DISPID_SERVER_START_APP)
+    } else {
+        None
+    }
+}
+
+fn remote_program_parameter_dispid(member_id: i32, name: &str) -> Option<i32> {
+    match member_id {
+        DISPID_SERVER_START_PROGRAM => [
+            "bstrExecutablePath",
+            "bstrFilePath",
+            "bstrWorkingDirectory",
+            "vbExpandEnvVarInWorkingDirectoryOnServer",
+            "bstrArguments",
+            "vbExpandEnvVarInArgumentsOnServer",
+        ]
+        .iter()
+        .position(|parameter| name.eq_ignore_ascii_case(parameter))
+        .map(|index| index as i32),
+        DISPID_SERVER_START_APP => [
+            "bstrAppUserModelId",
+            "bstrArguments",
+            "vbExpandEnvVarInArgumentsOnServer",
+        ]
+        .iter()
+        .position(|parameter| name.eq_ignore_ascii_case(parameter))
+        .map(|index| index as i32),
+        _ => None,
+    }
+}
+
+struct BoundDispatchArgument<'a> {
+    value: &'a VARIANT,
+    raw_index: u32,
+}
+
+fn bind_dispatch_arguments(
+    params: &DISPPARAMS,
+    expected: u32,
+    argument_error: *mut u32,
+) -> Result<Vec<BoundDispatchArgument<'_>>> {
+    if params.cArgs != expected || params.cNamedArgs > params.cArgs {
+        return Err(Error::from_hresult(DISP_E_BADPARAMCOUNT));
+    }
+    if params.rgvarg.is_null() || (params.cNamedArgs != 0 && params.rgdispidNamedArgs.is_null()) {
+        return Err(Error::from_hresult(E_POINTER));
+    }
+
+    let values = unsafe { slice::from_raw_parts(params.rgvarg, params.cArgs as usize) };
+    let named_ids = if params.cNamedArgs == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(params.rgdispidNamedArgs, params.cNamedArgs as usize) }
+    };
+    let mut bound = std::iter::repeat_with(|| None)
+        .take(expected as usize)
+        .collect::<Vec<_>>();
+    for (raw_index, (&named_id, value)) in named_ids.iter().zip(values).enumerate() {
+        let parameter_index = usize::try_from(named_id).ok();
+        let Some(slot) = parameter_index.and_then(|parameter_index| bound.get_mut(parameter_index)) else {
+            if !argument_error.is_null() {
+                unsafe {
+                    argument_error.write(raw_index as u32);
+                }
+            }
+            return Err(Error::from_hresult(DISP_E_PARAMNOTFOUND_HRESULT));
+        };
+        if slot.is_some() {
+            return Err(Error::from_hresult(DISP_E_BADPARAMCOUNT));
+        }
+        *slot = Some(BoundDispatchArgument {
+            value,
+            raw_index: raw_index as u32,
+        });
+    }
+    for (raw_index, value) in values.iter().enumerate().skip(params.cNamedArgs as usize) {
+        let Some(slot) = bound.iter_mut().rev().find(|slot| slot.is_none()) else {
+            return Err(Error::from_hresult(DISP_E_BADPARAMCOUNT));
+        };
+        *slot = Some(BoundDispatchArgument {
+            value,
+            raw_index: raw_index as u32,
+        });
+    }
+    bound
+        .into_iter()
+        .map(|argument| argument.ok_or_else(|| Error::from_hresult(DISP_E_BADPARAMCOUNT)))
+        .collect()
+}
+
+fn dispatch_variant_string(argument: &BoundDispatchArgument<'_>, argument_error: *mut u32) -> Result<String> {
+    let value = argument.value;
+    variant_string(value, ptr::null_mut()).inspect_err(|_| {
+        if !argument_error.is_null() {
+            unsafe {
+                argument_error.write(argument.raw_index);
+            }
+        }
+    })
+}
+
+fn dispatch_variant_bool(argument: &BoundDispatchArgument<'_>, argument_error: *mut u32) -> Result<i16> {
+    let value = argument.value;
+    let header = variant_header(value);
+    if header.vt != VT_BOOL {
+        if !argument_error.is_null() {
+            unsafe {
+                argument_error.write(argument.raw_index);
+            }
+        }
+        return Err(Error::from_hresult(DISP_E_TYPEMISMATCH));
+    }
+    normalize_variant_bool(unsafe { header.Anonymous.boolVal }.0).inspect_err(|_| {
+        if !argument_error.is_null() {
+            unsafe {
+                argument_error.write(argument.raw_index);
+            }
+        }
+    })
 }
 
 macro_rules! advanced_settings_stubs {
@@ -3592,8 +3975,26 @@ fn transport_vtable() -> &'static CompatibilitySettingsVtable<TRANSPORT_SETTINGS
 
 unsafe extern "system" fn remote_program_put_mode(this: *mut c_void, value: i16) -> HRESULT {
     trace_host_call("ITSRemoteProgram::put_RemoteProgramMode");
+    let value = match normalize_variant_bool(value) {
+        Ok(value) => value == VARIANT_TRUE.0,
+        Err(error) => return error.code(),
+    };
     let object = unsafe { &*(this.cast::<CompatibilitySettingsObject<7>>()) };
-    object.settings.borrow_mut().remote_program_mode = value != VARIANT_FALSE.0;
+    if let Some(bridge) = &object.remote_program_bridge {
+        let control = match bridge.control() {
+            Ok(control) => control,
+            Err(error) => return error.code(),
+        };
+        if let Err(error) = active_x_connection_settings_mutable(control.state.get(), &object.settings.borrow()) {
+            return error.code();
+        }
+        let mut configuration = control.remote_application.borrow_mut();
+        configuration.enabled = value;
+        if !value {
+            configuration.initial_execute = None;
+        }
+    }
+    object.settings.borrow_mut().remote_program_mode = value;
     S_OK
 }
 
@@ -3614,17 +4015,51 @@ unsafe extern "system" fn remote_program_get_mode(this: *mut c_void, value: *mut
 }
 
 unsafe extern "system" fn remote_program_start_program(
-    _this: *mut c_void,
-    _executable: Bstr,
-    _file: Bstr,
-    _working_directory: Bstr,
-    _expand_working_directory: i16,
-    _arguments: Bstr,
-    _expand_arguments: i16,
+    this: *mut c_void,
+    executable: Bstr,
+    file: Bstr,
+    working_directory: Bstr,
+    expand_working_directory: i16,
+    arguments: Bstr,
+    expand_arguments: i16,
 ) -> HRESULT {
-    // TODO(activex): implement RemoteApp launch/configuration APIs.
     trace_host_call("ITSRemoteProgram::ServerStartProgram");
-    E_NOTIMPL
+    let object = unsafe { &*(this.cast::<CompatibilitySettingsObject<7>>()) };
+    let Some(bridge) = &object.remote_program_bridge else {
+        return E_UNEXPECTED;
+    };
+    let control = match bridge.control() {
+        Ok(control) => control,
+        Err(error) => return error.code(),
+    };
+    let status = control.remote_program_launch_status();
+    if status != S_OK {
+        return status;
+    }
+    let execute = string_from_bstr(executable)
+        .and_then(|executable| {
+            Ok((
+                executable,
+                string_from_bstr(file)?,
+                string_from_bstr(working_directory)?,
+                string_from_bstr(arguments)?,
+            ))
+        })
+        .and_then(|(executable, file, working_directory, arguments)| {
+            remote_program_execute(
+                executable,
+                file,
+                working_directory,
+                expand_working_directory,
+                arguments,
+                expand_arguments,
+            )
+        });
+    let execute = match execute {
+        Ok(execute) => execute,
+        Err(error) => return error.code(),
+    };
+    control.queue_remote_program_execute(execute)
 }
 
 unsafe extern "system" fn remote_program_put_application_name(this: *mut c_void, value: Bstr) -> HRESULT {
@@ -3633,7 +4068,19 @@ unsafe extern "system" fn remote_program_put_application_name(this: *mut c_void,
         Ok(value) => value,
         Err(error) => return error.code(),
     };
+    if let Err(error) = validate_remote_program_string(&value, 259) {
+        return error.code();
+    }
     let object = unsafe { &*(this.cast::<CompatibilitySettingsObject<7>>()) };
+    if let Some(bridge) = &object.remote_program_bridge {
+        let control = match bridge.control() {
+            Ok(control) => control,
+            Err(error) => return error.code(),
+        };
+        if let Err(error) = active_x_connection_settings_mutable(control.state.get(), &object.settings.borrow()) {
+            return error.code();
+        }
+    }
     object.settings.borrow_mut().remote_application_name = value;
     S_OK
 }
@@ -3644,7 +4091,20 @@ unsafe extern "system" fn remote_program_put_application_program(this: *mut c_vo
         Ok(value) => value,
         Err(error) => return error.code(),
     };
+    if let Err(error) = validate_remote_program_string(&value, 259) {
+        return error.code();
+    }
     let object = unsafe { &*(this.cast::<CompatibilitySettingsObject<7>>()) };
+    if let Some(bridge) = &object.remote_program_bridge {
+        let control = match bridge.control() {
+            Ok(control) => control,
+            Err(error) => return error.code(),
+        };
+        if let Err(error) = active_x_connection_settings_mutable(control.state.get(), &object.settings.borrow()) {
+            return error.code();
+        }
+        control.remote_application.borrow_mut().program.clone_from(&value);
+    }
     object.settings.borrow_mut().remote_application_program = value;
     S_OK
 }
@@ -3655,20 +4115,53 @@ unsafe extern "system" fn remote_program_put_application_args(this: *mut c_void,
         Ok(value) => value,
         Err(error) => return error.code(),
     };
+    if let Err(error) = validate_remote_program_string(&value, 8_000) {
+        return error.code();
+    }
     let object = unsafe { &*(this.cast::<CompatibilitySettingsObject<7>>()) };
+    if let Some(bridge) = &object.remote_program_bridge {
+        let control = match bridge.control() {
+            Ok(control) => control,
+            Err(error) => return error.code(),
+        };
+        if let Err(error) = active_x_connection_settings_mutable(control.state.get(), &object.settings.borrow()) {
+            return error.code();
+        }
+        control.remote_application.borrow_mut().arguments.clone_from(&value);
+    }
     object.settings.borrow_mut().remote_application_args = value;
     S_OK
 }
 
 unsafe extern "system" fn remote_program_start_app(
-    _this: *mut c_void,
-    _app_user_model_id: Bstr,
-    _arguments: Bstr,
-    _expand_arguments: i16,
+    this: *mut c_void,
+    app_user_model_id: Bstr,
+    arguments: Bstr,
+    expand_arguments: i16,
 ) -> HRESULT {
-    // TODO(activex): implement RemoteApp launch/configuration APIs.
     trace_host_call("ITSRemoteProgram3::ServerStartApp");
-    E_NOTIMPL
+    let object = unsafe { &*(this.cast::<CompatibilitySettingsObject<7>>()) };
+    let Some(bridge) = &object.remote_program_bridge else {
+        return E_UNEXPECTED;
+    };
+    let control = match bridge.control() {
+        Ok(control) => control,
+        Err(error) => return error.code(),
+    };
+    let status = control.remote_program_launch_status();
+    if status != S_OK {
+        return status;
+    }
+    let execute = string_from_bstr(app_user_model_id)
+        .and_then(|app_user_model_id| Ok((app_user_model_id, string_from_bstr(arguments)?)))
+        .and_then(|(app_user_model_id, arguments)| {
+            remote_program_app_execute(app_user_model_id, arguments, expand_arguments)
+        });
+    let execute = match execute {
+        Ok(execute) => execute,
+        Err(error) => return error.code(),
+    };
+    control.queue_remote_program_execute(execute)
 }
 
 fn remote_program_vtable() -> &'static CompatibilitySettingsVtable<7> {
@@ -3692,13 +4185,31 @@ unsafe fn settings_object<const SLOTS: usize>(
     settings: Rc<RefCell<CompatibilitySettings>>,
     output: *mut *mut c_void,
 ) -> Result<()> {
-    unsafe { settings_object_with_bridge(vtable, settings, None, output) }
+    unsafe { settings_object_with_bridges(vtable, settings, None, None, output) }
 }
 
 unsafe fn settings_object_with_bridge<const SLOTS: usize>(
     vtable: &'static CompatibilitySettingsVtable<SLOTS>,
     settings: Rc<RefCell<CompatibilitySettings>>,
     native_mstsc_credential_bridge: Option<NativeMstscCredentialBridge>,
+    output: *mut *mut c_void,
+) -> Result<()> {
+    unsafe { settings_object_with_bridges(vtable, settings, native_mstsc_credential_bridge, None, output) }
+}
+
+unsafe fn remote_program_object(
+    settings: Rc<RefCell<CompatibilitySettings>>,
+    bridge: RemoteProgramBridge,
+    output: *mut *mut c_void,
+) -> Result<()> {
+    unsafe { settings_object_with_bridges(remote_program_vtable(), settings, None, Some(bridge), output) }
+}
+
+unsafe fn settings_object_with_bridges<const SLOTS: usize>(
+    vtable: &'static CompatibilitySettingsVtable<SLOTS>,
+    settings: Rc<RefCell<CompatibilitySettings>>,
+    native_mstsc_credential_bridge: Option<NativeMstscCredentialBridge>,
+    remote_program_bridge: Option<RemoteProgramBridge>,
     output: *mut *mut c_void,
 ) -> Result<()> {
     if output.is_null() {
@@ -3709,6 +4220,7 @@ unsafe fn settings_object_with_bridge<const SLOTS: usize>(
         references: AtomicU32::new(1),
         settings,
         native_mstsc_credential_bridge,
+        remote_program_bridge,
         server_object: false,
     });
     let mut object = object;
@@ -3773,6 +4285,15 @@ enum WorkerEvent {
         generation: u64,
         data: Vec<u8>,
     },
+    RailExecuteResult {
+        generation: u64,
+        result: ExecuteResultPdu,
+    },
+    RailExecuteFailed {
+        generation: u64,
+        executable: String,
+        flags: u16,
+    },
     AutoReconnecting {
         generation: u64,
         disconnect_reason: u32,
@@ -3811,6 +4332,8 @@ impl WorkerEvent {
             | Self::Image { generation, .. }
             | Self::DisplayResizeFallback { generation }
             | Self::RailWindowingOrders { generation, .. }
+            | Self::RailExecuteResult { generation, .. }
+            | Self::RailExecuteFailed { generation, .. }
             | Self::AutoReconnecting { generation, .. }
             | Self::AutoReconnected { generation }
             | Self::FatalError { generation, .. }
@@ -8326,6 +8849,96 @@ impl Control {
         }
     }
 
+    fn fire_remote_program_result(&self, executable: String, result: i32, is_executable: bool) {
+        if self.events_are_frozen() {
+            return;
+        }
+
+        // Automation arguments are supplied right-to-left: is-executable, result, then program.
+        let mut variants = [
+            variant_bool_value(is_executable),
+            variant_i32(result),
+            variant_bstr(executable),
+        ];
+        let params = DISPPARAMS {
+            rgvarg: variants.as_mut_ptr(),
+            rgdispidNamedArgs: ptr::null_mut(),
+            cArgs: variants.len() as u32,
+            cNamedArgs: 0,
+        };
+        let iid_null = GUID::zeroed();
+        let sinks = self
+            .sinks
+            .borrow()
+            .values()
+            .map(|sink| sink.dispatch.clone())
+            .collect::<Vec<_>>();
+
+        for sink in sinks {
+            let result = unsafe {
+                sink.Invoke(
+                    DISPID_ON_REMOTE_PROGRAM_RESULT,
+                    &iid_null,
+                    0,
+                    DISPATCH_METHOD,
+                    &params,
+                    None,
+                    None,
+                    None,
+                )
+            };
+            if let Err(error) = result {
+                tracing::debug!(?error, "ActiveX event sink rejected RemoteApp execution result");
+            }
+        }
+
+        free_owned_bstr_variant(&mut variants[2]);
+    }
+
+    fn queue_remote_program_execute(&self, execute: ExecutePdu) -> HRESULT {
+        if let Err(error) = validate_rail_execute(&execute) {
+            return error.code();
+        }
+        let status = self.remote_program_launch_status();
+        if status != S_OK {
+            return status;
+        }
+
+        match self.state.get() {
+            ConnectionState::Disconnected => {
+                let mut configuration = self.remote_application.borrow_mut();
+                configuration.initial_execute = Some(execute);
+                S_OK
+            }
+            ConnectionState::Connecting => S_FALSE,
+            ConnectionState::Connected => {
+                let input_sender = self.input_sender.borrow();
+                let Some(input_sender) = input_sender.as_ref() else {
+                    return E_FAIL;
+                };
+                match input_sender.try_send_rail_execute(execute) {
+                    Ok(()) => S_OK,
+                    Err(mpsc::error::TrySendError::Full(_)) => E_OUTOFMEMORY,
+                    Err(mpsc::error::TrySendError::Closed(_)) => E_FAIL,
+                }
+            }
+            ConnectionState::Stopping => S_FALSE,
+        }
+    }
+
+    fn remote_program_launch_status(&self) -> HRESULT {
+        let configuration = self.remote_application.borrow();
+        if !configuration.enabled {
+            return E_UNEXPECTED;
+        }
+        match self.state.get() {
+            ConnectionState::Disconnected if configuration.initial_execute.is_none() => S_OK,
+            ConnectionState::Disconnected | ConnectionState::Connecting | ConnectionState::Stopping => S_FALSE,
+            ConnectionState::Connected if self.input_sender.borrow().is_some() => S_OK,
+            ConnectionState::Connected => E_FAIL,
+        }
+    }
+
     fn request_close_status(&self) -> i32 {
         if self.events_are_frozen() {
             return CONTROL_CLOSE_CAN_PROCEED;
@@ -8460,6 +9073,25 @@ impl Control {
                     if self.rail_windows.borrow().is_enabled() {
                         self.rail_windows.borrow_mut().consume(&data);
                     }
+                }
+                WorkerEvent::RailExecuteResult { result, .. } => {
+                    let error = if matches!(result.raw_result, 3 | 5 | 53 | 65 | 67) {
+                        4
+                    } else {
+                        match result.result {
+                            ExecuteResult::Ok => 0,
+                            ExecuteResult::SessionLocked => 1,
+                            ExecuteResult::DecodeFailed => 2,
+                            ExecuteResult::NotInAllowlist => 3,
+                            ExecuteResult::FileNotFound => 5,
+                            ExecuteResult::Fail => 6,
+                            ExecuteResult::HookNotLoaded => 7,
+                        }
+                    };
+                    self.fire_remote_program_result(result.executable, error, result.flags & ExecutePdu::FILE == 0);
+                }
+                WorkerEvent::RailExecuteFailed { executable, flags, .. } => {
+                    self.fire_remote_program_result(executable, 6, flags & ExecutePdu::FILE == 0);
                 }
                 WorkerEvent::AutoReconnecting {
                     disconnect_reason,
@@ -9134,6 +9766,7 @@ impl Control {
             .unwrap_or((settings.desktop_width, settings.desktop_height));
         let remote_application = self.remote_application.borrow();
         let remote_program_mode = remote_application.enabled;
+        let consume_initial_execute = remote_application.initial_execute.is_some();
         let remote_application_execute = configured_remote_application_execute(&remote_application)?;
         drop(remote_application);
         if let Some(execute) = &remote_application_execute {
@@ -9471,6 +10104,35 @@ impl Control {
                                                     break;
                                                 }
                                             }
+                                            RdpOutputEvent::RailExecuteResult(result) => {
+                                                if !queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::RailExecuteResult { generation, result },
+                                                ) {
+                                                    break;
+                                                }
+                                            }
+                                            RdpOutputEvent::RailExecuteFailed {
+                                                executable,
+                                                flags,
+                                                reason,
+                                            } => {
+                                                tracing::warn!(?reason, %executable, flags, "RAIL Execute request failed locally");
+                                                if !queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::RailExecuteFailed {
+                                                        generation,
+                                                        executable,
+                                                        flags,
+                                                    },
+                                                ) {
+                                                    break;
+                                                }
+                                            }
                                             RdpOutputEvent::Connected => {
                                                 queue_worker_event(
                                                     &worker_events,
@@ -9669,6 +10331,9 @@ impl Control {
         }
 
         *self.input_sender.borrow_mut() = Some(input_sender);
+        if consume_initial_execute {
+            self.remote_application.borrow_mut().initial_execute = None;
+        }
         self.rail_windows.borrow_mut().start(
             remote_program_mode
                 .then(|| self.input_sender.borrow().as_ref().cloned())
@@ -10973,6 +11638,9 @@ impl IDispatch_Impl for Control_Impl {
             return Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND));
         }
 
+        unsafe {
+            slice::from_raw_parts_mut(dispids, count as usize).fill(DISPID_UNKNOWN);
+        }
         for index in 0..count as usize {
             let name =
                 unsafe { (*names.add(index)).to_string() }.map_err(|_| Error::from_hresult(DISP_E_UNKNOWNNAME))?;
@@ -11368,7 +12036,17 @@ impl IMsRdpClient5_Impl for Control_Impl {
     }
 
     unsafe fn get_RemoteProgram(&self, program: InterfaceOut) -> Result<()> {
-        unsupported_out(program)
+        let owner: IUnknown = self.to_interface();
+        unsafe {
+            remote_program_object(
+                Rc::clone(&self.compatibility),
+                RemoteProgramBridge {
+                    _owner: owner,
+                    control: self,
+                },
+                program,
+            )
+        }
     }
 
     unsafe fn get_MsRdpClientShell(&self, shell: InterfaceOut) -> Result<()> {
@@ -11415,7 +12093,17 @@ impl IMsRdpClient7_Impl for Control_Impl {
     }
 
     unsafe fn get_RemoteProgram2(&self, program: InterfaceOut) -> Result<()> {
-        unsupported_out(program)
+        let owner: IUnknown = self.to_interface();
+        unsafe {
+            remote_program_object(
+                Rc::clone(&self.compatibility),
+                RemoteProgramBridge {
+                    _owner: owner,
+                    control: self,
+                },
+                program,
+            )
+        }
     }
 }
 
@@ -11486,7 +12174,17 @@ impl IMsRdpClient9_Impl for Control_Impl {
 
 impl IMsRdpClient10_Impl for Control_Impl {
     unsafe fn get_RemoteProgram3(&self, program: InterfaceOut) -> Result<()> {
-        unsafe { settings_object(remote_program_vtable(), Rc::clone(&self.compatibility), program) }
+        let owner: IUnknown = self.to_interface();
+        unsafe {
+            remote_program_object(
+                Rc::clone(&self.compatibility),
+                RemoteProgramBridge {
+                    _owner: owner,
+                    control: self,
+                },
+                program,
+            )
+        }
     }
 }
 
@@ -12067,10 +12765,14 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
                 return Err(Error::from_hresult(E_POINTER));
             }
             let remote_program_mode = variant_bool(unsafe { &*value }, ptr::null_mut())?;
-            let compatibility = self.compatibility.borrow();
+            let mut compatibility = self.compatibility.borrow_mut();
             active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
-            drop(compatibility);
-            self.remote_application.borrow_mut().enabled = remote_program_mode;
+            compatibility.remote_program_mode = remote_program_mode;
+            let mut remote_application = self.remote_application.borrow_mut();
+            remote_application.enabled = remote_program_mode;
+            if !remote_program_mode {
+                remote_application.initial_execute = None;
+            }
             trace_host_call("IMsRdpExtendedSettings::put_IronRdpRemoteProgramMode");
             return Ok(());
         }
@@ -12080,9 +12782,11 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
             }
             let remote_application_program =
                 validate_activex_extended_string(variant_string(unsafe { &*value }, ptr::null_mut())?)?;
-            let compatibility = self.compatibility.borrow();
+            let mut compatibility = self.compatibility.borrow_mut();
             active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
-            drop(compatibility);
+            compatibility
+                .remote_application_program
+                .clone_from(&remote_application_program);
             self.remote_application.borrow_mut().program = remote_application_program;
             trace_host_call("IMsRdpExtendedSettings::put_IronRdpRemoteApplicationProgram");
             return Ok(());
@@ -12093,9 +12797,11 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
             }
             let remote_application_args =
                 validate_activex_extended_string(variant_string(unsafe { &*value }, ptr::null_mut())?)?;
-            let compatibility = self.compatibility.borrow();
+            let mut compatibility = self.compatibility.borrow_mut();
             active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
-            drop(compatibility);
+            compatibility
+                .remote_application_args
+                .clone_from(&remote_application_args);
             self.remote_application.borrow_mut().arguments = remote_application_args;
             trace_host_call("IMsRdpExtendedSettings::put_IronRdpRemoteApplicationArgs");
             return Ok(());
@@ -13984,6 +14690,8 @@ fn queue_worker_event(
             }
         }
         WorkerEvent::RailWindowingOrders { .. }
+        | WorkerEvent::RailExecuteResult { .. }
+        | WorkerEvent::RailExecuteFailed { .. }
         | WorkerEvent::CertificateWarning { .. }
         | WorkerEvent::FatalError { .. }
         | WorkerEvent::Disconnected { .. }
@@ -14975,7 +15683,8 @@ mod tests {
 
     use crate::mstsc::{
         IMsRdpClient6_Vtbl, IMsRdpClient7_Vtbl, IMsRdpClient8_Vtbl, IMsRdpClient9_Vtbl, IMsRdpClient10_Vtbl,
-        IMsRdpClientNonScriptable7_Vtbl, IMsRdpClientNonScriptable8_Vtbl, IMsTscAx,
+        IMsRdpClientNonScriptable7_Vtbl, IMsRdpClientNonScriptable8_Vtbl, IMsTscAx, ITSRemoteProgram,
+        ITSRemoteProgram_Vtbl, ITSRemoteProgram2, ITSRemoteProgram2_Vtbl, ITSRemoteProgram3, ITSRemoteProgram3_Vtbl,
     };
 
     #[test]
@@ -15526,6 +16235,58 @@ mod tests {
     }
 
     #[implement(IDispatch)]
+    struct RemoteProgramResultSink {
+        seen: Arc<Mutex<Vec<(String, i32, bool)>>>,
+    }
+
+    impl IDispatch_Impl for RemoteProgramResultSink_Impl {
+        fn GetTypeInfoCount(&self) -> Result<u32> {
+            Ok(0)
+        }
+
+        fn GetTypeInfo(&self, _itinfo: u32, _lcid: u32) -> Result<ITypeInfo> {
+            Err(Error::from_hresult(E_NOTIMPL))
+        }
+
+        fn GetIDsOfNames(
+            &self,
+            _riid: *const GUID,
+            _names: *const PCWSTR,
+            _count: u32,
+            _lcid: u32,
+            _dispids: *mut i32,
+        ) -> Result<()> {
+            Err(Error::from_hresult(DISP_E_UNKNOWNNAME))
+        }
+
+        fn Invoke(
+            &self,
+            dispid: i32,
+            _riid: *const GUID,
+            _lcid: u32,
+            flags: DISPATCH_FLAGS,
+            params: *const DISPPARAMS,
+            _result: *mut VARIANT,
+            _exception: *mut EXCEPINFO,
+            _argument_error: *mut u32,
+        ) -> Result<()> {
+            assert_eq!(dispid, DISPID_ON_REMOTE_PROGRAM_RESULT);
+            assert!(flags.contains(DISPATCH_METHOD));
+            let params = unsafe { params.as_ref() }.ok_or_else(|| Error::from_hresult(E_POINTER))?;
+            assert_eq!(params.cArgs, 3);
+            let arguments = unsafe { slice::from_raw_parts(params.rgvarg, params.cArgs as usize) };
+            let is_executable = variant_bool(&arguments[0], ptr::null_mut())?;
+            let result = variant_i32_value(&arguments[1], ptr::null_mut())?;
+            let executable = variant_bstr_value(&arguments[2])?;
+            self.seen
+                .lock()
+                .expect("event sink state")
+                .push((executable, result, is_executable));
+            Ok(())
+        }
+    }
+
+    #[implement(IDispatch)]
     struct LifecycleSink {
         seen: Arc<Mutex<Vec<i32>>>,
     }
@@ -15827,6 +16588,7 @@ mod tests {
             references: AtomicU32::new(1),
             settings: Rc::clone(&settings),
             native_mstsc_credential_bridge: None,
+            remote_program_bridge: None,
             server_object: false,
         };
         let this = (&mut object as *mut TransportSettingsObject).cast::<c_void>();
@@ -15968,6 +16730,7 @@ mod tests {
             references: AtomicU32::new(1),
             settings: Rc::clone(&settings),
             native_mstsc_credential_bridge: None,
+            remote_program_bridge: None,
             server_object: false,
         };
         let this = (&mut object as *mut AdvancedSettingsObject).cast::<c_void>();
@@ -16432,6 +17195,7 @@ mod tests {
             references: AtomicU32::new(1),
             settings,
             native_mstsc_credential_bridge: None,
+            remote_program_bridge: None,
             server_object: false,
         };
         let this = (&mut object as *mut AdvancedSettingsObject).cast::<c_void>();
@@ -16499,6 +17263,7 @@ mod tests {
             references: AtomicU32::new(1),
             settings: Rc::clone(&settings),
             native_mstsc_credential_bridge: None,
+            remote_program_bridge: None,
             server_object: false,
         };
         let this = (&mut object as *mut AdvancedSettingsObject).cast::<c_void>();
@@ -16795,6 +17560,7 @@ mod tests {
             references: AtomicU32::new(1),
             settings: Rc::clone(&settings),
             native_mstsc_credential_bridge: None,
+            remote_program_bridge: None,
             server_object: false,
         };
         let this = (&mut object as *mut SecuredSettingsObject).cast::<c_void>();
@@ -16863,6 +17629,7 @@ mod tests {
             references: AtomicU32::new(1),
             settings,
             native_mstsc_credential_bridge: None,
+            remote_program_bridge: None,
             server_object: false,
         };
         let this = (&mut object as *mut TransportSettingsObject).cast::<c_void>();
@@ -19639,24 +20406,28 @@ mod tests {
     }
 
     #[test]
-    fn configured_remote_application_execute_requires_a_program() {
+    fn configured_remote_application_execute_allows_a_connected_launch() {
         assert!(
             configured_remote_application_execute(&RemoteApplicationConfiguration::default())
                 .expect("disabled RemoteApp is valid")
                 .is_none()
         );
-        let error = configured_remote_application_execute(&RemoteApplicationConfiguration {
-            enabled: true,
-            program: String::new(),
-            arguments: "--ignored".to_owned(),
-        })
-        .expect_err("enabled RemoteApp requires a program");
-        assert_eq!(error.code(), E_INVALIDARG);
+        assert!(
+            configured_remote_application_execute(&RemoteApplicationConfiguration {
+                enabled: true,
+                program: String::new(),
+                arguments: "--ignored".to_owned(),
+                initial_execute: None,
+            })
+            .expect("RemoteApp mode can wait for a connected launch")
+            .is_none()
+        );
         assert_eq!(
             configured_remote_application_execute(&RemoteApplicationConfiguration {
                 enabled: true,
                 program: "calc.exe".to_owned(),
                 arguments: "/server:example".to_owned(),
+                initial_execute: None,
             })
             .expect("configured RemoteApp is valid"),
             Some(ExecutePdu {
@@ -19669,18 +20440,331 @@ mod tests {
     }
 
     #[test]
-    fn legacy_remote_program_settings_do_not_enable_remoteapp() {
-        let control = Control::new();
-        {
-            let mut compatibility = control.compatibility.borrow_mut();
-            compatibility.remote_program_mode = true;
-            compatibility.remote_application_program = "calc.exe".to_owned();
-            compatibility.remote_application_args = "/server:example".to_owned();
+    fn remote_program_builders_validate_public_contract_and_protocol_limits() {
+        let execute = remote_program_execute(
+            String::new(),
+            "C:\\Docs\\report.txt".to_owned(),
+            "%TEMP%".to_owned(),
+            VARIANT_TRUE.0,
+            String::new(),
+            VARIANT_TRUE.0,
+        )
+        .expect("file launch");
+        assert_eq!(
+            execute.flags,
+            ExecutePdu::FILE | ExecutePdu::EXPAND_WORKING_DIRECTORY | ExecutePdu::EXPAND_ARGUMENTS
+        );
+        assert_eq!(execute.executable, "C:\\Docs\\report.txt");
+
+        for (executable, file, arguments) in [
+            ("app.exe", "C:\\Docs\\report.txt", ""),
+            ("", "C:\\Docs\\report.txt", "--open"),
+        ] {
+            remote_program_execute(
+                executable.to_owned(),
+                file.to_owned(),
+                String::new(),
+                VARIANT_FALSE.0,
+                arguments.to_owned(),
+                VARIANT_FALSE.0,
+            )
+            .expect_err("invalid file launch arguments");
         }
-        assert!(
+
+        let app = remote_program_app_execute(
+            "Contoso.App_123!Main".to_owned(),
+            "--open %USERPROFILE%".to_owned(),
+            VARIANT_TRUE.0,
+        )
+        .expect("AUMID launch");
+        assert_eq!(app.flags, ExecutePdu::APP_USER_MODEL_ID | ExecutePdu::EXPAND_ARGUMENTS);
+
+        for error in [
+            remote_program_execute(
+                String::new(),
+                String::new(),
+                String::new(),
+                VARIANT_FALSE.0,
+                String::new(),
+                VARIANT_FALSE.0,
+            )
+            .expect_err("launch identity is required"),
+            remote_program_execute(
+                "app.exe".to_owned(),
+                String::new(),
+                String::new(),
+                1,
+                String::new(),
+                VARIANT_FALSE.0,
+            )
+            .expect_err("VARIANT_BOOL must be canonical"),
+            remote_program_app_execute("bad\0id".to_owned(), String::new(), VARIANT_FALSE.0)
+                .expect_err("embedded NUL is invalid"),
+            remote_program_app_execute("x".repeat(260), String::new(), VARIANT_FALSE.0)
+                .expect_err("AUMID exceeds the public contract"),
+            remote_program_app_execute("Contoso.App_123!Main".to_owned(), "x".repeat(8_001), VARIANT_FALSE.0)
+                .expect_err("arguments exceed the public contract"),
+        ] {
+            assert_eq!(error.code(), E_INVALIDARG);
+        }
+    }
+
+    #[test]
+    fn remote_program_launches_queue_before_and_during_a_remoteapp_session() {
+        let control = Control::new();
+        control.remote_application.borrow_mut().enabled = true;
+        let initial = ExecutePdu {
+            flags: 0,
+            executable: "notepad.exe".to_owned(),
+            working_directory: String::new(),
+            arguments: String::new(),
+        };
+        assert_eq!(control.queue_remote_program_execute(initial.clone()), S_OK);
+        assert_eq!(
             configured_remote_application_execute(&control.remote_application.borrow())
-                .expect("legacy settings do not configure the ActiveX RemoteApp route")
-                .is_none()
+                .expect("preconnect launch is configured"),
+            Some(initial)
+        );
+        assert_eq!(
+            control.queue_remote_program_execute(ExecutePdu {
+                flags: 0,
+                executable: "second.exe".to_owned(),
+                working_directory: String::new(),
+                arguments: String::new(),
+            }),
+            S_FALSE
+        );
+
+        let (sender, mut receiver) = RdpInputSender::channel(1);
+        *control.input_sender.borrow_mut() = Some(sender);
+        control.state.set(ConnectionState::Connecting);
+        assert_eq!(
+            control.queue_remote_program_execute(ExecutePdu {
+                flags: 0,
+                executable: "too-early.exe".to_owned(),
+                working_directory: String::new(),
+                arguments: String::new(),
+            }),
+            S_FALSE
+        );
+        control.state.set(ConnectionState::Connected);
+        let connected = ExecutePdu {
+            flags: ExecutePdu::APP_USER_MODEL_ID,
+            executable: "Contoso.App_123!Main".to_owned(),
+            working_directory: String::new(),
+            arguments: "--new".to_owned(),
+        };
+        assert_eq!(control.queue_remote_program_execute(connected.clone()), S_OK);
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(RdpInputEvent::RailExecute(execute)) if execute == connected
+        ));
+
+        control.remote_application.borrow_mut().enabled = false;
+        assert_eq!(
+            control.queue_remote_program_execute(ExecutePdu {
+                flags: 0,
+                executable: "blocked.exe".to_owned(),
+                working_directory: String::new(),
+                arguments: String::new(),
+            }),
+            E_UNEXPECTED
+        );
+    }
+
+    #[test]
+    fn inherited_remote_program_getters_share_state_and_keep_the_control_alive() {
+        let pointer_size = size_of::<usize>();
+        assert_eq!(size_of::<ITSRemoteProgram_Vtbl>(), 10 * pointer_size);
+        assert_eq!(size_of::<ITSRemoteProgram2_Vtbl>(), 13 * pointer_size);
+        assert_eq!(size_of::<ITSRemoteProgram3_Vtbl>(), 14 * pointer_size);
+
+        let client: IMsRdpClient10 = Control::new().into();
+        let client5 = client.cast::<IMsRdpClient5>().expect("client 5");
+        let client7 = client.cast::<IMsRdpClient7>().expect("client 7");
+        let mut program = ptr::null_mut();
+        let mut program2 = ptr::null_mut();
+        let mut program3 = ptr::null_mut();
+        unsafe {
+            client5.get_RemoteProgram(&mut program).expect("RemoteProgram");
+            client7.get_RemoteProgram2(&mut program2).expect("RemoteProgram2");
+            client.get_RemoteProgram3(&mut program3).expect("RemoteProgram3");
+        }
+        let program = unsafe { ITSRemoteProgram::from_raw(program) };
+        let program2 = unsafe { ITSRemoteProgram2::from_raw(program2) };
+        let program3 = unsafe { ITSRemoteProgram3::from_raw(program3) };
+        assert!(program.cast::<ITSRemoteProgram3>().is_ok());
+        assert!(program2.cast::<ITSRemoteProgram>().is_ok());
+
+        let unexpected_iid = GUID::from_u128(0x7d9432b4_5d93_4f4e_af15_749c6454872f);
+        let mut returned_dispid = 0;
+        assert_eq!(
+            unsafe {
+                settings_get_ids_of_names::<7>(
+                    program3.as_raw(),
+                    &unexpected_iid,
+                    &w!("RemoteProgramMode"),
+                    1,
+                    0,
+                    &mut returned_dispid,
+                )
+            },
+            DISP_E_UNKNOWNINTERFACE_HRESULT
+        );
+        assert_eq!(returned_dispid, 0);
+
+        unsafe { program.put_RemoteProgramMode(VARIANT_TRUE.0) }.expect("enable RemoteApp mode");
+        let mut enabled = VARIANT_FALSE.0;
+        unsafe { program3.get_RemoteProgramMode(&mut enabled) }.expect("shared RemoteApp mode");
+        assert_eq!(enabled, VARIANT_TRUE.0);
+
+        for (name, expected) in [
+            (w!("RemoteProgramMode"), 200),
+            (w!("ServerStartProgram"), 201),
+            (w!("RemoteApplicationName"), 202),
+            (w!("RemoteApplicationProgram"), 203),
+            (w!("RemoteApplicationArgs"), 204),
+            (w!("ServerStartApp"), 205),
+        ] {
+            let mut id = 0;
+            assert_eq!(
+                unsafe { settings_get_ids_of_names::<7>(program3.as_raw(), &GUID::zeroed(), &name, 1, 0, &mut id,) },
+                S_OK
+            );
+            assert_eq!(id, expected);
+        }
+        let names = [
+            w!("ServerStartApp"),
+            w!("bstrAppUserModelId"),
+            w!("bstrArguments"),
+            w!("vbExpandEnvVarInArgumentsOnServer"),
+        ];
+        let mut ids = [0; 4];
+        assert_eq!(
+            unsafe {
+                settings_get_ids_of_names::<7>(
+                    program3.as_raw(),
+                    &GUID::zeroed(),
+                    names.as_ptr(),
+                    names.len() as u32,
+                    0,
+                    ids.as_mut_ptr(),
+                )
+            },
+            S_OK
+        );
+        assert_eq!(ids, [205, 0, 1, 2]);
+
+        let mut arguments = [
+            variant_bool_value(false),
+            variant_bstr("--new".to_owned()),
+            variant_bstr("Contoso.App_123!Main".to_owned()),
+        ];
+        let mut named_ids = [2, 1, 0];
+        let params = DISPPARAMS {
+            rgvarg: arguments.as_mut_ptr(),
+            rgdispidNamedArgs: named_ids.as_mut_ptr(),
+            cArgs: arguments.len() as u32,
+            cNamedArgs: named_ids.len() as u32,
+        };
+        assert_eq!(
+            unsafe {
+                settings_invoke::<7>(
+                    program3.as_raw(),
+                    DISPID_SERVER_START_APP,
+                    &unexpected_iid,
+                    0,
+                    DISPATCH_METHOD,
+                    &params,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            },
+            DISP_E_UNKNOWNINTERFACE_HRESULT
+        );
+        assert_eq!(
+            unsafe {
+                settings_invoke::<7>(
+                    program3.as_raw(),
+                    DISPID_SERVER_START_APP,
+                    &GUID::zeroed(),
+                    0,
+                    DISPATCH_METHOD,
+                    &params,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            },
+            S_OK
+        );
+        let mut invalid_named_ids = [99, 1, 0];
+        let invalid_params = DISPPARAMS {
+            rgdispidNamedArgs: invalid_named_ids.as_mut_ptr(),
+            ..params
+        };
+        let mut argument_error = u32::MAX;
+        let error = match bind_dispatch_arguments(&invalid_params, 3, &mut argument_error) {
+            Ok(_) => panic!("unknown named arguments must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), DISP_E_PARAMNOTFOUND_HRESULT);
+        assert_eq!(argument_error, 0);
+        for argument in &mut arguments {
+            free_owned_bstr_variant(argument);
+        }
+
+        drop((client, client5, client7));
+        let name = BSTR::from("Retained RemoteApp");
+        unsafe { program2.put_RemoteApplicationName(name.as_ptr()) }.expect("child keeps control alive");
+    }
+
+    #[test]
+    fn rail_execute_results_raise_the_public_remote_program_event() {
+        let control = Control::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let dispatch: IDispatch = RemoteProgramResultSink {
+            seen: Arc::clone(&seen),
+        }
+        .into();
+        control.sinks.borrow_mut().insert(1, EventSink { cookie: 1, dispatch });
+        control.connection_generation.set(7);
+        control.events.events.lock().expect("event queue").extend([
+            WorkerEvent::RailExecuteResult {
+                generation: 7,
+                result: ExecuteResultPdu {
+                    flags: ExecutePdu::FILE,
+                    result: ExecuteResult::FileNotFound,
+                    raw_result: 2,
+                    executable: "C:\\missing.txt".to_owned(),
+                },
+            },
+            WorkerEvent::RailExecuteFailed {
+                generation: 7,
+                executable: "notepad.exe".to_owned(),
+                flags: 0,
+            },
+            WorkerEvent::RailExecuteResult {
+                generation: 7,
+                result: ExecuteResultPdu {
+                    flags: 0,
+                    result: ExecuteResult::Fail,
+                    raw_result: 53,
+                    executable: "network.exe".to_owned(),
+                },
+            },
+        ]);
+
+        control.dispatch_pending_events();
+
+        assert_eq!(
+            *seen.lock().expect("RemoteApp results"),
+            [
+                ("C:\\missing.txt".to_owned(), 5, false),
+                ("notepad.exe".to_owned(), 6, true),
+                ("network.exe".to_owned(), 4, true),
+            ]
         );
     }
 

@@ -576,6 +576,12 @@ exceptions.
 
 Set `IronRdpRemoteProgramMode=true` and a nonempty `IronRdpRemoteApplicationProgram` while disconnected to launch one RemoteApp program.
 `IronRdpRemoteApplicationArgs` supplies optional arguments.
+The inherited `IMsRdpClient5::RemoteProgram`, `IMsRdpClient7::RemoteProgram2`, and `IMsRdpClient10::RemoteProgram3` getters expose the same RemoteApp state.
+Hosts can configure the initial executable through these interfaces or call `ServerStartProgram` once before `Connect`.
+After the session starts, `ServerStartProgram` queues executable or file launches and `ServerStartApp` queues application user model ID launches over the active RAIL channel.
+Launch strings use MSTSCLib-compatible input limits: 259 UTF-16 code units for an executable, file, working directory, or application user model ID, and 8,000 for arguments.
+Expansion parameters accept only canonical `VARIANT_FALSE` or `VARIANT_TRUE`.
+`OnRemoteProgramResult` reports the server Execute Result after a queued launch; a local post-queue failure reports the generic RAIL failure result.
 RemoteApp mode projects server-authoritative RAIL windows as top-level HWNDs and removes them when the server deletes them or the session ends.
 
 ## Windowed ActiveX hosting
