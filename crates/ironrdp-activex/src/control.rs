@@ -18,8 +18,8 @@ use ironrdp_client::rdp::{
     AutoReconnectDecision, CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent,
 };
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
-use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png};
-use ironrdp_cliprdr_format::html::cf_html_to_plain_html;
+use ironrdp_cliprdr_format::bitmap::{validate_dib, validate_dibv5};
+use ironrdp_cliprdr_format::html::validate_cf_html;
 use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
 use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, encode_vec};
@@ -6054,74 +6054,17 @@ fn validated_clipboard_snapshot(kind: ClipboardSnapshotKind, data: &[u8]) -> Res
 }
 
 fn validated_dib_snapshot(data: &[u8], v5: bool) -> Option<Vec<u8>> {
-    let header_size = if v5 { 124usize } else { 40usize };
-    if data.len() < header_size || usize::try_from(u32_at(data, 0)?).ok()? != header_size {
-        return None;
-    }
-
-    let width = i32::from_le_bytes(data.get(4..8)?.try_into().ok()?);
-    let height = i32::from_le_bytes(data.get(8..12)?.try_into().ok()?);
-    let width = usize::try_from(width).ok()?;
-    let height = usize::try_from(height.checked_abs()?).ok()?;
-    if width == 0 || width > 10_000 || height == 0 || height > 10_000 {
-        return None;
-    }
-
-    let bit_count = usize::from(u16_at(data, 14)?);
-    let bits_per_row = width.checked_mul(bit_count)?;
-    let stride = bits_per_row.checked_add(31)?.checked_div(32)?.checked_mul(4)?;
-    let image_bytes = stride.checked_mul(height)?;
-    let declared_image_bytes = usize::try_from(u32_at(data, 20)?).ok()?;
-    if declared_image_bytes != 0 && declared_image_bytes != image_bytes {
-        return None;
-    }
-    if v5 && (u32_at(data, 112)? != 0 || u32_at(data, 116)? != 0) {
-        return None;
-    }
-
-    let payload_bytes = header_size.checked_add(image_bytes)?;
-    if payload_bytes > MAX_OLE_CLIPBOARD_BINARY_BYTES || payload_bytes > data.len() {
-        return None;
-    }
-    let payload = &data[..payload_bytes];
-    let valid = if v5 {
-        dibv5_to_png(payload).is_ok()
+    let payload_bytes = if v5 {
+        validate_dibv5(data).ok()?
     } else {
-        dib_to_png(payload).is_ok()
+        validate_dib(data).ok()?
     };
-    valid.then(|| payload.to_vec())
+    Some(data[..payload_bytes].to_vec())
 }
 
 fn validated_html_snapshot(data: &[u8]) -> Option<Vec<u8>> {
-    const END_HTML: &[u8] = b"EndHTML:";
-    const MAX_HTML_HEADER_BYTES: usize = 4096;
-
-    let header = &data[..data.len().min(MAX_HTML_HEADER_BYTES)];
-    let marker = header.windows(END_HTML.len()).position(|window| window == END_HTML)?;
-    let value = &header[marker + END_HTML.len()..];
-    let value_end = value.iter().position(|byte| matches!(byte, b'\r' | b'\n'))?;
-    let end_html = core::str::from_utf8(&value[..value_end])
-        .ok()?
-        .trim()
-        .parse::<usize>()
-        .ok()?;
-    if end_html == 0 || end_html > data.len() {
-        return None;
-    }
-    cf_html_to_plain_html(&data[..end_html]).ok()?;
-    Some(data[..end_html].to_vec())
-}
-
-fn u16_at(data: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(
-        data.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
-    ))
-}
-
-fn u32_at(data: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(
-        data.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
-    ))
+    let payload_bytes = validate_cf_html(data).ok()?;
+    Some(data[..payload_bytes].to_vec())
 }
 
 fn unlock_global_memory(memory: HGLOBAL) -> Result<()> {
