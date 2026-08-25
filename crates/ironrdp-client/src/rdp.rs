@@ -11,8 +11,8 @@ use ironrdp_connector::{ConnectionResult, ConnectorResult};
 use ironrdp_core::WriteBuf;
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_displaycontrol::pdu::MonitorLayoutEntry;
-#[cfg(all(windows, feature = "dvc-com-plugin"))]
-use ironrdp_dvc::DvcChannelListener as _;
+#[cfg(any(all(windows, feature = "dvc-com-plugin"), feature = "sound"))]
+use ironrdp_dvc::{DvcChannelListener, DvcClientProcessor, DynamicChannelId};
 use ironrdp_echo::client::EchoClient;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::DecodedPointer;
@@ -1148,6 +1148,44 @@ fn rdpsnd_backend_kind(audio_playback: bool, rdpdr_attached: bool) -> Option<Rdp
     }
 }
 
+/// Listener that hands out a fresh [`ironrdp_rdpeai::client::RdpeaiClient`] on every
+/// `DVC Create Request` for the AUDIO_INPUT channel.
+///
+/// Windows opens and closes the AUDIO_INPUT (MS-RDPEAI) dynamic virtual channel repeatedly
+/// over the lifetime of a session, as applications on the remote side grab and release the
+/// microphone. Registering this channel via `with_dynamic_channel` (the `OnceListener` path)
+/// hands out its `RdpeaiClient` exactly once: after the first Close, `OnceListener::create`
+/// keeps returning `None`, so the client answers every later Create Request with
+/// `NO_LISTENER` and the microphone silently stops working for the rest of the session.
+/// `with_listener` + this factory recreates the processor (and the underlying capture
+/// backend/cpal stream) on every open, matching how the RDPEWA listener above is wired.
+struct RdpeaiListener {
+    sender: RdpInputSender,
+}
+
+impl DvcChannelListener for RdpeaiListener {
+    fn channel_name(&self) -> &str {
+        ironrdp_rdpeai::CHANNEL_NAME
+    }
+
+    fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcClientProcessor>> {
+        let sender = self.sender.clone();
+        Some(Box::new(ironrdp_rdpeai::client::RdpeaiClient::new(
+            Box::new(RdpeaiCaptureBackend::new()),
+            Box::new(move |channel_id, messages| {
+                sender
+                    .try_send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                    .map_err(|_| pdu_other_err!("send AUDIO_INPUT messages to the event loop"))?;
+                Ok(())
+            }),
+        )))
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+}
+
 /// Build a fully wired [`ironrdp_connector::ClientConnector`] with all feature-gated channels attached.
 ///
 /// This helper is used by all transport paths.
@@ -1331,16 +1369,9 @@ fn build_connector(
     // AUDIO_INPUT (MS-RDPEAI) microphone capture DVC.
     #[cfg(feature = "sound")]
     if config.channels.audio_capture {
-        let sender = input_sender.clone();
-        drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpeai::client::RdpeaiClient::new(
-            Box::new(RdpeaiCaptureBackend::new()),
-            Box::new(move |channel_id, messages| {
-                sender
-                    .try_send(RdpInputEvent::SendDvcMessages { channel_id, messages })
-                    .map_err(|_| pdu_other_err!("send AUDIO_INPUT messages to the event loop"))?;
-                Ok(())
-            }),
-        ));
+        drdynvc = drdynvc.with_listener(RdpeaiListener {
+            sender: input_sender.clone(),
+        });
     }
 
     // Clone the connector config so we can apply runtime overrides before handing it to the
