@@ -103,6 +103,7 @@ pub struct Config {
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
     pub(crate) administrative_session: bool,
+    pub(crate) load_balance_info: Option<String>,
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
     pub(crate) audio_quality_mode: AudioQualityMode,
     pub(crate) rail_client_status_flags: Option<u32>,
@@ -193,6 +194,11 @@ impl Config {
         self.administrative_session
     }
 
+    /// Opaque load-balancing data sent in the initial X.224 Connection Request.
+    pub fn load_balance_info(&self) -> Option<&str> {
+        self.load_balance_info.as_deref()
+    }
+
     /// RDPSND quality policy sent during audio format negotiation.
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
     pub fn audio_quality_mode(&self) -> AudioQualityMode {
@@ -243,6 +249,7 @@ impl fmt::Debug for Config {
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
         s.field("administrative_session", &self.administrative_session);
+        s.field("load_balance_info", &self.load_balance_info);
         #[cfg(any(feature = "sound", feature = "rdpdr"))]
         s.field("audio_quality_mode", &self.audio_quality_mode);
         s.field("rail_client_status_flags", &self.rail_client_status_flags);
@@ -712,7 +719,7 @@ pub struct ConfigBuilder {
     enable_audio_capture: Option<bool>,
     compression_type: Option<ironrdp_pdu::rdp::client_info::CompressionType>,
     compression_enabled: Option<bool>,
-    request_data: Option<ironrdp_pdu::nego::NegoRequestData>,
+    load_balance_info: Option<String>,
     administrative_session: bool,
     alternate_shell: Option<String>,
     work_dir: Option<String>,
@@ -964,13 +971,11 @@ impl ConfigBuilder {
         let value = value.into();
         let normalized = value.strip_suffix("\r\n").unwrap_or(&value);
         if normalized.is_empty() {
-            self.request_data = None;
+            self.load_balance_info = None;
             self.properties.remove("loadbalanceinfo");
         } else {
             self.properties.insert("loadbalanceinfo", value.clone());
-            self.request_data = Some(ironrdp_pdu::nego::NegoRequestData::raw_routing_token(
-                normalized.to_owned(),
-            ));
+            self.load_balance_info = Some(normalized.to_owned());
         }
         self
     }
@@ -1527,11 +1532,14 @@ impl ConfigBuilder {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
         use ironrdp_pdu::rdp::client_info::TimezoneInfo;
 
-        if let Some(ironrdp_pdu::nego::NegoRequestData::OpaqueRoutingToken(token)) = &self.request_data {
+        if let Some(load_balance_info) = &self.load_balance_info {
             anyhow::ensure!(
-                token.0.len() <= ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH
-                    && !token.0.is_empty()
-                    && token.0.as_bytes().iter().all(|byte| (0x20..=0x7E).contains(byte)),
+                load_balance_info.len() <= ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH
+                    && !load_balance_info.is_empty()
+                    && load_balance_info
+                        .as_bytes()
+                        .iter()
+                        .all(|byte| (0x20..=0x7E).contains(byte)),
                 "invalid load-balance routing token"
             );
         }
@@ -1771,7 +1779,7 @@ impl ConfigBuilder {
             autologon: self.autologon.unwrap_or(false),
             enable_audio_playback: self.enable_audio_playback.unwrap_or(true),
             enable_audio_capture: self.enable_audio_capture.unwrap_or(false),
-            request_data: self.request_data,
+            request_data: None,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
             compression_type,
@@ -1816,6 +1824,7 @@ impl ConfigBuilder {
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,
             administrative_session: self.administrative_session,
+            load_balance_info: self.load_balance_info,
             #[cfg(any(feature = "sound", feature = "rdpdr"))]
             audio_quality_mode: self.audio_quality_mode.unwrap_or_default(),
             rail_client_status_flags: self.rail_client_status_flags,
@@ -1888,12 +1897,10 @@ impl ConfigBuilder {
         }
         if let Some(load_balance_info) = ps.get::<&str>("loadbalanceinfo") {
             let normalized = load_balance_info.strip_suffix("\r\n").unwrap_or(load_balance_info);
-            self.request_data = if normalized.is_empty() {
+            self.load_balance_info = if normalized.is_empty() {
                 None
             } else {
-                Some(ironrdp_pdu::nego::NegoRequestData::raw_routing_token(
-                    normalized.to_owned(),
-                ))
+                Some(normalized.to_owned())
             };
         }
         if let Some(scale) = ps.desktop_scale_factor().ok().flatten() {
@@ -2206,7 +2213,7 @@ mod tests {
             .with_load_balance_info("\r\n")
             .build()
             .expect("terminator-only load-balance info clears the token");
-        assert!(cleared.connector().request_data.is_none());
+        assert!(cleared.load_balance_info().is_none());
     }
 
     #[cfg(any(feature = "sound", feature = "rdpdr"))]

@@ -318,6 +318,7 @@ pub struct ClientConnector {
     /// MCS message channel ID assigned by the server, once negotiated.
     pub message_channel_id: Option<u16>,
     cluster_data: Option<gcc::ClientClusterData>,
+    load_balance_info: Option<String>,
     /// X.224 negotiation flags supplied by the server.
     response_flags: nego::ResponseFlags,
     /// Multitransport flags the server advertised in its GCC
@@ -353,6 +354,7 @@ impl ClientConnector {
             static_channels: StaticChannelSet::new(),
             message_channel_id: None,
             cluster_data: None,
+            load_balance_info: None,
             response_flags: nego::ResponseFlags::empty(),
             server_multitransport_flags: None,
             auto_reconnect_cookie: None,
@@ -384,6 +386,13 @@ impl ClientConnector {
     #[must_use]
     pub fn with_cluster_data(mut self, cluster_data: gcc::ClientClusterData) -> Self {
         self.cluster_data = Some(cluster_data);
+        self
+    }
+
+    /// Set opaque load-balancing data for the initial X.224 Connection Request.
+    #[must_use]
+    pub fn with_load_balance_info(mut self, load_balance_info: String) -> Self {
+        self.load_balance_info = Some(load_balance_info);
         self
     }
 
@@ -443,12 +452,16 @@ impl ClientConnector {
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
         let connection_request = nego::ConnectionRequest {
-            nego_data: self.config.request_data.clone().or_else(|| {
-                self.config
-                    .credentials
-                    .username()
-                    .map(|username| nego::NegoRequestData::cookie(username.to_owned()))
-            }),
+            nego_data: if self.load_balance_info.is_none() {
+                self.config.request_data.clone().or_else(|| {
+                    self.config
+                        .credentials
+                        .username()
+                        .map(|username| nego::NegoRequestData::cookie(username.to_owned()))
+                })
+            } else {
+                None
+            },
             flags: nego::RequestFlags::empty(),
             protocol: security_protocol,
             correlation_info: None,
@@ -456,7 +469,16 @@ impl ClientConnector {
 
         debug!(message = ?connection_request, "Send");
 
-        let written = ironrdp_core::encode_buf(&X224(connection_request), output).map_err(ConnectorError::encode)?;
+        let written = if let Some(load_balance_info) = &self.load_balance_info {
+            let request = nego::ConnectionRequestWithOpaqueRoutingToken {
+                request: connection_request,
+                routing_token: nego::OpaqueRoutingToken(load_balance_info.clone()),
+            };
+            ironrdp_core::encode_buf(&X224(request), output)
+        } else {
+            ironrdp_core::encode_buf(&X224(connection_request), output)
+        }
+        .map_err(ConnectorError::encode)?;
         self.state = ClientConnectorState::ConnectionInitiationWaitConfirm {
             requested_protocol: security_protocol,
         };

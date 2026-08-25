@@ -6,7 +6,6 @@ use std::sync::Arc;
 use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_client::config::{AudioQualityMode, ClipboardType, ConfigBuilder, Destination, Transport, VmConnectMode};
 use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};
-use ironrdp_pdu::nego::NegoRequestData;
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 use ironrdp_viewer::cli::parse_config_from;
 use uuid::Uuid;
@@ -371,11 +370,10 @@ fn generic_builder_options_reach_connector_configuration() {
     assert_eq!(config.connector().performance_flags, performance_flags);
     assert_eq!(config.connector().alternate_shell, "powershell.exe");
     assert_eq!(config.connector().work_dir, "C:\\Users\\test-user");
-    assert!(matches!(
-        config.connector().request_data.as_ref(),
-        Some(NegoRequestData::OpaqueRoutingToken(token))
-            if token.0 == "tsv://MS Terminal Services Plugin.1.collection"
-    ));
+    assert_eq!(
+        config.load_balance_info(),
+        Some("tsv://MS Terminal Services Plugin.1.collection")
+    );
     assert!(config.administrative_session());
     assert_eq!(config.audio_quality_mode(), AudioQualityMode::Dynamic);
     assert_eq!(
@@ -398,11 +396,10 @@ fn rdp_file_maps_routing_admin_and_audio_quality_settings() {
         &[],
     );
 
-    assert!(matches!(
-        config.connector().request_data.as_ref(),
-        Some(NegoRequestData::OpaqueRoutingToken(token))
-            if token.0 == "tsv://MS Terminal Services Plugin.1.collection"
-    ));
+    assert_eq!(
+        config.load_balance_info(),
+        Some("tsv://MS Terminal Services Plugin.1.collection")
+    );
     assert!(config.administrative_session());
     assert_eq!(config.audio_quality_mode(), AudioQualityMode::Medium);
 }
@@ -427,7 +424,7 @@ fn empty_rdp_load_balance_info_clears_an_existing_token() {
             .build()
             .expect("valid configuration without a routing token");
 
-        assert!(config.connector().request_data.is_none());
+        assert!(config.load_balance_info().is_none());
     }
 }
 

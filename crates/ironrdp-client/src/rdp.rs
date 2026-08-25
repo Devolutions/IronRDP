@@ -1397,6 +1397,10 @@ fn build_connector(
     let mut connector =
         ironrdp_connector::ClientConnector::new(connector_config, client_addr).with_static_channel(drdynvc);
 
+    if let Some(load_balance_info) = &config.load_balance_info {
+        connector = connector.with_load_balance_info(load_balance_info.clone());
+    }
+
     if config.administrative_session {
         connector = connector.with_cluster_data(ironrdp_pdu::gcc::ClientClusterData {
             flags: ironrdp_pdu::gcc::RedirectionFlags::REDIRECTION_SUPPORTED
