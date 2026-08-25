@@ -59,6 +59,7 @@ impl ProxyScheme {
         }
     }
 
+    #[cfg(feature = "test-support")]
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Http => "http",
@@ -371,6 +372,7 @@ fn parse_gateway_endpoint(endpoint: &str) -> Result<GatewayEndpoint, Error> {
     })
 }
 
+#[cfg(feature = "test-support")]
 pub(crate) fn gateway_endpoint_is_valid(endpoint: &str) -> bool {
     parse_gateway_endpoint(endpoint).is_ok()
 }
