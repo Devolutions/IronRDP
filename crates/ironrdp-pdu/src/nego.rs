@@ -174,7 +174,7 @@ pub enum NegoRequestData {
 
 impl NegoRequestData {
     pub fn routing_token(value: String) -> Self {
-        Self::RoutingToken(RoutingToken(format!("Cookie: msts={value}")))
+        Self::RoutingToken(RoutingToken(value))
     }
 
     pub fn raw_routing_token(value: String) -> Self {
@@ -252,7 +252,7 @@ impl RoutingToken {
     }
 }
 
-/// Complete opaque ANSI routing token, excluding the terminating CRLF.
+/// Opaque printable-ASCII routing token, excluding the terminating CRLF.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct OpaqueRoutingToken(pub String);
@@ -269,18 +269,21 @@ impl OpaqueRoutingToken {
         }
 
         let value = core::str::from_utf8(bytes)
-            .map_err(|_| invalid_field_err("RoutingToken", "value", "not valid UTF-8"))?
+            .map_err(|_| invalid_field_err("OpaqueRoutingToken", "value", "not valid UTF-8", None))?
             .to_owned();
         src.advance(length + 2);
         Ok(Some(Self(value)))
     }
 
     pub fn write(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        if self.0.is_empty() || !self.0.as_bytes().iter().all(|byte| (0x20..=0x7E).contains(byte)) {
+        if self.0.is_empty()
+            || self.0.len() > MAX_ROUTING_TOKEN_LENGTH
+            || !self.0.as_bytes().iter().all(|byte| (0x20..=0x7E).contains(byte))
+        {
             return Err(invalid_field_err!(
-                "RoutingToken",
+                "OpaqueRoutingToken",
                 "value",
-                "must contain printable ANSI characters"
+                "must contain 1 to 238 printable ASCII bytes"
             ));
         }
         write_nego_data(dst, "RoutingToken", "", &self.0)

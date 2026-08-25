@@ -285,8 +285,9 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. Non-filesystem device, camera, monitor, and preferred-redirection capabilities remain unavailable. |
 | Smartcard redirection | `IMsRdpClientAdvancedSettings::RedirectSmartCards` enables WinSCard RDPDR smartcard redirection (smartcard-only sessions are valid without redirected drives). |
 
-The audit also identified settings that have no IronRDP ActiveX backend: input throttling, keepalive and idle policy, printer/port/generic-device redirection, persistent bitmap caching, video policy, PCB, super-pan, security-layer negotiation, and Microsoft workspace extensions.
-Their audited AdvancedSettings vtable slots use their exact published ABI signatures, initialize out parameters, and return `E_NOTIMPL`; the control does not report success for settings that cannot affect the connection.
+The audit also identified unsupported `AdvancedSettings` members: plug-in DLL loading, input throttling, keepalive and idle policy, printer/port/generic-device redirection, persistent bitmap caching, video policy, PCB, super-pan, and security-layer negotiation.
+Their audited vtable slots use published ABI signatures, initialize getter outputs, and return `E_NOTIMPL`; the control does not report success for settings that cannot affect the connection.
+`IMsRdpClientNonScriptable8::StartWorkspaceExtension` independently returns `E_NOTIMPL` because IronRDP does not implement Microsoft workspace extensions.
 
 The control exposes a standard `IConnectionPointContainer` and an event connection point for the
 published `IMsTscAxEvents` IID `{336D5562-EFA8-482E-8CB3-C5C0FC7A7DB6}`. Lifecycle events are delivered
@@ -466,9 +467,11 @@ subtype, and functional-key count, secured `StartProgram`/`WorkDir`, both public
 `StartProgram` and `WorkDir` retain their caller-owned BSTR values and configure IronRDP's next
 Client Info PDU alternate shell and working directory. The keyboard fields configure the next GCC
 Client Core Data block.
-`LoadBalanceInfo` accepts an ASCII routing token of at most 238 bytes and carries it in the next X.224 Connection Request.
+`LoadBalanceInfo` carries a nonempty routing token in the next X.224 Connection Request.
+The token must contain 1–238 printable ASCII bytes, excluding an optional trailing CRLF; an empty value clears it.
 `ConnectToServerConsole` and `ConnectToAdministerServer` are aliases that request session ID zero through GCC Client Cluster Data.
-`AudioQualityMode` values `0`, `1`, and `2` select dynamic, medium, and high RDPSND quality.
+`AudioQualityMode` values `0`, `1`, and `2` select dynamic, medium, and high RDPSND quality; `0` is the default.
+The control sends this policy only when the server advertises RDPSND version 6 or newer.
 Audio mode `0` enables the Windows-native RDPSND playback backend (CPAL) and
 advertises the `rdpsnd` static channel for server-to-client wave data; modes
 `1` (play on server) and `2` (disabled) both clear local playback and set

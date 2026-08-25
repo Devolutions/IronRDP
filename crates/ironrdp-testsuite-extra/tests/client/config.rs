@@ -408,6 +408,30 @@ fn rdp_file_maps_routing_admin_and_audio_quality_settings() {
 }
 
 #[test]
+fn empty_rdp_load_balance_info_clears_an_existing_token() {
+    for value in ["", "\r\n"] {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.insert("loadbalanceinfo", value);
+
+        let config = ConfigBuilder::new()
+            .with_destination(Destination::from_parts("rdp.example.com", 3389))
+            .with_username("test-user")
+            .with_password("test-pass")
+            .with_client_build(1)
+            .with_client_dir("C:\\Windows\\System32")
+            .with_client_name("ironrdp-tests")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_load_balance_info("tsv://existing")
+            .with_property_set(&properties)
+            .expect("valid empty load-balance property")
+            .build()
+            .expect("valid configuration without a routing token");
+
+        assert!(config.connector().request_data.is_none());
+    }
+}
+
+#[test]
 fn out_of_range_desktop_dimensions_fall_back_to_defaults() {
     let default_config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n",

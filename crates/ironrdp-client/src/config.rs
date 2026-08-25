@@ -955,17 +955,21 @@ impl ConfigBuilder {
         self
     }
 
-    /// Set the opaque load-balance routing token carried by the X.224 Connection Request PDU.
+    /// Set or clear the opaque load-balance routing token carried by the X.224 Connection Request PDU.
+    ///
+    /// A nonempty token must contain 1–238 printable ASCII bytes, excluding an optional trailing CRLF.
+    /// An empty value clears the token, and [`Self::build`] rejects other values.
     #[must_use]
     pub fn with_load_balance_info(mut self, value: impl Into<String>) -> Self {
         let value = value.into();
-        if value.is_empty() {
+        let normalized = value.strip_suffix("\r\n").unwrap_or(&value);
+        if normalized.is_empty() {
             self.request_data = None;
             self.properties.remove("loadbalanceinfo");
         } else {
             self.properties.insert("loadbalanceinfo", value.clone());
             self.request_data = Some(ironrdp_pdu::nego::NegoRequestData::raw_routing_token(
-                value.strip_suffix("\r\n").unwrap_or(&value).to_owned(),
+                normalized.to_owned(),
             ));
         }
         self
@@ -1883,12 +1887,14 @@ impl ConfigBuilder {
             self.administrative_session = administrative_session;
         }
         if let Some(load_balance_info) = ps.get::<&str>("loadbalanceinfo") {
-            self.request_data = Some(ironrdp_pdu::nego::NegoRequestData::raw_routing_token(
-                load_balance_info
-                    .strip_suffix("\r\n")
-                    .unwrap_or(load_balance_info)
-                    .to_owned(),
-            ));
+            let normalized = load_balance_info.strip_suffix("\r\n").unwrap_or(load_balance_info);
+            self.request_data = if normalized.is_empty() {
+                None
+            } else {
+                Some(ironrdp_pdu::nego::NegoRequestData::raw_routing_token(
+                    normalized.to_owned(),
+                ))
+            };
         }
         if let Some(scale) = ps.desktop_scale_factor().ok().flatten() {
             self.desktop_scale_factor = Some(scale);
@@ -2186,6 +2192,29 @@ mod tests {
             .with_client_dir("C:\\")
             .with_platform(MajorPlatformType::WINDOWS)
             .with_client_name("client")
+    }
+
+    #[test]
+    fn load_balance_info_enforces_x224_length_limit() {
+        let maximum = "x".repeat(ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH);
+        assert!(complete_builder().with_load_balance_info(maximum).build().is_ok());
+
+        let oversized = "x".repeat(ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH + 1);
+        assert!(complete_builder().with_load_balance_info(oversized).build().is_err());
+
+        let cleared = complete_builder()
+            .with_load_balance_info("\r\n")
+            .build()
+            .expect("terminator-only load-balance info clears the token");
+        assert!(cleared.connector().request_data.is_none());
+    }
+
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    #[test]
+    fn property_set_rejects_out_of_range_audio_quality() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.insert("audioqualitymode", -1_i64);
+        assert!(ConfigBuilder::from_property_set(&properties).is_err());
     }
 
     #[cfg(feature = "gateway")]

@@ -2102,11 +2102,13 @@ const MAX_LOAD_BALANCE_INFO_BYTES: usize = ironrdp_pdu::nego::MAX_ROUTING_TOKEN_
 
 unsafe extern "system" fn advanced_put_load_balance_info(this: *mut c_void, value: Bstr) -> HRESULT {
     let value = match string_from_bstr(value) {
-        Ok(value) if value.is_ascii() => value,
-        Ok(_) | Err(_) => return E_INVALIDARG,
+        Ok(value) => value,
+        Err(_) => return E_INVALIDARG,
     };
     let normalized = value.strip_suffix("\r\n").unwrap_or(&value);
-    if normalized.len() > MAX_LOAD_BALANCE_INFO_BYTES || normalized.contains(['\r', '\n']) {
+    if normalized.len() > MAX_LOAD_BALANCE_INFO_BYTES
+        || !normalized.as_bytes().iter().all(|byte| (0x20..=0x7E).contains(byte))
+    {
         return E_INVALIDARG;
     }
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
@@ -2114,7 +2116,7 @@ unsafe extern "system" fn advanced_put_load_balance_info(this: *mut c_void, valu
     if settings.connection_settings_sealed {
         return E_FAIL;
     }
-    settings.load_balance_info = value;
+    settings.load_balance_info = if normalized.is_empty() { String::new() } else { value };
     S_OK
 }
 
@@ -16493,10 +16495,35 @@ mod tests {
             unsafe { advanced_put_load_balance_info(this, invalid_load_balance_info.as_ptr()) },
             E_INVALIDARG
         );
+        let control_character_load_balance_info = BSTR::from("tsv://invalid\t");
+        assert_eq!(
+            unsafe { advanced_put_load_balance_info(this, control_character_load_balance_info.as_ptr()) },
+            E_INVALIDARG
+        );
         let terminated_load_balance_info = BSTR::from("tsv://terminated\r\n");
         assert_eq!(
             unsafe { advanced_put_load_balance_info(this, terminated_load_balance_info.as_ptr()) },
             S_OK
+        );
+        let mut returned_terminated_load_balance_info = ptr::null();
+        assert_eq!(
+            unsafe { advanced_get_load_balance_info(this, &mut returned_terminated_load_balance_info) },
+            S_OK
+        );
+        let returned_terminated_load_balance_info = unsafe { BSTR::from_raw(returned_terminated_load_balance_info) };
+        assert_eq!(
+            String::try_from(&returned_terminated_load_balance_info).expect("valid terminated load-balance BSTR"),
+            "tsv://terminated\r\n"
+        );
+        let maximum_load_balance_info = BSTR::from("x".repeat(MAX_LOAD_BALANCE_INFO_BYTES));
+        assert_eq!(
+            unsafe { advanced_put_load_balance_info(this, maximum_load_balance_info.as_ptr()) },
+            S_OK
+        );
+        let oversized_load_balance_info = BSTR::from("x".repeat(MAX_LOAD_BALANCE_INFO_BYTES + 1));
+        assert_eq!(
+            unsafe { advanced_put_load_balance_info(this, oversized_load_balance_info.as_ptr()) },
+            E_INVALIDARG
         );
 
         let mut administrative_session = VARIANT_TRUE.0;
@@ -16530,7 +16557,10 @@ mod tests {
         assert_eq!(unsafe { advanced_put_audio_quality_mode(this, 3) }, E_INVALIDARG);
 
         let snapshot = active_x_property_snapshot(&Settings::default(), &settings.borrow());
-        assert_eq!(snapshot.get::<&str>("loadbalanceinfo"), Some("tsv://terminated"));
+        assert_eq!(
+            snapshot.get::<&str>("loadbalanceinfo").map(str::len),
+            Some(MAX_LOAD_BALANCE_INFO_BYTES)
+        );
         assert_eq!(snapshot.get::<bool>("administrative session"), Some(true));
         assert_eq!(snapshot.get::<u32>("audioqualitymode"), Some(2));
 
