@@ -6851,7 +6851,7 @@ impl IMsRdpCameraRedirConfigCollection_Impl for CameraRedirConfigCollection_Impl
             return Err(Error::from_hresult(E_INVALIDARG));
         }
         let link = string_from_bstr(link)?;
-        if link.is_empty() {
+        if link.is_empty() || link.contains('\0') {
             return Err(Error::from_hresult(E_INVALIDARG));
         }
         let redirected = normalize_variant_bool(redirected)? == VARIANT_TRUE.0;
@@ -22856,6 +22856,13 @@ mod tests {
         );
 
         let offline_link = BSTR::from(r"\\?\usb#vid_missing");
+        let invalid_link = BSTR::from("\\\\?\\usb#vid_missing\0suffix");
+        assert_eq!(
+            unsafe { collection.AddConfig(invalid_link.as_ptr(), VARIANT_FALSE.0) }
+                .expect_err("reject embedded NUL in camera symbolic link")
+                .code(),
+            E_INVALIDARG
+        );
         assert_eq!(
             unsafe { collection.AddConfig(offline_link.as_ptr(), VARIANT_TRUE.0) }
                 .expect_err("enabled offline camera has no backend")
