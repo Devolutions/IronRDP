@@ -1,8 +1,13 @@
 //! Test-only hooks for exercising the gateway HTTP transport without a TLS listener.
 
 use hyper::body::Bytes;
+use tokio::io::AsyncWriteExt as _;
 
-use crate::packet_io::{PacketIo, open_gateway_transport, open_test_transport};
+use crate::http_auth::basic_authorization;
+use crate::packet_io::{
+    PacketIo, gateway_endpoint_is_valid as endpoint_is_valid, open_gateway_transport, open_test_transport,
+    parse_proxy_url, proxy_from_values, read_http_connect_response,
+};
 use crate::{Error, GwClient, GwConnectTarget, GwConsentCallback};
 
 /// In-memory gateway transport used by the registered integration tests.
@@ -64,4 +69,60 @@ pub fn evaluate_consent_message(
     consent_callback: Option<&mut GwConsentCallback<'_>>,
 ) -> Result<(), Error> {
     crate::evaluate_consent_message(consent_message, consent_callback)
+}
+
+/// Select a proxy from explicit environment variable values without changing process state.
+pub fn proxy_summary(
+    gateway_host: &str,
+    https_proxy: Option<&str>,
+    https_proxy_lowercase: Option<&str>,
+    no_proxy: Option<&str>,
+    no_proxy_lowercase: Option<&str>,
+) -> Result<Option<String>, String> {
+    proxy_from_values(
+        gateway_host,
+        443,
+        https_proxy
+            .map(str::to_owned)
+            .or_else(|| https_proxy_lowercase.map(str::to_owned)),
+        no_proxy
+            .map(str::to_owned)
+            .or_else(|| no_proxy_lowercase.map(str::to_owned)),
+    )
+    .map(|proxy| proxy.map(|proxy| format!("{}://{}:{}", proxy.scheme.name(), proxy.host, proxy.port)))
+    .map_err(|error| error.to_string())
+}
+
+/// Validate a gateway endpoint without opening a connection.
+pub fn gateway_endpoint_is_valid(endpoint: &str) -> bool {
+    endpoint_is_valid(endpoint)
+}
+
+/// Verify that a proxy URL can construct a Basic CONNECT authorization header.
+pub fn proxy_uses_basic_authorization(proxy_url: &str) -> Result<bool, String> {
+    parse_proxy_url(proxy_url)
+        .map(|proxy| {
+            proxy.credentials.as_ref().is_some_and(|credentials| {
+                basic_authorization(&credentials.username, &credentials.password).starts_with("Basic ")
+            })
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// Format a proxy configuration with credentials redacted.
+pub fn proxy_debug(proxy_url: &str) -> Result<String, String> {
+    parse_proxy_url(proxy_url)
+        .map(|proxy| format!("{proxy:?}"))
+        .map_err(|error| error.to_string())
+}
+
+/// Read an HTTP CONNECT response from an in-memory stream.
+pub async fn validate_proxy_response(response: &[u8]) -> Result<(), String> {
+    let (client, mut server) = tokio::io::duplex(response.len().max(1));
+    server.write_all(response).await.map_err(|error| error.to_string())?;
+    drop(server);
+    read_http_connect_response(Box::new(client))
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }

@@ -5,6 +5,7 @@
 This crate
 - implements an MVP state needed to connect through Microsoft RD Gateway,
 - supports HTTPS WebSocket transport and falls back to the legacy dual-channel HTTP transport,
+- honors `HTTPS_PROXY`/`https_proxy` and `NO_PROXY`/`no_proxy` for outbound HTTP(S) CONNECT and SOCKS5 gateway proxies,
 - provides internal raw RPCH HTTP framing codecs, but no live RPC-over-HTTP gateway transport,
 - decodes HTTP control packets (`HTTP_SERVICE_MESSAGE`, `HTTP_REAUTH_MESSAGE`, and `HTTP_CLOSE_PACKET`) without performing mid-session reauthentication,
 - exposes decoded tunnel-authorization policy values without enforcing redirection rules or idle timeouts,
