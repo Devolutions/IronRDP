@@ -442,6 +442,8 @@ fn translate_control_site_accelerator(
 }
 
 const DISPID_UNKNOWN: i32 = -1;
+const DISP_E_UNKNOWNINTERFACE_HRESULT: HRESULT = HRESULT(0x8002_0001u32 as i32);
+const DISP_E_PARAMNOTFOUND_HRESULT: HRESULT = HRESULT(0x8002_0004u32 as i32);
 const DISPID_SERVER: i32 = 1;
 const DISPID_DOMAIN: i32 = 2;
 const DISPID_USERNAME: i32 = 3;
@@ -1913,7 +1915,7 @@ unsafe extern "system" fn settings_get_ids_of_names<const SLOTS: usize>(
         return E_POINTER;
     }
     if !iid.is_null() && unsafe { *iid } != GUID::zeroed() {
-        return DISP_E_MEMBERNOTFOUND;
+        return DISP_E_UNKNOWNINTERFACE_HRESULT;
     }
 
     if count == 0 {
@@ -1966,7 +1968,7 @@ unsafe extern "system" fn settings_invoke<const SLOTS: usize>(
         return E_POINTER;
     }
     if !iid.is_null() && unsafe { *iid } != GUID::zeroed() {
-        return DISP_E_MEMBERNOTFOUND;
+        return DISP_E_UNKNOWNINTERFACE_HRESULT;
     }
     let params = unsafe { &*params };
 
@@ -2042,7 +2044,7 @@ unsafe extern "system" fn settings_invoke<const SLOTS: usize>(
     if status != S_OK {
         return status;
     }
-    let arguments = match bind_dispatch_arguments(params, expected_arguments) {
+    let arguments = match bind_dispatch_arguments(params, expected_arguments, argument_error) {
         Ok(arguments) => arguments,
         Err(error) => return error.code(),
     };
@@ -2121,7 +2123,11 @@ struct BoundDispatchArgument<'a> {
     raw_index: u32,
 }
 
-fn bind_dispatch_arguments(params: &DISPPARAMS, expected: u32) -> Result<Vec<BoundDispatchArgument<'_>>> {
+fn bind_dispatch_arguments(
+    params: &DISPPARAMS,
+    expected: u32,
+    argument_error: *mut u32,
+) -> Result<Vec<BoundDispatchArgument<'_>>> {
     if params.cArgs != expected || params.cNamedArgs > params.cArgs {
         return Err(Error::from_hresult(DISP_E_BADPARAMCOUNT));
     }
@@ -2139,11 +2145,14 @@ fn bind_dispatch_arguments(params: &DISPPARAMS, expected: u32) -> Result<Vec<Bou
         .take(expected as usize)
         .collect::<Vec<_>>();
     for (raw_index, (&named_id, value)) in named_ids.iter().zip(values).enumerate() {
-        let Ok(parameter_index) = usize::try_from(named_id) else {
-            return Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND));
-        };
-        let Some(slot) = bound.get_mut(parameter_index) else {
-            return Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND));
+        let parameter_index = usize::try_from(named_id).ok();
+        let Some(slot) = parameter_index.and_then(|parameter_index| bound.get_mut(parameter_index)) else {
+            if !argument_error.is_null() {
+                unsafe {
+                    argument_error.write(raw_index as u32);
+                }
+            }
+            return Err(Error::from_hresult(DISP_E_PARAMNOTFOUND_HRESULT));
         };
         if slot.is_some() {
             return Err(Error::from_hresult(DISP_E_BADPARAMCOUNT));
@@ -20352,6 +20361,23 @@ mod tests {
         assert!(program.cast::<ITSRemoteProgram3>().is_ok());
         assert!(program2.cast::<ITSRemoteProgram>().is_ok());
 
+        let unexpected_iid = GUID::from_u128(0x7d9432b4_5d93_4f4e_af15_749c6454872f);
+        let mut returned_dispid = 0;
+        assert_eq!(
+            unsafe {
+                settings_get_ids_of_names::<7>(
+                    program3.as_raw(),
+                    &unexpected_iid,
+                    &w!("RemoteProgramMode"),
+                    1,
+                    0,
+                    &mut returned_dispid,
+                )
+            },
+            DISP_E_UNKNOWNINTERFACE_HRESULT
+        );
+        assert_eq!(returned_dispid, 0);
+
         unsafe { program.put_RemoteProgramMode(VARIANT_TRUE.0) }.expect("enable RemoteApp mode");
         let mut enabled = VARIANT_FALSE.0;
         unsafe { program3.get_RemoteProgramMode(&mut enabled) }.expect("shared RemoteApp mode");
@@ -20411,6 +20437,22 @@ mod tests {
                 settings_invoke::<7>(
                     program3.as_raw(),
                     DISPID_SERVER_START_APP,
+                    &unexpected_iid,
+                    0,
+                    DISPATCH_METHOD,
+                    &params,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            },
+            DISP_E_UNKNOWNINTERFACE_HRESULT
+        );
+        assert_eq!(
+            unsafe {
+                settings_invoke::<7>(
+                    program3.as_raw(),
+                    DISPID_SERVER_START_APP,
                     &GUID::zeroed(),
                     0,
                     DISPATCH_METHOD,
@@ -20422,6 +20464,18 @@ mod tests {
             },
             S_OK
         );
+        let mut invalid_named_ids = [99, 1, 0];
+        let invalid_params = DISPPARAMS {
+            rgdispidNamedArgs: invalid_named_ids.as_mut_ptr(),
+            ..params
+        };
+        let mut argument_error = u32::MAX;
+        let error = match bind_dispatch_arguments(&invalid_params, 3, &mut argument_error) {
+            Ok(_) => panic!("unknown named arguments must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), DISP_E_PARAMNOTFOUND_HRESULT);
+        assert_eq!(argument_error, 0);
         for argument in &mut arguments {
             free_owned_bstr_variant(argument);
         }
