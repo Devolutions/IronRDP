@@ -2,7 +2,6 @@ use core::net::SocketAddr;
 use core::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::Arc;
 
-use anyhow::Result;
 use ironrdp_pdu::codecs::rfx::Quant;
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, EntropyBits, server_codecs_capabilities};
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
@@ -16,6 +15,7 @@ use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{
     ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity, StaticChannelFactory,
 };
+use crate::error::ServerResult;
 #[cfg(feature = "usb")]
 use crate::urbdrc::DeviceFactory;
 use crate::{DisplayUpdate, RdpServerDisplayUpdates, RdpeiServerFactory, SoundServerFactory};
@@ -452,7 +452,7 @@ struct NoopDisplayUpdates;
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for NoopDisplayUpdates {
-    async fn next_update(&mut self) -> Result<Option<DisplayUpdate>> {
+    async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
         let () = core::future::pending().await;
         unreachable!()
     }
@@ -466,7 +466,7 @@ impl RdpServerDisplay for NoopDisplay {
         DesktopSize { width: 0, height: 0 }
     }
 
-    async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(NoopDisplayUpdates {}))
     }
 }
