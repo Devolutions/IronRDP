@@ -2611,6 +2611,7 @@ dependencies = [
  "ironrdp-cfg",
  "ironrdp-client",
  "ironrdp-cliprdr",
+ "ironrdp-cliprdr-format",
  "ironrdp-cliprdr-native",
  "ironrdp-connector",
  "ironrdp-core 0.2.1",
