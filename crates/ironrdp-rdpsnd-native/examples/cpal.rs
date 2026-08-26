@@ -3,13 +3,14 @@
 use core::sync::atomic::AtomicU32;
 use core::time::Duration;
 use std::sync::Arc;
-use std::sync::mpsc;
 use std::thread;
 
 use anyhow::Context as _;
 use cpal::traits::StreamTrait as _;
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
 use ironrdp_rdpsnd_native::cpal::DecodeStream;
+use ringbuf::HeapRb;
+use ringbuf::traits::{Producer as _, Split as _};
 use tracing::debug;
 
 fn setup_logging() -> anyhow::Result<()> {
@@ -44,15 +45,17 @@ fn main() -> anyhow::Result<()> {
         bits_per_sample: 16,
         data: None,
     };
-    let (tx, rx) = mpsc::channel();
+    let rb = HeapRb::<u8>::new(4096);
+    let (mut producer, consumer) = rb.split();
     // Full volume on both channels (internal pack_volume layout: left high, right low).
     let volume = Arc::new(AtomicU32::new(0xFFFF_FFFF));
-    let stream = DecodeStream::new(&rx_format, rx, volume)?;
+    let stream = DecodeStream::new(&rx_format, consumer, volume)?;
 
-    let producer = thread::spawn(move || {
+    let producer_thread = thread::spawn(move || {
         let data_chunks = vec![vec![1u8, 2, 3], vec![4, 5, 6], vec![7, 8, 9]];
         for chunk in data_chunks {
-            tx.send(chunk).expect("failed to send data chunk");
+            let written = producer.push_slice(&chunk);
+            debug_assert_eq!(written, chunk.len(), "ring buffer too small for this example chunk");
             debug!("Sent a chunk");
             thread::sleep(Duration::from_secs(1)); // Simulating work
         }
@@ -60,7 +63,7 @@ fn main() -> anyhow::Result<()> {
 
     stream.stream().play()?;
     thread::sleep(Duration::from_secs(3));
-    let _ = producer.join();
+    let _ = producer_thread.join();
 
     Ok(())
 }

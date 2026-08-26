@@ -1,6 +1,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::borrow::Cow;
 use std::sync::Arc;
+#[cfg(feature = "opus")]
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -464,7 +465,7 @@ impl RdpsndClientHandler for RdpsndBackend {
                     // absorption between the server's audio timeline and the local
                     // device (no resampling here); only worth a WARN once it's large
                     // enough to suggest an actual scheduling stall on the audio thread.
-                    if dropped > format.n_avg_bytes_per_sec as usize / 100 {
+                    if dropped > usize::try_from(format.n_avg_bytes_per_sec).unwrap_or(usize::MAX) / 100 {
                         warn!(dropped, "Playback ring buffer full; dropping audio");
                     } else {
                         trace!(dropped, "Playback ring buffer full; dropping audio");
