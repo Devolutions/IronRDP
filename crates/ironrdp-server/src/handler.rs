@@ -370,3 +370,82 @@ impl From<ainput::MousePdu> for MouseEvent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fastpath_keyboard_flags_map_to_pressed_and_released() {
+        let pressed = KeyboardEvent::from((0x2Au8, fast_path::KeyboardFlags::empty()));
+        assert!(matches!(
+            pressed,
+            KeyboardEvent::Pressed {
+                code: 0x2A,
+                extended: false
+            }
+        ));
+        let released = KeyboardEvent::from((
+            0x2Au8,
+            fast_path::KeyboardFlags::RELEASE | fast_path::KeyboardFlags::EXTENDED,
+        ));
+        assert!(matches!(
+            released,
+            KeyboardEvent::Released {
+                code: 0x2A,
+                extended: true
+            }
+        ));
+    }
+
+    #[test]
+    fn mouse_x_button1_maps_to_button4() {
+        for pressed in [true, false] {
+            let event = MouseEvent::from(MouseXPdu {
+                flags: PointerXFlags::BUTTON1
+                    | if pressed {
+                        PointerXFlags::DOWN
+                    } else {
+                        PointerXFlags::empty()
+                    },
+                x_position: 10,
+                y_position: 20,
+            });
+            assert!(matches!(
+                event,
+                MouseEvent::Button { x: 10, y: 20, button: MouseButton::X1, pressed: actual } if actual == pressed
+            ));
+        }
+    }
+
+    #[test]
+    fn mouse_x_button2_maps_to_button5() {
+        for pressed in [true, false] {
+            let event = MouseEvent::from(MouseXPdu {
+                flags: PointerXFlags::BUTTON2
+                    | if pressed {
+                        PointerXFlags::DOWN
+                    } else {
+                        PointerXFlags::empty()
+                    },
+                x_position: 10,
+                y_position: 20,
+            });
+            assert!(matches!(
+                event,
+                MouseEvent::Button { x: 10, y: 20, button: MouseButton::X2, pressed: actual } if actual == pressed
+            ));
+        }
+    }
+
+    #[test]
+    fn ainput_relative_mouse_maps_to_relative_motion() {
+        let event = MouseEvent::from(ainput::MousePdu {
+            time: 123,
+            flags: ainput::MouseEventFlags::REL,
+            x: 8,
+            y: -3,
+        });
+        assert!(matches!(event, MouseEvent::RelMove { x: 8, y: -3 }));
+    }
+}

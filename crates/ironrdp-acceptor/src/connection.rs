@@ -1349,11 +1349,12 @@ impl Sequence for Acceptor {
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
 
-                    if !self.allow_unverified_credentials && let Some(expected) = &self.creds {
-                        if !credentials_match(expected, &creds) {
-                            self.encode_access_denied(output)?;
-                            return Err(ConnectorError::general("invalid credentials"));
-                        }
+                    if !self.allow_unverified_credentials
+                        && let Some(expected) = &self.creds
+                        && !credentials_match(expected, &creds)
+                    {
+                        self.encode_access_denied(output)?;
+                        return Err(ConnectorError::general("invalid credentials"));
                     }
 
                     // Store credentials for later retrieval via AcceptorResult.
@@ -1695,7 +1696,7 @@ fn create_gcc_blocks(
 }
 
 #[cfg(test)]
-mod tests {
+mod credential_capture_tests {
     use super::*;
 
     fn credentials(username: &str) -> Credentials {

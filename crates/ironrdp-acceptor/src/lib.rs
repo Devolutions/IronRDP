@@ -14,8 +14,8 @@ pub mod credssp;
 mod finalization;
 mod util;
 
-pub use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize};
 pub use ironrdp_connector::sspi::{AuthIdentity as CredsspAuthIdentity, UsernameParts};
+pub use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize};
 use ironrdp_pdu::nego;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
@@ -370,8 +370,12 @@ where
             .creds
             .as_ref()
             .ok_or_else(|| general_err!("no credentials while doing credssp"))?;
-        let username =
-            Username::new(&creds.username, creds.domain.as_deref()).map_err(|e| custom_err!("invalid username", e))?;
+        let username = if creds.username.contains(['\\', '@']) {
+            Username::parse(&creds.username)
+        } else {
+            Username::new(&creds.username, creds.domain.as_deref())
+        }
+        .map_err(|e| custom_err!("invalid username", e))?;
         let identity = AuthIdentity {
             username,
             password: creds.password.clone().into(),

@@ -1483,14 +1483,14 @@ impl RdpServerHandle {
     pub fn quit(&self, reason: impl Into<String>) -> ServerResult<()> {
         self.sender
             .send(ServerEvent::Quit(reason.into()))
-            .map_err(|error| ServerError::custom("send server quit event", error))
+            .map_err(|_| ServerError::channel("send server quit event"))
     }
 
     /// Updates credentials that will be used for the next incoming connection.
     pub fn set_credentials(&self, credentials: Credentials) -> ServerResult<()> {
         self.sender
             .send(ServerEvent::SetCredentials(credentials))
-            .map_err(|error| ServerError::custom("send server credentials event", error))
+            .map_err(|_| ServerError::channel("send server credentials event"))
     }
 
     /// Requests the listener local address.
@@ -1501,9 +1501,10 @@ impl RdpServerHandle {
 
         self.sender
             .send(ServerEvent::GetLocalAddr(tx))
-            .map_err(|error| ServerError::custom("send server local address request event", error))?;
+            .map_err(|_| ServerError::channel("send server local address request event"))?;
 
-        rx.await.map_err(|error| ServerError::custom("receive server local address", error))
+        rx.await
+            .map_err(|error| ServerError::custom("receive server local address", error))
     }
 }
 
@@ -1775,15 +1776,29 @@ struct NegotiatedConnection<S> {
 }
 
 /// A negotiated connection whose session has not started yet.
-pub struct PendingSession {
-    connection: NegotiatedConnection<TcpStream>,
-    captured_identity: Option<ironrdp_acceptor::CredsspAuthIdentity>,
+#[expect(
+    clippy::large_enum_variant,
+    reason = "public API; boxing would be a breaking change and this enum is not created in hot paths"
+)]
+pub enum PendingSession {
+    Tls {
+        framed: TokioFramed<tokio_rustls::server::TlsStream<TcpStream>>,
+        acceptor: Acceptor,
+        captured_identity: Option<ironrdp_acceptor::CredsspAuthIdentity>,
+    },
+    Plain {
+        framed: TokioFramed<TcpStream>,
+        acceptor: Acceptor,
+    },
 }
 
 impl PendingSession {
     /// Returns the delegated CredSSP identity captured during the handshake, if any.
     pub fn captured_identity(&self) -> Option<&ironrdp_acceptor::CredsspAuthIdentity> {
-        self.captured_identity.as_ref()
+        match self {
+            Self::Tls { captured_identity, .. } => captured_identity.as_ref(),
+            Self::Plain { .. } => None,
+        }
     }
 }
 
@@ -2128,7 +2143,9 @@ where
         },
     );
 
-    pending.acceptor_mut().set_allow_unverified_credentials(ctx.allow_unverified_credentials);
+    pending
+        .acceptor_mut()
+        .set_allow_unverified_credentials(ctx.allow_unverified_credentials);
 
     // NOTE: deliberately NO channel attachment here. Building the cliprdr /
     // sound / gfx backends means running user-supplied factories for a peer
@@ -3054,7 +3071,9 @@ impl RdpServer {
         );
 
         self.attach_channels(pending.acceptor_mut()).await;
-        pending.acceptor_mut().set_allow_unverified_credentials(self.allow_unverified_credentials);
+        pending
+            .acceptor_mut()
+            .set_allow_unverified_credentials(self.allow_unverified_credentials);
 
         let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
             return Ok(());
@@ -3066,7 +3085,9 @@ impl RdpServer {
     /// Completes negotiation and authentication without starting the session loop.
     pub async fn run_connection_handshake(&mut self, stream: TcpStream) -> ServerResult<PendingSession> {
         self.discard_stale_session_events().await;
-        let local_addr = stream.local_addr().map_err(|error| ServerError::io("get local address", error))?;
+        let local_addr = stream
+            .local_addr()
+            .map_err(|error| ServerError::io("get local address", error))?;
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
         let mut pending = PendingConnection::new(
@@ -3082,36 +3103,63 @@ impl RdpServer {
                 ..ServerCredentialsHandler::default()
             },
         );
-        pending.acceptor_mut().set_allow_unverified_credentials(self.allow_unverified_credentials);
+        pending
+            .acceptor_mut()
+            .set_allow_unverified_credentials(self.allow_unverified_credentials);
         self.attach_channels(pending.acceptor_mut()).await;
-        let mut connection = pending
+        let connection = pending
             .negotiate_and_authenticate(stream, TransportTls::Managed)
             .await?
             .ok_or_else(|| ServerError::reason("TLS handshake failed", "TLS negotiation did not complete"))?;
-        connection.local_addr = Some(local_addr);
+        self.connection_local_addr = Some(local_addr);
         let captured_identity = connection
             .acceptor
             .received_credentials()
             .filter(|received| received.origin == CredentialOrigin::CredSspDelegated)
             .map(|received| {
                 let credentials = &received.credentials;
-                let username = ironrdp_connector::sspi::Username::new(
-                    &credentials.username,
-                    credentials.domain.as_deref(),
-                )
-                .map_err(|error| ServerError::custom("invalid delegated username", error))?;
+                let username =
+                    ironrdp_connector::sspi::Username::new(&credentials.username, credentials.domain.as_deref())
+                        .map_err(|error| ServerError::custom("invalid delegated username", error))?;
                 Ok(ironrdp_acceptor::CredsspAuthIdentity {
                     username,
                     password: credentials.password.clone().into(),
                 })
             })
             .transpose()?;
-        Ok(PendingSession { connection, captured_identity })
+        match connection.transport {
+            NegotiatedTransport::Tls(framed) => Ok(PendingSession::Tls {
+                framed: *framed,
+                acceptor: connection.acceptor,
+                captured_identity,
+            }),
+            NegotiatedTransport::Continued(framed) => Ok(PendingSession::Plain {
+                framed,
+                acceptor: connection.acceptor,
+            }),
+            NegotiatedTransport::Offloaded(_) => {
+                Err(ServerError::unsupported("offloaded transport in managed handshake"))
+            }
+        }
     }
 
     /// Starts the session loop for a connection returned by [`Self::run_connection_handshake`].
     pub async fn run_connection_session(&mut self, pending: PendingSession) -> ServerResult<()> {
-        let result = self.finalize_negotiated(pending.connection).await;
+        let (transport, acceptor) = match pending {
+            PendingSession::Tls { framed, acceptor, .. } => (NegotiatedTransport::Tls(Box::new(framed)), acceptor),
+            PendingSession::Plain { framed, acceptor } => (NegotiatedTransport::Continued(framed), acceptor),
+        };
+        let authenticated_credentials = acceptor
+            .received_credentials()
+            .filter(|received| received.origin == CredentialOrigin::CredSspDelegated)
+            .map(|received| received.credentials.clone());
+        let connection = NegotiatedConnection {
+            transport,
+            acceptor,
+            local_addr: self.connection_local_addr,
+            authenticated_credentials,
+        };
+        let result = Box::pin(self.finalize_negotiated(connection)).await;
         self.connection_local_addr = None;
         result
     }
@@ -6335,13 +6383,17 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
 #[async_trait::async_trait(?Send)]
 impl ConnectionSetupHandler for RdpServer {
     async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> Result<(), ConnectorError> {
-        if let Some(received) = credentials.as_ref()
-            && received.origin == CredentialOrigin::ClientInfo
+        let client_info_credentials = credentials
+            .as_ref()
+            .filter(|received| received.origin == CredentialOrigin::ClientInfo)
+            .map(|received| received.credentials.clone());
+        self.prepare_authenticated_connection(credentials).await?;
+        if let Some(credentials) = client_info_credentials
             && let Some(sink) = self.client_info_credentials_sink.as_ref()
         {
-            sink(received.credentials.clone());
+            sink(credentials);
         }
-        self.prepare_authenticated_connection(credentials).await
+        Ok(())
     }
 
     async fn prepare_capability_exchange(&mut self, desktop_size: DesktopSize) -> Result<(), ConnectorError> {
@@ -7322,6 +7374,7 @@ mod credential_binding_tests {
 #[cfg(test)]
 mod tests {
     use core::future::pending;
+    use std::sync::mpsc as std_mpsc;
 
     use ironrdp_core::{Encode as _, WriteCursor, impl_as_any};
     use ironrdp_dvc::DvcProcessor as _;
@@ -7329,6 +7382,93 @@ mod tests {
     use ironrdp_svc::{SvcMessage, SvcServerProcessor};
 
     use super::*;
+
+    struct RecordingInputHandler {
+        mouse_tx: std_mpsc::Sender<MouseEvent>,
+    }
+
+    impl RdpServerInputHandler for RecordingInputHandler {
+        fn keyboard(&mut self, _event: KeyboardEvent) {}
+
+        fn mouse(&mut self, event: MouseEvent) {
+            self.mouse_tx.send(event).expect("record mouse event");
+        }
+    }
+
+    struct RecordingDisplayUpdates;
+
+    #[async_trait::async_trait]
+    impl RdpServerDisplayUpdates for RecordingDisplayUpdates {
+        async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
+            Ok(None)
+        }
+    }
+
+    struct RecordingDisplay {
+        layout_tx: std_mpsc::Sender<DisplayControlMonitorLayout>,
+    }
+
+    #[async_trait::async_trait]
+    impl RdpServerDisplay for RecordingDisplay {
+        async fn size(&mut self) -> DesktopSize {
+            DesktopSize {
+                width: 1024,
+                height: 768,
+            }
+        }
+
+        async fn updates(&mut self, _context: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+            Ok(Box::new(RecordingDisplayUpdates))
+        }
+
+        fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
+            self.layout_tx.send(layout).expect("record display layout");
+        }
+    }
+
+    #[tokio::test]
+    async fn ainput_mouse_payload_is_forwarded_to_input_handler() {
+        let (mouse_tx, mouse_rx) = std_mpsc::channel();
+        let mut processor = AInputHandler {
+            handler: Arc::new(Mutex::new(Box::new(RecordingInputHandler { mouse_tx }))),
+            active: Arc::new(AtomicBool::new(false)),
+        };
+        let payload = encode_vec(&ironrdp_ainput::ClientPdu::Mouse(ironrdp_ainput::MousePdu {
+            time: 42,
+            flags: ironrdp_ainput::MouseEventFlags::BUTTON1 | ironrdp_ainput::MouseEventFlags::DOWN,
+            x: 0,
+            y: 0,
+        }))
+        .expect("encode ainput payload");
+        let _ = processor.process(1, &payload).expect("process ainput payload");
+        let event = task::spawn_blocking(move || mouse_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .expect("join blocking receiver")
+            .expect("mouse event from handler");
+        assert!(matches!(
+            event,
+            MouseEvent::Button {
+                x: 0,
+                y: 0,
+                button: crate::MouseButton::Left,
+                pressed: true
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn display_control_layout_is_forwarded_to_display() {
+        let (layout_tx, layout_rx) = std_mpsc::channel();
+        let backend = DisplayControlBackend::new(Arc::new(Mutex::new(Box::new(RecordingDisplay { layout_tx }))), 1);
+        let layout = DisplayControlMonitorLayout::new_single_primary_monitor(1280, 720, None, None)
+            .expect("create monitor layout");
+        backend.monitor_layout(layout.clone());
+        let forwarded = task::spawn_blocking(move || layout_rx.recv_timeout(Duration::from_secs(1)))
+            .await
+            .expect("join blocking receiver")
+            .expect("display layout forwarded");
+        assert_eq!(forwarded, layout);
+    }
 
     /// A channel backend that owns a resource, released on drop the way
     /// `RdpsndServer` stops its handler.
@@ -7566,10 +7706,7 @@ mod tests {
             }
         });
 
-        let got = handle
-            .local_addr()
-            .await
-            .expect("local address request should succeed");
+        let got = handle.local_addr().await.expect("local address request should succeed");
 
         assert_eq!(got, Some(expected));
         responder.await.expect("responder should complete");

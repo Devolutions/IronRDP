@@ -4,7 +4,9 @@ use ironrdp_connector::sspi::credssp::{
 };
 use ironrdp_connector::sspi::generator::{Generator, GeneratorState};
 use ironrdp_connector::sspi::negotiate::ProtocolConfig;
-use ironrdp_connector::sspi::{self, AuthIdentity, KerberosServerConfig, NegotiateConfig, NetworkRequest, Username};
+use ironrdp_connector::sspi::{
+    self, AuthIdentity, KerberosServerConfig, NegotiateConfig, NetworkRequest, Username, UsernameParts,
+};
 use ironrdp_connector::{
     ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written, custom_err, general_err,
 };
@@ -58,7 +60,7 @@ impl CredentialsProxy for CredentialsProxyImpl<'_> {
     type AuthenticationData = AuthIdentity;
 
     fn auth_data_by_user(&mut self, username: &Username) -> std::io::Result<Self::AuthenticationData> {
-        if username.account_name() != self.credentials.username.account_name() {
+        if !usernames_match(&self.credentials.username, username) {
             return Err(std::io::Error::other("invalid username"));
         }
 
@@ -70,6 +72,41 @@ impl CredentialsProxy for CredentialsProxyImpl<'_> {
 
     fn auth_data(&mut self) -> Result<Vec<Self::AuthenticationData>, std::io::Error> {
         Ok(vec![self.credentials.clone()])
+    }
+}
+
+fn usernames_match(expected: &Username, requested: &Username) -> bool {
+    let requested_parts = requested.parts();
+    let requested_account = match requested_parts {
+        UsernameParts::UserPrincipalName(parts) => parts.account_name(),
+        UsernameParts::DownLevelLogonName(parts) => parts.account_name(),
+    };
+
+    match expected.parts() {
+        UsernameParts::UserPrincipalName(expected_parts) => {
+            let UsernameParts::UserPrincipalName(requested_parts) = requested_parts else {
+                return false;
+            };
+            expected_parts
+                .account_name()
+                .eq_ignore_ascii_case(requested_parts.account_name())
+                && expected_parts.suffix().eq_ignore_ascii_case(requested_parts.suffix())
+        }
+        UsernameParts::DownLevelLogonName(expected_parts) => {
+            if !expected_parts.account_name().eq_ignore_ascii_case(requested_account) {
+                return false;
+            }
+
+            let Some(expected_domain) = expected_parts.netbios_domain() else {
+                return true;
+            };
+            let UsernameParts::DownLevelLogonName(requested_parts) = requested_parts else {
+                return false;
+            };
+            requested_parts
+                .netbios_domain()
+                .is_some_and(|requested_domain| expected_domain.eq_ignore_ascii_case(requested_domain))
+        }
     }
 }
 
