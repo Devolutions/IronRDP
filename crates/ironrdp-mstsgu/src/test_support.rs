@@ -5,13 +5,14 @@ use tokio::io::AsyncWriteExt as _;
 
 use crate::http_auth::basic_authorization;
 use crate::packet_io::{
-    PacketIo, gateway_endpoint_is_valid as endpoint_is_valid, open_gateway_transport, open_test_transport,
+    GatewayTransport as NetworkGatewayTransport, gateway_endpoint_is_valid as endpoint_is_valid,
+    open_gateway_transport, open_test_transport,
     parse_proxy_url, proxy_from_values, read_http_connect_response,
 };
 use crate::{Error, GwClient, GwConnectTarget, GwConsentCallback};
 
 /// In-memory gateway transport used by the registered integration tests.
-pub struct GatewayTransport(PacketIo);
+pub struct GatewayTransport(NetworkGatewayTransport);
 
 impl GatewayTransport {
     /// Connect the client side of the mock OUT and IN HTTP connections.
@@ -36,19 +37,24 @@ impl GatewayTransport {
             .map(|(transport, _)| Self(transport))
     }
 
+    /// Return the authentication negotiated while opening this mock transport.
+    pub fn session_authentication(&self) -> crate::GwSessionAuthentication {
+        self.0.session_authentication
+    }
+
     /// Send one MS-TSGU packet to the mock gateway.
     pub async fn send_packet(&mut self, packet: &[u8]) -> Result<(), String> {
-        self.0.send_bytes(packet).await.map_err(|error| error.to_string())
+        self.0.io.send_bytes(packet).await.map_err(|error| error.to_string())
     }
 
     /// Read one MS-TSGU packet from the mock gateway.
     pub async fn read_packet(&mut self) -> Result<Option<Bytes>, String> {
-        self.0.read_packet_buf().await.map_err(|error| error.to_string())
+        self.0.io.read_packet_buf().await.map_err(|error| error.to_string())
     }
 
     /// Finish the mock gateway IN request body.
     pub async fn close(&mut self) -> Result<(), String> {
-        self.0.close().await.map_err(|error| error.to_string())
+        self.0.io.close().await.map_err(|error| error.to_string())
     }
 
     /// Establish a gateway tunnel through this test transport.
@@ -60,6 +66,45 @@ impl GatewayTransport {
         consent_callback: Option<&mut GwConsentCallback<'_>>,
     ) -> Result<GwClient, Error> {
         GwClient::connect_ws(target, client_name, server_port, self.0, consent_callback).await
+    }
+
+    /// Establish a mock tunnel with a selected session-authentication mode.
+    pub async fn connect_tunnel_with_session_authentication(
+        self,
+        target: GwConnectTarget,
+        client_name: &str,
+        server_port: u16,
+        session_authentication: crate::GwSessionAuthentication,
+    ) -> Result<GwClient, Error> {
+        let mut transport = self.0;
+        transport.session_authentication = session_authentication;
+        GwClient::connect_ws(target, client_name, server_port, transport, None).await
+    }
+
+    /// Establish a mock tunnel with a second mock transport reserved for reauthentication.
+    pub async fn connect_tunnel_with_reauth(
+        self,
+        target: GwConnectTarget,
+        client_name: &str,
+        server_port: u16,
+        reauthentication_transport: GatewayTransport,
+    ) -> Result<GwClient, Error> {
+        let mut reauthentication_transport = Some(reauthentication_transport.0);
+        GwClient::connect_ws_with_reauth(
+            target,
+            client_name,
+            server_port,
+            self.0,
+            Box::new(move || {
+                Box::pin(core::future::ready(
+                    reauthentication_transport
+                        .take()
+                        .ok_or_else(|| Error::new("mock reauthentication transport exhausted", crate::GwErrorKind::Connect)),
+                ))
+            }),
+            None,
+        )
+        .await
     }
 }
 

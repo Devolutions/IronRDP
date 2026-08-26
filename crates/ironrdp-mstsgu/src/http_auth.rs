@@ -51,6 +51,17 @@ pub struct GatewayHttpAuth {
 }
 
 impl GatewayHttpAuth {
+    /// Build SSPI state for the MS-TSGU NTLM extended-authentication exchange.
+    pub(crate) fn new_extended_auth_ntlm(username: &str, password: &str) -> Result<Self, Error> {
+        Self::new_ntlm(username, password, None)
+    }
+
+    /// Process one NTLM token from the MS-TSGU extended-authentication exchange.
+    pub(crate) fn step_extended_auth(&mut self, input: Option<&[u8]>) -> Result<(Vec<u8>, bool), Error> {
+        let token = self.initialize(input)?;
+        Ok((token, self.complete))
+    }
+
     pub fn scheme(&self) -> &'static str {
         self.scheme
     }
