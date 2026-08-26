@@ -336,7 +336,18 @@ struct TimedResizeRequest {
     deadline: tokio::time::Instant,
 }
 
-const DISPLAY_CONTROL_READY_TIMEOUT: Duration = Duration::from_secs(3);
+// 3s was too tight right after login: the server is still busy negotiating DVC
+// channels (rdpdr/rdpei/geometry/displaycontrol...) at that point and can miss the
+// Deactivate-Reactivate window, causing spurious ReactivationTimedOut fallbacks.
+const DISPLAY_CONTROL_READY_TIMEOUT: Duration = Duration::from_secs(8);
+
+// Cooldown observed before firing a brand new NLA/CredSSP handshake after a resize
+// fallback. Without it, a fallback reconnect can immediately follow the initial
+// CapabilitiesTimedOut reconnect (itself already a full CredSSP handshake), and some
+// RDP hosts reject the third rapid-fire logon attempt with STATUS_LOGON_FAILURE even
+// though credentials are correct. Mirrors the delay already used by
+// `confirm_auto_reconnect` for transport-failure retries.
+const RESIZE_FALLBACK_RECONNECT_COOLDOWN: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 struct ResizeQueue {
@@ -803,6 +814,20 @@ impl RdpClient {
                     reconnect_attempt = 0;
                     self.config.connector.desktop_size.width = width;
                     self.config.connector.desktop_size.height = height;
+
+                    // Give the server a moment before hitting it with another full
+                    // NLA/CredSSP handshake. Firing immediately can land right after the
+                    // previous handshake and trigger STATUS_LOGON_FAILURE on some hosts.
+                    if cancelable_operation(
+                        tokio::time::sleep(RESIZE_FALLBACK_RECONNECT_COOLDOWN),
+                        &mut self.close_receiver,
+                    )
+                    .await
+                    .is_none()
+                    {
+                        self.emit_user_initiated_termination();
+                        break;
+                    }
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
                     if !self.send_output_event(RdpOutputEvent::Terminated(Ok(reason))).await {
