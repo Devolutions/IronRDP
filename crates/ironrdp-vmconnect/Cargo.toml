@@ -16,9 +16,10 @@ categories.workspace = true
 doctest = false
 test = false
 
-[[test]]
-name = "unit"
-path = "src/lib.rs"
+[features]
+# Internal (PRIVATE!) feature used to expose native CredSSP helpers to the shared integration tests.
+# Don't rely on this whatsoever. It may disappear at any time.
+__test = []
 
 [dependencies]
 ironrdp-async = { path = "../ironrdp-async", version = "0.10" } # public

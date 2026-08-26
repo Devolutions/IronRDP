@@ -1,7 +1,5 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
-// The explicit unit-test target reuses this file and does not need Cargo's implicit library dependency.
-#![cfg_attr(test, allow(unused_crate_dependencies))]
 
 //! Hyper-V VM console front-end: **PCB → TLS → CredSSP → X.224**.
 //!
@@ -30,6 +28,12 @@ use tracing::{debug, instrument};
 
 #[cfg(windows)]
 mod native_credssp;
+
+#[cfg(all(windows, feature = "__test"))]
+#[doc(hidden)]
+pub fn __test_binding_hash(magic: &[u8], nonce: &[u8; 32], public_key: &[u8]) -> Vec<u8> {
+    native_credssp::binding_hash(magic, nonce, public_key)
+}
 
 /// TCP port a Hyper-V VM console listens on.
 pub const PORT: u16 = 2179;
