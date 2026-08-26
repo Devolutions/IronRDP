@@ -25,9 +25,9 @@ use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::{Message, http};
 
-use crate::http_auth::{AuthStep, GatewayHttpAuth, basic_authorization, www_authenticate_values};
+use crate::http_auth::{AuthStep, GatewayHttpAuth, basic_authorization, split_auth_challenge, www_authenticate_values};
 use crate::proto::PktHdr;
-use crate::{Error, GwConnectTarget, GwErrorKind};
+use crate::{Error, GwConnectTarget, GwErrorKind, GwSessionAuthentication};
 
 pub(crate) trait GatewayIo: AsyncRead + AsyncWrite + Unpin {}
 
@@ -190,6 +190,11 @@ pub(crate) enum PacketIo {
     },
 }
 
+pub(crate) struct GatewayTransport {
+    pub(crate) io: PacketIo,
+    pub(crate) session_authentication: GwSessionAuthentication,
+}
+
 impl PacketIo {
     pub(crate) async fn send_bytes(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.check_in_response()?;
@@ -284,7 +289,7 @@ pub(crate) async fn open_gateway_transport(
     target: &GwConnectTarget,
     certificate_validation: CertificateValidation,
     certificate_validation_callback: Option<CertificateValidationCallback>,
-) -> Result<(PacketIo, core::net::SocketAddr), Error> {
+) -> Result<(GatewayTransport, core::net::SocketAddr), Error> {
     let gateway = parse_gateway_endpoint(&target.gw_endpoint)?;
     let gw_host = gateway.host.clone();
     let proxy = proxy_from_environment(&gateway)?;
@@ -791,7 +796,7 @@ async fn open_transport_with_out_stream<F, Fut>(
     gw_host: &str,
     target: &GwConnectTarget,
     open_in_stream: F,
-) -> Result<(PacketIo, core::net::SocketAddr), Error>
+) -> Result<(GatewayTransport, core::net::SocketAddr), Error>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<GatewayStream, Error>>,
@@ -827,7 +832,9 @@ where
         target,
         websocket_upgrade: true,
     };
-    let response = authenticated_rdg_request(&mut out_sender, &context, &spn, &mut cookies).await?;
+    let authenticated = authenticated_rdg_request(&mut out_sender, &context, &spn, &mut cookies, None).await?;
+    let session_authentication = authenticated.session_authentication;
+    let response = authenticated.response;
 
     match response.status() {
         http::StatusCode::SWITCHING_PROTOCOLS => {
@@ -837,7 +844,13 @@ where
                 .ok_or_else(|| Error::new("websocket upgrade connection lost", GwErrorKind::Connect))?;
             let stream = WebSocketStream::from_raw_socket(parts.io.into_inner(), Role::Client, None).await;
             let (sink, stream) = stream.split();
-            Ok((PacketIo::WebSocket { sink, stream }, client_addr))
+            Ok((
+                GatewayTransport {
+                    io: PacketIo::WebSocket { sink, stream },
+                    session_authentication,
+                },
+                client_addr,
+            ))
         }
         http::StatusCode::OK => {
             let mut out_body = response.into_body();
@@ -857,9 +870,16 @@ where
                 out_buf,
                 out_stop_tx,
                 out_conn,
+                session_authentication,
             )
             .await?;
-            Ok((io, client_addr))
+            Ok((
+                GatewayTransport {
+                    io,
+                    session_authentication,
+                },
+                client_addr,
+            ))
         }
         status => {
             drain_response_body(response.into_body(), "drain rdg out response body").await?;
@@ -872,7 +892,7 @@ where
 pub(crate) async fn open_test_transport(
     out_stream: tokio::io::DuplexStream,
     in_stream: tokio::io::DuplexStream,
-) -> Result<PacketIo, Error> {
+) -> Result<GatewayTransport, Error> {
     let target = GwConnectTarget {
         gw_endpoint: "gateway.test:443".to_owned(),
         gw_user: "user".to_owned(),
@@ -894,7 +914,7 @@ pub(crate) async fn open_test_transport(
         },
     )
     .await
-    .map(|(io, _)| io)
+    .map(|(transport, _)| transport)
 }
 
 #[expect(
@@ -912,6 +932,7 @@ async fn open_in_channel(
     out_buf: Vec<u8>,
     out_stop_tx: oneshot::Sender<()>,
     out_conn: tokio::task::JoinHandle<()>,
+    session_authentication: GwSessionAuthentication,
 ) -> Result<PacketIo, Error> {
     let in_io = hyper_util::rt::tokio::TokioIo::new(in_stream);
     let (mut in_sender, in_conn) = hyper::client::conn::http1::handshake(in_io)
@@ -930,7 +951,9 @@ async fn open_in_channel(
         target,
         websocket_upgrade: false,
     };
-    let response = authenticated_rdg_request(&mut in_sender, &context, spn, cookies).await?;
+    let authenticated =
+        authenticated_rdg_request(&mut in_sender, &context, spn, cookies, Some(session_authentication)).await?;
+    let response = authenticated.response;
     if response.status() != http::StatusCode::OK {
         let status = response.status();
         drain_response_body(response.into_body(), "drain rdg in response body").await?;
@@ -970,9 +993,12 @@ async fn authenticated_rdg_request(
     context: &RdgRequestContext<'_>,
     spn: &str,
     cookies: &mut GatewayCookies,
-) -> Result<http::Response<Incoming>, Error> {
+    requested_session_authentication: Option<GwSessionAuthentication>,
+) -> Result<AuthenticatedRdgResponse, Error> {
     let mut http_auth: Option<GatewayHttpAuth> = None;
-    let mut authorization: Option<String> = None;
+    let mut session_authentication = requested_session_authentication.unwrap_or_default();
+    let mut authorization =
+        (session_authentication == GwSessionAuthentication::NtlmSspi).then(|| "SSPI_NTLM".to_owned());
     let mut use_basic = false;
     const MAX_AUTH_ROUNDS: usize = 8;
 
@@ -999,7 +1025,19 @@ async fn authenticated_rdg_request(
                     .collect();
                 run_http_auth(move || auth.finish_www_authenticate(challenges.iter().map(String::as_str))).await?;
             }
-            return Ok(response);
+            return Ok(AuthenticatedRdgResponse {
+                response,
+                session_authentication,
+            });
+        }
+
+        if requested_session_authentication == Some(GwSessionAuthentication::NtlmSspi) {
+            let status = response.status();
+            drain_response_body(response.into_body(), "drain rdg extended authentication body").await?;
+            return Err(Error::new(
+                "rdg extended authentication",
+                GwErrorKind::HttpStatus(status.as_u16()),
+            ));
         }
 
         if use_basic {
@@ -1021,7 +1059,16 @@ async fn authenticated_rdg_request(
         let pass = context.target.gw_pass.clone();
         let smart_card = context.target.smart_card.clone();
         let target_name = spn.to_owned();
-        let step = if let Some(mut auth) = http_auth.take() {
+        let step = if requested_session_authentication.is_none()
+            && http_auth.is_none()
+            && smart_card.is_none()
+            && challenges
+                .iter()
+                .any(|challenge| split_auth_challenge(challenge, "SSPI_NTLM").is_some())
+        {
+            session_authentication = GwSessionAuthentication::NtlmSspi;
+            AuthStep::Continue("SSPI_NTLM".to_owned())
+        } else if let Some(mut auth) = http_auth.take() {
             let (auth, step) = run_http_auth(move || {
                 let refs: Vec<&str> = challenges.iter().map(String::as_str).collect();
                 let step = auth.step_www_authenticate(refs)?;
@@ -1053,6 +1100,11 @@ async fn authenticated_rdg_request(
     }
 
     Err(Error::new("rdg authentication rounds exceeded", GwErrorKind::Connect))
+}
+
+struct AuthenticatedRdgResponse {
+    response: http::Response<Incoming>,
+    session_authentication: GwSessionAuthentication,
 }
 
 fn empty_rdg_body() -> RdgBody {
