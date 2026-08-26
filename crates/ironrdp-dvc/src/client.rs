@@ -249,6 +249,22 @@ impl DrdynvcClient {
             .map(|p| DynamicChannelRef::new(channel_id, p))
     }
 
+    /// Returns a mutable typed accessor for a pre-registered active client DVC.
+    ///
+    /// Returns `None` until the server has created the channel and the processor has started.
+    pub fn get_dvc_mut<T>(&mut self) -> Option<DynamicChannelMut<'_, T>>
+    where
+        T: DvcClientProcessor,
+    {
+        let dvc_channel = self.dynamic_channels.get_by_type_id_mut(TypeId::of::<T>())?;
+        let channel_id = dvc_channel.channel_id?;
+        dvc_channel
+            .channel_processor
+            .as_any_mut()
+            .downcast_mut()
+            .map(|processor| DynamicChannelMut::new(channel_id, processor))
+    }
+
     /// Returns whether a dynamic channel of type `T` was pre-registered with this client.
     pub fn has_registered_dvc<T>(&self) -> bool
     where
@@ -560,6 +576,11 @@ impl DynamicChannelSet {
         self.type_id_to_channel_id
             .get(&type_id)
             .and_then(|id| self.active_channels.get(id))
+    }
+
+    fn get_by_type_id_mut(&mut self, type_id: TypeId) -> Option<&mut DynamicVirtualChannel> {
+        let id = *self.type_id_to_channel_id.get(&type_id)?;
+        self.active_channels.get_mut(&id)
     }
 
     fn has_listener_by_type_id(&self, type_id: TypeId) -> bool {
