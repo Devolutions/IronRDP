@@ -633,6 +633,27 @@ pub trait PropertySetExt {
     /// Removes the `ironrdp_named_pipe` property.
     fn clear_named_pipe(&mut self);
 
+    /// Select the Hyper-V basic console instead of Enhanced Session mode (`ironrdp_vmconnect_basic`).
+    fn vmconnect_basic(&self) -> Option<bool>;
+    /// Sets the `ironrdp_vmconnect_basic` property.
+    fn set_vmconnect_basic(&mut self, enabled: bool);
+    /// Removes the `ironrdp_vmconnect_basic` property.
+    fn clear_vmconnect_basic(&mut self);
+
+    /// Use the caller's current Windows logon token for VMConnect host authentication (`ironrdp_vmconnect_current_user`).
+    fn vmconnect_current_user(&self) -> Option<bool>;
+    /// Sets the `ironrdp_vmconnect_current_user` property.
+    fn set_vmconnect_current_user(&mut self, enabled: bool);
+    /// Removes the `ironrdp_vmconnect_current_user` property.
+    fn clear_vmconnect_current_user(&mut self);
+
+    /// Hyper-V VM ID for a VMConnect session (`ironrdp_vmconnect`).
+    fn vmconnect_id(&self) -> Option<&str>;
+    /// Sets the `ironrdp_vmconnect` property.
+    fn set_vmconnect_id(&mut self, value: impl Into<String>);
+    /// Removes the `ironrdp_vmconnect` property.
+    fn clear_vmconnect_id(&mut self);
+
     /// Windows Sandbox id used by agent tooling (`ironrdp_sandbox_id`).
     fn sandbox_id(&self) -> Option<&str>;
     /// Sets the `ironrdp_sandbox_id` property.
@@ -656,30 +677,6 @@ pub trait PropertySetExt {
     /// Removes every RDCleanPath-related key (`ironrdp_rdcleanpathurl` and
     /// `ironrdp_rdcleanpathtoken`).
     fn clear_rdcleanpath(&mut self);
-}
-
-/// Typed accessors for IronRDP VMConnect properties.
-pub trait VmConnectPropertySetExt {
-    /// Select the Hyper-V basic console instead of Enhanced Session mode (`ironrdp_vmconnect_basic`).
-    fn vmconnect_basic(&self) -> Option<bool>;
-    /// Sets the `ironrdp_vmconnect_basic` property.
-    fn set_vmconnect_basic(&mut self, enabled: bool);
-    /// Removes the `ironrdp_vmconnect_basic` property.
-    fn clear_vmconnect_basic(&mut self);
-
-    /// Use the caller's current Windows logon token for VMConnect host authentication (`ironrdp_vmconnect_current_user`).
-    fn vmconnect_current_user(&self) -> Option<bool>;
-    /// Sets the `ironrdp_vmconnect_current_user` property.
-    fn set_vmconnect_current_user(&mut self, enabled: bool);
-    /// Removes the `ironrdp_vmconnect_current_user` property.
-    fn clear_vmconnect_current_user(&mut self);
-
-    /// Hyper-V VM ID for a VMConnect session (`ironrdp_vmconnect`).
-    fn vmconnect_id(&self) -> Option<&str>;
-    /// Sets the `ironrdp_vmconnect` property.
-    fn set_vmconnect_id(&mut self, value: impl Into<String>);
-    /// Removes the `ironrdp_vmconnect` property.
-    fn clear_vmconnect_id(&mut self);
 }
 
 impl PropertySetExt for PropertySet {
@@ -1253,6 +1250,42 @@ impl PropertySetExt for PropertySet {
         self.remove("ironrdp_named_pipe");
     }
 
+    fn vmconnect_basic(&self) -> Option<bool> {
+        self.get::<bool>("ironrdp_vmconnect_basic")
+    }
+
+    fn set_vmconnect_basic(&mut self, enabled: bool) {
+        self.insert("ironrdp_vmconnect_basic", enabled);
+    }
+
+    fn clear_vmconnect_basic(&mut self) {
+        self.remove("ironrdp_vmconnect_basic");
+    }
+
+    fn vmconnect_current_user(&self) -> Option<bool> {
+        self.get::<bool>("ironrdp_vmconnect_current_user")
+    }
+
+    fn set_vmconnect_current_user(&mut self, enabled: bool) {
+        self.insert("ironrdp_vmconnect_current_user", enabled);
+    }
+
+    fn clear_vmconnect_current_user(&mut self) {
+        self.remove("ironrdp_vmconnect_current_user");
+    }
+
+    fn vmconnect_id(&self) -> Option<&str> {
+        self.get::<&str>("ironrdp_vmconnect")
+    }
+
+    fn set_vmconnect_id(&mut self, value: impl Into<String>) {
+        self.insert("ironrdp_vmconnect", value.into());
+    }
+
+    fn clear_vmconnect_id(&mut self) {
+        self.remove("ironrdp_vmconnect");
+    }
+
     /// Optional Windows Sandbox id used by agent tooling to resolve RDP config via gRPC.
     fn sandbox_id(&self) -> Option<&str> {
         self.get::<&str>("ironrdp_sandbox_id")
@@ -1291,43 +1324,5 @@ impl PropertySetExt for PropertySet {
     fn clear_rdcleanpath(&mut self) {
         self.remove("ironrdp_rdcleanpathurl");
         self.remove("ironrdp_rdcleanpathtoken");
-    }
-}
-
-impl VmConnectPropertySetExt for PropertySet {
-    fn vmconnect_basic(&self) -> Option<bool> {
-        self.get::<bool>("ironrdp_vmconnect_basic")
-    }
-
-    fn set_vmconnect_basic(&mut self, enabled: bool) {
-        self.insert("ironrdp_vmconnect_basic", enabled);
-    }
-
-    fn clear_vmconnect_basic(&mut self) {
-        self.remove("ironrdp_vmconnect_basic");
-    }
-
-    fn vmconnect_current_user(&self) -> Option<bool> {
-        self.get::<bool>("ironrdp_vmconnect_current_user")
-    }
-
-    fn set_vmconnect_current_user(&mut self, enabled: bool) {
-        self.insert("ironrdp_vmconnect_current_user", enabled);
-    }
-
-    fn clear_vmconnect_current_user(&mut self) {
-        self.remove("ironrdp_vmconnect_current_user");
-    }
-
-    fn vmconnect_id(&self) -> Option<&str> {
-        self.get::<&str>("ironrdp_vmconnect")
-    }
-
-    fn set_vmconnect_id(&mut self, value: impl Into<String>) {
-        self.insert("ironrdp_vmconnect", value.into());
-    }
-
-    fn clear_vmconnect_id(&mut self) {
-        self.remove("ironrdp_vmconnect");
     }
 }

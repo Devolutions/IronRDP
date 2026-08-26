@@ -5,10 +5,8 @@ use std::sync::Arc;
 
 #[cfg(windows)]
 use ironrdp_cfg::GatewayCredentialsSource;
-use ironrdp_cfg::{PropertySetExt as _, VmConnectPropertySetExt as _};
-use ironrdp_client::config::{
-    AudioQualityMode, ClipboardType, ConfigBuilder, Destination, Transport, VmConnectMode,
-};
+use ironrdp_cfg::PropertySetExt as _;
+use ironrdp_client::config::{AudioQualityMode, ClipboardType, ConfigBuilder, Destination, Transport, VmConnectMode};
 #[cfg(windows)]
 use ironrdp_client::config::{MissingField, TransportKind};
 use ironrdp_pdu::gcc::{ClientMonitorData, Monitor, MonitorFlags};

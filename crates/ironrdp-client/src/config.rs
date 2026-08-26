@@ -7,8 +7,6 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use ironrdp_cfg::PropertySetExt as _;
-#[cfg(feature = "vmconnect")]
-use ironrdp_cfg::VmConnectPropertySetExt as _;
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rail::pdu::ExecutePdu;
 use url::Url;
@@ -1244,7 +1242,6 @@ impl ConfigBuilder {
         self
     }
 
-    #[cfg(feature = "vmconnect")]
     /// Connect to a Hyper-V VM console by VM GUID. Destination must use port
     /// [`ironrdp_vmconnect::PORT`] (2179) unless the caller explicitly selects another port.
     /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
@@ -1253,6 +1250,7 @@ impl ConfigBuilder {
     /// embedder (error if disabled). Works over Direct, RDCleanPath, and RDS Gateway (the
     /// destination port, typically 2179, is forwarded in the MS-TSGU channel-create packet,
     /// then the VMConnect PCB / `connect_front` handshake runs on the tunneled stream).
+    #[cfg(feature = "vmconnect")]
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
         let vm_id = vm_id.into();
@@ -1263,10 +1261,10 @@ impl ConfigBuilder {
         self
     }
 
-    #[cfg(feature = "vmconnect")]
     /// Connect to a Hyper-V VM console using the selected mode.
     ///
     /// See [`with_vmconnect`](Self::with_vmconnect) for transport notes.
+    #[cfg(feature = "vmconnect")]
     #[must_use]
     pub fn with_vmconnect_mode(mut self, vm_id: impl Into<String>, mode: VmConnectMode) -> Self {
         let vm_id = vm_id.into();
@@ -1277,10 +1275,10 @@ impl ConfigBuilder {
         self
     }
 
-    #[cfg(all(windows, feature = "vmconnect"))]
     /// Use the caller's current Windows logon token for VMConnect host authentication.
     ///
     /// This is the native VMConnect behavior for local Hyper-V connections and avoids handling a reusable host password.
+    #[cfg(all(windows, feature = "vmconnect"))]
     #[must_use]
     pub fn with_vmconnect_current_user(mut self, enabled: bool) -> Self {
         self.properties.set_vmconnect_current_user(enabled);
