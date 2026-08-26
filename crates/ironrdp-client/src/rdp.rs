@@ -4164,10 +4164,11 @@ mod tests {
     fn noop_rdpdr_fallback_does_not_report_drive_hotplug() {
         let config = test_config();
         let (input_sender, _) = RdpInputSender::channel(1);
+        let (output_event_sender, _) = mpsc::channel(1);
         let mut connector = build_connector(
             &config,
             SocketAddr::from(([127, 0, 0, 1], 0)),
-            &input_sender,
+            (&input_sender, &output_event_sender),
             no_cliprdr_factory(),
             None,
             true,
