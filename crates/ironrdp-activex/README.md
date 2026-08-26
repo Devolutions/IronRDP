@@ -519,9 +519,14 @@ keyboard forwarding.
 `RescanDrives` preserves known selections and applies its Boolean argument only to newly discovered volumes.
 `RedirectDrives` selects or clears the current catalog before connecting.
 `DisableRdpdr` is a hard preconnect override, so it suppresses RDPDR even when drives are selected.
-The worker receives only a snapshot of selected drive names and roots through a `WindowsRdpdrBackendFactory`.
-Drive selection, catalog refresh, and `DisableRdpdr` are sealed after connection setup.
-`RedirectDynamicDrives` remains unsupported, so the collection does not modify an active session.
+The worker receives the selected drive IDs plus a bounded A-through-Z logical-volume catalog through a `WindowsRdpdrBackendFactory`.
+`RedirectDynamicDrives` keeps drive capability negotiation active even when no volume is initially selected.
+`NotifyRedirectDeviceChange` rescans the catalog, preserves stable device IDs and selections, announces newly selected volumes, and removes disappeared volumes from an active session.
+Connected `IMsRdpDrive::RedirectionState` changes use the same RDPDR announce/remove path, while connecting and stopping states reject mutation.
+These updates follow [MS-RDPEFS sections 3.2.5.1.9 and 3.2.5.2.2], including the requirement to announce only new devices and remove disconnected devices before reusing their IDs.
+`RedirectDynamicDevices` reports disabled and rejects enablement because generic Plug and Play devices have no IronRDP backend.
+`IMsRdpDeviceCollection` is therefore retained as an empty collection whose rescan operation returns `E_NOTIMPL`.
+Printer, serial, and parallel-port redirection remain unsupported; smartcard redirection remains independent of drive selection.
 `IMsRdpPreferredRedirectionInfo::UseRedirectionServerName` likewise reports disabled and rejects
 enabling it because IronRDP does not currently consume load-balancing redirection names. Remote
 actions also return `E_NOTIMPL` until an IronRDP session-operation mapping exists.
@@ -803,3 +808,5 @@ sink for the event interface IID before retaining its `IDispatch`.
 This is an Automation, lifecycle, hosting, framebuffer, basic input, RemoteApp projection, persistence, static virtual-channel, and bounded read-only OLE clipboard-snapshot foundation.
 It does not implement writable or file-backed OLE clipboard exchange, monikers, non-filesystem RDPDR device redirection, or arbitrary persisted designer state.
 Those contracts must be added as exact ABI implementations before advertising their individual methods as supported.
+
+[MS-RDPEFS sections 3.2.5.1.9 and 3.2.5.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5

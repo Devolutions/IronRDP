@@ -47,10 +47,10 @@ pub(crate) unsafe trait ITSRemoteProgram3: ITSRemoteProgram2 {
 
 #[interface("56540617-D281-488C-8738-6A8FDF64A118")]
 pub(crate) unsafe trait IMsRdpDeviceCollection: IUnknown {
-    fn RescanDevices(&self, dynamic_redirection: i16) -> Result<()>;
+    pub(crate) fn RescanDevices(&self, dynamic_redirection: i16) -> Result<()>;
     fn get_DeviceByIndex(&self, index: u32, device: InterfaceOut) -> Result<()>;
     fn get_DeviceById(&self, instance_id: Bstr, device: InterfaceOut) -> Result<()>;
-    fn get_DeviceCount(&self, count: *mut u32) -> Result<()>;
+    pub(crate) fn get_DeviceCount(&self, count: *mut u32) -> Result<()>;
 }
 
 #[interface("7FF17599-DA2C-4677-AD35-F60C04FE1585")]
@@ -133,11 +133,11 @@ pub(crate) unsafe trait IMsRdpClientNonScriptable3: IMsRdpClientNonScriptable2 {
     fn get_NegotiateSecurityLayer(&self, value: *mut i16) -> Result<()>;
     fn put_EnableCredSspSupport(&self, value: i16) -> Result<()>;
     fn get_EnableCredSspSupport(&self, value: *mut i16) -> Result<()>;
-    fn put_RedirectDynamicDrives(&self, value: i16) -> Result<()>;
-    fn get_RedirectDynamicDrives(&self, value: *mut i16) -> Result<()>;
-    fn put_RedirectDynamicDevices(&self, value: i16) -> Result<()>;
-    fn get_RedirectDynamicDevices(&self, value: *mut i16) -> Result<()>;
-    fn get_DeviceCollection(&self, collection: InterfaceOut) -> Result<()>;
+    pub(crate) fn put_RedirectDynamicDrives(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_RedirectDynamicDrives(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn put_RedirectDynamicDevices(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_RedirectDynamicDevices(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn get_DeviceCollection(&self, collection: InterfaceOut) -> Result<()>;
     pub(crate) fn get_DriveCollection(&self, collection: InterfaceOut) -> Result<()>;
     fn put_WarnAboutSendingCredentials(&self, value: i16) -> Result<()>;
     fn get_WarnAboutSendingCredentials(&self, value: *mut i16) -> Result<()>;

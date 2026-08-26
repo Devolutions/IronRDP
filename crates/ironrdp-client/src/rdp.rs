@@ -1,5 +1,7 @@
 use core::net::SocketAddr;
 use core::num::NonZeroU16;
+#[cfg(feature = "rdpdr")]
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::io;
 use std::sync::Arc;
@@ -213,6 +215,17 @@ pub enum RdpInputEvent {
         channel_name: ChannelName,
         data: Vec<u8>,
     },
+    /// Activates and announces a preconfigured RDPDR filesystem device.
+    #[cfg(feature = "rdpdr")]
+    AddRdpdrDrive {
+        device_id: u32,
+        name: String,
+    },
+    /// Removes an active RDPDR filesystem device.
+    #[cfg(feature = "rdpdr")]
+    RemoveRdpdrDrive {
+        device_id: u32,
+    },
     /// Requests a RemoteApp launch over the RAIL static channel.
     RailExecute(ExecutePdu),
     /// Queues a client-originated RAIL input event.
@@ -236,6 +249,8 @@ pub struct RdpInputSender {
     clipboard_sender: mpsc::UnboundedSender<RdpInputEvent>,
     close_sender: watch::Sender<bool>,
     graceful_close_sender: watch::Sender<bool>,
+    #[cfg(feature = "rdpdr")]
+    rdpdr_drive_hotplug_available: Arc<AtomicBool>,
 }
 
 impl RdpInputSender {
@@ -268,6 +283,8 @@ impl RdpInputSender {
                 clipboard_sender,
                 close_sender,
                 graceful_close_sender,
+                #[cfg(feature = "rdpdr")]
+                rdpdr_drive_hotplug_available: Arc::new(AtomicBool::new(false)),
             },
             input_receiver,
             clipboard_receiver,
@@ -320,6 +337,17 @@ impl RdpInputSender {
     /// immediately cancel a connection attempt or active session instead.
     pub fn request_graceful_close(&self) {
         self.graceful_close_sender.send_replace(true);
+    }
+
+    /// Returns whether the active session negotiated support for RDPDR drive hotplug.
+    #[cfg(feature = "rdpdr")]
+    pub fn rdpdr_drive_hotplug_available(&self) -> bool {
+        self.rdpdr_drive_hotplug_available.load(Ordering::Acquire)
+    }
+
+    #[cfg(feature = "rdpdr")]
+    fn set_rdpdr_drive_hotplug_available(&self, available: bool) {
+        self.rdpdr_drive_hotplug_available.store(available, Ordering::Release);
     }
 }
 
@@ -1088,10 +1116,11 @@ fn build_rdpdr_channel(
         return Ok(None);
     };
 
-    let (backend, initial_drives) = factory
+    let product = factory
         .build_rdpdr_backend()
-        .map_err(|error| ironrdp_connector::custom_err!("build RDPDR backend", RdpdrBackendBuildError(error)))?
-        .into_parts();
+        .map_err(|error| ironrdp_connector::custom_err!("build RDPDR backend", RdpdrBackendBuildError(error)))?;
+    let drive_hotplug = allow_drives && product.drive_hotplug();
+    let (backend, initial_drives) = product.into_parts();
     // Gateway drive restrictions do not apply to smartcard redirection, which shares RDPDR.
     let initial_drives = if allow_drives { initial_drives } else { Vec::new() };
 
@@ -1100,7 +1129,7 @@ fn build_rdpdr_channel(
     #[cfg(not(feature = "smartcard"))]
     let smartcard = false;
 
-    if initial_drives.is_empty() && !smartcard {
+    if initial_drives.is_empty() && !smartcard && !drive_hotplug {
         return Ok(None);
     }
 
@@ -1114,7 +1143,7 @@ fn build_rdpdr_channel(
     // `Rdpdr::add_dynamic_drive` hot-plug is unavailable on that session.
     // Prefer attaching an empty drive list only when drive hot-plug is required.
     let mut rdpdr_channel = ironrdp_rdpdr::Rdpdr::new(backend, "IronRDP".to_owned());
-    if !initial_drives.is_empty() {
+    if !initial_drives.is_empty() || drive_hotplug {
         rdpdr_channel = rdpdr_channel.with_drives(Some(initial_drives));
     }
 
@@ -1423,6 +1452,12 @@ fn build_connector(
                 .enabled
                 .then(|| ironrdp_rdpdr::Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), "IronRDP".to_owned()))
         });
+    #[cfg(feature = "rdpdr")]
+    input_sender.set_rdpdr_drive_hotplug_available(
+        rdpdr_channel
+            .as_ref()
+            .is_some_and(ironrdp_rdpdr::Rdpdr::drive_hotplug_available),
+    );
 
     // Windows servers only issue RDPDR traffic when RDPSND is also advertised.
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
@@ -2160,6 +2195,39 @@ fn poll_deferred_rdpdr_output(active_stage: &mut ActiveStage) -> SessionResult<O
     }
 }
 
+#[cfg(feature = "rdpdr")]
+fn process_rdpdr_drive_change(
+    active_stage: &mut ActiveStage,
+    device_id: u32,
+    name: Option<String>,
+) -> SessionResult<Vec<ActiveStageOutput>> {
+    let Some(rdpdr) = active_stage.get_svc_processor_mut::<ironrdp_rdpdr::Rdpdr>() else {
+        warn!(device_id, "Ignoring dynamic drive change because RDPDR is disabled");
+        return Ok(Vec::new());
+    };
+    let messages = match name {
+        Some(name) => rdpdr.add_dynamic_drive(device_id, name),
+        None => rdpdr.remove_drive(device_id),
+    };
+    let messages = match messages {
+        Ok(messages) => messages,
+        Err(error) => {
+            warn!(device_id, %error, "Unable to apply dynamic RDPDR drive change");
+            return Ok(Vec::new());
+        }
+    };
+    if messages.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let frame = active_stage.process_svc_messages_by_name(&ironrdp_rdpdr::Rdpdr::NAME, messages)?;
+    if frame.is_empty() {
+        Ok(Vec::new())
+    } else {
+        Ok(vec![ActiveStageOutput::ResponseFrame(frame)])
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the active loop owns independent transport, input, clipboard, and cancellation sources"
@@ -2484,6 +2552,14 @@ async fn active_session(
                                 Vec::new()
                             }
                         }
+                    }
+                    #[cfg(feature = "rdpdr")]
+                    RdpInputEvent::AddRdpdrDrive { device_id, name } => {
+                        process_rdpdr_drive_change(&mut active_stage, device_id, Some(name))?
+                    }
+                    #[cfg(feature = "rdpdr")]
+                    RdpInputEvent::RemoveRdpdrDrive { device_id } => {
+                        process_rdpdr_drive_change(&mut active_stage, device_id, None)?
                     }
                     RdpInputEvent::RailExecute(execute) => {
                         let executable = execute.executable.clone();
@@ -3159,7 +3235,7 @@ mod tests {
     #[cfg(feature = "rdpdr")]
     use core::any::TypeId;
     #[cfg(feature = "rdpdr")]
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::sync::atomic::AtomicUsize;
 
     #[cfg(feature = "rdpdr")]
     use ironrdp_core::encode_vec;
@@ -3182,6 +3258,7 @@ mod tests {
     struct TestRdpdrBackend {
         instance: usize,
         deferred_messages: Vec<SvcMessage>,
+        dynamic_drive_count: Arc<AtomicUsize>,
     }
 
     #[cfg(feature = "rdpdr")]
@@ -3190,6 +3267,7 @@ mod tests {
             Self {
                 instance,
                 deferred_messages: Vec::new(),
+                dynamic_drive_count: Arc::new(AtomicUsize::new(0)),
             }
         }
 
@@ -3197,6 +3275,7 @@ mod tests {
             Self {
                 instance: 0,
                 deferred_messages: vec![SvcMessage::from(RdpdrPdu::EmptyResponse)],
+                dynamic_drive_count: Arc::new(AtomicUsize::new(0)),
             }
         }
     }
@@ -3228,6 +3307,16 @@ mod tests {
         fn poll_deferred_messages(&mut self) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
             Ok(core::mem::take(&mut self.deferred_messages))
         }
+
+        fn add_drive(&mut self, _device_id: u32) -> ironrdp_pdu::PduResult<()> {
+            self.dynamic_drive_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn remove_drive(&mut self, _device_id: u32) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+            self.dynamic_drive_count.fetch_sub(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
     }
 
     #[cfg(feature = "rdpdr")]
@@ -3235,6 +3324,7 @@ mod tests {
     struct CountingRdpdrFactory {
         builds: AtomicUsize,
         initial_drives: Vec<RdpdrDrive>,
+        drive_hotplug: bool,
     }
 
     #[cfg(feature = "rdpdr")]
@@ -3243,7 +3333,13 @@ mod tests {
             Self {
                 builds: AtomicUsize::new(0),
                 initial_drives,
+                drive_hotplug: false,
             }
+        }
+
+        fn with_drive_hotplug(mut self) -> Self {
+            self.drive_hotplug = true;
+            self
         }
     }
 
@@ -3251,10 +3347,10 @@ mod tests {
     impl RdpdrBackendFactory for CountingRdpdrFactory {
         fn build_rdpdr_backend(&self) -> RdpdrBackendFactoryResult<RdpdrBackendProduct> {
             let instance = self.builds.fetch_add(1, Ordering::SeqCst) + 1;
-            Ok(RdpdrBackendProduct::new(
-                Box::new(TestRdpdrBackend::new(instance)),
-                self.initial_drives.clone(),
-            ))
+            Ok(
+                RdpdrBackendProduct::new(Box::new(TestRdpdrBackend::new(instance)), self.initial_drives.clone())
+                    .with_drive_hotplug(self.drive_hotplug),
+            )
         }
     }
 
@@ -3476,6 +3572,35 @@ mod tests {
             build_rdpdr_channel(Some(&factory), &config, true)
                 .expect("empty RDPDR product should not fail")
                 .is_none()
+        );
+        assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn hotplug_only_rdpdr_product_negotiates_drive_capability() {
+        let factory = CountingRdpdrFactory::new(Vec::new()).with_drive_hotplug();
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+        };
+
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, true)
+            .expect("hotplug-only RDPDR product should not fail")
+            .expect("hotplug-only product should build a channel");
+        let server_capability = RdpdrPdu::CoreCapability(CoreCapability {
+            capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_drive()],
+            kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
+        });
+        rdpdr
+            .process(&encode_vec(&server_capability).expect("encode server capability"))
+            .expect("process server capability");
+        assert!(
+            rdpdr
+                .add_dynamic_drive(42, "E:".to_owned())
+                .expect("hotplug capability was configured before negotiation")
+                .is_empty()
         );
         assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
     }
@@ -3709,6 +3834,7 @@ mod tests {
         )
         .expect("RDPDR connector should build");
 
+        assert!(input_sender.rdpdr_drive_hotplug_available());
         assert!(
             connector
                 .get_static_channel_processor::<ironrdp_rdpdr::Rdpdr>()
@@ -3717,6 +3843,30 @@ mod tests {
         assert!(
             connector
                 .get_static_channel_processor::<ironrdp_rdpsnd::client::Rdpsnd>()
+                .is_some()
+        );
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn noop_rdpdr_fallback_does_not_report_drive_hotplug() {
+        let config = test_config();
+        let (input_sender, _) = RdpInputSender::channel(1);
+        let mut connector = build_connector(
+            &config,
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            &input_sender,
+            no_cliprdr_factory(),
+            None,
+            true,
+            None,
+        )
+        .expect("Noop RDPDR connector should build");
+
+        assert!(!input_sender.rdpdr_drive_hotplug_available());
+        assert!(
+            connector
+                .get_static_channel_processor::<ironrdp_rdpdr::Rdpdr>()
                 .is_some()
         );
     }
@@ -3762,6 +3912,44 @@ mod tests {
                 .expect("polling an empty backend should succeed")
                 .is_none()
         );
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn dynamic_drive_changes_reach_the_rdpdr_processor() {
+        let backend = TestRdpdrBackend::new(0);
+        let dynamic_drive_count = Arc::clone(&backend.dynamic_drive_count);
+        let mut static_channels = StaticChannelSet::new();
+        assert!(
+            static_channels
+                .insert(ironrdp_rdpdr::Rdpdr::new(Box::new(backend), "test".to_owned()).with_drives(None))
+                .is_none()
+        );
+        let mut active_stage = ActiveStageBuilder {
+            static_channels,
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 0,
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+
+        assert!(
+            process_rdpdr_drive_change(&mut active_stage, 7, Some("E:".to_owned()))
+                .expect("dynamic add is accepted before post-logon announcement")
+                .is_empty()
+        );
+        assert_eq!(dynamic_drive_count.load(Ordering::SeqCst), 1);
+
+        assert!(
+            process_rdpdr_drive_change(&mut active_stage, 7, None)
+                .expect("dynamic removal is accepted")
+                .is_empty()
+        );
+        assert_eq!(dynamic_drive_count.load(Ordering::SeqCst), 0);
     }
 
     #[cfg(feature = "clipboard")]
