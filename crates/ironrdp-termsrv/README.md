@@ -21,12 +21,14 @@ The full IronRDP transport/data-plane integration is still in progress.
   - TCP bind address for side-by-side incoming sockets.
   - Default when unset: `0.0.0.0:4489`.
 
-- Environment variables: `IRONRDP_RDP_USERNAME`, `IRONRDP_RDP_PASSWORD`, `IRONRDP_RDP_DOMAIN` (optional)
+- Environment variables: `IRONRDP_RDP_USERNAME`, `IRONRDP_RDP_PASSWORD`, `IRONRDP_RDP_DOMAIN`
   - Expected RDP credentials used for authentication.
-  - When `IRONRDP_RDP_USERNAME` + `IRONRDP_RDP_PASSWORD` are set, the server advertises Hybrid security (CredSSP/NLA).
-  - When unset, the server falls back to TLS-only.
+  - `IRONRDP_RDP_USERNAME` and `IRONRDP_RDP_PASSWORD` are required for a successful CredSSP/NLA handshake.
   - Use down-level names as `IRONRDP_RDP_USERNAME=Administrator` with `IRONRDP_RDP_DOMAIN=IT-HELP`.
   - For UPNs, keep the full UPN in `IRONRDP_RDP_USERNAME` and leave `IRONRDP_RDP_DOMAIN` empty.
+  - The interactive capture helper receives an allowlisted environment that excludes these credentials.
+
+Completed capture frames are read on a dedicated task so cancelled display polls cannot corrupt frame boundaries.
 
 ## Build
 

@@ -40,7 +40,7 @@ mod windows_main {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::windows::named_pipe;
     use tokio::net::{TcpListener, TcpStream};
-    use tokio::sync::{Mutex, mpsc, watch};
+    use tokio::sync::{Mutex, Semaphore, mpsc, watch};
     use tokio::task::JoinHandle;
     use tokio::time::{Duration, sleep, timeout};
     use tracing::{debug, error, info, warn};
@@ -113,6 +113,9 @@ mod windows_main {
     const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
     const CONTROL_PIPE_SERVER_INSTANCES: usize = 64;
     const CONTROL_PIPE_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+    const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+    const MAX_PENDING_NOTIFICATIONS: usize = MAX_CONCURRENT_CONNECTIONS * 2;
+    const CONNECTION_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
     const LISTEN_ADDR_ENV: &str = "IRONRDP_WTS_LISTEN_ADDR";
     const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:4489";
     const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
@@ -1342,16 +1345,36 @@ mod windows_main {
         Ok(token)
     }
 
-    fn child_environment_with_capture_token(token: &str) -> Vec<u16> {
-        let mut entries: Vec<String> = std::env::vars()
-            .filter(|(name, _)| !name.eq_ignore_ascii_case(CAPTURE_HELPER_TOKEN_ENV))
+    fn child_environment_entries(variables: impl IntoIterator<Item = (String, String)>, token: &str) -> Vec<String> {
+        const ALLOWED_VARIABLES: [&str; 9] = [
+            "SystemRoot",
+            "WINDIR",
+            "TEMP",
+            "TMP",
+            "PATH",
+            "IRONRDP_LOG",
+            AUTO_SEND_SAS_ENV,
+            DUMP_BITMAP_UPDATES_DIR_ENV,
+            CAPTURE_IPC_ENV,
+        ];
+
+        let mut entries: Vec<String> = variables
+            .into_iter()
+            .filter(|(name, _)| {
+                ALLOWED_VARIABLES
+                    .iter()
+                    .any(|allowed| name.eq_ignore_ascii_case(allowed))
+            })
             .map(|(name, value)| format!("{name}={value}"))
             .collect();
         entries.push(format!("{CAPTURE_HELPER_TOKEN_ENV}={token}"));
         entries.sort_unstable_by_key(|entry| entry.to_ascii_uppercase());
+        entries
+    }
 
+    fn child_environment_with_capture_token(token: &str) -> Vec<u16> {
         let mut block = Vec::new();
-        for entry in entries {
+        for entry in child_environment_entries(std::env::vars(), token) {
             block.extend(entry.encode_utf16());
             block.push(0);
         }
@@ -1492,7 +1515,24 @@ mod windows_main {
         helper_pid: u32,
         helper_process: SendHandle,
         input_stream_slot: Arc<Mutex<Option<TcpStream>>>,
-        stream: TcpStream,
+        frame_rx: mpsc::Receiver<anyhow::Result<CapturedFrame>>,
+        frame_task: JoinHandle<()>,
+    }
+
+    fn spawn_capture_frame_reader(
+        mut stream: TcpStream,
+    ) -> (mpsc::Receiver<anyhow::Result<CapturedFrame>>, JoinHandle<()>) {
+        let (frame_tx, frame_rx) = mpsc::channel(1);
+        let frame_task = tokio::task::spawn_local(async move {
+            loop {
+                let frame = read_capture_frame(&mut stream).await;
+                let should_stop = frame.is_err();
+                if frame_tx.send(frame).await.is_err() || should_stop {
+                    break;
+                }
+            }
+        });
+        (frame_rx, frame_task)
     }
 
     impl HelperCaptureClient {
@@ -1550,12 +1590,14 @@ mod windows_main {
             }
 
             let (helper_pid, helper_process) = helper.into_process();
+            let (frame_rx, frame_task) = spawn_capture_frame_reader(stream);
 
             Ok(Self {
                 helper_pid,
                 helper_process,
                 input_stream_slot,
-                stream,
+                frame_rx,
+                frame_task,
             })
         }
 
@@ -1564,18 +1606,25 @@ mod windows_main {
         }
 
         fn terminate(self) {
-            if let Ok(mut guard) = self.input_stream_slot.try_lock() {
-                *guard = None;
-            }
-
-            // SAFETY: handle was returned by CreateProcessAsUserW.
-            unsafe {
-                let _ = TerminateProcess(self.helper_process.0, 1);
-            }
+            drop(self);
         }
 
         async fn read_frame(&mut self) -> anyhow::Result<CapturedFrame> {
-            read_capture_frame(&mut self.stream).await
+            self.frame_rx
+                .recv()
+                .await
+                .ok_or_else(|| anyhow!("capture helper frame reader stopped"))?
+        }
+    }
+
+    impl Drop for HelperCaptureClient {
+        fn drop(&mut self) {
+            if let Ok(mut guard) = self.input_stream_slot.try_lock() {
+                *guard = None;
+            }
+            self.frame_task.abort();
+            // SAFETY: this client owns the process handle returned by CreateProcessAsUserW.
+            let _ = unsafe { TerminateProcess(self.helper_process.0, 1) };
         }
     }
 
@@ -1990,14 +2039,7 @@ mod windows_main {
         }
 
         fn terminate(self) {
-            if let Ok(mut guard) = self.input_stream_slot.try_lock() {
-                *guard = None;
-            }
-
-            // SAFETY: handle was returned by CreateProcessAsUserW.
-            unsafe {
-                let _ = TerminateProcess(self.helper_process.0, 1);
-            }
+            drop(self);
         }
 
         async fn read_frame(&mut self) -> anyhow::Result<BitmapUpdate> {
@@ -2073,6 +2115,16 @@ mod windows_main {
                     stride: self.stride,
                 });
             }
+        }
+    }
+
+    impl Drop for SharedMemCaptureClient {
+        fn drop(&mut self) {
+            if let Ok(mut guard) = self.input_stream_slot.try_lock() {
+                *guard = None;
+            }
+            // SAFETY: this client owns the process handle returned by CreateProcessAsUserW.
+            let _ = unsafe { TerminateProcess(self.helper_process.0, 1) };
         }
     }
 
@@ -3839,7 +3891,7 @@ mod windows_main {
                                 stream,
                             };
 
-                            if accept_tx.send(accepted).is_err() {
+                            if accept_tx.send(accepted).await.is_err() {
                                 return;
                             }
                         }
@@ -4048,8 +4100,8 @@ mod windows_main {
         pending_broken: VecDeque<PendingBroken>,
         connections: HashMap<u32, ConnectionEntry>,
         next_connection_id: u32,
-        accepted_tx: mpsc::UnboundedSender<AcceptedSocket>,
-        broken_tx: mpsc::UnboundedSender<BrokenNotification>,
+        accepted_tx: mpsc::Sender<AcceptedSocket>,
+        broken_tx: mpsc::Sender<BrokenNotification>,
         /// Session ID per connection, set when the provider receives NotifySessionId from WTS.
         connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
         /// Session IDs for which the provider has signaled `NotifyIddDriverLoaded`.
@@ -4057,15 +4109,9 @@ mod windows_main {
     }
 
     impl ServiceState {
-        fn new(
-            bind_addr: SocketAddr,
-        ) -> (
-            Self,
-            mpsc::UnboundedReceiver<AcceptedSocket>,
-            mpsc::UnboundedReceiver<BrokenNotification>,
-        ) {
-            let (accepted_tx, accepted_rx) = mpsc::unbounded_channel();
-            let (broken_tx, broken_rx) = mpsc::unbounded_channel();
+        fn new(bind_addr: SocketAddr) -> (Self, mpsc::Receiver<AcceptedSocket>, mpsc::Receiver<BrokenNotification>) {
+            let (accepted_tx, accepted_rx) = mpsc::channel(MAX_CONCURRENT_CONNECTIONS);
+            let (broken_tx, broken_rx) = mpsc::channel(MAX_CONCURRENT_CONNECTIONS);
 
             let state = Self {
                 bind_addr,
@@ -4081,6 +4127,17 @@ mod windows_main {
             };
 
             (state, accepted_rx, broken_rx)
+        }
+
+        fn allocate_connection_id(&mut self) -> Option<u32> {
+            for _ in 0..=self.connections.len() {
+                let candidate = self.next_connection_id;
+                self.next_connection_id = self.next_connection_id.checked_add(1).unwrap_or(1);
+                if !self.connections.contains_key(&candidate) {
+                    return Some(candidate);
+                }
+            }
+            None
         }
 
         fn set_capture_session_id(&mut self, connection_id: u32, session_id: u32) -> ServiceEvent {
@@ -4158,6 +4215,8 @@ mod windows_main {
             if let Ok(mut guard) = self.connection_session_ids.lock() {
                 guard.remove(&connection_id);
             }
+            self.pending_incoming
+                .retain(|pending| pending.connection_id != connection_id);
             if let Some(entry) = self.connections.remove(&connection_id) {
                 if let Some(session_task) = entry.session_task {
                     session_task.abort();
@@ -4201,9 +4260,19 @@ mod windows_main {
             })
         }
 
-        fn register_accepted(&mut self, accepted: AcceptedSocket) {
-            let connection_id = self.next_connection_id;
-            self.next_connection_id = self.next_connection_id.saturating_add(1);
+        fn register_accepted(&mut self, accepted: AcceptedSocket) -> bool {
+            if self.connections.len() >= MAX_CONCURRENT_CONNECTIONS {
+                warn!(
+                    max_connections = MAX_CONCURRENT_CONNECTIONS,
+                    peer_addr = ?accepted.peer_addr,
+                    "Rejecting connection because the server is at capacity"
+                );
+                return false;
+            }
+            let Some(connection_id) = self.allocate_connection_id() else {
+                warn!("Rejecting connection because no connection ID is available");
+                return false;
+            };
 
             let listener_name = accepted.listener_name;
             let peer_addr = accepted.peer_addr;
@@ -4243,11 +4312,13 @@ mod windows_main {
                     Err(error) => format!("{error:#}"),
                 };
 
-                let _ = broken_tx.send(BrokenNotification {
-                    listener_name: listener_name_for_task,
-                    connection_id,
-                    reason,
-                });
+                let _ = broken_tx
+                    .send(BrokenNotification {
+                        listener_name: listener_name_for_task,
+                        connection_id,
+                        reason,
+                    })
+                    .await;
 
                 if let Err(error) = result {
                     warn!(
@@ -4273,6 +4344,7 @@ mod windows_main {
                 connection_id,
                 peer_addr,
             });
+            true
         }
     }
 
@@ -4357,11 +4429,12 @@ mod windows_main {
             }
         }
 
-        let pending = match server.run_connection_handshake(stream).await {
-            Ok(pending) => pending,
-            Err(error) => {
+        let pending = match timeout(CONNECTION_HANDSHAKE_TIMEOUT, server.run_connection_handshake(stream)).await {
+            Ok(Ok(pending)) => pending,
+            Ok(Err(error)) => {
                 return Err(error).with_context(|| format!("failed handshake for connection {connection_id}"));
             }
+            Err(_) => return Err(anyhow!("connection {connection_id} handshake timed out")),
         };
 
         // Store CredSSP credentials immediately so the WTS provider DLL can
@@ -4870,7 +4943,9 @@ mod windows_main {
                 while let Some(accepted) = accepted_rx.recv().await {
                     {
                         let mut guard = control_plane.state.lock().await;
-                        guard.register_accepted(accepted);
+                        if !guard.register_accepted(accepted) {
+                            continue;
+                        }
                     }
                     control_plane.notify_pending_changed();
                 }
@@ -4886,6 +4961,13 @@ mod windows_main {
                     let connection_id = notification.connection_id;
                     {
                         let mut guard = control_plane.state.lock().await;
+                        if guard.pending_broken.len() >= MAX_PENDING_NOTIFICATIONS {
+                            guard.pending_broken.pop_front();
+                            warn!(
+                                max_pending = MAX_PENDING_NOTIFICATIONS,
+                                "Dropping oldest broken-connection notification"
+                            );
+                        }
                         guard.pending_broken.push_back(PendingBroken {
                             listener_name: notification.listener_name,
                             connection_id,
@@ -4944,20 +5026,26 @@ mod windows_main {
         let listener = TcpListener::bind(bind_addr)
             .await
             .context("failed to bind standalone listener socket")?;
+        let connection_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
         let mut next_connection_id: u32 = 1;
 
         loop {
+            let permit = Arc::clone(&connection_permits)
+                .acquire_owned()
+                .await
+                .context("standalone connection limiter closed")?;
             let (stream, peer_addr) = listener.accept().await.context("standalone listener accept failed")?;
 
             let connection_id = next_connection_id;
-            next_connection_id = next_connection_id.saturating_add(1);
+            next_connection_id = next_connection_id.checked_add(1).unwrap_or(1);
 
             let peer_addr = peer_addr.to_string();
 
             info!(connection_id, peer_addr = %peer_addr, "Client accepted");
 
             tokio::task::spawn_local(async move {
+                let _permit = permit;
                 // In standalone mode there is no WTS provider to query credentials; use a
                 // throw-away slot (credentials won't be read by anyone).
                 let credentials_slot = Arc::new(Mutex::new(None));
@@ -5870,6 +5958,105 @@ mod windows_main {
         }
 
         main_impl();
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn helper_environment_excludes_service_credentials() {
+            let entries = child_environment_entries(
+                [
+                    ("SystemRoot".to_owned(), r"C:\Windows".to_owned()),
+                    (RDP_USERNAME_ENV.to_owned(), "alice".to_owned()),
+                    (RDP_PASSWORD_ENV.to_owned(), "secret".to_owned()),
+                    (RDP_DOMAIN_ENV.to_owned(), "CORP".to_owned()),
+                    ("UNRELATED_SECRET".to_owned(), "hidden".to_owned()),
+                ],
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            );
+
+            assert!(entries.iter().any(|entry| entry == r"SystemRoot=C:\Windows"));
+            assert!(entries.iter().any(|entry| entry.starts_with(CAPTURE_HELPER_TOKEN_ENV)));
+            assert!(!entries.iter().any(|entry| entry.starts_with(RDP_USERNAME_ENV)));
+            assert!(!entries.iter().any(|entry| entry.starts_with(RDP_PASSWORD_ENV)));
+            assert!(!entries.iter().any(|entry| entry.starts_with(RDP_DOMAIN_ENV)));
+            assert!(!entries.iter().any(|entry| entry.starts_with("UNRELATED_SECRET=")));
+        }
+
+        #[test]
+        fn connection_ids_wrap_without_using_zero() {
+            let bind_addr = "127.0.0.1:4489".parse().expect("valid bind address");
+            let (mut state, _accepted_rx, _broken_rx) = ServiceState::new(bind_addr);
+            state.next_connection_id = u32::MAX;
+
+            assert_eq!(state.allocate_connection_id(), Some(u32::MAX));
+            assert_eq!(state.allocate_connection_id(), Some(1));
+        }
+
+        #[test]
+        fn closing_connection_removes_pending_incoming_notification() {
+            let bind_addr = "127.0.0.1:4489".parse().expect("valid bind address");
+            let (mut state, _accepted_rx, _broken_rx) = ServiceState::new(bind_addr);
+            state.pending_incoming.push_back(PendingIncoming {
+                listener_name: "IRDP-Tcp".to_owned(),
+                connection_id: 7,
+                peer_addr: None,
+            });
+
+            assert_eq!(state.close_connection(7), ServiceEvent::Ack);
+            assert!(state.pending_incoming.is_empty());
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn capture_reader_survives_receiver_timeout_mid_frame() {
+            let local = tokio::task::LocalSet::new();
+            local
+                .run_until(async {
+                    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                        .await
+                        .expect("bind loopback listener");
+                    let address = listener.local_addr().expect("listener address");
+                    let connect = TcpStream::connect(address);
+                    let accept = listener.accept();
+                    let (connect, accept) = tokio::join!(connect, accept);
+                    let mut writer = connect.expect("connect loopback stream");
+                    let (reader, _) = accept.expect("accept loopback stream");
+                    let (mut frame_rx, frame_task) = spawn_capture_frame_reader(reader);
+
+                    let mut header = [0u8; CAPTURE_FRAME_HEADER_LEN];
+                    header[0..4].copy_from_slice(&CAPTURE_FRAME_MAGIC);
+                    header[4..6].copy_from_slice(&1u16.to_le_bytes());
+                    header[6..8].copy_from_slice(&1u16.to_le_bytes());
+                    header[8..10].copy_from_slice(&1u16.to_le_bytes());
+                    header[10..14].copy_from_slice(&4u32.to_le_bytes());
+                    header[14] = 0;
+                    header[20..24].copy_from_slice(&4u32.to_le_bytes());
+
+                    writer.write_all(&header).await.expect("write capture header");
+                    writer.write_all(&[1, 2]).await.expect("write partial payload");
+
+                    assert!(
+                        timeout(Duration::from_millis(10), frame_rx.recv()).await.is_err(),
+                        "partial frame should not be delivered"
+                    );
+
+                    writer.write_all(&[3, 4]).await.expect("finish payload");
+                    let frame = timeout(Duration::from_secs(1), frame_rx.recv())
+                        .await
+                        .expect("completed frame timeout")
+                        .expect("frame reader still open")
+                        .expect("frame should decode");
+                    match frame {
+                        CapturedFrame::Raw(bitmap) => assert_eq!(bitmap.data.as_ref(), &[1, 2, 3, 4]),
+                        CapturedFrame::PreEncoded(_) => panic!("expected raw frame"),
+                    }
+
+                    frame_task.abort();
+                })
+                .await;
+        }
     }
 }
 

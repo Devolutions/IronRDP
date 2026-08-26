@@ -17,7 +17,8 @@ The intended rollout is side-by-side first (new protocol listener name), before 
 See the [provider README](./README.md#scope-current) for implementation status.
 
 - Side-by-side install and uninstall scripts are present under `scripts/`.
-- Licensing, shadowing, virtual channels, and several advanced methods are still `E_NOTIMPL`.
+- Licensing uses the RDS grace-period stub.
+- Shadowing and several advanced methods are still `E_NOTIMPL`.
 
 ## First-run preparation checklist
 

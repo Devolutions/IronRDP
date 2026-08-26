@@ -2698,6 +2698,45 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
 #[implement(IWRdsProtocolLicenseConnection)]
 struct WrdsLicenseConnection;
 
+fn fill_license_capabilities(
+    license_capabilities: *mut WTS_LICENSE_CAPABILITIES,
+    license_capabilities_size: *mut u32,
+) -> windows_core::Result<()> {
+    if license_capabilities.is_null() || license_capabilities_size.is_null() {
+        return Err(windows_core::Error::new(
+            E_POINTER,
+            "null licensing capabilities pointer",
+        ));
+    }
+
+    let required_size =
+        u32::try_from(size_of::<WTS_LICENSE_CAPABILITIES>()).expect("WTS_LICENSE_CAPABILITIES size fits in u32");
+    // SAFETY: `license_capabilities_size` is non-null and points to the caller's in/out capacity.
+    let capacity = unsafe { *license_capabilities_size };
+    // SAFETY: the size pointer is writable and receives the required size on every outcome.
+    unsafe { *license_capabilities_size = required_size };
+
+    if capacity < required_size {
+        return Err(windows_core::Error::new(
+            HRESULT::from_win32(ERROR_INSUFFICIENT_BUFFER.0),
+            "licensing capabilities buffer is too small",
+        ));
+    }
+
+    let capabilities = WTS_LICENSE_CAPABILITIES {
+        KeyExchangeAlg: WTS_KEY_EXCHANGE_ALG_RSA,
+        ProtocolVer: WTS_LICENSE_PREAMBLE_VERSION,
+        fAuthenticateServer: BOOL(0),
+        CertType: WTS_CERT_TYPE_INVALID,
+        cbClientName: 0,
+        rgbClientName: [0; 42],
+    };
+    // SAFETY: the caller reported enough writable storage for the structure.
+    unsafe { core::ptr::write(license_capabilities, capabilities) };
+
+    Ok(())
+}
+
 impl IWRdsProtocolLicenseConnection_Impl for WrdsLicenseConnection_Impl {
     fn RequestLicensingCapabilities(
         &self,
@@ -2705,39 +2744,7 @@ impl IWRdsProtocolLicenseConnection_Impl for WrdsLicenseConnection_Impl {
         pcblicensecapabilities: *mut u32,
     ) -> windows_core::Result<()> {
         debug_log_line("WrdsLicenseConnection::RequestLicensingCapabilities");
-        if pplicensecapabilities.is_null() || pcblicensecapabilities.is_null() {
-            return Err(windows_core::Error::new(E_POINTER, "null pointer"));
-        }
-        // The SDK signature is PWRDS_LICENSE_CAPABILITIES* (double pointer): TermService passes a
-        // pointer-to-pointer and expects us to allocate and write the struct address into it.
-        // The windows-rs binding exposes this as *mut WTS_LICENSE_CAPABILITIES, so we treat it
-        // as a raw byte pointer and write the pointer value unaligned.
-        // SAFETY: TermService provides valid output slots for the duration of this call.
-        unsafe {
-            let caps = CoTaskMemAlloc(size_of::<WTS_LICENSE_CAPABILITIES>()).cast::<WTS_LICENSE_CAPABILITIES>();
-            if caps.is_null() {
-                return Err(windows_core::Error::new(E_OUTOFMEMORY, "CoTaskMemAlloc failed"));
-            }
-            // SAFETY: `caps` points to a writable allocation sized for WTS_LICENSE_CAPABILITIES.
-            core::ptr::write(
-                caps,
-                WTS_LICENSE_CAPABILITIES {
-                    KeyExchangeAlg: WTS_KEY_EXCHANGE_ALG_RSA,
-                    ProtocolVer: WTS_LICENSE_PREAMBLE_VERSION,
-                    fAuthenticateServer: BOOL(0),
-                    CertType: WTS_CERT_TYPE_INVALID,
-                    cbClientName: 0,
-                    rgbClientName: [0; 42],
-                },
-            );
-            // Write the allocated pointer into the caller's output slot (double-pointer semantics).
-            let dst = pplicensecapabilities.cast::<u8>();
-            let src = core::ptr::addr_of!(caps).cast::<u8>();
-            core::ptr::copy_nonoverlapping(src, dst, size_of::<*mut WTS_LICENSE_CAPABILITIES>());
-            // SAFETY: pcblicensecapabilities is a valid out-pointer.
-            *pcblicensecapabilities = u32::try_from(size_of::<WTS_LICENSE_CAPABILITIES>()).unwrap_or(0);
-        }
-        Ok(())
+        fill_license_capabilities(pplicensecapabilities, pcblicensecapabilities)
     }
 
     fn SendClientLicense(&self, _pclientlicense: *const u8, _cbclientlicense: u32) -> windows_core::Result<()> {
