@@ -12,7 +12,9 @@ use std::sync::{Arc, Condvar, Mutex, mpsc as std_mpsc};
 use std::time::Duration;
 
 use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
-use ironrdp_client::config::{ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind};
+use ironrdp_client::config::{
+    AudioQualityMode, ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind,
+};
 use ironrdp_client::rail::RailInputEvent;
 use ironrdp_client::rdp::{
     AutoReconnectDecision, CliprdrBackendFactory, RdpClient, RdpInputEvent, RdpInputSender, RdpOutputEvent,
@@ -1311,6 +1313,9 @@ struct CompatibilitySettings {
     grab_focus_on_connect: bool,
     enable_credssp: Option<bool>,
     compression: Option<bool>,
+    load_balance_info: String,
+    administrative_session: bool,
+    audio_quality_mode: AudioQualityMode,
     rdp_port: Option<u16>,
     enable_mouse: bool,
     enable_windows_key: bool,
@@ -1387,6 +1392,9 @@ impl Default for CompatibilitySettings {
             grab_focus_on_connect: false,
             enable_credssp: None,
             compression: None,
+            load_balance_info: String::new(),
+            administrative_session: false,
+            audio_quality_mode: AudioQualityMode::Dynamic,
             rdp_port: None,
             enable_mouse: true,
             enable_windows_key: true,
@@ -2453,43 +2461,112 @@ advanced_put_not_implemented!(
     (7, advanced_put_plugin_dlls, Bstr),
     (69, advanced_put_min_input_send_interval, i32),
     (75, advanced_put_keep_alive_interval, i32),
-    (91, advanced_put_connect_to_server_console, i16),
     (93, advanced_put_bitmap_persistence, i32),
     (95, advanced_put_minutes_to_idle_timeout, i32),
-    (112, advanced_put_load_balance_info, Bstr),
     (116, advanced_put_redirect_printers, i16),
     (118, advanced_put_redirect_ports, i16),
     (150, advanced_put_redirect_devices, i16),
     (161, advanced_put_pcb, Bstr),
-    (169, advanced_put_connect_to_administer_server, i16),
     (173, advanced_put_video_playback_mode, u32),
     (175, advanced_put_enable_super_pan, i16),
     (179, advanced_put_negotiate_security_layer, i16),
-    (181, advanced_put_audio_quality_mode, u32),
 );
 
 advanced_get_not_implemented!(
     (70, advanced_get_min_input_send_interval, i32),
     (76, advanced_get_keep_alive_interval, i32),
-    (92, advanced_get_connect_to_server_console, i16),
     (94, advanced_get_bitmap_persistence, i32),
     (96, advanced_get_minutes_to_idle_timeout, i32),
     (117, advanced_get_redirect_printers, i16),
     (119, advanced_get_redirect_ports, i16),
     (151, advanced_get_redirect_devices, i16),
-    (170, advanced_get_connect_to_administer_server, i16),
     (174, advanced_get_video_playback_mode, u32),
     (176, advanced_get_enable_super_pan, i16),
     (180, advanced_get_negotiate_security_layer, i16),
-    (182, advanced_get_audio_quality_mode, u32),
 );
 
-unsafe extern "system" fn advanced_get_load_balance_info(_this: *mut c_void, value: BstrOut) -> HRESULT {
-    if let Err(error) = write_out(value, ptr::null()) {
-        return error.code();
+const MAX_LOAD_BALANCE_INFO_BYTES: usize = ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH;
+
+unsafe extern "system" fn advanced_put_load_balance_info(this: *mut c_void, value: Bstr) -> HRESULT {
+    let value = match string_from_bstr(value) {
+        Ok(value) => value,
+        Err(_) => return E_INVALIDARG,
+    };
+    let normalized = value.strip_suffix("\r\n").unwrap_or(&value);
+    if normalized.len() > MAX_LOAD_BALANCE_INFO_BYTES
+        || !normalized.as_bytes().iter().all(|byte| (0x20..=0x7E).contains(byte))
+    {
+        return E_INVALIDARG;
     }
-    trace_host_call("E_NOTIMPL:AdvancedSettings::slot_113");
-    E_NOTIMPL
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    settings.load_balance_info = if normalized.is_empty() { String::new() } else { value };
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_load_balance_info(this: *mut c_void, value: BstrOut) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    write_bstr(value, &object.settings.borrow().load_balance_info).map_or_else(|error| error.code(), |_| S_OK)
+}
+
+unsafe extern "system" fn advanced_put_connect_to_server_console(this: *mut c_void, value: i16) -> HRESULT {
+    unsafe { advanced_put_connect_to_administer_server(this, value) }
+}
+
+unsafe extern "system" fn advanced_get_connect_to_server_console(this: *mut c_void, value: *mut i16) -> HRESULT {
+    unsafe { advanced_get_connect_to_administer_server(this, value) }
+}
+
+unsafe extern "system" fn advanced_put_connect_to_administer_server(this: *mut c_void, value: i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    settings.administrative_session = value != VARIANT_FALSE.0;
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_connect_to_administer_server(this: *mut c_void, value: *mut i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    write_out(
+        value,
+        if object.settings.borrow().administrative_session {
+            VARIANT_TRUE.0
+        } else {
+            VARIANT_FALSE.0
+        },
+    )
+    .map_or_else(|error| error.code(), |_| S_OK)
+}
+
+unsafe extern "system" fn advanced_put_audio_quality_mode(this: *mut c_void, value: u32) -> HRESULT {
+    let value = match value {
+        0 => AudioQualityMode::Dynamic,
+        1 => AudioQualityMode::Medium,
+        2 => AudioQualityMode::High,
+        _ => return E_INVALIDARG,
+    };
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    settings.audio_quality_mode = value;
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_audio_quality_mode(this: *mut c_void, out: *mut u32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let value = match object.settings.borrow().audio_quality_mode {
+        AudioQualityMode::Dynamic => 0,
+        AudioQualityMode::Medium => 1,
+        AudioQualityMode::High => 2,
+    };
+    write_out(out, value).map_or_else(|error| error.code(), |_| S_OK)
 }
 
 unsafe extern "system" fn advanced_get_authentication_type(_this: *mut c_void, value: *mut u32) -> HRESULT {
@@ -6832,6 +6909,18 @@ fn active_x_property_snapshot(settings: &Settings, compatibility: &Compatibility
     if let Some(value) = compatibility.desktop_scale_factor {
         properties.insert("desktopscalefactor", value);
     }
+    if !compatibility.load_balance_info.is_empty() {
+        properties.insert("loadbalanceinfo", compatibility.load_balance_info.clone());
+    }
+    properties.insert("administrative session", compatibility.administrative_session);
+    properties.insert(
+        "audioqualitymode",
+        match compatibility.audio_quality_mode {
+            AudioQualityMode::Dynamic => 0,
+            AudioQualityMode::Medium => 1,
+            AudioQualityMode::High => 2,
+        },
+    );
     properties.insert("redirectclipboard", compatibility.redirect_clipboard);
     properties.insert("redirectwebauthn", compatibility.redirect_webauthn);
     properties.insert("ironrdp_smartcard", compatibility.redirect_smart_cards);
@@ -9439,6 +9528,13 @@ impl Control {
             } else {
                 VARIANT_FALSE.0
             };
+            compatibility.load_balance_info = config
+                .properties()
+                .get::<&str>("loadbalanceinfo")
+                .unwrap_or_default()
+                .to_owned();
+            compatibility.administrative_session = config.administrative_session();
+            compatibility.audio_quality_mode = config.audio_quality_mode();
             compatibility.secured_start_program = connector.alternate_shell.clone();
             compatibility.secured_work_dir = connector.work_dir.clone();
             compatibility.authentication_level_set =
@@ -9745,6 +9841,9 @@ impl Control {
         let autologon = compatibility.autologon;
         let desktop_scale_factor = compatibility.desktop_scale_factor;
         let compression_level = compatibility.compression_level;
+        let load_balance_info = compatibility.load_balance_info.clone();
+        let administrative_session = compatibility.administrative_session;
+        let audio_quality_mode = compatibility.audio_quality_mode;
         let client_build = compatibility.client_build;
         let client_dir = compatibility.client_dir.clone();
         let ime_file_name = compatibility.ime_file_name.clone();
@@ -9885,6 +9984,9 @@ impl Control {
             .with_connection_type(connection_type)
             .with_audio_mode(audio_redirection_mode)
             .with_audio_capture(audio_capture_enabled)
+            .with_audio_quality_mode(audio_quality_mode)
+            .with_load_balance_info(load_balance_info)
+            .with_administrative_session(administrative_session)
             .with_certificate_validation(certificate_validation)
             // The GDI presenter has no hardware-cursor overlay, so cursor updates must be
             // composited into the decoded framebuffer before it receives image events.
@@ -17140,6 +17242,16 @@ mod tests {
             advanced_put_clear_text_password as *const () as usize
         );
         assert_eq!(
+            vtable.slots[91],
+            advanced_put_connect_to_server_console as *const () as usize
+        );
+        assert_eq!(vtable.slots[112], advanced_put_load_balance_info as *const () as usize);
+        assert_eq!(
+            vtable.slots[169],
+            advanced_put_connect_to_administer_server as *const () as usize
+        );
+        assert_eq!(vtable.slots[181], advanced_put_audio_quality_mode as *const () as usize);
+        assert_eq!(
             vtable.slots[168],
             advanced_get_authentication_type as *const () as usize
         );
@@ -17188,12 +17300,12 @@ mod tests {
     }
 
     #[test]
-    fn rdm_unmapped_advanced_settings_slots_use_typed_failures() {
+    fn advanced_settings_support_routing_admin_and_audio_quality_without_masking_stubs() {
         let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
         let mut object = CompatibilitySettingsObject {
             vtable: advanced_vtable(),
             references: AtomicU32::new(1),
-            settings,
+            settings: Rc::clone(&settings),
             native_mstsc_credential_bridge: None,
             remote_program_bridge: None,
             server_object: false,
@@ -17224,14 +17336,91 @@ mod tests {
         let load_balance_info = BSTR::from("tsv://example");
         assert_eq!(
             unsafe { advanced_put_load_balance_info(this, load_balance_info.as_ptr()) },
-            E_NOTIMPL
+            S_OK
         );
-        let mut load_balance_info = ptr::dangling::<u16>();
+        let mut load_balance_info = ptr::null();
         assert_eq!(
             unsafe { advanced_get_load_balance_info(this, &mut load_balance_info) },
-            E_NOTIMPL
+            S_OK
         );
-        assert!(load_balance_info.is_null());
+        let load_balance_info = unsafe { BSTR::from_raw(load_balance_info) };
+        assert_eq!(
+            String::try_from(&load_balance_info).expect("valid load-balance BSTR"),
+            "tsv://example"
+        );
+        let invalid_load_balance_info = BSTR::from("line1\r\nline2");
+        assert_eq!(
+            unsafe { advanced_put_load_balance_info(this, invalid_load_balance_info.as_ptr()) },
+            E_INVALIDARG
+        );
+        let control_character_load_balance_info = BSTR::from("tsv://invalid\t");
+        assert_eq!(
+            unsafe { advanced_put_load_balance_info(this, control_character_load_balance_info.as_ptr()) },
+            E_INVALIDARG
+        );
+        let terminated_load_balance_info = BSTR::from("tsv://terminated\r\n");
+        assert_eq!(
+            unsafe { advanced_put_load_balance_info(this, terminated_load_balance_info.as_ptr()) },
+            S_OK
+        );
+        let mut returned_terminated_load_balance_info = ptr::null();
+        assert_eq!(
+            unsafe { advanced_get_load_balance_info(this, &mut returned_terminated_load_balance_info) },
+            S_OK
+        );
+        let returned_terminated_load_balance_info = unsafe { BSTR::from_raw(returned_terminated_load_balance_info) };
+        assert_eq!(
+            String::try_from(&returned_terminated_load_balance_info).expect("valid terminated load-balance BSTR"),
+            "tsv://terminated\r\n"
+        );
+        let maximum_load_balance_info = BSTR::from("x".repeat(MAX_LOAD_BALANCE_INFO_BYTES));
+        assert_eq!(
+            unsafe { advanced_put_load_balance_info(this, maximum_load_balance_info.as_ptr()) },
+            S_OK
+        );
+        let oversized_load_balance_info = BSTR::from("x".repeat(MAX_LOAD_BALANCE_INFO_BYTES + 1));
+        assert_eq!(
+            unsafe { advanced_put_load_balance_info(this, oversized_load_balance_info.as_ptr()) },
+            E_INVALIDARG
+        );
+
+        let mut administrative_session = VARIANT_TRUE.0;
+        assert_eq!(
+            unsafe { advanced_get_connect_to_server_console(this, &mut administrative_session) },
+            S_OK
+        );
+        assert_eq!(administrative_session, VARIANT_FALSE.0);
+        assert_eq!(
+            unsafe { advanced_put_connect_to_server_console(this, VARIANT_TRUE.0) },
+            S_OK
+        );
+        assert_eq!(
+            unsafe { advanced_get_connect_to_administer_server(this, &mut administrative_session) },
+            S_OK
+        );
+        assert_eq!(administrative_session, VARIANT_TRUE.0);
+
+        let mut audio_quality_mode = u32::MAX;
+        assert_eq!(
+            unsafe { advanced_get_audio_quality_mode(this, &mut audio_quality_mode) },
+            S_OK
+        );
+        assert_eq!(audio_quality_mode, 0);
+        assert_eq!(unsafe { advanced_put_audio_quality_mode(this, 2) }, S_OK);
+        assert_eq!(
+            unsafe { advanced_get_audio_quality_mode(this, &mut audio_quality_mode) },
+            S_OK
+        );
+        assert_eq!(audio_quality_mode, 2);
+        assert_eq!(unsafe { advanced_put_audio_quality_mode(this, 3) }, E_INVALIDARG);
+
+        let snapshot = active_x_property_snapshot(&Settings::default(), &settings.borrow());
+        assert_eq!(
+            snapshot.get::<&str>("loadbalanceinfo").map(str::len),
+            Some(MAX_LOAD_BALANCE_INFO_BYTES)
+        );
+        assert_eq!(snapshot.get::<bool>("administrative session"), Some(true));
+        assert_eq!(snapshot.get::<u32>("audioqualitymode"), Some(2));
 
         let mut authentication_level = u32::MAX;
         assert_eq!(
@@ -17253,6 +17442,17 @@ mod tests {
             E_NOTIMPL
         );
         assert_eq!(keep_alive_interval, 0);
+
+        object.settings.borrow_mut().connection_settings_sealed = true;
+        assert_eq!(
+            unsafe { advanced_put_connect_to_administer_server(this, VARIANT_FALSE.0) },
+            E_FAIL
+        );
+        assert_eq!(
+            unsafe { advanced_put_load_balance_info(this, load_balance_info.as_ptr()) },
+            E_FAIL
+        );
+        assert_eq!(unsafe { advanced_put_audio_quality_mode(this, 1) }, E_FAIL);
     }
 
     #[test]

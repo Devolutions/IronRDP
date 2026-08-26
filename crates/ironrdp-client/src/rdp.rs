@@ -1397,6 +1397,19 @@ fn build_connector(
     let mut connector =
         ironrdp_connector::ClientConnector::new(connector_config, client_addr).with_static_channel(drdynvc);
 
+    if let Some(load_balance_info) = &config.load_balance_info {
+        connector = connector.with_load_balance_info(load_balance_info.clone());
+    }
+
+    if config.administrative_session {
+        connector = connector.with_cluster_data(ironrdp_pdu::gcc::ClientClusterData {
+            flags: ironrdp_pdu::gcc::RedirectionFlags::REDIRECTION_SUPPORTED
+                | ironrdp_pdu::gcc::RedirectionFlags::REDIRECTED_SESSION_FIELD_VALID,
+            redirection_version: ironrdp_pdu::gcc::RedirectionVersion::V6,
+            redirected_session_id: 0,
+        });
+    }
+
     if let Some(rail_client) = rail_client {
         connector = connector.with_static_channel(rail_client);
     }
@@ -1423,15 +1436,17 @@ fn build_connector(
             match kind {
                 #[cfg(feature = "sound")]
                 RdpsndBackendKind::Playback => {
-                    connector = connector.with_static_channel(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(
-                        cpal::RdpsndBackend::new(),
-                    )));
+                    connector = connector.with_static_channel(
+                        ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new()))
+                            .with_quality_mode(config.audio_quality_mode.into_rdpsnd()),
+                    );
                 }
                 #[cfg(feature = "rdpdr")]
                 RdpsndBackendKind::Noop => {
-                    connector = connector.with_static_channel(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(
-                        ironrdp_rdpsnd::client::NoopRdpsndBackend,
-                    )));
+                    connector = connector.with_static_channel(
+                        ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(ironrdp_rdpsnd::client::NoopRdpsndBackend))
+                            .with_quality_mode(config.audio_quality_mode.into_rdpsnd()),
+                    );
                 }
             }
         }
