@@ -10,8 +10,8 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use ironrdp_mstsgu::{GwConnectTarget, GwErrorKind, GwExtendedAuthentication, GwSessionAuthentication};
 use ironrdp_mstsgu::test_support::{GatewayTransport, evaluate_consent_message};
+use ironrdp_mstsgu::{GwConnectTarget, GwErrorKind, GwExtendedAuthentication, GwSessionAuthentication};
 
 type TestBody = BoxBody<Bytes, Infallible>;
 
@@ -171,7 +171,10 @@ async fn http_sspi_ntlm_is_selected_and_reused_for_the_in_channel() {
                         Ok::<_, Infallible>(response)
                     }
                     1 => {
-                        assert_eq!(request.headers().get("authorization").expect("SSPI_NTLM authorization"), "SSPI_NTLM");
+                        assert_eq!(
+                            request.headers().get("authorization").expect("SSPI_NTLM authorization"),
+                            "SSPI_NTLM"
+                        );
                         Ok::<_, Infallible>(response(StatusCode::OK, Bytes::from(vec![0; 10])))
                     }
                     _ => panic!("unexpected OUT request"),
@@ -574,7 +577,11 @@ fn control_response(error_code: u32) -> [u8; 8] {
 fn extended_auth_response(error_code: u32, auth_blob: &[u8]) -> Vec<u8> {
     let mut response = Vec::with_capacity(6 + auth_blob.len());
     response.extend(error_code.to_le_bytes());
-    response.extend(u16::try_from(auth_blob.len()).expect("extended authentication blob length").to_le_bytes());
+    response.extend(
+        u16::try_from(auth_blob.len())
+            .expect("extended authentication blob length")
+            .to_le_bytes(),
+    );
     response.extend(auth_blob);
     response
 }
@@ -583,10 +590,7 @@ fn reauth_message(reauth_tunnel_context: u64) -> [u8; 8] {
     reauth_tunnel_context.to_le_bytes()
 }
 
-async fn mock_out_server(
-    stream: tokio::io::DuplexStream,
-    packets: Vec<Vec<u8>>,
-) {
+async fn mock_out_server(stream: tokio::io::DuplexStream, packets: Vec<Vec<u8>>) {
     let mut response_body = Vec::from([0; 10]);
     for packet in packets {
         response_body.extend(packet);

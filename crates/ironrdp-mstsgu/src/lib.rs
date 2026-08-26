@@ -39,9 +39,8 @@ use self::packet_io::{GatewayTransport, PacketIo, open_gateway_transport};
 #[doc(hidden)]
 pub use self::proto::{ChannelClosePkt, ReauthMessagePkt, ServiceMessagePkt, gateway_code_label};
 use self::proto::{
-    ChannelPkt, ChannelResp, DataPkt as HttpDataPkt, ExtendedAuthPkt, HandshakeReqPkt, HandshakeRespPkt,
-    HttpCapsTy, HttpExtendedAuth, KeepalivePkt, PktHdr, PktTy, TunnelAuthPkt, TunnelAuthRespPkt, TunnelReqPkt,
-    TunnelRespPkt,
+    ChannelPkt, ChannelResp, DataPkt as HttpDataPkt, ExtendedAuthPkt, HandshakeReqPkt, HandshakeRespPkt, HttpCapsTy,
+    HttpExtendedAuth, KeepalivePkt, PktHdr, PktTy, TunnelAuthPkt, TunnelAuthRespPkt, TunnelReqPkt, TunnelRespPkt,
 };
 pub use self::udp::{
     AaSynData, AaSynDataResp, ConnectPkt, ConnectPktResp, DataPkt, DiscPkt, GwUdpOffer, MAX_CONNECT_REQ_FRAGMENT_SIZE,
@@ -230,7 +229,8 @@ struct GwConn {
     io: PacketIo,
 }
 
-type TransportFactory = Box<dyn FnMut() -> Pin<Box<dyn Future<Output = Result<GatewayTransport, Error>> + Send>> + Send>;
+type TransportFactory =
+    Box<dyn FnMut() -> Pin<Box<dyn Future<Output = Result<GatewayTransport, Error>> + Send>> + Send>;
 type ReauthenticationFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
 
 fn network_transport_factory(
@@ -399,8 +399,8 @@ impl GwClient {
             network_transport_factory(target.clone(), certificate_validation, certificate_validation_callback),
             consent_callback,
         )
-            .await
-            .map(|x| (x, client_addr))
+        .await
+        .map(|x| (x, client_addr))
     }
 
     async fn connect_ws(
@@ -635,7 +635,10 @@ impl GwConn {
         Ok((hdr, msg.split_off(cur.pos())))
     }
 
-    async fn handshake(&mut self, session_authentication: GwSessionAuthentication) -> Result<GwSessionAuthentication, Error> {
+    async fn handshake(
+        &mut self,
+        session_authentication: GwSessionAuthentication,
+    ) -> Result<GwSessionAuthentication, Error> {
         let hs = HandshakeReqPkt {
             ver_major: 1,
             ver_minor: 0,
@@ -703,7 +706,8 @@ impl GwConn {
             }
 
             let mut cur = ReadCursor::new(&bytes);
-            let response = ExtendedAuthPkt::decode(&mut cur).map_err(|_| Error::new("extended authentication", GwErrorKind::Decode))?;
+            let response = ExtendedAuthPkt::decode(&mut cur)
+                .map_err(|_| Error::new("extended authentication", GwErrorKind::Decode))?;
             if !cur.eof() {
                 return Err(Error::new("extended authentication", GwErrorKind::Decode));
             }

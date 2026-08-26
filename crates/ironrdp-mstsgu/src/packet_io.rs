@@ -997,8 +997,8 @@ async fn authenticated_rdg_request(
 ) -> Result<AuthenticatedRdgResponse, Error> {
     let mut http_auth: Option<GatewayHttpAuth> = None;
     let mut session_authentication = requested_session_authentication.unwrap_or_default();
-    let mut authorization = (session_authentication == GwSessionAuthentication::NtlmSspi)
-        .then(|| "SSPI_NTLM".to_owned());
+    let mut authorization =
+        (session_authentication == GwSessionAuthentication::NtlmSspi).then(|| "SSPI_NTLM".to_owned());
     let mut use_basic = false;
     const MAX_AUTH_ROUNDS: usize = 8;
 

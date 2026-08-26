@@ -6,8 +6,7 @@ use tokio::io::AsyncWriteExt as _;
 use crate::http_auth::basic_authorization;
 use crate::packet_io::{
     GatewayTransport as NetworkGatewayTransport, gateway_endpoint_is_valid as endpoint_is_valid,
-    open_gateway_transport, open_test_transport,
-    parse_proxy_url, proxy_from_values, read_http_connect_response,
+    open_gateway_transport, open_test_transport, parse_proxy_url, proxy_from_values, read_http_connect_response,
 };
 use crate::{Error, GwClient, GwConnectTarget, GwConsentCallback};
 
@@ -96,11 +95,9 @@ impl GatewayTransport {
             server_port,
             self.0,
             Box::new(move || {
-                Box::pin(core::future::ready(
-                    reauthentication_transport
-                        .take()
-                        .ok_or_else(|| Error::new("mock reauthentication transport exhausted", crate::GwErrorKind::Connect)),
-                ))
+                Box::pin(core::future::ready(reauthentication_transport.take().ok_or_else(
+                    || Error::new("mock reauthentication transport exhausted", crate::GwErrorKind::Connect),
+                )))
             }),
             None,
         )
