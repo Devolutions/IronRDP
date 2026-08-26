@@ -1,8 +1,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use core::time::Duration;
 use std::borrow::Cow;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
 use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
@@ -10,6 +9,8 @@ use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfigRange};
 use ironrdp_error::bail;
 use ironrdp_rdpsnd::client::RdpsndClientHandler;
 use ironrdp_rdpsnd::pdu::{AudioFormat, AudioFormatFlags, PitchPdu, VolumePdu, WaveFormat};
+use ringbuf::traits::{Consumer as _, Producer as _, Split as _};
+use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tracing::{debug, error, trace, warn};
 
 use crate::error::{RdpsndNativeError, RdpsndNativeErrorKind, RdpsndNativeResult};
@@ -101,12 +102,56 @@ pub fn apply_volume(
     }
 }
 
+/// Write silence for a PCM buffer of the given sample width.
+///
+/// 8-bit PCM is unsigned with midpoint 128; every other supported width here
+/// is signed, where zero is silence.
+fn fill_silence(buf: &mut [u8], bits_per_sample: u16) {
+    let silence = if bits_per_sample == 8 { 0x80 } else { 0x00 };
+    buf.fill(silence);
+}
+
+/// Capacity of the playback ring buffer between the producer (network/decode)
+/// and the real-time cpal consumer.
+///
+/// Sized to ~500 ms of audio at the negotiated format so ordinary pauses in
+/// the incoming Wave PDU stream (silence between sounds, scheduling jitter)
+/// don't starve the device, without adding much playback latency. Floored so
+/// odd/low-bitrate formats still get a workable buffer.
+fn ring_buffer_capacity(format: &AudioFormat) -> usize {
+    let bytes_per_sec = usize::try_from(format.n_avg_bytes_per_sec).unwrap_or(usize::MAX);
+    (bytes_per_sec / 2).max(4096)
+}
+
+/// Where PCM bytes go once a playback stream is open.
+///
+/// PCM Wave blocks are pushed straight into the ring buffer that feeds the
+/// cpal callback. Opus blocks go to a dedicated decode thread instead, which
+/// decodes and pushes the resulting PCM into that same ring buffer — decoding
+/// must never happen on whatever thread calls `wave()` (the RDPSND PDU
+/// processing path), and it must never happen on the real-time cpal thread.
+enum Ingest {
+    Pcm(HeapProd<u8>),
+    #[cfg(feature = "opus")]
+    Opus(Sender<Vec<u8>>),
+}
+
+impl core::fmt::Debug for Ingest {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Pcm(_) => f.write_str("Ingest::Pcm(..)"),
+            #[cfg(feature = "opus")]
+            Self::Opus(_) => f.write_str("Ingest::Opus(..)"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct RdpsndBackend {
     // Unfortunately, Stream is not `Send`, so we move it to a separate thread.
     stream_handle: Option<JoinHandle<()>>,
     stream_ended: Arc<AtomicBool>,
-    tx: Option<Sender<Vec<u8>>>,
+    ingest: Option<Ingest>,
     active_format: Option<AudioFormat>,
     volume: Arc<AtomicU32>,
     /// Formats advertised during RDPSND negotiation (device-filtered PCM + optional Opus).
@@ -122,7 +167,7 @@ impl Default for RdpsndBackend {
 impl RdpsndBackend {
     pub fn new() -> Self {
         Self {
-            tx: None,
+            ingest: None,
             active_format: None,
             stream_handle: None,
             stream_ended: Arc::new(AtomicBool::new(false)),
@@ -274,6 +319,67 @@ impl Drop for RdpsndBackend {
     }
 }
 
+/// Spawn the Opus decode thread and return the sender that feeds it encoded packets.
+///
+/// Runs entirely off the real-time path: it consumes encoded packets from an
+/// ordinary blocking `mpsc` channel (fine — this thread isn't real-time) and
+/// pushes decoded PCM into `producer` with a non-blocking `push_slice`, so it
+/// can never stall the cpal callback either.
+#[cfg(feature = "opus")]
+fn spawn_opus_decode_thread(format: &AudioFormat, mut producer: HeapProd<u8>) -> RdpsndNativeResult<Sender<Vec<u8>>> {
+    let chan = match format.n_channels {
+        1 => opus2::Channels::Mono,
+        2 => opus2::Channels::Stereo,
+        _ => bail!(
+            "unsupported channel count for Opus",
+            RdpsndNativeErrorKind::UnsupportedFormat,
+        ),
+    };
+    let mut dec = opus2::Decoder::new(format.n_samples_per_sec, chan)
+        .map_err(|e| RdpsndNativeError::new("creating Opus decoder", RdpsndNativeErrorKind::OpusInit).with_source(e))?;
+
+    let (enc_tx, enc_rx) = mpsc::channel::<Vec<u8>>();
+    thread::spawn(move || {
+        while let Ok(pkt) = enc_rx.recv() {
+            let nb_samples = match dec.get_nb_samples(&pkt) {
+                Ok(nb_samples) => nb_samples,
+                Err(error) => {
+                    error!(?error, "Failed to get the number of samples of an Opus packet");
+                    continue;
+                }
+            };
+
+            #[expect(
+                clippy::as_conversions,
+                reason = "opus::Channels has no conversions to usize implemented"
+            )]
+            let mut pcm_i16 = vec![0i16; nb_samples * chan as usize];
+            if let Err(error) = dec.decode(&pkt, &mut pcm_i16, false) {
+                error!(?error, "Failed to decode an Opus packet");
+                continue;
+            }
+            // Reinterpreting Vec<i16> -> &[u8] via cast_slice is safe (smaller alignment).
+            // Allocating as Vec<i16> in the first place avoids the alignment hazard of
+            // `bytemuck::cast_slice_mut::<u8, i16>` panicking when the allocator hands
+            // back a u8 buffer that is not 2-byte aligned (which manifested as a hard
+            // crash in #1202 under the burst of malformed Opus packets generated by a
+            // server reboot).
+            let pcm = bytemuck::cast_slice(&pcm_i16);
+
+            let written = producer.push_slice(pcm);
+            if written < pcm.len() {
+                warn!(
+                    dropped = pcm.len() - written,
+                    "Playback ring buffer full; dropping decoded audio"
+                );
+            }
+        }
+        debug!("Opus decode thread exiting (sender dropped)");
+    });
+
+    Ok(enc_tx)
+}
+
 impl RdpsndClientHandler for RdpsndBackend {
     fn get_flags(&self) -> AudioFormatFlags {
         // VOLUME is implemented via sample scaling in the playback path.
@@ -303,8 +409,27 @@ impl RdpsndClientHandler for RdpsndBackend {
         }
 
         if self.stream_handle.is_none() {
-            let (tx, rx) = mpsc::channel();
-            self.tx = Some(tx);
+            let rb = HeapRb::<u8>::new(ring_buffer_capacity(format));
+            let (producer, consumer) = rb.split();
+
+            let ingest = match format.format {
+                WaveFormat::PCM => Ingest::Pcm(producer),
+                #[cfg(feature = "opus")]
+                WaveFormat::OPUS => match spawn_opus_decode_thread(format, producer) {
+                    Ok(enc_tx) => Ingest::Opus(enc_tx),
+                    Err(e) => {
+                        // Soft-fail: log and bail before anything is spawned. The next
+                        // wave block will retry (stream_handle/ingest are still None).
+                        error!(error = %e.report().with_locations());
+                        return;
+                    }
+                },
+                _ => {
+                    error!(?format, "Unsupported wave format");
+                    return;
+                }
+            };
+            self.ingest = Some(ingest);
 
             self.active_format = Some(format.clone());
             let format = format.clone();
@@ -312,7 +437,7 @@ impl RdpsndClientHandler for RdpsndBackend {
             let stream_ended = Arc::clone(&self.stream_ended);
             let volume = Arc::clone(&self.volume);
             self.stream_handle = Some(thread::spawn(move || {
-                let stream = match DecodeStream::new(&format, rx, volume) {
+                let stream = match DecodeStream::new(&format, consumer, volume) {
                     Ok(stream) => stream,
                     Err(e) => {
                         // Soft-fail: log and exit the stream thread. Further wave
@@ -330,11 +455,24 @@ impl RdpsndClientHandler for RdpsndBackend {
             }));
         }
 
-        if let Some(ref tx) = self.tx {
-            if let Err(error) = tx.send(data.to_vec()) {
-                error!(%error);
+        match self.ingest.as_mut() {
+            Some(Ingest::Pcm(producer)) => {
+                let written = producer.push_slice(&data);
+                if written < data.len() {
+                    warn!(
+                        dropped = data.len() - written,
+                        "Playback ring buffer full; dropping audio"
+                    );
+                }
             }
-        };
+            #[cfg(feature = "opus")]
+            Some(Ingest::Opus(tx)) => {
+                if let Err(error) = tx.send(data.to_vec()) {
+                    error!(%error);
+                }
+            }
+            None => {}
+        }
     }
 
     fn set_volume(&mut self, volume: VolumePdu) {
@@ -349,7 +487,9 @@ impl RdpsndClientHandler for RdpsndBackend {
     }
 
     fn close(&mut self) {
-        self.tx = None;
+        // Dropping the Opus sender (if any) makes the decode thread's blocking
+        // `recv()` return `Err` on its own — no explicit stop signal needed there.
+        self.ingest = None;
         self.active_format = None;
         if let Some(stream) = self.stream_handle.take() {
             self.stream_ended.store(true, Ordering::Relaxed);
@@ -363,73 +503,11 @@ impl RdpsndClientHandler for RdpsndBackend {
 
 #[doc(hidden)]
 pub struct DecodeStream {
-    _dec_thread: Option<JoinHandle<()>>,
     stream: Stream,
 }
 
 impl DecodeStream {
-    pub fn new(rx_format: &AudioFormat, mut rx: Receiver<Vec<u8>>, volume: Arc<AtomicU32>) -> RdpsndNativeResult<Self> {
-        let mut dec_thread = None;
-        match rx_format.format {
-            #[cfg(feature = "opus")]
-            WaveFormat::OPUS => {
-                let chan = match rx_format.n_channels {
-                    1 => opus2::Channels::Mono,
-                    2 => opus2::Channels::Stereo,
-                    _ => bail!(
-                        "unsupported channel count for Opus",
-                        RdpsndNativeErrorKind::UnsupportedFormat,
-                    ),
-                };
-                let (dec_tx, dec_rx) = mpsc::channel();
-                let mut dec = opus2::Decoder::new(rx_format.n_samples_per_sec, chan).map_err(|e| {
-                    RdpsndNativeError::new("creating Opus decoder", RdpsndNativeErrorKind::OpusInit).with_source(e)
-                })?;
-                dec_thread = Some(thread::spawn(move || {
-                    while let Ok(pkt) = rx.recv() {
-                        let nb_samples = match dec.get_nb_samples(&pkt) {
-                            Ok(nb_samples) => nb_samples,
-                            Err(error) => {
-                                error!(?error, "Failed to get the number of samples of an Opus packet");
-                                continue;
-                            }
-                        };
-
-                        #[expect(
-                            clippy::as_conversions,
-                            reason = "opus::Channels has no conversions to usize implemented"
-                        )]
-                        let mut pcm_i16 = vec![0i16; nb_samples * chan as usize];
-                        if let Err(error) = dec.decode(&pkt, &mut pcm_i16, false) {
-                            error!(?error, "Failed to decode an Opus packet");
-                            continue;
-                        }
-                        // Vec<u8> is what the channel carries downstream. Reinterpreting
-                        // Vec<i16> -> Vec<u8> via cast_slice is safe (smaller alignment).
-                        // Allocating as Vec<i16> in the first place avoids the alignment
-                        // hazard of `bytemuck::cast_slice_mut::<u8, i16>` panicking when
-                        // the allocator hands back a u8 buffer that is not 2-byte aligned
-                        // (which manifested as a hard crash in #1202 under the burst of
-                        // malformed Opus packets generated by a server reboot).
-                        let pcm = bytemuck::cast_slice(&pcm_i16).to_vec();
-
-                        if dec_tx.send(pcm).is_err() {
-                            error!("Failed to send the decoded Opus packet over the channel");
-                            // If send has failed, it means that the receiver has been dropped.
-                            // There is no point in continuing the loop in this case.
-                            break;
-                        }
-                    }
-                }));
-                rx = dec_rx;
-            }
-            WaveFormat::PCM => {}
-            _ => bail!(
-                "matching server-requested wave format",
-                RdpsndNativeErrorKind::UnsupportedFormat,
-            ),
-        }
-
+    pub fn new(rx_format: &AudioFormat, consumer: HeapCons<u8>, volume: Arc<AtomicU32>) -> RdpsndNativeResult<Self> {
         let sample_format = match rx_format.bits_per_sample {
             8 => SampleFormat::U8,
             16 => SampleFormat::I16,
@@ -453,7 +531,7 @@ impl DecodeStream {
 
         let bits_per_sample = rx_format.bits_per_sample;
         let channels = rx_format.n_channels;
-        let mut rx = RxBuffer::new(rx, volume, bits_per_sample, channels);
+        let mut rx = RxBuffer::new(consumer, volume, bits_per_sample, channels);
         // cpal 0.17: SampleRate is a u32 type alias (not a newtype).
         let config = StreamConfig {
             channels: rx_format.n_channels,
@@ -482,10 +560,7 @@ impl DecodeStream {
             RdpsndNativeError::new("starting cpal output stream", RdpsndNativeErrorKind::StreamBuild).with_source(e)
         })?;
 
-        Ok(Self {
-            _dec_thread: dec_thread,
-            stream,
-        })
+        Ok(Self { stream })
     }
 
     pub fn stream(&self) -> &Stream {
@@ -494,9 +569,7 @@ impl DecodeStream {
 }
 
 struct RxBuffer {
-    receiver: Receiver<Vec<u8>>,
-    last: Option<Vec<u8>>,
-    idx: usize,
+    consumer: HeapCons<u8>,
     volume: Arc<AtomicU32>,
     bits_per_sample: u16,
     channels: u16,
@@ -505,11 +578,9 @@ struct RxBuffer {
 }
 
 impl RxBuffer {
-    fn new(receiver: Receiver<Vec<u8>>, volume: Arc<AtomicU32>, bits_per_sample: u16, channels: u16) -> Self {
+    fn new(consumer: HeapCons<u8>, volume: Arc<AtomicU32>, bits_per_sample: u16, channels: u16) -> Self {
         Self {
-            receiver,
-            last: None,
-            idx: 0,
+            consumer,
             volume,
             bits_per_sample,
             channels,
@@ -517,50 +588,35 @@ impl RxBuffer {
         }
     }
 
+    /// Fill `data` for one cpal callback period.
+    ///
+    /// Runs on the real-time audio thread: it must never block. `pop_slice`
+    /// is lock-free and returns immediately with however many bytes were
+    /// available; anything still missing is filled with silence instead of
+    /// blocking (as the old `recv_timeout(4000ms)` did) or leaving stale
+    /// bytes in `data`.
     fn fill(&mut self, data: &mut [u8]) {
-        let mut filled = 0;
+        let filled = self.consumer.pop_slice(data);
 
-        while filled < data.len() {
-            if self.last.is_none() {
-                match self.receiver.recv_timeout(Duration::from_millis(4000)) {
-                    Ok(mut rx) => {
-                        debug!(rx.len = rx.len());
-                        let (left, right) = unpack_volume(self.volume.load(Ordering::Relaxed));
-                        apply_volume(
-                            &mut rx,
-                            self.bits_per_sample,
-                            self.channels,
-                            left,
-                            right,
-                            &mut self.volume_sample_phase,
-                        );
-                        self.last = Some(rx);
-                    }
-                    Err(error) => {
-                        warn!(%error);
-                    }
-                }
+        if filled > 0 {
+            let (left, right) = unpack_volume(self.volume.load(Ordering::Relaxed));
+            apply_volume(
+                &mut data[..filled],
+                self.bits_per_sample,
+                self.channels,
+                left,
+                right,
+                &mut self.volume_sample_phase,
+            );
+        }
+
+        if filled < data.len() {
+            if filled == 0 {
+                trace!("Playback ring buffer underrun");
+            } else {
+                trace!(filled, requested = data.len(), "Playback ring buffer partial underrun");
             }
-
-            let Some(ref last) = self.last else {
-                trace!("Playback rx underrun");
-                return;
-            };
-
-            #[expect(clippy::arithmetic_side_effects)]
-            while self.idx < last.len() && filled < data.len() {
-                data[filled] = last[self.idx];
-                assert!(filled < usize::MAX);
-                assert!(self.idx < usize::MAX);
-                filled += 1;
-                self.idx += 1;
-            }
-
-            // If all elements from last have been consumed, clear `self.last`
-            if self.idx >= last.len() {
-                self.last = None;
-                self.idx = 0;
-            }
+            fill_silence(&mut data[filled..], self.bits_per_sample);
         }
     }
 }
