@@ -35,7 +35,7 @@ Use `RdpServer::handle()` to control a running server from other tasks without u
 ```rust
 use ironrdp_server::RdpServer;
 
-# async fn demo(server: RdpServer) -> anyhow::Result<()> {
+# async fn demo(server: RdpServer) -> ironrdp_server::ServerResult<()> {
 let handle = server.handle().clone();
 
 // Request listener address once run loop starts.
@@ -62,7 +62,7 @@ Custom logic for your RDP server can be added by implementing these traits:
 ## Input and graphics hooks
 
 - Keyboard and mouse are always hooked to `RdpServerInputHandler` from both FastPath and classic Input PDUs.
-- Mouse side buttons from extended mouse events are forwarded as `Button4` / `Button5`.
+- Mouse side buttons from extended mouse events are forwarded as `MouseButton::X1` / `MouseButton::X2`.
 - Display layout changes from Display Control DVC are forwarded to `RdpServerDisplay::request_layout`.
 - With feature `egfx`, the server always attaches the Graphics DVC hook; with no custom gfx factory it uses a default no-op EGFX handler.
 

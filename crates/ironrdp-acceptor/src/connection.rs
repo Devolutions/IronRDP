@@ -1936,7 +1936,7 @@ fn create_gcc_blocks(
 }
 
 #[cfg(test)]
-mod tests {
+mod credential_capture_tests {
     use super::*;
 
     fn credentials(username: &str) -> Credentials {

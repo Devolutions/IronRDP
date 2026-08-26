@@ -12,6 +12,7 @@ This crate implements `IWRdsProtocolManager`, `IWRdsProtocolListener`, and `IWRd
 - Optional provider/service control bridge over named-pipe IPC (`IRONRDP_WTS_CONTROL_PIPE`)
 - Connection lifecycle state machine with transition validation
 - CredSSP credential handoff from the companion service to Winlogon
+- Caller-buffer licensing capability negotiation for the RDS grace-period path
 - Input/video handle acquisition for keyboard, mouse, and video device paths
 - Virtual channel endpoint creation via `IWRdsProtocolConnection::CreateVirtualChannel`
 - In-proc COM class factory and DLL exports (`DllGetClassObject`, `DllCanUnloadNow`)
