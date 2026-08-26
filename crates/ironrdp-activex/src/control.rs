@@ -23034,6 +23034,5 @@ mod tests {
         drop(unsafe { IMsRdpCameraRedirConfigCollection::from_raw(first) });
         drop(unsafe { IMsRdpCameraRedirConfigCollection::from_raw(second) });
         assert_eq!(size_of::<IMsRdpCameraRedirConfig_Vtbl>(), 10 * size_of::<usize>());
-        assert_eq!(size_of::<IMsRdpCameraRedirConfig_Vtbl>(), 10 * size_of::<usize>());
     }
 }
