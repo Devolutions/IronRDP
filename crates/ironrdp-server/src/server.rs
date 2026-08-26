@@ -35,8 +35,6 @@ use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, Se
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpdr as rdpdr;
-#[cfg(feature = "usb")]
-use ironrdp_rdpeusb::io::RequestId;
 use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
@@ -1950,10 +1948,6 @@ impl RdpServer {
                                     .map_err_kind("query USB device text", ServerErrorKind::Pdu)?;
                                 (vec![text], false)
                             }
-                            UrbdrcDeviceServerMessage::IoComp { request_id, completion } => {
-                                device.complete_pending(request_id, completion);
-                                continue;
-                            }
                             UrbdrcDeviceServerMessage::IoReq { data, tx } => {
                                 if tx.is_closed() {
                                     continue;
@@ -1976,11 +1970,14 @@ impl RdpServer {
                                 // Reply before the write so the caller owns cancel-on-drop as early
                                 // as possible. A CANCEL_REQUEST it enqueues in response lands in a
                                 // later batch, so it cannot overtake this request on the wire.
-                                if tx.send(pending).is_err() {
+                                if tx.send(pending).is_err() && request.expects_completion {
                                     trace!(dvc_id, "USB I/O request receiver dropped");
+                                    device.forget_pending(request.request_id);
+                                    processor.abandon_unsent(request);
+                                    (Vec::new(), false)
+                                } else {
+                                    (vec![request.message], false)
                                 }
-
-                                (vec![request.message], false)
                             }
                             UrbdrcDeviceServerMessage::Retract(reason) => {
                                 let request = processor
@@ -1990,16 +1987,14 @@ impl RdpServer {
                                 (vec![request], true)
                             }
                             UrbdrcDeviceServerMessage::CancelRequest(request_id) => {
-                                let request = processor
-                                    .cancel_request(request_id)
-                                    .map_err_kind("cancel USB I/O request", ServerErrorKind::Pdu)?;
-
-                                // A completion may have won the race with PendingRequest::drop.
-                                // Only emit CANCEL_REQUEST while the request is still pending.
                                 if !device.is_pending(request_id) {
                                     trace!(dvc_id, request_id, "USB I/O request is no longer pending");
                                     continue;
                                 }
+
+                                let request = processor
+                                    .cancel_request(request_id)
+                                    .map_err_kind("cancel USB I/O request", ServerErrorKind::Pdu)?;
 
                                 (vec![request], false)
                             }

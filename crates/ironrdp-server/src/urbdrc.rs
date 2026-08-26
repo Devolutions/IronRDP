@@ -9,7 +9,7 @@ use std::{
 use crate::ServerEvent;
 use crate::error::{ServerError, ServerErrorExt as _, ServerResult};
 use ironrdp_dvc::DynamicChannelId;
-use ironrdp_pdu::{PduResult, pdu_other_err};
+use ironrdp_pdu::PduResult;
 use ironrdp_rdpeusb::{
     io::{
         CompletionData, DeviceAnnounce, DeviceText, InternalIoControlPacket, IoControlCompletionResult,
@@ -61,10 +61,6 @@ pub enum UrbdrcDeviceServerMessage {
         /// completion.
         tx: oneshot::Sender<Option<PendingIo>>,
     },
-    IoComp {
-        request_id: RequestId,
-        completion: CompletionData,
-    },
     CancelRequest(RequestId),
     Retract(UsbRetractReason),
 }
@@ -106,7 +102,6 @@ impl UrbdrcControlServerBackend for UsbControlHandle {
 #[derive(Debug, Clone)]
 pub struct UsbDeviceHandle {
     sender: UnboundedSender<ServerEvent>,
-    channel_id: DynamicChannelId,
     device: Arc<ServerUsbDevice>,
 }
 
@@ -114,8 +109,7 @@ impl UsbDeviceHandle {
     pub(crate) fn new(sender: UnboundedSender<ServerEvent>, channel_id: DynamicChannelId) -> Self {
         Self {
             sender,
-            channel_id,
-            device: Arc::new(ServerUsbDevice::new()),
+            device: Arc::new(ServerUsbDevice::new(channel_id)),
         }
     }
 
@@ -127,7 +121,7 @@ impl UsbDeviceHandle {
     fn send_device_message(&self, dev_msg: UrbdrcDeviceServerMessage) -> ServerResult<()> {
         self.sender
             .send(ServerEvent::Usb(UrbdrcServerMessage::Device {
-                dvc_id: self.channel_id,
+                dvc_id: self.device.channel_id,
                 dev_msg,
             }))
             .map_err(|_error| ServerError::reason("usb device message", "usb device channel is closing or closed"))
@@ -519,6 +513,7 @@ impl UsbDeviceHandle {
 /// commits binding state under `usb_state`.
 #[derive(Debug)]
 pub(crate) struct ServerUsbDevice {
+    channel_id: DynamicChannelId,
     /// Kept outside a lock: submission paths check it constantly and
     /// [`RawPending::drop`] reads it, so it must never require one.
     lifecycle: UsbDeviceLifecycle,
@@ -527,8 +522,9 @@ pub(crate) struct ServerUsbDevice {
 }
 
 impl ServerUsbDevice {
-    fn new() -> Self {
+    fn new(channel_id: DynamicChannelId) -> Self {
         Self {
+            channel_id,
             lifecycle: UsbDeviceLifecycle::new(),
             pending: Mutex::new(HashMap::new()),
             usb_state: Mutex::new(UsbSharedState::default()),
@@ -556,14 +552,33 @@ impl ServerUsbDevice {
             .insert(request_id, tx)
             .is_some()
         {
-            tracing::warn!(request_id, "Replacing pending USB I/O request");
+            tracing::warn!(
+                dvc_id = self.channel_id,
+                request_id,
+                "Replacing pending USB I/O request"
+            );
         }
 
         PendingIo { rx, id: request_id }
     }
 
     /// Delivers a completion to the caller waiting on `request_id`.
+    ///
+    /// Completions are refused once the device is retracting or closed, matching
+    /// the check the event loop applies to every other device message. The
+    /// RDPEUSB processor already stops reporting completions after
+    /// RETRACT_DEVICE, so this only keeps the guarantee local rather than
+    /// resting on that behavior.
     pub(crate) fn complete_pending(&self, request_id: RequestId, completion: CompletionData) {
+        if !self.is_open() {
+            tracing::trace!(
+                dvc_id = self.channel_id,
+                request_id,
+                "Dropping completion for closing or closed USB device"
+            );
+            return;
+        }
+
         // Bind the removal so the guard is released before the caller is woken:
         // it commits binding state under `usb_state`, and the two locks are
         // never held together.
@@ -574,13 +589,28 @@ impl ServerUsbDevice {
             .remove(&request_id);
 
         let Some(sender) = sender else {
-            tracing::warn!(request_id, "Missing pending USB I/O request");
+            tracing::warn!(dvc_id = self.channel_id, request_id, "Missing pending USB I/O request");
             return;
         };
 
         if sender.send(completion).is_err() {
-            tracing::trace!(request_id, "USB I/O completion receiver dropped");
+            tracing::trace!(
+                dvc_id = self.channel_id,
+                request_id,
+                "USB I/O completion receiver dropped"
+            );
         }
+    }
+
+    /// Drops the tracking for a request that was never written to the channel.
+    ///
+    /// Pairs with `UrbdrcDeviceServer::abandon_unsent`: no completion will
+    /// arrive for such a request, so nothing else would ever remove it.
+    pub(crate) fn forget_pending(&self, request_id: RequestId) {
+        self.pending
+            .lock()
+            .expect("USB pending requests mutex poisoned")
+            .remove(&request_id);
     }
 
     pub(crate) fn is_pending(&self, request_id: RequestId) -> bool {
@@ -1500,10 +1530,9 @@ impl UsbRedirServer {
         Self { handle, device }
     }
 
-    fn send_io_completion(&self, request_id: RequestId, completion: CompletionData) -> PduResult<()> {
-        self.handle
-            .send_device_message(UrbdrcDeviceServerMessage::IoComp { request_id, completion })
-            .map_err(|_| pdu_other_err!("failed to send usb I/O completion"))
+    fn io_completed(&self, request_id: RequestId, completion: CompletionData) -> PduResult<()> {
+        self.handle.device.complete_pending(request_id, completion);
+        Ok(())
     }
 }
 
@@ -1528,7 +1557,7 @@ impl UrbdrcDeviceServerBackend for UsbRedirServer {
         request_id: RequestId,
         completion: IoControlCompletionResult,
     ) -> PduResult<()> {
-        self.send_io_completion(request_id, CompletionData::IoControl(completion))
+        self.io_completed(request_id, CompletionData::IoControl(completion))
     }
 
     fn internal_io_control_completed(
@@ -1537,7 +1566,7 @@ impl UrbdrcDeviceServerBackend for UsbRedirServer {
         request_id: RequestId,
         completion: IoControlCompletionResult,
     ) -> PduResult<()> {
-        self.send_io_completion(request_id, CompletionData::InternalIoControl(completion))
+        self.io_completed(request_id, CompletionData::InternalIoControl(completion))
     }
 
     fn transfer_in_completed(
@@ -1546,7 +1575,7 @@ impl UrbdrcDeviceServerBackend for UsbRedirServer {
         request_id: RequestId,
         completion: TransferInCompletionResult,
     ) -> PduResult<()> {
-        self.send_io_completion(request_id, CompletionData::TransferIn(completion))
+        self.io_completed(request_id, CompletionData::TransferIn(completion))
     }
 
     fn transfer_out_completed(
@@ -1555,7 +1584,7 @@ impl UrbdrcDeviceServerBackend for UsbRedirServer {
         request_id: RequestId,
         completion: TransferOutCompletionResult,
     ) -> PduResult<()> {
-        self.send_io_completion(request_id, CompletionData::TransferOut(completion))
+        self.io_completed(request_id, CompletionData::TransferOut(completion))
     }
 
     fn close(&mut self, channel_id: u32) {
