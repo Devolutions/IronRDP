@@ -336,7 +336,18 @@ struct TimedResizeRequest {
     deadline: tokio::time::Instant,
 }
 
-const DISPLAY_CONTROL_READY_TIMEOUT: Duration = Duration::from_secs(3);
+// 3s was too tight right after login: the server is still busy negotiating DVC
+// channels (rdpdr/rdpei/geometry/displaycontrol...) at that point and can miss the
+// Deactivate-Reactivate window, causing spurious ReactivationTimedOut fallbacks.
+const DISPLAY_CONTROL_READY_TIMEOUT: Duration = Duration::from_secs(8);
+
+// Cooldown observed before firing a brand new NLA/CredSSP handshake after a resize
+// fallback. Without it, a fallback reconnect can immediately follow the initial
+// CapabilitiesTimedOut reconnect (itself already a full CredSSP handshake), and some
+// RDP hosts reject the third rapid-fire logon attempt with STATUS_LOGON_FAILURE even
+// though credentials are correct. Mirrors the delay already used by
+// `confirm_auto_reconnect` for transport-failure retries.
+const RESIZE_FALLBACK_RECONNECT_COOLDOWN: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 struct ResizeQueue {
@@ -803,6 +814,20 @@ impl RdpClient {
                     reconnect_attempt = 0;
                     self.config.connector.desktop_size.width = width;
                     self.config.connector.desktop_size.height = height;
+
+                    // Give the server a moment before hitting it with another full
+                    // NLA/CredSSP handshake. Firing immediately can land right after the
+                    // previous handshake and trigger STATUS_LOGON_FAILURE on some hosts.
+                    if cancelable_operation(
+                        tokio::time::sleep(RESIZE_FALLBACK_RECONNECT_COOLDOWN),
+                        &mut self.close_receiver,
+                    )
+                    .await
+                    .is_none()
+                    {
+                        self.emit_user_initiated_termination();
+                        break;
+                    }
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
                     if !self.send_output_event(RdpOutputEvent::Terminated(Ok(reason))).await {
@@ -2160,6 +2185,27 @@ fn poll_deferred_rdpdr_output(active_stage: &mut ActiveStage) -> SessionResult<O
     }
 }
 
+/// Best-effort notice to the server that this session is being abandoned before the
+/// client opens a brand new one (resize fallback). Without this, the client just drops
+/// the TCP connection and the server has no RDP-level signal that the session ended.
+/// If a fresh NLA/CredSSP logon for the same account arrives moments later while the
+/// server still considers the old session live, some hosts stall for many seconds
+/// resolving the conflict and then reject the new logon outright (STATUS_LOGON_FAILURE)
+/// even though the credentials are correct.
+async fn notify_shutdown_before_reconnect(
+    writer: &mut ironrdp_tokio::TokioFramed<tokio::io::WriteHalf<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>>,
+    active_stage: &ActiveStage,
+) {
+    let Ok(outputs) = active_stage.graceful_shutdown() else {
+        return;
+    };
+    for output in outputs {
+        if let ActiveStageOutput::ResponseFrame(frame) = output {
+            let _ = tokio::time::timeout(Duration::from_millis(500), writer.write_all(&frame)).await;
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the active loop owns independent transport, input, clipboard, and cancellation sources"
@@ -2405,6 +2451,7 @@ async fn active_session(
                             outputs
                         } else {
                             // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
+                            notify_shutdown_before_reconnect(&mut writer, &active_stage).await;
                             debug!("Reconnecting with new size");
                             return Ok(RdpControlFlow::ReconnectWithNewSize {
                                 width: request.width,
@@ -2621,6 +2668,7 @@ async fn active_session(
                 let (request, reason) = resize_queue
                     .timed_out_request(tokio::time::Instant::now())
                     .expect("resize deadline must correspond to a queued request");
+                            notify_shutdown_before_reconnect(&mut writer, &active_stage).await;
                 return Ok(RdpControlFlow::ReconnectWithNewSize {
                     width: request.width,
                     height: request.height,
@@ -2863,6 +2911,7 @@ async fn active_session(
                                         .pending
                                         .as_ref()
                                         .map_or(in_flight.request, |pending| pending.request);
+                                    notify_shutdown_before_reconnect(&mut writer, &active_stage).await;
                                     return Ok(RdpControlFlow::ReconnectWithNewSize {
                                         width: request.width,
                                         height: request.height,
@@ -3083,6 +3132,7 @@ async fn active_session(
                 }
                 None => {
                     debug!("Reconnecting because Display Control is unavailable");
+                    notify_shutdown_before_reconnect(&mut writer, &active_stage).await;
                     return Ok(RdpControlFlow::ReconnectWithNewSize {
                         width: request.width,
                         height: request.height,
