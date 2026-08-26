@@ -8,7 +8,7 @@ use crate::packet_io::{
     GatewayTransport as NetworkGatewayTransport, gateway_endpoint_is_valid as endpoint_is_valid,
     open_gateway_transport, open_test_transport, parse_proxy_url, proxy_from_values, read_http_connect_response,
 };
-use crate::{Error, GwClient, GwConnectTarget, GwConsentCallback};
+use crate::{ConsentFallback, Error, GwClient, GwConnectTarget, GwConsentCallback};
 
 /// In-memory gateway transport used by the registered integration tests.
 pub struct GatewayTransport(NetworkGatewayTransport);
@@ -88,6 +88,19 @@ impl GatewayTransport {
         server_port: u16,
         reauthentication_transport: GatewayTransport,
     ) -> Result<GwClient, Error> {
+        self.connect_tunnel_with_reauth_and_consent(target, client_name, server_port, reauthentication_transport, None)
+            .await
+    }
+
+    /// Establish a mock tunnel with a second mock transport and initial consent callback.
+    pub async fn connect_tunnel_with_reauth_and_consent(
+        self,
+        target: GwConnectTarget,
+        client_name: &str,
+        server_port: u16,
+        reauthentication_transport: GatewayTransport,
+        consent_callback: Option<&mut GwConsentCallback<'_>>,
+    ) -> Result<GwClient, Error> {
         let mut reauthentication_transport = Some(reauthentication_transport.0);
         GwClient::connect_ws_with_reauth(
             target,
@@ -99,7 +112,7 @@ impl GatewayTransport {
                     || Error::new("mock reauthentication transport exhausted", crate::GwErrorKind::Connect),
                 )))
             }),
-            None,
+            consent_callback,
         )
         .await
     }
@@ -110,7 +123,7 @@ pub fn evaluate_consent_message(
     consent_message: &[u8],
     consent_callback: Option<&mut GwConsentCallback<'_>>,
 ) -> Result<(), Error> {
-    crate::evaluate_consent_message(consent_message, consent_callback)
+    crate::evaluate_consent_message(consent_message, consent_callback, ConsentFallback::Accept)
 }
 
 /// Select a proxy from explicit environment variable values without changing process state.
