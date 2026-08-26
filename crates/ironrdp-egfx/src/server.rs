@@ -525,15 +525,20 @@ impl FrameTracker {
         let frame_id = self.next_frame_id;
         self.next_frame_id = self.next_frame_id.wrapping_add(1);
 
-        self.unacknowledged.insert(
-            frame_id,
-            FrameInfo {
+        // A suspended client sends no acknowledgement until it opts back in
+        // ([MS-RDPEGFX] 2.2.2.13), so nothing would take this frame back out.
+        // Backpressure is off while suspended, so the entry has no work to do.
+        if !self.ack_suspended {
+            self.unacknowledged.insert(
                 frame_id,
-                timestamp,
-                sent_at: Instant::now(),
-                size_bytes: 0,
-            },
-        );
+                FrameInfo {
+                    frame_id,
+                    timestamp,
+                    sent_at: Instant::now(),
+                    size_bytes: 0,
+                },
+            );
+        }
 
         self.total_sent += 1;
         frame_id
@@ -548,7 +553,8 @@ impl FrameTracker {
 
     /// Handle frame acknowledgment from client
     pub fn acknowledge(&mut self, frame_id: u32, queue_depth: u32) -> Option<FrameInfo> {
-        if queue_depth == SUSPEND_FRAME_ACK_QUEUE_DEPTH {
+        let suspending = queue_depth == SUSPEND_FRAME_ACK_QUEUE_DEPTH;
+        if suspending {
             self.ack_suspended = true;
             self.client_queue_depth = 0;
         } else {
@@ -556,10 +562,21 @@ impl FrameTracker {
             self.client_queue_depth = queue_depth;
         }
 
+        // A suspending Frame Acknowledge still acknowledges: take the frame
+        // out before the clear below, since it carries the round-trip sample
+        // and byte count the QoE report is built from.
         let info = self.unacknowledged.remove(&frame_id);
         if info.is_some() {
             self.total_acked += 1;
         }
+
+        if suspending {
+            // [MS-RDPEGFX] 3.2.5.13: "the server MUST clear the Unacknowledged
+            // Frames ADM element and MUST NOT expect any further
+            // RDPGFX_FRAME_ACKNOWLEDGE_PDU messages from the client".
+            self.unacknowledged.clear();
+        }
+
         info
     }
 
