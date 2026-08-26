@@ -282,7 +282,7 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | WinForms `AxHost` lifecycle | Windowed OLE activation, focus, sizing, the inherited `IMsRdpClient` through `IMsRdpClient10` raw interfaces, and the RDM virtual channels `RDMJump`, `RDMLog`, and `RDMCmd` are supported. |
 | Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio and quality policy, clipboard, CredSSP, administrative session, load-balance routing token, client-device name, RemoteApp, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
 | Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, writable confirm-close, and worker-backed warning and auto-reconnect events are delivered on the creating apartment. |
-| Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. Non-filesystem device, camera, monitor, and preferred-redirection capabilities remain unavailable. |
+| Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. `IMsRdpCameraRedirConfigCollection` exposes connected Windows camera metadata and offline configurations, but camera stream redirection remains unavailable. Non-filesystem device, monitor, and preferred-redirection capabilities remain unavailable. |
 | Smartcard redirection | `IMsRdpClientAdvancedSettings::RedirectSmartCards` enables WinSCard RDPDR smartcard redirection (smartcard-only sessions are valid without redirected drives). |
 
 The audit also identified unsupported `AdvancedSettings` members: plug-in DLL loading, input throttling, keepalive and idle policy, printer/port/generic-device redirection, persistent bitmap caching, video policy, PCB, super-pan, and security-layer negotiation.
@@ -558,6 +558,17 @@ properties clear getter outputs before returning `E_NOTIMPL` rather than reporti
 success. The ActiveX renderer centers and scales the framebuffer by the retained zoom level,
 preserves aspect ratio during smart sizing, and translates pointer coordinates through the same
 viewport.
+
+### Camera configuration
+
+`IMsRdpClientNonScriptable7::CameraRedirConfigCollection` returns a retained collection that can enumerate connected `KSCATEGORY_VIDEO_CAMERA` device interfaces.
+Each configuration exposes the friendly name, symbolic link, instance ID, parent instance ID, connection state, and requested redirection state.
+Rescans preserve configuration identity and retain disconnected or explicitly added symbolic links with `DeviceExists` set to false.
+
+The collection is currently an enabling compatibility layer, not a camera redirection backend.
+IronRDP does not register the MS-RDPECAM enumeration channel or start camera capture, and attempts to enable `Redirected`, `RedirectByDefault`, or an enabled `AddConfig` entry return `E_NOTIMPL`.
+Encoding policy can be read or changed before connecting, but has no effect until an MS-RDPECAM capture backend is available.
+All collection mutations are rejected after connection settings are sealed.
 
 ### DVC COM plugins
 
