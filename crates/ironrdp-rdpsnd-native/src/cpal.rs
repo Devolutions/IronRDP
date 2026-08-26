@@ -458,11 +458,17 @@ impl RdpsndClientHandler for RdpsndBackend {
         match self.ingest.as_mut() {
             Some(Ingest::Pcm(producer)) => {
                 let written = producer.push_slice(&data);
-                if written < data.len() {
-                    warn!(
-                        dropped = data.len() - written,
-                        "Playback ring buffer full; dropping audio"
-                    );
+                let dropped = data.len() - written;
+                if dropped > 0 {
+                    // A handful of dropped bytes every so often is normal clock-drift
+                    // absorption between the server's audio timeline and the local
+                    // device (no resampling here); only worth a WARN once it's large
+                    // enough to suggest an actual scheduling stall on the audio thread.
+                    if dropped > format.n_avg_bytes_per_sec as usize / 100 {
+                        warn!(dropped, "Playback ring buffer full; dropping audio");
+                    } else {
+                        trace!(dropped, "Playback ring buffer full; dropping audio");
+                    }
                 }
             }
             #[cfg(feature = "opus")]
