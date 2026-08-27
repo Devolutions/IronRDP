@@ -438,7 +438,7 @@ impl RdpsndClientHandler for RdpsndBackend {
             let stream_ended = Arc::clone(&self.stream_ended);
             let volume = Arc::clone(&self.volume);
             self.stream_handle = Some(thread::spawn(move || {
-                let stream = match DecodeStream::new(&format, consumer, volume) {
+                let stream = match DecodeStream::new_with_consumer(&format, consumer, volume) {
                     Ok(stream) => stream,
                     Err(e) => {
                         // Soft-fail: log and exit the stream thread. Further wave
@@ -508,13 +508,35 @@ impl RdpsndClientHandler for RdpsndBackend {
     }
 }
 
+pub struct PcmProducer {
+    producer: HeapProd<u8>,
+}
+
+impl PcmProducer {
+    pub fn push_slice(&mut self, data: &[u8]) -> usize {
+        self.producer.push_slice(data)
+    }
+}
+
 #[doc(hidden)]
 pub struct DecodeStream {
     stream: Stream,
 }
 
 impl DecodeStream {
-    pub fn new(rx_format: &AudioFormat, consumer: HeapCons<u8>, volume: Arc<AtomicU32>) -> RdpsndNativeResult<Self> {
+    pub fn new(rx_format: &AudioFormat, volume: Arc<AtomicU32>) -> RdpsndNativeResult<(Self, PcmProducer)> {
+        let rb = HeapRb::<u8>::new(ring_buffer_capacity(rx_format));
+        let (producer, consumer) = rb.split();
+        let stream = Self::new_with_consumer(rx_format, consumer, volume)?;
+
+        Ok((stream, PcmProducer { producer }))
+    }
+
+    fn new_with_consumer(
+        rx_format: &AudioFormat,
+        consumer: HeapCons<u8>,
+        volume: Arc<AtomicU32>,
+    ) -> RdpsndNativeResult<Self> {
         let sample_format = match rx_format.bits_per_sample {
             8 => SampleFormat::U8,
             16 => SampleFormat::I16,

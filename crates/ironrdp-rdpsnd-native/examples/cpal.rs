@@ -6,11 +6,8 @@ use std::sync::Arc;
 use std::thread;
 
 use anyhow::Context as _;
-use cpal::traits::StreamTrait as _;
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
 use ironrdp_rdpsnd_native::cpal::DecodeStream;
-use ringbuf::HeapRb;
-use ringbuf::traits::{Producer as _, Split as _};
 use tracing::debug;
 
 fn setup_logging() -> anyhow::Result<()> {
@@ -45,11 +42,9 @@ fn main() -> anyhow::Result<()> {
         bits_per_sample: 16,
         data: None,
     };
-    let rb = HeapRb::<u8>::new(4096);
-    let (mut producer, consumer) = rb.split();
     // Full volume on both channels (internal pack_volume layout: left high, right low).
     let volume = Arc::new(AtomicU32::new(0xFFFF_FFFF));
-    let stream = DecodeStream::new(&rx_format, consumer, volume)?;
+    let (_stream, mut producer) = DecodeStream::new(&rx_format, volume)?;
 
     let producer_thread = thread::spawn(move || {
         let data_chunks = vec![vec![1u8, 2, 3], vec![4, 5, 6], vec![7, 8, 9]];
@@ -61,7 +56,6 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    stream.stream().play()?;
     thread::sleep(Duration::from_secs(3));
     let _ = producer_thread.join();
 
