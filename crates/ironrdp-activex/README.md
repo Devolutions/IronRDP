@@ -573,9 +573,11 @@ configuration. `IMsRdpExtendedSettings`
 retains `ZoomLevel` values from 10 through 500, accepting the host's `VT_I4` or `VT_UI4` input and
 returning `VT_I4`. `ClientDeviceName` accepts up to 15 UTF-16 code units and configures the next
 IronRDP connection’s client name.
-`DisableUdpTransport` reports `true` and accepts `true` only while connection settings remain mutable.
-Attempting to enable UDP returns `E_NOTIMPL`: the lower layers implement reliable RDP-UDP2, but `ironrdp-client` does not yet own a sideband transport or route Soft-Sync-selected DVC traffic.
-Gateway, RDCleanPath, and named-pipe carriers have no supported UDP path.
+`DisableUdpTransport` defaults to `false` and can be changed only while connection settings remain mutable.
+The default enables reliable RDP-UDP2 for direct connections.
+Failed UDP bootstrap falls back to the main TCP connection.
+After Soft-Sync moves a dynamic channel to UDP, losing the sideband triggers the normal connection-failure and auto-reconnect path so the next connection negotiates fresh UDP security and correlation state.
+Gateway, RDCleanPath, named-pipe, legacy RDP-UDP v1/v2 data transfer, and lossy RDP-UDP-L remain unsupported.
 Other extended properties clear getter outputs before returning `E_NOTIMPL` rather than reporting ineffective success.
 The ActiveX renderer centers and scales the framebuffer by the retained zoom level, preserves aspect ratio during smart sizing, and translates pointer coordinates through the same viewport.
 

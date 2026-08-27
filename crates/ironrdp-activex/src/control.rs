@@ -1384,6 +1384,7 @@ struct CompatibilitySettings {
     remote_application_args: String,
     prompt_for_credentials: bool,
     client_name: Option<String>,
+    disable_udp_transport: bool,
     dvc_plugin_paths: Vec<PathBuf>,
     enable_tls: Option<bool>,
     autologon: Option<bool>,
@@ -1463,6 +1464,7 @@ impl Default for CompatibilitySettings {
             remote_application_args: String::new(),
             prompt_for_credentials: false,
             client_name: None,
+            disable_udp_transport: false,
             dvc_plugin_paths: Vec::new(),
             enable_tls: None,
             autologon: None,
@@ -10146,6 +10148,7 @@ impl Control {
         )
         .with_platform(MajorPlatformType::WINDOWS)
         .with_certificate_validation(certificate_validation)
+        .with_udp_transport(!self.compatibility.borrow().disable_udp_transport)
         .with_pointer_software_rendering(true);
         let missing = builder.missing();
         if !missing.is_empty() {
@@ -10542,6 +10545,7 @@ impl Control {
             .client_name
             .clone()
             .unwrap_or_else(|| "IronRDP ActiveX".to_owned());
+        let udp_transport_enabled = !compatibility.disable_udp_transport;
         let dvc_plugin_paths = if redirect_webauthn {
             let mut filtered = Vec::new();
             for path in &compatibility.dvc_plugin_paths {
@@ -10713,6 +10717,7 @@ impl Control {
             .with_load_balance_info(load_balance_info)
             .with_administrative_session(administrative_session)
             .with_certificate_validation(certificate_validation)
+            .with_udp_transport(udp_transport_enabled)
             // The GDI presenter has no hardware-cursor overlay, so cursor updates must be
             // composited into the decoded framebuffer before it receives image events.
             .with_pointer_software_rendering(true)
@@ -13615,12 +13620,9 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
                 return Err(Error::from_hresult(E_POINTER));
             }
             let disable_udp = variant_bool(unsafe { &*value }, ptr::null_mut())?;
-            let compatibility = self.compatibility.borrow();
+            let mut compatibility = self.compatibility.borrow_mut();
             active_x_connection_settings_mutable(self.state.get(), &compatibility)?;
-            if !disable_udp {
-                return Err(Error::from_hresult(E_NOTIMPL));
-            }
-            // IronRDP's ActiveX client exposes no UDP transport, so the only truthful value is true.
+            compatibility.disable_udp_transport = disable_udp;
             trace_host_call("IMsRdpExtendedSettings::put_DisableUdpTransport");
             return Ok(());
         }
@@ -13857,7 +13859,10 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
         }
         if name.eq_ignore_ascii_case("DisableUdpTransport") {
             trace_host_call("IMsRdpExtendedSettings::get_DisableUdpTransport");
-            return write_out(value, variant_bool_value(true));
+            return write_out(
+                value,
+                variant_bool_value(self.compatibility.borrow().disable_udp_transport),
+            );
         }
         if name.eq_ignore_ascii_case(ACTIVEX_ENABLE_TLS_PROPERTY) {
             trace_host_call("IMsRdpExtendedSettings::get_IronRdpEnableTls");
@@ -21299,11 +21304,19 @@ mod tests {
         );
         free_owned_bstr_variant(&mut client_name);
 
+        let mut disable_udp = VARIANT::default();
+        unsafe {
+            extended
+                .get_Property(BSTR::from("DisableUdpTransport").as_ptr(), &mut disable_udp)
+                .expect("read default UDP transport policy");
+        }
+        assert!(!variant_bool(&disable_udp, ptr::null_mut()).expect("default UDP policy boolean"));
+
         let mut disable_udp = variant_bool_value(true);
         unsafe {
             extended
                 .put_Property(BSTR::from("DisableUdpTransport").as_ptr(), &mut disable_udp)
-                .expect("confirm no UDP transport");
+                .expect("keep UDP disabled");
         }
         let mut disable_udp = VARIANT::default();
         unsafe {
@@ -21314,12 +21327,18 @@ mod tests {
         assert!(variant_bool(&disable_udp, ptr::null_mut()).expect("UDP policy boolean"));
 
         let mut enable_udp = variant_bool_value(false);
-        assert_eq!(
-            unsafe { extended.put_Property(BSTR::from("DisableUdpTransport").as_ptr(), &mut enable_udp) }
-                .expect_err("UDP transport is not integrated")
-                .code(),
-            E_NOTIMPL
-        );
+        unsafe {
+            extended
+                .put_Property(BSTR::from("DisableUdpTransport").as_ptr(), &mut enable_udp)
+                .expect("enable reliable UDP transport");
+        }
+        let mut disable_udp = VARIANT::default();
+        unsafe {
+            extended
+                .get_Property(BSTR::from("DisableUdpTransport").as_ptr(), &mut disable_udp)
+                .expect("read enabled UDP transport policy");
+        }
+        assert!(!variant_bool(&disable_udp, ptr::null_mut()).expect("UDP policy boolean"));
 
         let mut enable_tls = variant_bool_value(false);
         unsafe {

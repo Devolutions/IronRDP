@@ -7,6 +7,12 @@ runtime, input/output event types, the WebSocket transport, and the session driv
 consumed by `ironrdp-viewer` (the portable GUI client binary) and by any other embedder
 (for example, a headless agent).
 
+The optional `udp` feature enables reliable RDP-UDP2 multitransport for direct connections.
+Enable it with `ConfigBuilder::with_udp_transport(true)`.
+UDP bootstrap failures fall back to TCP.
+Once Soft-Sync moves a dynamic channel to UDP, losing that sideband terminates the connection so automatic reconnect can establish fresh security and correlation state.
+Gateway, RDCleanPath, named-pipe, Hyper-V VM Connect console sessions, legacy RDP-UDP v1/v2 data transfer, and lossy RDP-UDP-L are not supported.
+
 The library is winit-agnostic. Output events are emitted on a bounded
 `tokio::sync::mpsc::Sender<RdpOutputEvent>` channel: the embedder is responsible
 for consuming them and dispatching them to whatever event loop or runtime it wishes.

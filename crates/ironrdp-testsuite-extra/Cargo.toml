@@ -30,7 +30,7 @@ ironrdp-async.path = "../ironrdp-async"
 ironrdp-agent.path = "../ironrdp-agent"
 ironrdp-daemon.path = "../ironrdp-daemon"
 ironrdp-bulk.path = "../ironrdp-bulk"
-ironrdp-client = { path = "../ironrdp-client", features = ["sound"] }
+ironrdp-client = { path = "../ironrdp-client", features = ["sound", "udp"] }
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-dvc.path = "../ironrdp-dvc"
 ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
