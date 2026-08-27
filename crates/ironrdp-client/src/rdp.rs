@@ -1859,7 +1859,25 @@ async fn bootstrap_udp_transport(
             config.tls,
         )
         .await
-        .map_err(|error| ironrdp_connector::custom_err!("UDP multitransport bootstrap", error))?;
+        .map_err(|error| {
+            let failure = match error.kind() {
+                ironrdp_rdpeudp_tokio::UdpTransportErrorKind::Socket(_) => "socket",
+                ironrdp_rdpeudp_tokio::UdpTransportErrorKind::Handshake(_) => "handshake",
+                ironrdp_rdpeudp_tokio::UdpTransportErrorKind::HandshakeTimeout => "handshake-timeout",
+                ironrdp_rdpeudp_tokio::UdpTransportErrorKind::Tls(_) => "tls",
+                ironrdp_rdpeudp_tokio::UdpTransportErrorKind::TlsTimeout => "tls-timeout",
+                ironrdp_rdpeudp_tokio::UdpTransportErrorKind::Rdpemt(_) => "rdpemt",
+                ironrdp_rdpeudp_tokio::UdpTransportErrorKind::TunnelTimeout => "tunnel-timeout",
+                ironrdp_rdpeudp_tokio::UdpTransportErrorKind::TunnelRejected { .. } => "tunnel-rejected",
+                ironrdp_rdpeudp_tokio::UdpTransportErrorKind::DriverPanic => "driver-panic",
+                ironrdp_rdpeudp_tokio::UdpTransportErrorKind::Driver(_) => "driver",
+                ironrdp_rdpeudp_tokio::UdpTransportErrorKind::UnsupportedProtocol { .. } => "unsupported-protocol",
+                ironrdp_rdpeudp_tokio::UdpTransportErrorKind::PayloadTooLarge { .. } => "payload-too-large",
+                _ => "unknown",
+            };
+            warn!(failure, "UDP multitransport bootstrap failed");
+            ironrdp_connector::custom_err!("UDP multitransport bootstrap", error)
+        })?;
     bootstrap
         .take_transport()
         .ok_or_else(|| ironrdp_connector::general_err!("successful UDP bootstrap did not produce a transport"))
