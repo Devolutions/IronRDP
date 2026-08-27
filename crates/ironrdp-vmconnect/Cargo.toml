@@ -16,12 +16,32 @@ categories.workspace = true
 doctest = false
 test = false
 
+[features]
+# Internal (PRIVATE!) feature used to expose native CredSSP helpers to the shared integration tests.
+# Don't rely on this whatsoever. It may disappear at any time.
+__test = []
+
 [dependencies]
 ironrdp-async = { path = "../ironrdp-async", version = "0.10" } # public
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.10" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["alloc"] } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
 tracing = { version = "0.1", features = ["log"] }
+
+[target.'cfg(windows)'.dependencies]
+ironrdp-dvc = { version = "0.8.0", path = "../ironrdp-dvc" } # public
+sha2 = "0.10"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authentication_Identity",
+    "Win32_Security_Credentials",
+    "Win32_Security_Cryptography",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+windows-registry = "0.6"
 
 [lints]
 workspace = true

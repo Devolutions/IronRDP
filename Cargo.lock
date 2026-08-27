@@ -2584,6 +2584,7 @@ dependencies = [
  "pico-args",
  "rand 0.9.4",
  "sspi",
+ "tokio",
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
@@ -2611,6 +2612,7 @@ dependencies = [
  "ironrdp-cfg",
  "ironrdp-client",
  "ironrdp-cliprdr",
+ "ironrdp-cliprdr-format",
  "ironrdp-cliprdr-native",
  "ironrdp-connector",
  "ironrdp-core 0.2.1",
@@ -2751,6 +2753,7 @@ dependencies = [
  "ironrdp-dvc-com-plugin",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-echo",
+ "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-mstsgu",
  "ironrdp-pdu",
@@ -2760,6 +2763,7 @@ dependencies = [
  "ironrdp-rdpdr",
  "ironrdp-rdpeai",
  "ironrdp-rdpei",
+ "ironrdp-rdpel",
  "ironrdp-rdpewa",
  "ironrdp-rdpewa-native",
  "ironrdp-rdpsnd",
@@ -2971,6 +2975,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
+ "ironrdp-rdpel",
  "ironrdp-rdpemt",
  "ironrdp-rdpeudp",
  "ironrdp-rdpeusb",
@@ -3026,6 +3031,7 @@ dependencies = [
  "sspi",
  "tokio",
  "tokio-native-tls",
+ "tokio-socks",
  "tokio-tungstenite",
  "tokio-util",
  "uuid",
@@ -3136,6 +3142,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpel"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-rdpemt"
 version = "0.1.0"
 dependencies = [
@@ -3233,6 +3250,7 @@ dependencies = [
  "ironrdp-rdpeai",
  "ironrdp-rdpsnd",
  "opus2",
+ "ringbuf",
  "tracing",
  "tracing-subscriber",
 ]
@@ -3258,7 +3276,6 @@ dependencies = [
 name = "ironrdp-server"
 version = "0.13.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "bytes",
  "ironrdp-acceptor",
@@ -3275,6 +3292,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-nscodec",
  "ironrdp-pdu",
+ "ironrdp-rdpdr",
  "ironrdp-rdpei",
  "ironrdp-rdpeusb",
  "ironrdp-rdpsnd",
@@ -3301,6 +3319,7 @@ dependencies = [
  "ironrdp-core 0.2.1",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
+ "ironrdp-egfx",
  "ironrdp-error 0.2.0",
  "ironrdp-graphics",
  "ironrdp-pdu",
@@ -3308,6 +3327,7 @@ dependencies = [
  "ironrdp-svc",
  "qoicoubeh",
  "tracing",
+ "visibility",
  "zstd-safe",
 ]
 
@@ -3362,6 +3382,7 @@ dependencies = [
  "ironrdp-rdpdr",
  "ironrdp-rdpeai",
  "ironrdp-rdpei",
+ "ironrdp-rdpel",
  "ironrdp-rdpemt",
  "ironrdp-rdpeudp",
  "ironrdp-rdpeusb",
@@ -3485,8 +3506,12 @@ dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
  "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
  "ironrdp-pdu",
+ "sha2 0.10.9",
  "tracing",
+ "windows",
+ "windows-registry",
 ]
 
 [[package]]
@@ -4997,6 +5022,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d20d5497ef88037a52ff98267d066e7f11fcc5e99bbfbd58a42336193aacec3"
 
 [[package]]
+name = "portable-atomic-util"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618"
+dependencies = [
+ "portable-atomic",
+]
+
+[[package]]
 name = "portpicker"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5516,6 +5550,17 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "ringbuf"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a158e09ede21a14b172ca6cdd6208386c6ae2cb6acef58d774368ef8c450dfa7"
+dependencies = [
+ "crossbeam-utils",
+ "portable-atomic",
+ "portable-atomic-util",
 ]
 
 [[package]]
@@ -6624,6 +6669,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-socks"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7e2948f60dbe26b35f2c7fb74ac2854c1fddded0fe9d7548fcc674a246f7615"
+dependencies = [
+ "either",
+ "futures-util",
+ "thiserror 1.0.69",
  "tokio",
 ]
 

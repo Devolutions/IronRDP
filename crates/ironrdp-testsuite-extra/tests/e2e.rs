@@ -6,7 +6,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
-use anyhow::Result;
 use ironrdp::connector;
 use ironrdp::core::{Encode as _, encode_vec, impl_as_any};
 use ironrdp::dvc::DrdynvcClient;
@@ -20,7 +19,7 @@ use ironrdp::pdu::rdp::headers::CompressionFlags;
 use ironrdp::pdu::{self, gcc};
 use ironrdp::server::{
     self, Acceptor, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer, RdpServerDisplay,
-    RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, StaticChannelFactory, TlsIdentityCtx,
+    RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerResult, StaticChannelFactory, TlsIdentityCtx,
 };
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput};
@@ -436,7 +435,7 @@ struct TestDisplayUpdates {
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for TestDisplayUpdates {
-    async fn next_update(&mut self) -> Result<Option<DisplayUpdate>> {
+    async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
         let mut rx = self.rx.lock().await;
 
         Ok(rx.recv().await)
@@ -456,7 +455,7 @@ impl RdpServerDisplay for TestDisplay {
         }
     }
 
-    async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(TestDisplayUpdates {
             rx: Arc::clone(&self.rx),
         }))

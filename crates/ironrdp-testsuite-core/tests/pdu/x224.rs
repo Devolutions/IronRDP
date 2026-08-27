@@ -1,8 +1,8 @@
 use expect_test::expect;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::nego::{
-    ConnectionConfirm, ConnectionRequest, Cookie, CorrelationInfo, FailureCode, NegoRequestData, RequestFlags,
-    ResponseFlags, RoutingToken, SecurityProtocol,
+    ConnectionConfirm, ConnectionRequest, ConnectionRequestWithOpaqueRoutingToken, Cookie, CorrelationInfo,
+    FailureCode, NegoRequestData, OpaqueRoutingToken, RequestFlags, ResponseFlags, RoutingToken, SecurityProtocol,
 };
 use ironrdp_pdu::tpdu::{TpduCode, TpduHeader};
 use ironrdp_pdu::tpkt::TpktHeader;
@@ -487,6 +487,39 @@ fn routing_token_decode() {
         .expect("routing token");
 
     assert_eq!(routing_token.0, "3640205228.15629.0000");
+}
+
+#[test]
+fn raw_routing_token_roundtrip() {
+    let token = OpaqueRoutingToken("tsv://MS Terminal Services Plugin.1.collection".to_owned());
+    let mut buffer = vec![0; token.size()];
+    token
+        .write(&mut WriteCursor::new(&mut buffer))
+        .expect("write raw routing token");
+    assert_eq!(buffer, b"tsv://MS Terminal Services Plugin.1.collection\r\n");
+
+    let decoded = OpaqueRoutingToken::read(&mut ReadCursor::new(&buffer))
+        .expect("read raw routing token")
+        .expect("raw routing token");
+    assert_eq!(decoded, token);
+
+    let request = ConnectionRequestWithOpaqueRoutingToken {
+        request: ConnectionRequest {
+            nego_data: None,
+            flags: RequestFlags::empty(),
+            protocol: SecurityProtocol::SSL,
+            correlation_info: None,
+        },
+        routing_token: token,
+    };
+    let encoded = ironrdp_core::encode_vec(&X224(request.clone())).expect("encode connection request");
+    let decoded = ironrdp_core::decode::<X224<ConnectionRequestWithOpaqueRoutingToken>>(&encoded)
+        .expect("decode connection request");
+    assert_eq!(decoded.0, request);
+
+    let oversized = OpaqueRoutingToken("x".repeat(ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH + 1));
+    let mut buffer = vec![0; oversized.size()];
+    assert!(oversized.write(&mut WriteCursor::new(&mut buffer)).is_err());
 }
 
 #[test]

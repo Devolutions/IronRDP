@@ -127,6 +127,11 @@ pub(crate) struct UpdateEncoder {
     /// oversized bitmaps into strips that fit within the limit when sent as
     /// uncompressed surface commands.
     max_request_size: usize,
+    /// Client's advertised New Pointer Update cache size (MS-RDPBCGR 2.2.7.1.5
+    /// `pointerCacheSize`). Zero means the client did not advertise support for the
+    /// New Pointer Update; `RGBAPointer`/`CachedPointer` emission is skipped in that
+    /// case rather than sending a PDU the client did not agree to accept.
+    pointer_cache_size: u16,
 }
 
 impl fmt::Debug for UpdateEncoder {
@@ -144,6 +149,7 @@ impl UpdateEncoder {
         surface_flags: CmdFlags,
         codecs: UpdateEncoderCodecs,
         max_request_size: u32,
+        pointer_cache_size: u16,
     ) -> ServerResult<Self> {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
             match codecs {
@@ -179,6 +185,7 @@ impl UpdateEncoder {
             bitmap_updater: Some(bitmap_updater),
             max_request_size: usize::try_from(max_request_size)
                 .map_err(|e| ServerError::custom("max_request_size", e))?,
+            pointer_cache_size,
         })
     }
 
@@ -418,11 +425,25 @@ impl EncoderIter<'_> {
                         continue;
                     }
                     DisplayUpdate::PointerPosition(pos) => UpdateEncoder::pointer_position(pos),
-                    DisplayUpdate::RGBAPointer(ptr) => UpdateEncoder::rgba_pointer(ptr),
+                    DisplayUpdate::RGBAPointer(ptr) => {
+                        if encoder.pointer_cache_size == 0 {
+                            debug!("Dropping RGBAPointer update: client did not advertise New Pointer Update support");
+                            continue;
+                        }
+                        UpdateEncoder::rgba_pointer(ptr)
+                    }
                     DisplayUpdate::ColorPointer(ptr) => UpdateEncoder::color_pointer(ptr),
                     DisplayUpdate::HidePointer => UpdateEncoder::hide_pointer(),
                     DisplayUpdate::DefaultPointer => UpdateEncoder::default_pointer(),
-                    DisplayUpdate::CachedPointer(idx) => UpdateEncoder::cached_pointer(idx),
+                    DisplayUpdate::CachedPointer(idx) => {
+                        if encoder.pointer_cache_size == 0 {
+                            debug!(
+                                "Dropping CachedPointer update: client did not advertise New Pointer Update support"
+                            );
+                            continue;
+                        }
+                        UpdateEncoder::cached_pointer(idx)
+                    }
                     DisplayUpdate::Resize(_) => return None,
                 },
                 State::BitmapDiffs { diffs, bitmap, pos } => {

@@ -34,12 +34,14 @@ use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
+use ironrdp_rdpdr as rdpdr;
 #[cfg(feature = "usb")]
 use ironrdp_rdpeusb::io::RequestId;
 use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rand::RngCore as _;
+use rdpdr::server::{RdpdrServer, RdpdrServerMessage};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::{TcpSocket, TcpStream};
@@ -48,12 +50,12 @@ use tokio::task;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::autodetect::{AutoDetectManager, RttSnapshot};
+use crate::autodetect::{AutoDetectManager, AutoDetectOutcome, RttSnapshot};
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
 use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
-use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult, from_anyhow_with_context};
+use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
@@ -63,7 +65,7 @@ use crate::urbdrc::{
     DeviceFactory, RawPending, ServerDeviceIoReq, UrbdrcDeviceServerMessage, UrbdrcServerMessage, UsbControlHandle,
     UsbDeviceHandle, UsbDeviceLifecycle,
 };
-use crate::{SoundServerFactory, builder, capabilities};
+use crate::{RdpdrServerFactory, SoundServerFactory, builder, capabilities};
 #[cfg(feature = "usb")]
 use ironrdp_rdpeusb::{InterfaceAlloc, io::CompletionData, server::UrbdrcControlServer, server::UrbdrcDeviceServer};
 
@@ -578,7 +580,6 @@ pub enum TransportTls {
 /// ```
 /// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay, RdpServerDisplayUpdates};
 ///
-///# use anyhow::Result;
 ///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent, ServerResult};
 ///# use tokio_rustls::TlsAcceptor;
 ///# struct NoopInputHandler;
@@ -592,7 +593,7 @@ pub enum TransportTls {
 ///#     async fn size(&mut self) -> DesktopSize {
 ///#         todo!()
 ///#     }
-///#     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+///#     async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
 ///#         todo!()
 ///#     }
 ///# }
@@ -637,6 +638,7 @@ pub struct RdpServer {
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
+    rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
@@ -695,6 +697,16 @@ pub struct RdpServer {
     /// [`Self::autodetect_baseline_rtt_handle`].
     autodetect_baseline_rtt: Arc<AtomicU32>,
 
+    /// Latest NetworkAutoDetect measured bandwidth in kilobits per second, or
+    /// `u32::MAX` until the first measurement completes (and while auto-detect
+    /// is disabled). Updated whenever a Bandwidth Measure Results response is
+    /// processed, same trigger point as [`Self::autodetect_rtt`]. Exposed via
+    /// [`Self::autodetect_bandwidth_handle`]: without it, the server can tell
+    /// the *client* its measured bandwidth over the wire but has no way to
+    /// tell the embedder, which the connect-time figure carried to the client
+    /// alone does not fix.
+    autodetect_bandwidth: Arc<AtomicU32>,
+
     /// Optional Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`). When `Some`, the server validates a returning
     /// `ARC_CS_PRIVATE_PACKET`, replaces its random after every connection, and
@@ -729,11 +741,36 @@ impl AutoReconnectCookieHandle {
     /// The change takes effect only after the server handles this event. `None`
     /// then disables auto-reconnect and invalidates every cookie currently held
     /// by the server.
+    #[expect(
+        clippy::result_large_err,
+        reason = "SendError<ServerEvent> hands the whole event back on a closed channel; ServerEvent's size is \
+                  driven by its largest per-channel payload (RdpdrServerMessage), not by anything this method does"
+    )]
     pub fn set(
         &self,
         cookie: Option<rdp::session_info::ServerAutoReconnect>,
     ) -> Result<(), mpsc::error::SendError<ServerEvent>> {
         self.sender.send(ServerEvent::SetAutoReconnectCookie(cookie))
+    }
+}
+
+/// Cloneable handle for gracefully disconnecting the active client with a
+/// `ServerSetErrorInfo` PDU (MS-RDPBCGR 2.2.5.1) while [`RdpServer::run`]
+/// owns the server.
+#[derive(Clone)]
+pub struct ErrorInfoDisconnectHandle {
+    sender: mpsc::UnboundedSender<ServerEvent>,
+}
+
+impl ErrorInfoDisconnectHandle {
+    /// Send `error` to the client via a `ServerSetErrorInfoPdu`, then close the
+    /// connection.
+    ///
+    /// The disconnect takes effect only after the server handles this event.
+    /// Unlike [`ServerEvent::Quit`], the client is told why: it decodes the
+    /// PDU and can surface `error` to the user before the connection drops.
+    pub fn disconnect(&self, error: ErrorInfo) -> Result<(), mpsc::error::SendError<ServerEvent>> {
+        self.sender.send(ServerEvent::Disconnect(error))
     }
 }
 
@@ -750,9 +787,20 @@ pub enum ServerEvent {
     /// with no explanation auto-reconnects a second later, re-preempts the
     /// client that replaced it, and the two ping-pong indefinitely. Telling
     /// the loser WHY it was disconnected is what makes it stay away.
+    ///
+    /// A more general version of the same PDU/mechanism exists as
+    /// [`Self::Disconnect`] (upstream, `ErrorInfoDisconnectHandle`) for an
+    /// embedder-chosen [`ErrorInfo`]; this variant stays separate because its
+    /// reason is fixed (always `DisconnectedByOtherconnection`) and it is
+    /// wired specifically to the preemption race, not exposed as a public
+    /// handle.
     EvictedByOtherConnection,
+    /// Disconnect the active client with a `ServerSetErrorInfoPdu` carrying
+    /// the given reason. See [`ErrorInfoDisconnectHandle::disconnect`].
+    Disconnect(ErrorInfo),
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
+    Rdpdr(RdpdrServerMessage),
     Echo(EchoServerMessage),
     SetCredentials(Credentials),
     /// Replace or clear the Server Auto-Reconnect Cookie.
@@ -780,8 +828,10 @@ impl fmt::Debug for ServerEvent {
         match self {
             Self::Quit(reason) => f.debug_tuple("Quit").field(reason).finish(),
             Self::EvictedByOtherConnection => f.write_str("EvictedByOtherConnection"),
+            Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
+            Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
             Self::Echo(..) => f.write_str("Echo(..)"),
             Self::SetCredentials(..) => f.write_str("SetCredentials(..)"),
             Self::SetAutoReconnectCookie(Some(..)) => f.write_str("SetAutoReconnectCookie(Some(..))"),
@@ -1268,12 +1318,14 @@ impl RdpServer {
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         mut rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
+        mut rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
         display_suppressed: Option<Arc<AtomicBool>>,
         #[cfg(feature = "usb")] usb_factory: Option<Box<dyn DeviceFactory>>,
         autodetect_rtt: Option<Arc<AtomicU32>>,
         autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
+        autodetect_bandwidth: Option<Arc<AtomicU32>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
@@ -1284,6 +1336,9 @@ impl RdpServer {
         }
         if let Some(rdpei) = rdpei_factory.as_mut() {
             rdpei.set_sender(ev_sender.clone());
+        }
+        if let Some(rdpdr) = rdpdr_factory.as_mut() {
+            rdpdr.set_sender(ev_sender.clone());
         }
         #[cfg(feature = "egfx")]
         if let Some(gfx) = gfx_factory.as_mut() {
@@ -1299,6 +1354,7 @@ impl RdpServer {
             sound_factory,
             cliprdr_factory,
             rdpei_factory,
+            rdpdr_factory,
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
             gfx_factory,
@@ -1323,6 +1379,11 @@ impl RdpServer {
             },
             autodetect_baseline_rtt: {
                 let handle = autodetect_baseline_rtt.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
+                handle.store(u32::MAX, Ordering::Relaxed);
+                handle
+            },
+            autodetect_bandwidth: {
+                let handle = autodetect_bandwidth.unwrap_or_else(|| Arc::new(AtomicU32::new(u32::MAX)));
                 handle.store(u32::MAX, Ordering::Relaxed);
                 handle
             },
@@ -1389,6 +1450,14 @@ impl RdpServer {
     /// server.
     pub fn auto_reconnect_cookie_handle(&self) -> AutoReconnectCookieHandle {
         AutoReconnectCookieHandle {
+            sender: self.ev_sender.clone(),
+        }
+    }
+
+    /// Returns a handle for gracefully disconnecting the active client with a
+    /// `ServerSetErrorInfo` PDU while [`Self::run`] owns this server.
+    pub fn error_info_disconnect_handle(&self) -> ErrorInfoDisconnectHandle {
+        ErrorInfoDisconnectHandle {
             sender: self.ev_sender.clone(),
         }
     }
@@ -1647,6 +1716,17 @@ impl RdpServer {
         Arc::clone(&self.autodetect_baseline_rtt)
     }
 
+    /// Returns a handle to the latest NetworkAutoDetect measured bandwidth in
+    /// kilobits per second (`u32::MAX` until the first measurement completes,
+    /// and while auto-detect is disabled). The server updates it whenever a
+    /// Bandwidth Measure Results response completes a measurement; backends
+    /// clone the handle to read the figure the server also reports to the
+    /// client on the wire. Inject a shared instance at construction with
+    /// [`RdpServerBuilder::with_autodetect_bandwidth_handle`](crate::RdpServerBuilder::with_autodetect_bandwidth_handle).
+    pub fn autodetect_bandwidth_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.autodetect_bandwidth)
+    }
+
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
     pub fn echo_handle(&self) -> &EchoServerHandle {
         &self.echo_handle
@@ -1696,6 +1776,12 @@ impl RdpServer {
             let backend = factory.build_backend();
 
             acceptor.attach_static_channel(RdpsndServer::new(backend));
+        }
+
+        if let Some(factory) = self.rdpdr_factory.as_deref() {
+            let backend = factory.build_backend();
+
+            acceptor.attach_static_channel(RdpdrServer::new(backend));
         }
 
         let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
@@ -2443,7 +2529,7 @@ impl RdpServer {
                 writer
                     .write_all(&buffer[..len])
                     .await
-                    .map_err(|e| ServerError::custom("failed to write display update", e))?;
+                    .map_err(|e| ServerError::io("failed to write display update", e))?;
             }
         }
 
@@ -2515,6 +2601,21 @@ impl RdpServer {
                     }
                     return Ok(RunState::Disconnect);
                 }
+                ServerEvent::Disconnect(error) => {
+                    debug!(?error, "Got disconnect event");
+                    let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error));
+                    // pduSource=0, not user_channel_id -- same MS-RDPBCGR
+                    // 2.2.5.1.1 requirement as the EvictedByOtherConnection
+                    // arm above; upstream's original call here (before this
+                    // merge) predated that parameter and used
+                    // user_channel_id, which this fixes to match.
+                    let data = encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("send server set error info", e))?;
+                    return Ok(RunState::Disconnect);
+                }
                 ServerEvent::GetLocalAddr(tx) => {
                     let _ = tx.send(self.local_addr);
                 }
@@ -2552,6 +2653,106 @@ impl RdpServer {
                         .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
                         .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("write_all", e))?;
+                }
+                ServerEvent::Rdpdr(msg) => {
+                    let Some(rdpdr) = self.get_svc_processor::<RdpdrServer>() else {
+                        warn!("No rdpdr channel, dropping event");
+                        continue;
+                    };
+                    let msgs = match msg {
+                        RdpdrServerMessage::Create {
+                            device_id,
+                            path,
+                            desired_access,
+                            create_disposition,
+                            create_options,
+                        } => rdpdr.drive_create(device_id, path, desired_access, create_disposition, create_options),
+                        RdpdrServerMessage::Read {
+                            device_id,
+                            file_id,
+                            length,
+                            offset,
+                        } => rdpdr.drive_read(device_id, file_id, length, offset),
+                        RdpdrServerMessage::Write {
+                            device_id,
+                            file_id,
+                            data,
+                            offset,
+                        } => rdpdr.drive_write(device_id, file_id, data, offset),
+                        RdpdrServerMessage::Close { device_id, file_id } => rdpdr.drive_close(device_id, file_id),
+                        RdpdrServerMessage::FlushBuffers { device_id, file_id } => {
+                            rdpdr.drive_flush_buffers(device_id, file_id)
+                        }
+                        RdpdrServerMessage::QueryInformation {
+                            device_id,
+                            file_id,
+                            info_class,
+                        } => rdpdr.drive_query_information(device_id, file_id, info_class),
+                        RdpdrServerMessage::SetInformation {
+                            device_id,
+                            file_id,
+                            set_buffer,
+                        } => rdpdr.drive_set_information(device_id, file_id, set_buffer),
+                        RdpdrServerMessage::QueryDirectory {
+                            device_id,
+                            file_id,
+                            info_class,
+                            path,
+                            initial_query,
+                        } => rdpdr.drive_query_directory(device_id, file_id, info_class, path, initial_query),
+                        RdpdrServerMessage::NotifyChangeDirectory {
+                            device_id,
+                            file_id,
+                            watch_tree,
+                            completion_filter,
+                        } => rdpdr.drive_notify_change_directory(device_id, file_id, watch_tree, completion_filter),
+                        RdpdrServerMessage::QueryVolumeInformation {
+                            device_id,
+                            file_id,
+                            fs_info_class,
+                        } => rdpdr.drive_query_volume_information(device_id, file_id, fs_info_class),
+                        RdpdrServerMessage::LockControl {
+                            device_id,
+                            file_id,
+                            operation,
+                            wait,
+                            locks,
+                        } => rdpdr.drive_lock_control(device_id, file_id, operation, wait, locks),
+                        RdpdrServerMessage::QuerySecurity {
+                            device_id,
+                            file_id,
+                            security_information,
+                        } => rdpdr.drive_query_security(device_id, file_id, security_information),
+                        RdpdrServerMessage::SetSecurity {
+                            device_id,
+                            file_id,
+                            security_information,
+                            security_descriptor,
+                        } => rdpdr.drive_set_security(device_id, file_id, security_information, security_descriptor),
+                        RdpdrServerMessage::DeviceControl {
+                            device_id,
+                            file_id,
+                            io_control_code,
+                            input_buffer,
+                            output_buffer_length,
+                        } => rdpdr.drive_device_control(
+                            device_id,
+                            file_id,
+                            io_control_code,
+                            input_buffer,
+                            output_buffer_length,
+                        ),
+                    }
+                    .map_err_kind("failed to send rdpdr event", ServerErrorKind::Pdu)?;
+                    let channel_id = self
+                        .get_channel_id_by_type::<RdpdrServer>()
+                        .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
+                    let data =
+                        server_encode_svc_messages(msgs, channel_id, user_channel_id).map_err(ServerError::encode)?;
                     writer
                         .write_all(&data)
                         .await
@@ -2930,13 +3131,7 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Starting client loop");
-        let mut display_updates = self
-            .display
-            .lock()
-            .await
-            .updates()
-            .await
-            .map_err(|e| from_anyhow_with_context(e, "getting display updates"))?;
+        let mut display_updates = self.display.lock().await.updates().await?;
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
@@ -3147,6 +3342,7 @@ impl RdpServer {
 
         let mut update_codecs = UpdateEncoderCodecs::new();
         let mut surface_flags = CmdFlags::empty();
+        let mut pointer_cache_size: u16 = 0;
         for c in result.capabilities {
             match c {
                 CapabilitySet::General(c) => {
@@ -3230,12 +3426,28 @@ impl RdpServer {
                         }
                     }
                 }
+                CapabilitySet::Pointer(p) => {
+                    // MS-RDPBCGR 2.2.7.1.5: pointerCacheSize is the client's advertised cache
+                    // size for the New Pointer Update specifically (colorPointerCacheSize is
+                    // the separate, always-supported Color Pointer Update cache). A zero or
+                    // absent pointerCacheSize means the client did not advertise New Pointer
+                    // Update support at all, so `UpdateEncoder` must not emit RGBAPointer, and
+                    // must not reference a cache slot via CachedPointer either, since nothing
+                    // else in this crate populates that cache via the Color Pointer Update.
+                    pointer_cache_size = p.pointer_cache_size;
+                }
                 _ => {}
             }
         }
 
         let desktop_size = self.display.lock().await.size().await;
-        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs, self.opts.max_request_size)?;
+        let encoder = UpdateEncoder::new(
+            desktop_size,
+            surface_flags,
+            update_codecs,
+            self.opts.max_request_size,
+            pointer_cache_size,
+        )?;
 
         self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)
             .await?;
@@ -3381,23 +3593,44 @@ impl RdpServer {
         match decode::<rdp::autodetect::AutoDetectRspPdu>(data.user_data.as_ref()) {
             Ok(pdu) => {
                 if let Some(ref mut ad) = self.autodetect {
-                    if let Some(rtt_ms) = ad.handle_response(&pdu.response, monotonic_now_ms()) {
-                        self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
-                        // A matched RTT sample always updates the session-lifetime low in the
-                        // same call (see `handle_response`'s RttResponse arm), so it is available
-                        // unconditionally here, not just on a new low.
-                        let baseline_rtt_ms = ad
-                            .baseline_rtt_ms()
-                            .expect("handle_response just recorded a sample above");
-                        self.autodetect_baseline_rtt.store(baseline_rtt_ms, Ordering::Relaxed);
-                        debug!(
-                            rtt_ms,
-                            baseline_rtt_ms,
-                            seq = pdu.response.sequence_number(),
-                            "RTT measured"
-                        );
-                    } else {
-                        trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
+                    match ad.handle_response(&pdu.response, monotonic_now_ms()) {
+                        AutoDetectOutcome::Rtt(rtt_ms) => {
+                            self.autodetect_rtt.store(rtt_ms, Ordering::Relaxed);
+                            // A matched RTT sample always updates the session-lifetime low in the
+                            // same call (see `handle_response`'s RttResponse arm), so it is available
+                            // unconditionally here, not just on a new low.
+                            let baseline_rtt_ms = ad
+                                .baseline_rtt_ms()
+                                .expect("handle_response just recorded a sample above");
+                            self.autodetect_baseline_rtt.store(baseline_rtt_ms, Ordering::Relaxed);
+                            debug!(
+                                rtt_ms,
+                                baseline_rtt_ms,
+                                seq = pdu.response.sequence_number(),
+                                "RTT measured"
+                            );
+                        }
+                        AutoDetectOutcome::Bandwidth(Some(bandwidth_kbps)) => {
+                            self.autodetect_bandwidth.store(bandwidth_kbps, Ordering::Relaxed);
+                            debug!(
+                                bandwidth_kbps,
+                                seq = pdu.response.sequence_number(),
+                                "Bandwidth measured"
+                            );
+                        }
+                        AutoDetectOutcome::Bandwidth(None) => {
+                            // The manager just cleared its own figure rather than keep
+                            // reporting a stale one (see `handle_response`'s doc comment);
+                            // mirror that here so the exposed handle does not disagree.
+                            self.autodetect_bandwidth.store(u32::MAX, Ordering::Relaxed);
+                            trace!(
+                                seq = pdu.response.sequence_number(),
+                                "Bandwidth measurement completed without a usable figure"
+                            );
+                        }
+                        AutoDetectOutcome::Unmatched => {
+                            trace!(seq = pdu.response.sequence_number(), "Unmatched auto-detect response");
+                        }
                     }
                 }
             }
@@ -3709,11 +3942,7 @@ mod preempt_tests {
                     height: 768,
                 }
             }
-            async fn updates(&mut self) -> anyhow::Result<Box<dyn crate::RdpServerDisplayUpdates>> {
-                // `RdpServerDisplay::updates()` still returns `anyhow::Result`
-                // (its conversion to `ServerResult` is #1245, not yet landed
-                // upstream) -- qualified explicitly since this module's own
-                // `Result` alias is `ServerResult` now, not anyhow's.
+            async fn updates(&mut self) -> ServerResult<Box<dyn crate::RdpServerDisplayUpdates>> {
                 unreachable!("negotiation never asks for updates")
             }
         }

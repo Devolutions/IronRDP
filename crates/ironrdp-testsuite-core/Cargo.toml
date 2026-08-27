@@ -55,13 +55,14 @@ ironrdp-input.path = "../ironrdp-input"
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 ironrdp-rdpdr.path = "../ironrdp-rdpdr"
 ironrdp-rdpeai.path = "../ironrdp-rdpeai"
+ironrdp-rdpel.path = "../ironrdp-rdpel"
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", features = ["std"] }
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", features = ["std"] }
 ironrdp-rdpeusb.path = "../ironrdp-rdpeusb"
 ironrdp-usb.path = "../ironrdp-usb"
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", features = ["__test"] }
 ironrdp-server.path = "../ironrdp-server"
-ironrdp-session = { path = "../ironrdp-session", features = ["qoi"] }
+ironrdp-session = { path = "../ironrdp-session", features = ["qoi", "__test"] }
 ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpfile.path = "../ironrdp-rdpfile"

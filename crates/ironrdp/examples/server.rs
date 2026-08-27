@@ -14,15 +14,15 @@ use ironrdp::cliprdr::backend::{CliprdrBackend, CliprdrBackendFactory};
 use ironrdp::connector::DesktopSize;
 use ironrdp::rdpsnd::pdu::{AudioFormat, WaveFormat};
 use ironrdp::rdpsnd::server::{NegotiatedFormat, RdpsndError, RdpsndServerHandler, RdpsndServerMessage};
-use ironrdp::server::tokio::sync::mpsc::UnboundedSender;
-use ironrdp::server::tokio::time::{self, Duration, sleep};
 use ironrdp::server::{
     BitmapUpdate, CliprdrServerFactory, Credentials, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer,
     RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
-    SoundServerFactory, TlsIdentityCtx, tokio,
+    SoundServerFactory, TlsIdentityCtx,
 };
 use ironrdp_cliprdr_native::StubCliprdrBackend;
 use rand::prelude::*;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::time::{self, Duration, sleep};
 use tracing::{debug, info, warn};
 
 const HELP: &str = "\
@@ -154,7 +154,7 @@ struct DisplayUpdates;
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for DisplayUpdates {
-    async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
+    async fn next_update(&mut self) -> ironrdp::server::ServerResult<Option<DisplayUpdate>> {
         sleep(Duration::from_millis(100)).await;
         let mut rng = rand::rng();
 
@@ -206,7 +206,7 @@ impl RdpServerDisplay for Handler {
         }
     }
 
-    async fn updates(&mut self) -> anyhow::Result<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self) -> ironrdp::server::ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(DisplayUpdates {}))
     }
 }

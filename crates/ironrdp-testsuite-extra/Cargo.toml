@@ -49,7 +49,7 @@ ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }
 ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
-ironrdp-vmconnect.path = "../ironrdp-vmconnect"
+ironrdp-vmconnect = { path = "../ironrdp-vmconnect", features = ["__test"] }
 rcgen = "0.14"
 semver = "1.0"
 tracing = { version = "0.1", features = ["log"] }

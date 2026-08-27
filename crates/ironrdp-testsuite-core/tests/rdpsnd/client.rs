@@ -453,6 +453,23 @@ fn ready_audio_format_v6_restarts_negotiation() {
     assert!(matches!(confirm, pdu::ClientAudioOutputPdu::WaveConfirm(_)));
 }
 
+#[test]
+fn configured_quality_mode_is_sent_to_version_six_server() {
+    let backend = RecordingBackend::with_formats(vec![pcm(44100, 2)]);
+    let mut client = Rdpsnd::new(Box::new(backend)).with_quality_mode(pdu::QualityMode::Medium);
+
+    let responses = client
+        .process(&encoded_server_formats(pdu::Version::V6))
+        .expect("negotiate audio formats");
+    let encoded = responses[1].encode_unframed_pdu().expect("encode quality mode");
+    let pdu::ClientAudioOutputPdu::QualityMode(quality) =
+        decode::<pdu::ClientAudioOutputPdu>(&encoded).expect("decode quality mode")
+    else {
+        panic!("expected quality mode");
+    };
+    assert_eq!(quality.quality_mode, pdu::QualityMode::Medium);
+}
+
 // Renegotiation with version < V6 should not send QualityMode.
 #[test]
 fn ready_audio_format_v5_skips_quality_mode() {

@@ -2,8 +2,6 @@
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![allow(clippy::arithmetic_side_effects)] // TODO: should we enable this lint back?
 
-pub use {tokio, tokio_rustls};
-
 mod macros;
 
 pub mod autodetect;
@@ -19,6 +17,7 @@ mod gfx;
 mod handler;
 #[cfg(feature = "helper")]
 mod helper;
+mod rdpdr;
 mod rdpei;
 mod server;
 mod sound;
@@ -38,9 +37,11 @@ pub use handler::{KeyboardEvent, MouseButton, MouseEvent, RdpServerInputHandler}
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
 pub use ironrdp_acceptor::Acceptor;
+pub use ironrdp_pdu::rdp::server_error_info::ErrorInfo;
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 #[cfg(feature = "usb")]
 pub use ironrdp_rdpeusb::io::{CompletionData, DeviceAnnounce, DeviceText, InternalIoControlPacket};
+pub use rdpdr::{NoopRdpdrServerBackend, RdpdrServerBackend, RdpdrServerFactory, RdpdrServerMessage};
 pub use rdpei::{
     CsReadyFlags, CsReadyPdu, DismissHoveringTouchContactPdu, PenContact, PenContactDataFlags, PenContactFields,
     PenContactFlags, PenEventPdu, PenFlags, PenFrame, RdpInputProtocolVersion, RdpeiHandler, RdpeiServer,
@@ -49,8 +50,9 @@ pub use rdpei::{
 };
 pub use server::{
     AutoReconnectCookieHandle, ConnectionHandler, ConnectionInfo, CredentialDecision, CredentialValidationError,
-    CredentialValidator, Credentials, ExactMatchCredentialValidator, PostConnectionAction, RdpServer, RdpServerOptions,
-    RdpServerSecurity, ServerEvent, ServerEventSender, StaticChannelFactory, TransportTls, pick_remotefx_entropy_coder,
+    CredentialValidator, Credentials, ErrorInfoDisconnectHandle, ExactMatchCredentialValidator, PostConnectionAction,
+    RdpServer, RdpServerOptions, RdpServerSecurity, ServerEvent, ServerEventSender, StaticChannelFactory, TransportTls,
+    pick_remotefx_entropy_coder,
 };
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 #[cfg(feature = "usb")]
