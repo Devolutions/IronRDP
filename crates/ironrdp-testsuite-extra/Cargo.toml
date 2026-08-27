@@ -60,7 +60,6 @@ tokio = { version = "1", features = ["sync", "time", "net", "rt", "rt-multi-thre
 # process default, which fails every TLS test in this binary.
 tokio-rustls = { version = "0.26", default-features = false }
 uuid = { version = "1", features = ["v4"] }
-winit = "0.30"
 
 [target.'cfg(windows)'.dev-dependencies]
 ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"
