@@ -2557,10 +2557,10 @@ impl Information {
 
 /// [2.2.3.3.8] Server Drive Query Information Request (DR_DRIVE_QUERY_INFORMATION_REQ)
 ///
-/// Note that Length, Padding, and QueryBuffer fields are all ignored in keeping with the [analogous code in FreeRDP].
+/// `Length` bounds the consumed `QueryBuffer`; the padding and buffer contents are ignored like the [analogous FreeRDP code].
 ///
 /// [2.2.3.3.8]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/e43dcd68-2980-40a9-9238-344b6cf94946
-/// [analogous code in FreeRDP]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L384
+/// [analogous FreeRDP code]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L384
 #[derive(Debug, PartialEq, Clone)]
 pub struct ServerDriveQueryInformationRequest {
     pub device_io_request: DeviceIoRequest,
@@ -2569,11 +2569,16 @@ pub struct ServerDriveQueryInformationRequest {
 
 impl ServerDriveQueryInformationRequest {
     const NAME: &'static str = "ServerDriveQueryInformationRequest";
-    const FIXED_PART_SIZE: usize = 4; // FsInformationClass
+    const PADDING_SIZE: usize = 24;
+    const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + Self::PADDING_SIZE /* Padding */;
 
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        ensure_size!(ctx: Self::NAME, in: src, size: 4);
+        ensure_size!(ctx: Self::NAME, in: src, size: Self::FIXED_PART_SIZE);
         let file_info_class_lvl = FileInformationClassLevel::from(src.read_u32());
+        let query_buffer_length = cast_length!(Self::NAME, "Length", src.read_u32(), in: src)?;
+        read_padding!(src, Self::PADDING_SIZE);
+        ensure_size!(ctx: Self::NAME, in: src, size: query_buffer_length);
+        src.advance(query_buffer_length);
 
         Ok(Self {
             device_io_request: dev_io_req,
@@ -2581,10 +2586,13 @@ impl ServerDriveQueryInformationRequest {
         })
     }
 
+    /// Encodes an empty `QueryBuffer` because this representation retains only the information class.
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(ctx: Self::NAME, in: dst, size: self.size());
         self.device_io_request.encode(dst)?;
         dst.write_u32(self.file_info_class_lvl.clone().into());
+        dst.write_u32(0); // Length
+        write_padding!(dst, Self::PADDING_SIZE);
         Ok(())
     }
 

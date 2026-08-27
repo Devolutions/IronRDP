@@ -1030,17 +1030,70 @@ fn device_create_request_round_trips() {
 
 #[test]
 fn server_drive_query_information_request_round_trips() {
+    const WIRE: [u8; 52] = [
+        1, 0, 0, 0, // DeviceId
+        2, 0, 0, 0, // FileId
+        3, 0, 0, 0, // CompletionId
+        5, 0, 0, 0, // MajorFunction
+        0, 0, 0, 0, // MinorFunction
+        4, 0, 0, 0, // FsInformationClass
+        0, 0, 0, 0, // Length
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Padding
+    ];
     let original = ServerDriveQueryInformationRequest {
         device_io_request: some_device_io_request(MajorFunction::QueryInformation, MinorFunction::from(0)),
         file_info_class_lvl: FileInformationClassLevel::FILE_BASIC_INFORMATION,
     };
     let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    assert_eq!(encoded, WIRE);
+    let mut src = ReadCursor::new(&encoded[20..]);
     let decoded = ServerDriveQueryInformationRequest::decode(
         some_device_io_request(MajorFunction::QueryInformation, MinorFunction::from(0)),
-        &mut ReadCursor::new(&encoded[20..]),
+        &mut src,
     )
     .unwrap();
     assert_eq!(decoded.file_info_class_lvl, original.file_info_class_lvl);
+    assert!(src.is_empty());
+}
+
+#[test]
+fn server_drive_query_information_request_consumes_query_buffer() {
+    let original = ServerDriveQueryInformationRequest {
+        device_io_request: some_device_io_request(MajorFunction::QueryInformation, MinorFunction::from(0)),
+        file_info_class_lvl: FileInformationClassLevel::FILE_BASIC_INFORMATION,
+    };
+    let mut encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    encoded[24..28].copy_from_slice(&3u32.to_le_bytes());
+    encoded.extend_from_slice(&[1, 2, 3]);
+
+    let mut src = ReadCursor::new(&encoded[20..]);
+    let decoded = ServerDriveQueryInformationRequest::decode(
+        some_device_io_request(MajorFunction::QueryInformation, MinorFunction::from(0)),
+        &mut src,
+    )
+    .unwrap();
+    assert_eq!(decoded.file_info_class_lvl, original.file_info_class_lvl);
+    assert!(src.is_empty());
+}
+
+#[test]
+fn server_drive_query_information_request_rejects_truncated_fields() {
+    let original = ServerDriveQueryInformationRequest {
+        device_io_request: some_device_io_request(MajorFunction::QueryInformation, MinorFunction::from(0)),
+        file_info_class_lvl: FileInformationClassLevel::FILE_BASIC_INFORMATION,
+    };
+    let encoded = encode_to_vec(original.size(), |dst| original.encode(dst));
+    let request = some_device_io_request(MajorFunction::QueryInformation, MinorFunction::from(0));
+
+    assert!(
+        ServerDriveQueryInformationRequest::decode(request.clone(), &mut ReadCursor::new(&encoded[20..51])).is_err()
+    );
+
+    let mut missing_query_buffer = encoded;
+    missing_query_buffer[24..28].copy_from_slice(&1u32.to_le_bytes());
+    assert!(
+        ServerDriveQueryInformationRequest::decode(request, &mut ReadCursor::new(&missing_query_buffer[20..])).is_err()
+    );
 }
 
 #[test]
