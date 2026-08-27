@@ -96,6 +96,15 @@ pub fn install(sh: &Shell) -> anyhow::Result<()> {
 
     cmd!(sh, "rustup install {NIGHTLY_TOOLCHAIN} --profile=minimal").run()?;
 
+    // Required by `coverage` to merge raw profile data and render a report.
+    // Without it, `cargo fuzz coverage` fails partway through with a missing
+    // llvm-profdata error instead of at install time.
+    cmd!(
+        sh,
+        "rustup component add llvm-tools-preview --toolchain {NIGHTLY_TOOLCHAIN}"
+    )
+    .run()?;
+
     Ok(())
 }
 
@@ -120,6 +129,87 @@ pub fn run(sh: &Shell, duration: Option<u32>, target: Option<String>) -> anyhow:
     }
 
     println!("All good!");
+
+    Ok(())
+}
+
+/// Locate the pinned nightly toolchain's bundled LLVM tools directory
+/// (`llvm-cov`, `llvm-profdata`), installed via the `llvm-tools-preview`
+/// rustup component. Neither `rustup run` nor `PATH` exposes these: `cargo
+/// fuzz coverage` itself locates `llvm-profdata` the same way internally,
+/// by resolving the toolchain's own `rustlib` tree rather than relying on
+/// whatever `llvm-cov` a plain `PATH` lookup might find (which can be an
+/// unrelated system-wide LLVM install with an incompatible profile format).
+fn llvm_tools_bin_dir(sh: &Shell) -> anyhow::Result<std::path::PathBuf> {
+    let libdir = cmd!(sh, "rustc +{NIGHTLY_TOOLCHAIN} --print target-libdir")
+        .read()
+        .context("locate the pinned nightly toolchain's target-libdir")?;
+
+    let bin_dir = std::path::Path::new(libdir.trim())
+        .parent()
+        .context("target-libdir has no parent directory")?
+        .join("bin");
+
+    anyhow::ensure!(
+        bin_dir.join("llvm-cov").is_file(),
+        "llvm-cov not found at {}; run `cargo xtask fuzz install` first",
+        bin_dir.display()
+    );
+
+    Ok(bin_dir)
+}
+
+/// Run each target against its existing corpus (`cargo xtask fuzz corpus-fetch`
+/// first, for a corpus worth reporting on) and print per-file line coverage.
+///
+/// Coverage-guided fuzzing typically plateaus around 12 hours in (Liyanage
+/// et al., ICSE 2023); several targets here have run far longer than that
+/// without any coverage-feedback check. Running a target for hours after
+/// its coverage has stopped growing hides bug-finding opportunity
+/// elsewhere; this surfaces that instead of leaving it implicit.
+///
+/// Only lines with nonzero coverage are printed, since the full report
+/// otherwise lists every source file linked into the fuzz binary, most of
+/// which the target never reaches and are not useful to see.
+pub fn coverage(sh: &Shell, target: Option<String>) -> anyhow::Result<()> {
+    let _s = Section::new("FUZZ-COVERAGE");
+    windows_skip!();
+
+    let _guard = sh.push_dir("./fuzz");
+
+    let targets = match target {
+        Some(value) => vec![value],
+        None => discover_targets()?,
+    };
+
+    let llvm_cov = llvm_tools_bin_dir(sh)?.join("llvm-cov");
+
+    for target in &targets {
+        cmd!(sh, "rustup run {NIGHTLY_TOOLCHAIN} cargo fuzz coverage {target}").run()?;
+
+        let binary = std::path::Path::new("target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release")
+            .join(target);
+        let profdata = format!("coverage/{target}/coverage.profdata");
+
+        let report = cmd!(
+            sh,
+            "{llvm_cov} report {binary} --instr-profile={profdata} --ignore-filename-regex=cargo/registry|/rustc/|\\.cargo/"
+        )
+        .read()
+        .with_context(|| format!("generate coverage report for {target}"))?;
+
+        println!("--- {target} ---");
+        for line in report.lines() {
+            // A fully-untouched file's row carries exactly three "0.00%" columns
+            // (regions, functions, lines; branches shows "-", not a percentage).
+            // Any row with fewer is touched and worth keeping; the header, the
+            // separator, and the TOTAL summary line never contain "0.00%" at
+            // all and are always kept.
+            if line.matches("0.00%").count() < 3 {
+                println!("{line}");
+            }
+        }
+    }
 
     Ok(())
 }
