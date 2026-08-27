@@ -183,6 +183,24 @@ fn vmconnect_basic_flag_selects_basic_mode() {
     assert_eq!(config.properties().vmconnect_basic(), Some(true));
 }
 
+#[cfg(windows)]
+#[test]
+fn vmconnect_current_user_cli_flag_needs_no_credentials() {
+    const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
+    let config = parse_config_from([
+        "ironrdp-viewer",
+        "localhost",
+        "--vmconnect",
+        VM_ID,
+        "--vmconnect-current-user",
+    ])
+    .expect("valid current-user VMConnect configuration");
+
+    assert!(config.vmconnect_current_user());
+    assert_eq!(config.vm_id(), Some(VM_ID));
+    assert_eq!(config.properties().vmconnect_current_user(), Some(true));
+}
+
 #[test]
 fn vmconnect_properties_restore_typed_config() {
     const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
