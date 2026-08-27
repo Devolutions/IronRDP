@@ -2584,6 +2584,7 @@ dependencies = [
  "pico-args",
  "rand 0.9.4",
  "sspi",
+ "tokio",
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
