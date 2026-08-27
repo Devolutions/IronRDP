@@ -99,6 +99,8 @@ pub struct Config {
     pub(crate) vm_id: Option<String>,
     #[cfg(feature = "vmconnect")]
     pub(crate) vmconnect_mode: VmConnectMode,
+    #[cfg(all(windows, feature = "vmconnect"))]
+    pub(crate) vmconnect_current_user: bool,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
@@ -174,6 +176,20 @@ impl Config {
         self.vm_id.as_ref().map(|_| self.vmconnect_mode)
     }
 
+    #[cfg(all(windows, feature = "vmconnect"))]
+    /// Whether VMConnect host authentication uses the caller's current Windows logon token.
+    pub fn vmconnect_current_user(&self) -> bool {
+        self.vm_id.is_some() && self.vmconnect_current_user
+    }
+
+    #[cfg(all(windows, feature = "vmconnect"))]
+    /// Whether this local VMConnect session accepts Hyper-V frame-buffer redirection.
+    pub fn vmconnect_framebuffer_redirection(&self) -> bool {
+        self.vm_id.is_some()
+            && matches!(&self.transport, Transport::Direct)
+            && is_loopback_host(self.destination.name())
+    }
+
     /// Optional Kerberos/KDC proxy configuration.
     pub fn kerberos_config(&self) -> Option<&ironrdp_connector::credssp::KerberosConfig> {
         self.kerberos_config.as_ref()
@@ -244,6 +260,13 @@ impl fmt::Debug for Config {
         {
             s.field("vm_id", &self.vm_id);
             s.field("vmconnect_mode", &self.vmconnect_mode);
+            #[cfg(windows)]
+            s.field("vmconnect_current_user", &self.vmconnect_current_user);
+            #[cfg(windows)]
+            s.field(
+                "vmconnect_framebuffer_redirection",
+                &self.vmconnect_framebuffer_redirection(),
+            );
         }
         s.field("kerberos_config", &self.kerberos_config);
         s.field("fake_events_interval", &self.fake_events_interval);
@@ -739,6 +762,8 @@ pub struct ConfigBuilder {
     vm_id: Option<String>,
     #[cfg(feature = "vmconnect")]
     vmconnect_mode: VmConnectMode,
+    #[cfg(all(windows, feature = "vmconnect"))]
+    vmconnect_current_user: bool,
     rdcleanpath_token: Option<String>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     fake_events_interval: Option<Duration>,
@@ -1217,7 +1242,6 @@ impl ConfigBuilder {
         self
     }
 
-    #[cfg(feature = "vmconnect")]
     /// Connect to a Hyper-V VM console by VM GUID. Destination must use port
     /// [`ironrdp_vmconnect::PORT`] (2179) unless the caller explicitly selects another port.
     /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
@@ -1226,20 +1250,39 @@ impl ConfigBuilder {
     /// embedder (error if disabled). Works over Direct, RDCleanPath, and RDS Gateway (the
     /// destination port, typically 2179, is forwarded in the MS-TSGU channel-create packet,
     /// then the VMConnect PCB / `connect_front` handshake runs on the tunneled stream).
+    #[cfg(feature = "vmconnect")]
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
-        self.vm_id = Some(vm_id.into());
+        let vm_id = vm_id.into();
+        self.properties.set_vmconnect_id(vm_id.clone());
+        self.properties.set_vmconnect_basic(false);
+        self.vm_id = Some(vm_id);
+        self.vmconnect_mode = VmConnectMode::Enhanced;
         self
     }
 
-    #[cfg(feature = "vmconnect")]
     /// Connect to a Hyper-V VM console using the selected mode.
     ///
     /// See [`with_vmconnect`](Self::with_vmconnect) for transport notes.
+    #[cfg(feature = "vmconnect")]
     #[must_use]
     pub fn with_vmconnect_mode(mut self, vm_id: impl Into<String>, mode: VmConnectMode) -> Self {
-        self.vm_id = Some(vm_id.into());
+        let vm_id = vm_id.into();
+        self.properties.set_vmconnect_id(vm_id.clone());
+        self.properties.set_vmconnect_basic(mode == VmConnectMode::Basic);
+        self.vm_id = Some(vm_id);
         self.vmconnect_mode = mode;
+        self
+    }
+
+    /// Use the caller's current Windows logon token for VMConnect host authentication.
+    ///
+    /// This is the native VMConnect behavior for local Hyper-V connections and avoids handling a reusable host password.
+    #[cfg(all(windows, feature = "vmconnect"))]
+    #[must_use]
+    pub fn with_vmconnect_current_user(mut self, enabled: bool) -> Self {
+        self.properties.set_vmconnect_current_user(enabled);
+        self.vmconnect_current_user = enabled;
         self
     }
 
@@ -1491,28 +1534,40 @@ impl ConfigBuilder {
     /// because [`build`](Self::build) resolves them from the RDP server account.
     pub fn missing(&self) -> Vec<MissingField> {
         let mut missing = Vec::new();
-        if self.destination.is_none() {
-            missing.push(MissingField::ServerAddress);
-        }
-        if self.username.is_none() {
-            missing.push(MissingField::Username);
-        }
-        if self.password.is_none() {
-            missing.push(MissingField::Password);
-        }
+        #[cfg(all(windows, feature = "vmconnect"))]
+        let uses_current_vmconnect_credentials = self.vm_id.is_some() && self.vmconnect_current_user;
+        #[cfg(not(all(windows, feature = "vmconnect")))]
+        let uses_current_vmconnect_credentials = false;
         #[cfg(feature = "gateway")]
-        if matches!(self.transport, TransportKind::Gateway { .. }) {
-            let uses_server_credentials = matches!(
+        let gateway_uses_server_credentials = matches!(self.transport, TransportKind::Gateway { .. })
+            && matches!(
                 self.properties.gateway_credentials_source(),
                 Ok(Some(ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials))
             );
-            if !uses_server_credentials {
-                if self.gateway_username.is_none() {
-                    missing.push(MissingField::GatewayUsername);
-                }
-                if self.gateway_password.is_none() {
-                    missing.push(MissingField::GatewayPassword);
-                }
+        #[cfg(not(feature = "gateway"))]
+        let gateway_uses_server_credentials = false;
+        if self.destination.is_none() {
+            missing.push(MissingField::ServerAddress);
+        }
+        if self.username.is_none()
+            && (!uses_current_vmconnect_credentials
+                || (gateway_uses_server_credentials && self.gateway_username.is_none()))
+        {
+            missing.push(MissingField::Username);
+        }
+        if self.password.is_none()
+            && (!uses_current_vmconnect_credentials
+                || (gateway_uses_server_credentials && self.gateway_password.is_none()))
+        {
+            missing.push(MissingField::Password);
+        }
+        #[cfg(feature = "gateway")]
+        if matches!(self.transport, TransportKind::Gateway { .. }) && !gateway_uses_server_credentials {
+            if self.gateway_username.is_none() {
+                missing.push(MissingField::GatewayUsername);
+            }
+            if self.gateway_password.is_none() {
+                missing.push(MissingField::GatewayPassword);
             }
         }
         if matches!(self.transport, TransportKind::RDCleanPath { .. }) && self.rdcleanpath_token.is_none() {
@@ -1621,6 +1676,43 @@ impl ConfigBuilder {
         #[cfg(feature = "vmconnect")]
         if let Some(vm_id) = &self.vm_id {
             anyhow::ensure!(!vm_id.trim().is_empty(), "vmconnect VM ID is empty");
+        }
+
+        #[cfg(feature = "vmconnect")]
+        if self.vm_id.is_some()
+            && let Some(destination) = self.destination.as_mut()
+            && destination.name == "."
+        {
+            destination.name = "localhost".to_owned();
+            self.properties.set_full_address(&ironrdp_cfg::TargetAddr {
+                host: ironrdp_cfg::TargetHost::Domain(destination.name.clone()),
+                port: destination.port,
+            });
+            self.properties.clear_alternate_full_address();
+        }
+
+        #[cfg(all(windows, feature = "vmconnect"))]
+        if self.vm_id.is_some()
+            && self.vmconnect_current_user
+            && matches!(self.transport, TransportKind::RDCleanPath { .. })
+        {
+            anyhow::bail!("vmconnect current-user authentication is not supported with RDCleanPath");
+        }
+
+        #[cfg(all(windows, feature = "vmconnect"))]
+        let vmconnect_framebuffer_redirection = self.vm_id.is_some()
+            && matches!(&self.transport, TransportKind::Direct)
+            && self
+                .destination
+                .as_ref()
+                .is_some_and(|destination| is_loopback_host(destination.name()));
+
+        #[cfg(all(windows, feature = "vmconnect"))]
+        if vmconnect_framebuffer_redirection && self.dig_product_id.as_deref().is_none_or(str::is_empty) {
+            self.dig_product_id = Some(
+                ironrdp_vmconnect::local_instance_id()
+                    .context("read local RDP InstanceID for VMConnect frame-buffer redirection")?,
+            );
         }
 
         #[cfg(feature = "vmconnect")]
@@ -1834,6 +1926,8 @@ impl ConfigBuilder {
             vm_id: self.vm_id,
             #[cfg(feature = "vmconnect")]
             vmconnect_mode: self.vmconnect_mode,
+            #[cfg(all(windows, feature = "vmconnect"))]
+            vmconnect_current_user: self.vmconnect_current_user,
             kerberos_config,
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,
@@ -1931,6 +2025,22 @@ impl ConfigBuilder {
         }
         if let Some(dir) = ps.shell_working_directory() {
             self.work_dir = Some(dir.to_owned());
+        }
+        #[cfg(feature = "vmconnect")]
+        if let Some(vm_id) = ps.vmconnect_id() {
+            self.vm_id = Some(vm_id.to_owned());
+        }
+        #[cfg(feature = "vmconnect")]
+        if let Some(basic) = ps.vmconnect_basic() {
+            self.vmconnect_mode = if basic {
+                VmConnectMode::Basic
+            } else {
+                VmConnectMode::Enhanced
+            };
+        }
+        #[cfg(all(windows, feature = "vmconnect"))]
+        if let Some(current_user) = ps.vmconnect_current_user() {
+            self.vmconnect_current_user = current_user;
         }
         if let Some(remote_application_mode) = ps.remote_application_mode() {
             self.remote_application_mode = Some(remote_application_mode);
@@ -2156,6 +2266,14 @@ fn compression_type_from_level(level: u32) -> anyhow::Result<ironrdp_pdu::rdp::c
         3 => Ok(CompressionType::Rdp61),
         _ => anyhow::bail!("invalid compression level: valid values are 0, 1, 2, 3"),
     }
+}
+
+#[cfg(all(windows, feature = "vmconnect"))]
+fn is_loopback_host(host: &str) -> bool {
+    host.trim_end_matches('.').eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<core::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 fn level_from_compression_type(ty: ironrdp_pdu::rdp::client_info::CompressionType) -> u32 {
