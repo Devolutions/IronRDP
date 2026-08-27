@@ -59,8 +59,17 @@ async fn main() -> Result<(), anyhow::Error> {
         OptCodec::QoiZ => update_codecs.set_qoiz(Some(0)),
     };
 
-    let mut encoder = UpdateEncoder::new(DesktopSize { width, height }, flags, update_codecs, 8 * 1024 * 1024)
-        .context("failed to initialize update encoder")?;
+    // u16::MAX: this benchmark replays a fixed update file and isn't exercising the
+    // client capability gate, so don't let a default of 0 silently start dropping any
+    // pointer updates the replay file happens to contain.
+    let mut encoder = UpdateEncoder::new(
+        DesktopSize { width, height },
+        flags,
+        update_codecs,
+        8 * 1024 * 1024,
+        u16::MAX,
+    )
+    .context("failed to initialize update encoder")?;
 
     let mut total_raw = 0u64;
     let mut total_enc = 0u64;
