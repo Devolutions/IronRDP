@@ -3709,68 +3709,68 @@ async fn active_session(
                 }
                 ActiveStageOutput::MultitransportRequest(request) => {
                     #[cfg(feature = "udp")]
-                    let result = if udp_tunnel.attempted_protocols.contains(&request.requested_protocol) {
-                        warn!(
-                            request_id = request.request_id,
-                            requested_protocol = ?request.requested_protocol,
-                            "Rejecting duplicate multitransport request"
-                        );
-                        Err(None)
-                    } else {
-                        udp_tunnel.attempted_protocols.push(request.requested_protocol);
-                        match udp_tunnel.bootstrap.clone() {
-                            Some(config) => {
-                                let Some(result) = cancelable_operation(
-                                    bootstrap_udp_transport(request.clone(), config),
-                                    close_receiver,
-                                )
-                                .await
-                                else {
-                                    return Ok(RdpControlFlow::TerminatedGracefully(
-                                        GracefulDisconnectReason::UserInitiated,
-                                    ));
-                                };
-                                result.map_err(Some)
-                            }
-                            None => Err(None),
-                        }
-                    };
-                    #[cfg(not(feature = "udp"))]
-                    let result: Result<(), Option<ironrdp_connector::ConnectorError>> = Err(None);
-
-                    #[cfg(feature = "udp")]
-                    let mut established_transport = None;
-                    let response = match result {
-                        #[cfg(feature = "udp")]
-                        Ok(transport) if multitransport_soft_sync => {
-                            established_transport = Some(transport);
-                            Some(ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu::success(
-                                request.request_id,
-                            ))
-                        }
-                        #[cfg(feature = "udp")]
-                        Ok(_transport) => {
-                            trace!(
+                    let (outcome, established_transport) =
+                        if udp_tunnel.attempted_protocols.contains(&request.requested_protocol) {
+                            warn!(
                                 request_id = request.request_id,
-                                "Established and closed a multitransport sideband without negotiated Soft-Sync"
+                                requested_protocol = ?request.requested_protocol,
+                                "Rejecting duplicate multitransport request"
                             );
-                            None
-                        }
-                        Err(error) => {
-                            if let Some(error) = error {
-                                warn!(
-                                    request_id = request.request_id,
-                                    requested_protocol = ?request.requested_protocol,
-                                    %error,
-                                    "Reliable UDP bootstrap failed; continuing with TCP"
-                                );
+                            (
+                                ironrdp_connector::MultitransportResult::Failure(
+                                    ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu::E_ABORT,
+                                ),
+                                None,
+                            )
+                        } else {
+                            udp_tunnel.attempted_protocols.push(request.requested_protocol);
+                            match udp_tunnel.bootstrap.clone() {
+                                Some(config) => {
+                                    let Some(result) = cancelable_operation(
+                                        bootstrap_udp_transport(request.clone(), config),
+                                        close_receiver,
+                                    )
+                                    .await
+                                    else {
+                                        return Ok(RdpControlFlow::TerminatedGracefully(
+                                            GracefulDisconnectReason::UserInitiated,
+                                        ));
+                                    };
+                                    match result {
+                                        Ok(transport) => {
+                                            (ironrdp_connector::MultitransportResult::Success, Some(transport))
+                                        }
+                                        Err(error) => {
+                                            warn!(
+                                                request_id = request.request_id,
+                                                requested_protocol = ?request.requested_protocol,
+                                                %error,
+                                                "Reliable UDP bootstrap failed; continuing with TCP"
+                                            );
+                                            (
+                                            ironrdp_connector::MultitransportResult::Failure(
+                                                ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu::E_ABORT,
+                                            ),
+                                            None,
+                                        )
+                                        }
+                                    }
+                                }
+                                None => (
+                                    ironrdp_connector::MultitransportResult::Failure(
+                                        ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu::E_ABORT,
+                                    ),
+                                    None,
+                                ),
                             }
-                            Some(ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu::abort(
-                                request.request_id,
-                            ))
-                        }
-                    };
-                    if let Some(response) = response {
+                        };
+                    #[cfg(not(feature = "udp"))]
+                    let outcome = ironrdp_connector::MultitransportResult::Failure(
+                        ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu::E_ABORT,
+                    );
+
+                    if outcome.response_required(multitransport_soft_sync) {
+                        let response = outcome.response_pdu(request.request_id);
                         let frame = active_stage.encode_multitransport_response(&response)?;
                         let Some(result) = cancelable_operation(writer.write_all(&frame), close_receiver).await else {
                             return Ok(RdpControlFlow::TerminatedGracefully(
@@ -3786,8 +3786,15 @@ async fn active_session(
                     }
                     #[cfg(feature = "udp")]
                     if let Some(transport) = established_transport {
-                        udp_tunnel.transport = Some(transport);
-                        active_stage.enable_reliable_udp_dvc_tunnel()?;
+                        if multitransport_soft_sync {
+                            udp_tunnel.transport = Some(transport);
+                            active_stage.enable_reliable_udp_dvc_tunnel()?;
+                        } else {
+                            trace!(
+                                request_id = request.request_id,
+                                "Established and closed a multitransport sideband without negotiated Soft-Sync"
+                            );
+                        }
                     }
                 }
                 ActiveStageOutput::AutoDetect(request) => {
