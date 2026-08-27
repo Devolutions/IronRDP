@@ -34,12 +34,14 @@ use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
+use ironrdp_rdpdr as rdpdr;
 #[cfg(feature = "usb")]
 use ironrdp_rdpeusb::io::RequestId;
 use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rand::RngCore as _;
+use rdpdr::server::{RdpdrServer, RdpdrServerMessage};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::TcpSocket;
@@ -63,7 +65,7 @@ use crate::urbdrc::{
     DeviceFactory, RawPending, ServerDeviceIoReq, UrbdrcDeviceServerMessage, UrbdrcServerMessage, UsbControlHandle,
     UsbDeviceHandle, UsbDeviceLifecycle,
 };
-use crate::{SoundServerFactory, builder, capabilities};
+use crate::{RdpdrServerFactory, SoundServerFactory, builder, capabilities};
 #[cfg(feature = "usb")]
 use ironrdp_rdpeusb::{InterfaceAlloc, io::CompletionData, server::UrbdrcControlServer, server::UrbdrcDeviceServer};
 
@@ -588,6 +590,7 @@ pub struct RdpServer {
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
+    rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
@@ -676,6 +679,11 @@ impl AutoReconnectCookieHandle {
     /// The change takes effect only after the server handles this event. `None`
     /// then disables auto-reconnect and invalidates every cookie currently held
     /// by the server.
+    #[expect(
+        clippy::result_large_err,
+        reason = "SendError<ServerEvent> hands the whole event back on a closed channel; ServerEvent's size is \
+                  driven by its largest per-channel payload (RdpdrServerMessage), not by anything this method does"
+    )]
     pub fn set(
         &self,
         cookie: Option<rdp::session_info::ServerAutoReconnect>,
@@ -688,6 +696,7 @@ pub enum ServerEvent {
     Quit(String),
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
+    Rdpdr(RdpdrServerMessage),
     Echo(EchoServerMessage),
     SetCredentials(Credentials),
     /// Replace or clear the Server Auto-Reconnect Cookie.
@@ -716,6 +725,7 @@ impl fmt::Debug for ServerEvent {
             Self::Quit(reason) => f.debug_tuple("Quit").field(reason).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
+            Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
             Self::Echo(..) => f.write_str("Echo(..)"),
             Self::SetCredentials(..) => f.write_str("SetCredentials(..)"),
             Self::SetAutoReconnectCookie(Some(..)) => f.write_str("SetAutoReconnectCookie(Some(..))"),
@@ -760,6 +770,7 @@ impl RdpServer {
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         mut rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
+        mut rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
         connection_handler: Option<Box<dyn ConnectionHandler>>,
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
         display_suppressed: Option<Arc<AtomicBool>>,
@@ -778,6 +789,9 @@ impl RdpServer {
         if let Some(rdpei) = rdpei_factory.as_mut() {
             rdpei.set_sender(ev_sender.clone());
         }
+        if let Some(rdpdr) = rdpdr_factory.as_mut() {
+            rdpdr.set_sender(ev_sender.clone());
+        }
         #[cfg(feature = "egfx")]
         if let Some(gfx) = gfx_factory.as_mut() {
             gfx.set_sender(ev_sender.clone());
@@ -792,6 +806,7 @@ impl RdpServer {
             sound_factory,
             cliprdr_factory,
             rdpei_factory,
+            rdpdr_factory,
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
             gfx_factory,
@@ -1164,6 +1179,12 @@ impl RdpServer {
             let backend = factory.build_backend();
 
             acceptor.attach_static_channel(RdpsndServer::new(backend));
+        }
+
+        if let Some(factory) = self.rdpdr_factory.as_deref() {
+            let backend = factory.build_backend();
+
+            acceptor.attach_static_channel(RdpdrServer::new(backend));
         }
 
         let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
@@ -1672,6 +1693,106 @@ impl RdpServer {
                         .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
                         .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("write_all", e))?;
+                }
+                ServerEvent::Rdpdr(msg) => {
+                    let Some(rdpdr) = self.get_svc_processor::<RdpdrServer>() else {
+                        warn!("No rdpdr channel, dropping event");
+                        continue;
+                    };
+                    let msgs = match msg {
+                        RdpdrServerMessage::Create {
+                            device_id,
+                            path,
+                            desired_access,
+                            create_disposition,
+                            create_options,
+                        } => rdpdr.drive_create(device_id, path, desired_access, create_disposition, create_options),
+                        RdpdrServerMessage::Read {
+                            device_id,
+                            file_id,
+                            length,
+                            offset,
+                        } => rdpdr.drive_read(device_id, file_id, length, offset),
+                        RdpdrServerMessage::Write {
+                            device_id,
+                            file_id,
+                            data,
+                            offset,
+                        } => rdpdr.drive_write(device_id, file_id, data, offset),
+                        RdpdrServerMessage::Close { device_id, file_id } => rdpdr.drive_close(device_id, file_id),
+                        RdpdrServerMessage::FlushBuffers { device_id, file_id } => {
+                            rdpdr.drive_flush_buffers(device_id, file_id)
+                        }
+                        RdpdrServerMessage::QueryInformation {
+                            device_id,
+                            file_id,
+                            info_class,
+                        } => rdpdr.drive_query_information(device_id, file_id, info_class),
+                        RdpdrServerMessage::SetInformation {
+                            device_id,
+                            file_id,
+                            set_buffer,
+                        } => rdpdr.drive_set_information(device_id, file_id, set_buffer),
+                        RdpdrServerMessage::QueryDirectory {
+                            device_id,
+                            file_id,
+                            info_class,
+                            path,
+                            initial_query,
+                        } => rdpdr.drive_query_directory(device_id, file_id, info_class, path, initial_query),
+                        RdpdrServerMessage::NotifyChangeDirectory {
+                            device_id,
+                            file_id,
+                            watch_tree,
+                            completion_filter,
+                        } => rdpdr.drive_notify_change_directory(device_id, file_id, watch_tree, completion_filter),
+                        RdpdrServerMessage::QueryVolumeInformation {
+                            device_id,
+                            file_id,
+                            fs_info_class,
+                        } => rdpdr.drive_query_volume_information(device_id, file_id, fs_info_class),
+                        RdpdrServerMessage::LockControl {
+                            device_id,
+                            file_id,
+                            operation,
+                            wait,
+                            locks,
+                        } => rdpdr.drive_lock_control(device_id, file_id, operation, wait, locks),
+                        RdpdrServerMessage::QuerySecurity {
+                            device_id,
+                            file_id,
+                            security_information,
+                        } => rdpdr.drive_query_security(device_id, file_id, security_information),
+                        RdpdrServerMessage::SetSecurity {
+                            device_id,
+                            file_id,
+                            security_information,
+                            security_descriptor,
+                        } => rdpdr.drive_set_security(device_id, file_id, security_information, security_descriptor),
+                        RdpdrServerMessage::DeviceControl {
+                            device_id,
+                            file_id,
+                            io_control_code,
+                            input_buffer,
+                            output_buffer_length,
+                        } => rdpdr.drive_device_control(
+                            device_id,
+                            file_id,
+                            io_control_code,
+                            input_buffer,
+                            output_buffer_length,
+                        ),
+                    }
+                    .map_err_kind("failed to send rdpdr event", ServerErrorKind::Pdu)?;
+                    let channel_id = self
+                        .get_channel_id_by_type::<RdpdrServer>()
+                        .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
+                    let data =
+                        server_encode_svc_messages(msgs, channel_id, user_channel_id).map_err(ServerError::encode)?;
                     writer
                         .write_all(&data)
                         .await

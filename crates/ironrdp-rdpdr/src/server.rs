@@ -323,6 +323,98 @@ enum RdpdrServerState {
     Active,
 }
 
+/// Message sent by the event loop to trigger server-initiated drive I/O.
+///
+/// One variant per [`RdpdrServer`] `drive_*` method (`Create` for `drive_create`,
+/// `Read` for `drive_read`, and so on); each variant's fields match that method's
+/// parameters exactly, `path: impl Into<String>` parameters included as plain
+/// `String` since an enum field can't be generic. Mirrors
+/// `RdpsndServerMessage`'s convention of dropping the channel-name prefix from
+/// variant names, since the enum itself is already `RdpdrServerMessage`.
+#[derive(Debug, Clone)]
+pub enum RdpdrServerMessage {
+    Create {
+        device_id: u32,
+        path: String,
+        desired_access: DesiredAccess,
+        create_disposition: CreateDisposition,
+        create_options: CreateOptions,
+    },
+    Read {
+        device_id: u32,
+        file_id: u32,
+        length: u32,
+        offset: u64,
+    },
+    Write {
+        device_id: u32,
+        file_id: u32,
+        data: Vec<u8>,
+        offset: u64,
+    },
+    Close {
+        device_id: u32,
+        file_id: u32,
+    },
+    FlushBuffers {
+        device_id: u32,
+        file_id: u32,
+    },
+    QueryInformation {
+        device_id: u32,
+        file_id: u32,
+        info_class: FileInformationClassLevel,
+    },
+    SetInformation {
+        device_id: u32,
+        file_id: u32,
+        set_buffer: FileInformationClass,
+    },
+    QueryDirectory {
+        device_id: u32,
+        file_id: u32,
+        info_class: FileInformationClassLevel,
+        path: String,
+        initial_query: bool,
+    },
+    NotifyChangeDirectory {
+        device_id: u32,
+        file_id: u32,
+        watch_tree: bool,
+        completion_filter: u32,
+    },
+    QueryVolumeInformation {
+        device_id: u32,
+        file_id: u32,
+        fs_info_class: FileSystemInformationClassLevel,
+    },
+    LockControl {
+        device_id: u32,
+        file_id: u32,
+        operation: LockOperation,
+        wait: bool,
+        locks: Vec<RdpLockInfo>,
+    },
+    QuerySecurity {
+        device_id: u32,
+        file_id: u32,
+        security_information: SecurityInformation,
+    },
+    SetSecurity {
+        device_id: u32,
+        file_id: u32,
+        security_information: SecurityInformation,
+        security_descriptor: Vec<u8>,
+    },
+    DeviceControl {
+        device_id: u32,
+        file_id: u32,
+        io_control_code: u32,
+        input_buffer: Vec<u8>,
+        output_buffer_length: u32,
+    },
+}
+
 /// Server-side [\[MS-RDPEFS\]] channel handler.
 ///
 /// Initiates the RDPDR handshake, tracks client-announced devices, and sends drive
