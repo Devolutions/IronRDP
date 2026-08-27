@@ -4,17 +4,19 @@
 //! between a client (`connect_udp`) and server (`accept_udp`) on
 //! localhost, then exercises bidirectional data transfer.
 //!
-//! These tests use `multi_thread` flavor because they perform real
-//! UDP I/O, which conflicts with tokio's mock clock (test-util).
+//! Most tests use a multithreaded runtime.
+//! A dedicated test also covers the current-thread runtime used by ActiveX workers.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::sync::Arc;
 
 use ironrdp_rdpemt::TunnelConfig;
 use ironrdp_rdpeudp::ConnectionConfig;
 use ironrdp_rdpeudp_tokio::{
-    MultitransportBootstrap, UdpAcceptConfig, UdpTransport, UdpTransportConfig, accept_udp, connect_udp,
+    MultitransportBootstrap, UdpAcceptConfig, UdpTlsConfig, UdpTransport, UdpTransportConfig, accept_udp, connect_udp,
 };
+use ironrdp_tls::{CertificateValidation, CertificateValidationCallback};
 use tokio::net::UdpSocket;
 
 /// Generate a self-signed TLS server config for testing.
@@ -88,6 +90,65 @@ async fn full_stack_loopback_handshake() {
     let (client, server) = establish_loopback_pair_on("127.0.0.1:0").await;
     assert!(client.is_alive());
     assert!(server.is_alive());
+    client.shutdown().await.expect("client shutdown");
+    server.shutdown().await.expect("server shutdown");
+}
+
+/// Verify the full stack works on the current-thread runtime used by ActiveX workers.
+#[tokio::test(flavor = "current_thread")]
+async fn full_stack_current_thread_runtime() {
+    let (client, mut server) = establish_loopback_pair_on("127.0.0.1:0").await;
+    client.send(vec![0x01, 0x02, 0x03]).await.expect("client send");
+    assert_eq!(server.recv().await.expect("server recv"), vec![0x01, 0x02, 0x03]);
+    client.shutdown().await.expect("client shutdown");
+    server.shutdown().await.expect("server shutdown");
+}
+
+/// Verify a blocking certificate prompt cannot starve RDPEUDP timers on the ActiveX runtime.
+#[tokio::test(flavor = "current_thread")]
+async fn delayed_certificate_callback_does_not_starve_udp_driver() {
+    let server_sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind server");
+    let server_addr = server_sock.local_addr().expect("server addr");
+    let tunnel_config = test_tunnel_config();
+    let connection_config = ConnectionConfig {
+        idle_timeout: Duration::from_millis(100),
+        keep_alive_interval: Duration::from_millis(20),
+        ..ConnectionConfig::default()
+    };
+
+    let server_handle = tokio::spawn({
+        let tunnel_config = tunnel_config.clone();
+        let connection_config = connection_config.clone();
+        async move {
+            accept_udp(
+                server_sock,
+                UdpAcceptConfig {
+                    tls_config: test_tls_server_config(),
+                    tunnel_config,
+                    connection_config,
+                    accept_timeout: Duration::from_secs(10),
+                },
+            )
+            .await
+        }
+    });
+
+    let client_handle = tokio::spawn(async move {
+        let mut config = UdpTransportConfig::new(server_addr, "localhost".into(), tunnel_config);
+        config.connection_config = connection_config;
+        config.tls.certificate_validation = CertificateValidation::Strict;
+        config.tls.certificate_validation_callback = Some(Arc::new(|_, _, _| {
+            std::thread::sleep(Duration::from_millis(250));
+            true
+        }));
+        connect_udp(config).await
+    });
+
+    let (server, client) = tokio::join!(server_handle, client_handle);
+    let mut server = server.expect("server join").expect("server transport");
+    let client = client.expect("client join").expect("client transport");
+    client.send(vec![0x01]).await.expect("send after delayed callback");
+    assert_eq!(server.recv().await.expect("receive after delayed callback"), vec![0x01]);
     client.shutdown().await.expect("client shutdown");
     server.shutdown().await.expect("server shutdown");
 }
@@ -237,55 +298,17 @@ async fn tunnel_rejection_mismatched_cookie() {
     );
 }
 
-/// A `ServerCertVerifier` that rejects every certificate, used to prove a
-/// caller-supplied verifier is actually consulted rather than silently
-/// ignored in favor of the built-in no-verification default.
-#[derive(Debug)]
-struct AlwaysRejectVerifier;
-
-impl tokio_rustls::rustls::client::danger::ServerCertVerifier for AlwaysRejectVerifier {
-    fn verify_server_cert(
-        &self,
-        _: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
-        _: &[tokio_rustls::rustls::pki_types::CertificateDer<'_>],
-        _: &tokio_rustls::rustls::pki_types::ServerName<'_>,
-        _: &[u8],
-        _: tokio_rustls::rustls::pki_types::UnixTime,
-    ) -> Result<tokio_rustls::rustls::client::danger::ServerCertVerified, tokio_rustls::rustls::Error> {
-        Err(tokio_rustls::rustls::Error::General(
-            "test verifier rejects every certificate".into(),
-        ))
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _: &[u8],
-        _: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
-        _: &tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> Result<tokio_rustls::rustls::client::danger::HandshakeSignatureValid, tokio_rustls::rustls::Error> {
-        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _: &[u8],
-        _: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
-        _: &tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> Result<tokio_rustls::rustls::client::danger::HandshakeSignatureValid, tokio_rustls::rustls::Error> {
-        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
-        vec![tokio_rustls::rustls::SignatureScheme::ECDSA_NISTP256_SHA256]
-    }
+fn rejecting_certificate_callback(hits: Arc<AtomicUsize>) -> CertificateValidationCallback {
+    Arc::new(move |_, endpoint, _| {
+        assert_eq!(endpoint, "rdp.example.test:3389");
+        hits.fetch_add(1, Ordering::SeqCst);
+        false
+    })
 }
 
-/// Verify a caller-supplied `server_cert_verifier` is actually used: the
-/// server's self-signed test certificate must be rejected when the caller
-/// asks for real validation, where the default (no verifier supplied)
-/// accepts it unconditionally.
+/// Verify the sideband applies the primary transport's certificate callback policy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn connect_rejects_certificate_when_caller_supplies_a_verifier() {
+async fn connect_rejects_certificate_when_callback_declines_it() {
     let server_sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
     let server_addr = server_sock.local_addr().expect("addr");
     let tunnel_config = test_tunnel_config();
@@ -306,29 +329,32 @@ async fn connect_rejects_certificate_when_caller_supplies_a_verifier() {
         }
     });
 
-    let client_handle = tokio::spawn(async move {
-        let mut config = UdpTransportConfig::new(server_addr, "localhost".into(), tunnel_config);
-        config.server_cert_verifier = Some(Arc::new(AlwaysRejectVerifier));
-        connect_udp(config).await
+    let callback_hits = Arc::new(AtomicUsize::new(0));
+    let client_handle = tokio::spawn({
+        let callback_hits = Arc::clone(&callback_hits);
+        async move {
+            let mut config = UdpTransportConfig::new(server_addr, "localhost".into(), tunnel_config);
+            config.tls.certificate_validation = CertificateValidation::Strict;
+            config.tls.certificate_validation_callback = Some(rejecting_certificate_callback(callback_hits));
+            config.tls.certificate_validation_endpoint = "rdp.example.test:3389".into();
+            connect_udp(config).await
+        }
     });
 
     let client_result = client_handle.await.expect("client join");
     assert!(
         client_result.is_err(),
-        "the self-signed test certificate must be rejected once a verifier is supplied"
+        "the self-signed test certificate must be rejected when the callback declines it"
     );
+    assert_eq!(callback_hits.load(Ordering::SeqCst), 1);
 
     // The server side also errors, since the client aborts mid-handshake.
     let _ = server_handle.await;
 }
 
-/// The same proof as `connect_rejects_certificate_when_caller_supplies_a_verifier`,
-/// through `MultitransportBootstrap::connect` instead of `connect_udp`
-/// directly: before this path also accepted a `server_cert_verifier`, a
-/// caller going through the high-level orchestrator had no way to reach
-/// the verification `connect_udp` itself already supported.
+/// Verify the bootstrap forwards the same certificate policy to the sideband.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bootstrap_connect_rejects_certificate_when_caller_supplies_a_verifier() {
+async fn bootstrap_connect_rejects_certificate_when_callback_declines_it() {
     let server_sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
     let server_addr = server_sock.local_addr().expect("addr");
     let tunnel_config = test_tunnel_config();
@@ -361,28 +387,31 @@ async fn bootstrap_connect_rejects_certificate_when_caller_supplies_a_verifier()
         wire
     };
 
-    let client_handle = tokio::spawn(async move {
-        let mut bootstrap = MultitransportBootstrap::from_pdu(&request_wire).expect("decode request");
-        let result = bootstrap
-            .connect(
-                server_addr,
-                "localhost".into(),
-                ConnectionConfig::default(),
-                Some(Arc::new(AlwaysRejectVerifier)),
-            )
-            .await;
-        (result, bootstrap.is_connected())
+    let callback_hits = Arc::new(AtomicUsize::new(0));
+    let client_handle = tokio::spawn({
+        let callback_hits = Arc::clone(&callback_hits);
+        async move {
+            let mut bootstrap = MultitransportBootstrap::from_pdu(&request_wire).expect("decode request");
+            let mut tls = UdpTlsConfig::new("rdp.example.test:3389".into());
+            tls.certificate_validation = CertificateValidation::Strict;
+            tls.certificate_validation_callback = Some(rejecting_certificate_callback(callback_hits));
+            let result = bootstrap
+                .connect(server_addr, "localhost".into(), ConnectionConfig::default(), tls)
+                .await;
+            (result, bootstrap.is_connected())
+        }
     });
 
     let (client_result, is_connected) = client_handle.await.expect("client join");
     assert!(
         client_result.is_err(),
-        "the self-signed test certificate must be rejected once a verifier is supplied through the bootstrap"
+        "the self-signed test certificate must be rejected when the bootstrap callback declines it"
     );
     assert!(
         !is_connected,
         "a rejected certificate must not leave a transport behind"
     );
+    assert_eq!(callback_hits.load(Ordering::SeqCst), 1);
 
     // The server side also errors, since the client aborts mid-handshake.
     let _ = server_handle.await;
@@ -431,7 +460,12 @@ async fn failed_reconnect_clears_the_transport_from_an_earlier_success() {
     };
     let mut bootstrap = MultitransportBootstrap::from_pdu(&request_wire).expect("decode request");
     bootstrap
-        .connect(server_addr, "localhost".into(), ConnectionConfig::default(), None)
+        .connect(
+            server_addr,
+            "localhost".into(),
+            ConnectionConfig::default(),
+            UdpTlsConfig::new(server_addr.to_string()),
+        )
         .await
         .expect("first connect succeeds");
     assert!(bootstrap.is_connected());
@@ -440,7 +474,12 @@ async fn failed_reconnect_clears_the_transport_from_an_earlier_success() {
     // Reconnect against a closed loopback port nothing is listening on.
     let unreachable_addr: core::net::SocketAddr = "127.0.0.1:1".parse().expect("valid loopback address");
     let result = bootstrap
-        .connect(unreachable_addr, "localhost".into(), ConnectionConfig::default(), None)
+        .connect(
+            unreachable_addr,
+            "localhost".into(),
+            ConnectionConfig::default(),
+            UdpTlsConfig::new(unreachable_addr.to_string()),
+        )
         .await;
     assert!(result.is_err(), "reconnect against an unreachable address must fail");
 

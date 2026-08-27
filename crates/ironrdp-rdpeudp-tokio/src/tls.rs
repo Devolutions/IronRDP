@@ -1,8 +1,6 @@
 //! TLS upgrade over an RDPEUDP2 stream.
 //!
-//! Mirrors the rustls configuration from `ironrdp-tls`: no certificate
-//! verification (RDP uses self-signed certs), disabled TLS resumption
-//! (CredSSP compatibility), and SSLKEYLOGFILE support for Wireshark.
+//! Reuses the `ironrdp-tls` client configuration.
 //!
 //! The caller passes an `RdpeudpStream` which provides `AsyncRead +
 //! AsyncWrite` over the RDPEUDP2 connection. tokio-rustls wraps it
@@ -14,47 +12,75 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio_rustls::rustls::pki_types::ServerName;
 
+use ironrdp_tls::{CertificateValidation, CertificateValidationCallback};
+
 pub(crate) type TlsStream<S> = tokio_rustls::client::TlsStream<S>;
 pub(crate) type ServerTlsStream<S> = tokio_rustls::server::TlsStream<S>;
 
 /// Perform TLS handshake over an established RDPEUDP2 stream.
 ///
-/// `server_cert_verifier` selects how the peer certificate is validated.
-/// `None` preserves the historic behavior (no verification: RDP servers
-/// commonly present self-signed certificates). `Some(verifier)` lets a
-/// caller opt into real validation, for example a
-/// `rustls::client::WebPkiServerVerifier` built against the platform root
-/// store, mirroring the choice `ironrdp-tls` already exposes on the TCP
-/// path without this crate taking on that crate's certificate-store
-/// dependencies itself.
+/// The policy, callback, and endpoint use the same semantics as `ironrdp-tls` on the primary TCP transport.
 ///
-/// Returns the encrypted stream. The driver task continues running
-/// in the background, transparently shuttling encrypted bytes between
-/// the UDP socket and this TLS stream via `SharedIo`.
+/// A synchronous validation callback runs on a dedicated blocking thread so it cannot starve the RDPEUDP driver on a current-thread runtime.
+///
+/// Returns the encrypted stream.
+/// The driver task continues running in the background, transparently shuttling encrypted bytes between the UDP socket and this TLS stream via `SharedIo`.
 pub(crate) async fn tls_upgrade<S>(
     stream: S,
     server_name: &str,
-    server_cert_verifier: Option<Arc<dyn tokio_rustls::rustls::client::danger::ServerCertVerifier>>,
+    certificate_validation: CertificateValidation,
+    certificate_validation_callback: Option<CertificateValidationCallback>,
+    certificate_validation_endpoint: &str,
+) -> io::Result<TlsStream<S>>
+where
+    S: Unpin + Send + AsyncRead + AsyncWrite + 'static,
+{
+    if certificate_validation_callback.is_none() {
+        return tls_upgrade_inner(
+            stream,
+            server_name,
+            certificate_validation,
+            None,
+            certificate_validation_endpoint,
+        )
+        .await;
+    }
+
+    let server_name = server_name.to_owned();
+    let certificate_validation_endpoint = certificate_validation_endpoint.to_owned();
+    tokio::task::spawn_blocking(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(tls_upgrade_inner(
+                stream,
+                &server_name,
+                certificate_validation,
+                certificate_validation_callback,
+                &certificate_validation_endpoint,
+            ))
+    })
+    .await
+    .map_err(io::Error::other)?
+}
+
+async fn tls_upgrade_inner<S>(
+    stream: S,
+    server_name: &str,
+    certificate_validation: CertificateValidation,
+    certificate_validation_callback: Option<CertificateValidationCallback>,
+    certificate_validation_endpoint: &str,
 ) -> io::Result<TlsStream<S>>
 where
     S: Unpin + AsyncRead + AsyncWrite,
 {
-    let verifier: Arc<dyn tokio_rustls::rustls::client::danger::ServerCertVerifier> =
-        server_cert_verifier.unwrap_or_else(|| Arc::new(danger::NoCertificateVerification));
+    let config = ironrdp_tls::rustls_client_config(
+        certificate_validation,
+        certificate_validation_endpoint,
+        certificate_validation_callback,
+    )?;
 
     let mut tls_stream = {
-        let mut config = tokio_rustls::rustls::client::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(verifier)
-            .with_no_client_auth();
-
-        // SSLKEYLOGFILE support for debugging with Wireshark
-        config.key_log = Arc::new(tokio_rustls::rustls::KeyLogFile::new());
-
-        // Disable TLS resumption: not supported by CredSSP and some
-        // RDP server configurations.
-        config.resumption = tokio_rustls::rustls::client::Resumption::disabled();
-
         let config = Arc::new(config);
 
         let domain = ServerName::try_from(server_name.to_owned()).map_err(io::Error::other)?;
@@ -82,61 +108,4 @@ where
     let mut tls_stream = acceptor.accept(stream).await?;
     tls_stream.flush().await?;
     Ok(tls_stream)
-}
-
-mod danger {
-    use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-    use tokio_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme, pki_types};
-
-    #[derive(Debug)]
-    pub(super) struct NoCertificateVerification;
-
-    impl ServerCertVerifier for NoCertificateVerification {
-        fn verify_server_cert(
-            &self,
-            _: &pki_types::CertificateDer<'_>,
-            _: &[pki_types::CertificateDer<'_>],
-            _: &pki_types::ServerName<'_>,
-            _: &[u8],
-            _: pki_types::UnixTime,
-        ) -> Result<ServerCertVerified, Error> {
-            Ok(ServerCertVerified::assertion())
-        }
-
-        fn verify_tls12_signature(
-            &self,
-            _: &[u8],
-            _: &pki_types::CertificateDer<'_>,
-            _: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, Error> {
-            Ok(HandshakeSignatureValid::assertion())
-        }
-
-        fn verify_tls13_signature(
-            &self,
-            _: &[u8],
-            _: &pki_types::CertificateDer<'_>,
-            _: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, Error> {
-            Ok(HandshakeSignatureValid::assertion())
-        }
-
-        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-            vec![
-                SignatureScheme::RSA_PKCS1_SHA1,
-                SignatureScheme::ECDSA_SHA1_Legacy,
-                SignatureScheme::RSA_PKCS1_SHA256,
-                SignatureScheme::ECDSA_NISTP256_SHA256,
-                SignatureScheme::RSA_PKCS1_SHA384,
-                SignatureScheme::ECDSA_NISTP384_SHA384,
-                SignatureScheme::RSA_PKCS1_SHA512,
-                SignatureScheme::ECDSA_NISTP521_SHA512,
-                SignatureScheme::RSA_PSS_SHA256,
-                SignatureScheme::RSA_PSS_SHA384,
-                SignatureScheme::RSA_PSS_SHA512,
-                SignatureScheme::ED25519,
-                SignatureScheme::ED448,
-            ]
-        }
-    }
 }

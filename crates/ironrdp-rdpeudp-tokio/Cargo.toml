@@ -16,11 +16,9 @@ categories.workspace = true
 doctest = false
 
 [features]
-# No default: matches `ironrdp-tls`'s own stance. Neither feature changes
-# behavior for a consumer that already installs a process-default
-# CryptoProvider itself (for example by depending on `ironrdp-tls` in the
-# same process); they exist for a consumer using this crate standalone, so
-# `ClientConfig::builder()` doesn't panic for lack of one.
+# No default: matches `ironrdp-tls`'s own stance. Consumers must select one
+# of these features or install a process-default CryptoProvider before
+# `ClientConfig::builder()` is called.
 rustls-aws-lc-rs = ["tokio-rustls/aws_lc_rs"]
 rustls-ring = ["tokio-rustls/ring"]
 
@@ -31,6 +29,7 @@ ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", features = ["std"] } # public
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", version = "0.1", features = ["std"] } # public
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", version = "0.1", features = ["std"] } # public
+ironrdp-tls = { path = "../ironrdp-tls", version = "0.2.2", default-features = false, features = ["rustls-verifier"] } # public
 bytes = "1"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] } # public
 sha2 = "0.10"
