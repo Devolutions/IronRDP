@@ -9,7 +9,7 @@ use ironrdp_pdu::{self as pdu, PduError, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcServerProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::pdu::{
     CapabilitiesRequestPdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DrdynvcClientPdu,
@@ -467,7 +467,10 @@ impl SvcProcessor for DrdynvcServer {
                     return Err(pdu_other_err!("invalid channel state"));
                 }
                 if create_resp.creation_status() != CreationStatus::OK {
-                    c.state = ChannelState::CreationFailed(create_resp.creation_status().into());
+                    let name = c.processor.channel_name();
+                    let status = create_resp.creation_status();
+                    warn!(channel_id = ?id, %name, ?status, "DVC channel creation failed");
+                    c.state = ChannelState::CreationFailed(status.into());
                     return Ok(resp);
                 }
                 c.state = ChannelState::Opened;
