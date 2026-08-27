@@ -769,6 +769,11 @@ impl ErrorInfoDisconnectHandle {
     /// The disconnect takes effect only after the server handles this event.
     /// Unlike [`ServerEvent::Quit`], the client is told why: it decodes the
     /// PDU and can surface `error` to the user before the connection drops.
+    #[expect(
+        clippy::result_large_err,
+        reason = "SendError<ServerEvent> hands the whole event back on a closed channel; ServerEvent's size is \
+                  driven by its largest per-channel payload (RdpdrServerMessage), not by anything this method does"
+    )]
     pub fn disconnect(&self, error: ErrorInfo) -> Result<(), mpsc::error::SendError<ServerEvent>> {
         self.sender.send(ServerEvent::Disconnect(error))
     }
