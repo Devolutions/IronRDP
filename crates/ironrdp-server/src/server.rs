@@ -692,8 +692,31 @@ impl AutoReconnectCookieHandle {
     }
 }
 
+/// Cloneable handle for gracefully disconnecting the active client with a
+/// `ServerSetErrorInfo` PDU (MS-RDPBCGR 2.2.5.1) while [`RdpServer::run`]
+/// owns the server.
+#[derive(Clone)]
+pub struct ErrorInfoDisconnectHandle {
+    sender: mpsc::UnboundedSender<ServerEvent>,
+}
+
+impl ErrorInfoDisconnectHandle {
+    /// Send `error` to the client via a `ServerSetErrorInfoPdu`, then close the
+    /// connection.
+    ///
+    /// The disconnect takes effect only after the server handles this event.
+    /// Unlike [`ServerEvent::Quit`], the client is told why: it decodes the
+    /// PDU and can surface `error` to the user before the connection drops.
+    pub fn disconnect(&self, error: ErrorInfo) -> Result<(), mpsc::error::SendError<ServerEvent>> {
+        self.sender.send(ServerEvent::Disconnect(error))
+    }
+}
+
 pub enum ServerEvent {
     Quit(String),
+    /// Disconnect the active client with a `ServerSetErrorInfoPdu` carrying
+    /// the given reason. See [`ErrorInfoDisconnectHandle::disconnect`].
+    Disconnect(ErrorInfo),
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
     Rdpdr(RdpdrServerMessage),
@@ -723,6 +746,7 @@ impl fmt::Debug for ServerEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Quit(reason) => f.debug_tuple("Quit").field(reason).finish(),
+            Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
             Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
@@ -901,6 +925,14 @@ impl RdpServer {
     /// server.
     pub fn auto_reconnect_cookie_handle(&self) -> AutoReconnectCookieHandle {
         AutoReconnectCookieHandle {
+            sender: self.ev_sender.clone(),
+        }
+    }
+
+    /// Returns a handle for gracefully disconnecting the active client with a
+    /// `ServerSetErrorInfo` PDU while [`Self::run`] owns this server.
+    pub fn error_info_disconnect_handle(&self) -> ErrorInfoDisconnectHandle {
+        ErrorInfoDisconnectHandle {
             sender: self.ev_sender.clone(),
         }
     }
@@ -1654,6 +1686,16 @@ impl RdpServer {
             match event {
                 ServerEvent::Quit(reason) => {
                     debug!("Got quit event: {reason}");
+                    return Ok(RunState::Disconnect);
+                }
+                ServerEvent::Disconnect(error) => {
+                    debug!(?error, "Got disconnect event");
+                    let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error));
+                    let data = encode_share_data_pdu(pdu, io_channel_id, user_channel_id)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("send server set error info", e))?;
                     return Ok(RunState::Disconnect);
                 }
                 ServerEvent::GetLocalAddr(tx) => {
