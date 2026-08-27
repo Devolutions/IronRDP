@@ -11,6 +11,10 @@ use crate::{CertificateValidation, CertificateValidationCallback};
 ///
 /// A callback augments strict platform-root and server-name validation.
 /// Combining a callback with the dangerous policy is rejected because the callback would never observe a validation failure.
+///
+/// # Panics
+///
+/// Panics if no process-level crypto provider is installed and rustls cannot unambiguously select one from the enabled provider features.
 pub fn rustls_client_config(
     certificate_validation: CertificateValidation,
     endpoint: &str,

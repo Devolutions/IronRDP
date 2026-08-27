@@ -57,7 +57,7 @@ pub struct UdpTransportConfig {
     /// Default: 10 seconds (matching FreeRDP).
     pub handshake_timeout: Duration,
     /// Maximum time to wait for the TLS handshake to complete.
-    /// Default: 60 seconds to allow an interactive certificate decision.
+    /// Default: 130 seconds to allow a 120-second interactive certificate decision plus handshake overhead.
     pub tls_timeout: Duration,
     /// Maximum time to wait for the RDPEMT tunnel handshake to complete.
     /// Default: 10 seconds.
@@ -76,7 +76,7 @@ impl UdpTransportConfig {
             tunnel_config,
             connection_config: ConnectionConfig::default(),
             handshake_timeout: Duration::from_secs(10),
-            tls_timeout: Duration::from_secs(60),
+            tls_timeout: Duration::from_secs(130),
             tunnel_timeout: Duration::from_secs(10),
             tls: UdpTlsConfig::new(server_addr.to_string()),
         }

@@ -178,6 +178,8 @@ impl MultitransportBootstrap {
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
+
     use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 
     use super::*;
@@ -203,6 +205,21 @@ mod tests {
         assert_eq!(bootstrap.request().request_id, 42);
         assert!(!bootstrap.is_connected());
         assert!(bootstrap.response_pdu().is_none());
+    }
+
+    #[test]
+    fn default_tls_timeout_covers_interactive_certificate_decision() {
+        let server_addr = "127.0.0.1:3389".parse().expect("valid server address");
+        let config = UdpTransportConfig::new(
+            server_addr,
+            "localhost".into(),
+            TunnelConfig {
+                request_id: 42,
+                security_cookie: [0xAB; 16],
+            },
+        );
+
+        assert!(config.tls_timeout > Duration::from_secs(120));
     }
 
     #[test]
