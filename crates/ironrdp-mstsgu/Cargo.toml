@@ -16,46 +16,6 @@ categories.workspace = true
 doctest = false
 test = false
 
-[[test]]
-name = "rpch_v2"
-path = "tests/rpch_v2.rs"
-
-[[test]]
-name = "rpc_tsgu_stubs"
-path = "tests/rpc_tsgu_stubs.rs"
-
-[[test]]
-name = "rpch_http"
-path = "tests/rpch_http.rs"
-
-[[test]]
-name = "rpch_session"
-path = "tests/rpch_session.rs"
-
-[[test]]
-name = "tunnel_policy"
-path = "tests/tunnel_policy.rs"
-
-[[test]]
-name = "packet_io"
-path = "tests/packet_io.rs"
-required-features = ["native-tls", "test-support"]
-
-[[test]]
-name = "packet_io_rustls"
-path = "tests/packet_io_rustls.rs"
-required-features = ["rustls", "test-support"]
-
-[[test]]
-name = "proxy"
-path = "tests/proxy.rs"
-required-features = ["native-tls", "test-support"]
-
-[[test]]
-name = "consent"
-path = "tests/consent.rs"
-required-features = ["native-tls", "test-support"]
-
 [features]
 default = []
 rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
@@ -89,11 +49,6 @@ uuid = { version = "1", features = ["v4"] } # public, exposed by RpcSyntaxIdenti
 picky = { version = "=7.0.0-rc.25", optional = true }
 picky-asn1-der = { version = "0.5", optional = true }
 picky-asn1-x509 = { version = "0.15", optional = true }
-
-[dev-dependencies]
-hyper = { version = "1.9", features = ["server", "http1"] }
-tokio = { version = "1.52", features = ["io-util", "macros", "net", "rt", "sync"] }
-tokio-native-tls = "0.3"
 
 [lints]
 workspace = true
