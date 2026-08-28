@@ -3420,6 +3420,7 @@ dependencies = [
  "ironrdp-daemon",
  "ironrdp-dvc",
  "ironrdp-dvc-pipe-proxy",
+ "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
  "ironrdp-propertyset",
