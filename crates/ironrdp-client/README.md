@@ -16,6 +16,10 @@ existing deployments. `ConfigBuilder` exposes an explicit
 `CertificateValidation::Strict` policy for callers that require platform-root and
 server-name validation.
 
+With the `gateway` feature, the client uses the MS-TSGU HTTPS WebSocket transport and falls back to legacy dual-channel HTTP when necessary.
+It handles `HTTP_REAUTH_MESSAGE` through a short-lived background reauthentication transport without disrupting the active data transport.
+The gateway path does not provide a live RPC-over-HTTP (RPCH) transport or RDG-UDP/DTLS side channel.
+
 For the end-user RDP client binary, see [`ironrdp-viewer`](../ironrdp-viewer).
 
 This crate is part of the [IronRDP] project.
