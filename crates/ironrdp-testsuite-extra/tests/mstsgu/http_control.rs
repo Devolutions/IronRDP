@@ -1,13 +1,4 @@
-#![expect(dead_code, unreachable_pub, reason = "tests import private protocol structures")]
-
-#[path = "../../../ironrdp-mstsgu/src/proto.rs"]
-#[expect(
-    clippy::allow_attributes,
-    reason = "the imported protocol source contains an intentionally unfulfilled expectation"
-)]
-#[allow(unfulfilled_lint_expectations)]
-mod proto;
-
+use super::proto;
 use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
 use ironrdp_mstsgu::GwErrorKind;
 use ironrdp_mstsgu::{ChannelClosePkt, ReauthMessagePkt, ServiceMessagePkt, gateway_code_label};

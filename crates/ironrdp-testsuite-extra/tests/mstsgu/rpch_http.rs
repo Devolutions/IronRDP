@@ -1,13 +1,11 @@
-#![allow(unused_crate_dependencies)]
-
 use core::fmt;
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-type Error = ironrdp_error::Error<GwErrorKind>;
+pub(crate) type Error = ironrdp_error::Error<GwErrorKind>;
 
 #[derive(Debug)]
-enum GwErrorKind {
+pub(crate) enum GwErrorKind {
     Connect,
     PacketEof,
     Custom,
@@ -15,7 +13,7 @@ enum GwErrorKind {
     Decode,
 }
 
-trait GwErrorExt {
+pub(crate) trait GwErrorExt {
     fn custom<E>(context: &'static str, error: E) -> Self
     where
         E: core::error::Error + Sync + Send + 'static;
@@ -48,7 +46,7 @@ macro_rules! custom_err {
     ( $context:expr, $source:expr $(,)? ) => {{ <$crate::Error as $crate::GwErrorExt>::custom($context, $source) }};
 }
 
-#[path = "../src/rpc_transport.rs"]
+#[path = "../../../ironrdp-mstsgu/src/rpc_transport.rs"]
 mod rpc_transport;
 
 use rpc_transport::{RpchRequestHead, drain_body, read_rpch_response_head, write_rpch_request_head};
