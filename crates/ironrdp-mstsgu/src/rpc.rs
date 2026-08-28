@@ -1,14 +1,15 @@
-//! DCE/RPC common-header and fragment codecs.
+//! DCE/RPC common-header, fragment, and RPCH v2 setup codecs.
 //!
-//! This module frames connection-oriented DCE/RPC PDUs.
+//! This module frames connection-oriented DCE/RPC PDUs and the initial RPC-over-HTTP v2 RTS exchange.
 //! It is not a live RPC-over-HTTP transport.
 //! The staged TsProxy NDR control codecs do not provide a live RPC-over-HTTP transport.
-//! RTS, packet-integrity signing, and the RPCH client belong in later work.
+//! Packet-integrity signing and the RPCH client belong in later work.
 //!
 //! [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 //! [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+//! [MS-RPCH]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpch/10cf271a-1191-4f4b-961e-6bd9561eef83
 
-use core::fmt;
+use core::{fmt, time::Duration};
 
 /// DCE/RPC common-header size.
 ///
@@ -45,6 +46,11 @@ pub const PFC_LAST_FRAG: u8 = 0x02;
 pub const PTYPE_RESPONSE: u8 = 2;
 /// `fault` PDU type ([C706] 12.6.4.9).
 pub const PTYPE_FAULT: u8 = 3;
+/// `rts` PDU type ([MS-RPCH] 2.2.3.2).
+pub const PTYPE_RTS: u8 = 20;
+
+/// Exact size of the CONN/A1 body on the initial RPCH OUT request.
+pub const RPCH_OUT_CONTENT_LENGTH: usize = 76;
 
 // This fragment foundation assumes the conventional first presentation context.
 // A later bind codec will negotiate and supply the context identifier.
@@ -57,6 +63,28 @@ pub const DEFAULT_FRAGMENT_SIZE: u16 = 0x10b8;
 pub const MAX_PENDING_RPC_FRAGMENTS: usize = 16;
 
 const MAXIMUM_RESPONSE_ALLOC_HINT: usize = 0x7fff_ffff;
+const RTS_HEADER_SIZE: usize = RPC_COMMON_HEADER_SIZE + 4 /* flags and command count */;
+const RTS_PFC_FLAGS: u8 = PFC_FIRST_FRAG | PFC_LAST_FRAG;
+const RTS_FLAG_NONE: u16 = 0;
+const RTS_FLAG_PING: u16 = 0x0001;
+const RTS_FLAG_OTHER_CMD: u16 = 0x0002;
+const RTS_VERSION: u32 = 1;
+const RTS_COMMAND_RECEIVE_WINDOW_SIZE: u32 = 0;
+const RTS_COMMAND_FLOW_CONTROL_ACK: u32 = 1;
+const RTS_COMMAND_CONNECTION_TIMEOUT: u32 = 2;
+const RTS_COMMAND_COOKIE: u32 = 3;
+const RTS_COMMAND_CHANNEL_LIFETIME: u32 = 4;
+const RTS_COMMAND_CLIENT_KEEPALIVE: u32 = 5;
+const RTS_COMMAND_VERSION: u32 = 6;
+const RTS_COMMAND_ASSOCIATION_GROUP_ID: u32 = 12;
+const RTS_MIN_RECEIVE_WINDOW_SIZE: u32 = 8 * 1024;
+const RTS_MAX_RECEIVE_WINDOW_SIZE: u32 = 256 * 1024;
+const RTS_MIN_CONNECTION_TIMEOUT: u32 = 120_000;
+const RTS_MAX_CONNECTION_TIMEOUT: u32 = 14_400_000;
+const RTS_MIN_CHANNEL_LIFETIME: u32 = 128 * 1024;
+const RTS_MAX_CHANNEL_LIFETIME: u32 = 2 * 1024 * 1024 * 1024;
+const RTS_MIN_CLIENT_KEEPALIVE: u32 = 60_000;
+const DEFAULT_CLIENT_KEEPALIVE: u32 = 300_000;
 
 /// Errors reported by the DCE/RPC common-header and fragment codecs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +106,16 @@ pub enum RpcPduError {
     LengthOverflow,
     UnexpectedContextId { actual: u16 },
     InvalidAllocHint { alloc_hint: u32, stub_length: usize },
+    UnexpectedRtsCallId { actual: u32 },
+    InvalidRtsPfcFlags { actual: u8 },
+    UnexpectedRtsFlags { expected: u16, actual: u16 },
+    UnexpectedRtsCommandCount { expected: u16, actual: u16 },
+    InvalidRtsBodyLength { expected: usize, actual: usize },
+    UnexpectedRtsCommandType { expected: u32, actual: u32 },
+    InvalidRtsReceiveWindowSize { actual: u32 },
+    InvalidRtsConnectionTimeout { actual: u32 },
+    InvalidRtsChannelLifetime { actual: u32 },
+    InvalidRtsClientKeepalive { actual: u32 },
 }
 
 impl fmt::Display for RpcPduError {
@@ -152,6 +190,34 @@ impl fmt::Display for RpcPduError {
                     f,
                     "invalid rpc allocation hint {alloc_hint} for {stub_length}-byte stub"
                 )
+            }
+            Self::UnexpectedRtsCallId { actual } => write!(f, "unexpected rts call id {actual}"),
+            Self::InvalidRtsPfcFlags { actual } => {
+                write!(f, "invalid rts packet flags 0x{actual:02x}")
+            }
+            Self::UnexpectedRtsFlags { expected, actual } => {
+                write!(f, "unexpected rts flags 0x{actual:04x}, expected 0x{expected:04x}")
+            }
+            Self::UnexpectedRtsCommandCount { expected, actual } => {
+                write!(f, "unexpected rts command count {actual}, expected {expected}")
+            }
+            Self::InvalidRtsBodyLength { expected, actual } => {
+                write!(f, "invalid rts body length {actual}, expected {expected}")
+            }
+            Self::UnexpectedRtsCommandType { expected, actual } => {
+                write!(f, "unexpected rts command type {actual}, expected {expected}")
+            }
+            Self::InvalidRtsReceiveWindowSize { actual } => {
+                write!(f, "invalid rts receive window size {actual}")
+            }
+            Self::InvalidRtsConnectionTimeout { actual } => {
+                write!(f, "invalid rts connection timeout {actual}")
+            }
+            Self::InvalidRtsChannelLifetime { actual } => {
+                write!(f, "invalid rts channel lifetime {actual}")
+            }
+            Self::InvalidRtsClientKeepalive { actual } => {
+                write!(f, "invalid rts client keepalive {actual}")
             }
         }
     }
@@ -2001,6 +2067,922 @@ mod tsgu {
             response
         }
     }
+}
+
+/// An exact 16-byte RPC-over-HTTP RTS cookie.
+///
+/// [MS-RPCH] 2.2.3.5.4.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct RtsCookie([u8; Self::SIZE]);
+
+impl RtsCookie {
+    /// Size of an RTS cookie.
+    pub const SIZE: usize = 16;
+
+    /// Creates a cookie from its wire representation.
+    pub const fn new(bytes: [u8; Self::SIZE]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the wire representation.
+    pub const fn as_bytes(&self) -> &[u8; Self::SIZE] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for RtsCookie {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RtsCookie(..)")
+    }
+}
+
+/// Client-controlled values used to open an RPCH virtual connection.
+///
+/// [MS-RPCH] 2.2.3.5.1, 2.2.3.5.5, and 2.2.3.5.6.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RpchV2Settings {
+    receive_window_size: u32,
+    channel_lifetime: u32,
+    client_keepalive: u32,
+}
+
+impl RpchV2Settings {
+    /// Creates validated client RPCH settings.
+    pub fn new(receive_window_size: u32, channel_lifetime: u32, client_keepalive: u32) -> Result<Self, RpcPduError> {
+        validate_rts_receive_window_size(receive_window_size)?;
+        validate_rts_channel_lifetime(channel_lifetime)?;
+        validate_rts_client_keepalive(client_keepalive)?;
+
+        Ok(Self {
+            receive_window_size,
+            channel_lifetime,
+            client_keepalive,
+        })
+    }
+
+    /// Local receive window advertised in CONN/A1.
+    pub const fn receive_window_size(self) -> u32 {
+        self.receive_window_size
+    }
+
+    /// Requested IN-channel lifetime.
+    pub const fn channel_lifetime(self) -> u32 {
+        self.channel_lifetime
+    }
+
+    /// Requested client keepalive interval.
+    pub const fn client_keepalive(self) -> u32 {
+        self.client_keepalive
+    }
+
+    const fn effective_client_keepalive(self) -> u32 {
+        if self.client_keepalive == 0 {
+            DEFAULT_CLIENT_KEEPALIVE
+        } else {
+            self.client_keepalive
+        }
+    }
+}
+
+impl Default for RpchV2Settings {
+    fn default() -> Self {
+        Self {
+            receive_window_size: 64 * 1024,
+            channel_lifetime: 1024 * 1024 * 1024,
+            client_keepalive: DEFAULT_CLIENT_KEEPALIVE,
+        }
+    }
+}
+
+/// RPCH virtual-connection opening state.
+///
+/// [MS-RPCH] 3.2.2.4.1.2 and 3.2.2.5.2 through 3.2.2.5.4.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RpchV2State {
+    /// No channel request has started.
+    Initial,
+    /// The authenticated IN request has started.
+    InRequestStarted,
+    /// CONN/A1 is ready as the OUT request body.
+    OutRequestStarted,
+    /// CONN/B1 was produced for the IN request body.
+    AwaitingOutResponse,
+    /// A successful OUT response was accepted.
+    AwaitingA3,
+    /// CONN/A3 was accepted.
+    AwaitingC2,
+    /// The default IN and OUT channels are ready for RPC PDUs.
+    Open,
+    /// An invalid setup event terminated the opening sequence.
+    Failed,
+}
+
+/// Errors reported while advancing RPCH v2 connection setup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RpchV2Error {
+    /// An event is not valid in the current setup state.
+    InvalidState { action: &'static str, state: RpchV2State },
+    /// The OUT HTTP response was not successful.
+    OutResponseStatus { actual: u16 },
+    /// An RTS PDU was malformed or semantically invalid.
+    Rts(RpcPduError),
+}
+
+impl fmt::Display for RpchV2Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidState { action, state } => {
+                write!(f, "cannot {action} while rpch setup is {state:?}")
+            }
+            Self::OutResponseStatus { actual } => {
+                write!(f, "invalid rpch OUT response status {actual}")
+            }
+            Self::Rts(error) => error.fmt(f),
+        }
+    }
+}
+
+impl core::error::Error for RpchV2Error {}
+
+impl From<RpcPduError> for RpchV2Error {
+    fn from(error: RpcPduError) -> Self {
+        Self::Rts(error)
+    }
+}
+
+/// Stateful validation for the initial RPCH v2 CONN sequence.
+///
+/// This transport-independent state machine produces initial request bodies and accepts the OUT response status plus CONN/A3 and CONN/C2.
+/// It does not send HTTP requests or consume a live transport.
+///
+/// [MS-RPCH] 3.2.2.4.1.2 and 3.2.2.5.2 through 3.2.2.5.4.
+#[derive(Debug)]
+pub struct RpchV2Setup {
+    settings: RpchV2Settings,
+    virtual_connection_cookie: RtsCookie,
+    out_channel_cookie: RtsCookie,
+    in_channel_cookie: RtsCookie,
+    association_group_id: RtsCookie,
+    state: RpchV2State,
+    in_channel_ping_timeout: Option<u32>,
+    connection_timeout: Option<u32>,
+    peer_receive_window_size: Option<u32>,
+}
+
+impl RpchV2Setup {
+    /// Creates a setup state machine with caller-supplied connection cookies.
+    pub const fn new(
+        settings: RpchV2Settings,
+        virtual_connection_cookie: RtsCookie,
+        out_channel_cookie: RtsCookie,
+        in_channel_cookie: RtsCookie,
+        association_group_id: RtsCookie,
+    ) -> Self {
+        Self {
+            settings,
+            virtual_connection_cookie,
+            out_channel_cookie,
+            in_channel_cookie,
+            association_group_id,
+            state: RpchV2State::Initial,
+            in_channel_ping_timeout: None,
+            connection_timeout: None,
+            peer_receive_window_size: None,
+        }
+    }
+
+    /// Current setup state.
+    pub const fn state(&self) -> RpchV2State {
+        self.state
+    }
+
+    /// Server connection timeout used for IN-channel ping scheduling.
+    pub const fn in_channel_ping_timeout(&self) -> Option<u32> {
+        self.in_channel_ping_timeout
+    }
+
+    /// Negotiated virtual-connection timeout.
+    pub const fn connection_timeout(&self) -> Option<u32> {
+        self.connection_timeout
+    }
+
+    /// Peer receive window advertised in CONN/C2.
+    pub const fn peer_receive_window_size(&self) -> Option<u32> {
+        self.peer_receive_window_size
+    }
+
+    /// Records that the authenticated IN request has started.
+    pub fn start_in_request(&mut self) -> Result<(), RpchV2Error> {
+        if self.state != RpchV2State::Initial {
+            return self.fail(RpchV2Error::InvalidState {
+                action: "start the IN request",
+                state: self.state,
+            });
+        }
+
+        self.state = RpchV2State::InRequestStarted;
+        Ok(())
+    }
+
+    /// Produces the exact 76-byte CONN/A1 body for the OUT request.
+    pub fn out_request_body(&mut self) -> Result<Vec<u8>, RpchV2Error> {
+        if self.state != RpchV2State::InRequestStarted {
+            return self.fail(RpchV2Error::InvalidState {
+                action: "start the OUT request",
+                state: self.state,
+            });
+        }
+
+        let body = encode_rts_conn_a1(
+            self.virtual_connection_cookie,
+            self.out_channel_cookie,
+            self.settings.receive_window_size,
+        )?;
+        debug_assert_eq!(body.len(), RPCH_OUT_CONTENT_LENGTH);
+        self.state = RpchV2State::OutRequestStarted;
+        Ok(body)
+    }
+
+    /// Produces CONN/B1, the first PDU in the IN request body.
+    pub fn in_request_initial_pdu(&mut self) -> Result<Vec<u8>, RpchV2Error> {
+        if self.state != RpchV2State::OutRequestStarted {
+            return self.fail(RpchV2Error::InvalidState {
+                action: "send CONN/B1",
+                state: self.state,
+            });
+        }
+
+        let pdu = encode_rts_conn_b1(
+            self.virtual_connection_cookie,
+            self.in_channel_cookie,
+            self.settings.channel_lifetime,
+            self.settings.client_keepalive,
+            self.association_group_id,
+        )?;
+        self.state = RpchV2State::AwaitingOutResponse;
+        Ok(pdu)
+    }
+
+    /// Accepts the OUT HTTP response status before processing its RTS body.
+    pub fn accept_out_response(&mut self, status: u16) -> Result<(), RpchV2Error> {
+        if self.state != RpchV2State::AwaitingOutResponse {
+            return self.fail(RpchV2Error::InvalidState {
+                action: "accept the OUT response",
+                state: self.state,
+            });
+        }
+        if status != 200 {
+            return self.fail(RpchV2Error::OutResponseStatus { actual: status });
+        }
+
+        self.state = RpchV2State::AwaitingA3;
+        Ok(())
+    }
+
+    /// Processes the next initial RTS PDU from the OUT response body.
+    pub fn receive_out_pdu(&mut self, pdu: &[u8]) -> Result<(), RpchV2Error> {
+        match self.state {
+            RpchV2State::AwaitingA3 => {
+                let connection_timeout = match decode_rts_conn_a3(pdu) {
+                    Ok(connection_timeout) => connection_timeout,
+                    Err(error) => return self.fail(error.into()),
+                };
+                self.in_channel_ping_timeout = Some(connection_timeout);
+                self.state = RpchV2State::AwaitingC2;
+                Ok(())
+            }
+            RpchV2State::AwaitingC2 => {
+                let (peer_receive_window_size, connection_timeout) = match decode_rts_conn_c2(pdu) {
+                    Ok(values) => values,
+                    Err(error) => return self.fail(error.into()),
+                };
+                self.connection_timeout = Some(connection_timeout);
+                self.peer_receive_window_size = Some(peer_receive_window_size);
+                self.state = RpchV2State::Open;
+                Ok(())
+            }
+            state => self.fail(RpchV2Error::InvalidState {
+                action: "consume an OUT setup PDU",
+                state,
+            }),
+        }
+    }
+
+    /// Creates accounting for the established default IN and OUT channels.
+    pub fn flow_control(&self) -> Result<RpchFlowControl, RpchV2Error> {
+        if self.state != RpchV2State::Open {
+            return Err(RpchV2Error::InvalidState {
+                action: "create RPCH flow-control state",
+                state: self.state,
+            });
+        }
+
+        let peer_receive_window_size = self.peer_receive_window_size.ok_or(RpchV2Error::InvalidState {
+            action: "read the peer receive window",
+            state: self.state,
+        })?;
+        Ok(RpchFlowControl::new(
+            self.settings.receive_window_size,
+            peer_receive_window_size,
+            self.out_channel_cookie,
+            self.in_channel_cookie,
+        ))
+    }
+
+    /// Creates the ping schedule for the established default IN channel.
+    pub fn ping_schedule(&self, now: Duration) -> Result<RpchPingSchedule, RpchV2Error> {
+        if self.state != RpchV2State::Open {
+            return Err(RpchV2Error::InvalidState {
+                action: "create RPCH ping schedule",
+                state: self.state,
+            });
+        }
+
+        let connection_timeout = self.in_channel_ping_timeout.ok_or(RpchV2Error::InvalidState {
+            action: "read the IN channel connection timeout",
+            state: self.state,
+        })?;
+        Ok(RpchPingSchedule::new(
+            Duration::from_millis(u64::from(connection_timeout)),
+            Duration::from_millis(u64::from(self.settings.effective_client_keepalive())),
+            now,
+        ))
+    }
+
+    fn fail<T>(&mut self, error: RpchV2Error) -> Result<T, RpchV2Error> {
+        self.state = RpchV2State::Failed;
+        Err(error)
+    }
+}
+
+/// A flow-control acknowledgement for an RPCH channel.
+///
+/// [MS-RPCH] 2.2.3.4 and 2.2.4.50.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RtsFlowControlAck {
+    bytes_received: u32,
+    available_window: u32,
+    channel_cookie: RtsCookie,
+}
+
+impl RtsFlowControlAck {
+    /// Creates a flow-control acknowledgement.
+    pub const fn new(bytes_received: u32, available_window: u32, channel_cookie: RtsCookie) -> Self {
+        Self {
+            bytes_received,
+            available_window,
+            channel_cookie,
+        }
+    }
+
+    /// Total bytes received by the peer.
+    pub const fn bytes_received(self) -> u32 {
+        self.bytes_received
+    }
+
+    /// Receiver capacity available when the acknowledgement was sent.
+    pub const fn available_window(self) -> u32 {
+        self.available_window
+    }
+
+    /// Cookie identifying the acknowledged channel.
+    pub const fn channel_cookie(self) -> RtsCookie {
+        self.channel_cookie
+    }
+}
+
+/// Errors reported while applying RPCH flow-control accounting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RpchFlowControlError {
+    /// A platform-sized PDU length does not fit the wire counter.
+    PduLengthOverflow { actual: usize },
+    /// A sent PDU does not fit the available peer window.
+    SendWindowExhausted { pdu_size: u32, available_window: u32 },
+    /// A received PDU does not fit the local receive window.
+    ReceiveWindowExhausted { pdu_size: u32, available_window: u32 },
+    /// A consumer released more bytes than are queued locally.
+    PduNotQueued { pdu_size: u32, queued_bytes: u32 },
+    /// The received-byte counter would overflow.
+    BytesReceivedOverflow { current: u32, pdu_size: u32 },
+    /// The sent-byte counter would overflow.
+    BytesSentOverflow { current: u32, pdu_size: u32 },
+    /// An acknowledgement claims bytes that were not sent.
+    InvalidFlowControlAck { bytes_received: u32, bytes_sent: u32 },
+    /// An acknowledgement reduced its cumulative byte counter.
+    RegressingFlowControlAck {
+        bytes_received: u32,
+        previous_bytes_received: u32,
+    },
+    /// An acknowledgement advertises more capacity than the peer window.
+    FlowControlAckWindowExceedsPeer {
+        available_window: u32,
+        peer_receive_window_size: u32,
+    },
+    /// The acknowledgement cannot cover sent but unacknowledged bytes.
+    FlowControlAckExhaustsSenderWindow {
+        available_window: u32,
+        unacknowledged_bytes: u32,
+    },
+}
+
+impl fmt::Display for RpchFlowControlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PduLengthOverflow { actual } => write!(f, "rpch pdu length {actual} exceeds u32"),
+            Self::SendWindowExhausted {
+                pdu_size,
+                available_window,
+            } => write!(
+                f,
+                "rpch pdu size {pdu_size} exceeds available send window {available_window}"
+            ),
+            Self::ReceiveWindowExhausted {
+                pdu_size,
+                available_window,
+            } => write!(
+                f,
+                "rpch pdu size {pdu_size} exceeds available receive window {available_window}"
+            ),
+            Self::PduNotQueued { pdu_size, queued_bytes } => write!(
+                f,
+                "rpch consumed pdu size {pdu_size} exceeds queued bytes {queued_bytes}"
+            ),
+            Self::BytesReceivedOverflow { current, pdu_size } => {
+                write!(f, "rpch received byte count overflows: {current} + {pdu_size}")
+            }
+            Self::BytesSentOverflow { current, pdu_size } => {
+                write!(f, "rpch sent byte count overflows: {current} + {pdu_size}")
+            }
+            Self::InvalidFlowControlAck {
+                bytes_received,
+                bytes_sent,
+            } => write!(
+                f,
+                "rpch flow-control ack bytes received {bytes_received} exceeds bytes sent {bytes_sent}"
+            ),
+            Self::RegressingFlowControlAck {
+                bytes_received,
+                previous_bytes_received,
+            } => write!(
+                f,
+                "rpch flow-control ack bytes received {bytes_received} precedes {previous_bytes_received}"
+            ),
+            Self::FlowControlAckWindowExceedsPeer {
+                available_window,
+                peer_receive_window_size,
+            } => write!(
+                f,
+                "rpch flow-control ack window {available_window} exceeds peer receive window {peer_receive_window_size}"
+            ),
+            Self::FlowControlAckExhaustsSenderWindow {
+                available_window,
+                unacknowledged_bytes,
+            } => write!(
+                f,
+                "rpch flow-control ack window {available_window} is below unacknowledged bytes {unacknowledged_bytes}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for RpchFlowControlError {}
+
+/// Flow-control state for the default RPCH IN and OUT channels.
+///
+/// RPC PDUs received on the OUT channel consume the local receive window.
+/// RPC PDUs sent on the IN channel consume the peer receive window.
+///
+/// [MS-RPCH] 3.2.1.4.1 and 3.2.1.5.1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RpchFlowControl {
+    receive_window_size: u32,
+    receive_available_window: u32,
+    receive_available_window_advertised: i64,
+    receive_bytes_received: u32,
+    peer_receive_window_size: u32,
+    send_available_window: u32,
+    send_bytes_sent: u32,
+    send_bytes_acknowledged: u32,
+    receive_channel_cookie: RtsCookie,
+    send_channel_cookie: RtsCookie,
+}
+
+impl RpchFlowControl {
+    fn new(
+        receive_window_size: u32,
+        peer_receive_window_size: u32,
+        receive_channel_cookie: RtsCookie,
+        send_channel_cookie: RtsCookie,
+    ) -> Self {
+        Self {
+            receive_window_size,
+            receive_available_window: receive_window_size,
+            receive_available_window_advertised: i64::from(receive_window_size),
+            receive_bytes_received: 0,
+            peer_receive_window_size,
+            send_available_window: peer_receive_window_size,
+            send_bytes_sent: 0,
+            send_bytes_acknowledged: 0,
+            receive_channel_cookie,
+            send_channel_cookie,
+        }
+    }
+
+    /// Current available capacity for IN-channel RPC PDUs.
+    pub const fn send_available_window(&self) -> u32 {
+        self.send_available_window
+    }
+
+    /// Current available capacity in the local OUT-channel receive window.
+    pub const fn receive_available_window(&self) -> u32 {
+        self.receive_available_window
+    }
+
+    /// Records an RPC PDU sent on the default IN channel.
+    pub fn sent_rpc_pdu(&mut self, pdu_length: usize) -> Result<(), RpchFlowControlError> {
+        let pdu_size =
+            u32::try_from(pdu_length).map_err(|_| RpchFlowControlError::PduLengthOverflow { actual: pdu_length })?;
+        if self.send_available_window <= pdu_size {
+            return Err(RpchFlowControlError::SendWindowExhausted {
+                pdu_size,
+                available_window: self.send_available_window,
+            });
+        }
+
+        self.send_bytes_sent =
+            self.send_bytes_sent
+                .checked_add(pdu_size)
+                .ok_or(RpchFlowControlError::BytesSentOverflow {
+                    current: self.send_bytes_sent,
+                    pdu_size,
+                })?;
+        self.send_available_window -= pdu_size;
+        Ok(())
+    }
+
+    /// Records an RPC PDU received on the default OUT channel.
+    pub fn received_rpc_pdu(&mut self, pdu_length: usize) -> Result<(), RpchFlowControlError> {
+        let pdu_size =
+            u32::try_from(pdu_length).map_err(|_| RpchFlowControlError::PduLengthOverflow { actual: pdu_length })?;
+        if pdu_size > self.receive_available_window {
+            return Err(RpchFlowControlError::ReceiveWindowExhausted {
+                pdu_size,
+                available_window: self.receive_available_window,
+            });
+        }
+
+        self.receive_bytes_received =
+            self.receive_bytes_received
+                .checked_add(pdu_size)
+                .ok_or(RpchFlowControlError::BytesReceivedOverflow {
+                    current: self.receive_bytes_received,
+                    pdu_size,
+                })?;
+        self.receive_available_window -= pdu_size;
+        self.receive_available_window_advertised -= i64::from(pdu_size);
+        Ok(())
+    }
+
+    /// Records a higher layer consuming bytes from the local receive window.
+    ///
+    /// Returns an acknowledgement when more than half the local window has been reclaimed since the previous acknowledgement.
+    pub fn consumed_rpc_pdu(&mut self, pdu_length: usize) -> Result<Option<RtsFlowControlAck>, RpchFlowControlError> {
+        let pdu_size =
+            u32::try_from(pdu_length).map_err(|_| RpchFlowControlError::PduLengthOverflow { actual: pdu_length })?;
+        let queued_bytes = self.receive_window_size - self.receive_available_window;
+        if pdu_size > queued_bytes {
+            return Err(RpchFlowControlError::PduNotQueued { pdu_size, queued_bytes });
+        }
+        self.receive_available_window += pdu_size;
+
+        let reclaimed_window = i64::from(self.receive_available_window) - self.receive_available_window_advertised;
+        if reclaimed_window <= i64::from(self.receive_window_size / 2) {
+            return Ok(None);
+        }
+
+        self.receive_available_window_advertised = i64::from(self.receive_available_window);
+        Ok(Some(RtsFlowControlAck::new(
+            self.receive_bytes_received,
+            self.receive_available_window,
+            self.receive_channel_cookie,
+        )))
+    }
+
+    /// Applies an acknowledgement received on the default OUT channel.
+    ///
+    /// An acknowledgement for another channel is ignored.
+    pub fn receive_flow_control_ack(&mut self, ack: RtsFlowControlAck) -> Result<bool, RpchFlowControlError> {
+        if ack.channel_cookie != self.send_channel_cookie {
+            return Ok(false);
+        }
+        if ack.bytes_received > self.send_bytes_sent {
+            return Err(RpchFlowControlError::InvalidFlowControlAck {
+                bytes_received: ack.bytes_received,
+                bytes_sent: self.send_bytes_sent,
+            });
+        }
+        if ack.bytes_received < self.send_bytes_acknowledged {
+            return Err(RpchFlowControlError::RegressingFlowControlAck {
+                bytes_received: ack.bytes_received,
+                previous_bytes_received: self.send_bytes_acknowledged,
+            });
+        }
+        if ack.available_window > self.peer_receive_window_size {
+            return Err(RpchFlowControlError::FlowControlAckWindowExceedsPeer {
+                available_window: ack.available_window,
+                peer_receive_window_size: self.peer_receive_window_size,
+            });
+        }
+
+        let unacknowledged_bytes = self.send_bytes_sent - ack.bytes_received;
+        self.send_available_window = ack.available_window.checked_sub(unacknowledged_bytes).ok_or(
+            RpchFlowControlError::FlowControlAckExhaustsSenderWindow {
+                available_window: ack.available_window,
+                unacknowledged_bytes,
+            },
+        )?;
+        self.send_bytes_acknowledged = ack.bytes_received;
+        Ok(true)
+    }
+}
+
+/// Schedules PING PDUs for the default RPCH IN channel.
+///
+/// [MS-RPCH] 3.2.1.2.1, 3.2.1.2.2, and 3.2.2.6.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RpchPingSchedule {
+    connection_timeout: Duration,
+    keepalive_interval: Duration,
+    last_send: Duration,
+}
+
+impl RpchPingSchedule {
+    const fn new(connection_timeout: Duration, keepalive_interval: Duration, now: Duration) -> Self {
+        Self {
+            connection_timeout,
+            keepalive_interval,
+            last_send: now,
+        }
+    }
+
+    /// Returns whether a PING must be sent at `now`.
+    pub fn ping_due(&self, now: Duration) -> bool {
+        let elapsed = now.saturating_sub(self.last_send);
+        elapsed >= self.connection_timeout
+            || (!self.keepalive_interval.is_zero() && elapsed >= self.keepalive_interval / 2)
+    }
+
+    /// Records a PDU sent on the default IN channel.
+    pub fn record_send(&mut self, now: Duration) {
+        self.last_send = now;
+    }
+}
+
+/// Encodes the client CONN/A1 RTS PDU for the OUT channel.
+///
+/// [MS-RPCH] 2.2.4.2.
+pub fn encode_rts_conn_a1(
+    virtual_connection_cookie: RtsCookie,
+    out_channel_cookie: RtsCookie,
+    receive_window_size: u32,
+) -> Result<Vec<u8>, RpcPduError> {
+    validate_rts_receive_window_size(receive_window_size)?;
+
+    let mut commands = Vec::with_capacity(
+        8 /* version */
+            + 20 /* virtual connection cookie */
+            + 20 /* OUT channel cookie */
+            + 8, /* receive window size */
+    );
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_VERSION, RTS_VERSION);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, virtual_connection_cookie);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, out_channel_cookie);
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_RECEIVE_WINDOW_SIZE, receive_window_size);
+    encode_rts_pdu(RTS_FLAG_NONE, 4, commands)
+}
+
+/// Encodes the client CONN/B1 RTS PDU for the IN channel.
+///
+/// [MS-RPCH] 2.2.4.5.
+pub fn encode_rts_conn_b1(
+    virtual_connection_cookie: RtsCookie,
+    in_channel_cookie: RtsCookie,
+    channel_lifetime: u32,
+    client_keepalive: u32,
+    association_group_id: RtsCookie,
+) -> Result<Vec<u8>, RpcPduError> {
+    validate_rts_channel_lifetime(channel_lifetime)?;
+    validate_rts_client_keepalive(client_keepalive)?;
+
+    let mut commands = Vec::with_capacity(
+        8 /* version */
+            + 20 /* virtual connection cookie */
+            + 20 /* IN channel cookie */
+            + 8 /* channel lifetime */
+            + 8 /* client keepalive */
+            + 20, /* association group ID */
+    );
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_VERSION, RTS_VERSION);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, virtual_connection_cookie);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, in_channel_cookie);
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_CHANNEL_LIFETIME, channel_lifetime);
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_CLIENT_KEEPALIVE, client_keepalive);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_ASSOCIATION_GROUP_ID, association_group_id);
+    encode_rts_pdu(RTS_FLAG_NONE, 6, commands)
+}
+
+/// Encodes an RPCH PING RTS PDU.
+///
+/// [MS-RPCH] 2.2.4.49.
+pub fn encode_rts_ping() -> Result<Vec<u8>, RpcPduError> {
+    encode_rts_pdu(RTS_FLAG_PING, 0, Vec::new())
+}
+
+/// Encodes an RPCH flow-control acknowledgement.
+///
+/// [MS-RPCH] 2.2.4.50.
+pub fn encode_rts_flow_control_ack(ack: RtsFlowControlAck) -> Result<Vec<u8>, RpcPduError> {
+    let mut commands = Vec::with_capacity(
+        4 /* command type */
+            + 4 /* bytes received */
+            + 4 /* available window */
+            + RtsCookie::SIZE, /* channel cookie */
+    );
+    commands.extend_from_slice(&RTS_COMMAND_FLOW_CONTROL_ACK.to_le_bytes());
+    commands.extend_from_slice(&ack.bytes_received.to_le_bytes());
+    commands.extend_from_slice(&ack.available_window.to_le_bytes());
+    commands.extend_from_slice(ack.channel_cookie.as_bytes());
+    encode_rts_pdu(RTS_FLAG_OTHER_CMD, 1, commands)
+}
+
+/// Decodes an RPCH flow-control acknowledgement.
+///
+/// [MS-RPCH] 2.2.4.50.
+pub fn decode_rts_flow_control_ack(source: &[u8]) -> Result<RtsFlowControlAck, RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_OTHER_CMD, 1, 28)?;
+    let command_type = read_u32(body, 0)?;
+    if command_type != RTS_COMMAND_FLOW_CONTROL_ACK {
+        return Err(RpcPduError::UnexpectedRtsCommandType {
+            expected: RTS_COMMAND_FLOW_CONTROL_ACK,
+            actual: command_type,
+        });
+    }
+
+    let channel_cookie = body
+        .get(12..12 + RtsCookie::SIZE)
+        .ok_or(RpcPduError::Truncated {
+            actual: body.len(),
+            required: 12 + RtsCookie::SIZE,
+        })?
+        .try_into()
+        .map(RtsCookie::new)
+        .map_err(|_| RpcPduError::LengthOverflow)?;
+    Ok(RtsFlowControlAck::new(
+        read_u32(body, 4)?,
+        read_u32(body, 8)?,
+        channel_cookie,
+    ))
+}
+
+fn decode_rts_conn_a3(source: &[u8]) -> Result<u32, RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_NONE, 1, 8)?;
+    let connection_timeout = decode_rts_u32_command(body, 0, RTS_COMMAND_CONNECTION_TIMEOUT)?;
+    validate_rts_connection_timeout(connection_timeout)?;
+    Ok(connection_timeout)
+}
+
+fn decode_rts_conn_c2(source: &[u8]) -> Result<(u32, u32), RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_NONE, 3, 24)?;
+    let _version = decode_rts_u32_command(body, 0, RTS_COMMAND_VERSION)?;
+    let receive_window_size = decode_rts_u32_command(body, 8, RTS_COMMAND_RECEIVE_WINDOW_SIZE)?;
+    let connection_timeout = decode_rts_u32_command(body, 16, RTS_COMMAND_CONNECTION_TIMEOUT)?;
+    validate_rts_receive_window_size(receive_window_size)?;
+    validate_rts_connection_timeout(connection_timeout)?;
+    Ok((receive_window_size, connection_timeout))
+}
+
+fn encode_rts_pdu(flags: u16, command_count: u16, commands: Vec<u8>) -> Result<Vec<u8>, RpcPduError> {
+    let body_length = 4usize.checked_add(commands.len()).ok_or(RpcPduError::LengthOverflow)?;
+    let pdu_length = RTS_HEADER_SIZE
+        .checked_add(commands.len())
+        .ok_or(RpcPduError::LengthOverflow)?;
+    let header = RpcCommonHeader::encode(PTYPE_RTS, RTS_PFC_FLAGS, 0, body_length, 0)?;
+    let mut pdu = Vec::with_capacity(pdu_length);
+    pdu.extend_from_slice(&header);
+    pdu.extend_from_slice(&flags.to_le_bytes());
+    pdu.extend_from_slice(&command_count.to_le_bytes());
+    pdu.extend_from_slice(&commands);
+    Ok(pdu)
+}
+
+fn encode_rts_u32_command(output: &mut Vec<u8>, command_type: u32, value: u32) {
+    output.extend_from_slice(&command_type.to_le_bytes());
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn encode_rts_cookie_command(output: &mut Vec<u8>, command_type: u32, cookie: RtsCookie) {
+    output.extend_from_slice(&command_type.to_le_bytes());
+    output.extend_from_slice(cookie.as_bytes());
+}
+
+fn decode_rts_pdu(
+    source: &[u8],
+    expected_flags: u16,
+    expected_command_count: u16,
+    expected_body_length: usize,
+) -> Result<&[u8], RpcPduError> {
+    let header = RpcCommonHeader::decode(source)?;
+    if header.ptype != PTYPE_RTS {
+        return Err(RpcPduError::UnexpectedPduType {
+            expected: PTYPE_RTS,
+            actual: header.ptype,
+        });
+    }
+    if header.pfc_flags != RTS_PFC_FLAGS {
+        return Err(RpcPduError::InvalidRtsPfcFlags {
+            actual: header.pfc_flags,
+        });
+    }
+    if header.auth_length != 0 {
+        return Err(RpcPduError::AuthenticationUnsupported {
+            auth_length: header.auth_length,
+        });
+    }
+    if header.call_id != 0 {
+        return Err(RpcPduError::UnexpectedRtsCallId { actual: header.call_id });
+    }
+
+    let pdu = &source[..usize::from(header.fragment_length)];
+    let rts_header = pdu
+        .get(RPC_COMMON_HEADER_SIZE..RTS_HEADER_SIZE)
+        .ok_or(RpcPduError::Truncated {
+            actual: pdu.len(),
+            required: RTS_HEADER_SIZE,
+        })?;
+    let flags = read_u16(rts_header, 0)?;
+    if flags != expected_flags {
+        return Err(RpcPduError::UnexpectedRtsFlags {
+            expected: expected_flags,
+            actual: flags,
+        });
+    }
+    let command_count = read_u16(rts_header, 2)?;
+    if command_count != expected_command_count {
+        return Err(RpcPduError::UnexpectedRtsCommandCount {
+            expected: expected_command_count,
+            actual: command_count,
+        });
+    }
+
+    let body = &pdu[RTS_HEADER_SIZE..];
+    if body.len() != expected_body_length {
+        return Err(RpcPduError::InvalidRtsBodyLength {
+            expected: expected_body_length,
+            actual: body.len(),
+        });
+    }
+    Ok(body)
+}
+
+fn decode_rts_u32_command(source: &[u8], offset: usize, expected_type: u32) -> Result<u32, RpcPduError> {
+    let command_type = read_u32(source, offset)?;
+    if command_type != expected_type {
+        return Err(RpcPduError::UnexpectedRtsCommandType {
+            expected: expected_type,
+            actual: command_type,
+        });
+    }
+
+    let value_offset = offset.checked_add(4).ok_or(RpcPduError::LengthOverflow)?;
+    read_u32(source, value_offset)
+}
+
+fn validate_rts_receive_window_size(value: u32) -> Result<(), RpcPduError> {
+    if !(RTS_MIN_RECEIVE_WINDOW_SIZE..=RTS_MAX_RECEIVE_WINDOW_SIZE).contains(&value) {
+        return Err(RpcPduError::InvalidRtsReceiveWindowSize { actual: value });
+    }
+    Ok(())
+}
+
+fn validate_rts_connection_timeout(value: u32) -> Result<(), RpcPduError> {
+    if !(RTS_MIN_CONNECTION_TIMEOUT..=RTS_MAX_CONNECTION_TIMEOUT).contains(&value) {
+        return Err(RpcPduError::InvalidRtsConnectionTimeout { actual: value });
+    }
+    Ok(())
+}
+
+fn validate_rts_channel_lifetime(value: u32) -> Result<(), RpcPduError> {
+    if !(RTS_MIN_CHANNEL_LIFETIME..=RTS_MAX_CHANNEL_LIFETIME).contains(&value) {
+        return Err(RpcPduError::InvalidRtsChannelLifetime { actual: value });
+    }
+    Ok(())
+}
+
+fn validate_rts_client_keepalive(value: u32) -> Result<(), RpcPduError> {
+    if value != 0 && value < RTS_MIN_CLIENT_KEEPALIVE {
+        return Err(RpcPduError::InvalidRtsClientKeepalive { actual: value });
+    }
+    Ok(())
 }
 
 fn read_u16(source: &[u8], offset: usize) -> Result<u16, RpcPduError> {
