@@ -36,14 +36,13 @@ where
     S: Unpin + Send + AsyncRead + AsyncWrite + 'static,
 {
     if certificate_validation_callback.is_none() {
-        return tls_upgrade_inner(
-            stream,
-            server_name,
-            certificate_validation,
-            None,
-            certificate_validation_endpoint,
-        )
-        .await;
+        let certificate_validation_endpoint = certificate_validation_endpoint.to_owned();
+        let config = spawn_blocking_io(move || {
+            ironrdp_tls::rustls_client_config(certificate_validation, &certificate_validation_endpoint, None)
+        })
+        .await?;
+
+        return tls_connect_with_config(stream, server_name, config).await;
     }
 
     let server_name = server_name.to_owned();
@@ -52,34 +51,36 @@ where
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(tls_upgrade_inner(
-                stream,
-                &server_name,
-                certificate_validation,
-                certificate_validation_callback,
-                &certificate_validation_endpoint,
-            ))
+            .block_on(async {
+                let config = ironrdp_tls::rustls_client_config(
+                    certificate_validation,
+                    &certificate_validation_endpoint,
+                    certificate_validation_callback,
+                )?;
+
+                tls_connect_with_config(stream, &server_name, config).await
+            })
     })
     .await
     .map_err(io::Error::other)?
 }
 
-async fn tls_upgrade_inner<S>(
+async fn spawn_blocking_io<T, F>(action: F) -> io::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> io::Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(action).await.map_err(io::Error::other)?
+}
+
+async fn tls_connect_with_config<S>(
     stream: S,
     server_name: &str,
-    certificate_validation: CertificateValidation,
-    certificate_validation_callback: Option<CertificateValidationCallback>,
-    certificate_validation_endpoint: &str,
+    config: tokio_rustls::rustls::ClientConfig,
 ) -> io::Result<TlsStream<S>>
 where
     S: Unpin + AsyncRead + AsyncWrite,
 {
-    let config = ironrdp_tls::rustls_client_config(
-        certificate_validation,
-        certificate_validation_endpoint,
-        certificate_validation_callback,
-    )?;
-
     let mut tls_stream = {
         let config = Arc::new(config);
 
@@ -108,4 +109,44 @@ where
     let mut tls_stream = acceptor.accept(stream).await?;
     tls_stream.flush().await?;
     Ok(tls_stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::time::Duration;
+    use std::sync::mpsc;
+
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_io_does_not_stall_the_current_thread_runtime() {
+        let active = Arc::new(AtomicBool::new(false));
+        let action_active = Arc::clone(&active);
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            release_tx.send(()).expect("release blocking action");
+        });
+
+        let action = tokio::spawn(spawn_blocking_io(move || {
+            action_active.store(true, Ordering::SeqCst);
+            started_tx.send(()).expect("signal action started");
+            release_rx.recv().expect("wait for release");
+            action_active.store(false, Ordering::SeqCst);
+            Ok(())
+        }));
+
+        started_rx.await.expect("blocking action started");
+        assert!(
+            active.load(Ordering::SeqCst),
+            "the runtime must resume while the blocking action is still active"
+        );
+
+        action.await.expect("join blocking action").expect("blocking action");
+        release_thread.join().expect("join release thread");
+    }
 }

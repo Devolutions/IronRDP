@@ -58,6 +58,8 @@ pub struct UdpTransportConfig {
     pub handshake_timeout: Duration,
     /// Maximum time to wait for the TLS handshake to complete.
     /// Default: 130 seconds to allow a 120-second interactive certificate decision plus handshake overhead.
+    ///
+    /// The timeout cancels the connection attempt, but a synchronous certificate callback already running on a blocking thread continues until it returns.
     pub tls_timeout: Duration,
     /// Maximum time to wait for the RDPEMT tunnel handshake to complete.
     /// Default: 10 seconds.

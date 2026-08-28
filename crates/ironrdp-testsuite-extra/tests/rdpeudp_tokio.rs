@@ -104,6 +104,42 @@ async fn full_stack_current_thread_runtime() {
     server.shutdown().await.expect("server shutdown");
 }
 
+/// Verify strict validation without a callback is safe on the current-thread runtime.
+#[tokio::test(flavor = "current_thread")]
+async fn strict_validation_without_callback_on_current_thread_runtime() {
+    let server_sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind server");
+    let server_addr = server_sock.local_addr().expect("server addr");
+    let tunnel_config = test_tunnel_config();
+
+    let server_handle = tokio::spawn({
+        let tunnel_config = tunnel_config.clone();
+        async move {
+            accept_udp(
+                server_sock,
+                UdpAcceptConfig {
+                    tls_config: test_tls_server_config(),
+                    tunnel_config,
+                    connection_config: ConnectionConfig::default(),
+                    accept_timeout: Duration::from_secs(10),
+                },
+            )
+            .await
+        }
+    });
+
+    let mut config = UdpTransportConfig::new(server_addr, "localhost".into(), tunnel_config);
+    config.tls.certificate_validation = CertificateValidation::Strict;
+
+    let result = connect_udp(config).await;
+    assert!(
+        result.is_err(),
+        "strict validation must reject the self-signed test certificate"
+    );
+
+    // The server side also errors, since the client aborts mid-handshake.
+    let _ = server_handle.await;
+}
+
 /// Verify a blocking certificate prompt cannot starve RDPEUDP timers on the ActiveX runtime.
 #[tokio::test(flavor = "current_thread")]
 async fn delayed_certificate_callback_does_not_starve_udp_driver() {
