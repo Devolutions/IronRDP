@@ -116,14 +116,15 @@ pub fn read_string_from_cursor(
                 .read_u16_into::<LittleEndian>(u16_buffer.as_mut())
                 .expect("BUG: str_buffer is always even for UTF16");
 
-            String::from_utf16(&u16_buffer)
-                .map_err(|_| invalid_field_err!("UTF16 decode", "buffer", "Failed to decode UTF16 string"))?
+            String::from_utf16(&u16_buffer).map_err(
+                |_| invalid_field_err!("UTF16 decode", "buffer", "Failed to decode UTF16 string", in: cursor),
+            )?
         }
         CharacterSet::Ansi => {
             ensure_size!(ctx: "Decode string (UTF-8)", in: cursor, size: size);
             let slice = cursor.read_slice(size);
             String::from_utf8(slice.to_vec())
-                .map_err(|_| invalid_field_err!("UTF8 decode", "buffer", "Failed to decode UTF8 string"))?
+                .map_err(|_| invalid_field_err!("UTF8 decode", "buffer", "Failed to decode UTF8 string", in: cursor))?
         }
     };
 
@@ -155,7 +156,7 @@ pub fn read_multistring_from_cursor(
 }
 
 pub fn encode_string(
-    dst: &mut [u8],
+    dst: &mut WriteCursor<'_>,
     value: &str,
     character_set: CharacterSet,
     write_null_terminator: bool,
@@ -180,7 +181,7 @@ pub fn encode_string(
     let len = buffer.len();
 
     ensure_size!(ctx: ctx, in: dst, size: len);
-    dst[..len].copy_from_slice(&buffer);
+    dst.write_slice(&buffer);
 
     Ok(len)
 }
@@ -191,8 +192,7 @@ pub fn write_string_to_cursor(
     character_set: CharacterSet,
     write_null_terminator: bool,
 ) -> EncodeResult<()> {
-    let len = encode_string(cursor.remaining_mut(), value, character_set, write_null_terminator)?;
-    cursor.advance(len);
+    encode_string(cursor, value, character_set, write_null_terminator)?;
     Ok(())
 }
 

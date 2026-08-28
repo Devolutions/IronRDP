@@ -1,8 +1,8 @@
 use expect_test::expect;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::nego::{
-    ConnectionConfirm, ConnectionRequest, Cookie, CorrelationInfo, FailureCode, NegoRequestData, RequestFlags,
-    ResponseFlags, RoutingToken, SecurityProtocol,
+    ConnectionConfirm, ConnectionRequest, ConnectionRequestWithOpaqueRoutingToken, Cookie, CorrelationInfo,
+    FailureCode, NegoRequestData, OpaqueRoutingToken, RequestFlags, ResponseFlags, RoutingToken, SecurityProtocol,
 };
 use ironrdp_pdu::tpdu::{TpduCode, TpduHeader};
 use ironrdp_pdu::tpkt::TpktHeader;
@@ -413,6 +413,9 @@ fn nego_request_unexpected_rdp_msg_type() {
             context: "Client X.224 Connection Request",
             kind: UnexpectedMessageType {
                 got: 3,
+                offset: Some(
+                    35,
+                ),
             },
             source: None,
         }
@@ -447,6 +450,9 @@ fn nego_confirm_unexpected_rdp_msg_type() {
             context: "Server X.224 Connection Confirm",
             kind: UnexpectedMessageType {
                 got: 175,
+                offset: Some(
+                    12,
+                ),
             },
             source: None,
         }
@@ -484,6 +490,39 @@ fn routing_token_decode() {
 }
 
 #[test]
+fn raw_routing_token_roundtrip() {
+    let token = OpaqueRoutingToken("tsv://MS Terminal Services Plugin.1.collection".to_owned());
+    let mut buffer = vec![0; token.size()];
+    token
+        .write(&mut WriteCursor::new(&mut buffer))
+        .expect("write raw routing token");
+    assert_eq!(buffer, b"tsv://MS Terminal Services Plugin.1.collection\r\n");
+
+    let decoded = OpaqueRoutingToken::read(&mut ReadCursor::new(&buffer))
+        .expect("read raw routing token")
+        .expect("raw routing token");
+    assert_eq!(decoded, token);
+
+    let request = ConnectionRequestWithOpaqueRoutingToken {
+        request: ConnectionRequest {
+            nego_data: None,
+            flags: RequestFlags::empty(),
+            protocol: SecurityProtocol::SSL,
+            correlation_info: None,
+        },
+        routing_token: token,
+    };
+    let encoded = ironrdp_core::encode_vec(&X224(request.clone())).expect("encode connection request");
+    let decoded = ironrdp_core::decode::<X224<ConnectionRequestWithOpaqueRoutingToken>>(&encoded)
+        .expect("decode connection request");
+    assert_eq!(decoded.0, request);
+
+    let oversized = OpaqueRoutingToken("x".repeat(ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH + 1));
+    let mut buffer = vec![0; oversized.size()];
+    assert!(oversized.write(&mut WriteCursor::new(&mut buffer)).is_err());
+}
+
+#[test]
 fn not_a_cookie_decode() {
     let payload = [
         0x6e, 0x6f, 0x74, 0x20, 0x61, 0x20, 0x63, 0x6f, 0x6f, 0x6b, 0x69, 0x65, 0x0F, 0x42, 0x73, 0x65, 0x72, 0x0D,
@@ -510,6 +549,9 @@ fn cookie_without_cr_lf_error_decode() {
             kind: NotEnoughBytes {
                 received: 1,
                 expected: 2,
+                offset: Some(
+                    20,
+                ),
             },
             source: None,
         }

@@ -59,8 +59,17 @@ async fn main() -> Result<(), anyhow::Error> {
         OptCodec::QoiZ => update_codecs.set_qoiz(Some(0)),
     };
 
-    let mut encoder = UpdateEncoder::new(DesktopSize { width, height }, flags, update_codecs, 8 * 1024 * 1024)
-        .context("failed to initialize update encoder")?;
+    // u16::MAX: this benchmark replays a fixed update file and isn't exercising the
+    // client capability gate, so don't let a default of 0 silently start dropping any
+    // pointer updates the replay file happens to contain.
+    let mut encoder = UpdateEncoder::new(
+        DesktopSize { width, height },
+        flags,
+        update_codecs,
+        8 * 1024 * 1024,
+        u16::MAX,
+    )
+    .context("failed to initialize update encoder")?;
 
     let mut total_raw = 0u64;
     let mut total_enc = 0u64;
@@ -121,12 +130,17 @@ impl DisplayUpdates {
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for DisplayUpdates {
-    async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
+    async fn next_update(&mut self) -> ironrdp::server::ServerResult<Option<DisplayUpdate>> {
+        use ironrdp::server::ServerErrorExt as _;
+
         let stride = self.desktop_size.width as usize * 4;
         let frame_size = stride * self.desktop_size.height as usize;
         let mut buf = vec![0u8; frame_size];
         // FIXME: AsyncReadExt::read_exact is not cancellation safe.
-        self.file.read_exact(&mut buf).await.context("read exact")?;
+        self.file
+            .read_exact(&mut buf)
+            .await
+            .map_err(|e| ironrdp::server::ServerError::io("read exact", e))?;
 
         let now = Instant::now();
         if let Some(last_update_time) = self.last_update_time {
@@ -135,7 +149,7 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
                 sleep(Duration::from_millis(
                     1000 / self.fps
                         - u64::try_from(elapsed.as_millis())
-                            .context("invalid `elapsed millis`: out of range integral conversion")?,
+                            .map_err(|e| ironrdp::server::ServerError::custom("invalid `elapsed millis`", e))?,
                 ))
                 .await;
             }
@@ -145,11 +159,14 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
         let up = DisplayUpdate::Bitmap(BitmapUpdate {
             x: 0,
             y: 0,
-            width: NonZeroU16::new(self.desktop_size.width).context("width cannot be zero")?,
-            height: NonZeroU16::new(self.desktop_size.height).context("height cannot be zero")?,
+            width: NonZeroU16::new(self.desktop_size.width)
+                .ok_or_else(|| ironrdp::server::ServerError::reason("perfenc", "width cannot be zero"))?,
+            height: NonZeroU16::new(self.desktop_size.height)
+                .ok_or_else(|| ironrdp::server::ServerError::reason("perfenc", "height cannot be zero"))?,
             format: PixelFormat::RgbX32,
             data: buf.into(),
-            stride: NonZeroUsize::new(stride).context("stride cannot be zero")?,
+            stride: NonZeroUsize::new(stride)
+                .ok_or_else(|| ironrdp::server::ServerError::reason("perfenc", "stride cannot be zero"))?,
         });
         Ok(Some(up))
     }

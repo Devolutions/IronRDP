@@ -1,3 +1,4 @@
+mod chunked_fetch;
 mod delayed_rendering;
 mod delayed_rendering_integration;
 mod file_contents_state_machine;
@@ -8,6 +9,7 @@ mod format;
 mod lock_lifecycle;
 mod lock_strategy;
 mod lock_timeout;
+mod loop_detector;
 mod path_sanitization;
 mod preferred_drop_effect;
 mod server_role;

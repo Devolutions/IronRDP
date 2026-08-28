@@ -17,6 +17,7 @@ default = ["full", "rustls"]
 full = ["dep:ironrdp-agent", "dep:ironrdp-daemon", "dep:ironrdp-viewer"]
 rustls = ["ironrdp-mstsgu/rustls", "ironrdp-tls/rustls"]
 native-tls = ["ironrdp-mstsgu/native-tls", "ironrdp-tls/native-tls"]
+smartcard = ["ironrdp-mstsgu/smartcard"]
 
 [dependencies]
 ironrdp-agent = { path = "../ironrdp-agent", optional = true }
@@ -36,18 +37,26 @@ harness = true
 aes-gcm = "0.10"
 anyhow = "1.0"
 async-trait = "0.1"
+futures-util = "0.3"
 hmac = "0.12"
+http-body-util = { version = "0.1.4", features = ["channel"] }
+hyper = { version = "1.9", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo"] }
+ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-bulk.path = "../ironrdp-bulk"
 ironrdp-capture-replay.path = "../ironrdp-capture-replay"
-ironrdp-client.path = "../ironrdp-client"
+ironrdp-client = { path = "../ironrdp-client", features = ["sound"] }
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-dvc.path = "../ironrdp-dvc"
 ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
+ironrdp-error.path = "../ironrdp-error"
 ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-input.path = "../ironrdp-input"
+ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
+ironrdp-rail.path = "../ironrdp-rail"
 ironrdp-rdpdr.path = "../ironrdp-rdpdr"
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", features = ["std"] }
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", features = ["std"] }
@@ -57,7 +66,7 @@ ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", features = ["captur
 ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls.path = "../ironrdp-tls"
-ironrdp-vmconnect.path = "../ironrdp-vmconnect"
+ironrdp-vmconnect = { path = "../ironrdp-vmconnect", features = ["__test"] }
 rcgen = "0.14"
 semver = "1.0"
 sha2 = "0.10"
@@ -65,12 +74,14 @@ tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["sync", "time", "net", "rt", "rt-multi-thread", "macros", "io-util"] }
 tokio-native-tls = "0.3"
+tokio-tungstenite = "0.29"
 # No provider feature here on purpose: `ironrdp-tls` already brings
 # aws-lc-rs, and enabling a second one leaves rustls unable to pick a
 # process default, which fails every TLS test in this binary.
 tokio-rustls = { version = "0.26", default-features = false }
 uuid = { version = "1", features = ["v4"] }
-ironrdp-mstsgu = { path = "../ironrdp-mstsgu" }
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu", features = ["test-support"] }
+bitflags = "2.11.0"
 
 [target.'cfg(windows)'.dev-dependencies]
 ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"

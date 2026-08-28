@@ -5,6 +5,7 @@
 //! efficiently encode text, UI elements, and icons.
 
 mod glyph_cache;
+mod nscodec;
 mod vbar_cache;
 
 pub use self::glyph_cache::{GLYPH_CACHE_SIZE, GlyphCache, GlyphEntry};
@@ -56,12 +57,15 @@ impl ClearCodecDecoder {
         // Validate glyph index range per spec: 0..3999 inclusive
         if let Some(idx) = stream.glyph_index {
             if idx >= GLYPH_CACHE_WRAP {
-                return Err(invalid_field_err!("glyphIndex", "glyph index out of range 0-3999"));
+                return Err(invalid_field_err!("glyphIndex", "glyph index out of range 0-3999", in: src));
             }
         }
 
         let w = usize::from(width);
         let h = usize::from(height);
+        // width/height are decode() parameters supplied by the caller, not read from
+        // src, so an overflow here has no stream position: the None case decode.rs
+        // documents for "an integer conversion".
         let pixel_count = w
             .checked_mul(h)
             .ok_or_else(|| invalid_field_err!("dimensions", "width * height overflow"))?;
@@ -70,7 +74,10 @@ impl ClearCodecDecoder {
         if stream.is_glyph_hit() {
             let glyph_index = stream
                 .glyph_index
-                .ok_or_else(|| invalid_field_err!("flags", "GLYPH_HIT without GLYPH_INDEX"))?;
+                .ok_or_else(|| invalid_field_err!("flags", "GLYPH_HIT without GLYPH_INDEX", in: src))?;
+            // A cache-state failure, not a stream-position failure (decode.rs's None
+            // case): src has already advanced past the whole bitmap stream by this
+            // point, so a position here would just report the end of the header.
             let entry = self
                 .glyph_cache
                 .get(glyph_index)
@@ -85,7 +92,8 @@ impl ClearCodecDecoder {
             if entry.pixels.len() / 4 != pixel_count {
                 return Err(invalid_field_err!(
                     "glyphIndex",
-                    "cached glyph area does not match destination"
+                    "cached glyph area does not match destination",
+                    in: src
                 ));
             }
             return Ok(entry.pixels.clone());
@@ -103,6 +111,8 @@ impl ClearCodecDecoder {
         // rejects implausible tile shapes regardless of total area.
         const MAX_DECODE_DIM: u16 = 8192;
         if width > MAX_DECODE_DIM || height > MAX_DECODE_DIM {
+            // Same caller-supplied-dimension reasoning as the overflow check above:
+            // width/height are decode() parameters, not read from src.
             return Err(invalid_field_err!(
                 "dimensions",
                 "width or height exceeds 8192-pixel decoder limit"
@@ -208,7 +218,7 @@ impl ClearCodecDecoder {
         if !composite.subcodec_data.is_empty() {
             let subcodecs = decode_subcodec_layer(composite.subcodec_data)?;
             for sub in &subcodecs {
-                self.decode_subcodec_region(sub, output, width)?;
+                Self::decode_subcodec_region(sub, output, width)?;
             }
         }
 
@@ -269,10 +279,7 @@ impl ClearCodecDecoder {
         }
     }
 
-    // NsCodec variant will use decoder state in Phase A7
-    #[expect(clippy::unused_self)]
     fn decode_subcodec_region(
-        &self,
         sub: &ironrdp_pdu::codecs::clearcodec::Subcodec<'_>,
         output: &mut [u8],
         surface_width: u16,
@@ -284,6 +291,16 @@ impl ClearCodecDecoder {
         let y_end = usize::from(sub.y_start) + usize::from(sub.height);
         if x_end > sw || y_end > sh {
             return Err(invalid_field_err!("subcodec", "region exceeds surface bounds"));
+        }
+        let max_bitmap_data_len = usize::from(sub.width)
+            .checked_mul(usize::from(sub.height))
+            .and_then(|len| len.checked_mul(3))
+            .ok_or_else(|| invalid_field_err!("bitmapDataByteCount", "subcodec dimensions overflow"))?;
+        if sub.bitmap_data.len() > max_bitmap_data_len {
+            return Err(invalid_field_err!(
+                "bitmapDataByteCount",
+                "subcodec data exceeds region limit"
+            ));
         }
 
         match sub.codec_id {
@@ -362,7 +379,15 @@ impl ClearCodecDecoder {
                 }
             }
             SubcodecId::NsCodec => {
-                // Not yet implemented; encoder avoids generating NSCodec tiles.
+                let pixels = nscodec::decode(sub.bitmap_data, sub.width, sub.height)?;
+                let w = usize::from(sub.width);
+                let h = usize::from(sub.height);
+
+                for row in 0..h {
+                    let src_start = row * w * 4;
+                    let dst_start = ((usize::from(sub.y_start) + row) * sw + usize::from(sub.x_start)) * 4;
+                    output[dst_start..dst_start + w * 4].copy_from_slice(&pixels[src_start..src_start + w * 4]);
+                }
             }
         }
 
@@ -667,6 +692,83 @@ mod tests {
         assert_eq!(&pixels[0..4], &[0x00, 0x00, 0xFF, 0xFF]);
         // Pixel 1: blue (BGR: 0xFF, 0x00, 0x00)
         assert_eq!(&pixels[4..8], &[0xFF, 0x00, 0x00, 0xFF]);
+    }
+
+    #[test]
+    fn nscodec_subcodec_blits_positioned_region() {
+        let mut decoder = ClearCodecDecoder::new();
+        let mut nscodec_data = Vec::new();
+        nscodec_data.extend_from_slice(&10u32.to_le_bytes()); // Y
+        nscodec_data.extend_from_slice(&10u32.to_le_bytes()); // Co
+        nscodec_data.extend_from_slice(&7u32.to_le_bytes()); // Cg
+        nscodec_data.extend_from_slice(&0u32.to_le_bytes()); // alpha omitted
+        nscodec_data.extend_from_slice(&[1, 0, 0, 0]); // CLL=1, no chroma subsampling
+        nscodec_data.extend_from_slice(&[100, 100, 8, 80, 80, 4, 80, 80, 80, 80]); // Y RLE
+        nscodec_data.extend_from_slice(&[10, 10, 8, 246, 246, 4, 246, 246, 246, 246]); // Co RLE
+        nscodec_data.extend_from_slice(&[0, 0, 14, 0, 0, 0, 0]); // Cg RLE
+
+        let mut subcodec_data = Vec::new();
+        subcodec_data.extend_from_slice(&1u16.to_le_bytes()); // x_start
+        subcodec_data.extend_from_slice(&2u16.to_le_bytes()); // y_start
+        subcodec_data.extend_from_slice(&5u16.to_le_bytes()); // width
+        subcodec_data.extend_from_slice(&4u16.to_le_bytes()); // height
+        subcodec_data.extend_from_slice(
+            &u32::try_from(nscodec_data.len())
+                .expect("test data length fits")
+                .to_le_bytes(),
+        );
+        subcodec_data.push(0x01); // SubcodecId::NsCodec
+        subcodec_data.extend_from_slice(&nscodec_data);
+
+        let mut stream = vec![0, 0]; // flags, sequence number
+        stream.extend_from_slice(&0u32.to_le_bytes()); // residual
+        stream.extend_from_slice(&0u32.to_le_bytes()); // bands
+        stream.extend_from_slice(
+            &u32::try_from(subcodec_data.len())
+                .expect("test data length fits")
+                .to_le_bytes(),
+        );
+        stream.extend_from_slice(&subcodec_data);
+
+        let pixels = decoder.decode(&stream, 7, 7).unwrap();
+        let mut expected = vec![0; 7 * 7 * 4];
+        for row in 0..4 {
+            let pixel = if row < 2 {
+                [90, 100, 110, 0xFF]
+            } else {
+                [90, 80, 70, 0xFF]
+            };
+            for col in 0..5 {
+                let offset = ((row + 2) * 7 + col + 1) * 4;
+                expected[offset..offset + 4].copy_from_slice(&pixel);
+            }
+        }
+
+        assert_eq!(pixels, expected);
+    }
+
+    #[test]
+    fn rejects_oversized_subcodec_data() {
+        let mut subcodec_data = Vec::new();
+        subcodec_data.extend_from_slice(&0u16.to_le_bytes()); // x_start
+        subcodec_data.extend_from_slice(&0u16.to_le_bytes()); // y_start
+        subcodec_data.extend_from_slice(&1u16.to_le_bytes()); // width
+        subcodec_data.extend_from_slice(&1u16.to_le_bytes()); // height
+        subcodec_data.extend_from_slice(&4u32.to_le_bytes()); // bitmap data exceeds 3 * width * height
+        subcodec_data.push(0x01); // SubcodecId::NsCodec
+        subcodec_data.extend_from_slice(&[0; 4]);
+
+        let mut stream = vec![0, 0]; // flags, sequence number
+        stream.extend_from_slice(&0u32.to_le_bytes()); // residual
+        stream.extend_from_slice(&0u32.to_le_bytes()); // bands
+        stream.extend_from_slice(
+            &u32::try_from(subcodec_data.len())
+                .expect("test data length fits")
+                .to_le_bytes(),
+        );
+        stream.extend_from_slice(&subcodec_data);
+
+        assert!(ClearCodecDecoder::new().decode(&stream, 1, 1).is_err());
     }
 
     #[test]

@@ -34,7 +34,7 @@ pub fn size(properties: &PropertySet) -> usize {
 pub fn write(properties: &PropertySet, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
     ensure_size!(in: dst, size: size(properties));
 
-    let count: u32 = cast_length!("property count", properties.iter().count())?;
+    let count: u32 = cast_length!("property count", properties.iter().count(), in: dst)?;
     dst.write_u32(count);
 
     for (key, value) in properties.iter() {
@@ -73,7 +73,7 @@ pub fn read(properties: &mut PropertySet, src: &mut ReadCursor<'_>) -> DecodeRes
                 let value = read_string(src)?;
                 properties.insert(key, value);
             }
-            _ => return Err(ironrdp_core::invalid_field_err!("property value tag", "unknown tag")),
+            _ => return Err(ironrdp_core::invalid_field_err!("property value tag", "unknown tag", in: src)),
         }
     }
 

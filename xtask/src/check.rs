@@ -241,6 +241,11 @@ pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
         "{CARGO} test -p ironrdp-testsuite-extra --test integration_tests_extra --no-default-features --features native-tls --locked --no-run"
     )
     .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-testsuite-extra --test integration_tests_extra --no-default-features --features native-tls,smartcard --locked --no-run"
+    )
+    .run()?;
     println!("All good!");
     Ok(())
 }
@@ -251,6 +256,11 @@ pub fn tests_run(sh: &Shell) -> anyhow::Result<()> {
     cmd!(
         sh,
         "{CARGO} test -p ironrdp-testsuite-extra --test integration_tests_extra --no-default-features --features native-tls --locked"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-testsuite-extra --test integration_tests_extra --no-default-features --features native-tls,smartcard --locked"
     )
     .run()?;
     println!("All good!");

@@ -37,17 +37,27 @@
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
+use alloc::collections::BTreeSet;
 use alloc::collections::btree_map::Entry;
 
+use ironrdp_core::invalid_field_err;
 use ironrdp_pdu::codecs::rfx::EntropyAlgorithm;
-use ironrdp_pdu::codecs::rfx::progressive::{ComponentCodecQuant, TILE_FLAG_DIFFERENCE};
+use ironrdp_pdu::codecs::rfx::progressive::{ComponentCodecQuant, ProgressiveCodecQuant, TILE_FLAG_DIFFERENCE};
+use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle};
 
 use crate::dwt_extrapolate::BandInfo;
+use crate::rectangle_processing::Region;
 use crate::rlgr::RlgrError;
 use crate::srl::{self, SrlError};
 
 /// Number of DWT coefficients per component in a 64x64 tile.
 pub const COEFFICIENTS_PER_COMPONENT: usize = 4096;
+
+/// Progressive tile dimension in pixels ([MS-RDPEGFX] 2.2.4.2.1.1: `tileSize` MUST be 0x0040).
+pub const TILE_DIM: u16 = 64;
+
+/// Bytes per pixel of decoded RGBA tile output.
+pub const TILE_BYTES_PER_PIXEL: usize = 4;
 
 type DecDwtQ = [[i16; COEFFICIENTS_PER_COMPONENT]; 3];
 type SubBandDiffingTileKey = (u16, u16, u16);
@@ -1127,6 +1137,9 @@ pub struct DecodedTile {
     pub y_idx: u16,
     /// RGBA pixel data (64x64 = 16384 bytes).
     pub pixels: Vec<u8>,
+    /// Surface-relative rectangles where this tile is visible, clipped to the
+    /// Progressive REGION and surface bounds.
+    pub update_rectangles: Vec<ExclusiveRectangle>,
 }
 
 /// Per-axis cap on surface dimensions, in pixels.
@@ -1138,6 +1151,14 @@ pub struct DecodedTile {
 /// `Vec<Option<Box<TileState>>>` is 512 * 512 = 262144 slots * 8 bytes per
 /// slot = 2 MiB of pointer storage per surface before any tile is populated.
 pub const MAX_SURFACE_DIM: u16 = 32768;
+
+/// Maximum aggregate rectangle visits while clipping one progressive bitmap payload.
+///
+/// `Region::union_rectangle` scans the normalized rectangle list, and each
+/// tile intersection scans that list again. Charging both operations bounds
+/// server-controlled CPU and allocation amplification without rejecting a
+/// large `numRects` solely because many rectangles collapse to a simple region.
+const MAX_REGION_CLIPPING_WORK: usize = 1 << 20;
 
 /// Error type for progressive decoding operations.
 #[derive(Debug)]
@@ -1205,6 +1226,19 @@ impl From<SrlError> for ProgressiveDecodeError {
     }
 }
 
+fn charge_region_clipping_work(used: &mut usize, units: usize) -> Result<(), ProgressiveDecodeError> {
+    match (*used).checked_add(units) {
+        Some(total) if total <= MAX_REGION_CLIPPING_WORK => {
+            *used = total;
+            Ok(())
+        }
+        _ => Err(ProgressiveDecodeError::Pdu(invalid_field_err!(
+            "rects",
+            "progressive REGION clipping work limit exceeded"
+        ))),
+    }
+}
+
 /// Per-context progressive state, identified by `(surface_id, codec_context_id)`.
 struct ProgressiveContext {
     surface: SurfaceTiles,
@@ -1217,7 +1251,9 @@ struct ProgressiveContext {
 /// MS-RDPEGFX section 3.3.1.1 associates each codec context with a surface, so
 /// two surfaces can reuse a codec context ID without sharing progressive state.
 /// Feed it progressive bitmap data from `WireToSurface2Pdu.bitmap_data` and get
-/// back decoded RGBA tiles for compositing.
+/// back decoded RGBA tiles for compositing. Call [`Self::begin_frame`] and
+/// [`Self::end_frame`] around an RDPGFX frame so REGION blocks in separate
+/// bitmap payloads can share tiles.
 ///
 /// # Usage
 ///
@@ -1233,12 +1269,17 @@ struct ProgressiveContext {
 /// )?;
 ///
 /// for tile in &tiles {
-///     blit_tile(surface, tile.x_idx, tile.y_idx, &tile.pixels);
+///     for rectangle in &tile.update_rectangles {
+///         blit_tile_region(surface, tile.x_idx, tile.y_idx, rectangle, &tile.pixels);
+///     }
 /// }
 /// ```
 pub struct ProgressiveDecoder {
     contexts: BTreeMap<(u16, u32), ProgressiveContext>,
     references: BTreeMap<SubBandDiffingTileKey, DecDwtQ>,
+    frame_tiles: BTreeMap<(u16, u32), BTreeSet<(u16, u16)>>,
+    frame_active: bool,
+    surface_context_flags: BTreeMap<u16, bool>,
 }
 
 impl ProgressiveDecoder {
@@ -1247,7 +1288,22 @@ impl ProgressiveDecoder {
         Self {
             contexts: BTreeMap::new(),
             references: BTreeMap::new(),
+            frame_tiles: BTreeMap::new(),
+            frame_active: false,
+            surface_context_flags: BTreeMap::new(),
         }
+    }
+
+    /// Start an RDPGFX frame, resetting the set of tiles available to REGION blocks.
+    pub fn begin_frame(&mut self) {
+        self.frame_tiles.clear();
+        self.frame_active = true;
+    }
+
+    /// Finish an RDPGFX frame and discard its transient tile references.
+    pub fn end_frame(&mut self) {
+        self.frame_tiles.clear();
+        self.frame_active = false;
     }
 
     /// Decode a progressive bitmap stream from WireToSurface2Pdu.
@@ -1284,22 +1340,34 @@ impl ProgressiveDecoder {
         // `MissingBlock("CONTEXT")`, freezing the image on the coarse first
         // pass.
         //
-        // Fall back to the value stored when the context was first created.
-        // Only error when neither source is available, i.e. the very first
-        // frame for a context arrived without a CONTEXT block.
-        let use_reduce_extrapolate = match blocks.iter().find_map(|block| match block {
+        // Fall back to the value stored when the context was first created, then to the last
+        // one this surface described: Windows opens a new codec context id mid-session,
+        // deletes the previous one, and never repeats SYNC + CONTEXT, so a per-context lookup
+        // alone rejects the new context. The retained value is scoped to its surface and
+        // released with it. Only error when no source is available at all.
+        let signalled = blocks.iter().find_map(|block| match block {
             ProgressiveBlock::Context(ctx) => Some(ctx.uses_reduce_extrapolate()),
             _ => None,
-        }) {
-            Some(v) => v,
-            None => self
-                .contexts
-                .get(&(surface_id, codec_context_id))
-                .map(|c| c.surface.use_reduce_extrapolate)
-                .ok_or(ProgressiveDecodeError::MissingBlock("CONTEXT"))?,
-        };
+        });
+        if let Some(flag) = signalled {
+            self.surface_context_flags.insert(surface_id, flag);
+        }
+        let use_reduce_extrapolate = signalled
+            .or_else(|| {
+                self.contexts
+                    .get(&(surface_id, codec_context_id))
+                    .map(|c| c.surface.use_reduce_extrapolate)
+            })
+            .or_else(|| self.surface_context_flags.get(&surface_id).copied())
+            .ok_or(ProgressiveDecodeError::MissingBlock("CONTEXT"))?;
 
-        let (contexts, references) = (&mut self.contexts, &mut self.references);
+        // Direct users of the decoder get one self-contained frame per call.
+        // The EGFX client brackets multiple payloads with begin_frame/end_frame.
+        if !self.frame_active {
+            self.frame_tiles.clear();
+        }
+
+        let (contexts, references, all_frame_tiles) = (&mut self.contexts, &mut self.references, &mut self.frame_tiles);
 
         // Get or create the context for this (surface_id, codec_context_id).
         let context = match contexts.entry((surface_id, codec_context_id)) {
@@ -1311,37 +1379,136 @@ impl ProgressiveDecoder {
         };
 
         // If surface dimensions changed, reallocate the codec-context tile grid.
-        let expected_wide = surface_width.div_ceil(64);
-        let expected_high = surface_height.div_ceil(64);
-        if context.surface.tiles_wide != expected_wide || context.surface.tiles_high != expected_high {
+        let expected_wide = surface_width.div_ceil(TILE_DIM);
+        let expected_high = surface_height.div_ceil(TILE_DIM);
+        let surface_resized =
+            context.surface.tiles_wide != expected_wide || context.surface.tiles_high != expected_high;
+        if surface_resized {
             context.surface = SurfaceTiles::new(surface_width, surface_height, use_reduce_extrapolate)?;
         }
         context.surface.use_reduce_extrapolate = use_reduce_extrapolate;
 
-        let mut decoded_tiles = Vec::new();
+        let frame_tiles = all_frame_tiles.entry((surface_id, codec_context_id)).or_default();
+        if surface_resized {
+            frame_tiles.clear();
+        }
 
-        // Process REGION blocks (the main content)
+        let mut decoded_tiles = Vec::new();
+        let mut region_clipping_work = 0;
+
+        // Process REGION blocks only inside the first FRAME_BEGIN/FRAME_END
+        // pair in this bitmap stream. Codec state persists across RDPGFX
+        // frames, while frame_tiles persists only across payloads in one frame.
+        let mut in_frame = false;
+        let mut frame_ended = false;
         for block in &blocks {
             let region = match block {
-                ProgressiveBlock::Region(r) => r,
+                ProgressiveBlock::FrameBegin(_) if !frame_ended => {
+                    in_frame = true;
+                    continue;
+                }
+                ProgressiveBlock::FrameEnd(_) => {
+                    in_frame = false;
+                    frame_ended = true;
+                    continue;
+                }
+                ProgressiveBlock::Region(r) if in_frame => r,
                 _ => continue,
             };
 
-            let quant_vals = &region.quant_vals;
-            let prog_quant_vals = &region.quant_prog_vals;
-
+            let mut region_tiles = BTreeMap::new();
             for tile_block in &region.tiles {
                 let tiles = decode_tile_block(
                     surface_id,
                     &mut context.surface,
                     references,
                     tile_block,
-                    quant_vals,
-                    prog_quant_vals,
+                    &region.quant_vals,
+                    &region.quant_prog_vals,
                     use_reduce_extrapolate,
                 )?;
-                decoded_tiles.extend(tiles);
+                for tile in tiles {
+                    let key = (tile.x_idx, tile.y_idx);
+                    frame_tiles.insert(key);
+                    region_tiles.insert(key, tile);
+                }
             }
+
+            let mut clipping_region = Region::new();
+            for rectangle in &region.rects {
+                let left = rectangle.x.min(surface_width);
+                let top = rectangle.y.min(surface_height);
+                let right = rectangle.x.saturating_add(rectangle.width).min(surface_width);
+                let bottom = rectangle.y.saturating_add(rectangle.height).min(surface_height);
+                if left < right && top < bottom {
+                    charge_region_clipping_work(
+                        &mut region_clipping_work,
+                        clipping_region.rectangles.len().saturating_add(1),
+                    )?;
+                    clipping_region.union_rectangle(InclusiveRectangle {
+                        left,
+                        top,
+                        right: right - 1,
+                        bottom: bottom - 1,
+                    });
+                }
+            }
+
+            // REGION rectangles may be covered by tiles sent in an earlier REGION
+            // within the same frame, so clip them against every tile currently
+            // available for this frame rather than only the newly decoded tiles.
+            for &(x_idx, y_idx) in frame_tiles.iter() {
+                charge_region_clipping_work(&mut region_clipping_work, clipping_region.rectangles.len().max(1))?;
+                let left = x_idx.saturating_mul(TILE_DIM);
+                let top = y_idx.saturating_mul(TILE_DIM);
+                let right = left.saturating_add(TILE_DIM).min(surface_width);
+                let bottom = top.saturating_add(TILE_DIM).min(surface_height);
+                if left >= right || top >= bottom {
+                    continue;
+                }
+
+                let update_rectangles = clipping_region
+                    .intersect_rectangle(&InclusiveRectangle {
+                        left,
+                        top,
+                        right: right - 1,
+                        bottom: bottom - 1,
+                    })
+                    .rectangles
+                    .into_iter()
+                    .map(|rectangle| ExclusiveRectangle {
+                        left: rectangle.left,
+                        top: rectangle.top,
+                        right: rectangle.right + 1,
+                        bottom: rectangle.bottom + 1,
+                    })
+                    .collect::<Vec<_>>();
+                if update_rectangles.is_empty() {
+                    continue;
+                }
+
+                let mut tile = if let Some(tile) = region_tiles.remove(&(x_idx, y_idx)) {
+                    tile
+                } else {
+                    let Some(tile_state) = context.surface.get(x_idx, y_idx) else {
+                        continue;
+                    };
+                    let mut pixels = vec![0u8; usize::from(TILE_DIM) * usize::from(TILE_DIM) * TILE_BYTES_PER_PIXEL];
+                    tile_state.reconstruct_to_rgba(&mut pixels);
+                    DecodedTile {
+                        x_idx,
+                        y_idx,
+                        pixels,
+                        update_rectangles: Vec::new(),
+                    }
+                };
+                tile.update_rectangles = update_rectangles;
+                decoded_tiles.push(tile);
+            }
+        }
+
+        if !self.frame_active {
+            self.frame_tiles.clear();
         }
 
         Ok(decoded_tiles)
@@ -1353,6 +1520,7 @@ impl ProgressiveDecoder {
     /// identifies both the surface and codec context.
     pub fn delete_context(&mut self, surface_id: u16, codec_context_id: u32) {
         self.contexts.remove(&(surface_id, codec_context_id));
+        self.frame_tiles.remove(&(surface_id, codec_context_id));
     }
 
     /// Delete every codec context associated with a surface.
@@ -1364,12 +1532,46 @@ impl ProgressiveDecoder {
             .retain(|(context_surface_id, _), _| *context_surface_id != surface_id);
         self.references
             .retain(|(reference_surface_id, _, _), _| *reference_surface_id != surface_id);
+        self.frame_tiles
+            .retain(|(context_surface_id, _), _| *context_surface_id != surface_id);
+        self.surface_context_flags.remove(&surface_id);
     }
 
     /// Reset codec-context state while retaining surface sub-band references.
     pub fn reset(&mut self) {
         self.contexts.clear();
+        self.frame_tiles.clear();
+        self.frame_active = false;
     }
+}
+
+/// Resolve the progressive quantization values a tile's `quality` byte selects.
+///
+/// Per [MS-RDPEGFX] 2.2.4.2.1.5.2 `quality` indexes the REGION's `quantProgVals`, except for
+/// the reserved value 0xFF, which selects full quality instead of indexing. Windows servers
+/// send 0xFF with an empty table, so treating it as an index rejects every tile they encode.
+fn progressive_quant_for(
+    quality: u8,
+    prog_quant_vals: &[ProgressiveCodecQuant],
+) -> Result<ProgressiveCodecQuant, ProgressiveDecodeError> {
+    const FULL_QUALITY: u8 = 0xFF;
+
+    if quality == FULL_QUALITY {
+        return Ok(ProgressiveCodecQuant {
+            quality,
+            y_quant: ComponentCodecQuant::LOSSLESS,
+            cb_quant: ComponentCodecQuant::LOSSLESS,
+            cr_quant: ComponentCodecQuant::LOSSLESS,
+        });
+    }
+
+    prog_quant_vals
+        .get(usize::from(quality))
+        .copied()
+        .ok_or(ProgressiveDecodeError::InvalidQuantIndex {
+            index: usize::from(quality),
+            table_len: prog_quant_vals.len(),
+        })
 }
 
 #[expect(
@@ -1382,7 +1584,7 @@ fn decode_tile_block(
     references: &mut BTreeMap<SubBandDiffingTileKey, DecDwtQ>,
     tile_block: &ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile<'_>,
     quant_vals: &[ComponentCodecQuant],
-    prog_quant_vals: &[ironrdp_pdu::codecs::rfx::progressive::ProgressiveCodecQuant],
+    prog_quant_vals: &[ProgressiveCodecQuant],
     use_reduce_extrapolate: bool,
 ) -> Result<Vec<DecodedTile>, ProgressiveDecodeError> {
     use ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile;
@@ -1437,10 +1639,15 @@ fn decode_tile_block(
             )?;
             references.insert(reference_key, tile_state.coefficients);
 
-            let mut pixels = vec![0u8; 64 * 64 * 4];
+            let mut pixels = vec![0u8; usize::from(TILE_DIM) * usize::from(TILE_DIM) * TILE_BYTES_PER_PIXEL];
             tile_state.reconstruct_to_rgba(&mut pixels);
 
-            Ok(vec![DecodedTile { x_idx, y_idx, pixels }])
+            Ok(vec![DecodedTile {
+                x_idx,
+                y_idx,
+                pixels,
+                update_rectangles: Vec::new(),
+            }])
         }
 
         ProgressiveTile::First(tile) => {
@@ -1476,14 +1683,7 @@ fn decode_tile_block(
                 });
             }
 
-            let pq_idx = usize::from(tile.quality);
-            if pq_idx >= prog_quant_vals.len() {
-                return Err(ProgressiveDecodeError::InvalidQuantIndex {
-                    index: pq_idx,
-                    table_len: prog_quant_vals.len(),
-                });
-            }
-            let pq = &prog_quant_vals[pq_idx];
+            let pq = progressive_quant_for(tile.quality, prog_quant_vals)?;
 
             tile_state.decode_first_with_difference(
                 [tile.y_data, tile.cb_data, tile.cr_data],
@@ -1498,10 +1698,15 @@ fn decode_tile_block(
             )?;
             references.insert(reference_key, tile_state.coefficients);
 
-            let mut pixels = vec![0u8; 64 * 64 * 4];
+            let mut pixels = vec![0u8; usize::from(TILE_DIM) * usize::from(TILE_DIM) * TILE_BYTES_PER_PIXEL];
             tile_state.reconstruct_to_rgba(&mut pixels);
 
-            Ok(vec![DecodedTile { x_idx, y_idx, pixels }])
+            Ok(vec![DecodedTile {
+                x_idx,
+                y_idx,
+                pixels,
+                update_rectangles: Vec::new(),
+            }])
         }
 
         ProgressiveTile::Upgrade(tile) => {
@@ -1517,14 +1722,7 @@ fn decode_tile_block(
                 return Ok(Vec::new());
             }
 
-            let pq_idx = usize::from(tile.quality);
-            if pq_idx >= prog_quant_vals.len() {
-                return Err(ProgressiveDecodeError::InvalidQuantIndex {
-                    index: pq_idx,
-                    table_len: prog_quant_vals.len(),
-                });
-            }
-            let pq = &prog_quant_vals[pq_idx];
+            let pq = progressive_quant_for(tile.quality, prog_quant_vals)?;
 
             tile_state.decode_upgrade(
                 [tile.y_srl_data, tile.cb_srl_data, tile.cr_srl_data],
@@ -1534,10 +1732,15 @@ fn decode_tile_block(
             )?;
             references.insert((surface_id, x_idx, y_idx), tile_state.coefficients);
 
-            let mut pixels = vec![0u8; 64 * 64 * 4];
+            let mut pixels = vec![0u8; usize::from(TILE_DIM) * usize::from(TILE_DIM) * TILE_BYTES_PER_PIXEL];
             tile_state.reconstruct_to_rgba(&mut pixels);
 
-            Ok(vec![DecodedTile { x_idx, y_idx, pixels }])
+            Ok(vec![DecodedTile {
+                x_idx,
+                y_idx,
+                pixels,
+                update_rectangles: Vec::new(),
+            }])
         }
     }
 }
@@ -2049,6 +2252,165 @@ mod tests {
 
         assert!(decoder.decode_bitmap(2, 0, 640, 480, &stream_with_context).is_ok());
         assert!(decoder.decode_bitmap(2, 0, 640, 480, &stream_without_context).is_ok());
+    }
+
+    fn rect(x: u16, y: u16, width: u16, height: u16) -> ironrdp_pdu::codecs::rfx::RfxRectangle {
+        ironrdp_pdu::codecs::rfx::RfxRectangle { x, y, width, height }
+    }
+
+    #[test]
+    fn decoder_bounds_region_clipping_work() {
+        use ironrdp_pdu::codecs::rfx::RfxRectangle;
+        use ironrdp_pdu::codecs::rfx::progressive::{
+            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
+            ProgressiveRegion, ProgressiveSyncPdu, encode_progressive_stream,
+        };
+
+        fn stream_with_rects(rects: Vec<RfxRectangle>) -> Vec<u8> {
+            encode_progressive_stream(&[
+                ProgressiveBlock::Sync(ProgressiveSyncPdu),
+                ProgressiveBlock::Context(ProgressiveContextPdu {
+                    context_id: 0,
+                    tile_size: 0x0040,
+                    flags: 0,
+                }),
+                ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+                    frame_index: 0,
+                    region_count: 1,
+                }),
+                ProgressiveBlock::Region(ProgressiveRegion {
+                    tile_size: 0x40,
+                    rects,
+                    quant_vals: vec![],
+                    quant_prog_vals: vec![],
+                    flags: 0,
+                    tiles: vec![],
+                }),
+                ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+            ])
+            .unwrap()
+        }
+
+        // Each disjoint rectangle grows the normalized Region by one entry.
+        // 1,500 such inserts exceed the aggregate scan budget long before the
+        // wire-format u16 rectangle count could drive quadratic work unchecked.
+        const RECT_COUNT: u16 = 1_500;
+        let fragmented = (0..RECT_COUNT).map(|x| rect(x.saturating_mul(3), 0, 2, 2)).collect();
+        let mut decoder = ProgressiveDecoder::new();
+        let error = match decoder.decode_bitmap(1, 1, 8192, 64, &stream_with_rects(fragmented)) {
+            Err(error) => error,
+            Ok(_) => panic!("fragmented clipping region must exhaust the work budget"),
+        };
+        assert!(error.to_string().contains("clipping work limit exceeded"));
+
+        // The limit tracks actual normalized-region work rather than rejecting
+        // the same numRects when all rectangles collapse to one simple region.
+        let collapsed = vec![rect(0, 0, 2, 2); usize::from(RECT_COUNT)];
+        assert!(
+            ProgressiveDecoder::new()
+                .decode_bitmap(1, 1, 4096, 64, &stream_with_rects(collapsed))
+                .is_ok()
+        );
+
+        // Intersecting a moderately fragmented region with an attacker-sized
+        // accumulated tile set is charged to the same per-payload budget.
+        let rects = (0..100u16).map(|x| rect(x.saturating_mul(3), 0, 2, 2)).collect();
+        let frame_tiles = (0..11_000u16).map(|index| (index % 128, index / 128)).collect();
+        let mut decoder = ProgressiveDecoder::new();
+        decoder.begin_frame();
+        decoder.frame_tiles.insert((1, 1), frame_tiles);
+        let error = match decoder.decode_bitmap(1, 1, 8192, 8192, &stream_with_rects(rects)) {
+            Err(error) => error,
+            Ok(_) => panic!("tile intersections must share the clipping work budget"),
+        };
+        assert!(error.to_string().contains("clipping work limit exceeded"));
+    }
+
+    #[test]
+    fn decoder_ignores_regions_outside_frame() {
+        use ironrdp_pdu::codecs::rfx::progressive::{
+            ComponentCodecQuant, ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu,
+            ProgressiveFrameEndPdu, ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile, TileSimple,
+            encode_progressive_stream,
+        };
+
+        fn invalid_region() -> ProgressiveRegion<'static> {
+            ProgressiveRegion {
+                tile_size: 0x40,
+                rects: vec![rect(0, 0, 64, 64)],
+                quant_vals: vec![ComponentCodecQuant::LOSSLESS],
+                quant_prog_vals: vec![],
+                flags: 0,
+                tiles: vec![ProgressiveTile::Simple(TileSimple {
+                    quant_idx_y: 0,
+                    quant_idx_cb: 0,
+                    quant_idx_cr: 0,
+                    x_idx: 1,
+                    y_idx: 0,
+                    flags: 0,
+                    y_data: &[],
+                    cb_data: &[],
+                    cr_data: &[],
+                    tail_data: &[],
+                })],
+            }
+        }
+
+        let context = ProgressiveBlock::Context(ProgressiveContextPdu {
+            context_id: 0,
+            tile_size: 0x0040,
+            flags: 0,
+        });
+        let empty_frame_begin = ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+            frame_index: 0,
+            region_count: 0,
+        });
+
+        let outside = encode_progressive_stream(&[
+            ProgressiveBlock::Sync(ProgressiveSyncPdu),
+            context.clone(),
+            ProgressiveBlock::Region(invalid_region()),
+            empty_frame_begin,
+            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+            ProgressiveBlock::Region(invalid_region()),
+        ])
+        .unwrap();
+
+        let mut decoder = ProgressiveDecoder::new();
+        let tiles = decoder.decode_bitmap(1, 10, 64, 64, &outside).unwrap();
+        assert!(tiles.is_empty(), "out-of-frame regions must not produce tiles");
+
+        // The same deliberately out-of-bounds REGION must still be decoded,
+        // and fail, when it appears inside the frame.
+        let inside = encode_progressive_stream(&[
+            ProgressiveBlock::Sync(ProgressiveSyncPdu),
+            context,
+            ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
+                frame_index: 0,
+                region_count: 1,
+            }),
+            ProgressiveBlock::Region(invalid_region()),
+            ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
+        ])
+        .unwrap();
+        assert!(matches!(
+            decoder.decode_bitmap(1, 11, 64, 64, &inside),
+            Err(ProgressiveDecodeError::TileOutOfBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn full_quality_tiles_bypass_the_progressive_quant_table() {
+        let lossless = progressive_quant_for(0xFF, &[]).expect("0xFF selects full quality");
+        assert_eq!(lossless.y_quant, ComponentCodecQuant::LOSSLESS);
+        assert_eq!(lossless.cb_quant, ComponentCodecQuant::LOSSLESS);
+        assert_eq!(lossless.cr_quant, ComponentCodecQuant::LOSSLESS);
+
+        // Every other value still indexes the table the REGION carried.
+        assert!(matches!(
+            progressive_quant_for(0, &[]),
+            Err(ProgressiveDecodeError::InvalidQuantIndex { index: 0, table_len: 0 })
+        ));
     }
 
     #[test]
@@ -2870,7 +3232,7 @@ mod tests {
     fn progressive_tile_stream(
         include_context: bool,
         quant_vals: Vec<ComponentCodecQuant>,
-        quant_prog_vals: Vec<ironrdp_pdu::codecs::rfx::progressive::ProgressiveCodecQuant>,
+        quant_prog_vals: Vec<ProgressiveCodecQuant>,
         tile: ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile<'_>,
     ) -> Vec<u8> {
         use ironrdp_pdu::codecs::rfx::RfxRectangle;
@@ -2942,7 +3304,7 @@ mod tests {
         progressive_quant: ComponentCodecQuant,
         include_context: bool,
     ) -> Vec<u8> {
-        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveCodecQuant, ProgressiveTile, TileFirst};
+        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileFirst};
 
         progressive_tile_stream(
             include_context,
@@ -2976,7 +3338,7 @@ mod tests {
         upgrade_progressive_quant: ComponentCodecQuant,
         include_context: bool,
     ) -> Vec<u8> {
-        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveCodecQuant, ProgressiveTile, TileUpgrade};
+        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileUpgrade};
 
         progressive_tile_stream(
             include_context,

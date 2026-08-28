@@ -23,6 +23,7 @@ rayon = ["dep:rayon"]
 qoi = ["dep:qoicoubeh", "ironrdp-pdu/qoi"]
 qoiz = ["dep:zstd-safe", "qoi", "ironrdp-pdu/qoiz"]
 egfx = ["dep:ironrdp-egfx"]
+usb = ["dep:ironrdp-rdpeusb", "dep:ironrdp-usb"]
 # Opt-in NSCodec encoder. Off by default so consumers that don't need a legacy
 # bitmap codec fallback (e.g., RemoteFX-only or H.264-capable clients) don't
 # pay the extra build cost.
@@ -33,15 +34,16 @@ nscodec = ["dep:ironrdp-nscodec"]
 __bench = ["dep:visibility"]
 
 [dependencies]
-anyhow = "1.0"
 rand = "0.9"
-tokio = { version = "1", features = ["net", "macros", "sync", "rt", "time"] } # public
+tokio = { version = "1", features = ["net", "macros", "sync", "rt", "time"] }
 tokio-rustls = "0.26" # public
 async-trait = "0.1"
 ironrdp-async = { path = "../ironrdp-async", version = "0.10" }
 ironrdp-ainput = { path = "../ironrdp-ainput", version = "0.8" }
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.10" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.2" }
 ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.3", optional = true }
+ironrdp-error = { path = "../ironrdp-error", version = "0.2", features = ["std"] } # public
 ironrdp-nscodec = { path = "../ironrdp-nscodec", version = "0.2", optional = true, features = ["encoder"] }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
@@ -52,7 +54,11 @@ ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.8" } # public
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.10", features = ["reqwest"] }
 ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.10" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.9" } # public
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7" } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9" } # public
+ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" } # public
+ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.1", optional = true }
+ironrdp-usb = { path = "../ironrdp-usb", version = "0.1", optional = true }
 tracing = { version = "0.1", features = ["log"] }
 x509-cert = { version = "0.3", optional = true }
 rustls-pemfile = { version = "2.2", optional = true }

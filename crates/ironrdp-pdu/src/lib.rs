@@ -130,7 +130,8 @@ pub fn find_size(bytes: &[u8]) -> DecodeResult<Option<PduInfo>> {
     let fp_output_header = bytes[0];
 
     let action = Action::from_fp_output_header(fp_output_header)
-        .map_err(|unknown_action| unexpected_message_type_err("fpOutputHeader", unknown_action))?;
+        // No cursor here: `find_size` reads the raw slice, and fpOutputHeader is byte 0.
+        .map_err(|unknown_action| unexpected_message_type_err("fpOutputHeader", unknown_action, Some(0)))?;
 
     match action {
         Action::X224 => {
@@ -158,7 +159,10 @@ pub fn find_size(bytes: &[u8]) -> DecodeResult<Option<PduInfo>> {
             if usize::from(fast_path_length) < header_length {
                 return Err(invalid_field_err!(
                     "fastPathLength",
-                    "length is smaller than the Fast-Path header"
+                    "length is smaller than the Fast-Path header",
+                    // No cursor here: `find_size` reads the raw slice, and the
+                    // length field starts at byte 1 of the Fast-Path header.
+                    at: 1
                 ));
             }
 

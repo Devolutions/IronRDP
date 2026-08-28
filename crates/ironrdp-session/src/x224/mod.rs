@@ -1,11 +1,14 @@
 use ironrdp_bulk::BulkCompressor;
-use ironrdp_core::{WriteBuf, decode};
-use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelRef};
+use ironrdp_core::{Decode as _, ReadCursor, WriteBuf, decode};
+use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::client_info::CompressionType;
-use ironrdp_pdu::rdp::headers::{CompressionFlags, ShareDataCtx, ShareDataPdu};
+use ironrdp_pdu::rdp::headers::{
+    BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareDataCtx, ShareDataPdu,
+};
+use ironrdp_pdu::rdp::heartbeat::HeartbeatPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::rdp::session_info::{InfoData, SaveSessionInfoPdu, ServerAutoReconnect};
@@ -189,6 +192,10 @@ impl Processor {
 
     pub fn get_dvc<T: DvcClientProcessor + 'static>(&self) -> Option<DynamicChannelRef<'_, T>> {
         self.get_svc_processor::<DrdynvcClient>()?.get_dvc::<T>()
+    }
+
+    pub fn get_dvc_mut<T: DvcClientProcessor + 'static>(&mut self) -> Option<DynamicChannelMut<'_, T>> {
+        self.get_svc_processor_mut::<DrdynvcClient>()?.get_dvc_mut::<T>()
     }
 
     pub fn get_dvc_by_channel_id<T: DvcClientProcessor + 'static>(
@@ -391,15 +398,43 @@ impl Processor {
         Ok(decompressed)
     }
 
-    /// Process an auto-detect request received on the MCS message channel.
+    /// Process a PDU received on the MCS message channel: auto-detect
+    /// ([MS-RDPBCGR] 2.2.14) or Heartbeat ([MS-RDPBCGR] 2.2.16.1).
     ///
-    /// During continuous auto-detection ([MS-RDPBCGR] 2.2.14) the server sends
-    /// RTT (and bandwidth) requests on the message channel; the client answers
-    /// RTT requests and surfaces the final Network Characteristics Result.
+    /// The two PDU families share the channel and are told apart by the
+    /// `BasicSecurityHeader` flags (masking off `SEC_RESET_SEQNO`/
+    /// `SEC_IGNORE_SEQNO`, which the spec says MUST be ignored, before
+    /// comparing), peeked here before committing to either decode. Any other
+    /// flag combination is logged and ignored rather than treated as a
+    /// session-fatal decode error: this channel is forward-safe for future
+    /// message-channel PDU types the same way the connect-time demux
+    /// (`ironrdp-connector`) already is.
     fn process_message_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<ProcessorOutput>> {
         let Some(message_channel_id) = self.message_channel_id else {
             return Err(reason_err!("message channel", "no message channel negotiated"));
         };
+
+        let mut peek = ReadCursor::new(data_ctx.user_data);
+        let security_header = BasicSecurityHeader::decode(&mut peek).map_err(SessionError::decode)?;
+        let flags = security_header
+            .flags
+            .difference(BasicSecurityHeaderFlags::RESET_SEQNO | BasicSecurityHeaderFlags::IGNORE_SEQNO);
+
+        if flags == BasicSecurityHeaderFlags::HEARTBEAT {
+            let heartbeat = decode::<HeartbeatPdu>(data_ctx.user_data).map_err(SessionError::decode)?;
+            debug!(
+                period = heartbeat.period,
+                count1 = heartbeat.count1,
+                count2 = heartbeat.count2,
+                "Received Heartbeat PDU"
+            );
+            return Ok(Vec::new());
+        }
+
+        if flags != BasicSecurityHeaderFlags::AUTODETECT_REQ {
+            debug!(flags = ?security_header.flags, "Unrecognized message-channel PDU, ignoring");
+            return Ok(Vec::new());
+        }
 
         let req = decode::<AutoDetectReqPdu>(data_ctx.user_data).map_err(SessionError::decode)?;
 

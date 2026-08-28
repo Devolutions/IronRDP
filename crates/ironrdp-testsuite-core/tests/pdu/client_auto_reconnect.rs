@@ -1,4 +1,4 @@
-use ironrdp_core::{decode, encode_vec};
+use ironrdp_core::{DecodeErrorKind, decode, encode_vec};
 use ironrdp_pdu::rdp::client_info::ClientAutoReconnect;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 
@@ -141,6 +141,10 @@ fn round_trips() {
 /// A packet claiming any length other than 0x1C is malformed: the structure is
 /// fixed-size, so a differing cbLen means the peer and we disagree about the
 /// layout rather than about an optional tail.
+///
+/// The reported offset must point at cbLen's own position (0), not past it: the
+/// check reads cbLen before rejecting it, so a naive `in: src` after the read
+/// would report offset 4 instead.
 #[test]
 fn rejects_a_wrong_packet_length() {
     let mut bytes = ClientAutoReconnect {
@@ -150,11 +154,17 @@ fn rejects_a_wrong_packet_length() {
     .to_bytes();
     bytes[0] = 0x1D;
 
-    assert!(decode::<ClientAutoReconnect>(&bytes).is_err());
+    let error = decode::<ClientAutoReconnect>(&bytes).unwrap_err();
+    let DecodeErrorKind::InvalidField { offset, .. } = error.kind() else {
+        panic!("expected InvalidField, got {:?}", error.kind());
+    };
+    assert_eq!(*offset, Some(0), "offset must point at cbLen, not past it");
 }
 
 /// Only version 1 is defined; anything else would carry a layout we have not been
 /// told about.
+///
+/// The reported offset must point at Version's own position (4), not past it.
 #[test]
 fn rejects_an_unknown_version() {
     let mut bytes = ClientAutoReconnect {
@@ -164,5 +174,9 @@ fn rejects_an_unknown_version() {
     .to_bytes();
     bytes[4] = 0x02;
 
-    assert!(decode::<ClientAutoReconnect>(&bytes).is_err());
+    let error = decode::<ClientAutoReconnect>(&bytes).unwrap_err();
+    let DecodeErrorKind::InvalidField { offset, .. } = error.kind() else {
+        panic!("expected InvalidField, got {:?}", error.kind());
+    };
+    assert_eq!(*offset, Some(4), "offset must point at Version, not past it");
 }

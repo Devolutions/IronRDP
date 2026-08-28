@@ -47,11 +47,11 @@ pub fn decode_rlex(data: &[u8]) -> DecodeResult<RlexData> {
     let palette_count = src.read_u8();
 
     if palette_count == 0 {
-        return Err(invalid_field_err!("paletteCount", "palette count is 0"));
+        return Err(invalid_field_err!("paletteCount", "palette count is 0", in: src));
     }
 
     if palette_count > MAX_PALETTE_COUNT {
-        return Err(invalid_field_err!("paletteCount", "palette count exceeds 127"));
+        return Err(invalid_field_err!("paletteCount", "palette count exceeds 127", in: src));
     }
 
     let palette_byte_count = usize::from(palette_count) * 3;
@@ -125,7 +125,7 @@ fn decode_multi_palette_segments(
         let suite_depth = (packed >> stop_index_bits) & depth_mask;
 
         if stop_index >= palette_count {
-            return Err(invalid_field_err!("rlexStopIndex", "stop_index exceeds palette count"));
+            return Err(invalid_field_err!("rlexStopIndex", "stop_index exceeds palette count", in: src));
         }
 
         // MS-RDPEGFX 2.2.4.1.1.3.1.1.2: startIndex is stopIndex - suiteDepth and is itself a
@@ -133,7 +133,7 @@ fn decode_multi_palette_segments(
         // it would render a shorter suite than the stream asked for instead of rejecting it.
         let start_index = stop_index
             .checked_sub(suite_depth)
-            .ok_or_else(|| invalid_field_err!("rlexSuiteDepth", "suite depth exceeds stop index"))?;
+            .ok_or_else(|| invalid_field_err!("rlexSuiteDepth", "suite depth exceeds stop index", in: src))?;
 
         let run_length = decode_run_length(src)?;
 

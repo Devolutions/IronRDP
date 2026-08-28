@@ -96,6 +96,7 @@ impl Decode<'_> for TunnelData {
             return Err(ironrdp_core::DecodeError::unexpected_message_type(
                 Self::NAME,
                 header.action.to_u8(),
+                Some(src.pos()),
             ));
         }
 

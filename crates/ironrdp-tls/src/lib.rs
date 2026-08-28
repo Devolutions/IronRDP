@@ -31,18 +31,20 @@ compile_error!(
 #[cfg(any(feature = "stub", feature = "native-tls", feature = "rustls-no-provider"))]
 pub use impl_::{
     TlsStream, negotiated, upgrade, upgrade_with_certificate_validation, upgrade_with_certificate_validation_callback,
+    upgrade_with_certificate_validation_callback_for_endpoint,
 };
 
 /// Called when the Rustls backend cannot validate a server certificate.
 ///
-/// The callback receives the leaf certificate's DER encoding and a validation-error
-/// description. Returning `true` accepts that certificate for the current handshake.
+/// The callback receives the leaf certificate's DER encoding, the configured endpoint,
+/// and a validation-error description. Returning `true` accepts that certificate for the
+/// current handshake.
 /// Callers must make this decision explicitly and should retain the certificate
 /// fingerprint rather than accepting a host blindly.
 ///
 /// The `native-tls` and stub backends cannot safely support this operation and return
 /// an error if it is requested.
-pub type CertificateValidationCallback = Arc<dyn Fn(&[u8], &str) -> bool + Send + Sync>;
+pub type CertificateValidationCallback = Arc<dyn Fn(&[u8], &str, &str) -> bool + Send + Sync>;
 
 /// Certificate-validation policy applied during a TLS handshake.
 ///

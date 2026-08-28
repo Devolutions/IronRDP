@@ -48,6 +48,7 @@ dvc-com-plugin = ["dep:ironrdp-dvc-com-plugin"]
 # Keep the pure-Rust RDPEWA path as a fallback when the COM plugin is unavailable.
 webauthn = ["dep:ironrdp-rdpewa", "dep:ironrdp-rdpewa-native", "dvc-com-plugin"]
 vmconnect = ["dep:ironrdp-vmconnect"]
+location = ["dep:ironrdp-rdpel"]
 
 all = [
     "sound",
@@ -59,6 +60,7 @@ all = [
     "dvc-com-plugin",
     "webauthn",
     "vmconnect",
+    "location",
 ]
 
 [dependencies]
@@ -72,6 +74,7 @@ ironrdp-session = { path = "../ironrdp-session", version = "0.11" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.9" } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.8" }
 ironrdp-echo = { path = "../ironrdp-echo", version = "0.4" }
+ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.3" }
 ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" } # public
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.10", features = ["reqwest"] }
@@ -86,6 +89,7 @@ ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7", optional = tru
 ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7", optional = true } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.9", optional = true }
 ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.1", optional = true }
+ironrdp-rdpel = { path = "../ironrdp-rdpel", version = "0.0.0", optional = true }
 
 # Optional backend crates (activated by features above)
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.7", optional = true }

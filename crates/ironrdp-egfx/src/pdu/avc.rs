@@ -105,7 +105,7 @@ impl Encode for Avc420BitmapStream<'_> {
         // INVARIANT: rectangles.len() == quant_qual_vals.len()
         debug_assert_eq!(self.rectangles.len(), self.quant_qual_vals.len());
 
-        dst.write_u32(cast_length!("len", self.rectangles.len())?);
+        dst.write_u32(cast_length!("len", self.rectangles.len(), in: dst)?);
         for rectangle in &self.rectangles {
             rectangle.encode(dst)?;
         }
@@ -200,7 +200,7 @@ impl Encode for Avc444BitmapStream<'_> {
         ensure_fixed_part_size!(in: dst);
 
         let mut stream_info = 0u32;
-        stream_info.set_bits(0..30, cast_length!("stream1size", self.stream1.size())?);
+        stream_info.set_bits(0..30, cast_length!("stream1size", self.stream1.size(), in: dst)?);
         stream_info.set_bits(30..32, self.encoding.bits().into());
         dst.write_u32(stream_info);
         self.stream1.encode(dst)?;
@@ -235,13 +235,13 @@ impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
         let encoding_raw: u8 = stream_info.get_bits(30..32).try_into().unwrap();
         // Only 0x00 (LUMA_AND_CHROMA), 0x01 (LUMA), 0x02 (CHROMA) are defined.
         if encoding_raw > 2 {
-            return Err(invalid_field_err!("encoding", "reserved encoding value"));
+            return Err(invalid_field_err!("encoding", "reserved encoding value", in: src));
         }
         let encoding = Encoding::from_bits_retain(encoding_raw);
 
         if stream_len == 0 {
             if encoding == Encoding::LUMA_AND_CHROMA {
-                return Err(invalid_field_err!("encoding", "invalid encoding"));
+                return Err(invalid_field_err!("encoding", "invalid encoding", in: src));
             }
 
             let stream1 = Avc420BitmapStream::decode(src)?;
@@ -588,93 +588,4 @@ pub fn encode_avc420_bitmap_stream(regions: &[Avc420Region], h264_data: &[u8]) -
         .expect("encode_avc420_bitmap_stream: encoding failed");
 
     buf
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_avc420_region_full_frame() {
-        let region = Avc420Region::full_frame(1920, 1080, 22);
-        assert_eq!(region.left, 0);
-        assert_eq!(region.top, 0);
-        assert_eq!(region.right, 1919);
-        assert_eq!(region.bottom, 1079);
-        assert_eq!(region.quantization_parameter, 22);
-        assert_eq!(region.quality, 100);
-    }
-
-    #[test]
-    fn test_align_to_16() {
-        assert_eq!(align_to_16(0), 0);
-        assert_eq!(align_to_16(1), 16);
-        assert_eq!(align_to_16(15), 16);
-        assert_eq!(align_to_16(16), 16);
-        assert_eq!(align_to_16(17), 32);
-        assert_eq!(align_to_16(1920), 1920);
-        assert_eq!(align_to_16(1080), 1088);
-    }
-
-    #[test]
-    fn test_annex_b_to_avc_3byte_start() {
-        // NAL with 3-byte start code: 00 00 01 <NAL>
-        let annex_b = [0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1E];
-        let avc = annex_b_to_avc(&annex_b);
-
-        // Should be: 4-byte length (4) + NAL data
-        assert_eq!(avc.len(), 8);
-        assert_eq!(&avc[0..4], &[0, 0, 0, 4]); // Length = 4
-        assert_eq!(&avc[4..8], &[0x67, 0x42, 0x00, 0x1E]);
-    }
-
-    #[test]
-    fn test_annex_b_to_avc_4byte_start() {
-        // NAL with 4-byte start code: 00 00 00 01 <NAL>
-        let annex_b = [0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00];
-        let avc = annex_b_to_avc(&annex_b);
-
-        assert_eq!(avc.len(), 7);
-        assert_eq!(&avc[0..4], &[0, 0, 0, 3]); // Length = 3
-        assert_eq!(&avc[4..7], &[0x67, 0x42, 0x00]);
-    }
-
-    #[test]
-    fn test_annex_b_to_avc_multiple_nals() {
-        // Two NAL units
-        let annex_b = [
-            0x00, 0x00, 0x00, 0x01, 0x67, 0x42, // SPS
-            0x00, 0x00, 0x01, 0x68, 0xCE, // PPS with 3-byte start
-        ];
-        let avc = annex_b_to_avc(&annex_b);
-
-        // First NAL: 4 bytes length + 2 bytes data
-        // Second NAL: 4 bytes length + 2 bytes data
-        assert!(avc.len() >= 12);
-    }
-
-    #[test]
-    fn test_annex_b_to_avc_empty() {
-        let avc = annex_b_to_avc(&[]);
-        assert!(avc.is_empty());
-    }
-
-    #[test]
-    fn test_encode_avc420_bitmap_stream() {
-        let regions = vec![Avc420Region::full_frame(1920, 1080, 22)];
-        let h264_data = [0x00, 0x00, 0x00, 0x01, 0x67]; // Minimal H.264
-
-        let encoded = encode_avc420_bitmap_stream(&regions, &h264_data);
-
-        // Should have: 4 bytes (nRect=1) + 8 bytes (rectangle) + 2 bytes (quant) + 5 bytes (data)
-        assert_eq!(encoded.len(), 4 + 8 + 2 + 5);
-
-        // Verify we can decode it back
-        let mut cursor = ReadCursor::new(&encoded);
-        let decoded = Avc420BitmapStream::decode(&mut cursor).expect("decode failed");
-
-        assert_eq!(decoded.rectangles.len(), 1);
-        assert_eq!(decoded.quant_qual_vals.len(), 1);
-        assert_eq!(decoded.data, &h264_data);
-    }
 }

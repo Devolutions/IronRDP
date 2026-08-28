@@ -102,9 +102,18 @@ RDPDR channel implementation.
 
 RDPSND static channel for audio output implemented as described in MS-RDPEA.
 
+#### [`crates/ironrdp-egfx`](./crates/ironrdp-egfx)
+
+EGFX dynamic channel implemented as described in MS-RDPEGFX.
+
 #### [`crates/ironrdp-rdpeai`](./crates/ironrdp-rdpeai)
 
 AUDIO_INPUT dynamic channel for client microphone capture implemented as described in MS-RDPEAI.
+
+#### [`crates/ironrdp-rdpel`](./crates/ironrdp-rdpel)
+
+Location dynamic channel client and PDU codecs implemented as described in MS-RDPEL.
+The crate forwards only location data supplied by its caller and performs no location acquisition or I/O.
 
 #### [`crates/ironrdp-rdpewa`](./crates/ironrdp-rdpewa)
 

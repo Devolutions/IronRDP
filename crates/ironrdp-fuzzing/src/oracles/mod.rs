@@ -176,6 +176,7 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<ironrdp_rdpdr::pdu::RdpdrPdu>(data);
 
     let _ = decode::<ironrdp_displaycontrol::pdu::DisplayControlPdu>(data);
+    let _ = decode::<ironrdp_rdpel::pdu::LocationPdu>(data);
 
     let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>>(data);
     let _ = decode::<ironrdp_rdpsnd::pdu::ClientAudioOutputPdu>(data);
@@ -338,6 +339,9 @@ pub fn pdu_round_trip(data: &[u8]) {
 
     // Display control
     pdu_round_trip_one!(data, ironrdp_displaycontrol::pdu::DisplayControlPdu);
+
+    // Location
+    pdu_round_trip_one!(data, ironrdp_rdpel::pdu::LocationPdu);
 
     // RDPSND
     pdu_round_trip_one!(data, ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>);
@@ -1138,4 +1142,152 @@ pub fn rdpeudp_ack_vector(data: &[u8]) {
             header.elements.len()
         );
     }
+}
+
+/// Helper for [`message_decoding_invariants`].
+///
+/// On every successful `decode`, asserts that `Encode::size()` accurately
+/// predicts how many bytes `encode` actually writes. Encodes into a buffer
+/// deliberately larger than `pdu.size()` and compares the reported size
+/// against the encoder's own return value (bytes actually written), not
+/// against the length of a buffer sized FROM `pdu.size()` in the first
+/// place: `ironrdp_core::encode_vec` allocates its buffer as
+/// `vec![0; pdu.size()]` and returns that same buffer unchanged on success,
+/// so comparing `pdu.size()` against `encode_vec(&pdu).len()` (an earlier
+/// version of this assertion) is tautologically true by construction and
+/// catches nothing, regardless of what `encode` actually wrote. Using
+/// `ironrdp_core::encode` with headroom beyond `size()` sidesteps that: the
+/// returned `written` count is the encoder's true output length, so a
+/// `size()` that under- or over-reports is directly observable.
+///
+/// A framing-preservation property (does `decode`'s consumed byte count
+/// match `encode`'s output length) was considered and rejected as the
+/// oracle's invariant: it produces false positives against existing,
+/// reachable-in-production code. `bitmap::rdp6::BitmapStream::decode`
+/// deliberately consumes one fewer byte than its own `size()`/`encode()`
+/// account for when RLE compression is off (a padding byte the type's real
+/// caller, `ironrdp-graphics`'s top-level `decode()`, never checks for), so
+/// decode-consumed length and size()/encode()'s length are two genuinely
+/// different, both-valid properties for this type. The `size()`-vs-`written`
+/// check below is immune to this class of type-specific asymmetry: it never
+/// inspects decode's cursor position at all.
+///
+/// Distinct from [`pdu_round_trip`]: that oracle silently drops `Err` and
+/// catches panics only. This oracle ASSERTS on the size contract, so a
+/// violation aborts the fuzz iteration as a libFuzzer crash.
+///
+/// What this catches (that `pdu_round_trip` does not):
+///
+/// - `Encode::size()` lies about its own size (returns N but `encode` writes
+///   M != N), causing buffer over-allocation or under-allocation in real
+///   callers that size a buffer from `size()` before encoding into it.
+///
+/// What this does NOT catch (covered by other oracles):
+///
+/// - Decode-time panics or OOM (covered by `pdu_decode`).
+/// - Re-decode equality after round-trip (covered by `pdu_round_trip`'s
+///   silent-drop pattern; assertion-based re-decode is intentionally out of
+///   scope here to keep the oracle's failure mode unambiguous).
+macro_rules! decode_size_invariant_one {
+    ($data:expr, $ty:ty) => {{
+        use ironrdp_core::Encode as _;
+        let mut cursor = ironrdp_core::ReadCursor::new($data);
+        if let Ok(pdu) = ironrdp_core::decode_cursor::<$ty>(&mut cursor) {
+            let size_reported = pdu.size();
+            // Deliberately oversized: encode_vec's buffer is exactly
+            // `size_reported` bytes, which would mask an over-write as a
+            // panic/error rather than a comparable length. Headroom makes an
+            // over-write directly observable in `written` instead.
+            let mut buf = vec![0u8; size_reported.saturating_add(256)];
+            if let Ok(written) = ironrdp_core::encode(&pdu, &mut buf) {
+                assert!(
+                    written == size_reported,
+                    "{} violates Encode::size() contract: pdu.size() = {}, actual bytes written = {}",
+                    ::core::any::type_name::<$ty>(),
+                    size_reported,
+                    written
+                );
+            }
+        }
+    }};
+}
+
+/// Message-decoding invariants oracle: for each PDU type, exercise the
+/// `decode -> size() -> encode` pipeline and assert that the type's
+/// reported `size()` matches the actual encoded length, encoding into
+/// deliberately oversized buffers so an over-write is observable rather than
+/// masked.
+///
+/// The property tested is the `Encode` trait's soundness contract: on any
+/// decoder-accepted input, the decoded PDU's `size()` method must accurately
+/// report the byte length `encode` will produce. Caller code uses `size()`
+/// for buffer sizing (`ensure_size!`, `cast_length!`), so a violation
+/// produces real downstream bugs (under-allocation -> truncated encode,
+/// over-allocation -> wasted memory or buffer-overflow risk depending on
+/// surrounding context).
+///
+/// The bug class is distinct from `pdu_round_trip`: that oracle catches
+/// encoder panics on decoder-accepted inputs, while this one catches the
+/// strictly weaker but distinct class of size-contract violations.
+///
+/// Type coverage matches `pdu_round_trip`: any input that exercises the
+/// round-trip oracle's decoder set also exercises this oracle's
+/// size-invariant assertion by construction.
+pub fn message_decoding_invariants(data: &[u8]) {
+    use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
+    use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
+    use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
+    use ironrdp_pdu::rdp::headers::ShareControlHeader;
+    use ironrdp_pdu::rdp::{ClientInfoPdu, server_error_info, server_license, vc};
+    use ironrdp_pdu::x224::X224;
+    use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
+
+    // Connection-time PDUs
+    decode_size_invariant_one!(data, X224<ConnectionRequest>);
+    decode_size_invariant_one!(data, X224<ConnectionConfirm>);
+    decode_size_invariant_one!(data, X224<McsMessage<'_>>);
+    decode_size_invariant_one!(data, ConnectInitial);
+    decode_size_invariant_one!(data, ConnectResponse);
+    decode_size_invariant_one!(data, ClientInfoPdu);
+    decode_size_invariant_one!(data, pcb::PreconnectionBlob);
+    decode_size_invariant_one!(data, server_error_info::ServerSetErrorInfoPdu);
+
+    // Capability sharing. `ShareControlHeader` transits through `CapabilitySet`'s
+    // encoder via the Active variants, so the same encoder path exercises both.
+    decode_size_invariant_one!(data, CapabilitySet);
+    decode_size_invariant_one!(data, ShareControlHeader);
+
+    // GCC blocks and conference creation
+    decode_size_invariant_one!(data, gcc::ClientGccBlocks);
+    decode_size_invariant_one!(data, gcc::ServerGccBlocks);
+    decode_size_invariant_one!(data, gcc::ClientClusterData);
+    decode_size_invariant_one!(data, gcc::ConferenceCreateRequest);
+    decode_size_invariant_one!(data, gcc::ConferenceCreateResponse);
+
+    // Licensing
+    decode_size_invariant_one!(data, server_license::LicensePdu);
+
+    // Virtual channel header
+    decode_size_invariant_one!(data, vc::ChannelPduHeader);
+
+    // Fast-path framing
+    decode_size_invariant_one!(data, fast_path::FastPathHeader);
+    decode_size_invariant_one!(data, fast_path::FastPathUpdatePdu<'_>);
+
+    // Surface commands
+    decode_size_invariant_one!(data, surface_commands::SurfaceCommand<'_>);
+    decode_size_invariant_one!(data, surface_commands::SurfaceBitsPdu<'_>);
+    decode_size_invariant_one!(data, surface_commands::FrameMarkerPdu);
+    decode_size_invariant_one!(data, surface_commands::ExtendedBitmapDataPdu<'_>);
+    decode_size_invariant_one!(data, surface_commands::BitmapDataHeader);
+
+    // Codecs
+    decode_size_invariant_one!(data, codecs::rfx::Block<'_>);
+
+    // Input
+    decode_size_invariant_one!(data, input::InputEventPdu);
+    decode_size_invariant_one!(data, input::InputEvent);
+
+    // Bitmap RDP6
+    decode_size_invariant_one!(data, bitmap::rdp6::BitmapStream<'_>);
 }

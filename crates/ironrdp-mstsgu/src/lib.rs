@@ -10,6 +10,11 @@ mod packet_io;
 mod proto;
 #[doc(hidden)]
 pub mod rpc;
+#[expect(dead_code)]
+mod rpc_transport;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod test_support;
 mod udp;
 
 use core::fmt;
@@ -22,40 +27,138 @@ use std::io;
 use futures_util::FutureExt as _;
 use hyper::body::Bytes;
 use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor};
+use ironrdp_tls::{CertificateValidation, CertificateValidationCallback};
 use log::warn;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::PollSender;
 
-use self::packet_io::{PacketIo, open_websocket_transport};
+use self::packet_io::{GatewayTransport, PacketIo, open_gateway_transport};
 #[doc(hidden)]
 pub use self::proto::{ChannelClosePkt, ReauthMessagePkt, ServiceMessagePkt, gateway_code_label};
 use self::proto::{
-    ChannelPkt, ChannelResp, DataPkt as HttpDataPkt, HandshakeReqPkt, HandshakeRespPkt, HttpCapsTy, KeepalivePkt,
-    PktHdr, PktTy, TunnelAuthPkt, TunnelAuthRespPkt, TunnelReqPkt, TunnelRespPkt,
+    ChannelPkt, ChannelResp, DataPkt as HttpDataPkt, ExtendedAuthPkt, HandshakeReqPkt, HandshakeRespPkt, HttpCapsTy,
+    HttpExtendedAuth, KeepalivePkt, PktHdr, PktTy, TunnelAuthPkt, TunnelAuthRespPkt, TunnelReqPkt, TunnelRespPkt,
 };
 pub use self::udp::{
     AaSynData, AaSynDataResp, ConnectPkt, ConnectPktResp, DataPkt, DiscPkt, GwUdpOffer, MAX_CONNECT_REQ_FRAGMENT_SIZE,
     UdpCorrelationInfo, UdpPacketHeader, UdpPktType, encode_connect_request, fragment_connect_pkt,
 };
 
+/// Smart-card credentials used for HTTP Negotiate Kerberos PKINIT authentication.
+///
+/// This type owns application-supplied identity material and reader metadata.
+/// It does not perform smart-card I/O or prompt for a PIN.
+#[derive(Clone)]
+pub struct GwSmartCardCredentials {
+    /// User principal name supplied to Kerberos.
+    pub username: String,
+    /// PIN used to unlock the smart card.
+    pub pin: String,
+    /// DER-encoded X.509 certificate identifying the user.
+    pub certificate: Vec<u8>,
+    /// PKCS#1 private key for an emulated smart card.
+    ///
+    /// Set this to `None` to use the Windows smart-card API.
+    pub private_key: Option<Vec<u8>>,
+    /// Smart-card reader name.
+    pub reader_name: String,
+    /// Optional smart-card name.
+    pub card_name: Option<String>,
+    /// Optional key container name.
+    pub container_name: Option<String>,
+    /// Optional cryptographic service provider name.
+    pub csp_name: Option<String>,
+}
+
+impl fmt::Debug for GwSmartCardCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GwSmartCardCredentials")
+            .field("username", &"<redacted>")
+            .field("pin", &"<redacted>")
+            .field("certificate", &"<redacted>")
+            .field("private_key", &self.private_key.as_ref().map(|_| "<redacted>"))
+            .field("reader_name", &self.reader_name)
+            .field("card_name", &self.card_name)
+            .field("container_name", &self.container_name)
+            .field("csp_name", &self.csp_name)
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct GwConnectTarget {
     pub gw_endpoint: String,
     pub gw_user: String,
     pub gw_pass: String,
+    /// Optional smart-card credentials for HTTP Negotiate Kerberos PKINIT authentication.
+    pub smart_card: Option<Box<GwSmartCardCredentials>>,
 
     pub server: String,
 }
 
+/// Policy parameters reported by the gateway during [tunnel authorization][MS-TSGU 2.2.10.17].
+///
+/// IronRDP exposes these values but does not enforce device redirection restrictions or client-side idle timeouts.
+///
+/// [MS-TSGU 2.2.10.17]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=70
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GwTunnelPolicy {
+    /// Device redirection flags supplied by the gateway, if any.
+    pub redirection_flags: Option<u32>,
+    /// Idle timeout in minutes supplied by the gateway, if any.
+    pub idle_timeout_minutes: Option<u32>,
+    /// Statement of health response supplied by the gateway, if any.
+    pub soh_response: Option<Vec<u8>>,
+}
+
+/// Synchronously decides whether to accept a gateway consent message.
+///
+/// The callback receives the UTF-16LE consent message decoded from
+/// [HTTP_TUNNEL_RESPONSE_OPTIONAL][MS-TSGU 2.2.10.21] as an [HTTP_UNICODE_STRING][MS-TSGU 2.2.10.22].
+/// Returning `false` declines the gateway consent and stops tunnel setup.
+///
+/// A consent message received during later background reauthentication is declined because this
+/// borrowed callback is no longer available.
+///
+/// [MS-TSGU 2.2.10.21]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=72
+/// [MS-TSGU 2.2.10.22]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=73
+pub type GwConsentCallback<'a> = dyn FnMut(&str) -> bool + Send + 'a;
+
 type Error = ironrdp_error::Error<GwErrorKind>;
+
+/// Gateway authentication selected for the current HTTP connection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GwSessionAuthentication {
+    /// Authentication completed during the HTTP or WebSocket setup.
+    #[default]
+    Http,
+    /// NTLM authentication completed with `HTTP_EXTENDED_AUTH_PACKET` messages.
+    NtlmSspi,
+}
+
+/// An extended authentication method advertised by the gateway.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GwExtendedAuthentication {
+    SmartCard,
+    PluggableAuthentication,
+    NtlmSspi,
+    Unknown(u16),
+}
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum GwErrorKind {
     InvalidGwTarget,
+    InvalidCertificateValidation,
     Connect,
+    /// A nonzero HRESULT returned by the gateway during control setup.
+    GatewayCode(u32),
+    HttpStatus(u16),
     PacketEof,
     UnsupportedFeature,
+    UnsupportedExtendedAuthentication(GwExtendedAuthentication),
+    ConsentDeclined,
     Custom,
     Encode,
     Decode,
@@ -81,9 +184,19 @@ impl Display for GwErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let x = match self {
             GwErrorKind::InvalidGwTarget => "invalid GW Target",
+            GwErrorKind::InvalidCertificateValidation => "invalid certificate validation configuration",
             GwErrorKind::Connect => "connection error",
+            GwErrorKind::GatewayCode(code) => match gateway_code_label(*code) {
+                Some(label) => return write!(f, "gateway error 0x{code:08x} ({label})"),
+                None => return write!(f, "gateway error 0x{code:08x}"),
+            },
+            GwErrorKind::HttpStatus(status) => return write!(f, "unexpected http status {status}"),
             GwErrorKind::PacketEof => "PacketEOF",
             GwErrorKind::UnsupportedFeature => "unsupported feature",
+            GwErrorKind::UnsupportedExtendedAuthentication(method) => {
+                return write!(f, "unsupported extended authentication method {method:?}");
+            }
+            GwErrorKind::ConsentDeclined => "gateway consent declined",
             GwErrorKind::Custom => "custom",
             GwErrorKind::Encode => "encode",
             GwErrorKind::Decode => "decode",
@@ -93,6 +206,18 @@ impl Display for GwErrorKind {
 }
 
 impl core::error::Error for GwErrorKind {}
+
+fn extended_authentication_method(extended_auth: HttpExtendedAuth) -> GwExtendedAuthentication {
+    if extended_auth.contains(HttpExtendedAuth::HTTP_EXTENDED_AUTH_SC) {
+        GwExtendedAuthentication::SmartCard
+    } else if extended_auth.contains(HttpExtendedAuth::HTTP_EXTENDED_AUTH_PAA) {
+        GwExtendedAuthentication::PluggableAuthentication
+    } else if extended_auth.contains(HttpExtendedAuth::HTTP_EXTENDED_AUTH_SSPI_NTLM) {
+        GwExtendedAuthentication::NtlmSspi
+    } else {
+        GwExtendedAuthentication::Unknown(extended_auth.bits())
+    }
+}
 
 struct GwConn {
     client_name: String,
@@ -104,6 +229,32 @@ struct GwConn {
     io: PacketIo,
 }
 
+type TransportFactory =
+    Box<dyn FnMut() -> Pin<Box<dyn Future<Output = Result<GatewayTransport, Error>> + Send>> + Send>;
+type ReauthenticationFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
+
+#[derive(Clone, Copy)]
+enum ConsentFallback {
+    Accept,
+    Reject,
+}
+
+fn network_transport_factory(
+    target: GwConnectTarget,
+    certificate_validation: CertificateValidation,
+    certificate_validation_callback: Option<CertificateValidationCallback>,
+) -> TransportFactory {
+    Box::new(move || {
+        let target = target.clone();
+        let certificate_validation_callback = certificate_validation_callback.clone();
+        Box::pin(async move {
+            open_gateway_transport(&target, certificate_validation, certificate_validation_callback)
+                .await
+                .map(|(transport, _)| transport)
+        })
+    })
+}
+
 pub struct GwClient {
     work: tokio::task::JoinHandle<Result<(), Error>>,
     /// Set once the work task has completed; its `JoinHandle` must not be polled again
@@ -112,6 +263,8 @@ pub struct GwClient {
     rx: tokio::sync::mpsc::Receiver<Bytes>,
     rx_bufs: Vec<Bytes>,
     tx: PollSender<Bytes>,
+    policy: GwTunnelPolicy,
+    session_authentication: GwSessionAuthentication,
 }
 
 impl Drop for GwClient {
@@ -129,7 +282,41 @@ impl GwClient {
         target: &GwConnectTarget,
         client_name: &str,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
-        Self::connect_with_port(target, client_name, 3389).await
+        Self::connect_with_certificate_validation(target, client_name, CertificateValidation::default(), None).await
+    }
+
+    /// Open an MS-TSGU tunnel with an explicit TLS certificate-validation configuration.
+    ///
+    /// This presents port `3389` to the gateway.
+    ///
+    /// Certificate-validation callbacks require the Rustls TLS backend and cannot be
+    /// combined with [`CertificateValidation::DangerouslyAcceptInvalidCertificate`].
+    pub async fn connect_with_certificate_validation(
+        target: &GwConnectTarget,
+        client_name: &str,
+        certificate_validation: CertificateValidation,
+        certificate_validation_callback: Option<CertificateValidationCallback>,
+    ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        Self::connect_with_port_and_certificate_validation(
+            target,
+            client_name,
+            3389,
+            certificate_validation,
+            certificate_validation_callback,
+        )
+        .await
+    }
+
+    /// Open an MS-TSGU tunnel and decide a gateway consent message synchronously.
+    ///
+    /// The callback is invoked once for each consent message returned while creating the initial tunnel.
+    /// Returning `false` stops tunnel setup with [`GwErrorKind::ConsentDeclined`].
+    pub async fn connect_with_consent(
+        target: &GwConnectTarget,
+        client_name: &str,
+        consent_callback: &mut GwConsentCallback<'_>,
+    ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        Self::connect_with_port_and_consent(target, client_name, 3389, consent_callback).await
     }
 
     /// Open an MS-TSGU tunnel, presenting `server_port` as HTTP_CHANNEL_PACKET `port`.
@@ -138,28 +325,137 @@ impl GwClient {
         client_name: &str,
         server_port: u16,
     ) -> Result<(GwClient, core::net::SocketAddr), Error> {
-        let (io, client_addr) = open_websocket_transport(target).await?;
-        Self::connect_ws(target.clone(), client_name, server_port, io)
-            .await
-            .map(|x| (x, client_addr))
+        Self::connect_with_port_and_certificate_validation(
+            target,
+            client_name,
+            server_port,
+            CertificateValidation::default(),
+            None,
+        )
+        .await
     }
 
+    /// Open an MS-TSGU tunnel with an explicit TLS certificate-validation configuration.
+    ///
+    /// Certificate-validation callbacks require the Rustls TLS backend and cannot be
+    /// combined with [`CertificateValidation::DangerouslyAcceptInvalidCertificate`].
+    pub async fn connect_with_port_and_certificate_validation(
+        target: &GwConnectTarget,
+        client_name: &str,
+        server_port: u16,
+        certificate_validation: CertificateValidation,
+        certificate_validation_callback: Option<CertificateValidationCallback>,
+    ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        if certificate_validation == CertificateValidation::DangerouslyAcceptInvalidCertificate
+            && certificate_validation_callback.is_some()
+        {
+            return Err(Error::new(
+                "certificate validation",
+                GwErrorKind::InvalidCertificateValidation,
+            ));
+        }
+
+        Self::connect_with_port_and_optional_consent(
+            target,
+            client_name,
+            server_port,
+            certificate_validation,
+            certificate_validation_callback,
+            None,
+        )
+        .await
+    }
+
+    /// Open an MS-TSGU tunnel and decide a gateway consent message synchronously.
+    ///
+    /// The callback is invoked once for each consent message returned while creating the initial tunnel.
+    /// Returning `false` stops tunnel setup with [`GwErrorKind::ConsentDeclined`].
+    pub async fn connect_with_port_and_consent(
+        target: &GwConnectTarget,
+        client_name: &str,
+        server_port: u16,
+        consent_callback: &mut GwConsentCallback<'_>,
+    ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        Self::connect_with_port_and_optional_consent(
+            target,
+            client_name,
+            server_port,
+            CertificateValidation::default(),
+            None,
+            Some(consent_callback),
+        )
+        .await
+    }
+
+    async fn connect_with_port_and_optional_consent(
+        target: &GwConnectTarget,
+        client_name: &str,
+        server_port: u16,
+        certificate_validation: CertificateValidation,
+        certificate_validation_callback: Option<CertificateValidationCallback>,
+        consent_callback: Option<&mut GwConsentCallback<'_>>,
+    ) -> Result<(GwClient, core::net::SocketAddr), Error> {
+        let (transport, client_addr) =
+            open_gateway_transport(target, certificate_validation, certificate_validation_callback.clone()).await?;
+        Self::connect_ws_with_reauth(
+            target.clone(),
+            client_name,
+            server_port,
+            transport,
+            network_transport_factory(target.clone(), certificate_validation, certificate_validation_callback),
+            consent_callback,
+        )
+        .await
+        .map(|x| (x, client_addr))
+    }
+
+    #[cfg(feature = "test-support")]
     async fn connect_ws(
         target: GwConnectTarget,
         client_name: &str,
         server_port: u16,
-        io: PacketIo,
+        transport: GatewayTransport,
+        consent_callback: Option<&mut GwConsentCallback<'_>>,
+    ) -> Result<GwClient, Error> {
+        Self::connect_ws_with_reauth(
+            target,
+            client_name,
+            server_port,
+            transport,
+            Box::new(|| {
+                Box::pin(core::future::ready(Err(Error::new(
+                    "gateway reauthentication requires a network transport",
+                    GwErrorKind::UnsupportedFeature,
+                ))))
+            }),
+            consent_callback,
+        )
+        .await
+    }
+
+    async fn connect_ws_with_reauth(
+        target: GwConnectTarget,
+        client_name: &str,
+        server_port: u16,
+        transport: GatewayTransport,
+        mut open_transport: TransportFactory,
+        consent_callback: Option<&mut GwConsentCallback<'_>>,
     ) -> Result<GwClient, Error> {
         let mut gw = GwConn {
             client_name: client_name.to_owned(),
             target,
             server_port,
-            io,
+            io: transport.io,
         };
 
-        gw.handshake().await?;
-        gw.tunnel().await?;
-        gw.tunnel_auth().await?;
+        let session_authentication = gw.handshake(transport.session_authentication).await?;
+        let reauthentication_consent_fallback = if consent_callback.is_some() {
+            ConsentFallback::Reject
+        } else {
+            ConsentFallback::Accept
+        };
+        gw.tunnel(None, consent_callback, ConsentFallback::Accept).await?;
+        let policy = gw.tunnel_auth().await?;
         gw.channel().await?;
 
         let (in_tx, in_rx) = tokio::sync::mpsc::channel(4);
@@ -169,11 +465,24 @@ impl GwClient {
             let iv = Duration::from_secs(15 * 60);
             let mut keepalive_interval = tokio::time::interval_at(tokio::time::Instant::now() + iv, iv);
             let mut inbound_open = true;
+            let mut reauthentication: Option<ReauthenticationFuture> = None;
 
             loop {
                 let mut wsbuf = [0u8; 8192];
 
                 tokio::select!(
+                    result = async {
+                        match &mut reauthentication {
+                            Some(reauthentication) => Some(reauthentication.await),
+                            None => core::future::pending().await,
+                        }
+                    } => {
+                        reauthentication = None;
+                        match result.expect("reauthentication future is present") {
+                            Ok(()) => warn!("RD Gateway reauthentication completed"),
+                            Err(error) => warn!("RD Gateway reauthentication failed: {error}"),
+                        }
+                    },
                     _ = keepalive_interval.tick() => {
                         let pos = {
                             let mut cur = WriteCursor::new(&mut wsbuf);
@@ -212,8 +521,37 @@ impl GwClient {
                             },
                             PktTy::ReauthMessage => {
                                 let msg = ReauthMessagePkt::decode(&mut cur).map_err(|e| custom_err!("PktDecode", e))?;
+                                if reauthentication.is_some() {
+                                    return Err(Error::new("gateway reauthentication already pending", GwErrorKind::Connect));
+                                }
+
+                                let client_name = gw.client_name.clone();
+                                let target = gw.target.clone();
+                                let server_port = gw.server_port;
+                                let reauth_tunnel_context = msg.reauth_tunnel_context;
+                                let transport = open_transport();
+                                reauthentication = Some(Box::pin(async move {
+                                    let transport = transport.await?;
+                                    let session_authentication = transport.session_authentication;
+                                    let mut secondary = GwConn {
+                                        client_name,
+                                        target,
+                                        server_port,
+                                        io: transport.io,
+                                    };
+                                    secondary.handshake(session_authentication).await?;
+                                    secondary
+                                        .tunnel(Some(reauth_tunnel_context), None, reauthentication_consent_fallback)
+                                        .await?;
+                                    secondary.tunnel_auth().await?;
+                                    secondary.channel().await?;
+
+                                    // A reauthentication channel only updates authorization state for the
+                                    // original connection and never carries application data.
+                                    Ok(())
+                                }));
                                 warn!(
-                                    "RD Gateway requested reauthentication (context 0x{:016x}); mid-session reauth is not performed",
+                                    "RD Gateway requested reauthentication (context 0x{:016x})",
                                     msg.reauth_tunnel_context
                                 );
                             },
@@ -265,13 +603,25 @@ impl GwClient {
             rx: in_rx,
             rx_bufs: vec![],
             tx: PollSender::new(out_tx),
+            policy,
+            session_authentication,
         })
+    }
+
+    /// Policy parameters reported by the gateway during tunnel authorization.
+    pub fn tunnel_policy(&self) -> &GwTunnelPolicy {
+        &self.policy
+    }
+
+    /// Authentication selected for the initial gateway connection.
+    pub fn session_authentication(&self) -> GwSessionAuthentication {
+        self.session_authentication
     }
 }
 
 impl GwConn {
     async fn send_packet<E: Encode>(&mut self, payload: &E) -> Result<(), Error> {
-        let mut buf = [0u8; 4096];
+        let mut buf = vec![0; payload.size()];
         let pos = {
             let mut cur = WriteCursor::new(&mut buf);
             payload
@@ -301,29 +651,122 @@ impl GwConn {
         Ok((hdr, msg.split_off(cur.pos())))
     }
 
-    async fn handshake(&mut self) -> Result<(), Error> {
-        // For NTLM we would include extended_auth: NTLM_SSPI in this handshake req here.
+    async fn handshake(
+        &mut self,
+        session_authentication: GwSessionAuthentication,
+    ) -> Result<GwSessionAuthentication, Error> {
         let hs = HandshakeReqPkt {
             ver_major: 1,
             ver_minor: 0,
+            extended_auth: match session_authentication {
+                GwSessionAuthentication::Http => HttpExtendedAuth::HTTP_EXTENDED_AUTH_NONE,
+                GwSessionAuthentication::NtlmSspi => HttpExtendedAuth::HTTP_EXTENDED_AUTH_SSPI_NTLM,
+            },
             ..HandshakeReqPkt::default()
         };
         self.send_packet(&hs).await?;
-        let (_hdr, bytes) = self.read_packet().await?;
+        let (hdr, bytes) = self.read_packet().await?;
+        if hdr.ty != PktTy::HandshakeResp {
+            return Err(Error::new("Handshake", GwErrorKind::Decode));
+        }
 
         let mut cur = ReadCursor::new(&bytes);
         let resp = HandshakeRespPkt::decode(&mut cur).map_err(|_| Error::new("Handshake", GwErrorKind::Decode))?;
-        if resp.error_code != 0 || resp.ver_major != 1 || resp.ver_minor != 0 || resp.server_version != 0 {
+        if resp.error_code != 0 {
+            return Err(Error::new("Handshake", GwErrorKind::GatewayCode(resp.error_code)));
+        }
+        if resp.ver_major != 1 || resp.ver_minor != 0 || resp.server_version != 0 {
             return Err(Error::new("Handshake", GwErrorKind::Connect));
         }
-        Ok(())
+        if !cur.eof() {
+            return Err(Error::new("Handshake", GwErrorKind::Decode));
+        }
+
+        match session_authentication {
+            GwSessionAuthentication::Http if !resp.extended_auth.is_empty() => {
+                return Err(Error::new(
+                    "Handshake",
+                    GwErrorKind::UnsupportedExtendedAuthentication(extended_authentication_method(resp.extended_auth)),
+                ));
+            }
+            GwSessionAuthentication::NtlmSspi
+                if !resp
+                    .extended_auth
+                    .contains(HttpExtendedAuth::HTTP_EXTENDED_AUTH_SSPI_NTLM) =>
+            {
+                return Err(Error::new(
+                    "Handshake",
+                    GwErrorKind::UnsupportedExtendedAuthentication(GwExtendedAuthentication::NtlmSspi),
+                ));
+            }
+            GwSessionAuthentication::NtlmSspi => self.extended_auth_sspi_ntlm().await?,
+            GwSessionAuthentication::Http => {}
+        }
+
+        Ok(session_authentication)
     }
 
-    async fn tunnel(&mut self) -> Result<(), Error> {
+    async fn extended_auth_sspi_ntlm(&mut self) -> Result<(), Error> {
+        let mut auth = http_auth::GatewayHttpAuth::new_extended_auth_ntlm(&self.target.gw_user, &self.target.gw_pass)?;
+        let (token, mut complete) = auth.step_extended_auth(None)?;
+        self.send_packet(&ExtendedAuthPkt {
+            error_code: 0,
+            auth_blob: token,
+        })
+        .await?;
+
+        loop {
+            let (hdr, bytes) = self.read_packet().await?;
+            if hdr.ty != PktTy::ExtendedAuth {
+                return Err(Error::new("extended authentication response", GwErrorKind::Decode));
+            }
+
+            let mut cur = ReadCursor::new(&bytes);
+            let response = ExtendedAuthPkt::decode(&mut cur)
+                .map_err(|_| Error::new("extended authentication", GwErrorKind::Decode))?;
+            if !cur.eof() {
+                return Err(Error::new("extended authentication", GwErrorKind::Decode));
+            }
+            if response.error_code != 0 {
+                return Err(Error::new(
+                    "extended authentication",
+                    GwErrorKind::GatewayCode(response.error_code),
+                ));
+            }
+            if complete {
+                if response.auth_blob.is_empty() {
+                    return Ok(());
+                }
+                return Err(Error::new("extended authentication", GwErrorKind::Connect));
+            }
+            if response.auth_blob.is_empty() {
+                return Err(Error::new("extended authentication", GwErrorKind::Connect));
+            }
+
+            let (token, is_complete) = auth.step_extended_auth(Some(&response.auth_blob))?;
+            if token.is_empty() {
+                return Err(Error::new("extended authentication", GwErrorKind::Connect));
+            }
+            self.send_packet(&ExtendedAuthPkt {
+                error_code: 0,
+                auth_blob: token,
+            })
+            .await?;
+            complete = is_complete;
+        }
+    }
+
+    async fn tunnel(
+        &mut self,
+        reauth_tunnel_context: Option<u64>,
+        consent_callback: Option<&mut GwConsentCallback<'_>>,
+        default_consent: ConsentFallback,
+    ) -> Result<(), Error> {
         let req = TunnelReqPkt {
-            // Havent seen any server working without this.
-            caps: HttpCapsTy::MessagingConsentSign.as_u32(),
+            // No observed server works without this capability.
+            caps: HttpCapsTy::MessagingConsentSign.as_u32() | HttpCapsTy::Reauth.as_u32(),
             fields_present: 0,
+            reauth_tunnel_context,
             ..TunnelReqPkt::default()
         };
         self.send_packet(&req).await?;
@@ -333,19 +776,14 @@ impl GwConn {
 
         let resp = TunnelRespPkt::decode(&mut cur).map_err(|_| Error::new("TunnelDecode", GwErrorKind::Decode))?;
         if resp.status_code != 0 {
-            return Err(Error::new("Tunnel", GwErrorKind::Connect));
+            return Err(Error::new("Tunnel", GwErrorKind::GatewayCode(resp.status_code)));
         }
         assert!(cur.eof());
-        if !resp.consent_msg.is_empty() {
-            return Err(Error::new(
-                "Received consent message but showing it not implemented",
-                GwErrorKind::UnsupportedFeature,
-            ));
-        }
+        evaluate_consent_message(&resp.consent_msg, consent_callback, default_consent)?;
         Ok(())
     }
 
-    async fn tunnel_auth(&mut self) -> Result<(), Error> {
+    async fn tunnel_auth(&mut self) -> Result<GwTunnelPolicy, Error> {
         let req = TunnelAuthPkt {
             fields_present: 0,
             client_name: self.client_name.clone(),
@@ -357,10 +795,14 @@ impl GwConn {
         let resp: TunnelAuthRespPkt =
             TunnelAuthRespPkt::decode(&mut cur).map_err(|_| Error::new("TunnelAuth", GwErrorKind::Decode))?;
 
-        if resp.error_code() != 0 {
-            return Err(Error::new("TunnelAuth", GwErrorKind::Connect));
+        if resp.error_code != 0 {
+            return Err(Error::new("TunnelAuth", GwErrorKind::GatewayCode(resp.error_code)));
         }
-        Ok(())
+        Ok(GwTunnelPolicy {
+            redirection_flags: resp.redirection_flags,
+            idle_timeout_minutes: resp.idle_timeout_minutes,
+            soh_response: resp.soh_response,
+        })
     }
 
     async fn channel(&mut self) -> Result<ChannelResp, Error> {
@@ -377,10 +819,47 @@ impl GwConn {
         let resp: ChannelResp =
             ChannelResp::decode(&mut cur).map_err(|_| Error::new("ChannelResp", GwErrorKind::Decode))?;
         if resp.error_code() != 0 {
-            return Err(Error::new("ChannelCreate", GwErrorKind::Connect));
+            return Err(Error::new("ChannelCreate", GwErrorKind::GatewayCode(resp.error_code())));
         }
         assert!(cur.eof());
         Ok(resp)
+    }
+}
+
+fn decode_consent_message(bytes: &[u8]) -> Result<String, Error> {
+    if !bytes.len().is_multiple_of(2) {
+        return Err(Error::new("TunnelConsent", GwErrorKind::Decode));
+    }
+
+    let code_units = bytes
+        .chunks_exact(2)
+        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+        .collect::<Vec<_>>();
+    let message = String::from_utf16(&code_units).map_err(|_| Error::new("TunnelConsent", GwErrorKind::Decode))?;
+    Ok(message.strip_suffix('\0').unwrap_or(&message).to_owned())
+}
+
+fn evaluate_consent_message(
+    consent_message: &[u8],
+    consent_callback: Option<&mut GwConsentCallback<'_>>,
+    default_consent: ConsentFallback,
+) -> Result<(), Error> {
+    if consent_message.is_empty() {
+        return Ok(());
+    }
+
+    let message = decode_consent_message(consent_message)?;
+    if let Some(consent_callback) = consent_callback {
+        if consent_callback(&message) {
+            return Ok(());
+        }
+        return Err(Error::new("TunnelConsent", GwErrorKind::ConsentDeclined));
+    }
+
+    if matches!(default_consent, ConsentFallback::Reject) {
+        Err(Error::new("TunnelConsent", GwErrorKind::ConsentDeclined))
+    } else {
+        Ok(())
     }
 }
 

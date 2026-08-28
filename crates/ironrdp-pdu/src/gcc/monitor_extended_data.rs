@@ -31,7 +31,7 @@ impl Encode for ClientMonitorExtendedData {
 
         dst.write_u32(0); // flags
         dst.write_u32(MONITOR_ATTRIBUTE_SIZE); // flags
-        dst.write_u32(cast_length!("nMonitors", self.extended_monitors_info.len())?);
+        dst.write_u32(cast_length!("nMonitors", self.extended_monitors_info.len(), in: dst)?);
 
         for extended_monitor_info in self.extended_monitors_info.iter().take(MONITOR_COUNT_MAX) {
             extended_monitor_info.encode(dst)?;
@@ -57,13 +57,13 @@ impl<'de> Decode<'de> for ClientMonitorExtendedData {
 
         let monitor_attribute_size = src.read_u32();
         if monitor_attribute_size != MONITOR_ATTRIBUTE_SIZE {
-            return Err(invalid_field_err!("monitorAttributeSize", "invalid size"));
+            return Err(invalid_field_err!("monitorAttributeSize", "invalid size", in: src));
         }
 
-        let monitor_count = cast_length!("monitorCount", src.read_u32())?;
+        let monitor_count = cast_length!("monitorCount", src.read_u32(), in: src)?;
 
         if monitor_count > MONITOR_COUNT_MAX {
-            return Err(invalid_field_err!("monitorCount", "invalid monitor count"));
+            return Err(invalid_field_err!("monitorCount", "invalid monitor count", in: src));
         }
 
         let mut extended_monitors_info = Vec::with_capacity(monitor_count);
@@ -120,7 +120,7 @@ impl<'de> Decode<'de> for ExtendedMonitorInfo {
         let physical_width = src.read_u32();
         let physical_height = src.read_u32();
         let orientation = MonitorOrientation::from_u32(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("orientation", "invalid monitor orientation"))?;
+            .ok_or_else(|| invalid_field_err!("orientation", "invalid monitor orientation", in: src))?;
         let desktop_scale_factor = src.read_u32();
         let device_scale_factor = src.read_u32();
 

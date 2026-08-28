@@ -18,12 +18,39 @@ pub(crate) type Bstr = *const u16;
 pub(crate) type BstrOut = *mut *const u16;
 pub(crate) type InterfaceOut = *mut *mut c_void;
 
+#[interface("FDD029F9-467A-4C49-8529-64B521DBD1B4")]
+pub(crate) unsafe trait ITSRemoteProgram: IDispatch {
+    pub(crate) fn put_RemoteProgramMode(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_RemoteProgramMode(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn ServerStartProgram(
+        &self,
+        executable: Bstr,
+        file: Bstr,
+        working_directory: Bstr,
+        expand_working_directory: i16,
+        arguments: Bstr,
+        expand_arguments: i16,
+    ) -> Result<()>;
+}
+
+#[interface("92C38A7D-241A-418C-9936-099872C9AF20")]
+pub(crate) unsafe trait ITSRemoteProgram2: ITSRemoteProgram {
+    pub(crate) fn put_RemoteApplicationName(&self, value: Bstr) -> Result<()>;
+    pub(crate) fn put_RemoteApplicationProgram(&self, value: Bstr) -> Result<()>;
+    pub(crate) fn put_RemoteApplicationArgs(&self, value: Bstr) -> Result<()>;
+}
+
+#[interface("4B84EA77-ACEA-418C-881A-4A8C28AB1510")]
+pub(crate) unsafe trait ITSRemoteProgram3: ITSRemoteProgram2 {
+    pub(crate) fn ServerStartApp(&self, app_user_model_id: Bstr, arguments: Bstr, expand_arguments: i16) -> Result<()>;
+}
+
 #[interface("56540617-D281-488C-8738-6A8FDF64A118")]
 pub(crate) unsafe trait IMsRdpDeviceCollection: IUnknown {
-    fn RescanDevices(&self, dynamic_redirection: i16) -> Result<()>;
+    pub(crate) fn RescanDevices(&self, dynamic_redirection: i16) -> Result<()>;
     fn get_DeviceByIndex(&self, index: u32, device: InterfaceOut) -> Result<()>;
     fn get_DeviceById(&self, instance_id: Bstr, device: InterfaceOut) -> Result<()>;
-    fn get_DeviceCount(&self, count: *mut u32) -> Result<()>;
+    pub(crate) fn get_DeviceCount(&self, count: *mut u32) -> Result<()>;
 }
 
 #[interface("7FF17599-DA2C-4677-AD35-F60C04FE1585")]
@@ -42,18 +69,29 @@ pub(crate) unsafe trait IMsRdpDrive: IUnknown {
 
 #[interface("AE45252B-AAAB-4504-B681-649D6073A37A")]
 pub(crate) unsafe trait IMsRdpCameraRedirConfigCollection: IUnknown {
-    fn Rescan(&self) -> Result<()>;
-    fn get_Count(&self, count: *mut u32) -> Result<()>;
-    fn get_ByIndex(&self, index: u32, config: InterfaceOut) -> Result<()>;
-    fn get_BySymbolicLink(&self, link: Bstr, config: InterfaceOut) -> Result<()>;
-    fn get_ByInstanceId(&self, id: Bstr, config: InterfaceOut) -> Result<()>;
-    fn AddConfig(&self, link: Bstr, redirected: i16) -> Result<()>;
-    fn put_RedirectByDefault(&self, redirect: i16) -> Result<()>;
-    fn get_RedirectByDefault(&self, redirect: *mut i16) -> Result<()>;
-    fn put_EncodeVideo(&self, encode: i16) -> Result<()>;
-    fn get_EncodeVideo(&self, encode: *mut i16) -> Result<()>;
-    fn put_EncodingQuality(&self, quality: i32) -> Result<()>;
-    fn get_EncodingQuality(&self, quality: *mut i32) -> Result<()>;
+    pub(crate) fn Rescan(&self) -> Result<()>;
+    pub(crate) fn get_Count(&self, count: *mut u32) -> Result<()>;
+    pub(crate) fn get_ByIndex(&self, index: u32, config: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_BySymbolicLink(&self, link: Bstr, config: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_ByInstanceId(&self, id: Bstr, config: InterfaceOut) -> Result<()>;
+    pub(crate) fn AddConfig(&self, link: Bstr, redirected: i16) -> Result<()>;
+    pub(crate) fn put_RedirectByDefault(&self, redirect: i16) -> Result<()>;
+    pub(crate) fn get_RedirectByDefault(&self, redirect: *mut i16) -> Result<()>;
+    pub(crate) fn put_EncodeVideo(&self, encode: i16) -> Result<()>;
+    pub(crate) fn get_EncodeVideo(&self, encode: *mut i16) -> Result<()>;
+    pub(crate) fn put_EncodingQuality(&self, quality: i32) -> Result<()>;
+    pub(crate) fn get_EncodingQuality(&self, quality: *mut i32) -> Result<()>;
+}
+
+#[interface("09750604-D625-47C1-9FCD-F09F735705D7")]
+pub(crate) unsafe trait IMsRdpCameraRedirConfig: IUnknown {
+    pub(crate) fn get_FriendlyName(&self, name: BstrOut) -> Result<()>;
+    pub(crate) fn get_SymbolicLink(&self, link: BstrOut) -> Result<()>;
+    pub(crate) fn get_InstanceId(&self, id: BstrOut) -> Result<()>;
+    pub(crate) fn get_ParentInstanceId(&self, id: BstrOut) -> Result<()>;
+    pub(crate) fn put_Redirected(&self, redirected: i16) -> Result<()>;
+    pub(crate) fn get_Redirected(&self, redirected: *mut i16) -> Result<()>;
+    pub(crate) fn get_DeviceExists(&self, exists: *mut i16) -> Result<()>;
 }
 
 #[interface("FDD029F9-9574-4DEF-8529-64B521CCCAA4")]
@@ -106,11 +144,11 @@ pub(crate) unsafe trait IMsRdpClientNonScriptable3: IMsRdpClientNonScriptable2 {
     fn get_NegotiateSecurityLayer(&self, value: *mut i16) -> Result<()>;
     fn put_EnableCredSspSupport(&self, value: i16) -> Result<()>;
     fn get_EnableCredSspSupport(&self, value: *mut i16) -> Result<()>;
-    fn put_RedirectDynamicDrives(&self, value: i16) -> Result<()>;
-    fn get_RedirectDynamicDrives(&self, value: *mut i16) -> Result<()>;
-    fn put_RedirectDynamicDevices(&self, value: i16) -> Result<()>;
-    fn get_RedirectDynamicDevices(&self, value: *mut i16) -> Result<()>;
-    fn get_DeviceCollection(&self, collection: InterfaceOut) -> Result<()>;
+    pub(crate) fn put_RedirectDynamicDrives(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_RedirectDynamicDrives(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn put_RedirectDynamicDevices(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_RedirectDynamicDevices(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn get_DeviceCollection(&self, collection: InterfaceOut) -> Result<()>;
     pub(crate) fn get_DriveCollection(&self, collection: InterfaceOut) -> Result<()>;
     fn put_WarnAboutSendingCredentials(&self, value: i16) -> Result<()>;
     fn get_WarnAboutSendingCredentials(&self, value: *mut i16) -> Result<()>;
@@ -164,13 +202,13 @@ pub(crate) unsafe trait IMsRdpClientNonScriptable5: IMsRdpClientNonScriptable4 {
 
 #[interface("05293249-B28B-4BD8-BE64-1B2F496B910E")]
 pub(crate) unsafe trait IMsRdpClientNonScriptable6: IMsRdpClientNonScriptable5 {
-    fn SendLocation2D(&self, latitude: f64, longitude: f64) -> Result<()>;
-    fn SendLocation3D(&self, latitude: f64, longitude: f64, altitude: i32) -> Result<()>;
+    pub(crate) fn SendLocation2D(&self, latitude: f64, longitude: f64) -> Result<()>;
+    pub(crate) fn SendLocation3D(&self, latitude: f64, longitude: f64, altitude: i32) -> Result<()>;
 }
 
 #[interface("71B4A60A-FE21-46D8-A39B-8E32BA0C5ECC")]
 pub(crate) unsafe trait IMsRdpClientNonScriptable7: IMsRdpClientNonScriptable6 {
-    fn get_CameraRedirConfigCollection(&self, collection: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_CameraRedirConfigCollection(&self, collection: InterfaceOut) -> Result<()>;
     fn DisableDpiCursorScalingForProcess(&self) -> Result<()>;
     pub(crate) fn get_Clipboard(&self, clipboard: InterfaceOut) -> Result<()>;
 }
@@ -267,7 +305,7 @@ pub(crate) unsafe trait IMsRdpClient5: IMsRdpClient4 {
     fn get_TransportSettings(&self, settings: InterfaceOut) -> Result<()>;
     fn get_AdvancedSettings6(&self, settings: InterfaceOut) -> Result<()>;
     fn GetErrorDescription(&self, disconnect_reason: u32, extended_reason: u32, message: BstrOut) -> Result<()>;
-    fn get_RemoteProgram(&self, program: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_RemoteProgram(&self, program: InterfaceOut) -> Result<()>;
     fn get_MsRdpClientShell(&self, shell: InterfaceOut) -> Result<()>;
 }
 
@@ -283,7 +321,7 @@ pub(crate) unsafe trait IMsRdpClient7: IMsRdpClient6 {
     fn get_TransportSettings3(&self, settings: InterfaceOut) -> Result<()>;
     fn GetStatusText(&self, status: u32, text: BstrOut) -> Result<()>;
     fn get_SecuredSettings3(&self, settings: InterfaceOut) -> Result<()>;
-    fn get_RemoteProgram2(&self, program: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_RemoteProgram2(&self, program: InterfaceOut) -> Result<()>;
 }
 
 #[interface("4247E044-9271-43A9-BC49-E2AD9E855D62")]
@@ -313,5 +351,5 @@ pub(crate) unsafe trait IMsRdpClient9: IMsRdpClient8 {
 
 #[interface("7ED92C39-EB38-4927-A70A-708AC5A59321")]
 pub(crate) unsafe trait IMsRdpClient10: IMsRdpClient9 {
-    fn get_RemoteProgram3(&self, program: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_RemoteProgram3(&self, program: InterfaceOut) -> Result<()>;
 }

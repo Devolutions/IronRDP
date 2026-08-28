@@ -243,19 +243,20 @@ impl BitmapInfoHeader {
 
         let width = src.read_i32();
         check_invariant(width != i32::MIN && width.abs() <= 10_000)
-            .ok_or_else(|| invalid_field_err!("biWidth", "width is too big"))?;
+            .ok_or_else(|| invalid_field_err!("biWidth", "width is too big", in: src))?;
 
         let height = src.read_i32();
         check_invariant(height != i32::MIN && height.abs() <= 10_000)
-            .ok_or_else(|| invalid_field_err!("biHeight", "height is too big"))?;
+            .ok_or_else(|| invalid_field_err!("biHeight", "height is too big", in: src))?;
 
         let planes = src.read_u16();
         if planes != 1 {
-            return Err(invalid_field_err!("biPlanes", "invalid planes count"));
+            return Err(invalid_field_err!("biPlanes", "invalid planes count", in: src));
         }
 
         let bit_count = src.read_u16();
-        check_invariant(bit_count <= 32).ok_or_else(|| invalid_field_err!("biBitCount", "invalid bit count"))?;
+        check_invariant(bit_count <= 32)
+            .ok_or_else(|| invalid_field_err!("biBitCount", "invalid bit count", in: src))?;
 
         let compression = BitmapCompression(src.read_u32());
         let size_image = src.read_u32();
@@ -301,7 +302,7 @@ impl BitmapInfoHeader {
 
 impl Encode for BitmapInfoHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        let size = cast_int!("biSize", Self::FIXED_PART_SIZE)?;
+        let size = cast_int!("biSize", Self::FIXED_PART_SIZE, in: dst)?;
         self.encode_with_size(dst, size)
     }
 
@@ -317,10 +318,10 @@ impl Encode for BitmapInfoHeader {
 impl<'a> Decode<'a> for BitmapInfoHeader {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         let (header, size) = Self::decode_with_size(src)?;
-        let size: usize = cast_int!("biSize", size)?;
+        let size: usize = cast_int!("biSize", size, in: src)?;
 
         if size != Self::FIXED_PART_SIZE {
-            return Err(invalid_field_err!("biSize", "invalid V1 bitmap info header size"));
+            return Err(invalid_field_err!("biSize", "invalid V1 bitmap info header size", in: src));
         }
 
         Ok(header)
@@ -369,7 +370,7 @@ impl Encode for BitmapV5Header {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        let size = cast_int!("biSize", Self::FIXED_PART_SIZE)?;
+        let size = cast_int!("biSize", Self::FIXED_PART_SIZE, in: dst)?;
         self.v1.encode_with_size(dst, size)?;
 
         dst.write_u32(self.red_mask);
@@ -403,10 +404,10 @@ impl<'a> Decode<'a> for BitmapV5Header {
         ensure_fixed_part_size!(in: src);
 
         let (header_v1, size) = BitmapInfoHeader::decode_with_size(src)?;
-        let size: usize = cast_int!("biSize", size)?;
+        let size: usize = cast_int!("biSize", size, in: src)?;
 
         if size != Self::FIXED_PART_SIZE {
-            return Err(invalid_field_err!("biSize", "invalid V5 bitmap info header size"));
+            return Err(invalid_field_err!("biSize", "invalid V5 bitmap info header size", in: src));
         }
 
         let red_mask = src.read_u32();
@@ -502,6 +503,10 @@ fn validate_v5_header(header: &BitmapV5Header) -> Result<(), BitmapError> {
         return Err(BitmapError::Unsupported("not supported color space"));
     }
 
+    if header.profile_data != 0 || header.profile_size != 0 {
+        return Err(BitmapError::Unsupported("embedded color profile is not supported"));
+    }
+
     Ok(())
 }
 
@@ -537,6 +542,57 @@ fn rgb_bmp_stride(width: u16, bit_count: u16) -> usize {
     {
         (((usize::from(width) * usize::from(bit_count)) + 31) & !31) >> 3
     }
+}
+
+fn bitmap_data<'a>(header: &BitmapInfoHeader, header_size: usize, input: &'a [u8]) -> Result<&'a [u8], BitmapError> {
+    let image_size = rgb_bmp_stride(header.width(), header.bit_count)
+        .checked_mul(usize::from(header.height()))
+        .ok_or(BitmapError::BufferTooBig)?;
+    let declared_size = usize::try_from(header.size_image).map_err(|_| BitmapError::InvalidSize)?;
+    if declared_size != 0 && declared_size != image_size {
+        return Err(BitmapError::InvalidSize);
+    }
+    let total_size = header_size.checked_add(image_size).ok_or(BitmapError::BufferTooBig)?;
+    if total_size > MAX_BUFFER_SIZE {
+        return Err(BitmapError::BufferTooBig);
+    }
+
+    input.get(..image_size).ok_or(BitmapError::InvalidSize)
+}
+
+fn decode_dib(input: &[u8]) -> Result<(BitmapInfoHeader, &[u8]), BitmapError> {
+    let mut src = ReadCursor::new(input);
+    let header = BitmapInfoHeader::decode(&mut src).map_err(BitmapError::Decode)?;
+    validate_v1_header(&header)?;
+    if header.compression != BitmapCompression::RGB {
+        return Err(BitmapError::Unsupported("unsupported compression"));
+    }
+    let bitmap = bitmap_data(&header, BitmapInfoHeader::FIXED_PART_SIZE, src.remaining())?;
+    Ok((header, bitmap))
+}
+
+fn decode_dibv5(input: &[u8]) -> Result<(BitmapV5Header, &[u8]), BitmapError> {
+    let mut src = ReadCursor::new(input);
+    let header = BitmapV5Header::decode(&mut src).map_err(BitmapError::Decode)?;
+    validate_v5_header(&header)?;
+    let bitmap = bitmap_data(&header.v1, BitmapV5Header::FIXED_PART_SIZE, src.remaining())?;
+    Ok((header, bitmap))
+}
+
+/// Validates a `CF_DIB` payload without allocating and returns its logical byte length.
+pub fn validate_dib(input: &[u8]) -> Result<usize, BitmapError> {
+    let (_, bitmap) = decode_dib(input)?;
+    BitmapInfoHeader::FIXED_PART_SIZE
+        .checked_add(bitmap.len())
+        .ok_or(BitmapError::BufferTooBig)
+}
+
+/// Validates a `CF_DIBV5` payload without allocating and returns its logical byte length.
+pub fn validate_dibv5(input: &[u8]) -> Result<usize, BitmapError> {
+    let (_, bitmap) = decode_dibv5(input)?;
+    BitmapV5Header::FIXED_PART_SIZE
+        .checked_add(bitmap.len())
+        .ok_or(BitmapError::BufferTooBig)
 }
 
 fn bgra_to_top_down_rgba(
@@ -644,32 +700,15 @@ fn encode_png(ctx: &PngEncoderContext) -> Result<Vec<u8>, BitmapError> {
 
 /// Converts `CF_DIB` to PNG.
 pub fn dib_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
-    let mut src = ReadCursor::new(input);
-    let header = BitmapInfoHeader::decode(&mut src).map_err(BitmapError::Decode)?;
-
-    validate_v1_header(&header)?;
-
-    // We support only uncompressed DIB bitmaps as it is the most common case for clipboard-copied bitmaps.
-    // However, for DIBv1 specifically, BitmapCompression::BITFIELDS is not supported even when the order is BGRA,
-    // because there is an additional variable-sized header holding the color masks that we don’t support yet.
-    const DIBV1_SUPPORTED_COMPRESSION: &[BitmapCompression] = &[BitmapCompression::RGB];
-
-    if !DIBV1_SUPPORTED_COMPRESSION.contains(&header.compression) {
-        return Err(BitmapError::Unsupported("unsupported compression"));
-    }
-
-    let png_ctx = bgra_to_top_down_rgba(&header, src.remaining(), false)?;
+    let (header, bitmap) = decode_dib(input)?;
+    let png_ctx = bgra_to_top_down_rgba(&header, bitmap, false)?;
     encode_png(&png_ctx)
 }
 
-/// Converts `CF_DIB` to PNG.
+/// Converts `CF_DIBV5` to PNG.
 pub fn dibv5_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
-    let mut src = ReadCursor::new(input);
-    let header = BitmapV5Header::decode(&mut src).map_err(BitmapError::Decode)?;
-
-    validate_v5_header(&header)?;
-
-    let png_ctx = bgra_to_top_down_rgba(&header.v1, src.remaining(), true)?;
+    let (header, bitmap) = decode_dibv5(input)?;
+    let png_ctx = bgra_to_top_down_rgba(&header.v1, bitmap, true)?;
     encode_png(&png_ctx)
 }
 

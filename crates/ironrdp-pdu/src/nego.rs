@@ -11,6 +11,8 @@ use crate::tpkt::TpktHeader;
 use crate::x224::X224Pdu;
 use crate::{DecodeResult, EncodeResult, Pdu as _, impl_x224_pdu_pod};
 
+pub const MAX_ROUTING_TOKEN_LENGTH: usize = 238;
+
 bitflags! {
     /// A 32-bit, unsigned integer that contains flags indicating the supported security protocols.
     ///
@@ -240,6 +242,48 @@ impl RoutingToken {
     }
 }
 
+/// Opaque printable-ASCII routing token, excluding the terminating CRLF.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct OpaqueRoutingToken(pub String);
+
+impl OpaqueRoutingToken {
+    pub fn read(src: &mut ReadCursor<'_>) -> DecodeResult<Option<Self>> {
+        let start = src.pos();
+        let Some(length) = src.inner()[start..].windows(2).position(|bytes| bytes == b"\r\n") else {
+            return Ok(None);
+        };
+        let bytes = &src.inner()[start..start + length];
+        if bytes.is_empty() || !bytes.iter().all(|byte| (0x20..=0x7E).contains(byte)) {
+            return Ok(None);
+        }
+
+        let value = core::str::from_utf8(bytes)
+            .map_err(|_| invalid_field_err("OpaqueRoutingToken", "value", "not valid UTF-8", None))?
+            .to_owned();
+        src.advance(length + 2);
+        Ok(Some(Self(value)))
+    }
+
+    pub fn write(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        if self.0.is_empty()
+            || self.0.len() > MAX_ROUTING_TOKEN_LENGTH
+            || !self.0.as_bytes().iter().all(|byte| (0x20..=0x7E).contains(byte))
+        {
+            return Err(invalid_field_err!(
+                "OpaqueRoutingToken",
+                "value",
+                "must contain 1 to 238 printable ASCII bytes"
+            ));
+        }
+        write_nego_data(dst, "RoutingToken", "", &self.0)
+    }
+
+    pub fn size(&self) -> usize {
+        self.0.len() + 2
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct NegoMsgType(u8);
 
@@ -274,7 +318,104 @@ impl_x224_pdu_pod!(ConnectionRequest);
 
 impl ConnectionRequest {
     const RDP_NEG_REQ_SIZE: u16 = 8;
+
+    fn encode_after_nego_data(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        // [MS-RDPBCGR] mentions the following payload as optional, but it appears that on recent
+        // versions of Windows, the server always expect to find this payload.
+        dst.write_u8(u8::from(NegoMsgType::REQUEST));
+        let mut flags = self.flags;
+        flags.set(RequestFlags::CORRELATION_INFO_PRESENT, self.correlation_info.is_some());
+        dst.write_u8(flags.bits());
+        dst.write_u16(Self::RDP_NEG_REQ_SIZE);
+        dst.write_u32(self.protocol.bits());
+
+        if let Some(correlation_info) = &self.correlation_info {
+            correlation_info.write(dst)?;
+        }
+
+        Ok(())
+    }
+
+    fn decode_after_nego_data(
+        src: &mut ReadCursor<'_>,
+        variable_part_rest_size: usize,
+        nego_data: Option<NegoRequestData>,
+    ) -> DecodeResult<Self> {
+        if variable_part_rest_size > 0 && variable_part_rest_size < usize::from(Self::RDP_NEG_REQ_SIZE) {
+            return Err(invalid_field_err!(
+                Self::NAME,
+                "TPDU header variable part",
+                "has a truncated negotiation request"
+            ));
+        }
+
+        if variable_part_rest_size >= usize::from(Self::RDP_NEG_REQ_SIZE) {
+            let msg_type = NegoMsgType::from(src.read_u8());
+
+            if msg_type != NegoMsgType::REQUEST {
+                return Err(unexpected_message_type_err!(Self::NAME, u8::from(msg_type), in: src));
+            }
+
+            let flags = RequestFlags::from_bits_retain(src.read_u8());
+            let length = src.read_u16();
+            if length != Self::RDP_NEG_REQ_SIZE {
+                return Err(invalid_field_err!(Self::NAME, "length", "must be eight bytes", in: src));
+            }
+
+            let protocol = SecurityProtocol::from_bits_retain(src.read_u32());
+            let correlation_info = if flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
+                if variable_part_rest_size != usize::from(Self::RDP_NEG_REQ_SIZE + CorrelationInfo::SIZE) {
+                    return Err(invalid_field_err!(
+                        Self::NAME,
+                        "TPDU header variable part",
+                        "has invalid correlation information length"
+                    ));
+                }
+                Some(CorrelationInfo::read(src)?)
+            } else {
+                if variable_part_rest_size != usize::from(Self::RDP_NEG_REQ_SIZE) {
+                    return Err(invalid_field_err!(
+                        Self::NAME,
+                        "TPDU header variable part",
+                        "has unexpected trailing data"
+                    ));
+                }
+                None
+            };
+
+            Ok(Self {
+                nego_data,
+                flags,
+                protocol,
+                correlation_info,
+            })
+        } else {
+            Ok(Self {
+                nego_data,
+                flags: RequestFlags::empty(),
+                protocol: SecurityProtocol::empty(),
+                correlation_info: None,
+            })
+        }
+    }
+
+    fn negotiation_data_size(&self) -> usize {
+        usize::from(Self::RDP_NEG_REQ_SIZE)
+            + self
+                .correlation_info
+                .as_ref()
+                .map_or(0, |_| usize::from(CorrelationInfo::SIZE))
+    }
 }
+
+/// X.224 Connection Request carrying caller-supplied opaque load-balancing data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionRequestWithOpaqueRoutingToken {
+    pub request: ConnectionRequest,
+    pub routing_token: OpaqueRoutingToken,
+}
+
+impl_x224_pdu_pod!(ConnectionRequestWithOpaqueRoutingToken);
 
 /// Connection correlation information carried after an RDP negotiation request.
 ///
@@ -315,7 +456,8 @@ impl CorrelationInfo {
             return Err(invalid_field_err!(
                 "RDP_NEG_CORRELATION_INFO",
                 "header",
-                "contains invalid type, flags, or length"
+                "contains invalid type, flags, or length",
+                in: src
             ));
         }
 
@@ -325,7 +467,8 @@ impl CorrelationInfo {
             return Err(invalid_field_err!(
                 "RDP_NEG_CORRELATION_INFO",
                 "reserved",
-                "must be zero"
+                "must be zero",
+                in: src
             ));
         }
 
@@ -343,20 +486,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
             nego_data.write(dst)?;
         }
 
-        // [MS-RDPBCGR] mentions the following payload as optional, but it appears that on recent
-        // versions of Windows, the server always expect to find this payload.
-        dst.write_u8(u8::from(NegoMsgType::REQUEST));
-        let mut flags = self.flags;
-        flags.set(RequestFlags::CORRELATION_INFO_PRESENT, self.correlation_info.is_some());
-        dst.write_u8(flags.bits());
-        dst.write_u16(Self::RDP_NEG_REQ_SIZE);
-        dst.write_u32(self.protocol.bits());
-
-        if let Some(correlation_info) = &self.correlation_info {
-            correlation_info.write(dst)?;
-        }
-
-        Ok(())
+        self.encode_after_nego_data(dst)
     }
 
     fn x224_body_decode(src: &mut ReadCursor<'de>, _: &TpktHeader, tpdu: &TpduHeader) -> DecodeResult<Self> {
@@ -373,75 +503,60 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
                 Self::NAME,
                 "TPDU header variable part",
                 "advertised size too small",
+                None,
             ));
         };
 
-        if variable_part_rest_size > 0 && variable_part_rest_size < usize::from(Self::RDP_NEG_REQ_SIZE) {
-            return Err(invalid_field_err!(
-                Self::NAME,
-                "TPDU header variable part",
-                "has a truncated negotiation request"
-            ));
-        }
-
-        if variable_part_rest_size >= usize::from(Self::RDP_NEG_REQ_SIZE) {
-            let msg_type = NegoMsgType::from(src.read_u8());
-
-            if msg_type != NegoMsgType::REQUEST {
-                return Err(unexpected_message_type_err!(Self::NAME, u8::from(msg_type)));
-            }
-
-            let flags = RequestFlags::from_bits_retain(src.read_u8());
-            let length = src.read_u16();
-            if length != Self::RDP_NEG_REQ_SIZE {
-                return Err(invalid_field_err!(Self::NAME, "length", "must be eight bytes"));
-            }
-
-            let protocol = SecurityProtocol::from_bits_retain(src.read_u32());
-            let correlation_info = if flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
-                if variable_part_rest_size != usize::from(Self::RDP_NEG_REQ_SIZE + CorrelationInfo::SIZE) {
-                    return Err(invalid_field_err!(
-                        Self::NAME,
-                        "TPDU header variable part",
-                        "has invalid correlation information length"
-                    ));
-                }
-                Some(CorrelationInfo::read(src)?)
-            } else {
-                if variable_part_rest_size != usize::from(Self::RDP_NEG_REQ_SIZE) {
-                    return Err(invalid_field_err!(
-                        Self::NAME,
-                        "TPDU header variable part",
-                        "has unexpected trailing data"
-                    ));
-                }
-                None
-            };
-
-            Ok(Self {
-                nego_data,
-                flags,
-                protocol,
-                correlation_info,
-            })
-        } else {
-            Ok(Self {
-                nego_data,
-                flags: RequestFlags::empty(),
-                protocol: SecurityProtocol::empty(),
-                correlation_info: None,
-            })
-        }
+        Self::decode_after_nego_data(src, variable_part_rest_size, nego_data)
     }
 
     fn tpdu_header_variable_part_size(&self) -> usize {
         let optional_nego_data_size = self.nego_data.as_ref().map(|data| data.size()).unwrap_or(0);
-        optional_nego_data_size
-            + usize::from(Self::RDP_NEG_REQ_SIZE)
-            + self
-                .correlation_info
-                .as_ref()
-                .map_or(0, |_| usize::from(CorrelationInfo::SIZE))
+        optional_nego_data_size + self.negotiation_data_size()
+    }
+
+    fn tpdu_user_data_size(&self) -> usize {
+        0
+    }
+}
+
+impl<'de> X224Pdu<'de> for ConnectionRequestWithOpaqueRoutingToken {
+    const X224_NAME: &'static str = "Client X.224 Connection Request with opaque routing token";
+
+    const TPDU_CODE: TpduCode = TpduCode::CONNECTION_REQUEST;
+
+    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        self.routing_token.write(dst)?;
+        self.request.encode_after_nego_data(dst)
+    }
+
+    fn x224_body_decode(src: &mut ReadCursor<'de>, _: &TpktHeader, tpdu: &TpduHeader) -> DecodeResult<Self> {
+        let variable_part_size = tpdu.variable_part_size();
+        ensure_size!(in: src, size: variable_part_size);
+
+        let routing_token = OpaqueRoutingToken::read(src)?.ok_or_else(|| {
+            invalid_field_err!(
+                Self::NAME,
+                "routingToken",
+                "missing opaque routing token",
+                in: src
+            )
+        })?;
+        let variable_part_rest_size = variable_part_size.checked_sub(routing_token.size()).ok_or_else(|| {
+            invalid_field_err!(
+                Self::NAME,
+                "TPDU header variable part",
+                "advertised size too small",
+                in: src
+            )
+        })?;
+        let request = ConnectionRequest::decode_after_nego_data(src, variable_part_rest_size, None)?;
+
+        Ok(Self { request, routing_token })
+    }
+
+    fn tpdu_header_variable_part_size(&self) -> usize {
+        self.routing_token.size() + self.request.negotiation_data_size()
     }
 
     fn tpdu_user_data_size(&self) -> usize {
@@ -515,7 +630,7 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
 
                     Ok(Self::Failure { code })
                 }
-                unexpected => Err(unexpected_message_type_err!(Self::X224_NAME, u8::from(unexpected))),
+                unexpected => Err(unexpected_message_type_err!(Self::X224_NAME, u8::from(unexpected), in: src)),
             }
         } else {
             Ok(Self::Response {
@@ -560,7 +675,7 @@ fn read_nego_data(src: &mut ReadCursor<'_>, ctx: &'static str, prefix: &str) -> 
     src.advance(2);
 
     let data = core::str::from_utf8(&src.inner()[identifier_start..identifier_end])
-        .map_err(|_| invalid_field_err(ctx, "identifier", "not valid UTF-8"))?
+        .map_err(|_| invalid_field_err(ctx, "identifier", "not valid UTF-8", Some(identifier_start)))?
         .to_owned();
 
     Ok(Some(data))

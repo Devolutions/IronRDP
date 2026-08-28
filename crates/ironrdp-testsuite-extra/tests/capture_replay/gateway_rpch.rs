@@ -7,7 +7,9 @@ const PTYPE_REQUEST: u8 = 0;
 const PTYPE_RESPONSE: u8 = 2;
 const PFC_FIRST_FRAG: u8 = 0x01;
 const PFC_LAST_FRAG: u8 = 0x02;
+const SETUP_RECEIVE_PIPE_OPNUM: u16 = 8;
 const SEND_TO_SERVER_OPNUM: u16 = 9;
+const CHANNEL_CONTEXT: [u8; 20] = [1; 20];
 
 fn common_header(ptype: u8, flags: u8, call_id: u32, fragment_length: usize) -> Vec<u8> {
     let mut pdu = vec![5, 0, ptype, flags, 0x10, 0, 0, 0];
@@ -59,6 +61,19 @@ fn authenticated_response_pdu(call_id: u32, stub: &[u8]) -> Vec<u8> {
     pdu
 }
 
+fn authenticated_request_pdu(call_id: u32, opnum: u16, stub: &[u8]) -> Vec<u8> {
+    let mut pdu = request_pdu(call_id, opnum, stub);
+    let auth_pad_length =
+        u8::try_from((16 - (pdu.len() - COMMON_HEADER) % 16) % 16).expect("authentication padding fits u8");
+    pdu.resize(pdu.len() + usize::from(auth_pad_length), 0); // Authentication padding.
+    pdu.extend_from_slice(&[0x0a, 0x05, auth_pad_length, 0, 0, 0, 0, 0]); // NTLM integrity security trailer.
+    pdu.extend_from_slice(&[0; 16]); // NTLM message-integrity verifier.
+    let fragment_length = u16::try_from(pdu.len()).expect("fragment length fits u16");
+    pdu[8..10].copy_from_slice(&fragment_length.to_le_bytes());
+    pdu[10..12].copy_from_slice(&16u16.to_le_bytes());
+    pdu
+}
+
 fn encode_u32(value: usize, big_endian: bool) -> [u8; 4] {
     let value = u32::try_from(value).expect("length fits u32");
     if big_endian {
@@ -69,7 +84,7 @@ fn encode_u32(value: usize, big_endian: bool) -> [u8; 4] {
 }
 
 fn send_to_server_stub_with_endian(buffers: &[&[u8]], big_endian: bool) -> Vec<u8> {
-    let mut stub = vec![0u8; 20];
+    let mut stub = CHANNEL_CONTEXT.to_vec();
     let total: usize = buffers.iter().map(|buffer| buffer.len()).sum::<usize>() + 4 * buffers.len();
     stub.extend_from_slice(&encode_u32(total, big_endian));
     stub.extend_from_slice(&encode_u32(buffers.len(), big_endian));
@@ -126,6 +141,25 @@ fn handles_dce_rpc_authentication_trailers() {
 
     let inner = extract_rpch_tunneled_rdp(&input, &output).unwrap();
 
+    assert_eq!(inner.server, vec![(2, cc.to_vec())]);
+}
+
+#[test]
+fn extracts_authenticated_send_to_server_payload_after_receive_pipe_setup() {
+    let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
+    let cc = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0];
+    let mut client_body = request_pdu(6, SETUP_RECEIVE_PIPE_OPNUM, &CHANNEL_CONTEXT);
+    client_body.extend(authenticated_request_pdu(
+        7,
+        SEND_TO_SERVER_OPNUM,
+        &send_to_server_stub(&[&rdp]),
+    ));
+    let input = in_channel(client_body);
+    let output = out_channel(response_pdu(6, &cc));
+
+    let inner = extract_rpch_tunneled_rdp(&input, &output).unwrap();
+
+    assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
     assert_eq!(inner.server, vec![(2, cc.to_vec())]);
 }
 
