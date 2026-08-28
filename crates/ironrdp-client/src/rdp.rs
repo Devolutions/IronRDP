@@ -1159,10 +1159,12 @@ fn rdpsnd_backend_kind(audio_playback: bool, rdpdr_attached: bool) -> Option<Rdp
 /// `NO_LISTENER` and the microphone silently stops working for the rest of the session.
 /// `with_listener` + this factory recreates the processor (and the underlying capture
 /// backend/cpal stream) on every open, matching how the RDPEWA listener above is wired.
+#[cfg(feature = "sound")]
 struct RdpeaiListener {
     sender: RdpInputSender,
 }
 
+#[cfg(feature = "sound")]
 impl DvcChannelListener for RdpeaiListener {
     fn channel_name(&self) -> &str {
         ironrdp_rdpeai::CHANNEL_NAME
