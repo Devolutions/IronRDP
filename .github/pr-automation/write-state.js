@@ -104,7 +104,19 @@ async function reviews(github, owner, repo, prNumber) {
   return result;
 }
 
-async function publishReview(github, owner, repo, prNumber, expectedSha, botLogin, comment) {
+function assertReviewPolicy(labels, state) {
+  const currentReviewCount = labels.has("ai-reviewed/2") ? "ai-reviewed/2"
+    : labels.has("ai-reviewed/1") ? "ai-reviewed/1"
+    : null;
+  if (currentReviewCount !== state.expectedReviewCount ||
+      (!state.forced && !reviewPolicyEligible({
+        labels: [...labels], protocolRelated: state.protocolRelated,
+      }))) {
+    throw new StalePolicyError();
+  }
+}
+
+async function publishReview(github, owner, repo, prNumber, state, botLogin, comment) {
   if (!botLogin || typeof botLogin !== "string") throw new Error("botLogin is required for review ownership");
   if ((await reviews(github, owner, repo, prNumber)).some((review) =>
     review.user?.login === botLogin && typeof review.body === "string" && review.body.includes(comment.marker))) return false;
@@ -121,10 +133,10 @@ async function publishReview(github, owner, repo, prNumber, expectedSha, botLogi
     }
     return comment;
   });
-  await issueLabels(github, owner, repo, prNumber);
-  await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
+  await assertCurrentHead(github, owner, repo, prNumber, state.expectedSha);
+  assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
   await github.rest.pulls.createReview({
-    owner, repo, pull_number: prNumber, commit_id: expectedSha, event: "COMMENT",
+    owner, repo, pull_number: prNumber, commit_id: state.expectedSha, event: "COMMENT",
     body: reviewBody(comment.marker, review), comments: inline,
   });
   return true;
@@ -162,14 +174,16 @@ async function ensureClassificationCheck(github, owner, repo, prNumber, expected
   return true;
 }
 
-async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, check) {
+async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, check, state) {
   const conclusion = check.conclusion ?? "success";
   const title = check.title ?? "Automated review complete";
   const summary = check.summary ?? "Validated automated review is bound to this commit.";
   const existing = await findCheck(github, owner, repo, expectedSha, check);
   if (existing?.conclusion === conclusion && existing.output?.title === title &&
       existing.output?.summary === summary) return false;
-  await issueLabels(github, owner, repo, prNumber);
+  if (state.failed !== true) {
+    assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
+  }
   await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
   const payload = {
     owner, repo, name: check.name, head_sha: expectedSha, external_id: check.externalId,
@@ -226,26 +240,19 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
     throw new Error("invalid normalized state");
   }
   await assertCurrentHead(github, owner, repo, prNumber, state.expectedSha);
-  let currentLabels;
-  if (state.mode === "review" && state.failed !== true) {
-    currentLabels = await issueLabels(github, owner, repo, prNumber);
-    const currentReviewCount = currentLabels.has("ai-reviewed/2") ? "ai-reviewed/2"
-      : currentLabels.has("ai-reviewed/1") ? "ai-reviewed/1"
-      : null;
-    if (currentReviewCount !== state.expectedReviewCount ||
-        (!state.forced && !reviewPolicyEligible({
-          labels: [...currentLabels], protocolRelated: state.protocolRelated,
-        }))) {
-      throw new StalePolicyError();
-    }
-  }
   if (state.mode === "review") {
     const comments = state.comments || [];
     for (const comment of comments.filter((comment) => comment.kind === "review")) {
-      await publishReview(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
+      await publishReview(github, owner, repo, prNumber, state, botLogin, comment);
     }
-    if (state.check) await ensureReviewCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
-    await applyLabels(github, owner, repo, prNumber, state, currentLabels);
+    if (state.check) {
+      await ensureReviewCheck(github, owner, repo, prNumber, state.expectedSha, state.check, state);
+    }
+    const latestLabels = state.failed === true
+      ? undefined
+      : await issueLabels(github, owner, repo, prNumber);
+    if (latestLabels) assertReviewPolicy(latestLabels, state);
+    await applyLabels(github, owner, repo, prNumber, state, latestLabels);
     for (const comment of comments.filter((comment) => comment.kind !== "review")) {
       await upsertMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
     }

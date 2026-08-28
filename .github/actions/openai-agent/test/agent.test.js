@@ -190,22 +190,6 @@ test("runtime allows exactly one tools-disabled repair for JSON or schema failur
     client, config: baseConfig, methodologies: [], prompt: "p", sandbox, schema,
   });
 
-  test("runtime repairs schema-valid output that exceeds the configured byte budget", async () => {
-    const requests = [];
-    const result = await runAgent({
-      client: clientFrom([
-        message(JSON.stringify({ answer: "x".repeat(2000) })),
-        message('{"answer":"bounded"}'),
-      ], requests),
-      config: { ...baseConfig, max_output_bytes: 1024 },
-      methodologies: [],
-      prompt: "p",
-      sandbox,
-      schema,
-    });
-    assert.equal(result.output, '{"answer":"bounded"}');
-    assert.equal(requests.length, 2);
-  });
   assert.equal(result.output, '{"answer":"repaired"}');
   assert.equal(result.turnCount, 2);
   assert.equal(requests[1].tools, undefined);
@@ -220,6 +204,23 @@ test("runtime allows exactly one tools-disabled repair for JSON or schema failur
     }),
     (error) => error.reason === "repair response was invalid" && error.turnCount === 2,
   );
+});
+
+test("runtime repairs schema-valid output that exceeds the configured byte budget", async () => {
+  const requests = [];
+  const result = await runAgent({
+    client: clientFrom([
+      message(JSON.stringify({ answer: "x".repeat(2000) })),
+      message('{"answer":"bounded"}'),
+    ], requests),
+    config: { ...baseConfig, max_output_bytes: 1024 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+  });
+  assert.equal(result.output, '{"answer":"bounded"}');
+  assert.equal(requests.length, 2);
 });
 
 test("repair rejects provider tool calls and does not execute them", async () => {
