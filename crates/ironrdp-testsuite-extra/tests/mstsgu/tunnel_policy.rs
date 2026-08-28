@@ -1,6 +1,7 @@
-use super::http_control::proto::TunnelAuthRespPkt;
+use super::proto;
 use ironrdp_core::{Decode as _, ReadCursor};
 use ironrdp_mstsgu::GwTunnelPolicy;
+use proto::TunnelAuthRespPkt;
 
 #[test]
 fn tunnel_auth_response_decodes_optional_policy_fields() {

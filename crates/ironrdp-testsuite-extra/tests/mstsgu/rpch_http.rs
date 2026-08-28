@@ -1,4 +1,44 @@
+use core::fmt;
+
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+pub(crate) type Error = ironrdp_error::Error<GwErrorKind>;
+
+#[derive(Debug)]
+pub(crate) enum GwErrorKind {
+    PacketEof,
+    Custom,
+    Encode,
+    Decode,
+}
+
+pub(crate) trait GwErrorExt {
+    fn custom<E>(context: &'static str, error: E) -> Self
+    where
+        E: core::error::Error + Sync + Send + 'static;
+}
+
+impl GwErrorExt for Error {
+    fn custom<E>(context: &'static str, error: E) -> Self
+    where
+        E: core::error::Error + Sync + Send + 'static,
+    {
+        Self::new(context, GwErrorKind::Custom).with_source(error)
+    }
+}
+
+impl fmt::Display for GwErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::PacketEof => "packet EOF",
+            Self::Custom => "custom",
+            Self::Encode => "encode",
+            Self::Decode => "decode",
+        })
+    }
+}
+
+impl core::error::Error for GwErrorKind {}
 
 macro_rules! custom_err {
     ( $context:expr, $source:expr $(,)? ) => {{ <$crate::Error as $crate::GwErrorExt>::custom($context, $source) }};

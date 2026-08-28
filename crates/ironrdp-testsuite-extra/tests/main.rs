@@ -6,44 +6,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-type Error = ironrdp_error::Error<GwErrorKind>;
-
-#[derive(Debug)]
-enum GwErrorKind {
-    PacketEof,
-    Custom,
-    Encode,
-    Decode,
-}
-
-trait GwErrorExt {
-    fn custom<E>(context: &'static str, error: E) -> Self
-    where
-        E: core::error::Error + Sync + Send + 'static;
-}
-
-impl GwErrorExt for Error {
-    fn custom<E>(context: &'static str, error: E) -> Self
-    where
-        E: core::error::Error + Sync + Send + 'static,
-    {
-        Self::new(context, GwErrorKind::Custom).with_source(error)
-    }
-}
-
-impl core::fmt::Display for GwErrorKind {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(match self {
-            Self::PacketEof => "packet EOF",
-            Self::Custom => "custom",
-            Self::Encode => "encode",
-            Self::Decode => "decode",
-        })
-    }
-}
-
-impl core::error::Error for GwErrorKind {}
-
 #[cfg(feature = "full")]
 mod agent;
 mod async_framed;
@@ -56,6 +18,7 @@ mod dvc_pipe_proxy;
 mod e2e;
 mod gateway_detect;
 mod mstsgu;
+pub(crate) use mstsgu::rpch_http::{Error, GwErrorExt, GwErrorKind};
 #[cfg(windows)]
 mod rdpdr;
 mod rdpeudp_tokio;
