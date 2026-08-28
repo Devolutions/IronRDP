@@ -289,6 +289,7 @@ pub fn lock_files(sh: &Shell) -> anyhow::Result<()> {
     const LOCK_FILES: &[&str] = &[
         "Cargo.lock",
         "fuzz/Cargo.lock",
+        ".github/actions/openai-agent/package-lock.json",
         "web-client/iron-remote-desktop/package-lock.json",
         "web-client/iron-remote-desktop-rdp/package-lock.json",
         "web-client/iron-svelte-client/package-lock.json",

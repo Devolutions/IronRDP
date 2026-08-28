@@ -1,0 +1,16 @@
+{
+  "id": "general-reviewer",
+  "model": "glm-5.2",
+  "prompt_file": ".github/pr-automation/prompts/general-reviewer.md",
+  "schema_file": ".github/pr-automation/schemas/final-review.json",
+  "allowed_roots": [
+    "pr-head",
+    "pr-evidence"
+  ],
+  "allowed_files": [
+    "validated-specialist-findings.json"
+  ],
+  "max_output_bytes": 65536,
+  "max_turns": 30,
+  "max_tool_calls": 120
+}

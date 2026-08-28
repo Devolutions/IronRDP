@@ -1,0 +1,29 @@
+name: OpenAI filesystem agent
+description: Run a bounded read-only filesystem agent against an OpenAI-compatible API
+
+inputs:
+  api-key:
+    description: API key sent to the configured OpenAI-compatible endpoint
+    required: true
+  base-url:
+    description: Trusted OpenAI-compatible API base URL
+    required: true
+  config-file:
+    description: Trusted action configuration file relative to the workspace
+    required: true
+
+outputs:
+  structured-output:
+    description: Schema-validated JSON returned by the selected model
+  failure-reason:
+    description: Bounded failure category when no valid output was produced
+  model:
+    description: Model that produced the output, including a trusted fallback when used
+  turn-count:
+    description: Number of provider completion requests attempted
+  tool-call-count:
+    description: Number of model tool calls processed
+
+runs:
+  using: node24
+  main: dist/index.js

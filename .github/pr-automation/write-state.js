@@ -1,9 +1,15 @@
 "use strict";
 
 const { encodeCheckState } = require("./validate-classifier");
+const { provenancePrefix } = require("./validate-final-review");
+const { reviewPolicyEligible } = require("./routing");
 
 class StaleHeadError extends Error {
   constructor() { super("pull request head is no longer current"); this.name = "StaleHeadError"; }
+}
+
+class StalePolicyError extends Error {
+  constructor() { super("pull request review policy changed"); this.name = "StalePolicyError"; }
 }
 
 // Model output is treated as hostile, so it is neutralized before it reaches a bot-authored
@@ -83,12 +89,11 @@ async function deleteMarkedComment(github, owner, repo, prNumber, expectedSha, b
 
 function reviewBody(marker, review) {
   const findings = review.findings.filter((finding) => finding.start_line === null).map((finding, index) => {
-    return `${index + 1}. **${finding.classification}** / ${finding.severity} — ${escapeMarkdown(finding.path)}\n   ${escapeMarkdown(finding.rationale)}`;
+    return `${index + 1}. **${provenancePrefix(finding.sources)} ${escapeMarkdown(finding.title)}** — ` +
+      `${finding.classification} / ${finding.severity} — ${escapeMarkdown(finding.path)}\n` +
+      `   ${escapeMarkdown(finding.rationale)}`;
   }).join("\n");
-  const handoff = review.protocol_handoff.received
-    ? `\n\nProtocol analysis: ${review.protocol_handoff.disposition} — ${escapeMarkdown(review.protocol_handoff.rationale)}`
-    : "";
-  return `${marker}\n\n${escapeMarkdown(review.summary)}${handoff}${findings ? `\n\n${findings}` : ""}`;
+  return `${marker}\n\n${escapeMarkdown(review.summary)}${findings ? `\n\n${findings}` : ""}`;
 }
 
 async function reviews(github, owner, repo, prNumber) {
@@ -104,10 +109,18 @@ async function publishReview(github, owner, repo, prNumber, expectedSha, botLogi
   if ((await reviews(github, owner, repo, prNumber)).some((review) =>
     review.user?.login === botLogin && typeof review.body === "string" && review.body.includes(comment.marker))) return false;
   const review = comment.review;
-  const inline = review.findings.filter((finding) => finding.start_line !== null).map((finding) => ({
-    path: finding.path, line: finding.end_line, side: "RIGHT",
-    body: `**${finding.classification}** / ${finding.severity}: ${escapeMarkdown(finding.rationale)}`,
-  }));
+  const inline = review.findings.filter((finding) => finding.start_line !== null).map((finding) => {
+    const comment = {
+      path: finding.path, line: finding.end_line, side: "RIGHT",
+      body: `**${provenancePrefix(finding.sources)} ${escapeMarkdown(finding.title)}** — ` +
+        `${finding.classification} / ${finding.severity}: ${escapeMarkdown(finding.rationale)}`,
+    };
+    if (finding.start_line !== finding.end_line) {
+      comment.start_line = finding.start_line;
+      comment.start_side = "RIGHT";
+    }
+    return comment;
+  });
   await issueLabels(github, owner, repo, prNumber);
   await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
   await github.rest.pulls.createReview({
@@ -180,8 +193,8 @@ async function dispatchClassificationComplete(github, owner, repo, prNumber, exp
 
 // Computes the whole label delta from a single read, so a state with two label sets plus additions
 // and removals costs one issue read instead of one per candidate label.
-async function applyLabels(github, owner, repo, prNumber, state) {
-  const current = await issueLabels(github, owner, repo, prNumber);
+async function applyLabels(github, owner, repo, prNumber, state, currentLabels) {
+  const current = currentLabels ?? await issueLabels(github, owner, repo, prNumber);
   const add = new Set();
   const remove = new Set();
   for (const { owned, desired } of state.labelSets || []) {
@@ -213,19 +226,31 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
     throw new Error("invalid normalized state");
   }
   await assertCurrentHead(github, owner, repo, prNumber, state.expectedSha);
-  // Labels come first in both modes: they are the durable record of the outcome, and a later
-  // comment or review failure must not leave the pull request without its maintainer-required triage.
-  await applyLabels(github, owner, repo, prNumber, state);
+  let currentLabels;
+  if (state.mode === "review" && state.failed !== true) {
+    currentLabels = await issueLabels(github, owner, repo, prNumber);
+    const currentReviewCount = currentLabels.has("ai-reviewed/2") ? "ai-reviewed/2"
+      : currentLabels.has("ai-reviewed/1") ? "ai-reviewed/1"
+      : null;
+    if (currentReviewCount !== state.expectedReviewCount ||
+        (!state.forced && !reviewPolicyEligible({
+          labels: [...currentLabels], protocolRelated: state.protocolRelated,
+        }))) {
+      throw new StalePolicyError();
+    }
+  }
   if (state.mode === "review") {
-    for (const comment of state.comments || []) {
-      if (comment.kind === "review") {
-        await publishReview(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
-      } else {
-        await upsertMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
-      }
+    const comments = state.comments || [];
+    for (const comment of comments.filter((comment) => comment.kind === "review")) {
+      await publishReview(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
     }
     if (state.check) await ensureReviewCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
+    await applyLabels(github, owner, repo, prNumber, state, currentLabels);
+    for (const comment of comments.filter((comment) => comment.kind !== "review")) {
+      await upsertMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
+    }
   } else {
+    await applyLabels(github, owner, repo, prNumber, state);
     for (const comment of state.comments || []) await upsertMarkedComment(
       github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
     for (const comment of state.auditComments || []) await upsertMarkedComment(
@@ -244,6 +269,6 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
 }
 
 module.exports = {
-  StaleHeadError, applyLabels, assertCurrentHead, deleteMarkedComment, dispatchClassificationComplete,
+  StaleHeadError, StalePolicyError, applyLabels, assertCurrentHead, deleteMarkedComment, dispatchClassificationComplete,
   escapeMarkdown, markerBody, upsertMarkedComment, writeState,
 };
