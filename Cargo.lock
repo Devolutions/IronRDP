@@ -2858,6 +2858,7 @@ dependencies = [
  "ironrdp-rail",
  "ironrdp-rdpdr-native",
  "ironrdp-rpc",
+ "ironrdp-session",
  "ironrdp-tls",
  "libc",
  "now-client",
