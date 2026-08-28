@@ -20,19 +20,18 @@ impl Encode for MousePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        let wheel_negative_bit = if self.number_of_wheel_rotation_units < 0 {
+        // The wire field is 9-bit two's complement: representable range is
+        // [-256, 255], narrower than i16. Fast/high-precision wheel input (or a
+        // caller that forwards a raw OS delta) can easily produce values outside
+        // this range, so clamp instead of trusting the caller — this field must
+        // never be able to panic the encoder.
+        let clamped_wheel_rotation_units = self.number_of_wheel_rotation_units.clamp(-256, 255);
+
+        let wheel_negative_bit = if clamped_wheel_rotation_units < 0 {
             PointerFlags::WHEEL_NEGATIVE.bits()
         } else {
             PointerFlags::empty().bits()
         };
-
-        // The wire field is 9-bit two's complement: representable range is
-        // [-256, 255], narrower than i16.
-        debug_assert!(
-            (-256..=255).contains(&self.number_of_wheel_rotation_units),
-            "number_of_wheel_rotation_units out of the 9-bit two's-complement range [-256, 255]: {}",
-            self.number_of_wheel_rotation_units
-        );
 
         #[expect(
             clippy::as_conversions,
@@ -40,7 +39,7 @@ impl Encode for MousePdu {
             clippy::cast_possible_truncation,
             reason = "truncation intended"
         )]
-        let truncated_wheel_rotation_units = self.number_of_wheel_rotation_units as u8;
+        let truncated_wheel_rotation_units = clamped_wheel_rotation_units as u8;
         let wheel_rotations_bits = u16::from(truncated_wheel_rotation_units);
 
         let flags = self.flags.bits() | wheel_negative_bit | wheel_rotations_bits;
@@ -163,5 +162,27 @@ mod tests {
         buffer[0..2].copy_from_slice(&flags.to_le_bytes());
         let pdu: MousePdu = decode(buffer.as_slice()).unwrap();
         assert_eq!(pdu.number_of_wheel_rotation_units, -1);
+    }
+
+    #[test]
+    fn out_of_range_wheel_rotation_units_are_clamped_instead_of_panicking() {
+        // Regression test for a panic reported when scrolling very fast: the OS
+        // can report a wheel delta well outside the 9-bit two's-complement range
+        // representable on the wire ([-256, 255]). `encode` must clamp such
+        // values rather than assert/panic.
+        let pdu = mouse_pdu(-300);
+        let buffer = encode_vec(&pdu).unwrap();
+        let decoded: MousePdu = decode(buffer.as_slice()).unwrap();
+        assert_eq!(decoded.number_of_wheel_rotation_units, -256);
+
+        let pdu = mouse_pdu(i16::MAX);
+        let buffer = encode_vec(&pdu).unwrap();
+        let decoded: MousePdu = decode(buffer.as_slice()).unwrap();
+        assert_eq!(decoded.number_of_wheel_rotation_units, 255);
+
+        let pdu = mouse_pdu(i16::MIN);
+        let buffer = encode_vec(&pdu).unwrap();
+        let decoded: MousePdu = decode(buffer.as_slice()).unwrap();
+        assert_eq!(decoded.number_of_wheel_rotation_units, -256);
     }
 }
