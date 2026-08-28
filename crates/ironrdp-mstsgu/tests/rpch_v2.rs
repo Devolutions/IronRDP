@@ -134,14 +134,20 @@ fn setup_rejects_malformed_rts_and_wrong_sequence() {
 
 #[test]
 fn ping_uses_half_keepalive_or_connection_timeout_and_has_an_exact_vector() {
-    let mut schedule = opened_setup(60_000)
-        .ping_schedule(Duration::ZERO)
+    let mut schedule = opened_setup(0)
+        .ping_schedule(Duration::from_secs(60), Duration::ZERO)
         .expect("opened setup has a ping schedule");
     assert!(!schedule.ping_due(Duration::from_secs(29)));
     assert!(schedule.ping_due(Duration::from_secs(30)));
     schedule.record_send(Duration::from_secs(30));
     assert!(!schedule.ping_due(Duration::from_secs(59)));
     assert!(schedule.ping_due(Duration::from_secs(60)));
+
+    let connection_timeout = opened_setup(60_000)
+        .ping_schedule(Duration::ZERO, Duration::ZERO)
+        .expect("opened setup has a ping schedule");
+    assert!(!connection_timeout.ping_due(Duration::from_secs(119)));
+    assert!(connection_timeout.ping_due(Duration::from_secs(120)));
 
     let expected_ping = [
         [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
@@ -183,6 +189,19 @@ fn flow_control_accounts_windows_and_encodes_acknowledgements() {
             bytes_received: 0,
             previous_bytes_received: 64 * 1024,
         })
+    );
+
+    let mut exact_half_flow_control = opened_setup(0).flow_control().expect("open flow control");
+    exact_half_flow_control
+        .received_rpc_pdu(64 * 1024)
+        .expect("queue received PDU");
+    assert_eq!(
+        exact_half_flow_control.consumed_rpc_pdu(64 * 1024),
+        Ok(Some(RtsFlowControlAck::new(
+            64 * 1024,
+            RECEIVE_WINDOW_SIZE,
+            OUT_CHANNEL_COOKIE,
+        )))
     );
 
     flow_control.received_rpc_pdu(100 * 1024).expect("queue received PDU");

@@ -2134,14 +2134,6 @@ impl RpchV2Settings {
     pub const fn client_keepalive(self) -> u32 {
         self.client_keepalive
     }
-
-    const fn effective_client_keepalive(self) -> u32 {
-        if self.client_keepalive == 0 {
-            DEFAULT_CLIENT_KEEPALIVE
-        } else {
-            self.client_keepalive
-        }
-    }
 }
 
 impl Default for RpchV2Settings {
@@ -2390,7 +2382,10 @@ impl RpchV2Setup {
     }
 
     /// Creates the ping schedule for the established default IN channel.
-    pub fn ping_schedule(&self, now: Duration) -> Result<RpchPingSchedule, RpchV2Error> {
+    ///
+    /// `keepalive_interval` is configured by the higher layer, independently
+    /// of the proxy-facing ClientKeepalive command in CONN/B1.
+    pub fn ping_schedule(&self, keepalive_interval: Duration, now: Duration) -> Result<RpchPingSchedule, RpchV2Error> {
         if self.state != RpchV2State::Open {
             return Err(RpchV2Error::InvalidState {
                 action: "create RPCH ping schedule",
@@ -2404,7 +2399,7 @@ impl RpchV2Setup {
         })?;
         Ok(RpchPingSchedule::new(
             Duration::from_millis(u64::from(connection_timeout)),
-            Duration::from_millis(u64::from(self.settings.effective_client_keepalive())),
+            keepalive_interval,
             now,
         ))
     }
@@ -2645,7 +2640,7 @@ impl RpchFlowControl {
 
     /// Records a higher layer consuming bytes from the local receive window.
     ///
-    /// Returns an acknowledgement when more than half the local window has been reclaimed since the previous acknowledgement.
+    /// Returns an acknowledgement when at least half the local window has been reclaimed since the previous acknowledgement.
     pub fn consumed_rpc_pdu(&mut self, pdu_length: usize) -> Result<Option<RtsFlowControlAck>, RpchFlowControlError> {
         let pdu_size =
             u32::try_from(pdu_length).map_err(|_| RpchFlowControlError::PduLengthOverflow { actual: pdu_length })?;
@@ -2656,7 +2651,7 @@ impl RpchFlowControl {
         self.receive_available_window += pdu_size;
 
         let reclaimed_window = i64::from(self.receive_available_window) - self.receive_available_window_advertised;
-        if reclaimed_window <= i64::from(self.receive_window_size / 2) {
+        if reclaimed_window < i64::from(self.receive_window_size / 2) {
             return Ok(None);
         }
 
