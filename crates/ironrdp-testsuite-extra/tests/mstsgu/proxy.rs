@@ -1,5 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
 use core::convert::Infallible;
 use std::ffi::OsString;
 
@@ -304,8 +302,8 @@ impl Drop for ProxyEnvironment {
 
 async fn tls_listener() -> (TcpListener, TlsAcceptor) {
     let identity = Identity::from_pkcs8(
-        include_bytes!("../../ironrdp-tls/tests/certs/server-cert.pem"),
-        include_bytes!("../../ironrdp-tls/tests/certs/server-key.pem"),
+        include_bytes!("../../../ironrdp-tls/tests/certs/server-cert.pem"),
+        include_bytes!("../../../ironrdp-tls/tests/certs/server-key.pem"),
     )
     .expect("create TLS identity");
     let acceptor = TlsAcceptor::from(NativeTlsAcceptor::new(identity).expect("create TLS acceptor"));
