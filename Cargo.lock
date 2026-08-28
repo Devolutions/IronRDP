@@ -3434,6 +3434,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-mstsgu",
+ "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rail",
  "ironrdp-rdpdr",
