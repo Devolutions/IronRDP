@@ -3,6 +3,9 @@
 Tokio driver wiring the RDP-UDP transport, TLS and the multitransport tunnel
 into a usable async transport.
 
+The client path implements reliable RDP-UDP2 only.
+Legacy RDP-UDP v1/v2 data transfer, lossy RDP-UDP-L, FEC, and DTLS are not implemented.
+
 This crate is the I/O layer for three sans-I/O pieces:
 
 - [`ironrdp-rdpeudp`](../ironrdp-rdpeudp): reliable UDP with congestion control
@@ -34,12 +37,14 @@ state machine stays testable and free of ambient time.
 ```rust,ignore
 use ironrdp_rdpemt::TunnelConfig;
 use ironrdp_rdpeudp_tokio::{UdpTransportConfig, connect_udp};
+use ironrdp_tls::CertificateValidation;
 
-let config = UdpTransportConfig::new(
+let mut config = UdpTransportConfig::new(
     server_addr,
     "rdp-server.example.com".into(),
     TunnelConfig { request_id, security_cookie },
 );
+config.tls.certificate_validation = CertificateValidation::Strict;
 
 let mut transport = connect_udp(config).await?;
 

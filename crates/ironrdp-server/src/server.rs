@@ -1932,6 +1932,11 @@ impl RdpServer {
     /// Run a single RDP connection over `stream`, performing the
     /// IronRDP-managed TLS handshake on `ShouldUpgrade` (standard TCP+TLS).
     ///
+    /// Socket options on `stream` are the caller's to set. In particular RDP
+    /// is a stream of small, latency-sensitive writes, so a TCP stream should
+    /// have `TCP_NODELAY` set; [`RdpServer::run`] does that for the
+    /// connections it accepts itself.
+    ///
     /// Equivalent to [`run_connection_with`](Self::run_connection_with) with
     /// [`TransportTls::Managed`].
     pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
@@ -1943,6 +1948,9 @@ impl RdpServer {
 
     /// Run a single RDP connection over `stream`, choosing who performs the TLS
     /// handshake with `tls`.
+    ///
+    /// Socket options on `stream` are the caller's to set; see
+    /// [`run_connection`](Self::run_connection).
     ///
     /// With [`TransportTls::Managed`], IronRDP performs the TLS accept on
     /// `ShouldUpgrade`, exactly as [`run_connection`](Self::run_connection).
@@ -2229,6 +2237,16 @@ impl RdpServer {
                         },
                         Ok((stream, peer)) = listener.accept() => {
                             drop(ev_receiver);
+                            // RDP output is small writes the peer is waiting
+                            // on: a frame, a pointer update, a channel PDU.
+                            // Nagle holds the trailing partial segment of each
+                            // until the previous is acknowledged, which
+                            // against a peer using delayed acknowledgements is
+                            // dead time on every one. Not worth refusing a
+                            // connection over, though.
+                            if let Err(error) = stream.set_nodelay(true) {
+                                warn!(?peer, %error, "Failed to set TCP_NODELAY; interactive latency may suffer");
+                            }
                             (stream, peer)
                         },
                         else => break,
@@ -2325,6 +2343,19 @@ impl RdpServer {
                                 break (res, None, handler, recently_evicted);
                             }
                             PreemptRace::Accepted(Ok((next_stream, next_peer))) => {
+                                // Same reason as the primary accept above: RDP
+                                // is small latency-sensitive writes, so a
+                                // candidate that goes on to win the race and
+                                // become the live session needs this too, not
+                                // just the one accept path upstream's own
+                                // (non-preemption) loop happens to have.
+                                if let Err(error) = next_stream.set_nodelay(true) {
+                                    warn!(
+                                        ?next_peer,
+                                        %error,
+                                        "Failed to set TCP_NODELAY on a candidate; interactive latency may suffer"
+                                    );
+                                }
                                 // A peer evicted moments ago may not bounce
                                 // straight back and retake the session; each
                                 // attempt re-arms the window, so a reconnect

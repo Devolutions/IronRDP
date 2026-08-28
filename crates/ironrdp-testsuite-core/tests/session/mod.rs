@@ -2,6 +2,7 @@ mod active_stage;
 mod autodetect;
 mod connection_activation;
 mod fast_path;
+mod heartbeat;
 mod rfx;
 mod save_session_info;
 
