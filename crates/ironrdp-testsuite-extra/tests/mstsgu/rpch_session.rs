@@ -80,21 +80,21 @@ struct GwRpchRedirectionFlags {
     pnp_disabled: bool,
 }
 
-#[path = "../src/http_auth.rs"]
+#[path = "../../../ironrdp-mstsgu/src/http_auth.rs"]
 #[expect(
     dead_code,
     reason = "the integration harness only exercises shared HTTP authentication through RPCH"
 )]
 mod http_auth;
-#[path = "../src/mock_rpch.rs"]
+#[path = "../../../ironrdp-mstsgu/src/mock_rpch.rs"]
 mod mock_rpch;
-#[path = "../src/rpc.rs"]
+#[path = "../../../ironrdp-mstsgu/src/rpc.rs"]
 #[expect(
     dead_code,
     reason = "the integration harness exercises only the RPCH session codec subset"
 )]
 mod rpc;
-#[path = "../src/rpc_transport.rs"]
+#[path = "../../../ironrdp-mstsgu/src/rpc_transport.rs"]
 mod rpc_transport;
 mod packet_io {
     use tokio::io::{AsyncRead, AsyncWrite};
@@ -127,7 +127,7 @@ mod packet_io {
         ))
     }
 }
-#[path = "../src/rpch.rs"]
+#[path = "../../../ironrdp-mstsgu/src/rpch.rs"]
 #[expect(
     dead_code,
     reason = "the live raw channel is exercised by the rpch_client integration target"

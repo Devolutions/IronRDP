@@ -1,5 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
 use std::sync::{Arc, Mutex};
 
 use core::convert::Infallible;

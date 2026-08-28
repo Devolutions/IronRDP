@@ -14,6 +14,7 @@ mod dvc_pipe_proxy;
 mod e2e;
 mod gateway_detect;
 mod mstsgu;
+pub(crate) use mstsgu::rpch_http::{Error, GwErrorExt, GwErrorKind};
 mod rdpeudp_tokio;
 mod vmconnect;
 mod volume;
