@@ -1,8 +1,6 @@
 //! TLS upgrade over an RDPEUDP2 stream.
 //!
-//! Mirrors the rustls configuration from `ironrdp-tls`: no certificate
-//! verification (RDP uses self-signed certs), disabled TLS resumption
-//! (CredSSP compatibility), and SSLKEYLOGFILE support for Wireshark.
+//! Reuses the `ironrdp-tls` client configuration.
 //!
 //! The caller passes an `RdpeudpStream` which provides `AsyncRead +
 //! AsyncWrite` over the RDPEUDP2 connection. tokio-rustls wraps it
@@ -14,47 +12,76 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio_rustls::rustls::pki_types::ServerName;
 
+use ironrdp_tls::{CertificateValidation, CertificateValidationCallback};
+
 pub(crate) type TlsStream<S> = tokio_rustls::client::TlsStream<S>;
 pub(crate) type ServerTlsStream<S> = tokio_rustls::server::TlsStream<S>;
 
 /// Perform TLS handshake over an established RDPEUDP2 stream.
 ///
-/// `server_cert_verifier` selects how the peer certificate is validated.
-/// `None` preserves the historic behavior (no verification: RDP servers
-/// commonly present self-signed certificates). `Some(verifier)` lets a
-/// caller opt into real validation, for example a
-/// `rustls::client::WebPkiServerVerifier` built against the platform root
-/// store, mirroring the choice `ironrdp-tls` already exposes on the TCP
-/// path without this crate taking on that crate's certificate-store
-/// dependencies itself.
+/// The policy, callback, and endpoint use the same semantics as `ironrdp-tls` on the primary TCP transport.
 ///
-/// Returns the encrypted stream. The driver task continues running
-/// in the background, transparently shuttling encrypted bytes between
-/// the UDP socket and this TLS stream via `SharedIo`.
+/// A synchronous validation callback runs on a dedicated blocking thread so it cannot starve the RDPEUDP driver on a current-thread runtime.
+///
+/// Returns the encrypted stream.
+/// The driver task continues running in the background, transparently shuttling encrypted bytes between the UDP socket and this TLS stream via `SharedIo`.
 pub(crate) async fn tls_upgrade<S>(
     stream: S,
     server_name: &str,
-    server_cert_verifier: Option<Arc<dyn tokio_rustls::rustls::client::danger::ServerCertVerifier>>,
+    certificate_validation: CertificateValidation,
+    certificate_validation_callback: Option<CertificateValidationCallback>,
+    certificate_validation_endpoint: &str,
+) -> io::Result<TlsStream<S>>
+where
+    S: Unpin + Send + AsyncRead + AsyncWrite + 'static,
+{
+    if certificate_validation_callback.is_none() {
+        let certificate_validation_endpoint = certificate_validation_endpoint.to_owned();
+        let config = spawn_blocking_io(move || {
+            ironrdp_tls::rustls_client_config(certificate_validation, &certificate_validation_endpoint, None)
+        })
+        .await?;
+
+        return tls_connect_with_config(stream, server_name, config).await;
+    }
+
+    let server_name = server_name.to_owned();
+    let certificate_validation_endpoint = certificate_validation_endpoint.to_owned();
+    tokio::task::spawn_blocking(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                let config = ironrdp_tls::rustls_client_config(
+                    certificate_validation,
+                    &certificate_validation_endpoint,
+                    certificate_validation_callback,
+                )?;
+
+                tls_connect_with_config(stream, &server_name, config).await
+            })
+    })
+    .await
+    .map_err(io::Error::other)?
+}
+
+async fn spawn_blocking_io<T, F>(action: F) -> io::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> io::Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(action).await.map_err(io::Error::other)?
+}
+
+async fn tls_connect_with_config<S>(
+    stream: S,
+    server_name: &str,
+    config: tokio_rustls::rustls::ClientConfig,
 ) -> io::Result<TlsStream<S>>
 where
     S: Unpin + AsyncRead + AsyncWrite,
 {
-    let verifier: Arc<dyn tokio_rustls::rustls::client::danger::ServerCertVerifier> =
-        server_cert_verifier.unwrap_or_else(|| Arc::new(danger::NoCertificateVerification));
-
     let mut tls_stream = {
-        let mut config = tokio_rustls::rustls::client::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(verifier)
-            .with_no_client_auth();
-
-        // SSLKEYLOGFILE support for debugging with Wireshark
-        config.key_log = Arc::new(tokio_rustls::rustls::KeyLogFile::new());
-
-        // Disable TLS resumption: not supported by CredSSP and some
-        // RDP server configurations.
-        config.resumption = tokio_rustls::rustls::client::Resumption::disabled();
-
         let config = Arc::new(config);
 
         let domain = ServerName::try_from(server_name.to_owned()).map_err(io::Error::other)?;
@@ -84,59 +111,42 @@ where
     Ok(tls_stream)
 }
 
-mod danger {
-    use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-    use tokio_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme, pki_types};
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::time::Duration;
+    use std::sync::mpsc;
 
-    #[derive(Debug)]
-    pub(super) struct NoCertificateVerification;
+    use tokio::sync::oneshot;
 
-    impl ServerCertVerifier for NoCertificateVerification {
-        fn verify_server_cert(
-            &self,
-            _: &pki_types::CertificateDer<'_>,
-            _: &[pki_types::CertificateDer<'_>],
-            _: &pki_types::ServerName<'_>,
-            _: &[u8],
-            _: pki_types::UnixTime,
-        ) -> Result<ServerCertVerified, Error> {
-            Ok(ServerCertVerified::assertion())
-        }
+    use super::*;
 
-        fn verify_tls12_signature(
-            &self,
-            _: &[u8],
-            _: &pki_types::CertificateDer<'_>,
-            _: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, Error> {
-            Ok(HandshakeSignatureValid::assertion())
-        }
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_io_does_not_stall_the_current_thread_runtime() {
+        let active = Arc::new(AtomicBool::new(false));
+        let action_active = Arc::clone(&active);
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            release_tx.send(()).expect("release blocking action");
+        });
 
-        fn verify_tls13_signature(
-            &self,
-            _: &[u8],
-            _: &pki_types::CertificateDer<'_>,
-            _: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, Error> {
-            Ok(HandshakeSignatureValid::assertion())
-        }
+        let action = tokio::spawn(spawn_blocking_io(move || {
+            action_active.store(true, Ordering::SeqCst);
+            started_tx.send(()).expect("signal action started");
+            release_rx.recv().expect("wait for release");
+            action_active.store(false, Ordering::SeqCst);
+            Ok(())
+        }));
 
-        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-            vec![
-                SignatureScheme::RSA_PKCS1_SHA1,
-                SignatureScheme::ECDSA_SHA1_Legacy,
-                SignatureScheme::RSA_PKCS1_SHA256,
-                SignatureScheme::ECDSA_NISTP256_SHA256,
-                SignatureScheme::RSA_PKCS1_SHA384,
-                SignatureScheme::ECDSA_NISTP384_SHA384,
-                SignatureScheme::RSA_PKCS1_SHA512,
-                SignatureScheme::ECDSA_NISTP521_SHA512,
-                SignatureScheme::RSA_PSS_SHA256,
-                SignatureScheme::RSA_PSS_SHA384,
-                SignatureScheme::RSA_PSS_SHA512,
-                SignatureScheme::ED25519,
-                SignatureScheme::ED448,
-            ]
-        }
+        started_rx.await.expect("blocking action started");
+        assert!(
+            active.load(Ordering::SeqCst),
+            "the runtime must resume while the blocking action is still active"
+        );
+
+        action.await.expect("join blocking action").expect("blocking action");
+        release_thread.join().expect("join release thread");
     }
 }
