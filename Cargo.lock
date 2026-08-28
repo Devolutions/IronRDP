@@ -3432,6 +3432,7 @@ dependencies = [
  "ironrdp-error 0.2.0",
  "ironrdp-input",
  "ironrdp-mstsgu",
+ "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rail",
  "ironrdp-rdpdr",
