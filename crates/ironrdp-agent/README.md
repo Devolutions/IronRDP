@@ -257,7 +257,7 @@ The ignored live test uses `IRONRDP_AGENT_E2E_HOST`, `IRONRDP_AGENT_E2E_USERNAME
 
 ```powershell
 $env:IRONRDP_AGENT_E2E = '1'
-cargo test -p ironrdp-agent --test live_e2e -- --ignored
+cargo test -p ironrdp-testsuite-extra --test integration_tests_extra -- --ignored agent::live_e2e
 ```
 
 The RemoteApp variant uses `IRONRDP_AGENT_RAIL_E2E=1` plus the corresponding
