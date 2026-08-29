@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context as _;
 use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_client::config::{ConfigBuilder, MissingField};
+use ironrdp_client::output_channel::{OutputEventReceiver, output_channel};
 use ironrdp_client::rail::RailControlEvent;
 use ironrdp_client::rdp::{
     RailExecuteFailureReason as ClientRailExecuteFailureReason, RdpClient, RdpInputEvent, RdpInputSender,
@@ -768,7 +769,7 @@ impl Daemon {
             None
         };
 
-        let (output_tx, output_rx) = mpsc::channel(16);
+        let (output_tx, output_rx) = output_channel(16);
         let client = RdpClient::new(config, output_tx);
         #[cfg(windows)]
         let client = match rdpdr_factory {
@@ -1412,7 +1413,7 @@ impl Daemon {
 
 /// Consumes the bounded output-event stream, keeping the live state current.
 async fn consume_output(
-    mut output_rx: mpsc::Receiver<RdpOutputEvent>,
+    mut output_rx: OutputEventReceiver,
     live: Arc<Mutex<Live>>,
     notification: Option<mpsc::Sender<()>>,
     rail_notify: Arc<tokio::sync::Notify>,
@@ -1780,6 +1781,7 @@ mod tests {
 
     use tokio::sync::mpsc;
 
+    use ironrdp_client::output_channel::output_channel;
     use ironrdp_client::rdp::{RdpInputEvent, RdpInputSender};
     use ironrdp_input::{Database, Operation};
     use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
@@ -1917,7 +1919,7 @@ mod tests {
                 .expect("queue a dynamic launch");
         }
 
-        let (output_tx, output_rx) = mpsc::channel(1);
+        let (output_tx, output_rx) = output_channel(1);
         let rail_notify = Arc::new(tokio::sync::Notify::new());
         let consumer = tokio::spawn(consume_output(
             output_rx,
@@ -1981,7 +1983,7 @@ mod tests {
     async fn rail_wait_ignores_non_rail_output_until_evidence_arrives() {
         let (daemon, _, live, rail_notify) = active_rail_session(true);
 
-        let (output_tx, output_rx) = mpsc::channel(1);
+        let (output_tx, output_rx) = output_channel(1);
         let consumer = tokio::spawn(consume_output(
             output_rx,
             live,
@@ -2100,7 +2102,7 @@ mod tests {
     #[tokio::test]
     async fn local_rail_execute_failure_resolves_pending_launch_without_terminating() {
         let (daemon, mut input_rx, live, rail_notify) = active_rail_session(true);
-        let (output_tx, output_rx) = mpsc::channel(1);
+        let (output_tx, output_rx) = output_channel(1);
         let consumer = tokio::spawn(consume_output(
             output_rx,
             Arc::clone(&live),
@@ -2169,7 +2171,7 @@ mod tests {
     #[tokio::test]
     async fn connection_failure_discards_pending_rail_launches() {
         let (daemon, mut input_rx, live, rail_notify) = active_rail_session(true);
-        let (output_tx, output_rx) = mpsc::channel(1);
+        let (output_tx, output_rx) = output_channel(1);
         let consumer = tokio::spawn(consume_output(
             output_rx,
             Arc::clone(&live),

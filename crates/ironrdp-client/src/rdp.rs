@@ -188,6 +188,29 @@ pub enum RdpOutputEvent {
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
+impl RdpOutputEvent {
+    /// Classifies how this event should be queued when the output channel is
+    /// full: [`crate::output_channel::DropPolicy::MustDeliver`] for events where
+    /// loss would be a real bug (a failed connection, a completed RAIL launch),
+    /// [`crate::output_channel::DropPolicy::LatestOnly`] for high-frequency
+    /// display state where only the newest value matters.
+    ///
+    /// See <https://github.com/Devolutions/IronRDP/issues/1330> for the design
+    /// rationale.
+    pub fn drop_policy(&self) -> crate::output_channel::DropPolicy {
+        use crate::output_channel::DropPolicy;
+
+        match self {
+            RdpOutputEvent::Image { .. }
+            | RdpOutputEvent::PointerDefault
+            | RdpOutputEvent::PointerHidden
+            | RdpOutputEvent::PointerPosition { .. }
+            | RdpOutputEvent::PointerBitmap(_) => DropPolicy::LatestOnly,
+            _ => DropPolicy::MustDeliver,
+        }
+    }
+}
+
 /// Controls whether a pending automatic reconnect may proceed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AutoReconnectDecision {
@@ -596,7 +619,7 @@ impl ResizeQueue {
 
 pub struct RdpClient {
     config: Config,
-    output_event_sender: mpsc::Sender<RdpOutputEvent>,
+    output_event_sender: crate::output_channel::OutputEventSender,
     input_event_sender: RdpInputSender,
     input_event_receiver: mpsc::Receiver<RdpInputEvent>,
     clipboard_event_receiver: mpsc::UnboundedReceiver<RdpInputEvent>,
@@ -610,7 +633,7 @@ pub struct RdpClient {
 }
 
 impl RdpClient {
-    pub fn new(config: Config, output_event_sender: mpsc::Sender<RdpOutputEvent>) -> Self {
+    pub fn new(config: Config, output_event_sender: crate::output_channel::OutputEventSender) -> Self {
         let (
             input_event_sender,
             input_event_receiver,
@@ -1184,18 +1207,15 @@ where
 }
 
 async fn send_cancellable_output_event(
-    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
+    output_event_sender: &crate::output_channel::OutputEventSender,
     event: RdpOutputEvent,
     close_receiver: &mut watch::Receiver<bool>,
 ) -> Result<bool, mpsc::error::SendError<RdpOutputEvent>> {
-    match cancelable_operation(output_event_sender.send(event), close_receiver).await {
-        Some(result) => result.map(|()| true),
-        None => Ok(false),
-    }
+    output_event_sender.send_cancellable(event, close_receiver).await
 }
 
 async fn send_active_output_event(
-    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
+    output_event_sender: &crate::output_channel::OutputEventSender,
     event: RdpOutputEvent,
     close_receiver: &mut watch::Receiver<bool>,
 ) -> SessionResult<bool> {
@@ -1363,7 +1383,7 @@ fn rdpsnd_backend_kind(audio_playback: bool, rdpdr_attached: bool) -> Option<Rdp
 fn build_connector(
     config: &Config,
     client_addr: SocketAddr,
-    event_senders: (&RdpInputSender, &mpsc::Sender<RdpOutputEvent>),
+    event_senders: (&RdpInputSender, &crate::output_channel::OutputEventSender),
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
     rdpdr_drives_allowed: bool,
@@ -1415,6 +1435,11 @@ fn build_connector(
                     width: NonZeroU16::new(width).expect("fbr validates nonzero width"),
                     height: NonZeroU16::new(height).expect("fbr validates nonzero height"),
                 };
+                // `Image` is `DropPolicy::LatestOnly` (see `RdpOutputEvent::drop_policy`), so
+                // `try_send` always succeeds: a full queue is impossible for this variant, it
+                // always just replaces whatever frame was pending. The `Full` arm below is
+                // unreachable for this call site but kept for the (unlikely) case this
+                // closure is ever reused for a `MustDeliver` event.
                 match output_event_sender.try_send(event) {
                     Ok(()) => {}
                     Err(mpsc::error::TrySendError::Full(_)) => {
@@ -1740,7 +1765,7 @@ type UpgradedFramed = ironrdp_tokio::TokioFramed<Box<dyn AsyncReadWrite + Unpin 
 async fn connect_direct(
     config: &Config,
     input_sender: &RdpInputSender,
-    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
+    output_event_sender: &crate::output_channel::OutputEventSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
@@ -1781,7 +1806,7 @@ async fn connect_named_pipe(
     config: &Config,
     pipe_path: &str,
     input_sender: &RdpInputSender,
-    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
+    output_event_sender: &crate::output_channel::OutputEventSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
@@ -1824,7 +1849,7 @@ async fn connect_gateway(
     config: &Config,
     gw: &crate::config::GatewayConfig,
     input_sender: &RdpInputSender,
-    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
+    output_event_sender: &crate::output_channel::OutputEventSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
@@ -1920,7 +1945,7 @@ async fn connect_rdcleanpath_transport(
     config: &Config,
     rdcp: &RDCleanPathConfig,
     input_sender: &RdpInputSender,
-    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
+    output_event_sender: &crate::output_channel::OutputEventSender,
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
@@ -2482,7 +2507,7 @@ async fn active_session(
     framed: UpgradedFramed,
     connection_result: ConnectionResult,
     initial_rail_execute: Option<ExecutePdu>,
-    output_event_sender: &mpsc::Sender<RdpOutputEvent>,
+    output_event_sender: &crate::output_channel::OutputEventSender,
     input_event_receiver: &mut mpsc::Receiver<RdpInputEvent>,
     clipboard_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
     close_receiver: &mut watch::Receiver<bool>,
@@ -4143,7 +4168,7 @@ mod tests {
         let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "fixtures".to_owned())]);
         let config = test_config();
         let (input_sender, _) = RdpInputSender::channel(1);
-        let (output_event_sender, _) = mpsc::channel(1);
+        let (output_event_sender, _) = crate::output_channel::output_channel(1);
         let mut connector = build_connector(
             &config,
             SocketAddr::from(([127, 0, 0, 1], 0)),
@@ -4173,7 +4198,7 @@ mod tests {
     fn noop_rdpdr_fallback_does_not_report_drive_hotplug() {
         let config = test_config();
         let (input_sender, _) = RdpInputSender::channel(1);
-        let (output_event_sender, _) = mpsc::channel(1);
+        let (output_event_sender, _) = crate::output_channel::output_channel(1);
         let mut connector = build_connector(
             &config,
             SocketAddr::from(([127, 0, 0, 1], 0)),
@@ -4301,7 +4326,7 @@ mod tests {
 
     #[tokio::test]
     async fn windowing_orders_are_delivered_to_the_output_consumer() {
-        let (output_sender, mut output_receiver) = mpsc::channel(1);
+        let (output_sender, mut output_receiver) = crate::output_channel::output_channel(1);
         let (_close_sender, mut close_receiver) = watch::channel(false);
 
         assert!(
@@ -4321,7 +4346,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_rail_execute_failure_is_delivered_without_terminating_the_session() {
-        let (output_sender, mut output_receiver) = mpsc::channel(1);
+        let (output_sender, mut output_receiver) = crate::output_channel::output_channel(1);
         let (_close_sender, mut close_receiver) = watch::channel(false);
 
         assert!(
@@ -4349,7 +4374,7 @@ mod tests {
 
     #[tokio::test]
     async fn output_send_is_cancelled_when_the_consumer_is_backpressured() {
-        let (output_sender, _output_receiver) = mpsc::channel(1);
+        let (output_sender, _output_receiver) = crate::output_channel::output_channel(1);
         output_sender
             .try_send(RdpOutputEvent::Connected)
             .expect("the first output event fills the queue");

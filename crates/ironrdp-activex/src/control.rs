@@ -17,6 +17,7 @@ use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
 use ironrdp_client::config::{
     AudioQualityMode, ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind,
 };
+use ironrdp_client::output_channel::output_channel;
 use ironrdp_client::rail::RailInputEvent;
 use ironrdp_client::rdp::{
     AutoReconnectDecision, CliprdrBackendFactory, LocationInputError, RdpClient, RdpInputEvent, RdpInputSender,
@@ -10832,7 +10833,7 @@ impl Control {
         }
         let rpc_destination = config.destination().to_string();
         drop(settings);
-        let (output_sender, mut output_receiver) = mpsc::channel(32);
+        let (output_sender, mut output_receiver) = output_channel(32);
         let client = RdpClient::new(config, output_sender);
         let client = if let Some(maximum_attempts) = auto_reconnect_maximum_attempts {
             client.with_auto_reconnect(maximum_attempts)
