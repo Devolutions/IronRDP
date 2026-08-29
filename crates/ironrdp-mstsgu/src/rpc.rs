@@ -1495,6 +1495,7 @@ mod tsgu {
         UnexpectedNdrPointer { actual: u32 },
         UnexpectedPacketId { expected: u32, actual: u32 },
         UnexpectedPacketSwitch { expected: u32, actual: u32 },
+        UnexpectedMessageSwitch { expected: u32, actual: u32 },
         UnexpectedComponentId { expected: u16, actual: u16 },
         UnexpectedProtocolVersion { major: u16, minor: u16 },
         UnexpectedCapabilityType { expected: u32, actual: u32 },
@@ -1565,6 +1566,9 @@ mod tsgu {
                 }
                 Self::UnexpectedPacketSwitch { expected, actual } => {
                     write!(f, "unexpected packet switch 0x{actual:08x}, expected 0x{expected:08x}")
+                }
+                Self::UnexpectedMessageSwitch { expected, actual } => {
+                    write!(f, "unexpected message switch {actual}, expected {expected}")
                 }
                 Self::UnexpectedComponentId { expected, actual } => {
                     write!(f, "unexpected component id 0x{actual:04x}, expected 0x{expected:04x}")
@@ -1731,7 +1735,7 @@ mod tsgu {
         }
     }
 
-    /// NDR32 `TsProxyMakeTunnelCall` request for one queued server message.
+    /// NDR32 `TsProxyMakeTunnelCall` request for an administrative message.
     ///
     /// [MS-TSGU] 2.2.9.2.1.8 and 3.2.6.1.3.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1899,11 +1903,11 @@ mod tsgu {
             let buffer_count = u32::try_from(self.buffer_count).map_err(|_| RpcStubError::LengthOverflow)?;
             let mut output = Vec::with_capacity(encoded_len);
             output.extend_from_slice(&self.channel_context.as_bytes());
-            output.extend_from_slice(&total_data_bytes.to_le_bytes());
-            output.extend_from_slice(&buffer_count.to_le_bytes());
+            output.extend_from_slice(&total_data_bytes.to_be_bytes());
+            output.extend_from_slice(&buffer_count.to_be_bytes());
             for buffer in self.buffers() {
                 let length = u32::try_from(buffer.len()).map_err(|_| RpcStubError::LengthOverflow)?;
-                output.extend_from_slice(&length.to_le_bytes());
+                output.extend_from_slice(&length.to_be_bytes());
             }
             for buffer in self.buffers() {
                 output.extend_from_slice(buffer);
@@ -1937,7 +1941,7 @@ mod tsgu {
     }
 
     /// Decodes the final `TsProxySendToServer` return value.
-    pub(crate) fn decode_tsgu_send_to_server_response(source: &[u8]) -> Result<(), RpcStubError> {
+    pub(crate) fn decode_tsgu_send_to_server_response(source: &[u8]) -> Result<u32, RpcStubError> {
         const RESPONSE_SIZE: usize = 4 /* return value */;
         if source.len() != RESPONSE_SIZE {
             return Err(RpcStubError::ResponseLength {
@@ -1945,7 +1949,7 @@ mod tsgu {
                 expected: RESPONSE_SIZE,
             });
         }
-        validate_hresult(read_u32(source, 0)?)
+        read_u32(source, 0)
     }
 
     /// Decoded non-messaging `TsProxyCreateTunnel` response values.
@@ -2222,7 +2226,7 @@ mod tsgu {
                 actual: source.len(),
                 expected: data_end,
             })?;
-            offset = padded_to_ndr_4(data_end)?;
+            offset = padded_to_ndr(data_end, 4)?;
             response_data.to_vec()
         };
         let response_size = offset.checked_add(4).ok_or(RpcStubError::LengthOverflow)?;
@@ -2274,7 +2278,8 @@ mod tsgu {
             + 4 /* msgId */
             + 4 /* msgType */
             + 4 /* isMsgPresent */
-            + 4; /* messagePacket */
+            + 4 /* messagePacket union switch */
+            + 4; /* messagePacket pointer */
         let fixed = source.get(..FIXED_SIZE).ok_or(RpcStubError::ResponseLength {
             actual: source.len(),
             expected: FIXED_SIZE,
@@ -2284,7 +2289,15 @@ mod tsgu {
         require_ndr_pointer(read_u32(fixed, 12)?)?;
 
         let message_type = read_u32(fixed, 20)?;
+        validate_message_type(message_type)?;
         let message_present = decode_ndr_boolean(fixed, 24)?;
+        let message_switch = read_u32(fixed, 28)?;
+        if message_switch != message_type {
+            return Err(RpcStubError::UnexpectedMessageSwitch {
+                expected: message_type,
+                actual: message_switch,
+            });
+        }
         if !message_present {
             const RESPONSE_SIZE: usize = FIXED_SIZE + 4 /* HRESULT */;
             if source.len() != RESPONSE_SIZE {
@@ -2295,19 +2308,22 @@ mod tsgu {
             }
             return Ok(TsProxyTunnelMessage::None);
         }
-        require_ndr_pointer(read_u32(fixed, 28)?)?;
+        require_ndr_pointer(read_u32(fixed, 32)?)?;
 
         match message_type {
             TSG_ASYNC_MESSAGE_REAUTH => {
-                const RESPONSE_SIZE: usize = FIXED_SIZE + 8 /* tunnelContext */ + 4 /* HRESULT */;
-                if source.len() != RESPONSE_SIZE {
+                let reauthentication_start = padded_to_ndr(FIXED_SIZE, 8)?;
+                let response_size = reauthentication_start
+                    .checked_add(8 /* tunnelContext */ + 4 /* HRESULT */)
+                    .ok_or(RpcStubError::LengthOverflow)?;
+                if source.len() != response_size {
                     return Err(RpcStubError::ResponseLength {
                         actual: source.len(),
-                        expected: RESPONSE_SIZE,
+                        expected: response_size,
                     });
                 }
                 let tunnel_context = u64::from_le_bytes(
-                    source[FIXED_SIZE..FIXED_SIZE + 8]
+                    source[reauthentication_start..reauthentication_start + 8]
                         .try_into()
                         .map_err(|_| RpcStubError::LengthOverflow)?,
                 );
@@ -2356,7 +2372,9 @@ mod tsgu {
                     let message_end = message_start
                         .checked_add(message_len)
                         .ok_or(RpcStubError::LengthOverflow)?;
-                    let response_size = message_end.checked_add(4).ok_or(RpcStubError::LengthOverflow)?;
+                    let response_size = padded_to_ndr(message_end, 4)?
+                        .checked_add(4 /* HRESULT */)
+                        .ok_or(RpcStubError::LengthOverflow)?;
                     let message_bytes = source
                         .get(message_start..message_end)
                         .ok_or(RpcStubError::ResponseLength {
@@ -2534,7 +2552,7 @@ mod tsgu {
         }
         let text =
             String::from_utf16(&utf16[..utf16.len().saturating_sub(1)]).map_err(|_| RpcStubError::InvalidUtf16)?;
-        Ok((text, padded_to_ndr_4(characters_end)?))
+        Ok((text, padded_to_ndr(characters_end, 4)?))
     }
 
     fn pad_ndr_4(output: &mut Vec<u8>) {
@@ -2542,10 +2560,11 @@ mod tsgu {
         output.resize(output.len() + padding, 0);
     }
 
-    fn padded_to_ndr_4(length: usize) -> Result<usize, RpcStubError> {
+    fn padded_to_ndr(length: usize, alignment: usize) -> Result<usize, RpcStubError> {
+        debug_assert!(alignment.is_power_of_two());
         length
-            .checked_add(3)
-            .map(|value| value & !3)
+            .checked_add(alignment - 1)
+            .map(|value| value & !(alignment - 1))
             .ok_or(RpcStubError::LengthOverflow)
     }
 
@@ -2572,6 +2591,13 @@ mod tsgu {
             });
         }
         Ok(())
+    }
+
+    fn validate_message_type(value: u32) -> Result<(), RpcStubError> {
+        match value {
+            TSG_ASYNC_MESSAGE_CONSENT | TSG_ASYNC_MESSAGE_SERVICE | TSG_ASYNC_MESSAGE_REAUTH => Ok(()),
+            actual => Err(RpcStubError::InvalidMessageType { actual }),
+        }
     }
 
     fn decode_ndr_boolean(source: &[u8], offset: usize) -> Result<bool, RpcStubError> {
@@ -3018,6 +3044,7 @@ mod tsgu {
                 &0u32.to_le_bytes(),
                 &TSG_ASYNC_MESSAGE_SERVICE.to_le_bytes(),
                 &0u32.to_le_bytes(),
+                &TSG_ASYNC_MESSAGE_SERVICE.to_le_bytes(),
                 &0u32.to_le_bytes(),
                 &0u32.to_le_bytes(),
             ]
@@ -3025,6 +3052,13 @@ mod tsgu {
             assert_eq!(
                 decode_tsgu_make_tunnel_call_response(&none),
                 Ok(TsProxyTunnelMessage::None)
+            );
+            let mut invalid_none = none;
+            invalid_none[20..24].copy_from_slice(&4u32.to_le_bytes());
+            invalid_none[28..32].copy_from_slice(&4u32.to_le_bytes());
+            assert_eq!(
+                decode_tsgu_make_tunnel_call_response(&invalid_none),
+                Err(RpcStubError::InvalidMessageType { actual: 4 })
             );
 
             let consent = [
@@ -3035,6 +3069,7 @@ mod tsgu {
                 &0u32.to_le_bytes(),
                 &TSG_ASYNC_MESSAGE_CONSENT.to_le_bytes(),
                 &1u32.to_le_bytes(),
+                &TSG_ASYNC_MESSAGE_CONSENT.to_le_bytes(),
                 &(NDR_REFERENT_ID + 8).to_le_bytes(),
                 &1u32.to_le_bytes(),
                 &1u32.to_le_bytes(),
@@ -3053,6 +3088,15 @@ mod tsgu {
                     text: "x".to_owned(),
                 })
             );
+            let mut mismatched_consent = consent;
+            mismatched_consent[28..32].copy_from_slice(&TSG_ASYNC_MESSAGE_SERVICE.to_le_bytes());
+            assert_eq!(
+                decode_tsgu_make_tunnel_call_response(&mismatched_consent),
+                Err(RpcStubError::UnexpectedMessageSwitch {
+                    expected: TSG_ASYNC_MESSAGE_CONSENT,
+                    actual: TSG_ASYNC_MESSAGE_SERVICE,
+                })
+            );
 
             let service = [
                 NDR_REFERENT_ID.to_le_bytes().as_slice(),
@@ -3062,6 +3106,7 @@ mod tsgu {
                 &0u32.to_le_bytes(),
                 &TSG_ASYNC_MESSAGE_SERVICE.to_le_bytes(),
                 &1u32.to_le_bytes(),
+                &TSG_ASYNC_MESSAGE_SERVICE.to_le_bytes(),
                 &(NDR_REFERENT_ID + 8).to_le_bytes(),
                 &1u32.to_le_bytes(),
                 &0u32.to_le_bytes(),
@@ -3069,6 +3114,7 @@ mod tsgu {
                 &(NDR_REFERENT_ID + 12).to_le_bytes(),
                 &3u32.to_le_bytes(),
                 &[b'h', 0, b'i', 0, 0, 0],
+                &[0, 0],
                 &0u32.to_le_bytes(),
             ]
             .concat();
@@ -3088,7 +3134,9 @@ mod tsgu {
                 &0u32.to_le_bytes(),
                 &TSG_ASYNC_MESSAGE_REAUTH.to_le_bytes(),
                 &1u32.to_le_bytes(),
+                &TSG_ASYNC_MESSAGE_REAUTH.to_le_bytes(),
                 &(NDR_REFERENT_ID + 8).to_le_bytes(),
+                &[0; 4],
                 &0x1122_3344_5566_7788u64.to_le_bytes(),
                 &0u32.to_le_bytes(),
             ]
@@ -3142,9 +3190,9 @@ mod tsgu {
                 request.encode().expect("valid encoding"),
                 [
                     CONTEXT.as_slice(),
-                    &[8, 0, 0, 0],
-                    &[1, 0, 0, 0],
-                    &[4, 0, 0, 0],
+                    &[0, 0, 0, 8],
+                    &[0, 0, 0, 1],
+                    &[0, 0, 0, 4],
                     &[4, 0, 0, 3],
                 ]
                 .concat()
@@ -3157,11 +3205,11 @@ mod tsgu {
                 request.encode().expect("valid encoding"),
                 [
                     CONTEXT.as_slice(),
-                    &[18, 0, 0, 0],
-                    &[3, 0, 0, 0],
-                    &[1, 0, 0, 0],
-                    &[2, 0, 0, 0],
-                    &[3, 0, 0, 0],
+                    &[0, 0, 0, 18],
+                    &[0, 0, 0, 3],
+                    &[0, 0, 0, 1],
+                    &[0, 0, 0, 2],
+                    &[0, 0, 0, 3],
                     &[1, 2, 3, 4, 5, 6],
                 ]
                 .concat()
@@ -3196,11 +3244,8 @@ mod tsgu {
                 })
             );
 
-            assert_eq!(decode_tsgu_send_to_server_response(&0u32.to_le_bytes()), Ok(()));
-            assert_eq!(
-                decode_tsgu_send_to_server_response(&5u32.to_le_bytes()),
-                Err(RpcStubError::RpcStatus { value: 5 })
-            );
+            assert_eq!(decode_tsgu_send_to_server_response(&0u32.to_le_bytes()), Ok(0));
+            assert_eq!(decode_tsgu_send_to_server_response(&5u32.to_le_bytes()), Ok(5));
         }
 
         fn create_tunnel_response() -> Vec<u8> {
