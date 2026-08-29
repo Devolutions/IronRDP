@@ -211,6 +211,18 @@ impl Surfaces {
         self.surfaces.clear();
     }
 
+    /// Clear all surfaces AND reset the surface ID allocator to 0.
+    ///
+    /// Used by the server when the client emits a mid-session
+    /// CapsAdvertise (a decoder-recovery sequence): the client has
+    /// already cleared its own surface state and expects new surface
+    /// IDs to start from 0. Distinct from [`clear`] which preserves the
+    /// counter.
+    pub fn reset_for_reinit(&mut self) {
+        self.surfaces.clear();
+        self.next_surface_id = 0;
+    }
+
     /// Number of surfaces
     pub fn len(&self) -> usize {
         self.surfaces.len()
@@ -1770,6 +1782,31 @@ impl GraphicsPipelineServer {
     // ========================================================================
 
     fn handle_capabilities_advertise(&mut self, pdu: CapabilitiesAdvertisePdu) {
+        // Detect mid-session re-advertise. mstsc (and likely other clients)
+        // emits a fresh CapsAdvertise as a decoder-recovery sequence under
+        // load, typically when its EGFX decoder loses sync after a long
+        // P-slice chain. Before sending CapsAdvertise the client has cleared
+        // its surface/frame/cache state, so the server must mirror that
+        // silently (no DeleteSurface PDUs, the client doesn't have those
+        // surfaces anymore and treats a stray DeleteSurface as a protocol
+        // violation, leading to TCP RST within milliseconds).
+        //
+        // Observed: macOS Windows App and mstsc on Windows 11 both initiate
+        // this sequence. MS-RDPEGFX does not document the recovery flow
+        // explicitly, but the empirical pattern is CapsAdvertise ->
+        // CacheImportOffer -> expect server to emit CapsConfirm +
+        // ResetGraphics + CreateSurface(id=0) + MapSurfaceToOutput + IDR.
+        let is_readvertise = self.state == ServerState::Ready;
+        if is_readvertise {
+            debug!(
+                "EGFX: mid-session CapsAdvertise observed, silently clearing surface and frame \
+                 state for re-initialization (no DeleteSurface PDU emitted, surface ID counter reset)"
+            );
+            self.surfaces.reset_for_reinit();
+            self.frames.clear();
+            self.reset_graphics_sent = false;
+        }
+
         self.handler.capabilities_advertise(&pdu);
         let server_caps = self.handler.preferred_capabilities();
 
