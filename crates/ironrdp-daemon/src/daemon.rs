@@ -2234,7 +2234,7 @@ mod tests {
     #[tokio::test]
     async fn connection_failure_status_preserves_gateway_error_sources() {
         let (daemon, _, live, rail_notify) = active_rail_session(false);
-        let (output_tx, output_rx) = mpsc::channel(1);
+        let (output_tx, output_rx) = output_channel(1);
         let consumer = tokio::spawn(consume_output(
             output_rx,
             live,
@@ -2271,7 +2271,7 @@ mod tests {
     #[tokio::test]
     async fn terminated_error_status_preserves_session_error_sources() {
         let (daemon, _, live, rail_notify) = active_rail_session(false);
-        let (output_tx, output_rx) = mpsc::channel(1);
+        let (output_tx, output_rx) = output_channel(1);
         let consumer = tokio::spawn(consume_output(
             output_rx,
             live,
