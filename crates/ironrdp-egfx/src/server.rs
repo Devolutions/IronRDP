@@ -493,6 +493,13 @@ pub struct FrameTracker {
     total_sent: u64,
     /// Total frames acknowledged
     total_acked: u64,
+    /// Tracks last-emitted backpressure state for edge-triggered transition
+    /// logging. Without this, callers either log nothing (and the failure is
+    /// invisible) or log every call (and the log floods at 30+/sec). Edge
+    /// triggering gives one line on engage, one line on release.
+    last_backpressure_state: bool,
+    /// Tracks last-emitted ack_suspended state for the same reason.
+    last_ack_suspended_state: bool,
 }
 
 impl Default for FrameTracker {
@@ -512,6 +519,53 @@ impl FrameTracker {
             max_in_flight: DEFAULT_MAX_FRAMES_IN_FLIGHT,
             total_sent: 0,
             total_acked: 0,
+            last_backpressure_state: false,
+            last_ack_suspended_state: false,
+        }
+    }
+
+    /// Emit edge-triggered diagnostic logs when backpressure or ack_suspended
+    /// state changes. Called from begin_frame / acknowledge. Single source of
+    /// truth so callers don't need to remember to log.
+    ///
+    /// MS-RDPEGFX § 2.2.4.3 RDPGFX_FRAME_ACKNOWLEDGE_PDU defines queue_depth=0xFFFFFFFF
+    /// as SUSPEND_FRAME_ACKNOWLEDGEMENT. We surface that distinct state separately
+    /// so operators can tell "we're saturated" from "client said stop ack'ing."
+    fn emit_state_transitions(&mut self) {
+        let in_flight = self.in_flight();
+        let now_backpressure = self.should_backpressure();
+        if now_backpressure != self.last_backpressure_state {
+            if now_backpressure {
+                debug!(
+                    in_flight,
+                    max_in_flight = self.max_in_flight,
+                    ack_suspended = self.ack_suspended,
+                    client_queue_depth = self.client_queue_depth,
+                    "EGFX backpressure ENGAGED, encoder must wait for FrameAcknowledge"
+                );
+            } else {
+                debug!(
+                    in_flight,
+                    max_in_flight = self.max_in_flight,
+                    "EGFX backpressure RELEASED, encoder may proceed"
+                );
+            }
+            self.last_backpressure_state = now_backpressure;
+        }
+        if self.ack_suspended != self.last_ack_suspended_state {
+            if self.ack_suspended {
+                debug!(
+                    in_flight,
+                    "EGFX ack_suspended ENGAGED, client requested no FrameAcknowledge (queue_depth=0xFFFFFFFF per MS-RDPEGFX 2.2.4.3)"
+                );
+            } else {
+                debug!(
+                    in_flight,
+                    client_queue_depth = self.client_queue_depth,
+                    "EGFX ack_suspended RELEASED"
+                );
+            }
+            self.last_ack_suspended_state = self.ack_suspended;
         }
     }
 
@@ -536,6 +590,9 @@ impl FrameTracker {
         );
 
         self.total_sent += 1;
+        // Edge-trigger after insert so a frame that pushes us to max_in_flight
+        // logs the transition.
+        self.emit_state_transitions();
         frame_id
     }
 
@@ -560,6 +617,8 @@ impl FrameTracker {
         if info.is_some() {
             self.total_acked += 1;
         }
+        // Edge-trigger after remove so an ack that releases backpressure logs.
+        self.emit_state_transitions();
         info
     }
 
@@ -1736,19 +1795,33 @@ impl GraphicsPipelineServer {
         let mode = self.compression_mode;
         let pdus: Vec<_> = self.output_queue.drain(..).collect();
 
-        pdus.into_iter()
+        // D2: ZGFX compression timing. drain_output runs synchronously on the
+        // event-dispatch thread and is held under both `this.lock()` and the
+        // SharedWriter lock — so any slowness here blocks both inbound PDU
+        // processing AND outbound writes. Sum per-PDU compress times; log
+        // INFO if the batch exceeded a budget so operators can see when ZGFX
+        // is the limiter on a slow VM.
+        let drain_start = Instant::now();
+        let mut total_uncompressed: usize = 0;
+        let mut total_compressed: usize = 0;
+        let pdu_count = pdus.len();
+
+        let messages: Vec<DvcMessage> = pdus
+            .into_iter()
             .map(|pdu| {
                 let pdu_name = pdu.name();
                 let pdu_size = pdu.size();
                 let mut pdu_bytes = vec![0u8; pdu_size];
                 let mut cursor = WriteCursor::new(&mut pdu_bytes);
                 pdu.encode(&mut cursor).expect("GfxPdu encoding should not fail");
+                total_uncompressed += pdu_size;
 
                 let wrapped = match mode {
                     CompressionMode::Never => wrap_uncompressed(&pdu_bytes),
                     _ => compress_and_wrap_egfx(&pdu_bytes, &mut self.zgfx_compressor, mode)
                         .unwrap_or_else(|_| wrap_uncompressed(&pdu_bytes)),
                 };
+                total_compressed += wrapped.len();
                 trace!(pdu_name, pdu_size, wrapped = wrapped.len(), mode = ?mode, "ZGFX output");
 
                 Box::new(ZgfxWrappedBytes {
@@ -1756,7 +1829,34 @@ impl GraphicsPipelineServer {
                     pdu_name,
                 }) as DvcMessage
             })
-            .collect()
+            .collect();
+
+        // D2: log batch timing. INFO threshold at 10ms — anything above is
+        // significant for the per-frame budget. Always log at DEBUG so the
+        // ZGFX ratio is visible during normal debug sessions.
+        let elapsed = drain_start.elapsed();
+        if elapsed >= core::time::Duration::from_millis(10) {
+            tracing::info!(
+                pdu_count,
+                total_uncompressed,
+                total_compressed,
+                ratio = format!("{:.2}", total_uncompressed as f32 / total_compressed.max(1) as f32),
+                drain_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+                mode = ?mode,
+                "EGFX drain_output (ZGFX compress) slow"
+            );
+        } else if pdu_count > 0 {
+            tracing::debug!(
+                pdu_count,
+                total_uncompressed,
+                total_compressed,
+                ratio = format!("{:.2}", total_uncompressed as f32 / total_compressed.max(1) as f32),
+                drain_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
+                mode = ?mode,
+                "EGFX drain_output"
+            );
+        }
+        messages
     }
 
     /// Check if there are pending PDUs to send
@@ -1817,12 +1917,34 @@ impl GraphicsPipelineServer {
 
     fn handle_frame_acknowledge(&mut self, pdu: FrameAcknowledgePdu) {
         let queue_depth = pdu.queue_depth.to_u32();
+        let suspended = queue_depth == SUSPEND_FRAME_ACK_QUEUE_DEPTH;
 
         if let Some(info) = self.frames.acknowledge(pdu.frame_id, queue_depth) {
             let rtt = info.sent_at.elapsed();
             self.qoe.record_rtt(rtt);
             self.qoe.record_frame_ack(info.size_bytes);
-            trace!(frame_id = pdu.frame_id, latency = ?rtt);
+            // DEBUG: visible at default log levels. FrameAcknowledge is the
+            // single most important signal in the EGFX flow-control loop —
+            // without it the server cannot decide when to release backpressure.
+            // Logging at TRACE only made the loop invisible under normal
+            // operator-friendly log levels.
+            debug!(
+                frame_id = pdu.frame_id,
+                latency_us = u64::try_from(rtt.as_micros()).unwrap_or(u64::MAX),
+                queue_depth,
+                suspended,
+                in_flight_after = self.frames.in_flight(),
+                "EGFX FrameAcknowledge received"
+            );
+        } else {
+            // PROTOCOL COMPLIANCE: per MS-RDPEGFX 2.2.4.3 the client MUST only
+            // acknowledge frame_ids the server has sent. An ack for an unknown
+            // frame_id indicates either client misbehavior, a server bug
+            // (frame_id reuse), or a session reset out of sync.
+            warn!(
+                frame_id = pdu.frame_id,
+                queue_depth, "EGFX FrameAcknowledge for UNKNOWN frame_id, protocol violation or stale ack"
+            );
         }
 
         self.handler
@@ -1871,6 +1993,22 @@ impl DvcProcessor for GraphicsPipelineServer {
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         let pdu = decode(payload).map_err(|e| decode_err!(e))?;
+
+        // Single-source dispatch log. DEBUG level so operators see every
+        // client→server EGFX PDU at default debug builds without having to
+        // enable TRACE (which floods on the encode side).
+        // PROTOCOL COMPLIANCE: client-bound PDU types per MS-RDPEGFX 2.2:
+        // CapabilitiesAdvertise (2.2.1.1), FrameAcknowledge (2.2.4.3),
+        // QoeFrameAcknowledge (2.2.4.4), CacheImportOffer (2.2.2.16).
+        // Anything else lands in the `_` arm as `warn!("Unhandled")`.
+        let pdu_kind = match &pdu {
+            GfxPdu::CapabilitiesAdvertise(_) => "CapabilitiesAdvertise",
+            GfxPdu::FrameAcknowledge(_) => "FrameAcknowledge",
+            GfxPdu::QoeFrameAcknowledge(_) => "QoeFrameAcknowledge",
+            GfxPdu::CacheImportOffer(_) => "CacheImportOffer",
+            _ => "other",
+        };
+        debug!(pdu_kind, payload_len = payload.len(), "EGFX DVC PDU received");
 
         match pdu {
             GfxPdu::CapabilitiesAdvertise(pdu) => {
