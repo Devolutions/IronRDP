@@ -90,6 +90,10 @@ impl fmt::Debug for GwSmartCardCredentials {
 
 #[derive(Clone, Debug)]
 pub struct GwConnectTarget {
+    /// Gateway host with an optional port.
+    ///
+    /// Omitted ports use the HTTPS default of 443.
+    /// Bracket IPv6 literals, such as `[2001:db8::1]:8443`.
     pub gw_endpoint: String,
     pub gw_user: String,
     pub gw_pass: String,

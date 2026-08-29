@@ -351,35 +351,62 @@ async fn upgrade_gateway_tls(
 }
 
 fn parse_gateway_endpoint(endpoint: &str) -> Result<GatewayEndpoint, Error> {
-    let (host, port) = endpoint
-        .rsplit_once(':')
-        .ok_or_else(|| Error::new("connect", GwErrorKind::InvalidGwTarget))?;
-    let host = host
+    if endpoint.contains('@') {
+        return Err(Error::new("connect", GwErrorKind::InvalidGwTarget));
+    }
+    let authority = endpoint
+        .parse::<http::uri::Authority>()
+        .map_err(|_| Error::new("connect", GwErrorKind::InvalidGwTarget))?;
+    let host = authority
+        .host()
         .strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host);
+        .unwrap_or_else(|| authority.host());
+    let bracketed = authority.host().starts_with('[');
     if host.is_empty()
         || host
             .bytes()
             .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || (bracketed && !matches!(host.parse(), Ok(IpAddr::V6(_))))
     {
         return Err(Error::new("connect", GwErrorKind::InvalidGwTarget));
     }
 
-    let port = port
-        .parse()
-        .map_err(|_| Error::new("connect", GwErrorKind::InvalidGwTarget))?;
+    let has_explicit_port = if bracketed {
+        match endpoint.rsplit_once(']') {
+            Some((_, "")) => false,
+            Some((_, suffix)) if suffix.starts_with(':') => true,
+            _ => return Err(Error::new("connect", GwErrorKind::InvalidGwTarget)),
+        }
+    } else {
+        endpoint.contains(':')
+    };
+    let port = match authority.port_u16() {
+        Some(port) => port,
+        None if !has_explicit_port => 443,
+        None => return Err(Error::new("connect", GwErrorKind::InvalidGwTarget)),
+    };
+    let endpoint = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
 
     Ok(GatewayEndpoint {
         host: host.to_owned(),
         port,
-        endpoint: endpoint.to_owned(),
+        endpoint,
     })
 }
 
 #[cfg(feature = "test-support")]
 pub(crate) fn gateway_endpoint_is_valid(endpoint: &str) -> bool {
     parse_gateway_endpoint(endpoint).is_ok()
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn gateway_endpoint_summary(endpoint: &str) -> Result<String, Error> {
+    parse_gateway_endpoint(endpoint).map(|gateway| gateway.endpoint)
 }
 
 async fn open_gateway_tcp(

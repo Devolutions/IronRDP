@@ -12,8 +12,8 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use ironrdp_mstsgu::GwConnectTarget;
 use ironrdp_mstsgu::test_support::{
-    GatewayTransport, gateway_endpoint_is_valid, proxy_debug, proxy_summary, proxy_uses_basic_authorization,
-    validate_proxy_response,
+    GatewayTransport, gateway_endpoint_is_valid, gateway_endpoint_summary, proxy_debug, proxy_summary,
+    proxy_uses_basic_authorization, validate_proxy_response,
 };
 use ironrdp_tls::CertificateValidation;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -95,6 +95,41 @@ fn rejects_unsupported_or_malformed_proxy_urls() {
         assert!(proxy_summary("gateway.example.test", Some(proxy), None, None, None).is_err());
     }
     assert!(!gateway_endpoint_is_valid("gateway.example.test\r\nX-Injected: 443"));
+}
+
+#[test]
+fn parses_gateway_endpoints_with_default_https_port() {
+    assert_eq!(
+        gateway_endpoint_summary("gateway.example.test").expect("parse hostname"),
+        "gateway.example.test:443"
+    );
+    assert_eq!(
+        gateway_endpoint_summary("gateway.example.test:8443").expect("parse hostname and port"),
+        "gateway.example.test:8443"
+    );
+    assert_eq!(
+        gateway_endpoint_summary("[2001:db8::1]").expect("parse bracketed IPv6 address"),
+        "[2001:db8::1]:443"
+    );
+    assert_eq!(
+        gateway_endpoint_summary("[2001:db8::1]:8443").expect("parse bracketed IPv6 address and port"),
+        "[2001:db8::1]:8443"
+    );
+
+    for endpoint in [
+        "",
+        ":443",
+        "gateway.example.test:",
+        "gateway.example.test:99999",
+        "gateway.example.test:443:8443",
+        "display-name@actual-gateway:443",
+        "2001:db8::1",
+        "[2001:db8::1",
+        "[2001:db8::1]443",
+        "[gateway.example.test]:443",
+    ] {
+        assert!(!gateway_endpoint_is_valid(endpoint), "must reject {endpoint:?}");
+    }
 }
 
 #[test]
