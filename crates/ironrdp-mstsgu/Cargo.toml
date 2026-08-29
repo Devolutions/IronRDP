@@ -16,9 +16,6 @@ categories.workspace = true
 doctest = false
 test = false
 
-[[test]]
-name = "rpch_v2"
-path = "tests/rpch_v2.rs"
 [features]
 default = []
 rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
