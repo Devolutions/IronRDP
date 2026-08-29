@@ -328,3 +328,36 @@ fn wheel_rotations() {
 
     assert_eq!(actual_inputs.as_slice(), expected_inputs.as_slice());
 }
+
+#[rstest]
+#[case(300, 255)]
+#[case(-300, -256)]
+#[case(i16::MAX, 255)]
+#[case(i16::MIN, -256)]
+#[case(255, 255)]
+#[case(-256, -256)]
+fn wheel_rotations_out_of_range_is_clamped(#[case] rotation_units: i16, #[case] expected: i16) {
+    // A single OS scroll event (fast trackpad fling, etc.) can report a delta beyond
+    // the wire's 9-bit two's-complement range (MS-RDPBCGR 2.2.8.1.1.3.1.1.3,
+    // WheelRotationMask, representable range [-256, 255]). `Database::apply` must
+    // clamp rather than pass it through: `MousePdu::encode` only debug_asserts the
+    // range, so an out-of-range value panics in debug builds and silently wraps
+    // (via a truncating cast) in release builds.
+    let mut db = Database::default();
+
+    let packets = db.apply(core::iter::once(Operation::WheelRotations(WheelRotations {
+        is_vertical: true,
+        rotation_units,
+    })));
+    let packet = packets.into_iter().next().expect("one input event");
+
+    assert_eq!(
+        packet,
+        FastPathInputEvent::MouseEvent(MousePdu {
+            flags: PointerFlags::VERTICAL_WHEEL,
+            number_of_wheel_rotation_units: expected,
+            x_position: 0,
+            y_position: 0,
+        })
+    );
+}

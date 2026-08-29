@@ -27,7 +27,7 @@ use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
 use ironrdp_pdu::rdp::capability_sets::{
-    BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, EntropyBits, GeneralExtraFlags,
+    BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, EntropyBits, GeneralExtraFlags, LargePointerSupportFlags,
 };
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
@@ -1279,6 +1279,11 @@ impl RdpServer {
     /// Run a single RDP connection over `stream`, performing the
     /// IronRDP-managed TLS handshake on `ShouldUpgrade` (standard TCP+TLS).
     ///
+    /// Socket options on `stream` are the caller's to set. In particular RDP
+    /// is a stream of small, latency-sensitive writes, so a TCP stream should
+    /// have `TCP_NODELAY` set; [`RdpServer::run`] does that for the
+    /// connections it accepts itself.
+    ///
     /// Equivalent to [`run_connection_with`](Self::run_connection_with) with
     /// [`TransportTls::Managed`].
     pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
@@ -1290,6 +1295,9 @@ impl RdpServer {
 
     /// Run a single RDP connection over `stream`, choosing who performs the TLS
     /// handshake with `tls`.
+    ///
+    /// Socket options on `stream` are the caller's to set; see
+    /// [`run_connection`](Self::run_connection).
     ///
     /// With [`TransportTls::Managed`], IronRDP performs the TLS accept on
     /// `ShouldUpgrade`, exactly as [`run_connection`](Self::run_connection).
@@ -1558,6 +1566,15 @@ impl RdpServer {
                         debug!(?peer, "Connection rejected by handler");
                         drop(stream);
                     } else {
+                        // RDP output is small writes the peer is waiting on: a
+                        // frame, a pointer update, a channel PDU. Nagle holds
+                        // the trailing partial segment of each until the
+                        // previous is acknowledged, which against a peer using
+                        // delayed acknowledgements is dead time on every one.
+                        // Not worth refusing a connection over, though.
+                        if let Err(error) = stream.set_nodelay(true) {
+                            warn!(?peer, %error, "Failed to set TCP_NODELAY; interactive latency may suffer");
+                        }
                         let started = tokio::time::Instant::now();
                         let result = self.run_connection(stream).await;
                         let duration = started.elapsed();
@@ -2430,6 +2447,10 @@ impl RdpServer {
         let mut update_codecs = UpdateEncoderCodecs::new();
         let mut surface_flags = CmdFlags::empty();
         let mut pointer_cache_size: u16 = 0;
+        // Absence means the client did not send a Large Pointer Capability Set at all,
+        // which per MS-RDPBCGR 2.2.7.2.7 leaves the pointer size ceiling at 32x32 (the
+        // base Color/New Pointer Update limit with no large-pointer flags set).
+        let mut large_pointer_flags = LargePointerSupportFlags::empty();
         for c in result.capabilities {
             match c {
                 CapabilitySet::General(c) => {
@@ -2523,6 +2544,14 @@ impl RdpServer {
                     // else in this crate populates that cache via the Color Pointer Update.
                     pointer_cache_size = p.pointer_cache_size;
                 }
+                CapabilitySet::LargePointer(lp) => {
+                    // MS-RDPBCGR 2.2.7.2.7: LARGE_POINTER_FLAG_96x96 raises the Color/New
+                    // Pointer Update ceiling from 32x32 to 96x96; LARGE_POINTER_FLAG_384x384
+                    // additionally unlocks the dedicated Fast-Path Large Pointer Update, up to
+                    // 384x384. `UpdateEncoder` uses these flags to decide which pointer
+                    // updates it can send at all, and at what size.
+                    large_pointer_flags = lp.flags;
+                }
                 _ => {}
             }
         }
@@ -2534,6 +2563,7 @@ impl RdpServer {
             update_codecs,
             self.opts.max_request_size,
             pointer_cache_size,
+            large_pointer_flags,
         )?;
 
         self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)

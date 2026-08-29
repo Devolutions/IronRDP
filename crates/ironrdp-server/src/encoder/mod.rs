@@ -8,9 +8,10 @@ use ironrdp_pdu::encode_vec;
 use ironrdp_pdu::fast_path::UpdateCode;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::pointer::{
-    CachedPointerAttribute, ColorPointerAttribute, Point16, PointerAttribute, PointerPositionAttribute,
+    CachedPointerAttribute, ColorPointerAttribute, LargePointerAttribute, Point16, PointerAttribute,
+    PointerPositionAttribute,
 };
-use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits};
+use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits, LargePointerSupportFlags};
 use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, SurfaceCommand};
 use tracing::{debug, warn};
 
@@ -19,7 +20,7 @@ use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
 use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _};
 use crate::macros::time_warn;
-use crate::{ColorPointer, DisplayUpdate, Framebuffer, RGBAPointer};
+use crate::{ColorPointer, DisplayUpdate, Framebuffer, LargePointer, RGBAPointer};
 
 mod bitmap;
 mod fast_path;
@@ -132,6 +133,12 @@ pub(crate) struct UpdateEncoder {
     /// New Pointer Update; `RGBAPointer`/`CachedPointer` emission is skipped in that
     /// case rather than sending a PDU the client did not agree to accept.
     pointer_cache_size: u16,
+    /// Client's advertised Large Pointer Capability Set flags (MS-RDPBCGR 2.2.7.2.7).
+    /// Empty when the client didn't send this capability set at all. Governs both the
+    /// pointer size ceiling for `RGBAPointer` (32x32 with no flags, 96x96 with
+    /// `UP_TO_96X96_PIXELS`) and whether the dedicated `LargePointer` update, up to
+    /// 384x384, is usable at all (`UP_TO_384X384_PIXELS`).
+    large_pointer_flags: LargePointerSupportFlags,
 }
 
 impl fmt::Debug for UpdateEncoder {
@@ -150,6 +157,7 @@ impl UpdateEncoder {
         codecs: UpdateEncoderCodecs,
         max_request_size: u32,
         pointer_cache_size: u16,
+        large_pointer_flags: LargePointerSupportFlags,
     ) -> ServerResult<Self> {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
             match codecs {
@@ -186,7 +194,35 @@ impl UpdateEncoder {
             max_request_size: usize::try_from(max_request_size)
                 .map_err(|e| ServerError::custom("max_request_size", e))?,
             pointer_cache_size,
+            large_pointer_flags,
         })
+    }
+
+    /// Whether a `width`x`height` pointer shape fits the Color/New Pointer Update
+    /// ceiling: 96x96 if the client's Large Pointer Capability Set includes
+    /// `UP_TO_96X96_PIXELS` (MS-RDPBCGR 2.2.9.1.1.4.4's width/height field docs; New
+    /// Pointer Update carries the same `ColorPointerAttribute` internally, so the same
+    /// ceiling applies to both), 32x32 otherwise. Shapes above this ceiling need the
+    /// dedicated Large Pointer Update instead (see `large_pointer_update_supported`).
+    fn color_or_new_pointer_size_ok(&self, width: u16, height: u16) -> bool {
+        let max = if self
+            .large_pointer_flags
+            .contains(LargePointerSupportFlags::UP_TO_96X96_PIXELS)
+        {
+            96
+        } else {
+            32
+        };
+        width <= max && height <= max
+    }
+
+    /// Whether the client negotiated the dedicated Fast-Path Large Pointer Update
+    /// itself. Per MS-RDPBCGR 2.2.7.2.7, only `UP_TO_384X384_PIXELS` unlocks this PDU;
+    /// `UP_TO_96X96_PIXELS` alone only raises the Color/New Pointer Update ceiling and
+    /// does not enable it.
+    fn large_pointer_update_supported(&self) -> bool {
+        self.large_pointer_flags
+            .contains(LargePointerSupportFlags::UP_TO_384X384_PIXELS)
     }
 
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
@@ -227,6 +263,28 @@ impl UpdateEncoder {
         Ok(UpdateFragmenter::new(
             UpdateCode::NewPointer,
             encode_vec(&ptr).map_err(ServerError::encode)?,
+        ))
+    }
+
+    fn large_pointer(ptr: LargePointer) -> ServerResult<UpdateFragmenter> {
+        let xor_mask = ptr.data;
+
+        let hot_spot = Point16 {
+            x: ptr.hot_x,
+            y: ptr.hot_y,
+        };
+        let large_pointer = LargePointerAttribute {
+            xor_bpp: 32,
+            cache_index: ptr.cache_index,
+            hot_spot,
+            width: ptr.width,
+            height: ptr.height,
+            xor_mask: &xor_mask,
+            and_mask: &[],
+        };
+        Ok(UpdateFragmenter::new(
+            UpdateCode::LargePointer,
+            encode_vec(&large_pointer).map_err(ServerError::encode)?,
         ))
     }
 
@@ -430,7 +488,36 @@ impl EncoderIter<'_> {
                             debug!("Dropping RGBAPointer update: client did not advertise New Pointer Update support");
                             continue;
                         }
+                        if !encoder.color_or_new_pointer_size_ok(ptr.width, ptr.height) {
+                            debug!(
+                                "Dropping RGBAPointer update: {}x{} exceeds the client's negotiated pointer size \
+                                 ceiling",
+                                ptr.width, ptr.height,
+                            );
+                            continue;
+                        }
                         UpdateEncoder::rgba_pointer(ptr)
+                    }
+                    DisplayUpdate::LargePointer(ptr) => {
+                        if encoder.pointer_cache_size == 0 {
+                            debug!("Dropping LargePointer update: client did not advertise New Pointer Update support");
+                            continue;
+                        }
+                        if !encoder.large_pointer_update_supported() {
+                            debug!(
+                                "Dropping LargePointer update: client did not advertise \
+                                 LARGE_POINTER_FLAG_384x384 support"
+                            );
+                            continue;
+                        }
+                        if 384 < ptr.width || 384 < ptr.height {
+                            debug!(
+                                "Dropping LargePointer update: {}x{} exceeds the 384x384 protocol maximum",
+                                ptr.width, ptr.height,
+                            );
+                            continue;
+                        }
+                        UpdateEncoder::large_pointer(ptr)
                     }
                     DisplayUpdate::ColorPointer(ptr) => UpdateEncoder::color_pointer(ptr),
                     DisplayUpdate::HidePointer => UpdateEncoder::hide_pointer(),

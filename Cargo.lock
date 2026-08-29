@@ -3184,6 +3184,7 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-rdpemt",
  "ironrdp-rdpeudp",
+ "ironrdp-tls",
  "sha2 0.10.9",
  "tokio",
  "tokio-rustls",
