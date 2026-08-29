@@ -376,9 +376,10 @@ pub fn pdu_round_trip(data: &[u8]) {
 /// decoder-accepted inputs, integer overflow / OOB in egfx encoders, panics
 /// in the decoder when fed encoder-produced bytes.
 ///
-/// What this does NOT catch: the OpenH264 input-construction wrapper, ZGFX
-/// decompression, multi-frame H.264 state. Those are sibling targets in the
-/// egfx fuzz-coverage umbrella.
+/// What this does NOT catch: the OpenH264 input-construction wrapper,
+/// multi-frame H.264 state. Those are sibling targets in the egfx
+/// fuzz-coverage umbrella. ZGFX decompression is covered by
+/// [`egfx_zgfx_decompress`].
 pub fn egfx_round_trip(data: &[u8]) {
     use ironrdp_egfx::pdu::{
         Avc420BitmapStream, Avc444BitmapStream, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, GfxPdu,
@@ -1338,4 +1339,35 @@ pub fn egfx_avc444_decode(data: &[u8]) {
             let _ = avc_to_annex_b(stream2.data);
         }
     }
+}
+
+/// ZGFX decompression oracle.
+///
+/// ZGFX is the egfx-specific compression scheme defined in MS-RDPEGFX
+/// 2.2.5.1-2.2.5.3 (segmentation and encoding) and 3.1.9.1 (RDP 8.0 Bulk
+/// Compression processing rules). It is distinct from `ironrdp-bulk`'s
+/// MPPC/NCRUSH/XCRUSH (those carry connection-level RDP traffic; ZGFX wraps
+/// individual EGFX PDU payloads).
+/// The implementation lives in `ironrdp-graphics::zgfx` and uses a
+/// 2.5 MB sliding-window history.
+///
+/// Each iteration constructs a fresh `Decompressor` so history state does not
+/// leak between fuzz inputs. The output buffer is local to the iteration.
+///
+/// What this catches: panics in the segmented-PDU parser, OOB reads/writes
+/// in the LZ77-style match-copy path, decompression bombs that exhaust the
+/// output buffer, corrupted-history paths that desynchronize the circular
+/// buffer's read/write cursors.
+///
+/// What this does NOT catch: cross-iteration state (history reuse across
+/// PDU sequences). The multi-frame oracle target under #1316 covers that
+/// shape when it lands. A memory-budget overlay is also planned once the
+/// shape question on #1120 is settled; the panic/sanitizer-only oracle here
+/// is the interim baseline.
+pub fn egfx_zgfx_decompress(data: &[u8]) {
+    use ironrdp_graphics::zgfx::Decompressor;
+
+    let mut decompressor = Decompressor::new();
+    let mut output = Vec::new();
+    let _ = decompressor.decompress(data, &mut output);
 }

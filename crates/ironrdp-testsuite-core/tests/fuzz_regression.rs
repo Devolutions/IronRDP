@@ -81,3 +81,8 @@ fn check_message_decoding_invariants() {
 fn check_egfx_avc444_decode() {
     check!(egfx_avc444_decode);
 }
+
+#[test]
+fn check_egfx_zgfx_decompress() {
+    check!(egfx_zgfx_decompress);
+}
