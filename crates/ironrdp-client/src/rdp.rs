@@ -3153,13 +3153,20 @@ async fn active_session(
                                 Some(dvc) if !dvc.processor().ready() => Err(LocationInputError::ChannelNotReady),
                                 Some(dvc) => {
                                     let channel_id = dvc.channel_id();
-                                    dvc.processor().prepare_location(latitude, longitude, altitude).map(
-                                        |(prepared, messages)| (prepared, DvcMessageBatch::new(channel_id, messages)),
-                                    )
-                                    .map_err(|error| {
-                                        warn!(%error, "Unable to encode location update");
-                                        LocationInputError::EncodingFailed
-                                    })
+                                    dvc.processor()
+                                        .prepare_location(latitude, longitude, altitude)
+                                        .map_err(|error| {
+                                            warn!(%error, "Unable to encode location update");
+                                            LocationInputError::EncodingFailed
+                                        })
+                                        .and_then(|(prepared, messages)| {
+                                            DvcMessageBatch::try_new(channel_id, messages)
+                                                .map(|batch| (prepared, batch))
+                                                .map_err(|error| {
+                                                    warn!(%error, "Unable to prepare location update");
+                                                    LocationInputError::EncodingFailed
+                                                })
+                                        })
                                 }
                             };
 
@@ -3378,7 +3385,8 @@ async fn active_session(
         };
 
         if let Some(batch) = iteration.dvc_batch {
-            let (channel_id, messages) = batch.into_parts();
+            let channel_id = batch.channel_id();
+            let messages = batch.into_messages();
             #[cfg(feature = "udp")]
             let route_over_udp =
                 active_stage.dvc_tunnel_for_channel(channel_id) == Some(SoftSyncTunnelType::RELIABLE_UDP);
@@ -3896,7 +3904,8 @@ async fn active_session(
                         .ok_or_else(|| ironrdp_session::general_err!("Display Control became unavailable"))??;
                     resize_queue.pending = None;
                     resize_queue.mark_in_flight(request);
-                    let (channel_id, messages) = batch.into_parts();
+                    let channel_id = batch.channel_id();
+                    let messages = batch.into_messages();
                     #[cfg(feature = "udp")]
                     let route_over_udp =
                         active_stage.dvc_tunnel_for_channel(channel_id) == Some(SoftSyncTunnelType::RELIABLE_UDP);
