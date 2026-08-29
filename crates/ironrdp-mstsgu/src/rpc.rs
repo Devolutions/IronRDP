@@ -56,16 +56,28 @@ pub const PFC_FIRST_FRAG: u8 = 0x01;
 pub const PFC_LAST_FRAG: u8 = 0x02;
 
 /// `response` PDU type ([C706] 12.6.4.9).
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 pub const PTYPE_RESPONSE: u8 = 2;
 /// `fault` PDU type ([C706] 12.6.4.9).
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 pub const PTYPE_FAULT: u8 = 3;
 /// `request` PDU type ([C706] 12.6.4.8).
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 pub const PTYPE_REQUEST: u8 = 0;
 /// `bind` PDU type ([C706] 12.6.4.3).
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 pub const PTYPE_BIND: u8 = 11;
 /// `bind_ack` PDU type ([C706] 12.6.4.4).
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 pub const PTYPE_BIND_ACK: u8 = 12;
 /// `bind_nak` PDU type ([C706] 12.6.4.5).
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 pub const PTYPE_BIND_NAK: u8 = 13;
 /// `rts` PDU type ([MS-RPCH] 2.2.3.2).
 pub const PTYPE_RTS: u8 = 20;
@@ -125,7 +137,7 @@ pub enum RpcPduError {
     FragmentExceedsMaximum { fragment_length: u16, maximum: u16 },
     PendingBytesExceedMaximum { actual: usize, maximum: usize },
     LengthOverflow,
-    UnexpectedContextId { actual: u16 },
+    UnexpectedContextId { expected: u16, actual: u16 },
     InvalidAllocHint { alloc_hint: u32, stub_length: usize },
     EmptyPresentationContexts,
     TooManyPresentationContexts { actual: usize },
@@ -205,8 +217,11 @@ impl fmt::Display for RpcPduError {
                 write!(f, "pending rpc stream size {actual} exceeds maximum {maximum}")
             }
             Self::LengthOverflow => f.write_str("rpc pdu length overflow"),
-            Self::UnexpectedContextId { actual } => {
-                write!(f, "unexpected rpc presentation context id {actual}")
+            Self::UnexpectedContextId { expected, actual } => {
+                write!(
+                    f,
+                    "unexpected rpc presentation context id {actual}, expected {expected}"
+                )
             }
             Self::InvalidAllocHint {
                 alloc_hint,
@@ -242,7 +257,8 @@ impl fmt::Display for RpcPduError {
             Self::InvalidBindNakVersionsLength { actual, expected } => {
                 write!(
                     f,
-                    "invalid rpc bind_nak body length {actual}, expected at least {expected}"
+                    "invalid rpc bind_nak body length {actual}: expected {expected} or at least {}",
+                    expected.saturating_add(16)
                 )
             }
             Self::UnexpectedRtsCallId { actual } => write!(f, "unexpected rts call id {actual}"),
@@ -335,6 +351,8 @@ impl RpcSyntaxIdentifier {
 /// One presentation context requested in an RPC bind.
 ///
 /// [C706] 12.6.4.3.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RpcPresentationContext<'a> {
     pub context_id: u16,
@@ -361,6 +379,8 @@ pub struct RpcPresentationResult {
 /// acknowledgement in each direction.
 ///
 /// [C706] 12.6.4.4.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RpcBindAck<'a> {
     pub call_id: u32,
@@ -822,6 +842,8 @@ pub struct RpcFault<'a> {
 /// Encodes one complete, unauthenticated RPC bind PDU.
 ///
 /// [C706] 12.6.4.3.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 pub fn encode_rpc_bind(
     call_id: u32,
     fragment_sizes: RpcFragmentSizes,
@@ -897,6 +919,8 @@ pub fn encode_rpc_bind(
 /// Decodes one complete, unauthenticated RPC bind acknowledgement.
 ///
 /// [C706] 12.6.4.4.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 pub fn decode_rpc_bind_ack(
     source: &[u8],
     offered_fragment_sizes: RpcFragmentSizes,
@@ -1111,6 +1135,8 @@ pub fn decode_rpc_response(source: &[u8], maximum_fragment_size: u16) -> Result<
 /// Decodes one complete, unauthenticated RPC response PDU for `context_id`.
 ///
 /// [C706] 12.6.4.9.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 pub fn decode_rpc_response_for_context(
     source: &[u8],
     maximum_fragment_size: u16,
@@ -1130,6 +1156,8 @@ pub fn decode_rpc_response_fragment(source: &[u8], maximum_fragment_size: u16) -
 /// Decodes one unauthenticated RPC response fragment for `context_id`.
 ///
 /// [C706] 12.6.4.9.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 pub fn decode_rpc_response_fragment_for_context(
     source: &[u8],
     maximum_fragment_size: u16,
@@ -1163,6 +1191,7 @@ pub fn decode_rpc_fault_for_context(
     let actual_context_id = read_u16(fault_header, 4)?;
     if actual_context_id != context_id {
         return Err(RpcPduError::UnexpectedContextId {
+            expected: context_id,
             actual: actual_context_id,
         });
     }
@@ -1192,6 +1221,7 @@ fn decode_rpc_response_body<'a>(
     let actual_context_id = read_u16(request_header, 4)?;
     if actual_context_id != context_id {
         return Err(RpcPduError::UnexpectedContextId {
+            expected: context_id,
             actual: actual_context_id,
         });
     }

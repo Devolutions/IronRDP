@@ -659,9 +659,16 @@ fn bind_and_request_codecs_match_connection_oriented_rpc_wire_layouts() {
         0,
         0,
     ];
-    let ack = decode_rpc_bind_ack(&bind_ack, RpcFragmentSizes::DEFAULT).expect("valid bind acknowledgement");
+    let offered_fragment_sizes = RpcFragmentSizes::new(0x1000, 0x0a00).expect("valid offered maxima");
+    let mut bind_ack = bind_ack;
+    bind_ack[16..18].copy_from_slice(&0x0c00u16.to_le_bytes());
+    bind_ack[18..20].copy_from_slice(&0x0e00u16.to_le_bytes());
+    let ack = decode_rpc_bind_ack(&bind_ack, offered_fragment_sizes).expect("valid bind acknowledgement");
     assert_eq!(ack.call_id, 0x7856_3412);
-    assert_eq!(ack.fragment_sizes, RpcFragmentSizes::DEFAULT);
+    assert_eq!(
+        ack.fragment_sizes,
+        RpcFragmentSizes::new(0x0e00, 0x0a00).expect("valid negotiated maxima")
+    );
     assert_eq!(ack.association_group_id, 0xdead_beef);
     assert_eq!(ack.secondary_address, b"135");
     assert_eq!(ack.results.len(), 1);
@@ -762,7 +769,7 @@ fn bind_and_request_codecs_match_connection_oriented_rpc_wire_layouts() {
     ];
     assert_eq!(
         decode_rpc_fault(&fault, DEFAULT_FRAGMENT_SIZE),
-        Err(RpcPduError::UnexpectedContextId { actual: 7 })
+        Err(RpcPduError::UnexpectedContextId { expected: 0, actual: 7 })
     );
     assert_eq!(
         decode_rpc_fault_for_context(&fault, DEFAULT_FRAGMENT_SIZE, 7).expect("valid fault"),
