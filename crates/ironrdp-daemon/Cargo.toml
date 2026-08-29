@@ -13,10 +13,10 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["rustls", "dvc-pipe-proxy", "rdpdr", "smartcard", "vmconnect"] } # public
-ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
+ironrdp-client = { path = "../ironrdp-client", version = "0.2", features = ["rustls", "dvc-pipe-proxy", "rdpdr", "smartcard", "vmconnect"] } # public
+ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.2" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.10" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
 ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.1" } # public
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.2" }
@@ -40,7 +40,7 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # WebAuthn redirection is Windows-only (webauthn.dll / WebAuthN* APIs).
-ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["webauthn"] }
+ironrdp-client = { path = "../ironrdp-client", version = "0.2", features = ["webauthn"] }
 ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.7" }
 
 [lints]

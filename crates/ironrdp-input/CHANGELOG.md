@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-input-v0.7.0...ironrdp-input-v0.7.1)] - 2026-08-29
+
+### <!-- 4 -->Bug Fixes
+
+- Clamp wheel rotation units to the wire's 9-bit range ([#1818](https://github.com/Devolutions/IronRDP/issues/1818)) ([2685d85cc4](https://github.com/Devolutions/IronRDP/commit/2685d85cc4f95e2ee3294e4edda4d0ff41f9ff80)) 
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-input-v0.6.0...ironrdp-input-v0.7.0)] - 2026-07-10
 
 ### <!-- 7 -->Build

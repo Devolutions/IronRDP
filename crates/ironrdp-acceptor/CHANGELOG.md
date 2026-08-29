@@ -6,6 +6,231 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.10.0...ironrdp-acceptor-v0.11.0)] - 2026-08-29
+
+### <!-- 0 -->Security
+
+- Validate auto-reconnect cookies ([#1509](https://github.com/Devolutions/IronRDP/issues/1509)) ([44f675e244](https://github.com/Devolutions/IronRDP/commit/44f675e244ee76b5311756668ffbbe28e98c7175)) 
+
+  ## Summary
+  - parse and carry `ARC_CS_PRIVATE_PACKET` data through the acceptor
+  - validate returning Enhanced RDP Security cookies with HMAC-MD5 before
+  reconnecting
+  - rotate reconnect randoms per connection and hourly, with runtime
+  cookie updates
+  - restrict cookie authentication to TLS/Hybrid and document the behavior
+  
+  ## Testing
+  - `cargo test -p ironrdp-pdu -p ironrdp-acceptor -p ironrdp-server`
+  - `cargo clippy -p ironrdp-pdu -p ironrdp-acceptor -p ironrdp-server
+  --all-targets -- -D warnings`
+
+### <!-- 1 -->Features
+
+- Expose client multitransport flags on AcceptorResult ([#1453](https://github.com/Devolutions/IronRDP/issues/1453)) ([f0fc215555](https://github.com/Devolutions/IronRDP/commit/f0fc215555394a89510ff85c7b8a93b20e878074)) 
+
+  ## What
+  
+  The acceptor already parses the client's GCC `MultiTransportChannelData`
+  block (MS-RDPBCGR §2.2.1.3.8) into `ClientGccBlocks` during
+  `BasicSettingsWaitInitial` and then discards it, keeping only the
+  early-capability flags, core desktop size, and keyboard layout. This
+  surfaces the client's multitransport (MS-RDPEMT) capability flags on
+  `AcceptorResult`.
+  
+  ## Why
+  
+  A server implementing UDP multitransport needs to know whether the
+  client advertised support (`SOFT_SYNC_TCP_TO_UDP`,
+  `TRANSPORT_TYPE_UDP_FEC{R,L}`) before deciding whether to send a Server
+  Initiate Multitransport Request. Today that information is parsed and
+  thrown away, so there's no way for a downstream server to see it.
+  
+  ## Shape
+  
+  Purely additive, mirroring the existing `keyboard_layout` ([#1397](https://github.com/Devolutions/IronRDP/issues/1397)) and
+  desktop-size ([#1373](https://github.com/Devolutions/IronRDP/issues/1373)) surfacing of GCC client data the acceptor already
+  parses:
+  
+  - new private `multitransport_flags: gcc::MultiTransportFlags` field on
+  `Acceptor`, captured from `gcc_blocks.multi_transport_channel`;
+  - new `pub multitransport_flags: gcc::MultiTransportFlags` field on
+  `AcceptorResult`;
+  - empty when the client sends no multitransport block;
+  - carried across a deactivation-reactivation like the sibling fields.
+  
+  No behavior change — the acceptor just stops discarding a block it
+  already decodes.
+  
+  `cargo clippy -p ironrdp-acceptor --all-targets` and `cargo fmt --check`
+  are clean.
+
+- [**breaking**] Clamp honored client desktop size to an operator maximum ([#1404](https://github.com/Devolutions/IronRDP/issues/1404)) ([d3747a05b2](https://github.com/Devolutions/IronRDP/commit/d3747a05b202ba2d87ac19698354ae7e487850a2)) 
+
+  Follow-up to #1373 (the resource-hardening angle you flagged in review —
+  thanks for the go-ahead 🙂).
+  
+  ## Problem
+  
+  `#1373` gated honor-client-desktop-size behind a bare `bool`. With it
+  on, the acceptor adopts the client-requested desktop size bounded only
+  by the protocol range `[200, 8192]`. But the desktop size is a
+  client-controlled `u16`, and the server still builds its
+  framebuffer/encoder from the negotiated size — so a client could request
+  e.g. `8192x8192` and drive the server's allocation off an untrusted
+  number (~256 MiB per frame buffer). Mild, and only on an opt-in
+  default-off path, but it's a resource-exhaustion vector driven purely by
+  a number the client picks.
+  
+  Your review comment: *"[200, 8192] is a protocol ceiling, not a resource
+  guard … tracked the 'clamp/range policy rather than a bare bool' idea as
+  a future follow-up (an operator-set max size)."* This is that PR.
+  
+  ## Change
+  
+  Replace the `bool` with `Option<DesktopSize>` carrying an **operator-set
+  maximum**:
+  
+  - `None` (default) — disabled; always enforce the server-provided size
+  (unchanged behavior).
+  - `Some(max)` — honor the client's request, **clamped per dimension to
+  `max`**. The client can ask for a smaller desktop, never a larger one.
+  
+  The acceptor clamps the requested `width`/`height` to `max` *before* the
+  existing `validate_desktop_size` protocol-range check, so the negotiated
+  size can never exceed what the operator is willing to render — set `max`
+  to the host display's native resolution (or whatever ceiling the server
+  can afford).
+
+- Support runtime-defined static virtual channels ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba)) 
+
+  ## Summary
+  - add keyed runtime-defined static-channel registration, lookup, and
+  negotiated ID attachment
+  - enforce the static-channel limit and reject malformed SVC fragment
+  sequences
+  - wire generic connector, acceptor, and session name-based dispatch
+  support
+  
+  ## Testing
+  - `cargo test -p ironrdp-testsuite-core --test integration_tests_core
+  svc::`
+  - `cargo clippy -p ironrdp-testsuite-core --test integration_tests_core
+  -- -D warnings`
+  
+  ---------
+
+- Negotiate monitor topology ([#1675](https://github.com/Devolutions/IronRDP/issues/1675)) ([063efcdc30](https://github.com/Devolutions/IronRDP/commit/063efcdc3088d8f44e423cc322077d40bf9aadf2)) 
+
+  Negotiate the client monitor layout from UseMultimon and expose the
+  confirmed remote topology through the ActiveX compatibility interface.
+  
+  Advertise Monitor Layout PDU support whenever Extended Client Data is
+  negotiated, and forward layouts from activation, active sessions, and
+  reactivation so advertised support does not terminate sessions.
+  
+  Keep fallback reporting truthful when servers do not honor the request,
+  while preserving single-monitor resize behavior and blocking
+  multi-monitor resizing.
+  
+  Do not send Client Monitor Extended Data; per-monitor DPI and
+  orientation remain unavailable.
+
+- [**breaking**] Pass frame arrival time into Sequence::step ([#1530](https://github.com/Devolutions/IronRDP/issues/1530)) ([6a499faece](https://github.com/Devolutions/IronRDP/commit/6a499faece8911e50a715a3fb08d4fd8e7d7dc87)) 
+
+  ## Summary
+  
+  - Connect-time bandwidth measurement needs to know when bytes arrived,
+  and nothing in the sans-I/O layer could tell it. #1465, now merged,
+  answers the server's Bandwidth Measure Stop with a nominal interval for
+  exactly that reason: the connector has no way to observe the real one.
+  - Introduce `MonotonicInstant`, a millisecond counter with an arbitrary
+  epoch, and make `Option<MonotonicInstant>` a required parameter of
+  `Sequence::step`. The I/O drivers already know when a read completed, so
+  `Framed` records the arrival time of each read and hands it to the state
+  machine. A driver with no clock passes `None`.
+  - With arrival times available, measure for real: a Bandwidth Measure
+  Start opens a window, Payload messages accumulate their byte counts, and
+  Stop reports the elapsed time between its own arrival and the Start's.
+  
+  #1465 has merged, so this applies directly to master and carries no
+  merge-order dependency. That PR was the FreeRDP unblock on its own; this
+  is the design change behind it, split out at @CBenoit's suggestion in
+  review.
+  
+  ## Why the clock lives in the driver
+  
+  Two reasons, both of which rule out having the sequence read a clock
+  itself.
+
+- [**breaking**] Expose per-connection keyboard metadata via ConnectionHandler ([#1691](https://github.com/Devolutions/IronRDP/issues/1691)) ([393869b30b](https://github.com/Devolutions/IronRDP/commit/393869b30b1078da7204c6bf20e8a5472e419070)) 
+
+  ## Summary
+  
+  AcceptorResult already carried keyboard_layout (the client's GCC Client
+  Core Data keyboardLayout, MS-RDPBCGR 2.2.1.3.2), but ironrdp-server's
+  client_accepted never read it, and the only extension point that could
+  plausibly expose it, ConnectionHandler::on_accept/on_disconnected, only
+  fires from RdpServer::run's own accept loop. An embedder with its own
+  accept loop calling run_connection or run_connection_with directly never
+  sees these hooks at all.
+  
+  Added keyboard_type and ime_file_name to Acceptor and AcceptorResult,
+  captured from the same Client Core Data alongside keyboard_layout.
+  
+  Added a new ConnectionInfo struct and a default-no-op
+  ConnectionHandler::on_connection_info(&ConnectionInfo) method, fired
+  from client_accepted itself, right after credential and auto-reconnect
+  validation succeed. This is reachable from every code path that
+  completes connection setup, not only run's accept loop, so it is usable
+  by embedders that never call run.
+  
+  Kept the hook synchronous. It only hands the embedder a small Clone-able
+  struct; an embedder that needs to do blocking work in response can spawn
+  its own task, the same way the existing on_accept/on_disconnected hooks
+  already work.
+  
+  Open question: AcceptorResult is a public struct without non_exhaustive,
+  so the two new fields are a real breaking change for any consumer
+  destructuring it exhaustively, same class as the keyboardType change in
+  #1689. AcceptorResult's attributes are unchanged here since marking it
+  non_exhaustive is a broader decision than this PR's two fields.
+  
+  ## Validation
+  
+  cargo xtask check fmt/lints/tests/typos/locks all pass.
+  
+  ## Review round and rebase, 2026-08-19
+  
+  #1689 (KeyboardType) merged. This branch was still carrying a stale
+  pre-merge copy of that commit, so the diff was cumulative against
+  master. Rebased onto current master, which dropped the redundant
+  duplicate commit (its content was already upstream) and left this PR's
+  own single commit.
+  
+  Four review findings from the bot review, all addressed:
+  
+  - `on_connection_info` fired on every Deactivation-Reactivation resize,
+  not just the initial connection, since `accept_finalize` loops back into
+  `client_accepted` with `result.reactivation` set. Gated the call on
+  `!result.reactivation`, matching the existing gate on the static-channel
+  start block just below it.
+  - `get_result()` took `ime_file_name` via `mem::take`, emptying it out
+  of the acceptor before `new_deactivation_reactivation` copied the same
+  acceptor's field into the next result, so every reactivation after the
+  first reported an empty IME name. Changed to a clone, matching how the
+  Copy-type sibling fields on the same lines already survive.
+  - No regression test covered the permissive zero/unrecognized-value
+  keyboardType decode in the Input capability set. Added
+  `keyboard_type_zero_decodes_to_none` and
+  `keyboard_type_unrecognized_value_round_trips` (0x51).
+  - A fourth finding asked for the same coverage on Client Core Data's own
+  keyboardType field; that test already exists on master, added to #1689
+  in response to its own review. The rebase above inherits it directly, so
+  no new code was needed there.
+
+
+
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.9.0...ironrdp-acceptor-v0.10.0)] - 2026-07-10
 
 ### <!-- 1 -->Features
