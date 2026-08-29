@@ -122,6 +122,7 @@ fn parses_gateway_endpoints_with_default_https_port() {
         "gateway.example.test:",
         "gateway.example.test:99999",
         "gateway.example.test:443:8443",
+        "display-name@actual-gateway:443",
         "2001:db8::1",
         "[2001:db8::1",
         "[2001:db8::1]443",

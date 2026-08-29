@@ -351,6 +351,9 @@ async fn upgrade_gateway_tls(
 }
 
 fn parse_gateway_endpoint(endpoint: &str) -> Result<GatewayEndpoint, Error> {
+    if endpoint.contains('@') {
+        return Err(Error::new("connect", GwErrorKind::InvalidGwTarget));
+    }
     let authority = endpoint
         .parse::<http::uri::Authority>()
         .map_err(|_| Error::new("connect", GwErrorKind::InvalidGwTarget))?;
