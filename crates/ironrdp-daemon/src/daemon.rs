@@ -1781,6 +1781,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
+    use ironrdp_cfg::{GatewayUsageMethod, PropertySetExt as _};
     use tokio::sync::mpsc;
 
     use ironrdp_client::output_channel::output_channel;
@@ -2381,6 +2382,21 @@ mod tests {
             insecure.certificate_validation(),
             CertificateValidation::DangerouslyAcceptInvalidCertificate
         );
+    }
+
+    #[test]
+    fn gateway_property_set_requires_gateway_credentials() {
+        let daemon = Daemon::with_overlay(PropertySet::new());
+        let mut properties = PropertySet::new();
+        properties.set_gateway_hostname("gateway.example:443");
+        properties.set_gateway_usage_method(GatewayUsageMethod::UseAlways);
+
+        assert!(matches!(
+            daemon.connect(properties, None),
+            Response::Err(error)
+                if error.message
+                    == "missing required fields: server address, username, password, gateway username, gateway password"
+        ));
     }
 
     #[test]
