@@ -5,14 +5,6 @@ const Ajv = require("ajv");
 const { ActionError, fail } = require("./errors");
 const { MAX_MODEL_OUTPUT_BYTES, MAX_TOOL_ARGUMENT_BYTES } = require("./limits");
 
-const MODEL_UNAVAILABLE_CODES = new Set([
-  "deployment_not_found",
-  "invalid_model",
-  "model_not_available",
-  "model_not_found",
-  "model_unavailable",
-]);
-
 const TOOLS = [
   {
     type: "function",
@@ -70,7 +62,6 @@ class AgentFailure extends Error {
     super(reason, cause ? { cause } : undefined);
     this.name = "AgentFailure";
     this.reason = reason;
-    this.model = state?.model || "";
     this.turnCount = state?.providerCalls || 0;
     this.toolCallCount = state?.toolCalls || 0;
   }
@@ -83,15 +74,6 @@ function providerFailureReason(error) {
   if (status >= 500 && status <= 599) return "provider service unavailable";
   if (status >= 400 && status <= 499) return "provider rejected the request";
   return "provider request failed";
-}
-
-function isModelUnavailable(error) {
-  const status = Number(error?.status);
-  const code = typeof error?.code === "string"
-    ? error.code
-    : typeof error?.error?.code === "string" ? error.error.code : "";
-  return [400, 404, 422, 503].includes(status) &&
-    MODEL_UNAVAILABLE_CODES.has(code.toLowerCase());
 }
 
 function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
@@ -149,45 +131,33 @@ function initialMessages(prompt, methodologies, schema) {
 async function runAgent({ client, config, methodologies, prompt, sandbox, schema }) {
   const validateOutput = compileOutputValidator(schema, config.max_output_bytes);
   const state = {
-    model: config.model,
     providerCalls: 0,
-    successfulTurns: 0,
     toolCalls: 0,
   };
 
   try {
-    return await runModel(config.model, initialMessages(prompt, methodologies, schema), state);
+    return await runModel(initialMessages(prompt, methodologies, schema));
   } catch (error) {
-    if (config.fallback_model && state.successfulTurns === 0 && state.toolCalls === 0 &&
-        state.providerCalls === 1 && isModelUnavailable(error)) {
-      state.model = config.fallback_model;
-      try {
-        return await runModel(config.fallback_model, initialMessages(prompt, methodologies, schema), state);
-      } catch (fallbackError) {
-        throw withState(fallbackError, state);
-      }
-    }
     throw withState(error, state);
   }
 
-  async function runModel(model, messages, sharedState) {
-    while (sharedState.providerCalls < config.max_turns) {
-      const allowTools = sharedState.toolCalls < config.max_tool_calls;
-      const response = await completion(model, messages, allowTools);
-      sharedState.successfulTurns++;
+  async function runModel(messages) {
+    while (state.providerCalls < config.max_turns) {
+      const allowTools = state.toolCalls < config.max_tool_calls;
+      const response = await completion(messages, allowTools);
       const message = firstMessage(response);
       messages.push(message);
       const calls = message.tool_calls;
       if (!Array.isArray(calls) || calls.length === 0) {
         const candidate = validateOutput(textContent(message.content));
-        if (candidate.ok) return result(candidate.output, sharedState);
-        return repair(model, messages, candidate.reason, sharedState);
+        if (candidate.ok) return result(candidate.output, state);
+        return repair(messages, candidate.reason);
       }
-      if (calls.length > config.max_tool_calls - sharedState.toolCalls) {
-        throw new AgentFailure("maximum tool call count exceeded", undefined, sharedState);
+      if (calls.length > config.max_tool_calls - state.toolCalls) {
+        throw new AgentFailure("maximum tool call count exceeded", undefined, state);
       }
       for (const call of calls) {
-        sharedState.toolCalls++;
+        state.toolCalls++;
         const toolResult = executeTool(call, sandbox);
         messages.push({
           role: "tool",
@@ -196,12 +166,12 @@ async function runAgent({ client, config, methodologies, prompt, sandbox, schema
         });
       }
     }
-    throw new AgentFailure("maximum turn count exceeded", undefined, sharedState);
+    throw new AgentFailure("maximum turn count exceeded", undefined, state);
   }
 
-  async function repair(model, messages, validationReason, sharedState) {
-    if (sharedState.providerCalls >= config.max_turns) {
-      throw new AgentFailure("maximum turn count exceeded", undefined, sharedState);
+  async function repair(messages, validationReason) {
+    if (state.providerCalls >= config.max_turns) {
+      throw new AgentFailure("maximum turn count exceeded", undefined, state);
     }
     messages.push({
       role: "user",
@@ -211,32 +181,25 @@ async function runAgent({ client, config, methodologies, prompt, sandbox, schema
         "Do not call tools or investigate further. Return only corrected JSON.",
       ].join("\n"),
     });
-    const response = await completion(model, messages, false);
+    const response = await completion(messages, false);
     const message = firstMessage(response);
     if (Array.isArray(message.tool_calls) && message.tool_calls.length !== 0) {
-      throw new AgentFailure("repair response attempted a tool call", undefined, sharedState);
+      throw new AgentFailure("repair response attempted a tool call", undefined, state);
     }
     const candidate = validateOutput(textContent(message.content));
-    if (!candidate.ok) throw new AgentFailure("repair response was invalid", undefined, sharedState);
-    return result(candidate.output, sharedState);
+    if (!candidate.ok) throw new AgentFailure("repair response was invalid", undefined, state);
+    return result(candidate.output, state);
   }
 
-  async function completion(model, messages, allowTools) {
+  async function completion(messages, allowTools) {
     state.providerCalls++;
-    try {
-      const request = {
-        model,
-        messages,
-      };
-      if (allowTools) {
-        request.tools = TOOLS;
-        request.tool_choice = "auto";
-        request.parallel_tool_calls = false;
-      }
-      return await client.chat.completions.create(request);
-    } catch (error) {
-      throw error;
+    const request = { model: config.model, messages };
+    if (allowTools) {
+      request.tools = TOOLS;
+      request.tool_choice = "auto";
+      request.parallel_tool_calls = false;
     }
+    return client.chat.completions.create(request);
   }
 }
 
@@ -258,23 +221,15 @@ function firstMessage(response) {
 
 function withState(error, state) {
   if (error instanceof AgentFailure) {
-    if (!error.model) {
-      error.model = state.model;
-      error.turnCount = state.providerCalls;
-      error.toolCallCount = state.toolCalls;
-    }
+    error.turnCount = state.providerCalls;
+    error.toolCallCount = state.toolCalls;
     return error;
   }
   return new AgentFailure(providerFailureReason(error), error, state);
 }
 
 function textContent(content) {
-  if (typeof content === "string") {
-    if (Buffer.byteLength(content, "utf8") > MAX_MODEL_OUTPUT_BYTES) {
-      throw new AgentFailure("provider response exceeded byte limit");
-    }
-    return content.trim();
-  }
+  if (typeof content === "string") return content.trim();
   throw new AgentFailure("provider response did not contain text");
 }
 
@@ -316,13 +271,11 @@ function executeTool(call, sandbox) {
 function result(output, state) {
   return {
     output,
-    model: state.model,
     turnCount: state.providerCalls,
     toolCallCount: state.toolCalls,
   };
 }
 
 module.exports = {
-  AgentFailure, TOOLS, compileOutputValidator, executeTool, isModelUnavailable, providerFailureReason,
-  runAgent,
+  AgentFailure, TOOLS, compileOutputValidator, executeTool, providerFailureReason, runAgent,
 };

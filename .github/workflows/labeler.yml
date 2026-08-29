@@ -418,7 +418,7 @@ jobs:
       failure-reason: ${{ steps.agent.outputs.failure-reason }}
       duplicate-candidates: ${{ steps.duplicate-candidates.outputs.manifest }}
     steps:
-      - name: Fetch trusted base and untrusted PR head without credentials
+      - name: Fetch base and PR head without credentials
         shell: bash
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
@@ -463,7 +463,7 @@ jobs:
               candidates.map(({ number, url }) => ({ number, url })),
             ));
 
-      - name: Write trusted classifier context
+      - name: Write classifier context
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
@@ -607,14 +607,16 @@ jobs:
                 .filter((run) => run.external_id === externalId)
                 .sort((left, right) => right.id - left.id)[0];
               const classification = completed(classificationRuns, `${SCHEMA_VERSION}:${headSha}`);
-              const trusted = classification?.conclusion === "success" && classification.app?.slug === "github-actions";
+              const classificationOwned = classification?.conclusion === "success" &&
+                classification.app?.slug === "github-actions";
               // A check without the current machine-readable state predates this contract: fail closed
               // and wait for a later classification event to rewrite it.
-              const protocolState = trusted ? parseCheckState(classification.output?.summary) : null;
-              const classificationCheck = trusted && protocolState !== null &&
+              const protocolState = classificationOwned ? parseCheckState(classification.output?.summary) : null;
+              const classificationCheck = classificationOwned && protocolState !== null &&
                 protocolState.automaticReviewEligible === true &&
                 classification.output?.title === "Classification complete";
-              const legitimacyStopped = trusted && classification.output?.title === "Automation stopped";
+              const legitimacyStopped = classificationOwned &&
+                classification.output?.title === "Automation stopped";
               const protocolRelated = protocolState?.protocolRelated === true;
               if (force) {
                 const route = resolveReviewerRoute({
@@ -695,7 +697,7 @@ jobs:
       output: ${{ steps.final.outputs.output }}
       failure-reason: ${{ steps.final.outputs.reason }}
     steps:
-      - name: Prepare trusted review evidence once
+      - name: Prepare review evidence once
         shell: bash
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
@@ -806,7 +808,7 @@ jobs:
           config-file: .github/pr-automation/agents/code-compressor.json
 
       - id: aggregate
-        name: Build trusted specialist aggregate
+        name: Build validated specialist findings
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}

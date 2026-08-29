@@ -22,7 +22,6 @@ const CONFIG_SCHEMA = {
   properties: {
     id: { type: "string", pattern: SAFE_ID.source },
     model: { type: "string", pattern: SAFE_MODEL.source },
-    fallback_model: { type: "string", pattern: SAFE_MODEL.source },
     prompt_file: { type: "string", minLength: 1 },
     schema_file: { type: "string", minLength: 1 },
     methodology_files: {
@@ -57,8 +56,8 @@ function parseJson(text, code) {
 }
 
 function loadConfiguration(workspace, configFile) {
-  const unrestricted = new WorkspaceSandbox(workspace);
-  const rawConfig = unrestricted.readTrustedFile(configFile, MAX_CONFIG_BYTES);
+  const workspaceReader = new WorkspaceSandbox(workspace);
+  const rawConfig = workspaceReader.readWorkflowFile(configFile, MAX_CONFIG_BYTES);
   const config = parseJson(rawConfig, "configuration is not valid JSON");
   const validate = new Ajv({ allErrors: true, strict: true }).compile(CONFIG_SCHEMA);
   if (!validate(config)) fail("configuration does not match its schema");
@@ -66,14 +65,12 @@ function loadConfiguration(workspace, configFile) {
       config.allowed_roots.length === 0 && config.allowed_files.length === 0) {
     fail("configuration grants no filesystem capabilities");
   }
-  if (config.fallback_model === config.model) fail("fallback model must differ from primary model");
-
   const sandbox = new WorkspaceSandbox(workspace, {
     allowedRoots: config.allowed_roots,
     allowedFiles: config.allowed_files,
   });
-  const prompt = unrestricted.readTrustedFile(config.prompt_file, MAX_PROMPT_BYTES);
-  const schemaText = unrestricted.readTrustedFile(config.schema_file, MAX_SCHEMA_BYTES);
+  const prompt = workspaceReader.readWorkflowFile(config.prompt_file, MAX_PROMPT_BYTES);
+  const schemaText = workspaceReader.readWorkflowFile(config.schema_file, MAX_SCHEMA_BYTES);
   const schema = parseJson(schemaText, "output schema is not valid JSON");
   if (schema === null || typeof schema !== "object" || Array.isArray(schema)) {
     fail("output schema must be an object");
@@ -82,7 +79,7 @@ function loadConfiguration(workspace, configFile) {
   const methodologies = [];
   let methodologyBytes = 0;
   for (const file of config.methodology_files || []) {
-    const content = unrestricted.readTrustedFile(file, MAX_METHODOLOGY_BYTES);
+    const content = workspaceReader.readWorkflowFile(file, MAX_METHODOLOGY_BYTES);
     methodologyBytes += Buffer.byteLength(content, "utf8");
     if (methodologyBytes > MAX_METHODOLOGY_TOTAL_BYTES) fail("methodology files exceed byte limit");
     methodologies.push(content);

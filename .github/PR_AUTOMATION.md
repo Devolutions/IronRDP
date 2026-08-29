@@ -6,19 +6,19 @@ Automatic routes stop at `ai-reviewed/2` unless a maintainer uses force mode.
 ## Review pipeline
 
 Classification and review use [Helmcode's OpenAI-compatible endpoint](https://api.helmcode.com/v1).
-The classifier uses `qwen3.6` and falls back to `glm-5.2` only when Helmcode reports that the primary model is unavailable.
+The classifier uses `qwen3.6`.
 The protocol, skeptical, code-compressor, and general reviewers use `glm-5.2`.
 
-The trusted pipeline performs these stages:
+The pipeline performs these stages:
 
 1. Prepare a SHA-bound changed-file manifest, diff, pull request context, and read-only head tree.
 2. Classify risk, scope, legitimacy, duplicate likelihood, protocol relevance, and useful specialist reviewers.
-3. Apply trusted routing rules and persist the canonical review plan in the `AI classification` check.
+3. Apply workflow-controlled routing rules and persist the canonical review plan in the `AI classification` check.
 4. Run selected specialists sequentially in the order `protocol`, `skeptical`, then `code-compressor`.
 5. Validate each specialist result and write `validated-specialist-findings.json`.
 6. Run the general reviewer as an independent reviewer and verifier.
 7. Validate its candidate dispositions, findings, locations, and provenance.
-8. Resolve trusted state and publish through the existing serialized writer.
+8. Resolve validated state and publish through the serialized writer.
 
 The classifier can suggest specialists but cannot suppress mandatory review.
 Protocol-related changes always require the protocol specialist.
@@ -26,7 +26,7 @@ Medium- and high-risk changes always require the skeptical specialist.
 IronRDP configures sequential execution only, and model output cannot select parallelism.
 
 Specialists use one bounded candidate schema.
-Each candidate binds to the expected head SHA, a trusted reviewer ID, a changed path, an optional added-line range, and a unique finding ID.
+Each candidate binds to the expected head SHA, a configured reviewer ID, a changed path, an optional added-line range, and a unique finding ID.
 Protocol candidates also carry structured protocol references.
 One specialist never receives another specialist's output.
 
@@ -36,7 +36,7 @@ Only the validated general-review result can be published.
 
 ## Visible finding sources
 
-Trusted code derives a visible prefix from validated source references.
+Workflow code derives a visible prefix from validated source references.
 The model cannot provide or override the prefix.
 
 Examples include:
@@ -57,7 +57,7 @@ Model-generated titles and rationales remain untrusted and are escaped independe
 ## Model runtime
 
 `.github/actions/openai-agent` is a bundled JavaScript action built on the official OpenAI SDK.
-It loads a trusted agent configuration, prompt, output schema, methodology, and filesystem capability list.
+It loads a workflow-controlled agent configuration, prompt, output schema, methodology, and filesystem capability list.
 It exposes only `read_file`, `list_files`, and `search_text`.
 It enforces turn, tool-call, path, byte, line, recursion, result, timeout, and retry limits.
 It validates JSON against the configured schema and permits one tools-disabled correction completion.
@@ -67,11 +67,11 @@ It logs bounded metadata only and never logs prompts, pull request content, tool
 
 The action directory contains no IronRDP prompts, reviewer identities, routing, OpenSpecs handling, state resolution, or publication policy.
 It can move to the public Devolutions Actions repository without deleting repository-specific code.
-Extraction should preserve the bundled artifact, lockfile, tests, input contract, and trusted consumer configuration.
+Extraction should preserve the bundled artifact, lockfile, tests, input contract, and consumer-controlled configuration.
 
 ## Evidence and filesystem boundaries
 
-`.github/pr-automation/fetch-pr-evidence.sh` runs from the trusted base checkout without repository credentials.
+`.github/pr-automation/fetch-pr-evidence.sh` runs from the base checkout without repository credentials.
 It binds evidence to the resolved base and head SHAs and computes the merge-base diff.
 The untrusted head tree is available only for surrounding context.
 
@@ -86,10 +86,10 @@ Final publication rechecks the current head before mutation.
 ## Protocol corpus
 
 The protocol specialist reads the Microsoft Open Specifications as inert data under `review-sources/windows-protocols`.
-The trusted workflow pins a reviewed `awakecoding/openspecs` commit, fetches that exact SHA without credentials, and copies only allowlisted regular Markdown files.
+The workflow pins a reviewed `awakecoding/openspecs` commit, fetches that exact SHA without credentials, and copies only allowlisted regular Markdown files.
 It excludes skills, instruction files, symlinks, submodules, executables, and lifecycle content.
 
-Trusted validation uses the same corpus commit that the specialist read.
+Citation validation uses the same corpus commit that the specialist read.
 Every protocol ID, section number, and heading must exist at that exact commit.
 An unavailable corpus, protocol specialist, or protocol validation blocks publication for a mandatory protocol review.
 
@@ -106,7 +106,7 @@ Risk labels express required maintainer scrutiny:
 
 `cargo-semver-checks` incompatibility forces `risk/high`.
 A model-suspected breaking change promotes `risk/low` to `risk/medium`.
-Trusted paths can add `scope/core`, `scope/web`, `scope/ffi`, and `scope/tooling`.
+Path rules can add `scope/core`, `scope/web`, `scope/ffi`, and `scope/tooling`.
 The classifier controls `scope/cross-cutting`, `kind/technical-debt`, and documentation-only classification.
 
 Automatic review requires successful CI for the exact classified head and at least three qualifying merged IronRDP pull requests from the author.
@@ -171,11 +171,11 @@ api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
 The environment must contain the secret named exactly `HELMCODE_GLM_API_KEY`.
 Do not add a second provider secret or expose this key through prompts, files, outputs, logs, summaries, fixtures, diagnostics, or unrelated child processes.
 
-Trusted agent configuration lives in `.github/pr-automation/agents`.
+Agent configuration lives in `.github/pr-automation/agents` on the base branch.
 Configuration fixes model selection, prompts, schemas, methodologies, filesystem capabilities, and execution limits.
 Models cannot alter these values or the Helmcode endpoint.
 
-To migrate final-review stages to GLM-5.3, update the trusted `model` fields after Helmcode exposes the model and the action's mocked provider and schema tests pass unchanged.
+To migrate final-review stages to GLM-5.3, update the base-branch `model` fields after Helmcode exposes the model and the action's mocked provider and schema tests pass unchanged.
 Keep classification on a separate model while concurrency isolation remains useful.
 
 ## Label setup

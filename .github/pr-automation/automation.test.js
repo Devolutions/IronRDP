@@ -317,7 +317,7 @@ test("every deterministic label is declared and the repository rules classify to
   assert.equal(result.firstTime, false);
 });
 
-test("deterministic analysis applies trusted scopes and source size", () => {
+test("deterministic analysis applies configured scopes and source size", () => {
   const rules = parseLabelerRules('scope/core:\n  - changed-files:\n      - any-glob-to-any-file: "crates/ironrdp-core/**"\n');
   const result = analyzeFiles([{ filename: "crates/a/src/lib.rs", additions: 29, deletions: 0 }], { labelerRules: rules });
   assert.deepEqual(result.pathLabels, []);
@@ -424,7 +424,7 @@ test("classifier normalizes PR 1564 quoted-empty-string output", () => {
   assert.equal(result.value.non_legitimate_reason, "");
 });
 
-test("candidate reviews require trusted identity, changed paths, and paired lines", () => {
+test("candidate reviews require configured identity, changed paths, and paired lines", () => {
   const context = {
     expectedSha: SHA,
     expectedReviewer: "skeptical",
@@ -592,7 +592,7 @@ test("model prose validation does not rely on prompt-injection text matching", (
   }).ok, true);
 });
 
-test("classifier output validation requires trusted PR context", () => {
+test("classifier output validation requires PR context", () => {
   assert.equal(validateClassifier(classifier(), {
     expectedSha: SHA, changedPaths: ["src/lib.rs"], prNumber: 7,
   }).ok, true);
@@ -610,7 +610,7 @@ test("classifier output validation requires trusted PR context", () => {
   }).ok, false);
 });
 
-test("general reviewer accounts for every candidate and derives trusted provenance", () => {
+test("general reviewer accounts for every candidate and derives validated provenance", () => {
   const aggregate = {
     head_sha: SHA,
     reviewers: [{
@@ -652,7 +652,7 @@ test("general reviewer accounts for every candidate and derives trusted provenan
   }, context).ok, false);
 });
 
-test("general-only and merged findings receive deterministic trusted categories", () => {
+test("general-only and merged findings receive deterministic categories", () => {
   assert.equal(provenancePrefix([]), "[general]");
   assert.equal(provenancePrefix([
     { reviewer: "skeptical", finding_id: "s1" },
@@ -701,7 +701,7 @@ test("classification check state survives a round trip and fails closed when abs
   assert.throws(() => encodeCheckState({}));
 });
 
-test("trusted routing adds mandatory reviewers and rejects unknown or noncanonical plans", () => {
+test("routing adds mandatory reviewers and rejects unknown or noncanonical plans", () => {
   assert.deepEqual(resolveReviewerRoute({
     suggestedReviewers: ["code-compressor"],
     protocolRelated: true,
@@ -1191,7 +1191,7 @@ test("forced classification bypasses policy, quota, and cache but still validate
   assert.equal(wrongHead.failed, true);
 });
 
-test("forced review bypasses eligibility while retaining trusted publication gates", () => {
+test("forced review bypasses eligibility while retaining publication gates", () => {
   const reviewer = review({ has_findings: false, summary: "none", findings: [] });
   const args = {
     expectedSha: SHA,

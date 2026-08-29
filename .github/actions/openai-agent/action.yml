@@ -6,10 +6,10 @@ inputs:
     description: API key sent to the configured OpenAI-compatible endpoint
     required: true
   base-url:
-    description: Trusted OpenAI-compatible API base URL
+    description: Configured OpenAI-compatible API base URL
     required: true
   config-file:
-    description: Trusted action configuration file relative to the workspace
+    description: Workflow-controlled action configuration relative to the workspace
     required: true
 
 outputs:
@@ -17,8 +17,6 @@ outputs:
     description: Schema-validated JSON returned by the selected model
   failure-reason:
     description: Bounded failure category when no valid output was produced
-  model:
-    description: Model that produced the output, including a trusted fallback when used
   turn-count:
     description: Number of provider completion requests attempted
   tool-call-count:

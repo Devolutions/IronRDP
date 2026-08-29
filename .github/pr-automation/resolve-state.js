@@ -174,7 +174,7 @@ function resolveClassificationState({
   });
   if (!machineState) {
     return failedClassification(
-      expectedSha, deterministic, "trusted reviewer routing unavailable", failureRateLimit, semverStatus);
+      expectedSha, deterministic, "reviewer routing unavailable", failureRateLimit, semverStatus);
   }
   const duplicate = model.duplicate.detected && model.duplicate.confidence >= 0.85;
   const optional = [
@@ -313,7 +313,7 @@ function resolveReviewState({
       protocolRelated: gate.protocolRelated,
       risk: gate.risk,
     });
-    if (!route.ok) return fail("trusted reviewer route unavailable");
+    if (!route.ok) return fail("reviewer route unavailable");
     if (contributor?.status === "ineligible") {
       const reason = Number.isSafeInteger(contributor.merged)
         ? `contributor history ineligible (merged: ${contributor.merged}, required: ${ELIGIBLE_MERGED_PRS})`

@@ -116,7 +116,7 @@ class WorkspaceSandbox {
       isInside(root.real, target.real));
   }
 
-  readTrustedFile(repositoryPath, maxBytes) {
+  readWorkflowFile(repositoryPath, maxBytes) {
     const target = this.resolve(repositoryPath, "file", false);
     return this.readText(target, maxBytes);
   }

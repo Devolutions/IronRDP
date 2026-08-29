@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Materializes the untrusted pull request head beside the trusted base checkout and derives the evidence the LLM stages are given.
+# Materializes the untrusted pull request head beside the base checkout and derives the evidence the LLM stages are given.
 # It runs without repository credentials and writes nothing back.
 #
 # The model runtime receives only explicitly allowed files and has no command execution or Git access.

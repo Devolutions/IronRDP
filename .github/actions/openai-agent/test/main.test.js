@@ -8,14 +8,14 @@ const assert = require("node:assert/strict");
 const { main } = require("../src/main");
 const { scratchWorkspace, write } = require("./helpers");
 
-test("action metadata exposes only the trusted inputs and required outputs on node24", () => {
+test("action metadata exposes only configured inputs and required outputs on node24", () => {
   const action = fs.readFileSync(path.join(__dirname, "..", "action.yml"), "utf8");
   assert.match(action, /runs:\r?\n  using: node24\r?\n  main: dist\/index\.js/);
   for (const input of ["api-key", "base-url", "config-file"]) {
     assert.match(action, new RegExp(`^  ${input}:\\r?$`, "m"));
   }
   for (const output of [
-    "structured-output", "failure-reason", "model", "turn-count", "tool-call-count",
+    "structured-output", "failure-reason", "turn-count", "tool-call-count",
   ]) {
     assert.match(action, new RegExp(`^  ${output}:\\r?$`, "m"));
   }
@@ -109,7 +109,6 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
     assert.equal(request.model, "safe-model");
     assert.equal(core.outputs.get("structured-output"), '{"answer":"MODEL_RESPONSE_SENTINEL"}');
     assert.equal(core.outputs.get("failure-reason"), "");
-    assert.equal(core.outputs.get("model"), "safe-model");
     assert.equal(core.outputs.get("turn-count"), "1");
     assert.equal(core.outputs.get("tool-call-count"), "0");
     assert.equal(core.events.some((event) => event[0] === "failed"), false);

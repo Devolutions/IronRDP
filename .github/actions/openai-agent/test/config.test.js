@@ -12,8 +12,8 @@ const { scratchWorkspace, write } = require("./helpers");
 function configurationFixture(changes = {}) {
   const workspace = scratchWorkspace();
   fs.mkdirSync(path.join(workspace.directory, "root"));
-  write(workspace.directory, "prompt.md", "trusted prompt");
-  write(workspace.directory, "method.md", "trusted method");
+  write(workspace.directory, "prompt.md", "configured prompt");
+  write(workspace.directory, "method.md", "configured method");
   write(workspace.directory, "schema.json", JSON.stringify({
     type: "object",
     required: ["ok"],
@@ -36,13 +36,13 @@ function configurationFixture(changes = {}) {
   return workspace;
 }
 
-test("configuration loads trusted artifacts and constructs capabilities", () => {
+test("configuration loads workflow artifacts and constructs capabilities", () => {
   const workspace = configurationFixture();
   try {
     const loaded = loadConfiguration(workspace.directory, "config.json");
     assert.equal(loaded.config.id, "generic-test");
-    assert.equal(loaded.prompt, "trusted prompt");
-    assert.deepEqual(loaded.methodologies, ["trusted method"]);
+    assert.equal(loaded.prompt, "configured prompt");
+    assert.deepEqual(loaded.methodologies, ["configured method"]);
     assert.equal(loaded.schema.type, "object");
     assert.doesNotThrow(() => loaded.sandbox.listFiles({ path: "root" }));
   } finally {
@@ -50,12 +50,11 @@ test("configuration loads trusted artifacts and constructs capabilities", () => 
   }
 });
 
-test("configuration rejects unknown fields, unsafe models, empty capabilities, and duplicate fallback", () => {
+test("configuration rejects unknown fields, unsafe models, and empty capabilities", () => {
   for (const changes of [
     { unexpected: true },
     { model: "unsafe model\n" },
     { allowed_roots: [], allowed_files: [] },
-    { fallback_model: "model-1" },
     { max_output_bytes: 1023 },
     { max_turns: 51 },
     { max_tool_calls: 201 },

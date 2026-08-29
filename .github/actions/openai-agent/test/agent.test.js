@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
-  AgentFailure, TOOLS, executeTool, isModelUnavailable, providerFailureReason, runAgent,
+  AgentFailure, TOOLS, executeTool, providerFailureReason, runAgent,
 } = require("../src/agent");
 
 const schema = {
@@ -80,7 +80,6 @@ test("runtime executes only declared tools and returns schema-validated canonica
   });
   assert.deepEqual(result, {
     output: '{"answer":"done"}',
-    model: "primary",
     turnCount: 2,
     toolCallCount: 3,
   });
@@ -257,58 +256,7 @@ test("zero-tool configuration never exposes filesystem tools", async () => {
   assert.equal(requests[0].tool_choice, undefined);
 });
 
-test("trusted fallback runs only for a coded model-unavailable first failure", async () => {
-  const requests = [];
-  const unavailable = Object.assign(new Error("raw secret provider text"), {
-    status: 404,
-    code: "model_not_found",
-  });
-  const result = await runAgent({
-    client: clientFrom([{ throw: unavailable }, message('{"answer":"fallback"}')], requests),
-    config: { ...baseConfig, fallback_model: "fallback" },
-    methodologies: [], prompt: "p", sandbox, schema,
-  });
-  assert.equal(result.model, "fallback");
-  assert.equal(result.turnCount, 2);
-  assert.deepEqual(requests.map((request) => request.model), ["primary", "fallback"]);
-});
-
-test("fallback never runs for authentication, quota, generic 404, or later failures", async () => {
-  for (const providerError of [
-    { status: 401, code: "model_not_found" },
-    { status: 429, code: "model_not_found" },
-    { status: 404 },
-  ]) {
-    const requests = [];
-    await assert.rejects(
-      runAgent({
-        client: clientFrom([{ throw: providerError }], requests),
-        config: { ...baseConfig, fallback_model: "fallback" },
-        methodologies: [], prompt: "p", sandbox, schema,
-      }),
-      (error) => error.model === "primary",
-    );
-    assert.equal(requests.length, 1);
-  }
-
-  const requests = [];
-  await assert.rejects(
-    runAgent({
-      client: clientFrom([
-        message(null, [call("one", "read_file", { path: "x" })]),
-        { throw: { status: 404, code: "model_not_found" } },
-      ], requests),
-      config: { ...baseConfig, fallback_model: "fallback" },
-      methodologies: [], prompt: "p", sandbox, schema,
-    }),
-    (error) => error.model === "primary" && error.toolCallCount === 1,
-  );
-  assert.equal(requests.length, 2);
-});
-
 test("provider errors are reduced to fixed non-sensitive categories", () => {
-  assert.equal(isModelUnavailable({ status: 404, code: "model_not_found" }), true);
-  assert.equal(isModelUnavailable({ status: 404, message: "model not found" }), false);
   assert.equal(providerFailureReason({ status: 401, message: "secret" }), "provider authentication failed");
   assert.equal(providerFailureReason({ status: 429, message: "secret" }), "provider rate or quota limit reached");
   assert.equal(providerFailureReason({ status: 503, message: "secret" }), "provider service unavailable");

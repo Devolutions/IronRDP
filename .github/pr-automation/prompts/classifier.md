@@ -35,4 +35,4 @@ Use `specialist_reviewers` only to suggest useful additional review.
 Every entry must be `protocol`, `skeptical`, or `code-compressor`, with no duplicates and at most three entries.
 List selected reviewers in that stable order because they execute sequentially.
 Suggest `code-compressor` when the change would benefit from a focused simplification pass.
-Trusted routing policy prevents suggestions from suppressing required reviewers or bypassing automation gates.
+Workflow routing policy prevents suggestions from suppressing required reviewers or bypassing automation gates.

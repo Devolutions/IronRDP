@@ -9,10 +9,9 @@ const { REQUEST_RETRIES, REQUEST_TIMEOUT_MS } = require("./limits");
 
 async function main(core, environment = process.env, OpenAIClient = OpenAI) {
   let apiKey = "";
-  let model = "";
   let turnCount = 0;
   let toolCallCount = 0;
-  setOutputs(core, { output: "", failureReason: "", model, turnCount, toolCallCount });
+  setOutputs(core, { output: "", failureReason: "", turnCount, toolCallCount });
 
   try {
     apiKey = core.getInput("api-key", { required: true, trimWhitespace: false });
@@ -22,12 +21,10 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
     const configFile = core.getInput("config-file", { required: true });
     const workspace = environment.GITHUB_WORKSPACE;
     const loaded = loadConfiguration(workspace, configFile);
-    model = loaded.config.model;
-
     core.info(JSON.stringify({
       event: "openai-agent.start",
       id: loaded.config.id,
-      model,
+      model: loaded.config.model,
       maxTurns: loaded.config.max_turns,
       maxToolCalls: loaded.config.max_tool_calls,
     }));
@@ -40,20 +37,18 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       fetchOptions: { redirect: "error" },
     });
     const result = await runAgent({ client, ...loaded });
-    model = result.model;
     turnCount = result.turnCount;
     toolCallCount = result.toolCallCount;
     setOutputs(core, {
       output: result.output,
       failureReason: "",
-      model,
       turnCount,
       toolCallCount,
     });
     core.info(JSON.stringify({
       event: "openai-agent.complete",
       id: loaded.config.id,
-      model,
+      model: loaded.config.model,
       turnCount,
       toolCallCount,
       outputBytes: Buffer.byteLength(result.output, "utf8"),
@@ -63,21 +58,19 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       ? error.reason
       : error instanceof ActionError ? error.code : "action failed";
     if (error instanceof AgentFailure) {
-      model = error.model || model;
       turnCount = error.turnCount;
       toolCallCount = error.toolCallCount;
     }
-    setOutputs(core, { output: "", failureReason, model, turnCount, toolCallCount });
+    setOutputs(core, { output: "", failureReason, turnCount, toolCallCount });
     core.setFailed(failureReason);
   } finally {
     apiKey = "";
   }
 }
 
-function setOutputs(core, { output, failureReason, model, turnCount, toolCallCount }) {
+function setOutputs(core, { output, failureReason, turnCount, toolCallCount }) {
   core.setOutput("structured-output", output);
   core.setOutput("failure-reason", failureReason);
-  core.setOutput("model", model);
   core.setOutput("turn-count", String(turnCount));
   core.setOutput("tool-call-count", String(toolCallCount));
 }
