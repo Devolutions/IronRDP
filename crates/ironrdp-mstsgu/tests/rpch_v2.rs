@@ -17,6 +17,7 @@ const IN_CHANNEL_COOKIE: RtsCookie = RtsCookie::new([0x30; RtsCookie::SIZE]);
 const ASSOCIATION_GROUP_ID: RtsCookie = RtsCookie::new([0x40; RtsCookie::SIZE]);
 const RECEIVE_WINDOW_SIZE: u32 = 128 * 1024;
 const CONNECTION_TIMEOUT: u32 = 120_000;
+const IN_RECYCLE_CONNECTION_TIMEOUT: u32 = 240_000;
 
 #[test]
 fn conn_a1_and_conn_b1_encode_exact_rts_vectors() {
@@ -242,202 +243,250 @@ fn flow_control_accounts_windows_and_encodes_acknowledgements() {
 fn channel_recycling_encodes_exact_r1_vectors_and_updates_defaults() {
     let successor_in_channel_cookie = RtsCookie::new([0x50; RtsCookie::SIZE]);
     let successor_out_channel_cookie = RtsCookie::new([0x60; RtsCookie::SIZE]);
-    let mut recycling = opened_setup(0).channel_recycling().expect("open setup");
+    let mut setup = opened_setup(0);
+    let mut flow_control = setup.flow_control().expect("open flow control");
+    let mut ping_schedule = setup
+        .ping_schedule(Duration::ZERO, Duration::ZERO)
+        .expect("open ping schedule");
+    {
+        let mut recycling = setup.channel_recycling().expect("open setup");
 
-    let expected_in_a1 = [
-        [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
-        &88u16.to_le_bytes(),
-        &0u16.to_le_bytes(),
-        &0u32.to_le_bytes(),
-        &4u16.to_le_bytes(),
-        &4u16.to_le_bytes(),
-        &6u32.to_le_bytes(),
-        &1u32.to_le_bytes(),
-        &3u32.to_le_bytes(),
-        VIRTUAL_CONNECTION_COOKIE.as_bytes(),
-        &3u32.to_le_bytes(),
-        IN_CHANNEL_COOKIE.as_bytes(),
-        &3u32.to_le_bytes(),
-        successor_in_channel_cookie.as_bytes(),
-    ]
-    .concat();
-    assert_eq!(
+        let expected_in_a1 = [
+            [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
+            &88u16.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &4u16.to_le_bytes(),
+            &4u16.to_le_bytes(),
+            &6u32.to_le_bytes(),
+            &1u32.to_le_bytes(),
+            &3u32.to_le_bytes(),
+            VIRTUAL_CONNECTION_COOKIE.as_bytes(),
+            &3u32.to_le_bytes(),
+            IN_CHANNEL_COOKIE.as_bytes(),
+            &3u32.to_le_bytes(),
+            successor_in_channel_cookie.as_bytes(),
+        ]
+        .concat();
+        assert_eq!(
+            recycling
+                .start_in_recycling(successor_in_channel_cookie)
+                .expect("IN_R1/A1"),
+            expected_in_a1
+        );
+        assert_eq!(recycling.in_state(), RpchInChannelRecycleState::AwaitingA4);
+
+        let in_a4 = [
+            [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
+            &52u16.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            &4u16.to_le_bytes(),
+            &13u32.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &6u32.to_le_bytes(),
+            &1u32.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &(8 * 1024u32).to_le_bytes(),
+            &2u32.to_le_bytes(),
+            &IN_RECYCLE_CONNECTION_TIMEOUT.to_le_bytes(),
+        ]
+        .concat();
+        let decoded_a4 = decode_rts_in_recycle_a4(&in_a4).expect("IN_R1/A4");
+        assert_eq!(decoded_a4.version(), 1);
+        assert_eq!(decoded_a4.receive_window_size(), 8 * 1024);
+        assert_eq!(decoded_a4.connection_timeout(), IN_RECYCLE_CONNECTION_TIMEOUT);
+
+        let expected_in_a5 = [
+            [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
+            &40u16.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            &1u16.to_le_bytes(),
+            &3u32.to_le_bytes(),
+            successor_in_channel_cookie.as_bytes(),
+        ]
+        .concat();
+        assert_eq!(
+            recycling.receive_in_recycle_a4(&in_a4).expect("IN_R1/A5"),
+            expected_in_a5
+        );
+        assert_eq!(recycling.in_state(), RpchInChannelRecycleState::AwaitingA5);
+        assert_eq!(recycling.default_in_channel_cookie(), successor_in_channel_cookie);
+        assert_eq!(recycling.peer_receive_window_size(), 8 * 1024);
         recycling
-            .start_in_recycling(successor_in_channel_cookie)
+            .finish_in_recycling(&mut flow_control, &mut ping_schedule)
+            .expect("IN_R1/A5 sent");
+        assert_eq!(recycling.in_state(), RpchInChannelRecycleState::Open);
+        flow_control
+            .sent_rpc_pdu(4 * 1024)
+            .expect("send on successor IN channel");
+        assert_eq!(
+            flow_control.receive_flow_control_ack(RtsFlowControlAck::new(
+                4 * 1024,
+                8 * 1024,
+                successor_in_channel_cookie,
+            )),
+            Ok(true)
+        );
+        assert!(!ping_schedule.ping_due(Duration::from_secs(239)));
+        assert!(ping_schedule.ping_due(Duration::from_secs(240)));
+
+        let out_a2 = [
+            [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
+            &28u16.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &4u16.to_le_bytes(),
+            &1u16.to_le_bytes(),
+            &13u32.to_le_bytes(),
+            &0u32.to_le_bytes(),
+        ]
+        .concat();
+        decode_rts_out_recycle_a2(&out_a2).expect("OUT_R1/A2");
+        let expected_out_a3 = [
+            [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
+            &96u16.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &4u16.to_le_bytes(),
+            &5u16.to_le_bytes(),
+            &6u32.to_le_bytes(),
+            &1u32.to_le_bytes(),
+            &3u32.to_le_bytes(),
+            VIRTUAL_CONNECTION_COOKIE.as_bytes(),
+            &3u32.to_le_bytes(),
+            OUT_CHANNEL_COOKIE.as_bytes(),
+            &3u32.to_le_bytes(),
+            successor_out_channel_cookie.as_bytes(),
+            &0u32.to_le_bytes(),
+            &RECEIVE_WINDOW_SIZE.to_le_bytes(),
+        ]
+        .concat();
+        assert_eq!(
+            recycling
+                .receive_out_recycle_a2(&out_a2, successor_out_channel_cookie)
+                .expect("OUT_R1/A3"),
+            expected_out_a3
+        );
+        assert_eq!(recycling.out_state(), RpchOutChannelRecycleState::AwaitingA6);
+
+        let out_a6 = [
+            [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
+            &44u16.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &0x10u16.to_le_bytes(),
+            &3u16.to_le_bytes(),
+            &13u32.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &6u32.to_le_bytes(),
+            &1u32.to_le_bytes(),
+            &2u32.to_le_bytes(),
+            &CONNECTION_TIMEOUT.to_le_bytes(),
+        ]
+        .concat();
+        let decoded_a6 = decode_rts_out_recycle_a6(&out_a6).expect("OUT_R1/A6");
+        assert_eq!(decoded_a6.version(), 1);
+        assert_eq!(decoded_a6.connection_timeout(), CONNECTION_TIMEOUT);
+
+        let expected_out_a7 = [
+            [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
+            &48u16.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &0x10u16.to_le_bytes(),
+            &2u16.to_le_bytes(),
+            &13u32.to_le_bytes(),
+            &2u32.to_le_bytes(),
+            &3u32.to_le_bytes(),
+            successor_out_channel_cookie.as_bytes(),
+        ]
+        .concat();
+        assert_eq!(
+            recycling.receive_out_recycle_a6(&out_a6).expect("OUT_R1/A7"),
+            expected_out_a7
+        );
+        assert_eq!(recycling.out_state(), RpchOutChannelRecycleState::AwaitingA10);
+
+        let out_a10 = [
+            [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
+            &24u16.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            &0u32.to_le_bytes(),
+            &0u16.to_le_bytes(),
+            &1u16.to_le_bytes(),
+            &10u32.to_le_bytes(),
+        ]
+        .concat();
+        decode_rts_out_recycle_a10(&out_a10).expect("OUT_R1/A10");
+        assert_eq!(
+            recycling.receive_out_recycle_a10(&out_a10).expect("OUT_R1/A11"),
+            out_a10
+        );
+        assert_eq!(recycling.out_state(), RpchOutChannelRecycleState::AwaitingA11);
+        assert_eq!(recycling.default_out_channel_cookie(), successor_out_channel_cookie);
+        recycling
+            .finish_out_recycling(&mut flow_control)
+            .expect("OUT_R1/A11 sent");
+        assert_eq!(recycling.out_state(), RpchOutChannelRecycleState::Open);
+        flow_control
+            .received_rpc_pdu(64 * 1024)
+            .expect("receive on successor OUT channel");
+        assert_eq!(
+            flow_control.consumed_rpc_pdu(64 * 1024),
+            Ok(Some(RtsFlowControlAck::new(
+                64 * 1024,
+                RECEIVE_WINDOW_SIZE,
+                successor_out_channel_cookie,
+            )))
+        );
+        assert_eq!(
+            encode_rts_in_recycle_a1(
+                VIRTUAL_CONNECTION_COOKIE,
+                IN_CHANNEL_COOKIE,
+                successor_in_channel_cookie,
+            )
             .expect("IN_R1/A1"),
-        expected_in_a1
-    );
-    assert_eq!(recycling.in_state(), RpchInChannelRecycleState::AwaitingA4);
-
-    let in_a4 = [
-        [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
-        &52u16.to_le_bytes(),
-        &0u16.to_le_bytes(),
-        &0u32.to_le_bytes(),
-        &0u16.to_le_bytes(),
-        &4u16.to_le_bytes(),
-        &13u32.to_le_bytes(),
-        &0u32.to_le_bytes(),
-        &6u32.to_le_bytes(),
-        &1u32.to_le_bytes(),
-        &0u32.to_le_bytes(),
-        &(8 * 1024u32).to_le_bytes(),
-        &2u32.to_le_bytes(),
-        &CONNECTION_TIMEOUT.to_le_bytes(),
-    ]
-    .concat();
-    let decoded_a4 = decode_rts_in_recycle_a4(&in_a4).expect("IN_R1/A4");
-    assert_eq!(decoded_a4.version(), 1);
-    assert_eq!(decoded_a4.receive_window_size(), 8 * 1024);
-    assert_eq!(decoded_a4.connection_timeout(), CONNECTION_TIMEOUT);
-
-    let expected_in_a5 = [
-        [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
-        &40u16.to_le_bytes(),
-        &0u16.to_le_bytes(),
-        &0u32.to_le_bytes(),
-        &0u16.to_le_bytes(),
-        &1u16.to_le_bytes(),
-        &3u32.to_le_bytes(),
-        successor_in_channel_cookie.as_bytes(),
-    ]
-    .concat();
-    assert_eq!(
-        recycling.receive_in_recycle_a4(&in_a4).expect("IN_R1/A5"),
-        expected_in_a5
-    );
-    assert_eq!(recycling.in_state(), RpchInChannelRecycleState::Open);
-    assert_eq!(recycling.default_in_channel_cookie(), successor_in_channel_cookie);
-    assert_eq!(recycling.peer_receive_window_size(), 8 * 1024);
-
-    let out_a2 = [
-        [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
-        &28u16.to_le_bytes(),
-        &0u16.to_le_bytes(),
-        &0u32.to_le_bytes(),
-        &4u16.to_le_bytes(),
-        &1u16.to_le_bytes(),
-        &13u32.to_le_bytes(),
-        &0u32.to_le_bytes(),
-    ]
-    .concat();
-    decode_rts_out_recycle_a2(&out_a2).expect("OUT_R1/A2");
-    let expected_out_a3 = [
-        [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
-        &96u16.to_le_bytes(),
-        &0u16.to_le_bytes(),
-        &0u32.to_le_bytes(),
-        &4u16.to_le_bytes(),
-        &5u16.to_le_bytes(),
-        &6u32.to_le_bytes(),
-        &1u32.to_le_bytes(),
-        &3u32.to_le_bytes(),
-        VIRTUAL_CONNECTION_COOKIE.as_bytes(),
-        &3u32.to_le_bytes(),
-        OUT_CHANNEL_COOKIE.as_bytes(),
-        &3u32.to_le_bytes(),
-        successor_out_channel_cookie.as_bytes(),
-        &0u32.to_le_bytes(),
-        &RECEIVE_WINDOW_SIZE.to_le_bytes(),
-    ]
-    .concat();
-    assert_eq!(
-        recycling
-            .receive_out_recycle_a2(&out_a2, successor_out_channel_cookie)
+            expected_in_a1
+        );
+        assert_eq!(
+            encode_rts_in_recycle_a5(successor_in_channel_cookie).expect("IN_R1/A5"),
+            expected_in_a5
+        );
+        assert_eq!(
+            encode_rts_out_recycle_a3(
+                VIRTUAL_CONNECTION_COOKIE,
+                OUT_CHANNEL_COOKIE,
+                successor_out_channel_cookie,
+                RECEIVE_WINDOW_SIZE,
+            )
             .expect("OUT_R1/A3"),
-        expected_out_a3
-    );
-    assert_eq!(recycling.out_state(), RpchOutChannelRecycleState::AwaitingA6);
-
-    let out_a6 = [
-        [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
-        &44u16.to_le_bytes(),
-        &0u16.to_le_bytes(),
-        &0u32.to_le_bytes(),
-        &0x10u16.to_le_bytes(),
-        &3u16.to_le_bytes(),
-        &13u32.to_le_bytes(),
-        &0u32.to_le_bytes(),
-        &6u32.to_le_bytes(),
-        &1u32.to_le_bytes(),
-        &2u32.to_le_bytes(),
-        &CONNECTION_TIMEOUT.to_le_bytes(),
-    ]
-    .concat();
-    let decoded_a6 = decode_rts_out_recycle_a6(&out_a6).expect("OUT_R1/A6");
-    assert_eq!(decoded_a6.version(), 1);
-    assert_eq!(decoded_a6.connection_timeout(), CONNECTION_TIMEOUT);
-
-    let expected_out_a7 = [
-        [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
-        &48u16.to_le_bytes(),
-        &0u16.to_le_bytes(),
-        &0u32.to_le_bytes(),
-        &0x10u16.to_le_bytes(),
-        &2u16.to_le_bytes(),
-        &13u32.to_le_bytes(),
-        &2u32.to_le_bytes(),
-        &3u32.to_le_bytes(),
-        successor_out_channel_cookie.as_bytes(),
-    ]
-    .concat();
+            expected_out_a3
+        );
+        assert_eq!(
+            encode_rts_out_recycle_a7(successor_out_channel_cookie).expect("OUT_R1/A7"),
+            expected_out_a7
+        );
+        assert_eq!(encode_rts_out_recycle_a11().expect("OUT_R1/A11"), out_a10);
+    }
+    assert_eq!(setup.in_channel_ping_timeout(), Some(IN_RECYCLE_CONNECTION_TIMEOUT));
+    assert_eq!(setup.peer_receive_window_size(), Some(8 * 1024));
     assert_eq!(
-        recycling.receive_out_recycle_a6(&out_a6).expect("OUT_R1/A7"),
-        expected_out_a7
+        setup
+            .flow_control()
+            .expect("updated flow control")
+            .send_available_window(),
+        8 * 1024
     );
-    assert_eq!(recycling.out_state(), RpchOutChannelRecycleState::AwaitingA10);
-
-    let out_a10 = [
-        [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
-        &24u16.to_le_bytes(),
-        &0u16.to_le_bytes(),
-        &0u32.to_le_bytes(),
-        &0u16.to_le_bytes(),
-        &1u16.to_le_bytes(),
-        &10u32.to_le_bytes(),
-    ]
-    .concat();
-    decode_rts_out_recycle_a10(&out_a10).expect("OUT_R1/A10");
-    assert_eq!(
-        recycling.receive_out_recycle_a10(&out_a10).expect("OUT_R1/A11"),
-        out_a10
-    );
-    assert_eq!(recycling.out_state(), RpchOutChannelRecycleState::Open);
-    assert_eq!(recycling.default_out_channel_cookie(), successor_out_channel_cookie);
-
-    assert_eq!(
-        encode_rts_in_recycle_a1(
-            VIRTUAL_CONNECTION_COOKIE,
-            IN_CHANNEL_COOKIE,
-            successor_in_channel_cookie,
-        )
-        .expect("IN_R1/A1"),
-        expected_in_a1
-    );
-    assert_eq!(
-        encode_rts_in_recycle_a5(successor_in_channel_cookie).expect("IN_R1/A5"),
-        expected_in_a5
-    );
-    assert_eq!(
-        encode_rts_out_recycle_a3(
-            VIRTUAL_CONNECTION_COOKIE,
-            OUT_CHANNEL_COOKIE,
-            successor_out_channel_cookie,
-            RECEIVE_WINDOW_SIZE,
-        )
-        .expect("OUT_R1/A3"),
-        expected_out_a3
-    );
-    assert_eq!(
-        encode_rts_out_recycle_a7(successor_out_channel_cookie).expect("OUT_R1/A7"),
-        expected_out_a7
-    );
-    assert_eq!(encode_rts_out_recycle_a11().expect("OUT_R1/A11"), out_a10);
 }
 
 #[test]
 fn channel_recycling_rejects_invalid_order_and_destinations() {
-    let mut recycling = opened_setup(0).channel_recycling().expect("open setup");
+    let mut setup = opened_setup(0);
+    let mut recycling = setup.channel_recycling().expect("open setup");
     let out_a2 = [
         [5, 0, PTYPE_RTS, PFC_FIRST_FRAG | PFC_LAST_FRAG, 0x10, 0, 0, 0].as_slice(),
         &28u16.to_le_bytes(),
@@ -465,7 +514,8 @@ fn channel_recycling_rejects_invalid_order_and_destinations() {
         })
     );
 
-    let mut recycling = opened_setup(0).channel_recycling().expect("open setup");
+    let mut setup = opened_setup(0);
+    let mut recycling = setup.channel_recycling().expect("open setup");
     assert_eq!(
         recycling.receive_in_recycle_a4(&[]),
         Err(ironrdp_mstsgu::rpc::RpchChannelRecycleError::InvalidInState {
