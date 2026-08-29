@@ -68,6 +68,8 @@ const RTS_PFC_FLAGS: u8 = PFC_FIRST_FRAG | PFC_LAST_FRAG;
 const RTS_FLAG_NONE: u16 = 0;
 const RTS_FLAG_PING: u16 = 0x0001;
 const RTS_FLAG_OTHER_CMD: u16 = 0x0002;
+const RTS_FLAG_RECYCLE_CHANNEL: u16 = 0x0004;
+const RTS_FLAG_OUT_CHANNEL: u16 = 0x0010;
 const RTS_VERSION: u32 = 1;
 const RTS_COMMAND_RECEIVE_WINDOW_SIZE: u32 = 0;
 const RTS_COMMAND_FLOW_CONTROL_ACK: u32 = 1;
@@ -77,6 +79,10 @@ const RTS_COMMAND_CHANNEL_LIFETIME: u32 = 4;
 const RTS_COMMAND_CLIENT_KEEPALIVE: u32 = 5;
 const RTS_COMMAND_VERSION: u32 = 6;
 const RTS_COMMAND_ASSOCIATION_GROUP_ID: u32 = 12;
+const RTS_COMMAND_DESTINATION: u32 = 13;
+const RTS_COMMAND_ANCE: u32 = 10;
+const RTS_DESTINATION_FD_CLIENT: u32 = 0;
+const RTS_DESTINATION_FD_SERVER: u32 = 2;
 const RTS_MIN_RECEIVE_WINDOW_SIZE: u32 = 8 * 1024;
 const RTS_MAX_RECEIVE_WINDOW_SIZE: u32 = 256 * 1024;
 const RTS_MIN_CONNECTION_TIMEOUT: u32 = 120_000;
@@ -112,6 +118,7 @@ pub enum RpcPduError {
     UnexpectedRtsCommandCount { expected: u16, actual: u16 },
     InvalidRtsBodyLength { expected: usize, actual: usize },
     UnexpectedRtsCommandType { expected: u32, actual: u32 },
+    UnexpectedRtsDestination { expected: u32, actual: u32 },
     InvalidRtsReceiveWindowSize { actual: u32 },
     InvalidRtsConnectionTimeout { actual: u32 },
     InvalidRtsChannelLifetime { actual: u32 },
@@ -206,6 +213,9 @@ impl fmt::Display for RpcPduError {
             }
             Self::UnexpectedRtsCommandType { expected, actual } => {
                 write!(f, "unexpected rts command type {actual}, expected {expected}")
+            }
+            Self::UnexpectedRtsDestination { expected, actual } => {
+                write!(f, "unexpected rts destination {actual}, expected {expected}")
             }
             Self::InvalidRtsReceiveWindowSize { actual } => {
                 write!(f, "invalid rts receive window size {actual}")
@@ -2202,6 +2212,123 @@ impl From<RpcPduError> for RpchV2Error {
     }
 }
 
+/// Values received in an IN_R1/A4 RTS PDU.
+///
+/// [MS-RPCH] 2.2.4.13.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RtsInRecycleA4 {
+    version: u32,
+    receive_window_size: u32,
+    connection_timeout: u32,
+}
+
+impl RtsInRecycleA4 {
+    /// Protocol version selected by the proxy and server.
+    pub const fn version(self) -> u32 {
+        self.version
+    }
+
+    /// Receive window supplied for the successor IN channel.
+    pub const fn receive_window_size(self) -> u32 {
+        self.receive_window_size
+    }
+
+    /// Connection timeout supplied for the successor IN channel.
+    pub const fn connection_timeout(self) -> u32 {
+        self.connection_timeout
+    }
+}
+
+/// Values received in an OUT_R1/A6 RTS PDU.
+///
+/// [MS-RPCH] 2.2.4.28.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RtsOutRecycleA6 {
+    version: u32,
+    connection_timeout: u32,
+}
+
+impl RtsOutRecycleA6 {
+    /// Protocol version selected by the proxy and server.
+    pub const fn version(self) -> u32 {
+        self.version
+    }
+
+    /// Connection timeout supplied for the successor OUT channel.
+    ///
+    /// This value is informational to clients ([MS-RPCH] 2.2.4.28).
+    pub const fn connection_timeout(self) -> u32 {
+        self.connection_timeout
+    }
+}
+
+/// State of the virtual IN channel recycling sequence.
+///
+/// [MS-RPCH] 3.2.2.5.5 and 3.2.2.5.12.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RpchInChannelRecycleState {
+    /// The default IN channel is open.
+    Open,
+    /// IN_R1/A1 was produced and IN_R1/A4 is expected.
+    AwaitingA4,
+    /// An invalid recycle event was received.
+    Failed,
+}
+
+/// State of the virtual OUT channel recycling sequence.
+///
+/// [MS-RPCH] 3.2.2.5.6 through 3.2.2.5.8.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RpchOutChannelRecycleState {
+    /// The default OUT channel is open.
+    Open,
+    /// OUT_R1/A2 was accepted and OUT_R1/A6 is expected.
+    AwaitingA6,
+    /// OUT_R1/A6 was accepted and OUT_R1/A10 is expected.
+    AwaitingA10,
+    /// An invalid recycle event was received.
+    Failed,
+}
+
+/// Errors reported while advancing an RPCH v2 channel recycling sequence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RpchChannelRecycleError {
+    /// An IN recycling event is not valid in the current state.
+    InvalidInState {
+        action: &'static str,
+        state: RpchInChannelRecycleState,
+    },
+    /// An OUT recycling event is not valid in the current state.
+    InvalidOutState {
+        action: &'static str,
+        state: RpchOutChannelRecycleState,
+    },
+    /// An RTS PDU was malformed or semantically invalid.
+    Rts(RpcPduError),
+}
+
+impl fmt::Display for RpchChannelRecycleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidInState { action, state } => {
+                write!(f, "cannot {action} while IN recycling is {state:?}")
+            }
+            Self::InvalidOutState { action, state } => {
+                write!(f, "cannot {action} while OUT recycling is {state:?}")
+            }
+            Self::Rts(error) => error.fmt(f),
+        }
+    }
+}
+
+impl core::error::Error for RpchChannelRecycleError {}
+
+impl From<RpcPduError> for RpchChannelRecycleError {
+    fn from(error: RpcPduError) -> Self {
+        Self::Rts(error)
+    }
+}
+
 /// Stateful validation for the initial RPCH v2 CONN sequence.
 ///
 /// This transport-independent state machine produces initial request bodies and accepts the OUT response status plus CONN/A3 and CONN/C2.
@@ -2404,8 +2531,252 @@ impl RpchV2Setup {
         ))
     }
 
+    /// Creates state validation for channel recycling after the initial CONN sequence opens.
+    ///
+    /// [MS-RPCH] 3.2.2.5.5 through 3.2.2.5.8 and 3.2.2.5.12.
+    pub fn channel_recycling(&self) -> Result<RpchV2ChannelRecycle, RpchV2Error> {
+        if self.state != RpchV2State::Open {
+            return Err(RpchV2Error::InvalidState {
+                action: "create RPCH channel recycling state",
+                state: self.state,
+            });
+        }
+
+        Ok(RpchV2ChannelRecycle {
+            virtual_connection_cookie: self.virtual_connection_cookie,
+            default_in_channel_cookie: self.in_channel_cookie,
+            default_out_channel_cookie: self.out_channel_cookie,
+            receive_window_size: self.settings.receive_window_size,
+            in_channel_ping_timeout: self.in_channel_ping_timeout.ok_or(RpchV2Error::InvalidState {
+                action: "read the IN channel connection timeout",
+                state: self.state,
+            })?,
+            peer_receive_window_size: self.peer_receive_window_size.ok_or(RpchV2Error::InvalidState {
+                action: "read the peer receive window",
+                state: self.state,
+            })?,
+            in_state: RpchInChannelRecycleState::Open,
+            out_state: RpchOutChannelRecycleState::Open,
+            successor_in_channel_cookie: None,
+            successor_out_channel_cookie: None,
+        })
+    }
+
     fn fail<T>(&mut self, error: RpchV2Error) -> Result<T, RpchV2Error> {
         self.state = RpchV2State::Failed;
+        Err(error)
+    }
+}
+
+/// Stateful validation for the RPCH v2 R1 channel recycling sequences.
+///
+/// The caller creates and switches transport channels around the returned RTS PDUs.
+/// This type owns no I/O and validates only the protocol-visible ordering.
+///
+/// [MS-RPCH] 3.2.2.5.5 through 3.2.2.5.8 and 3.2.2.5.12.
+#[derive(Debug)]
+pub struct RpchV2ChannelRecycle {
+    virtual_connection_cookie: RtsCookie,
+    default_in_channel_cookie: RtsCookie,
+    default_out_channel_cookie: RtsCookie,
+    receive_window_size: u32,
+    in_channel_ping_timeout: u32,
+    peer_receive_window_size: u32,
+    in_state: RpchInChannelRecycleState,
+    out_state: RpchOutChannelRecycleState,
+    successor_in_channel_cookie: Option<RtsCookie>,
+    successor_out_channel_cookie: Option<RtsCookie>,
+}
+
+impl RpchV2ChannelRecycle {
+    /// Current virtual IN channel recycling state.
+    pub const fn in_state(&self) -> RpchInChannelRecycleState {
+        self.in_state
+    }
+
+    /// Current virtual OUT channel recycling state.
+    pub const fn out_state(&self) -> RpchOutChannelRecycleState {
+        self.out_state
+    }
+
+    /// Current default IN channel cookie.
+    pub const fn default_in_channel_cookie(&self) -> RtsCookie {
+        self.default_in_channel_cookie
+    }
+
+    /// Current default OUT channel cookie.
+    pub const fn default_out_channel_cookie(&self) -> RtsCookie {
+        self.default_out_channel_cookie
+    }
+
+    /// Connection timeout for the current default IN channel.
+    pub const fn in_channel_ping_timeout(&self) -> u32 {
+        self.in_channel_ping_timeout
+    }
+
+    /// Peer receive window for the current default IN channel.
+    pub const fn peer_receive_window_size(&self) -> u32 {
+        self.peer_receive_window_size
+    }
+
+    /// Starts IN_R1 channel recycling and returns IN_R1/A1 for the successor IN channel.
+    ///
+    /// [MS-RPCH] 2.2.4.10 and 3.2.2.5.12.
+    pub fn start_in_recycling(
+        &mut self,
+        successor_channel_cookie: RtsCookie,
+    ) -> Result<Vec<u8>, RpchChannelRecycleError> {
+        if self.in_state != RpchInChannelRecycleState::Open {
+            return self.fail_in(RpchChannelRecycleError::InvalidInState {
+                action: "start IN channel recycling",
+                state: self.in_state,
+            });
+        }
+
+        let pdu = encode_rts_in_recycle_a1(
+            self.virtual_connection_cookie,
+            self.default_in_channel_cookie,
+            successor_channel_cookie,
+        )?;
+        self.successor_in_channel_cookie = Some(successor_channel_cookie);
+        self.in_state = RpchInChannelRecycleState::AwaitingA4;
+        Ok(pdu)
+    }
+
+    /// Accepts IN_R1/A4 and returns IN_R1/A5 for the predecessor IN channel.
+    ///
+    /// The returned PDU must be sent after predecessor-channel PDUs have drained.
+    ///
+    /// [MS-RPCH] 2.2.4.13, 2.2.4.14, and 3.2.2.5.5.
+    pub fn receive_in_recycle_a4(&mut self, pdu: &[u8]) -> Result<Vec<u8>, RpchChannelRecycleError> {
+        if self.in_state != RpchInChannelRecycleState::AwaitingA4 {
+            return self.fail_in(RpchChannelRecycleError::InvalidInState {
+                action: "accept IN_R1/A4",
+                state: self.in_state,
+            });
+        }
+
+        let a4 = match decode_rts_in_recycle_a4(pdu) {
+            Ok(a4) => a4,
+            Err(error) => return self.fail_in(error.into()),
+        };
+        let successor_channel_cookie = match self.successor_in_channel_cookie {
+            Some(cookie) => cookie,
+            None => {
+                return self.fail_in(RpchChannelRecycleError::InvalidInState {
+                    action: "read the successor IN channel cookie",
+                    state: self.in_state,
+                });
+            }
+        };
+        let a5 = encode_rts_in_recycle_a5(successor_channel_cookie)?;
+        self.default_in_channel_cookie = successor_channel_cookie;
+        self.in_channel_ping_timeout = a4.connection_timeout;
+        self.peer_receive_window_size = a4.receive_window_size;
+        self.successor_in_channel_cookie = None;
+        self.in_state = RpchInChannelRecycleState::Open;
+        Ok(a5)
+    }
+
+    /// Accepts OUT_R1/A2 and returns OUT_R1/A3 for the successor OUT channel.
+    ///
+    /// The caller creates the successor OUT channel before sending the returned PDU.
+    ///
+    /// [MS-RPCH] 2.2.4.24, 2.2.4.25, and 3.2.2.5.6.
+    pub fn receive_out_recycle_a2(
+        &mut self,
+        pdu: &[u8],
+        successor_channel_cookie: RtsCookie,
+    ) -> Result<Vec<u8>, RpchChannelRecycleError> {
+        if self.out_state != RpchOutChannelRecycleState::Open {
+            return self.fail_out(RpchChannelRecycleError::InvalidOutState {
+                action: "accept OUT_R1/A2",
+                state: self.out_state,
+            });
+        }
+
+        if let Err(error) = decode_rts_out_recycle_a2(pdu) {
+            return self.fail_out(error.into());
+        }
+        let a3 = encode_rts_out_recycle_a3(
+            self.virtual_connection_cookie,
+            self.default_out_channel_cookie,
+            successor_channel_cookie,
+            self.receive_window_size,
+        )?;
+        self.successor_out_channel_cookie = Some(successor_channel_cookie);
+        self.out_state = RpchOutChannelRecycleState::AwaitingA6;
+        Ok(a3)
+    }
+
+    /// Accepts OUT_R1/A6 and returns OUT_R1/A7 for the default IN channel.
+    ///
+    /// [MS-RPCH] 2.2.4.28, 2.2.4.29, and 3.2.2.5.7.
+    pub fn receive_out_recycle_a6(&mut self, pdu: &[u8]) -> Result<Vec<u8>, RpchChannelRecycleError> {
+        if self.out_state != RpchOutChannelRecycleState::AwaitingA6 {
+            return self.fail_out(RpchChannelRecycleError::InvalidOutState {
+                action: "accept OUT_R1/A6",
+                state: self.out_state,
+            });
+        }
+
+        if let Err(error) = decode_rts_out_recycle_a6(pdu) {
+            return self.fail_out(error.into());
+        }
+        let successor_channel_cookie = match self.successor_out_channel_cookie {
+            Some(cookie) => cookie,
+            None => {
+                return self.fail_out(RpchChannelRecycleError::InvalidOutState {
+                    action: "read the successor OUT channel cookie",
+                    state: self.out_state,
+                });
+            }
+        };
+        let a7 = encode_rts_out_recycle_a7(successor_channel_cookie)?;
+        self.out_state = RpchOutChannelRecycleState::AwaitingA10;
+        Ok(a7)
+    }
+
+    /// Accepts OUT_R1/A10 and returns OUT_R1/A11 for the successor OUT channel.
+    ///
+    /// [MS-RPCH] 2.2.4.32, 2.2.4.33, and 3.2.2.5.8.
+    pub fn receive_out_recycle_a10(&mut self, pdu: &[u8]) -> Result<Vec<u8>, RpchChannelRecycleError> {
+        if self.out_state != RpchOutChannelRecycleState::AwaitingA10 {
+            return self.fail_out(RpchChannelRecycleError::InvalidOutState {
+                action: "accept OUT_R1/A10",
+                state: self.out_state,
+            });
+        }
+
+        if let Err(error) = decode_rts_out_recycle_a10(pdu) {
+            return self.fail_out(error.into());
+        }
+        let successor_channel_cookie = match self.successor_out_channel_cookie {
+            Some(cookie) => cookie,
+            None => {
+                return self.fail_out(RpchChannelRecycleError::InvalidOutState {
+                    action: "read the successor OUT channel cookie",
+                    state: self.out_state,
+                });
+            }
+        };
+        let a11 = encode_rts_out_recycle_a11()?;
+        self.default_out_channel_cookie = successor_channel_cookie;
+        self.successor_out_channel_cookie = None;
+        self.out_state = RpchOutChannelRecycleState::Open;
+        Ok(a11)
+    }
+
+    fn fail_in<T>(&mut self, error: RpchChannelRecycleError) -> Result<T, RpchChannelRecycleError> {
+        // A protocol error terminates the entire virtual connection.
+        self.in_state = RpchInChannelRecycleState::Failed;
+        self.out_state = RpchOutChannelRecycleState::Failed;
+        Err(error)
+    }
+
+    fn fail_out<T>(&mut self, error: RpchChannelRecycleError) -> Result<T, RpchChannelRecycleError> {
+        self.in_state = RpchInChannelRecycleState::Failed;
+        self.out_state = RpchOutChannelRecycleState::Failed;
         Err(error)
     }
 }
@@ -2786,6 +3157,127 @@ pub fn encode_rts_conn_b1(
     encode_rts_pdu(RTS_FLAG_NONE, 6, commands)
 }
 
+/// Encodes the client IN_R1/A1 RTS PDU for a successor IN channel.
+///
+/// [MS-RPCH] 2.2.4.10.
+pub fn encode_rts_in_recycle_a1(
+    virtual_connection_cookie: RtsCookie,
+    predecessor_channel_cookie: RtsCookie,
+    successor_channel_cookie: RtsCookie,
+) -> Result<Vec<u8>, RpcPduError> {
+    let mut commands = Vec::with_capacity(
+        8 /* version */
+            + 20 /* virtual connection cookie */
+            + 20 /* predecessor IN channel cookie */
+            + 20, /* successor IN channel cookie */
+    );
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_VERSION, RTS_VERSION);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, virtual_connection_cookie);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, predecessor_channel_cookie);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, successor_channel_cookie);
+    encode_rts_pdu(RTS_FLAG_RECYCLE_CHANNEL, 4, commands)
+}
+
+/// Encodes the client IN_R1/A5 RTS PDU for a predecessor IN channel.
+///
+/// [MS-RPCH] 2.2.4.14.
+pub fn encode_rts_in_recycle_a5(successor_channel_cookie: RtsCookie) -> Result<Vec<u8>, RpcPduError> {
+    let mut commands = Vec::with_capacity(20 /* successor IN channel cookie */);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, successor_channel_cookie);
+    encode_rts_pdu(RTS_FLAG_NONE, 1, commands)
+}
+
+/// Decodes and validates an OUT_R1/A2 RTS PDU.
+///
+/// [MS-RPCH] 2.2.4.24.
+pub fn decode_rts_out_recycle_a2(source: &[u8]) -> Result<(), RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_RECYCLE_CHANNEL, 1, 8)?;
+    let destination = decode_rts_u32_command(body, 0, RTS_COMMAND_DESTINATION)?;
+    if destination != RTS_DESTINATION_FD_CLIENT {
+        return Err(RpcPduError::UnexpectedRtsDestination {
+            expected: RTS_DESTINATION_FD_CLIENT,
+            actual: destination,
+        });
+    }
+    Ok(())
+}
+
+/// Encodes the client OUT_R1/A3 RTS PDU for a successor OUT channel.
+///
+/// [MS-RPCH] 2.2.4.25.
+pub fn encode_rts_out_recycle_a3(
+    virtual_connection_cookie: RtsCookie,
+    predecessor_channel_cookie: RtsCookie,
+    successor_channel_cookie: RtsCookie,
+    receive_window_size: u32,
+) -> Result<Vec<u8>, RpcPduError> {
+    validate_rts_receive_window_size(receive_window_size)?;
+
+    let mut commands = Vec::with_capacity(
+        8 /* version */
+            + 20 /* virtual connection cookie */
+            + 20 /* predecessor OUT channel cookie */
+            + 20 /* successor OUT channel cookie */
+            + 8, /* receive window size */
+    );
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_VERSION, RTS_VERSION);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, virtual_connection_cookie);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, predecessor_channel_cookie);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, successor_channel_cookie);
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_RECEIVE_WINDOW_SIZE, receive_window_size);
+    encode_rts_pdu(RTS_FLAG_RECYCLE_CHANNEL, 5, commands)
+}
+
+/// Decodes and validates an OUT_R1/A6 RTS PDU.
+///
+/// [MS-RPCH] 2.2.4.28.
+pub fn decode_rts_out_recycle_a6(source: &[u8]) -> Result<RtsOutRecycleA6, RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_OUT_CHANNEL, 3, 24)?;
+    let destination = decode_rts_u32_command(body, 0, RTS_COMMAND_DESTINATION)?;
+    if destination != RTS_DESTINATION_FD_CLIENT {
+        return Err(RpcPduError::UnexpectedRtsDestination {
+            expected: RTS_DESTINATION_FD_CLIENT,
+            actual: destination,
+        });
+    }
+
+    let version = decode_rts_u32_command(body, 8, RTS_COMMAND_VERSION)?;
+    let connection_timeout = decode_rts_u32_command(body, 16, RTS_COMMAND_CONNECTION_TIMEOUT)?;
+    validate_rts_connection_timeout(connection_timeout)?;
+    Ok(RtsOutRecycleA6 {
+        version,
+        connection_timeout,
+    })
+}
+
+/// Encodes the client OUT_R1/A7 RTS PDU for the default IN channel.
+///
+/// [MS-RPCH] 2.2.4.29.
+pub fn encode_rts_out_recycle_a7(successor_channel_cookie: RtsCookie) -> Result<Vec<u8>, RpcPduError> {
+    let mut commands = Vec::with_capacity(
+        8 /* destination */
+            + 20, /* successor OUT channel cookie */
+    );
+    encode_rts_u32_command(&mut commands, RTS_COMMAND_DESTINATION, RTS_DESTINATION_FD_SERVER);
+    encode_rts_cookie_command(&mut commands, RTS_COMMAND_COOKIE, successor_channel_cookie);
+    encode_rts_pdu(RTS_FLAG_OUT_CHANNEL, 2, commands)
+}
+
+/// Decodes and validates an OUT_R1/A10 RTS PDU.
+///
+/// [MS-RPCH] 2.2.4.32.
+pub fn decode_rts_out_recycle_a10(source: &[u8]) -> Result<(), RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_NONE, 1, 4)?;
+    decode_rts_empty_command(body, 0, RTS_COMMAND_ANCE)
+}
+
+/// Encodes the client OUT_R1/A11 RTS PDU for a successor OUT channel.
+///
+/// [MS-RPCH] 2.2.4.33.
+pub fn encode_rts_out_recycle_a11() -> Result<Vec<u8>, RpcPduError> {
+    encode_rts_pdu(RTS_FLAG_NONE, 1, RTS_COMMAND_ANCE.to_le_bytes().to_vec())
+}
+
 /// Encodes an RPCH PING RTS PDU.
 ///
 /// [MS-RPCH] 2.2.4.49.
@@ -2854,6 +3346,31 @@ fn decode_rts_conn_c2(source: &[u8]) -> Result<(u32, u32), RpcPduError> {
     validate_rts_receive_window_size(receive_window_size)?;
     validate_rts_connection_timeout(connection_timeout)?;
     Ok((receive_window_size, connection_timeout))
+}
+
+/// Decodes and validates an IN_R1/A4 RTS PDU.
+///
+/// [MS-RPCH] 2.2.4.13.
+pub fn decode_rts_in_recycle_a4(source: &[u8]) -> Result<RtsInRecycleA4, RpcPduError> {
+    let body = decode_rts_pdu(source, RTS_FLAG_NONE, 4, 32)?;
+    let destination = decode_rts_u32_command(body, 0, RTS_COMMAND_DESTINATION)?;
+    if destination != RTS_DESTINATION_FD_CLIENT {
+        return Err(RpcPduError::UnexpectedRtsDestination {
+            expected: RTS_DESTINATION_FD_CLIENT,
+            actual: destination,
+        });
+    }
+
+    let version = decode_rts_u32_command(body, 8, RTS_COMMAND_VERSION)?;
+    let receive_window_size = decode_rts_u32_command(body, 16, RTS_COMMAND_RECEIVE_WINDOW_SIZE)?;
+    let connection_timeout = decode_rts_u32_command(body, 24, RTS_COMMAND_CONNECTION_TIMEOUT)?;
+    validate_rts_receive_window_size(receive_window_size)?;
+    validate_rts_connection_timeout(connection_timeout)?;
+    Ok(RtsInRecycleA4 {
+        version,
+        receive_window_size,
+        connection_timeout,
+    })
 }
 
 fn encode_rts_pdu(flags: u16, command_count: u16, commands: Vec<u8>) -> Result<Vec<u8>, RpcPduError> {
@@ -2950,6 +3467,17 @@ fn decode_rts_u32_command(source: &[u8], offset: usize, expected_type: u32) -> R
 
     let value_offset = offset.checked_add(4).ok_or(RpcPduError::LengthOverflow)?;
     read_u32(source, value_offset)
+}
+
+fn decode_rts_empty_command(source: &[u8], offset: usize, expected_type: u32) -> Result<(), RpcPduError> {
+    let command_type = read_u32(source, offset)?;
+    if command_type != expected_type {
+        return Err(RpcPduError::UnexpectedRtsCommandType {
+            expected: expected_type,
+            actual: command_type,
+        });
+    }
+    Ok(())
 }
 
 fn validate_rts_receive_window_size(value: u32) -> Result<(), RpcPduError> {
