@@ -47,6 +47,7 @@ ironrdp-client = { path = "../ironrdp-client", features = ["sound"] }
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-dvc.path = "../ironrdp-dvc"
 ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
+ironrdp-graphics.path = "../ironrdp-graphics"
 ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-input.path = "../ironrdp-input"
 ironrdp-propertyset.path = "../ironrdp-propertyset"

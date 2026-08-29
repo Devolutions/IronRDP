@@ -17,6 +17,7 @@ use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
 use ironrdp_client::config::{
     AudioQualityMode, ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind,
 };
+use ironrdp_client::output_channel::output_channel;
 use ironrdp_client::rail::RailInputEvent;
 use ironrdp_client::rdp::{
     AutoReconnectDecision, CliprdrBackendFactory, LocationInputError, RdpClient, RdpInputEvent, RdpInputSender,
@@ -29,7 +30,6 @@ use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
 use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, encode_vec};
 use ironrdp_input::{Database as InputDatabase, MouseButton, MousePosition, Operation, Scancode, WheelRotations};
-use ironrdp_pdu::PduResult;
 use ironrdp_pdu::gcc::{
     ChannelName, ChannelOptions, ClientMonitorData, ConnectionType, KeyboardType, MONITOR_COUNT_MAX, Monitor,
     MonitorFlags,
@@ -39,6 +39,7 @@ use ironrdp_pdu::rdp::{
     client_info::PerformanceFlags,
 };
 use ironrdp_pdu::window::try_decode_slow_path_windowing_orders;
+use ironrdp_pdu::{PduError, PduErrorKind, PduResult};
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rail::pdu::{
     ActivatePdu, ExecutePdu, ExecuteResult, ExecuteResultPdu, RailPdu, SystemCommand, SystemCommandPdu,
@@ -798,9 +799,24 @@ fn trace_decode_failure(error: &DecodeError) {
     ));
 }
 
+fn trace_pdu_failure(error: &PduError) {
+    let marker = match error.kind() {
+        PduErrorKind::Encode => "Encode",
+        PduErrorKind::Decode => "Decode",
+        PduErrorKind::Other { .. } => "Other",
+        _ => "Unknown",
+    };
+    let location = error.location();
+    let file = location.file().rsplit(['/', '\\']).next().unwrap_or("unknown");
+    trace_host_call(&format!(
+        "RdpWorker::SessionFailure:Pdu:{marker}:{file}:line_{}",
+        location.line()
+    ));
+}
+
 fn trace_session_failure(error: &SessionError) {
     match error.kind() {
-        SessionErrorKind::Pdu(_) => trace_host_call("RdpWorker::SessionFailure:Pdu"),
+        SessionErrorKind::Pdu(pdu_error) => trace_pdu_failure(pdu_error),
         SessionErrorKind::Encode(_) => trace_host_call("RdpWorker::SessionFailure:Encode"),
         SessionErrorKind::Decode(decode_error) => trace_decode_failure(decode_error),
         SessionErrorKind::FastPathBulkDecompression(failure) => {
@@ -10817,7 +10833,7 @@ impl Control {
         }
         let rpc_destination = config.destination().to_string();
         drop(settings);
-        let (output_sender, mut output_receiver) = mpsc::channel(32);
+        let (output_sender, mut output_receiver) = output_channel(32);
         let client = RdpClient::new(config, output_sender);
         let client = if let Some(maximum_attempts) = auto_reconnect_maximum_attempts {
             client.with_auto_reconnect(maximum_attempts)
@@ -18430,6 +18446,15 @@ mod tests {
             "general context must not be traced",
             SessionErrorKind::General,
         ));
+        trace_session_failure(&SessionError::new(
+            "outer PDU context must not be traced",
+            SessionErrorKind::Pdu(PduError::new(
+                "nested PDU context must not be traced",
+                PduErrorKind::Other {
+                    description: "PDU detail must not be traced",
+                },
+            )),
+        ));
         drop(trace_guard);
         let trace = std::fs::read_to_string(&trace_path).expect("session failure trace must be written");
         let _ = std::fs::remove_file(trace_path);
@@ -18439,6 +18464,7 @@ mod tests {
             "RdpWorker::SessionFailure:Decode:Other:control.rs:line_",
             "RdpWorker::SessionFailure:Reason:control.rs:line_",
             "RdpWorker::SessionFailure:General:control.rs:line_",
+            "RdpWorker::SessionFailure:Pdu:Other:control.rs:line_",
         ] {
             assert!(lines.next().is_some_and(|line| line.starts_with(prefix)));
         }
@@ -18450,6 +18476,9 @@ mod tests {
             "reason context must not be traced",
             "reason detail must not be traced",
             "general context must not be traced",
+            "outer PDU context must not be traced",
+            "nested PDU context must not be traced",
+            "PDU detail must not be traced",
         ] {
             assert!(!trace.contains(secret));
         }

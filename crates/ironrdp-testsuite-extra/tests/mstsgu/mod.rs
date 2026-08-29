@@ -21,5 +21,6 @@ mod proxy;
 mod rpc_pdu;
 mod rpc_tsgu_stubs;
 pub(crate) mod rpch_http;
+mod rpch_v2;
 mod tunnel_policy;
 mod udp;
