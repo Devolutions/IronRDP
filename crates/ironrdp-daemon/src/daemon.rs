@@ -1550,7 +1550,8 @@ async fn consume_output(
             }
             RdpOutputEvent::ConnectionFailure(error) => {
                 guard.state = ConnState::Failed;
-                guard.error = Some(format!("{error}"));
+                let error = error.report();
+                guard.error = Some(error.to_string());
                 let rail_changed = guard.rail.fail_pending_launches();
                 error!(%error, "Session connection failed");
                 rail_changed
@@ -1564,7 +1565,8 @@ async fn consume_output(
             }
             RdpOutputEvent::Terminated(Err(error)) => {
                 guard.state = ConnState::Failed;
-                guard.error = Some(format!("{error}"));
+                let error = error.report();
+                guard.error = Some(error.to_string());
                 let rail_changed = guard.rail.fail_pending_launches();
                 warn!(%error, "Session terminated with an error");
                 rail_changed
@@ -2227,6 +2229,77 @@ mod tests {
 
         drop(output_tx);
         consumer.await.expect("consume output");
+    }
+
+    #[tokio::test]
+    async fn connection_failure_status_preserves_gateway_error_sources() {
+        let (daemon, _, live, rail_notify) = active_rail_session(false);
+        let (output_tx, output_rx) = mpsc::channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::ConnectionFailure(
+                ironrdp_connector::custom_err!(
+                    "GW connect",
+                    ironrdp_connector::custom_err!(
+                        "send rdg authentication request",
+                        std::io::Error::other("connection reset")
+                    )
+                ),
+            ))
+            .await
+            .expect("send connection failure");
+        drop(output_tx);
+        consumer.await.expect("consume output");
+
+        let Response::Ok(Payload::Status(status)) = daemon.status() else {
+            panic!("expected status response");
+        };
+        let message = status.message.expect("connection failure message");
+
+        assert_eq!(
+            message,
+            "[GW connect] custom error, caused by: [send rdg authentication request] custom error, caused by: connection reset"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminated_error_status_preserves_session_error_sources() {
+        let (daemon, _, live, rail_notify) = active_rail_session(false);
+        let (output_tx, output_rx) = mpsc::channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::Terminated(Err(
+                ironrdp_session::custom_err!(
+                    "read frame",
+                    ironrdp_session::custom_err!("decode transport", std::io::Error::other("connection reset"))
+                ),
+            )))
+            .await
+            .expect("send terminated error");
+        drop(output_tx);
+        consumer.await.expect("consume output");
+
+        let Response::Ok(Payload::Status(status)) = daemon.status() else {
+            panic!("expected status response");
+        };
+        let message = status.message.expect("terminated error message");
+
+        assert_eq!(
+            message,
+            "[read frame] custom error, caused by: [decode transport] custom error, caused by: connection reset"
+        );
     }
 
     #[test]
