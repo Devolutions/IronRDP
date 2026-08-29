@@ -279,8 +279,19 @@ impl<'de> Decode<'de> for ChannelDef {
         let name = src.read_array();
         let name = ChannelName::new(name);
 
-        let options = ChannelOptions::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("options", "invalid channel options", in: src))?;
+        // Undefined bits are dropped rather than rejected. [MS-RDPBCGR]
+        // 2.2.1.3.4.1 never asks a server to validate this field, and for five
+        // of the eleven flags it asks the opposite: CHANNEL_OPTION_INITIALIZED,
+        // ENCRYPT_RDP, ENCRYPT_SC and ENCRYPT_CS are each "unused and its value
+        // MUST be ignored by the server", and SHOW_PROTOCOL likewise.
+        //
+        // Rejecting is not only stricter than the protocol, it costs real
+        // sessions. rdesktop 1.9.0 writes this one field big-endian while the
+        // rest of the block is little-endian (secure.c:516 uses
+        // `out_uint32_be`), so every channel it registers arrives byte-swapped
+        // and every bit lands outside the mask -- and a server that rejects
+        // drops the connection at GCC, before any channel is joined.
+        let options = ChannelOptions::from_bits_truncate(src.read_u32());
 
         Ok(Self { name, options })
     }
@@ -301,5 +312,43 @@ bitflags! {
         const COMPRESS = 0x0040_0000;
         const SHOW_PROTOCOL = 0x0020_0000;
         const REMOTE_CONTROL_PERSISTENT = 0x0010_0000;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn channel_def(name: &[u8; 8], options: u32) -> Vec<u8> {
+        let mut bytes = name.to_vec();
+        bytes.extend_from_slice(&options.to_le_bytes());
+        bytes
+    }
+
+    /// [MS-RDPBCGR] 2.2.1.3.4.1 asks the server to ignore several of these
+    /// flags and never asks it to validate the field, so a bit the server does
+    /// not know is not a reason to refuse the connection.
+    #[test]
+    fn undefined_option_bits_are_dropped_rather_than_refused() {
+        let known = ChannelOptions::INITIALIZED | ChannelOptions::COMPRESS_RDP;
+        let bytes = channel_def(b"rdpdr\0\0\0", known.bits() | 0x0000_0044);
+
+        let decoded = ChannelDef::decode(&mut ReadCursor::new(&bytes)).expect("undefined bits are not fatal");
+
+        assert_eq!(decoded.options, known);
+    }
+
+    /// The value rdesktop 1.9.0 actually puts on the wire for its clipboard
+    /// channel: its flags written big-endian in a little-endian field, so every
+    /// set bit is undefined. Refusing it drops the connection at GCC, before a
+    /// single channel is joined.
+    #[test]
+    fn a_wholly_undefined_value_still_yields_a_channel() {
+        let bytes = channel_def(b"cliprdr\0", u32::from_le_bytes([0xc0, 0xa0, 0x00, 0x00]));
+
+        let decoded = ChannelDef::decode(&mut ReadCursor::new(&bytes)).expect("still a channel");
+
+        assert_eq!(decoded.name.as_str(), Some("cliprdr"));
+        assert_eq!(decoded.options, ChannelOptions::empty());
     }
 }
