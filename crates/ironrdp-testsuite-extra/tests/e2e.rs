@@ -62,15 +62,9 @@ async fn test_client_server() {
     .await
 }
 
-/// Advertising the Graphics Pipeline early-capability bit must not disturb the
-/// connection sequence itself.
+/// Advertising the Graphics Pipeline early-capability bit must not disturb connection establishment.
 ///
-/// Scope, stated plainly: this asserts negotiation still completes end to end
-/// with the bit set. It does *not* assert the server acted on it —
-/// `ironrdp-server` does not surface the client's early capability flags, and
-/// plumbing that through only to observe it here would be a larger change than
-/// the feature. The bit's presence and absence on the wire are asserted
-/// directly in `ironrdp-connector`'s `create_gcc_blocks` unit tests.
+/// The core testsuite separately decodes the emitted Connect Initial PDU and verifies the capability flag.
 #[tokio::test]
 async fn test_client_server_advertising_dyn_vc_gfx_protocol() {
     client_server(
