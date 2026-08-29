@@ -19,8 +19,8 @@ use crate::pdu::{
     DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncResponsePdu, SoftSyncTunnelType,
 };
 use crate::{
-    DvcMessage, DvcProcessor, DynamicChannelId, DynamicChannelMut, DynamicChannelName, DynamicChannelRef,
-    encode_dvc_messages,
+    DvcMessage, DvcMessageBatch, DvcProcessor, DynamicChannelId, DynamicChannelMut, DynamicChannelName,
+    DynamicChannelRef, encode_dvc_messages,
 };
 
 pub trait DvcClientProcessor: DvcProcessor {}
@@ -320,6 +320,14 @@ impl DrdynvcClient {
         self.available_tunnels.insert(tunnel_type);
     }
 
+    /// Marks a multitransport tunnel as unavailable, e.g. after it failed or was torn down.
+    ///
+    /// A future Soft-Sync request that selects this tunnel is rejected; channels already routed
+    /// to it by a prior Soft-Sync exchange are unaffected.
+    pub fn disable_soft_sync_tunnel(&mut self, tunnel_type: SoftSyncTunnelType) {
+        self.available_tunnels.remove(&tunnel_type);
+    }
+
     /// Returns whether the client has produced its Soft-Sync response and activated
     /// its local routing state.
     pub const fn soft_sync_complete(&self) -> bool {
@@ -331,19 +339,35 @@ impl DrdynvcClient {
         self.tunnel_channels.get(&channel_id).copied()
     }
 
-    /// Processes raw DRDYNVC data received through an established multitransport tunnel.
-    pub fn process_tunnel(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+    /// Returns whether Soft-Sync routed any dynamic channel to `tunnel_type`.
+    pub fn has_channels_on_tunnel(&self, tunnel_type: SoftSyncTunnelType) -> bool {
+        self.tunnel_channels.values().any(|selected| *selected == tunnel_type)
+    }
+
+    /// Processes raw DRDYNVC data received through `tunnel_type`.
+    ///
+    /// The channel's Soft-Sync-selected route is validated before the dynamic channel sees the
+    /// data, so data arriving on the wrong tunnel is rejected (MS-RDPEDYC 3.1.5.4.3, 3.2.5.3.2).
+    /// The returned batch carries the channel ID so response messages can be routed back onto
+    /// the same tunnel.
+    pub fn process_tunnel(&mut self, tunnel_type: SoftSyncTunnelType, payload: &[u8]) -> PduResult<DvcMessageBatch> {
         let pdu = decode_dvc_message(payload).map_err(|e| decode_err!(e))?;
         let DrdynvcServerPdu::Data(data) = pdu else {
             return Err(pdu_other_err!("only DVC data is permitted on a multitransport tunnel"));
         };
         let channel_id = data.channel_id();
-        if !self.tunnel_channels.contains_key(&channel_id) {
+        let selected_tunnel = self
+            .tunnel_channels
+            .get(&channel_id)
+            .copied()
+            .ok_or_else(|| pdu_other_err!("received tunneled data for a channel not selected by Soft-Sync"))?;
+        if tunnel_type != selected_tunnel {
             return Err(pdu_other_err!(
-                "received tunneled data for a channel not selected by Soft-Sync"
+                "received tunneled data on a tunnel not selected for the dynamic channel"
             ));
         }
-        self.process_data(data)
+        let messages = self.process_data(data)?;
+        Ok(DvcMessageBatch::new(channel_id, messages))
     }
 
     fn process_data(&mut self, data: DrdynvcDataPdu) -> PduResult<Vec<SvcMessage>> {
@@ -365,6 +389,9 @@ impl DrdynvcClient {
         let mut tunnel_channels = BTreeMap::new();
         let mut tunnels_to_switch = Vec::new();
         for list in request.channel_lists() {
+            // MS-RDPEDYC 3.2.5.3.1: the server manager starts sending data for these channels
+            // on the tunnel as soon as it sends the request, before it sees our response, so an
+            // unavailable tunnel cannot be silently skipped without losing that inbound data.
             if !self.available_tunnels.contains(&list.tunnel_type()) {
                 return Err(pdu_other_err!("soft-sync request selected an unavailable tunnel"));
             }
@@ -672,7 +699,11 @@ mod tests {
             crate::pdu::DataPdu::new(1, Vec::new()),
         )))
         .unwrap();
-        assert!(client.process_tunnel(&tunnel_data).is_err());
+        assert!(
+            client
+                .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &tunnel_data)
+                .is_err()
+        );
 
         let request = crate::pdu::SoftSyncRequestPdu::new(alloc::vec![crate::pdu::SoftSyncChannelList::new(
             SoftSyncTunnelType::RELIABLE_UDP,
@@ -682,18 +713,32 @@ mod tests {
 
         assert!(client.soft_sync_complete());
         assert_eq!(client.tunnel_for_channel(1), Some(SoftSyncTunnelType::RELIABLE_UDP));
-        assert!(client.process_tunnel(&tunnel_data).is_ok());
+        assert!(client.has_channels_on_tunnel(SoftSyncTunnelType::RELIABLE_UDP));
+
+        assert!(
+            client
+                .process_tunnel(SoftSyncTunnelType::LOSSY_UDP, &tunnel_data)
+                .is_err()
+        );
+        let batch = client
+            .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &tunnel_data)
+            .unwrap();
+        assert_eq!(batch.channel_id(), 1);
+        assert!(batch.messages().is_empty());
 
         assert!(client.process(&tunnel_data).is_err());
 
         client.close_channel(1).unwrap();
         assert_eq!(client.tunnel_for_channel(1), None);
+        assert!(!client.has_channels_on_tunnel(SoftSyncTunnelType::RELIABLE_UDP));
     }
 
     #[test]
     fn soft_sync_rejects_an_unavailable_tunnel() {
         let mut client = DrdynvcClient::new();
         add_active_channel(&mut client, 1);
+        client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+        client.disable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
 
         let request = crate::pdu::SoftSyncRequestPdu::new(alloc::vec![crate::pdu::SoftSyncChannelList::new(
             SoftSyncTunnelType::RELIABLE_UDP,
@@ -702,5 +747,15 @@ mod tests {
 
         assert!(client.process_soft_sync_request(request).is_err());
         assert!(!client.soft_sync_complete());
+        assert!(!client.has_channels_on_tunnel(SoftSyncTunnelType::RELIABLE_UDP));
+    }
+
+    #[test]
+    fn message_batch_rejects_a_mismatched_channel_id() {
+        let message = SvcMessage::from(DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(crate::pdu::DataPdu::new(
+            7,
+            Vec::new(),
+        ))));
+        assert!(DvcMessageBatch::try_new(8, alloc::vec![message]).is_err());
     }
 }
