@@ -1,12 +1,15 @@
 #![allow(unused_crate_dependencies)]
 
 use ironrdp_mstsgu::rpc::{
-    DEFAULT_FRAGMENT_SIZE, MAX_PENDING_RPC_FRAGMENTS, PFC_FIRST_FRAG, PFC_LAST_FRAG, PTYPE_FAULT, PTYPE_RESPONSE,
-    RPC_COMMON_HEADER_SIZE, RPC_DREP_LITTLE_ENDIAN, RPC_VERSION, RPC_VERSION_MINOR, RpcCommonHeader, RpcFault,
-    RpcFragmentSizes, RpcPduError, RpcPduStream, RpcReassembledResponse, RpcResponse, RpcResponseReassembler,
-    RpcSyntaxVersion, decode_rpc_fault, decode_rpc_response, decode_rpc_response_fragment, encode_rpc_fault,
-    encode_rpc_response, encode_rpc_response_fragment,
+    DEFAULT_FRAGMENT_SIZE, MAX_PENDING_RPC_FRAGMENTS, PFC_FIRST_FRAG, PFC_LAST_FRAG, PTYPE_BIND, PTYPE_BIND_ACK,
+    PTYPE_BIND_NAK, PTYPE_FAULT, PTYPE_REQUEST, PTYPE_RESPONSE, RPC_COMMON_HEADER_SIZE, RPC_DREP_LITTLE_ENDIAN,
+    RPC_VERSION, RPC_VERSION_MINOR, RpcCommonHeader, RpcFault, RpcFragmentSizes, RpcPduError, RpcPduStream,
+    RpcPresentationContext, RpcReassembledResponse, RpcResponse, RpcResponseReassembler, RpcSyntaxIdentifier,
+    RpcSyntaxVersion, decode_rpc_bind_ack, decode_rpc_bind_nak, decode_rpc_fault, decode_rpc_fault_for_context,
+    decode_rpc_response, decode_rpc_response_for_context, decode_rpc_response_fragment, encode_rpc_bind,
+    encode_rpc_fault, encode_rpc_request_fragments, encode_rpc_response, encode_rpc_response_fragment,
 };
+use uuid::Uuid;
 
 #[test]
 fn syntax_version_and_fragment_sizes_round_trip_accessors() {
@@ -468,6 +471,7 @@ fn response_reassembler_bounds_hints_and_recovers_from_an_oversized_first_fragme
             Ok(None)
         );
     }
+
     assert_eq!(
         reassembler.push(RpcResponse {
             call_id: 9,
@@ -483,5 +487,453 @@ fn response_reassembler_bounds_hints_and_recovers_from_an_oversized_first_fragme
             reserved: 0,
             stub: vec![1],
         }))
+    );
+}
+
+#[test]
+fn bind_and_request_codecs_match_connection_oriented_rpc_wire_layouts() {
+    let abstract_syntax = RpcSyntaxIdentifier::new(
+        Uuid::from_u128(0x00112233_4455_6677_8899_aabbccddeeff),
+        RpcSyntaxVersion::new(1, 3),
+    );
+    let transfer_syntax = RpcSyntaxIdentifier::new(
+        Uuid::from_u128(0x8a885d04_1ceb_11c9_9fe8_08002b104860),
+        RpcSyntaxVersion::new(2, 0),
+    );
+    let presentation_context = RpcPresentationContext {
+        context_id: 7,
+        abstract_syntax,
+        transfer_syntaxes: &[transfer_syntax],
+    };
+    let bind = encode_rpc_bind(0x7856_3412, RpcFragmentSizes::DEFAULT, 0, &[presentation_context]).expect("valid bind");
+    assert_eq!(
+        bind,
+        [
+            5,
+            0,
+            PTYPE_BIND,
+            PFC_FIRST_FRAG | PFC_LAST_FRAG,
+            0x10,
+            0,
+            0,
+            0,
+            72,
+            0,
+            0,
+            0,
+            0x12,
+            0x34,
+            0x56,
+            0x78,
+            0xb8,
+            0x10,
+            0xb8,
+            0x10,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            7,
+            0,
+            1,
+            0,
+            0x33,
+            0x22,
+            0x11,
+            0,
+            0x55,
+            0x44,
+            0x77,
+            0x66,
+            0x88,
+            0x99,
+            0xaa,
+            0xbb,
+            0xcc,
+            0xdd,
+            0xee,
+            0xff,
+            1,
+            0,
+            3,
+            0,
+            4,
+            0x5d,
+            0x88,
+            0x8a,
+            0xeb,
+            0x1c,
+            0xc9,
+            0x11,
+            0x9f,
+            0xe8,
+            8,
+            0,
+            0x2b,
+            0x10,
+            0x48,
+            0x60,
+            2,
+            0,
+            0,
+            0,
+        ]
+    );
+    assert_eq!(
+        encode_rpc_bind(1, RpcFragmentSizes::DEFAULT, 0, &[]),
+        Err(RpcPduError::EmptyPresentationContexts)
+    );
+    assert_eq!(
+        encode_rpc_bind(
+            1,
+            RpcFragmentSizes::DEFAULT,
+            0,
+            &[presentation_context, presentation_context],
+        ),
+        Err(RpcPduError::DuplicatePresentationContext { context_id: 7 })
+    );
+
+    let bind_ack = [
+        5,
+        0,
+        PTYPE_BIND_ACK,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG,
+        0x10,
+        0,
+        0,
+        0,
+        60,
+        0,
+        0,
+        0,
+        0x12,
+        0x34,
+        0x56,
+        0x78,
+        0xb8,
+        0x10,
+        0xb8,
+        0x10,
+        0xef,
+        0xbe,
+        0xad,
+        0xde,
+        3,
+        0,
+        b'1',
+        b'3',
+        b'5',
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        4,
+        0x5d,
+        0x88,
+        0x8a,
+        0xeb,
+        0x1c,
+        0xc9,
+        0x11,
+        0x9f,
+        0xe8,
+        8,
+        0,
+        0x2b,
+        0x10,
+        0x48,
+        0x60,
+        2,
+        0,
+        0,
+        0,
+    ];
+    let offered_fragment_sizes = RpcFragmentSizes::new(0x1000, 0x0a00).expect("valid offered maxima");
+    let mut bind_ack = bind_ack;
+    bind_ack[16..18].copy_from_slice(&0x0c00u16.to_le_bytes());
+    bind_ack[18..20].copy_from_slice(&0x0e00u16.to_le_bytes());
+    let ack = decode_rpc_bind_ack(&bind_ack, offered_fragment_sizes).expect("valid bind acknowledgement");
+    assert_eq!(ack.call_id, 0x7856_3412);
+    assert_eq!(
+        ack.fragment_sizes,
+        RpcFragmentSizes::new(0x0e00, 0x0a00).expect("valid negotiated maxima")
+    );
+    assert_eq!(ack.association_group_id, 0xdead_beef);
+    assert_eq!(ack.secondary_address, b"135");
+    assert_eq!(ack.results.len(), 1);
+    assert_eq!(ack.results[0].result, 0);
+    assert_eq!(ack.results[0].reason, 0);
+    assert_eq!(ack.results[0].transfer_syntax, transfer_syntax);
+    let mut authenticated_bind_ack = bind_ack;
+    authenticated_bind_ack[10..12].copy_from_slice(&1u16.to_le_bytes());
+    assert_eq!(
+        decode_rpc_bind_ack(&authenticated_bind_ack, RpcFragmentSizes::DEFAULT),
+        Err(RpcPduError::AuthenticationUnsupported { auth_length: 1 })
+    );
+    let mut truncated_bind_ack = bind_ack.to_vec();
+    truncated_bind_ack.pop();
+    truncated_bind_ack[8..10].copy_from_slice(&59u16.to_le_bytes());
+    assert_eq!(
+        decode_rpc_bind_ack(&truncated_bind_ack, RpcFragmentSizes::DEFAULT),
+        Err(RpcPduError::InvalidBindAckLength {
+            actual: 43,
+            expected: 44,
+        })
+    );
+
+    let response = [
+        5,
+        0,
+        PTYPE_RESPONSE,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG,
+        0x10,
+        0,
+        0,
+        0,
+        27,
+        0,
+        0,
+        0,
+        0x12,
+        0x34,
+        0x56,
+        0x78,
+        3,
+        0,
+        0,
+        0,
+        7,
+        0,
+        0,
+        0,
+        1,
+        2,
+        3,
+    ];
+    assert_eq!(
+        decode_rpc_response_for_context(&response, DEFAULT_FRAGMENT_SIZE, 7).expect("valid response"),
+        RpcResponse {
+            call_id: 0x7856_3412,
+            pfc_flags: PFC_FIRST_FRAG | PFC_LAST_FRAG,
+            alloc_hint: 3,
+            cancel_count: 0,
+            reserved: 0,
+            stub: &[1, 2, 3],
+        }
+    );
+
+    let fault = [
+        5,
+        0,
+        PTYPE_FAULT,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG,
+        0x10,
+        0,
+        0,
+        0,
+        32,
+        0,
+        0,
+        0,
+        0x12,
+        0x34,
+        0x56,
+        0x78,
+        0,
+        0,
+        0,
+        0,
+        7,
+        0,
+        0,
+        0,
+        0xef,
+        0xbe,
+        0xad,
+        0xde,
+        0,
+        0,
+        0,
+        0,
+    ];
+    assert_eq!(
+        decode_rpc_fault(&fault, DEFAULT_FRAGMENT_SIZE),
+        Err(RpcPduError::UnexpectedContextId { expected: 0, actual: 7 })
+    );
+    assert_eq!(
+        decode_rpc_fault_for_context(&fault, DEFAULT_FRAGMENT_SIZE, 7).expect("valid fault"),
+        RpcFault {
+            call_id: 0x7856_3412,
+            pfc_flags: PFC_FIRST_FRAG | PFC_LAST_FRAG,
+            alloc_hint: 0,
+            cancel_count: 0,
+            reserved: 0,
+            status: 0xdead_beef,
+            reserved2: 0,
+            stub: &[],
+        }
+    );
+
+    let bind_nak = [
+        5,
+        0,
+        PTYPE_BIND_NAK,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG,
+        0x10,
+        0,
+        0,
+        0,
+        23,
+        0,
+        0,
+        0,
+        0x12,
+        0x34,
+        0x56,
+        0x78,
+        4,
+        0,
+        2,
+        5,
+        0,
+        5,
+        1,
+    ];
+    let nak = decode_rpc_bind_nak(&bind_nak, DEFAULT_FRAGMENT_SIZE).expect("valid bind rejection");
+    assert_eq!(nak.call_id, 0x7856_3412);
+    assert_eq!(nak.reason, 4);
+    assert_eq!(
+        nak.supported_versions,
+        vec![
+            ironrdp_mstsgu::rpc::RpcProtocolVersion::new(5, 0),
+            ironrdp_mstsgu::rpc::RpcProtocolVersion::new(5, 1),
+        ]
+    );
+    assert_eq!(nak.extended_error_signature, None);
+
+    let requests = encode_rpc_request_fragments(
+        0x7856_3412,
+        7,
+        3,
+        &[1, 2, 3, 4, 5, 6, 7, 8, 9],
+        RpcFragmentSizes::new(28, 28).expect("valid maxima"),
+    )
+    .expect("fragmented request");
+    let common_header_size = u16::try_from(RPC_COMMON_HEADER_SIZE).expect("common header size fits");
+    assert_eq!(
+        encode_rpc_request_fragments(
+            1,
+            7,
+            3,
+            &[],
+            RpcFragmentSizes::new(common_header_size, common_header_size).expect("valid common-header maximum"),
+        ),
+        Err(RpcPduError::FragmentTooSmall {
+            maximum: common_header_size,
+            required: RPC_COMMON_HEADER_SIZE + 8,
+        })
+    );
+    assert_eq!(
+        requests,
+        vec![
+            vec![
+                5,
+                0,
+                PTYPE_REQUEST,
+                PFC_FIRST_FRAG,
+                0x10,
+                0,
+                0,
+                0,
+                28,
+                0,
+                0,
+                0,
+                0x12,
+                0x34,
+                0x56,
+                0x78,
+                9,
+                0,
+                0,
+                0,
+                7,
+                0,
+                3,
+                0,
+                1,
+                2,
+                3,
+                4,
+            ],
+            vec![
+                5,
+                0,
+                PTYPE_REQUEST,
+                0,
+                0x10,
+                0,
+                0,
+                0,
+                28,
+                0,
+                0,
+                0,
+                0x12,
+                0x34,
+                0x56,
+                0x78,
+                5,
+                0,
+                0,
+                0,
+                7,
+                0,
+                3,
+                0,
+                5,
+                6,
+                7,
+                8,
+            ],
+            vec![
+                5,
+                0,
+                PTYPE_REQUEST,
+                PFC_LAST_FRAG,
+                0x10,
+                0,
+                0,
+                0,
+                25,
+                0,
+                0,
+                0,
+                0x12,
+                0x34,
+                0x56,
+                0x78,
+                1,
+                0,
+                0,
+                0,
+                7,
+                0,
+                3,
+                0,
+                9,
+            ],
+        ]
     );
 }
