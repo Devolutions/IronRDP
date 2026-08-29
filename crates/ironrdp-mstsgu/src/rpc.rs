@@ -11,6 +11,8 @@
 
 use core::{fmt, time::Duration};
 
+use uuid::Uuid;
+
 /// DCE/RPC common-header size.
 ///
 /// [MS-RPCE] 2.2.2.1 / [C706] 12.6.
@@ -26,9 +28,20 @@ pub const RPC_COMMON_HEADER_SIZE: usize = 1 /* rpc_vers */
     + 2 /* auth_length */
     + 4; /* call_id */
 
+const RPC_REQUEST_HEADER_SIZE: usize =
+    4 /* alloc_hint */ + 2 /* p_cont_id */ + 2 /* opnum */;
 const RPC_RESPONSE_HEADER_SIZE: usize =
     4 /* alloc_hint */ + 2 /* p_cont_id */ + 1 /* cancel_count */ + 1 /* reserved */;
 const RPC_FAULT_HEADER_SIZE: usize = RPC_RESPONSE_HEADER_SIZE + 4 /* status */ + 4 /* reserved2 */;
+const RPC_BIND_HEADER_SIZE: usize =
+    2 /* max_xmit_frag */ + 2 /* max_recv_frag */ + 4 /* assoc_group_id */ + 1 /* n_context_elem */ + 1 /* reserved */ + 2 /* reserved2 */;
+const RPC_BIND_ACK_HEADER_SIZE: usize =
+    2 /* max_xmit_frag */ + 2 /* max_recv_frag */ + 4 /* assoc_group_id */ + 2 /* sec_addr length */;
+const RPC_PRESENTATION_CONTEXT_HEADER_SIZE: usize =
+    2 /* p_cont_id */ + 1 /* n_transfer_syn */ + 1 /* reserved */;
+const RPC_SYNTAX_IDENTIFIER_SIZE: usize = 16 /* UUID */ + 2 /* version major */ + 2; /* version minor */
+const RPC_PRESENTATION_RESULT_SIZE: usize =
+    2 /* result */ + 2 /* reason */ + RPC_SYNTAX_IDENTIFIER_SIZE /* transfer syntax */;
 
 /// Connection-oriented DCE/RPC major version.
 pub const RPC_VERSION: u8 = 5;
@@ -46,14 +59,22 @@ pub const PFC_LAST_FRAG: u8 = 0x02;
 pub const PTYPE_RESPONSE: u8 = 2;
 /// `fault` PDU type ([C706] 12.6.4.9).
 pub const PTYPE_FAULT: u8 = 3;
+/// `request` PDU type ([C706] 12.6.4.8).
+pub const PTYPE_REQUEST: u8 = 0;
+/// `bind` PDU type ([C706] 12.6.4.3).
+pub const PTYPE_BIND: u8 = 11;
+/// `bind_ack` PDU type ([C706] 12.6.4.4).
+pub const PTYPE_BIND_ACK: u8 = 12;
+/// `bind_nak` PDU type ([C706] 12.6.4.5).
+pub const PTYPE_BIND_NAK: u8 = 13;
 /// `rts` PDU type ([MS-RPCH] 2.2.3.2).
 pub const PTYPE_RTS: u8 = 20;
 
 /// Exact size of the CONN/A1 body on the initial RPCH OUT request.
 pub const RPCH_OUT_CONTENT_LENGTH: usize = 76;
 
-// This fragment foundation assumes the conventional first presentation context.
-// A later bind codec will negotiate and supply the context identifier.
+// The existing response codecs default to the conventional first presentation context.
+// Context-aware decoders support other negotiated identifiers.
 const RPC_CONTEXT_ID: u16 = 0;
 
 /// Conventional DCE/RPC fragment maximum used for the initial bind.
@@ -106,6 +127,14 @@ pub enum RpcPduError {
     LengthOverflow,
     UnexpectedContextId { actual: u16 },
     InvalidAllocHint { alloc_hint: u32, stub_length: usize },
+    EmptyPresentationContexts,
+    TooManyPresentationContexts { actual: usize },
+    DuplicatePresentationContext { context_id: u16 },
+    EmptyTransferSyntaxes { context_id: u16 },
+    TooManyTransferSyntaxes { context_id: u16, actual: usize },
+    FragmentTooSmall { maximum: u16, required: usize },
+    InvalidBindAckLength { actual: usize, expected: usize },
+    InvalidBindNakVersionsLength { actual: usize, expected: usize },
     UnexpectedRtsCallId { actual: u32 },
     InvalidRtsPfcFlags { actual: u8 },
     UnexpectedRtsFlags { expected: u16, actual: u16 },
@@ -177,10 +206,7 @@ impl fmt::Display for RpcPduError {
             }
             Self::LengthOverflow => f.write_str("rpc pdu length overflow"),
             Self::UnexpectedContextId { actual } => {
-                write!(
-                    f,
-                    "unexpected rpc presentation context id {actual}, expected {RPC_CONTEXT_ID}"
-                )
+                write!(f, "unexpected rpc presentation context id {actual}")
             }
             Self::InvalidAllocHint {
                 alloc_hint,
@@ -189,6 +215,34 @@ impl fmt::Display for RpcPduError {
                 write!(
                     f,
                     "invalid rpc allocation hint {alloc_hint} for {stub_length}-byte stub"
+                )
+            }
+            Self::EmptyPresentationContexts => f.write_str("rpc bind must contain a presentation context"),
+            Self::TooManyPresentationContexts { actual } => {
+                write!(f, "rpc bind contains {actual} presentation contexts")
+            }
+            Self::DuplicatePresentationContext { context_id } => {
+                write!(f, "duplicate rpc presentation context id {context_id}")
+            }
+            Self::EmptyTransferSyntaxes { context_id } => {
+                write!(f, "rpc presentation context {context_id} has no transfer syntax")
+            }
+            Self::TooManyTransferSyntaxes { context_id, actual } => {
+                write!(
+                    f,
+                    "rpc presentation context {context_id} has {actual} transfer syntaxes"
+                )
+            }
+            Self::FragmentTooSmall { maximum, required } => {
+                write!(f, "rpc fragment maximum {maximum} cannot hold {required} bytes")
+            }
+            Self::InvalidBindAckLength { actual, expected } => {
+                write!(f, "invalid rpc bind_ack body length {actual}, expected {expected}")
+            }
+            Self::InvalidBindNakVersionsLength { actual, expected } => {
+                write!(
+                    f,
+                    "invalid rpc bind_nak body length {actual}, expected at least {expected}"
                 )
             }
             Self::UnexpectedRtsCallId { actual } => write!(f, "unexpected rts call id {actual}"),
@@ -225,7 +279,7 @@ impl fmt::Display for RpcPduError {
 
 impl core::error::Error for RpcPduError {}
 
-/// A DCE/RPC syntax version staged for a later bind codec.
+/// A DCE/RPC syntax version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RpcSyntaxVersion {
     major: u16,
@@ -247,6 +301,116 @@ impl RpcSyntaxVersion {
     pub const fn minor(self) -> u16 {
         self.minor
     }
+}
+
+/// A DCE/RPC syntax identifier.
+///
+/// [MS-RPCE] 2.2.2.7 / [C706] 12.6.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RpcSyntaxIdentifier {
+    uuid: Uuid,
+    version: RpcSyntaxVersion,
+}
+
+impl RpcSyntaxIdentifier {
+    /// Creates a syntax identifier from its UUID and version.
+    pub const fn new(uuid: Uuid, version: RpcSyntaxVersion) -> Self {
+        Self { uuid, version }
+    }
+
+    /// Syntax UUID.
+    pub const fn uuid(self) -> Uuid {
+        self.uuid
+    }
+
+    /// Syntax version.
+    pub const fn version(self) -> RpcSyntaxVersion {
+        self.version
+    }
+}
+
+/// One presentation context requested in an RPC bind.
+///
+/// [C706] 12.6.4.3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RpcPresentationContext<'a> {
+    pub context_id: u16,
+    pub abstract_syntax: RpcSyntaxIdentifier,
+    pub transfer_syntaxes: &'a [RpcSyntaxIdentifier],
+}
+
+/// One presentation-context result returned by an RPC bind acknowledgement.
+///
+/// [MS-RPCE] 2.2.2.4 / [C706] 12.6.4.4.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RpcPresentationResult {
+    pub result: u16,
+    pub reason: u16,
+    pub transfer_syntax: RpcSyntaxIdentifier,
+}
+
+/// A decoded, unauthenticated RPC bind acknowledgement.
+///
+/// The decoded fragment sizes are the minima of the client offer and server
+/// acknowledgement in each direction.
+///
+/// [C706] 12.6.4.4.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RpcBindAck<'a> {
+    pub call_id: u32,
+    pub fragment_sizes: RpcFragmentSizes,
+    pub association_group_id: u32,
+    pub secondary_address: &'a [u8],
+    pub results: Vec<RpcPresentationResult>,
+}
+
+/// An RPC runtime version advertised in a bind rejection.
+///
+/// [MS-RPCE] 2.2.2.9 / [C706] 12.6.4.5.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RpcProtocolVersion {
+    major: u8,
+    minor: u8,
+}
+
+impl RpcProtocolVersion {
+    /// Creates an RPC runtime version.
+    pub const fn new(major: u8, minor: u8) -> Self {
+        Self { major, minor }
+    }
+
+    /// Major runtime version.
+    pub const fn major(self) -> u8 {
+        self.major
+    }
+
+    /// Minor runtime version.
+    pub const fn minor(self) -> u8 {
+        self.minor
+    }
+}
+
+/// A decoded, unauthenticated RPC bind rejection.
+///
+/// [MS-RPCE] 2.2.2.9 / [C706] 12.6.4.5.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RpcBindNak {
+    pub call_id: u32,
+    pub reason: u16,
+    pub supported_versions: Vec<RpcProtocolVersion>,
+    pub extended_error_signature: Option<Uuid>,
 }
 
 /// Negotiated client-to-server and server-to-client fragment maxima.
@@ -655,6 +819,253 @@ pub struct RpcFault<'a> {
     pub stub: &'a [u8],
 }
 
+/// Encodes one complete, unauthenticated RPC bind PDU.
+///
+/// [C706] 12.6.4.3.
+pub fn encode_rpc_bind(
+    call_id: u32,
+    fragment_sizes: RpcFragmentSizes,
+    association_group_id: u32,
+    presentation_contexts: &[RpcPresentationContext<'_>],
+) -> Result<Vec<u8>, RpcPduError> {
+    if presentation_contexts.is_empty() {
+        return Err(RpcPduError::EmptyPresentationContexts);
+    }
+    if u8::try_from(presentation_contexts.len()).is_err() {
+        return Err(RpcPduError::TooManyPresentationContexts {
+            actual: presentation_contexts.len(),
+        });
+    }
+
+    let mut body_length = RPC_BIND_HEADER_SIZE;
+    for (index, context) in presentation_contexts.iter().enumerate() {
+        if presentation_contexts[..index]
+            .iter()
+            .any(|previous| previous.context_id == context.context_id)
+        {
+            return Err(RpcPduError::DuplicatePresentationContext {
+                context_id: context.context_id,
+            });
+        }
+        if context.transfer_syntaxes.is_empty() {
+            return Err(RpcPduError::EmptyTransferSyntaxes {
+                context_id: context.context_id,
+            });
+        }
+        if u8::try_from(context.transfer_syntaxes.len()).is_err() {
+            return Err(RpcPduError::TooManyTransferSyntaxes {
+                context_id: context.context_id,
+                actual: context.transfer_syntaxes.len(),
+            });
+        }
+
+        body_length = body_length
+            .checked_add(RPC_PRESENTATION_CONTEXT_HEADER_SIZE)
+            .and_then(|length| length.checked_add(RPC_SYNTAX_IDENTIFIER_SIZE))
+            .and_then(|length| {
+                length.checked_add(
+                    context
+                        .transfer_syntaxes
+                        .len()
+                        .checked_mul(RPC_SYNTAX_IDENTIFIER_SIZE)?,
+                )
+            })
+            .ok_or(RpcPduError::LengthOverflow)?;
+    }
+    ensure_fragment_fits(body_length, fragment_sizes.max_xmit())?;
+
+    let mut body = Vec::with_capacity(body_length);
+    body.extend_from_slice(&fragment_sizes.max_xmit().to_le_bytes());
+    body.extend_from_slice(&fragment_sizes.max_recv().to_le_bytes());
+    body.extend_from_slice(&association_group_id.to_le_bytes());
+    body.push(u8::try_from(presentation_contexts.len()).map_err(|_| RpcPduError::LengthOverflow)?);
+    body.push(0); // reserved
+    body.extend_from_slice(&0u16.to_le_bytes()); // reserved2
+    for context in presentation_contexts {
+        body.extend_from_slice(&context.context_id.to_le_bytes());
+        body.push(u8::try_from(context.transfer_syntaxes.len()).map_err(|_| RpcPduError::LengthOverflow)?);
+        body.push(0); // reserved
+        encode_syntax_identifier(&mut body, context.abstract_syntax);
+        for syntax in context.transfer_syntaxes {
+            encode_syntax_identifier(&mut body, *syntax);
+        }
+    }
+
+    encode_unprotected_pdu(PTYPE_BIND, call_id, body)
+}
+
+/// Decodes one complete, unauthenticated RPC bind acknowledgement.
+///
+/// [C706] 12.6.4.4.
+pub fn decode_rpc_bind_ack(
+    source: &[u8],
+    offered_fragment_sizes: RpcFragmentSizes,
+) -> Result<RpcBindAck<'_>, RpcPduError> {
+    let (header, body) = decode_unprotected_single_fragment(source, PTYPE_BIND_ACK, offered_fragment_sizes.max_recv())?;
+    let fixed = body.get(..RPC_BIND_ACK_HEADER_SIZE).ok_or(RpcPduError::Truncated {
+        actual: body.len(),
+        required: RPC_BIND_ACK_HEADER_SIZE,
+    })?;
+    let server_fragment_sizes = RpcFragmentSizes::new(read_u16(fixed, 0)?, read_u16(fixed, 2)?)?;
+    let secondary_address_end = RPC_BIND_ACK_HEADER_SIZE
+        .checked_add(usize::from(read_u16(fixed, 8)?))
+        .ok_or(RpcPduError::LengthOverflow)?;
+    let result_list_offset = secondary_address_end
+        .checked_add(3)
+        .ok_or(RpcPduError::LengthOverflow)?
+        & !3;
+    let result_list_end = result_list_offset.checked_add(4).ok_or(RpcPduError::LengthOverflow)?;
+    let result_list = body
+        .get(result_list_offset..result_list_end)
+        .ok_or(RpcPduError::Truncated {
+            actual: body.len(),
+            required: result_list_end,
+        })?;
+    let result_count = usize::from(result_list[0]);
+    let results_end = result_list_end
+        .checked_add(
+            result_count
+                .checked_mul(RPC_PRESENTATION_RESULT_SIZE)
+                .ok_or(RpcPduError::LengthOverflow)?,
+        )
+        .ok_or(RpcPduError::LengthOverflow)?;
+    if body.len() != results_end {
+        return Err(RpcPduError::InvalidBindAckLength {
+            actual: body.len(),
+            expected: results_end,
+        });
+    }
+
+    let mut results = Vec::with_capacity(result_count);
+    for result in body[result_list_end..].chunks_exact(RPC_PRESENTATION_RESULT_SIZE) {
+        results.push(RpcPresentationResult {
+            result: read_u16(result, 0)?,
+            reason: read_u16(result, 2)?,
+            transfer_syntax: decode_syntax_identifier(&result[4..])?,
+        });
+    }
+
+    let fragment_sizes = RpcFragmentSizes::new(
+        offered_fragment_sizes.max_xmit().min(server_fragment_sizes.max_recv()),
+        offered_fragment_sizes.max_recv().min(server_fragment_sizes.max_xmit()),
+    )?;
+    Ok(RpcBindAck {
+        call_id: header.call_id(),
+        fragment_sizes,
+        association_group_id: read_u32(fixed, 4)?,
+        secondary_address: &body[RPC_BIND_ACK_HEADER_SIZE..secondary_address_end],
+        results,
+    })
+}
+
+/// Decodes one complete, unauthenticated RPC bind rejection.
+///
+/// [MS-RPCE] 2.2.2.9 / [C706] 12.6.4.5.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+pub fn decode_rpc_bind_nak(source: &[u8], maximum_fragment_size: u16) -> Result<RpcBindNak, RpcPduError> {
+    let (header, body) = decode_unprotected_single_fragment(source, PTYPE_BIND_NAK, maximum_fragment_size)?;
+    let fixed = body.get(..3).ok_or(RpcPduError::Truncated {
+        actual: body.len(),
+        required: 3,
+    })?;
+    let versions_end = 3usize
+        .checked_add(
+            usize::from(fixed[2])
+                .checked_mul(2)
+                .ok_or(RpcPduError::LengthOverflow)?,
+        )
+        .ok_or(RpcPduError::LengthOverflow)?;
+    if body.len() < versions_end || (versions_end < body.len() && body.len() < versions_end + 16) {
+        return Err(RpcPduError::InvalidBindNakVersionsLength {
+            actual: body.len(),
+            expected: versions_end,
+        });
+    }
+
+    let supported_versions = body[3..versions_end]
+        .chunks_exact(2)
+        .map(|version| RpcProtocolVersion::new(version[0], version[1]))
+        .collect();
+    let extended_error_signature = match body.get(versions_end..versions_end + 16) {
+        Some(signature) => Some(Uuid::from_bytes_le(
+            signature.try_into().map_err(|_| RpcPduError::LengthOverflow)?,
+        )),
+        None => None,
+    };
+    Ok(RpcBindNak {
+        call_id: header.call_id(),
+        reason: read_u16(fixed, 0)?,
+        supported_versions,
+        extended_error_signature,
+    })
+}
+
+/// Encodes an unauthenticated RPC request into DCE/RPC fragments.
+///
+/// Each fragment advertises the remaining stub size through `alloc_hint`.
+///
+/// [MS-RPCE] 2.2.2.6 / [C706] 12.6.4.8.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+pub fn encode_rpc_request_fragments(
+    call_id: u32,
+    context_id: u16,
+    opnum: u16,
+    stub: &[u8],
+    fragment_sizes: RpcFragmentSizes,
+) -> Result<Vec<Vec<u8>>, RpcPduError> {
+    u32::try_from(stub.len()).map_err(|_| RpcPduError::LengthOverflow)?;
+    let maximum_stub_size = usize::from(fragment_sizes.max_xmit())
+        .checked_sub(RPC_COMMON_HEADER_SIZE + RPC_REQUEST_HEADER_SIZE)
+        .ok_or_else(|| RpcPduError::FragmentTooSmall {
+            maximum: fragment_sizes.max_xmit(),
+            required: RPC_COMMON_HEADER_SIZE + RPC_REQUEST_HEADER_SIZE,
+        })?;
+    if maximum_stub_size == 0 && !stub.is_empty() {
+        return Err(RpcPduError::FragmentTooSmall {
+            maximum: fragment_sizes.max_xmit(),
+            required: RPC_COMMON_HEADER_SIZE + RPC_REQUEST_HEADER_SIZE + 1,
+        });
+    }
+
+    let mut fragments = Vec::new();
+    let mut offset = 0;
+    loop {
+        let remaining = stub.len().checked_sub(offset).ok_or(RpcPduError::LengthOverflow)?;
+        let fragment_stub_length = remaining.min(maximum_stub_size);
+        let mut pfc_flags = if offset == 0 { PFC_FIRST_FRAG } else { 0 };
+        if fragment_stub_length == remaining {
+            pfc_flags |= PFC_LAST_FRAG;
+        }
+
+        let mut body = Vec::with_capacity(RPC_REQUEST_HEADER_SIZE + fragment_stub_length);
+        body.extend_from_slice(
+            &u32::try_from(remaining)
+                .map_err(|_| RpcPduError::LengthOverflow)?
+                .to_le_bytes(),
+        );
+        body.extend_from_slice(&context_id.to_le_bytes());
+        body.extend_from_slice(&opnum.to_le_bytes());
+        body.extend_from_slice(&stub[offset..offset + fragment_stub_length]);
+        fragments.push(encode_unprotected_pdu_with_flags(
+            PTYPE_REQUEST,
+            pfc_flags,
+            call_id,
+            body,
+        )?);
+
+        if fragment_stub_length == remaining {
+            return Ok(fragments);
+        }
+        offset = offset
+            .checked_add(fragment_stub_length)
+            .ok_or(RpcPduError::LengthOverflow)?;
+    }
+}
+
 /// Encodes one complete, unauthenticated RPC response PDU.
 pub fn encode_rpc_response(call_id: u32, stub: &[u8]) -> Result<Vec<u8>, RpcPduError> {
     let alloc_hint = u32::try_from(stub.len()).map_err(|_| RpcPduError::LengthOverflow)?;
@@ -694,28 +1105,66 @@ pub fn encode_rpc_fault(fault: RpcFault<'_>) -> Result<Vec<u8>, RpcPduError> {
 
 /// Decodes one complete, unauthenticated RPC response PDU.
 pub fn decode_rpc_response(source: &[u8], maximum_fragment_size: u16) -> Result<RpcResponse<'_>, RpcPduError> {
+    decode_rpc_response_for_context(source, maximum_fragment_size, RPC_CONTEXT_ID)
+}
+
+/// Decodes one complete, unauthenticated RPC response PDU for `context_id`.
+///
+/// [C706] 12.6.4.9.
+pub fn decode_rpc_response_for_context(
+    source: &[u8],
+    maximum_fragment_size: u16,
+    context_id: u16,
+) -> Result<RpcResponse<'_>, RpcPduError> {
     let (header, body) = decode_unprotected_single_fragment(source, PTYPE_RESPONSE, maximum_fragment_size)?;
-    let response = decode_rpc_response_body(header, body)?;
+    let response = decode_rpc_response_body(header, body, context_id)?;
     validate_single_response_alloc_hint(response)?;
     Ok(response)
 }
 
 /// Decodes one unauthenticated RPC response fragment for a response reassembler.
 pub fn decode_rpc_response_fragment(source: &[u8], maximum_fragment_size: u16) -> Result<RpcResponse<'_>, RpcPduError> {
+    decode_rpc_response_fragment_for_context(source, maximum_fragment_size, RPC_CONTEXT_ID)
+}
+
+/// Decodes one unauthenticated RPC response fragment for `context_id`.
+///
+/// [C706] 12.6.4.9.
+pub fn decode_rpc_response_fragment_for_context(
+    source: &[u8],
+    maximum_fragment_size: u16,
+    context_id: u16,
+) -> Result<RpcResponse<'_>, RpcPduError> {
     let (header, body) = decode_unprotected_fragment(source, PTYPE_RESPONSE, maximum_fragment_size)?;
-    decode_rpc_response_body(header, body)
+    decode_rpc_response_body(header, body, context_id)
 }
 
 /// Decodes one complete, unauthenticated RPC fault PDU.
 pub fn decode_rpc_fault(source: &[u8], maximum_fragment_size: u16) -> Result<RpcFault<'_>, RpcPduError> {
+    decode_rpc_fault_for_context(source, maximum_fragment_size, RPC_CONTEXT_ID)
+}
+
+/// Decodes one complete, unauthenticated RPC fault PDU for `context_id`.
+///
+/// [MS-RPCE] 2.2.2.8 / [C706] 12.6.4.9.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+pub fn decode_rpc_fault_for_context(
+    source: &[u8],
+    maximum_fragment_size: u16,
+    context_id: u16,
+) -> Result<RpcFault<'_>, RpcPduError> {
     let (header, body) = decode_unprotected_single_fragment(source, PTYPE_FAULT, maximum_fragment_size)?;
     let fault_header = body.get(..RPC_FAULT_HEADER_SIZE).ok_or(RpcPduError::Truncated {
         actual: body.len(),
         required: RPC_FAULT_HEADER_SIZE,
     })?;
-    let context_id = read_u16(fault_header, 4)?;
-    if context_id != RPC_CONTEXT_ID {
-        return Err(RpcPduError::UnexpectedContextId { actual: context_id });
+    let actual_context_id = read_u16(fault_header, 4)?;
+    if actual_context_id != context_id {
+        return Err(RpcPduError::UnexpectedContextId {
+            actual: actual_context_id,
+        });
     }
 
     Ok(RpcFault {
@@ -730,15 +1179,21 @@ pub fn decode_rpc_fault(source: &[u8], maximum_fragment_size: u16) -> Result<Rpc
     })
 }
 
-fn decode_rpc_response_body<'a>(header: RpcCommonHeader, body: &'a [u8]) -> Result<RpcResponse<'a>, RpcPduError> {
+fn decode_rpc_response_body<'a>(
+    header: RpcCommonHeader,
+    body: &'a [u8],
+    context_id: u16,
+) -> Result<RpcResponse<'a>, RpcPduError> {
     let request_header = body.get(..RPC_RESPONSE_HEADER_SIZE).ok_or(RpcPduError::Truncated {
         actual: body.len(),
         required: RPC_RESPONSE_HEADER_SIZE,
     })?;
     let alloc_hint = read_u32(request_header, 0)?;
-    let context_id = read_u16(request_header, 4)?;
-    if context_id != RPC_CONTEXT_ID {
-        return Err(RpcPduError::UnexpectedContextId { actual: context_id });
+    let actual_context_id = read_u16(request_header, 4)?;
+    if actual_context_id != context_id {
+        return Err(RpcPduError::UnexpectedContextId {
+            actual: actual_context_id,
+        });
     }
     let stub = &body[RPC_RESPONSE_HEADER_SIZE..];
     Ok(RpcResponse {
@@ -828,6 +1283,38 @@ fn validate_single_fragment(header: RpcCommonHeader) -> Result<(), RpcPduError> 
     }
 
     Ok(())
+}
+
+fn ensure_fragment_fits(body_length: usize, maximum_fragment_size: u16) -> Result<(), RpcPduError> {
+    let fragment_length = RPC_COMMON_HEADER_SIZE
+        .checked_add(body_length)
+        .ok_or(RpcPduError::LengthOverflow)?;
+    let fragment_length = u16::try_from(fragment_length).map_err(|_| RpcPduError::LengthOverflow)?;
+    if fragment_length > maximum_fragment_size {
+        return Err(RpcPduError::FragmentExceedsMaximum {
+            fragment_length,
+            maximum: maximum_fragment_size,
+        });
+    }
+
+    Ok(())
+}
+
+fn encode_syntax_identifier(target: &mut Vec<u8>, syntax: RpcSyntaxIdentifier) {
+    target.extend_from_slice(&syntax.uuid().to_bytes_le());
+    target.extend_from_slice(&syntax.version().major().to_le_bytes());
+    target.extend_from_slice(&syntax.version().minor().to_le_bytes());
+}
+
+fn decode_syntax_identifier(source: &[u8]) -> Result<RpcSyntaxIdentifier, RpcPduError> {
+    let source = source.get(..RPC_SYNTAX_IDENTIFIER_SIZE).ok_or(RpcPduError::Truncated {
+        actual: source.len(),
+        required: RPC_SYNTAX_IDENTIFIER_SIZE,
+    })?;
+    Ok(RpcSyntaxIdentifier::new(
+        Uuid::from_bytes_le(source[..16].try_into().map_err(|_| RpcPduError::LengthOverflow)?),
+        RpcSyntaxVersion::new(read_u16(source, 16)?, read_u16(source, 18)?),
+    ))
 }
 
 #[expect(
