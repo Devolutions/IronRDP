@@ -5,6 +5,7 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use crate::{Error, GwErrorKind};
 
 const MAX_RESPONSE_HEADERS: usize = 16 * 1024;
+const MAX_AUTH_RESPONSE_BODY: u32 = 16 * 1024;
 
 /// The TS Proxy RPC interface UUID advertised in `Pragma: ResourceTypeUuid`.
 ///
@@ -42,8 +43,7 @@ pub(crate) struct RpchRequestHead<'a> {
 /// An RPCH IN request whose streaming body is committed after authentication.
 ///
 /// Authentication probes use a zero-length request body.
-/// The final authenticated request reserves the channel-lifetime body length before
-/// the caller writes any RPC bytes.
+/// The final authenticated request reserves the full body length before the caller writes any RPC bytes.
 pub(crate) struct RpchInRequest<S> {
     stream: S,
     host: String,
@@ -89,13 +89,22 @@ where
 
     /// Reads the response to the current request head.
     ///
-    /// Error bodies from authentication challenges are drained before a retry can
-    /// reuse the connection.
+    /// Bounded authentication challenge bodies are drained before a retry can reuse the connection.
     pub(crate) async fn receive_response(&mut self) -> Result<RpchResponseHead, Error> {
         let response = read_rpch_response_head(&mut self.stream).await?;
-        if response.status == 401
-            && let Some(length) = response.content_length
-        {
+        if response.status == 401 {
+            let length = response.content_length.ok_or_else(|| {
+                Error::new(
+                    "rpch authentication response missing content length",
+                    GwErrorKind::Decode,
+                )
+            })?;
+            if length > MAX_AUTH_RESPONSE_BODY {
+                return Err(Error::new(
+                    "rpch authentication response body exceeds limit",
+                    GwErrorKind::Decode,
+                ));
+            }
             drain_body(&mut self.stream, length).await?;
         }
         Ok(response)
@@ -109,14 +118,12 @@ where
             return Err(Error::new("rpch IN retry after body", GwErrorKind::Connect));
         }
 
-        let host = self.host.clone();
-        let target = self.target.clone();
         write_rpch_request_head(
             &mut self.stream,
             RpchRequestHead {
                 method: "RPC_IN_DATA",
-                host: &host,
-                target: &target,
+                host: &self.host,
+                target: &self.target,
                 content_length,
                 authorization,
                 cookie: None,

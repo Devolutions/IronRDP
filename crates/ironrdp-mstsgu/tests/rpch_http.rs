@@ -274,6 +274,62 @@ async fn in_authentication_probe_precedes_the_committed_body() {
 }
 
 #[tokio::test]
+async fn in_authentication_response_requires_a_bounded_body() {
+    for response in [
+        b"HTTP/1.1 401 Unauthorized\r\n\r\n".as_slice(),
+        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 16385\r\n\r\n",
+    ] {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let server_task = tokio::spawn(async move {
+            server.write_all(response).await.expect("write authentication response");
+        });
+
+        let mut request = rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", None)
+            .await
+            .expect("open authentication probe");
+        let error = request
+            .receive_response()
+            .await
+            .expect_err("reject unbounded authentication response");
+        assert_eq!(error.kind().to_string(), "decode");
+        server_task.await.expect("join server");
+    }
+}
+
+#[tokio::test]
+async fn in_authentication_response_drains_body_at_limit() {
+    let (client, mut server) = tokio::io::duplex(32 * 1024);
+    let server_task = tokio::spawn(async move {
+        server
+            .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 16384\r\n\r\n")
+            .await
+            .expect("write authentication response head");
+        server
+            .write_all(&[b'x'; 16 * 1024])
+            .await
+            .expect("write authentication response body");
+        server
+            .write_all(b"HTTP/1.1 200 OK\r\n\r\n")
+            .await
+            .expect("write following response");
+    });
+
+    let mut request = rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", None)
+        .await
+        .expect("open authentication probe");
+    assert_eq!(request.receive_response().await.expect("read challenge").status, 401);
+    assert_eq!(
+        request
+            .receive_response()
+            .await
+            .expect("read following response")
+            .status,
+        200
+    );
+    server_task.await.expect("join server");
+}
+
+#[tokio::test]
 async fn request_head_rejects_expect_continue_for_out_channel() {
     let (mut client, _) = tokio::io::duplex(4096);
     assert!(
