@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use ironrdp_tls::endpoint_channel_binding;
 use ironrdp_tls::{CertificateValidation, upgrade, upgrade_with_certificate_validation};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_native_tls::TlsAcceptor;
@@ -34,6 +36,19 @@ async fn default_accepts_self_signed_certificates_and_strict_rejects_them() {
     )
     .await
     .expect("default validation accepts the self-signed test certificate");
+    #[cfg(windows)]
+    {
+        let channel_binding = endpoint_channel_binding(&tls_stream)
+            .expect("get TLS endpoint channel binding")
+            .expect("TLS endpoint channel binding");
+        assert!(channel_binding[..24].iter().all(|byte| *byte == 0));
+        assert_eq!(
+            &channel_binding[24..28],
+            &(u32::try_from(channel_binding.len() - 32).expect("channel binding length")).to_le_bytes()
+        );
+        assert_eq!(&channel_binding[28..32], &32u32.to_le_bytes());
+        assert!(channel_binding[32..].starts_with(b"tls-server-end-point:"));
+    }
     drop(tls_stream);
 
     let strict_result = upgrade_with_certificate_validation(

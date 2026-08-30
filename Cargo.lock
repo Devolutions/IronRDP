@@ -3036,6 +3036,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "uuid",
+ "windows",
 ]
 
 [[package]]

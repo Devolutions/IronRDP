@@ -6,6 +6,38 @@ use crate::{CertificateValidation, CertificateValidationCallback};
 
 pub type TlsStream<S> = tokio_native_tls::TlsStream<S>;
 
+/// Returns the RFC 5929 endpoint channel binding encoded for a Windows SSPI `SECBUFFER_CHANNEL_BINDINGS` input buffer.
+#[cfg(windows)]
+pub fn endpoint_channel_binding<S>(stream: &TlsStream<S>) -> io::Result<Option<Vec<u8>>>
+where
+    S: Unpin + AsyncRead + AsyncWrite,
+{
+    let Some(endpoint) = stream.get_ref().tls_server_end_point().map_err(io::Error::other)? else {
+        return Ok(None);
+    };
+
+    const HEADER_SIZE: usize = 32;
+    const APPLICATION_DATA_LENGTH_OFFSET: usize = 24;
+    const APPLICATION_DATA_OFFSET_OFFSET: usize = 28;
+    const APPLICATION_DATA_OFFSET: u32 = 32;
+    const APPLICATION_DATA_PREFIX: &[u8] = b"tls-server-end-point:";
+
+    let application_data_length = APPLICATION_DATA_PREFIX
+        .len()
+        .checked_add(endpoint.len())
+        .ok_or_else(|| io::Error::other("endpoint channel binding is too large"))?;
+    let application_data_length_u32 = u32::try_from(application_data_length)
+        .map_err(|_| io::Error::other("endpoint channel binding is too large"))?;
+    let mut binding = vec![0; HEADER_SIZE + application_data_length];
+    binding[APPLICATION_DATA_LENGTH_OFFSET..APPLICATION_DATA_OFFSET_OFFSET]
+        .copy_from_slice(&application_data_length_u32.to_le_bytes());
+    binding[APPLICATION_DATA_OFFSET_OFFSET..HEADER_SIZE].copy_from_slice(&APPLICATION_DATA_OFFSET.to_le_bytes());
+    binding[HEADER_SIZE..HEADER_SIZE + APPLICATION_DATA_PREFIX.len()].copy_from_slice(APPLICATION_DATA_PREFIX);
+    binding[HEADER_SIZE + APPLICATION_DATA_PREFIX.len()..].copy_from_slice(&endpoint);
+
+    Ok(Some(binding))
+}
+
 pub async fn upgrade<S>(stream: S, server_name: &str) -> io::Result<(TlsStream<S>, x509_cert::Certificate)>
 where
     S: Unpin + AsyncRead + AsyncWrite,

@@ -1,8 +1,11 @@
-//! HTTP authentication helpers for the MS-TSGU WebSocket upgrade.
+//! HTTP authentication helpers for MS-TSGU WebSocket upgrades.
 //!
 //! Corporate RD Gateways typically challenge with Negotiate and/or NTLM rather than Basic.
 //! Negotiate prefers Kerberos (via KDC / `SSPI_KDC_URL`) and falls back to NTLM inside SPNEGO.
 //! Pure NTLM is used when the server only offers the NTLM scheme.
+
+#[cfg(all(windows, feature = "native-tls"))]
+pub(crate) mod native_http_auth;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -14,6 +17,8 @@ use sspi::{
 };
 
 use crate::{Error, GwErrorExt as _, GwErrorKind};
+#[cfg(all(windows, feature = "native-tls"))]
+use native_http_auth::NativeHttpAuth;
 
 /// Result of consuming one HTTP auth challenge/response.
 #[derive(Debug)]
@@ -37,6 +42,8 @@ enum AuthBackend {
         negotiate: Negotiate,
         credentials_handle: Option<CredentialsBuffers>,
     },
+    #[cfg(all(windows, feature = "native-tls"))]
+    Native(NativeHttpAuth),
 }
 
 /// Multi-leg HTTP auth state for `Authorization: NTLM …` / `Negotiate …`.
@@ -53,7 +60,7 @@ pub struct GatewayHttpAuth {
 impl GatewayHttpAuth {
     /// Build SSPI state for the MS-TSGU NTLM extended-authentication exchange.
     pub(crate) fn new_extended_auth_ntlm(username: &str, password: &str) -> Result<Self, Error> {
-        Self::new_ntlm(username, password, None)
+        Self::new_ntlm(username, password, None, None)
     }
 
     /// Process one NTLM token from the MS-TSGU extended-authentication exchange.
@@ -74,6 +81,17 @@ impl GatewayHttpAuth {
         password: &str,
         smart_card: Option<&crate::GwSmartCardCredentials>,
         target_name: Option<String>,
+        challenges: &[&str],
+    ) -> Result<(Option<Self>, AuthStep), Error> {
+        Self::from_challenges_with_channel_binding(username, password, smart_card, target_name, None, challenges)
+    }
+
+    pub(crate) fn from_challenges_with_channel_binding(
+        username: &str,
+        password: &str,
+        smart_card: Option<&crate::GwSmartCardCredentials>,
+        target_name: Option<String>,
+        channel_binding: Option<&[u8]>,
         challenges: &[&str],
     ) -> Result<(Option<Self>, AuthStep), Error> {
         let challenges: Vec<&str> = iter_auth_challenges(challenges.iter().copied()).collect();
@@ -152,7 +170,7 @@ impl GatewayHttpAuth {
         }
 
         if saw_negotiate {
-            let mut auth = Self::new_negotiate(username, password, target_name.clone())?;
+            let mut auth = Self::new_negotiate(username, password, target_name.clone(), channel_binding)?;
             let input = negotiate_token.as_deref().filter(|t| !t.is_empty());
             // Kerberos SPNEGO can fail without a reachable KDC (for example a gateway SPN
             // with no ticket path); fall back to plain NTLM, which needs no network.
@@ -169,7 +187,7 @@ impl GatewayHttpAuth {
         }
 
         if saw_ntlm {
-            let mut auth = Self::new_ntlm(username, password, target_name)?;
+            let mut auth = Self::new_ntlm(username, password, target_name, channel_binding)?;
             let input = ntlm_token.as_deref().filter(|t| !t.is_empty());
             let token = auth.initialize(input)?;
             let header = auth.format_authorization(&token);
@@ -186,7 +204,19 @@ impl GatewayHttpAuth {
         ))
     }
 
-    fn new_ntlm(username: &str, password: &str, target_name: Option<String>) -> Result<Self, Error> {
+    fn new_ntlm(
+        username: &str,
+        password: &str,
+        target_name: Option<String>,
+        channel_binding: Option<&[u8]>,
+    ) -> Result<Self, Error> {
+        #[cfg(not(all(windows, feature = "native-tls")))]
+        let _ = channel_binding;
+        #[cfg(all(windows, feature = "native-tls"))]
+        if let (Some(target_name), Some(channel_binding)) = (target_name.as_deref(), channel_binding) {
+            return Self::new_native_http_auth(username, password, target_name, channel_binding, "NTLM");
+        }
+
         let identity = auth_identity(username, password)?;
         let mut ntlm = Ntlm::new();
         let credentials_handle = ntlm
@@ -209,7 +239,19 @@ impl GatewayHttpAuth {
         })
     }
 
-    fn new_negotiate(username: &str, password: &str, target_name: Option<String>) -> Result<Self, Error> {
+    fn new_negotiate(
+        username: &str,
+        password: &str,
+        target_name: Option<String>,
+        channel_binding: Option<&[u8]>,
+    ) -> Result<Self, Error> {
+        #[cfg(not(all(windows, feature = "native-tls")))]
+        let _ = channel_binding;
+        #[cfg(all(windows, feature = "native-tls"))]
+        if let (Some(target_name), Some(channel_binding)) = (target_name.as_deref(), channel_binding) {
+            return Self::new_native_http_auth(username, password, target_name, channel_binding, "Negotiate");
+        }
+
         let identity = auth_identity(username, password)?;
         let credentials = Credentials::AuthIdentity(identity);
         let client_computer_name = client_computer_name();
@@ -238,6 +280,25 @@ impl GatewayHttpAuth {
             },
             scheme: "Negotiate",
             target_name,
+            complete: false,
+            allow_basic_fallback: true,
+        })
+    }
+
+    #[cfg(all(windows, feature = "native-tls"))]
+    fn new_native_http_auth(
+        username: &str,
+        password: &str,
+        target_name: &str,
+        channel_binding: &[u8],
+        package: &'static str,
+    ) -> Result<Self, Error> {
+        let native = NativeHttpAuth::new(username, password, target_name, channel_binding, package)?;
+
+        Ok(Self {
+            backend: AuthBackend::Native(native),
+            scheme: package,
+            target_name: Some(target_name.to_owned()),
             complete: false,
             allow_basic_fallback: true,
         })
@@ -473,6 +534,12 @@ impl GatewayHttpAuth {
                     .resolve_with_default_network_client()
                     .map_err(|e| Error::custom("negotiate initialize security context", e))?;
                 status
+            }
+            #[cfg(all(windows, feature = "native-tls"))]
+            AuthBackend::Native(native) => {
+                let step = native.initialize(input)?;
+                self.complete = step.complete;
+                return Ok(step.token);
             }
         };
 
