@@ -15,6 +15,7 @@ mod error;
 #[cfg(feature = "egfx")]
 mod gfx;
 mod handler;
+pub mod heartbeat;
 #[cfg(feature = "helper")]
 mod helper;
 mod rdpdr;
