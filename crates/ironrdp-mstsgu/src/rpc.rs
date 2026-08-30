@@ -152,7 +152,6 @@ pub enum RpcPduError {
     IncompleteFragment { actual: usize, fragment_length: u16 },
     AuthenticationUnsupported { auth_length: u16 },
     AuthenticationRequired,
-    MissingSupportHeaderSign,
     InvalidSecurityTrailer { fragment_length: u16, auth_length: u16 },
     InvalidAuthenticationPadding { actual: u8 },
     NonZeroAuthenticationPadding,
@@ -221,7 +220,6 @@ impl fmt::Display for RpcPduError {
                 )
             }
             Self::AuthenticationRequired => f.write_str("rpc authentication token is required"),
-            Self::MissingSupportHeaderSign => f.write_str("rpc pdu does not support header signing"),
             Self::InvalidSecurityTrailer {
                 fragment_length,
                 auth_length,
@@ -467,6 +465,7 @@ pub struct RpcBindAck<'a> {
 pub struct RpcAuthenticatedBindAck<'a> {
     bind_ack: RpcBindAck<'a>,
     token: &'a [u8],
+    supports_header_signing: bool,
 }
 
 impl RpcAuthenticatedBindAck<'_> {
@@ -478,6 +477,11 @@ impl RpcAuthenticatedBindAck<'_> {
     /// The server authentication token from the DCE/RPC security trailer.
     pub const fn token(&self) -> &[u8] {
         self.token
+    }
+
+    /// Whether the server acknowledged header-signing support.
+    pub const fn supports_header_signing(&self) -> bool {
+        self.supports_header_signing
     }
 }
 
@@ -1177,7 +1181,7 @@ pub fn decode_rpc_bind_ack(
 /// Decodes an NTLM-authenticated RPC bind acknowledgement and extracts its Type-2 token.
 ///
 /// This validates the DCE/RPC security trailer and header-signing negotiation.
-/// This RD Gateway profile requires the server to acknowledge header-signing support.
+/// Use [`RpcAuthenticatedBindAck::supports_header_signing`] to retain the server result.
 /// The caller passes the extracted token to [`RpcNtlmAuth::continue_token`].
 ///
 /// [MS-RPCE] 2.2.2.3, 2.2.2.11, 2.2.2.12, and 4.2.
@@ -1190,7 +1194,12 @@ pub fn decode_rpc_bind_ack_with_ntlm_auth(
     let (header, body, token) =
         decode_authenticated_single_fragment(source, PTYPE_BIND_ACK, offered_fragment_sizes.max_recv())?;
     let bind_ack = decode_rpc_bind_ack_body(header, body, offered_fragment_sizes)?;
-    Ok(RpcAuthenticatedBindAck { bind_ack, token })
+    let supports_header_signing = header.pfc_flags() & PFC_SUPPORT_HEADER_SIGN != 0;
+    Ok(RpcAuthenticatedBindAck {
+        bind_ack,
+        token,
+        supports_header_signing,
+    })
 }
 
 /// Encodes the NTLM Type-3 continuation token in an rpc_auth_3 PDU.
@@ -1627,9 +1636,6 @@ fn decode_authenticated_single_fragment(
             expected: expected_ptype,
             actual: header.ptype(),
         });
-    }
-    if header.pfc_flags() & PFC_SUPPORT_HEADER_SIGN == 0 {
-        return Err(RpcPduError::MissingSupportHeaderSign);
     }
     if header.fragment_length() > maximum_fragment_size {
         return Err(RpcPduError::FragmentExceedsMaximum {

@@ -1055,13 +1055,13 @@ fn authenticated_bind_ack_extracts_the_type2_token_and_validates_its_trailer() {
         RpcFragmentSizes::new(0x10b8, 0x10b8).expect("valid negotiated maxima")
     );
     assert_eq!(ack.bind_ack().results.len(), 1);
+    assert!(ack.supports_header_signing());
 
     let mut missing_header_sign = bind_ack.clone();
     missing_header_sign[3] &= !PFC_SUPPORT_HEADER_SIGN;
-    assert_eq!(
-        decode_rpc_bind_ack_with_ntlm_auth(&missing_header_sign, RpcFragmentSizes::DEFAULT),
-        Err(RpcPduError::MissingSupportHeaderSign)
-    );
+    let ack = decode_rpc_bind_ack_with_ntlm_auth(&missing_header_sign, RpcFragmentSizes::DEFAULT)
+        .expect("valid bind acknowledgement without header-signing support");
+    assert!(!ack.supports_header_signing());
 
     let mut wrong_auth_type = bind_ack.clone();
     wrong_auth_type[64] = 9;
