@@ -1,4 +1,5 @@
 use ironrdp_core::{Encode as _, decode, encode_vec};
+use ironrdp_pdu::rdp::client_info::ClientInfo;
 use ironrdp_testsuite_core::capsets::*;
 use ironrdp_testsuite_core::client_info::*;
 use ironrdp_testsuite_core::rdp::*;
@@ -306,6 +307,26 @@ fn from_buffer_correct_parses_client_info_pdu_unicode() {
         CLIENT_INFO_UNICODE.clone(),
         decode(CLIENT_INFO_BUFFER_UNICODE.as_ref()).unwrap()
     );
+}
+
+#[test]
+fn client_info_with_undefined_flag_bits_decodes_and_retains_them() {
+    // [MS-RDPBCGR] 2.2.1.11.1.1's INFO_* list keeps growing; a client setting
+    // a bit this library does not know yet must not be refused at the login
+    // step (3.3.5.3.11 mandates no validation of this field). The unknown bit
+    // is retained rather than dropped so re-encoding preserves the wire value.
+    const UNDEFINED_BIT: u32 = 0x0000_0004; // undefined in 2.2.1.11.1.1
+
+    let mut buffer = CLIENT_INFO_BUFFER_UNICODE.to_vec();
+    let flags = u32::from_le_bytes(buffer[4..8].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[4..8].copy_from_slice(&flags.to_le_bytes());
+
+    let client_info: ClientInfo = decode(buffer.as_slice()).expect("undefined INFO bits are not fatal");
+
+    assert_ne!(client_info.flags.bits() & UNDEFINED_BIT, 0);
+
+    let reencoded = encode_vec(&client_info).unwrap();
+    assert_eq!(reencoded, buffer);
 }
 
 #[test]
