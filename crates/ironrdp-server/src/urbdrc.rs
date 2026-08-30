@@ -333,7 +333,7 @@ impl UsbDeviceHandle {
             (rx, transition)
         };
 
-        let mut submission = TransitionGuard::poison_on_drop(self, transition);
+        let submission = TransitionGuard::poison_on_drop(self, transition);
         let inner = self.resolve_pending(rx).await?;
         submission.disarm();
         Ok(PendingRequest::new(
@@ -393,7 +393,7 @@ impl UsbDeviceHandle {
             descriptor: descriptor.as_set().as_bytes().to_vec(),
         };
 
-        let mut submission = TransitionGuard::poison_on_drop(self, transition);
+        let submission = TransitionGuard::poison_on_drop(self, transition);
         let inner = self.resolve_pending(rx).await?;
         submission.disarm();
         Ok(PendingRequest::new(
@@ -439,7 +439,7 @@ impl UsbDeviceHandle {
             (rx, transition, previous_binding)
         };
 
-        let mut submission = TransitionGuard::poison_on_drop(self, transition);
+        let submission = TransitionGuard::poison_on_drop(self, transition);
         let inner = self.resolve_pending(rx).await?;
         submission.disarm();
         Ok(PendingRequest::new(
@@ -970,7 +970,6 @@ struct TransitionGuard<'a> {
     handle: &'a UsbDeviceHandle,
     transition: StatefulTransition,
     poison: bool,
-    armed: bool,
 }
 
 impl<'a> TransitionGuard<'a> {
@@ -979,7 +978,6 @@ impl<'a> TransitionGuard<'a> {
             handle,
             transition,
             poison: true,
-            armed: true,
         }
     }
 
@@ -988,21 +986,21 @@ impl<'a> TransitionGuard<'a> {
             handle,
             transition,
             poison: false,
-            armed: true,
         }
     }
 
     /// Hands transition bookkeeping over to the caller.
-    fn disarm(&mut self) {
-        self.armed = false;
+    #[expect(
+        clippy::mem_forget,
+        reason = "the guard owns nothing to leak; skipping its drop glue is the hand-off"
+    )]
+    fn disarm(self) {
+        core::mem::forget(self);
     }
 }
 
 impl Drop for TransitionGuard<'_> {
     fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
         let mut state = self.handle.lock_usb_state();
         if self.poison {
             state.poison_transition(self.transition);
@@ -1273,7 +1271,7 @@ impl PendingOperation {
                     .map_err(|e| ServerError::custom("malformed usb get interface completion", e))?,
             )),
             Self::SelectConfiguration { transition, plan } => {
-                let mut finish = TransitionGuard::finish_on_drop(handle, transition);
+                let finish = TransitionGuard::finish_on_drop(handle, transition);
                 let completion = ironrdp_rdpeusb::usb::select_configuration_completion(completion)
                     .map_err(|e| ServerError::custom("malformed usb select configuration completion", e))?;
                 let result = match completion {
@@ -1286,7 +1284,7 @@ impl PendingOperation {
                 Ok(UsbRequestCompletion::Unit(Ok(())))
             }
             Self::SelectInterface { transition, plan } => {
-                let mut finish = TransitionGuard::finish_on_drop(handle, transition);
+                let finish = TransitionGuard::finish_on_drop(handle, transition);
                 let completion = ironrdp_rdpeusb::usb::select_interface_completion(completion)
                     .map_err(|e| ServerError::custom("malformed usb select interface completion", e))?;
                 let result = match completion {
@@ -1308,7 +1306,7 @@ impl PendingOperation {
                 transition,
                 previous_binding,
             } => {
-                let mut finish = TransitionGuard::finish_on_drop(handle, transition);
+                let finish = TransitionGuard::finish_on_drop(handle, transition);
                 let completion = ironrdp_rdpeusb::usb::reset_device_completion(completion)
                     .map_err(|e| ServerError::custom("malformed usb reset device completion", e))?;
                 if let Err(usb_error) = completion {
