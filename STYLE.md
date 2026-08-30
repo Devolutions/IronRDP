@@ -105,6 +105,71 @@ The error reporter (e.g.: `ironrdp_error::ErrorReport`) is responsible for addin
 [api-guidelines-errors]: https://rust-lang.github.io/api-guidelines/interoperability.html#error-types-are-meaningful-and-well-behaved-c-good-err
 [std-error-trait]: https://doc.rust-lang.org/stable/std/error/trait.Error.html
 
+### Choosing an error kind
+
+The structured `DecodeErrorKind` / `EncodeErrorKind` variants (`NotEnoughBytes`,
+`InvalidField`, `UnexpectedMessageType`, `UnsupportedVersion`, `UnsupportedValue`)
+carry the byte offset of the failure. Construct them through the dedicated macros
+(`invalid_field_err!`, `unexpected_message_type_err!`, `unsupported_version_err!`,
+`unsupported_value_err!`) with `in: src` so the cursor position is captured.
+
+Reserve `Other` for failures outside stream processing: constructors, integer
+conversions, state validation. It is the only offset-less variant, by design.
+
+```rust
+// GOOD
+return Err(invalid_field_err!("channelCount", "too many channels", in: src));
+
+// BAD: the offset is lost, and the report cannot say where decoding failed
+return Err(DecodeError::new("ChannelDef", DecodeErrorKind::Other { description: "too many channels" }));
+```
+
+**Rationale:** offsets make malformed-PDU reports and fuzz crash replays
+actionable; a bare `Other` on a decode path throws that information away.
+
+### Error types
+
+Library crates expose typed errors (`ironrdp_error::Error<Kind>` and the per-crate
+kind enums), not `anyhow`. Core-tier crates do not use proc-macro error derives
+(no `thiserror`): hand-roll the `Display` and `Error` implementations, following
+`ironrdp-error`'s own pattern (its `Source` captures `core::panic::Location` via
+`#[track_caller]` and renders it in `Display`).
+
+**Rationale:** keeps `syn` and friends out of the core build graph; the hand-rolled
+pattern costs a few lines once and nothing thereafter.
+
+### Decoding unknown values
+
+Wire formats grow. When a decoder meets a value the current flag or constant list
+does not define, the handling depends on what the field IS:
+
+- **Peer advertisements** (capability flags, option masks, supported-feature bit
+  sets): decode with `from_bits_retain`. Unknown bits are kept, never dropped and
+  never fatal, so re-encoding reproduces the wire bytes and a peer newer than this
+  library is not refused.
+- **Negotiation outputs the receiver must implement** (for example, the server's
+  selected encryption method): strict. An unknown selection cannot be honored, and
+  a conforming peer cannot produce one.
+- **Structural discriminants** (PDU types, event codes): strict, matching the
+  specifications' own drop-the-connection language for unknown structures.
+
+```rust
+// GOOD: advertisement mask; the receiver acts only on the bits it knows
+let options = ChannelOptions::from_bits_retain(src.read_u32());
+
+// BAD: rejects any peer that sets a bit added to the protocol after this
+// list was written
+let options = ChannelOptions::from_bits(src.read_u32())
+    .ok_or_else(|| invalid_field_err!("options", "invalid channel options", in: src))?;
+```
+
+**Rationale:** the RDP specifications routinely extend flag lists, and several
+flags are explicitly documented as "MUST be ignored" by the receiver. Validating
+advertisement bits turns forward compatibility into a connection failure, and
+`from_bits_retain` (rather than `from_bits_truncate`) additionally preserves the
+decode -> encode round-trip byte-for-byte, which replay tooling and the round-trip
+fuzz oracles rely on.
+
 ## Logging
 
 If any, the human-readable message should start with a capital letter and not end with a period.
