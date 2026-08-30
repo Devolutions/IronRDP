@@ -16,7 +16,7 @@ This crate
 - can use Kerberos PKINIT with application-supplied UPN `smartcard` credentials for HTTP Negotiate authentication only,
 - does not implement `HTTP_EXTENDED_AUTH_SC` or PAA exchanges without a credential-provider UI,
 - encodes and decodes RDG-UDP PDUs (`CONNECT_PKT`, `DATA_PKT`, `DISC_PKT`, and correlation info) without opening that side channel,
-- encodes and decodes DCE/RPC common-header fragments plus the NTLM bind/bind_ack/rpc_auth_3 association exchange, but not live RPC-over-HTTP transport or authenticated request/response traffic, and
+- encodes and decodes DCE/RPC fragments, including the NTLM bind/bind_ack/rpc_auth_3 association exchange, caller-owned packet-integrity trailer framing, and response reassembly, but no live RPC-over-HTTP transport or authentication-provider request/response processing, and
 - finishes write-side shutdown by closing the outbound WebSocket or ending the dual HTTP IN request body.
 
 [MS-TSGU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tsgu/0007d661-a86d-4e8f-89f7-7f77f8824188
