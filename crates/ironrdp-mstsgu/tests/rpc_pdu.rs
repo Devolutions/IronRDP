@@ -3,13 +3,15 @@
 use ironrdp_mstsgu::rpc::{
     DEFAULT_FRAGMENT_SIZE, MAX_PENDING_RPC_FRAGMENTS, PFC_FIRST_FRAG, PFC_LAST_FRAG, PFC_SUPPORT_HEADER_SIGN,
     PTYPE_BIND, PTYPE_BIND_ACK, PTYPE_BIND_NAK, PTYPE_FAULT, PTYPE_REQUEST, PTYPE_RESPONSE, PTYPE_RPC_AUTH_3,
-    RPC_COMMON_HEADER_SIZE, RPC_DREP_LITTLE_ENDIAN, RPC_VERSION, RPC_VERSION_MINOR, RpcCommonHeader, RpcFault,
-    RpcFragmentSizes, RpcNtlmAuth, RpcPduError, RpcPduStream, RpcPresentationContext, RpcReassembledResponse,
-    RpcResponse, RpcResponseReassembler, RpcSyntaxIdentifier, RpcSyntaxVersion, decode_rpc_bind_ack,
-    decode_rpc_bind_ack_with_ntlm_auth, decode_rpc_bind_nak, decode_rpc_fault, decode_rpc_fault_for_context,
-    decode_rpc_response, decode_rpc_response_for_context, decode_rpc_response_fragment, encode_rpc_auth_3,
-    encode_rpc_bind, encode_rpc_bind_with_ntlm_auth, encode_rpc_fault, encode_rpc_request_fragments,
-    encode_rpc_response, encode_rpc_response_fragment,
+    RPC_AUTH_LEVEL_PACKET_INTEGRITY, RPC_COMMON_HEADER_SIZE, RPC_DREP_LITTLE_ENDIAN, RPC_SECURITY_TRAILER_SIZE,
+    RPC_VERSION, RPC_VERSION_MINOR, RpcAuthenticatedResponseReassembler, RpcAuthenticationInfo, RpcCommonHeader,
+    RpcFault, RpcFragmentSizes, RpcNtlmAuth, RpcPduError, RpcPduStream, RpcPresentationContext, RpcReassembledResponse,
+    RpcResponse, RpcResponseReassembler, RpcSyntaxIdentifier, RpcSyntaxVersion, decode_rpc_authenticated_fragment,
+    decode_rpc_bind_ack, decode_rpc_bind_ack_with_ntlm_auth, decode_rpc_bind_nak, decode_rpc_fault,
+    decode_rpc_fault_for_context, decode_rpc_response, decode_rpc_response_for_context, decode_rpc_response_fragment,
+    encode_rpc_auth_3, encode_rpc_bind, encode_rpc_bind_with_ntlm_auth, encode_rpc_fault, encode_rpc_request_fragments,
+    encode_rpc_response, encode_rpc_response_fragment, prepare_rpc_authenticated_bind, prepare_rpc_authenticated_pdu,
+    prepare_rpc_authenticated_request_fragments,
 };
 use uuid::Uuid;
 
@@ -734,7 +736,653 @@ fn bind_and_request_codecs_match_connection_oriented_rpc_wire_layouts() {
             stub: &[1, 2, 3],
         }
     );
+}
 
+#[test]
+fn authenticated_pdu_vector_exposes_exact_security_segments() {
+    let authentication = RpcAuthenticationInfo {
+        auth_type: 0x0a,
+        auth_level: 5,
+        auth_context_id: 0x7856_3412,
+        verifier_length: 3,
+    };
+    let prepared = prepare_rpc_authenticated_pdu(
+        PTYPE_REQUEST,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG,
+        0x0102_0304,
+        &[0xaa, 0xbb],
+        authentication,
+    )
+    .expect("authenticated request");
+    assert_eq!(prepared.fragment_length(), 43);
+    assert_eq!(prepared.body(), &[0xaa, 0xbb]);
+    let segments = prepared.authentication_segments();
+    assert_eq!(segments.header.len(), RPC_COMMON_HEADER_SIZE);
+    assert_eq!(segments.body, &[0xaa, 0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(segments.security_trailer, &[0x0a, 5, 14, 0, 0x12, 0x34, 0x56, 0x78]);
+
+    let pdu = prepared.finish(&[0xf1, 0xf2, 0xf3]).expect("reserved verifier length");
+    assert_eq!(
+        pdu,
+        [
+            5,
+            0,
+            PTYPE_REQUEST,
+            PFC_FIRST_FRAG | PFC_LAST_FRAG,
+            0x10,
+            0,
+            0,
+            0,
+            43,
+            0,
+            3,
+            0,
+            4,
+            3,
+            2,
+            1,
+            0xaa,
+            0xbb,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0x0a,
+            5,
+            14,
+            0,
+            0x12,
+            0x34,
+            0x56,
+            0x78,
+            0xf1,
+            0xf2,
+            0xf3,
+        ]
+    );
+
+    let fragment = decode_rpc_authenticated_fragment(&pdu, DEFAULT_FRAGMENT_SIZE).expect("authenticated fragment");
+    assert_eq!(fragment.verifier(), &[0xf1, 0xf2, 0xf3]);
+    let debug = format!("{fragment:?}");
+    assert!(!debug.contains("170"));
+    assert!(!debug.contains("187"));
+    let fragment = fragment
+        .verify_with(|segments, verifier| {
+            assert_eq!(segments.body, &[0xaa, 0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            assert_eq!(segments.security_trailer, &[0x0a, 5, 14, 0, 0x12, 0x34, 0x56, 0x78]);
+            assert_eq!(verifier, &[0xf1, 0xf2, 0xf3]);
+            Ok::<(), ()>(())
+        })
+        .expect("caller accepts verifier");
+    assert_eq!(fragment.body(), &[0xaa, 0xbb]);
+    assert_eq!(fragment.authentication_padding(), &[0; 14]);
+    assert_eq!(
+        fragment.security_trailer(),
+        ironrdp_mstsgu::rpc::RpcSecurityTrailer {
+            auth_type: 0x0a,
+            auth_level: 5,
+            auth_pad_length: 14,
+            auth_reserved: 0,
+            auth_context_id: 0x7856_3412,
+        }
+    );
+}
+
+#[test]
+fn authenticated_bind_sets_header_signing_and_obeys_fragment_maximum() {
+    let abstract_syntax = RpcSyntaxIdentifier::new(
+        Uuid::from_u128(0x00112233_4455_6677_8899_aabbccddeeff),
+        RpcSyntaxVersion::new(1, 3),
+    );
+    let transfer_syntax = RpcSyntaxIdentifier::new(
+        Uuid::from_u128(0x8a885d04_1ceb_11c9_9fe8_08002b104860),
+        RpcSyntaxVersion::new(2, 0),
+    );
+    let presentation_context = RpcPresentationContext {
+        context_id: 7,
+        abstract_syntax,
+        transfer_syntaxes: &[transfer_syntax],
+    };
+    let authentication = RpcAuthenticationInfo {
+        auth_type: 0x0a,
+        auth_level: 5,
+        auth_context_id: 1,
+        verifier_length: 4,
+    };
+    let prepared = prepare_rpc_authenticated_bind(
+        1,
+        RpcFragmentSizes::DEFAULT,
+        0,
+        &[presentation_context],
+        true,
+        authentication,
+    )
+    .expect("authenticated bind");
+    assert_eq!(prepared.fragment_length(), 92);
+    let pdu = prepared.finish(&[0; 4]).expect("reserved verifier length");
+    assert_eq!(
+        RpcCommonHeader::decode(&pdu).expect("complete bind").pfc_flags(),
+        PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_SUPPORT_HEADER_SIGN
+    );
+    let bind_ack = prepare_rpc_authenticated_pdu(
+        PTYPE_BIND_ACK,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG,
+        1,
+        &[0x00, 0x10, 0x00, 0x0a, 0xef, 0xbe, 0xad, 0xde, 0, 0, 0, 0, 0, 0, 0, 0],
+        authentication,
+    )
+    .expect("authenticated bind acknowledgement")
+    .finish(&[0; 4])
+    .expect("reserved verifier length");
+    let bind_ack = decode_rpc_authenticated_fragment(&bind_ack, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated bind acknowledgement")
+        .verify_with(|_, _| Ok::<(), ()>(()))
+        .expect("caller accepts verifier")
+        .decode_bind_ack(RpcFragmentSizes::new(0x1000, 0x0a00).expect("valid offered maxima"))
+        .expect("decoded bind acknowledgement");
+    assert_eq!(bind_ack.association_group_id, 0xdead_beef);
+    assert_eq!(bind_ack.results, []);
+    assert_eq!(
+        prepare_rpc_authenticated_bind(
+            1,
+            RpcFragmentSizes::new(80, 80).expect("valid maxima"),
+            0,
+            &[presentation_context],
+            false,
+            authentication,
+        ),
+        Err(RpcPduError::FragmentExceedsMaximum {
+            fragment_length: 92,
+            maximum: 80,
+        })
+    );
+}
+
+#[test]
+fn authenticated_request_fragments_reserve_and_exclude_security_data_per_fragment() {
+    let authentication = RpcAuthenticationInfo {
+        auth_type: 0x0a,
+        auth_level: 5,
+        auth_context_id: 1,
+        verifier_length: 4,
+    };
+    let fragment_sizes = RpcFragmentSizes::new(52, 52).expect("valid maxima");
+    let prepared = prepare_rpc_authenticated_request_fragments(
+        0x7856_3412,
+        7,
+        3,
+        &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+        fragment_sizes,
+        authentication,
+    )
+    .expect("authenticated request fragments");
+    assert_eq!(prepared.len(), 3);
+
+    let fragments: Vec<_> = prepared
+        .into_iter()
+        .map(|prepared| {
+            assert_eq!(prepared.fragment_length(), 44);
+            assert_eq!(
+                prepared.authentication_segments().header.len() + prepared.authentication_segments().body.len(),
+                32
+            );
+            assert_eq!(
+                prepared.authentication_segments().security_trailer.len(),
+                RPC_SECURITY_TRAILER_SIZE
+            );
+            prepared
+                .finish(&[0xde, 0xad, 0xbe, 0xef])
+                .expect("reserved verifier length")
+        })
+        .collect();
+
+    let expected_flags = [PFC_FIRST_FRAG, 0, PFC_LAST_FRAG];
+    let expected_alloc_hints = [17u32, 9, 1];
+    let expected_stubs: [&[u8]; 3] = [&[1, 2, 3, 4, 5, 6, 7, 8], &[9, 10, 11, 12, 13, 14, 15, 16], &[17]];
+    for ((fragment, flags), (alloc_hint, stub)) in fragments
+        .iter()
+        .zip(expected_flags)
+        .zip(expected_alloc_hints.into_iter().zip(expected_stubs))
+    {
+        let authenticated =
+            decode_rpc_authenticated_fragment(fragment, fragment_sizes.max_xmit()).expect("authenticated fragment");
+        assert_eq!(authenticated.header().pfc_flags(), flags);
+        assert_eq!(authenticated.verifier(), &[0xde, 0xad, 0xbe, 0xef]);
+        let authenticated = authenticated
+            .verify_with(|_, verifier| {
+                assert_eq!(verifier, &[0xde, 0xad, 0xbe, 0xef]);
+                Ok::<(), ()>(())
+            })
+            .expect("caller accepts verifier");
+        assert_eq!(&authenticated.body()[..4], &alloc_hint.to_le_bytes());
+        assert_eq!(&authenticated.body()[4..6], &7u16.to_le_bytes());
+        assert_eq!(&authenticated.body()[6..8], &3u16.to_le_bytes());
+        assert_eq!(&authenticated.body()[8..], stub);
+    }
+
+    assert_eq!(
+        prepare_rpc_authenticated_request_fragments(
+            1,
+            0,
+            0,
+            &[],
+            RpcFragmentSizes::new(43, 43).expect("valid maxima"),
+            authentication
+        ),
+        Err(RpcPduError::FragmentTooSmall {
+            maximum: 43,
+            required: 44,
+        })
+    );
+    assert_eq!(
+        prepare_rpc_authenticated_request_fragments(
+            1,
+            0,
+            0,
+            &[],
+            RpcFragmentSizes::DEFAULT,
+            RpcAuthenticationInfo {
+                verifier_length: 0,
+                ..authentication
+            },
+        ),
+        Err(RpcPduError::EmptyAuthenticationVerifier)
+    );
+}
+
+#[test]
+fn authenticated_response_fragments_keep_verifiers_out_of_reassembly() {
+    let authentication = RpcAuthenticationInfo {
+        auth_type: 0x0a,
+        auth_level: 5,
+        auth_context_id: 1,
+        verifier_length: 4,
+    };
+    let first = prepare_rpc_authenticated_pdu(
+        PTYPE_RESPONSE,
+        PFC_FIRST_FRAG,
+        9,
+        &[5, 0, 0, 0, 0, 0, 1, 2, 1, 2],
+        authentication,
+    )
+    .expect("first response fragment")
+    .finish(&[1, 2, 3, 4])
+    .expect("reserved verifier length");
+    let last = prepare_rpc_authenticated_pdu(
+        PTYPE_RESPONSE,
+        PFC_LAST_FRAG,
+        9,
+        &[3, 0, 0, 0, 0, 0, 0, 0, 3, 4, 5],
+        authentication,
+    )
+    .expect("last response fragment")
+    .finish(&[5, 6, 7, 8])
+    .expect("reserved verifier length");
+
+    let mut reassembler = RpcAuthenticatedResponseReassembler::new(5);
+    let first = decode_rpc_authenticated_fragment(&first, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated first response")
+        .verify_with(|segments, verifier| {
+            assert_eq!(segments.body.len(), 16);
+            assert_eq!(verifier, &[1, 2, 3, 4]);
+            Ok::<(), ()>(())
+        })
+        .expect("caller accepts verifier");
+    assert_eq!(reassembler.push(first), Ok(None));
+    let mismatched = prepare_rpc_authenticated_pdu(
+        PTYPE_RESPONSE,
+        0,
+        9,
+        &[3, 0, 0, 0, 0, 0, 0, 0, 3, 4, 5],
+        RpcAuthenticationInfo {
+            auth_context_id: 2,
+            ..authentication
+        },
+    )
+    .expect("mismatched response fragment")
+    .finish(&[5, 6, 7, 8])
+    .expect("reserved verifier length");
+    let mismatched = decode_rpc_authenticated_fragment(&mismatched, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated mismatched response")
+        .verify_with(|_, _| Ok::<(), ()>(()))
+        .expect("caller accepts verifier");
+    assert_eq!(
+        reassembler.push(mismatched),
+        Err(RpcPduError::ResponseFragmentAuthentication {
+            expected_auth_type: 0x0a,
+            expected_auth_level: RPC_AUTH_LEVEL_PACKET_INTEGRITY,
+            expected_auth_context_id: 1,
+            actual_auth_type: 0x0a,
+            actual_auth_level: RPC_AUTH_LEVEL_PACKET_INTEGRITY,
+            actual_auth_context_id: 2,
+        })
+    );
+    let last = decode_rpc_authenticated_fragment(&last, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated last response")
+        .verify_with(|_, verifier| {
+            assert_eq!(verifier, &[5, 6, 7, 8]);
+            Ok::<(), ()>(())
+        })
+        .expect("caller accepts verifier");
+    assert_eq!(
+        reassembler.push(last),
+        Ok(Some(RpcReassembledResponse {
+            call_id: 9,
+            cancel_count: 0,
+            reserved: 2,
+            stub: vec![1, 2, 3, 4, 5],
+        }))
+    );
+}
+
+#[test]
+fn authenticated_response_reassembly_resets_security_context_after_terminal_failure() {
+    let authentication = RpcAuthenticationInfo {
+        auth_type: 0x0a,
+        auth_level: RPC_AUTH_LEVEL_PACKET_INTEGRITY,
+        auth_context_id: 1,
+        verifier_length: 3,
+    };
+    let first = prepare_rpc_authenticated_pdu(
+        PTYPE_RESPONSE,
+        PFC_FIRST_FRAG,
+        1,
+        &[5, 0, 0, 0, 0, 0, 0, 0, 1, 2],
+        authentication,
+    )
+    .expect("first response fragment")
+    .finish(&[1, 2, 3])
+    .expect("reserved verifier length");
+    let invalid_last = prepare_rpc_authenticated_pdu(
+        PTYPE_RESPONSE,
+        PFC_LAST_FRAG,
+        1,
+        &[5, 0, 0, 0, 0, 0, 0, 0, 3],
+        authentication,
+    )
+    .expect("invalid last response fragment")
+    .finish(&[1, 2, 3])
+    .expect("reserved verifier length");
+
+    let mut reassembler = RpcAuthenticatedResponseReassembler::new(8);
+    let first = decode_rpc_authenticated_fragment(&first, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated first response")
+        .verify_with(|_, _| Ok::<(), ()>(()))
+        .expect("caller accepts verifier");
+    assert_eq!(reassembler.push(first), Ok(None));
+    let invalid_last = decode_rpc_authenticated_fragment(&invalid_last, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated invalid last response")
+        .verify_with(|_, _| Ok::<(), ()>(()))
+        .expect("caller accepts verifier");
+    assert_eq!(
+        reassembler.push(invalid_last),
+        Err(RpcPduError::InvalidAllocHint {
+            alloc_hint: 5,
+            stub_length: 3,
+        })
+    );
+
+    let replacement = prepare_rpc_authenticated_pdu(
+        PTYPE_RESPONSE,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG,
+        2,
+        &[1, 0, 0, 0, 0, 0, 0, 0, 9],
+        RpcAuthenticationInfo {
+            auth_context_id: 2,
+            ..authentication
+        },
+    )
+    .expect("replacement response")
+    .finish(&[1, 2, 3])
+    .expect("reserved verifier length");
+    let replacement = decode_rpc_authenticated_fragment(&replacement, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated replacement response")
+        .verify_with(|_, _| Ok::<(), ()>(()))
+        .expect("caller accepts verifier");
+    assert_eq!(
+        reassembler.push(replacement),
+        Ok(Some(RpcReassembledResponse {
+            call_id: 2,
+            cancel_count: 0,
+            reserved: 0,
+            stub: vec![9],
+        }))
+    );
+}
+
+#[test]
+fn authenticated_response_reassembly_resets_after_terminal_decode_failure() {
+    let authentication = RpcAuthenticationInfo {
+        auth_type: 0x0a,
+        auth_level: RPC_AUTH_LEVEL_PACKET_INTEGRITY,
+        auth_context_id: 1,
+        verifier_length: 3,
+    };
+    let first = prepare_rpc_authenticated_pdu(
+        PTYPE_RESPONSE,
+        PFC_FIRST_FRAG,
+        1,
+        &[1, 0, 0, 0, 0, 0, 0, 0, 1],
+        authentication,
+    )
+    .expect("first response fragment")
+    .finish(&[1, 2, 3])
+    .expect("reserved verifier length");
+    let invalid_last =
+        prepare_rpc_authenticated_pdu(PTYPE_RESPONSE, PFC_LAST_FRAG, 1, &[1, 0, 0, 0, 0, 0, 0], authentication)
+            .expect("invalid last response fragment")
+            .finish(&[1, 2, 3])
+            .expect("reserved verifier length");
+
+    let mut reassembler = RpcAuthenticatedResponseReassembler::new(1);
+    let first = decode_rpc_authenticated_fragment(&first, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated first response")
+        .verify_with(|_, _| Ok::<(), ()>(()))
+        .expect("caller accepts verifier");
+    assert_eq!(reassembler.push(first), Ok(None));
+    let invalid_last = decode_rpc_authenticated_fragment(&invalid_last, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated invalid last response")
+        .verify_with(|_, _| Ok::<(), ()>(()))
+        .expect("caller accepts verifier");
+    assert_eq!(
+        reassembler.push(invalid_last),
+        Err(RpcPduError::Truncated { actual: 7, required: 8 })
+    );
+
+    let replacement = prepare_rpc_authenticated_pdu(
+        PTYPE_RESPONSE,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG,
+        2,
+        &[1, 0, 0, 0, 0, 0, 0, 0, 2],
+        RpcAuthenticationInfo {
+            auth_context_id: 2,
+            ..authentication
+        },
+    )
+    .expect("replacement response")
+    .finish(&[1, 2, 3])
+    .expect("reserved verifier length");
+    let replacement = decode_rpc_authenticated_fragment(&replacement, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated replacement response")
+        .verify_with(|_, _| Ok::<(), ()>(()))
+        .expect("caller accepts verifier");
+    assert_eq!(
+        reassembler.push(replacement),
+        Ok(Some(RpcReassembledResponse {
+            call_id: 2,
+            cancel_count: 0,
+            reserved: 0,
+            stub: vec![2],
+        }))
+    );
+}
+
+#[test]
+fn authenticated_response_reassembly_recovers_after_terminal_authentication_mismatch() {
+    let authentication = RpcAuthenticationInfo {
+        auth_type: 0x0a,
+        auth_level: RPC_AUTH_LEVEL_PACKET_INTEGRITY,
+        auth_context_id: 1,
+        verifier_length: 1,
+    };
+    let first = prepare_rpc_authenticated_pdu(
+        PTYPE_RESPONSE,
+        PFC_FIRST_FRAG,
+        1,
+        &[2, 0, 0, 0, 0, 0, 0, 0, 1],
+        authentication,
+    )
+    .expect("first response fragment")
+    .finish(&[1])
+    .expect("reserved verifier length");
+    let mismatched_last = prepare_rpc_authenticated_pdu(
+        PTYPE_RESPONSE,
+        PFC_LAST_FRAG,
+        1,
+        &[1, 0, 0, 0, 0, 0, 0, 0, 2],
+        RpcAuthenticationInfo {
+            auth_context_id: 2,
+            ..authentication
+        },
+    )
+    .expect("mismatched response fragment")
+    .finish(&[1])
+    .expect("reserved verifier length");
+
+    let mut reassembler = RpcAuthenticatedResponseReassembler::new(2);
+    let first = decode_rpc_authenticated_fragment(&first, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated first response")
+        .verify_with(|_, _| Ok::<(), ()>(()))
+        .expect("caller accepts verifier");
+    assert_eq!(reassembler.push(first), Ok(None));
+    let mismatched_last = decode_rpc_authenticated_fragment(&mismatched_last, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated mismatched response")
+        .verify_with(|_, _| Ok::<(), ()>(()))
+        .expect("caller accepts verifier");
+    assert_eq!(
+        reassembler.push(mismatched_last),
+        Err(RpcPduError::ResponseFragmentAuthentication {
+            expected_auth_type: 0x0a,
+            expected_auth_level: RPC_AUTH_LEVEL_PACKET_INTEGRITY,
+            expected_auth_context_id: 1,
+            actual_auth_type: 0x0a,
+            actual_auth_level: RPC_AUTH_LEVEL_PACKET_INTEGRITY,
+            actual_auth_context_id: 2,
+        })
+    );
+
+    let replacement = prepare_rpc_authenticated_pdu(
+        PTYPE_RESPONSE,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG,
+        2,
+        &[1, 0, 0, 0, 0, 0, 0, 0, 3],
+        RpcAuthenticationInfo {
+            auth_context_id: 2,
+            ..authentication
+        },
+    )
+    .expect("replacement response")
+    .finish(&[1])
+    .expect("reserved verifier length");
+    let replacement = decode_rpc_authenticated_fragment(&replacement, DEFAULT_FRAGMENT_SIZE)
+        .expect("authenticated replacement response")
+        .verify_with(|_, _| Ok::<(), ()>(()))
+        .expect("caller accepts verifier");
+    assert_eq!(
+        reassembler.push(replacement),
+        Ok(Some(RpcReassembledResponse {
+            call_id: 2,
+            cancel_count: 0,
+            reserved: 0,
+            stub: vec![3],
+        }))
+    );
+}
+
+#[test]
+fn authenticated_pdu_framing_rejects_malformed_trailers_and_verifiers() {
+    let authentication = RpcAuthenticationInfo {
+        auth_type: 0x0a,
+        auth_level: 5,
+        auth_context_id: 1,
+        verifier_length: 3,
+    };
+    let prepared =
+        prepare_rpc_authenticated_pdu(PTYPE_REQUEST, PFC_FIRST_FRAG | PFC_LAST_FRAG, 1, &[1], authentication)
+            .expect("authenticated request");
+    assert_eq!(
+        prepared.clone().finish(&[1, 2]),
+        Err(RpcPduError::AuthenticationVerifierLength { expected: 3, actual: 2 })
+    );
+    let valid = prepared.finish(&[1, 2, 3]).expect("reserved verifier length");
+    assert_eq!(
+        prepare_rpc_authenticated_pdu(
+            PTYPE_REQUEST,
+            PFC_FIRST_FRAG | PFC_LAST_FRAG,
+            1,
+            &[],
+            RpcAuthenticationInfo {
+                auth_level: RPC_AUTH_LEVEL_PACKET_INTEGRITY + 1,
+                ..authentication
+            },
+        ),
+        Err(RpcPduError::UnsupportedAuthenticationLevel {
+            actual: RPC_AUTH_LEVEL_PACKET_INTEGRITY + 1,
+        })
+    );
+
+    let mut oversized_trailer = valid.clone();
+    oversized_trailer[10..12].copy_from_slice(&u16::MAX.to_le_bytes());
+    assert_eq!(
+        decode_rpc_authenticated_fragment(&oversized_trailer, DEFAULT_FRAGMENT_SIZE),
+        Err(RpcPduError::InvalidSecurityTrailer {
+            fragment_length: 43,
+            auth_length: u16::MAX,
+        })
+    );
+
+    let mut unaligned_trailer = valid.clone();
+    unaligned_trailer[8..10].copy_from_slice(&42u16.to_le_bytes());
+    assert_eq!(
+        decode_rpc_authenticated_fragment(&unaligned_trailer, DEFAULT_FRAGMENT_SIZE),
+        Err(RpcPduError::UnalignedSecurityTrailer { offset: 31 })
+    );
+
+    let mut excessive_padding = valid.clone();
+    excessive_padding[34] = 17;
+    assert_eq!(
+        decode_rpc_authenticated_fragment(&excessive_padding, DEFAULT_FRAGMENT_SIZE),
+        Err(RpcPduError::InvalidAuthenticationPadding { actual: 17 })
+    );
+    let mut unsupported_level = valid.clone();
+    unsupported_level[33] = RPC_AUTH_LEVEL_PACKET_INTEGRITY + 1;
+    assert_eq!(
+        decode_rpc_authenticated_fragment(&unsupported_level, DEFAULT_FRAGMENT_SIZE),
+        Err(RpcPduError::UnsupportedAuthenticationLevel {
+            actual: RPC_AUTH_LEVEL_PACKET_INTEGRITY + 1,
+        })
+    );
+    assert_eq!(
+        decode_rpc_authenticated_fragment(&valid, 42),
+        Err(RpcPduError::FragmentExceedsMaximum {
+            fragment_length: 43,
+            maximum: 42,
+        })
+    );
+}
+
+#[test]
+fn bind_and_request_fragment_vectors() {
     let fault = [
         5,
         0,
