@@ -14,7 +14,7 @@ This crate
 - does not implement reconnection, Detect, or a live UDP/DTLS side channel,
 - authenticates gateway setup with HTTP Negotiate (Kerberos then NTLM), NTLM, Basic fallback, or MS-TSGU `SSPI_NTLM` extended authentication when negotiated,
 - can use Kerberos PKINIT with application-supplied UPN `smartcard` credentials for HTTP Negotiate authentication only,
-- rejects unsupported `HTTP_EXTENDED_AUTH_SC` and PAA exchanges without a credential-provider UI,
+- does not implement `HTTP_EXTENDED_AUTH_SC` or PAA exchanges without a credential-provider UI,
 - encodes and decodes RDG-UDP PDUs (`CONNECT_PKT`, `DATA_PKT`, `DISC_PKT`, and correlation info) without opening that side channel,
 - encodes and decodes DCE/RPC common-header fragments plus the NTLM bind/bind_ack/rpc_auth_3 association exchange, but not live RPC-over-HTTP transport or authenticated request/response traffic, and
 - finishes write-side shutdown by closing the outbound WebSocket or ending the dual HTTP IN request body.
