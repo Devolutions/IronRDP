@@ -100,32 +100,63 @@ async fn switching_protocols_keeps_websocket_transport() {
     let (out_client, out_server) = tokio::io::duplex(4096);
     let (in_client, _in_server) = tokio::io::duplex(4096);
     let (upgrade_tx, upgrade_rx) = oneshot::channel();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let websocket_key = Arc::new(Mutex::new(None));
+    let server_requests = Arc::clone(&requests);
+    let server_websocket_key = Arc::clone(&websocket_key);
 
     let server = tokio::spawn(async move {
         let upgrade_tx = Arc::new(Mutex::new(Some(upgrade_tx)));
+        let requests = server_requests;
+        let websocket_key = server_websocket_key;
         let service = service_fn(move |mut request: Request<hyper::body::Incoming>| {
-            let upgrade = hyper::upgrade::on(&mut request);
             let upgrade_tx = Arc::clone(&upgrade_tx);
+            let requests = Arc::clone(&requests);
+            let websocket_key = Arc::clone(&websocket_key);
             async move {
                 assert_eq!(request.method(), "RDG_OUT_DATA");
-                assert!(request.headers().get("authorization").is_none());
-                upgrade_tx
-                    .lock()
-                    .expect("upgrade sender lock")
-                    .take()
-                    .expect("one websocket request")
-                    .send(upgrade)
-                    .expect("send upgrade");
+                match requests.fetch_add(1, Ordering::SeqCst) {
+                    0 => {
+                        assert!(request.headers().get("authorization").is_none());
+                        *websocket_key.lock().expect("WebSocket key lock") =
+                            Some(request.headers()["sec-websocket-key"].clone());
+                        Ok::<_, Infallible>(response(
+                            StatusCode::UNAUTHORIZED,
+                            &[("www-authenticate", "Basic realm=\"RDG\"")],
+                            Bytes::new(),
+                        ))
+                    }
+                    1 => {
+                        assert_eq!(request.headers()["authorization"], "Basic dXNlcjpwYXNz");
+                        assert_eq!(
+                            request.headers()["sec-websocket-key"],
+                            websocket_key
+                                .lock()
+                                .expect("WebSocket key lock")
+                                .as_ref()
+                                .expect("initial WebSocket key")
+                        );
+                        let upgrade = hyper::upgrade::on(&mut request);
+                        upgrade_tx
+                            .lock()
+                            .expect("upgrade sender lock")
+                            .take()
+                            .expect("one websocket request")
+                            .send(upgrade)
+                            .expect("send upgrade");
 
-                let mut response = Response::new(Full::new(Bytes::new()).boxed());
-                *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
-                response
-                    .headers_mut()
-                    .insert("connection", "Upgrade".parse().expect("header"));
-                response
-                    .headers_mut()
-                    .insert("upgrade", "websocket".parse().expect("header"));
-                Ok::<_, Infallible>(response)
+                        let mut response = Response::new(Full::new(Bytes::new()).boxed());
+                        *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+                        response
+                            .headers_mut()
+                            .insert("connection", "Upgrade".parse().expect("header"));
+                        response
+                            .headers_mut()
+                            .insert("upgrade", "websocket".parse().expect("header"));
+                        Ok(response)
+                    }
+                    _ => panic!("unexpected WebSocket upgrade request"),
+                }
             }
         });
         http1::Builder::new()
@@ -169,6 +200,7 @@ async fn switching_protocols_keeps_websocket_transport() {
 
     transport.close().await.expect("close websocket");
     server.await.expect("server task");
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

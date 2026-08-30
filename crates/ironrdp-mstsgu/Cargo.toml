@@ -110,3 +110,6 @@ tokio-native-tls = "0.3"
 
 [lints]
 workspace = true
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials"] }

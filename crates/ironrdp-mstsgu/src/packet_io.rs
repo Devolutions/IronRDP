@@ -36,6 +36,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin + ?Sized> GatewayIo for T {}
 type GatewayStream = Box<dyn GatewayIo + Send>;
 type RdgBody = BoxBody<Bytes, Infallible>;
 
+struct GatewayTlsConnection {
+    stream: GatewayStream,
+    channel_binding: Option<Vec<u8>>,
+}
+
 const MAX_AUTH_RESPONSE_SIZE: usize = 16 * 1024;
 const MAX_PACKET_SIZE: usize = 16 * 1024 * 1024;
 const MAX_PROXY_RESPONSE_SIZE: usize = 16 * 1024;
@@ -138,7 +143,7 @@ struct RdgRequestContext<'a> {
     gw_host: &'a str,
     connection_id: &'a str,
     target: &'a GwConnectTarget,
-    websocket_upgrade: bool,
+    websocket_key: Option<&'a str>,
 }
 
 /// Session cookies returned by an RD Gateway or its load balancer.
@@ -330,7 +335,7 @@ async fn upgrade_gateway_tls(
     gw_endpoint: &str,
     certificate_validation: CertificateValidation,
     certificate_validation_callback: Option<CertificateValidationCallback>,
-) -> Result<GatewayStream, Error> {
+) -> Result<GatewayTlsConnection, Error> {
     let (stream, _) = match select_gateway_tls_upgrade(certificate_validation, certificate_validation_callback) {
         GatewayTlsUpgrade::CertificateValidation(certificate_validation) => {
             ironrdp_tls::upgrade_with_certificate_validation(stream, gw_host, certificate_validation).await
@@ -347,7 +352,16 @@ async fn upgrade_gateway_tls(
     }
     .map_err(|e| custom_err!("tls connect", e))?;
 
-    Ok(Box::new(stream))
+    #[cfg(all(windows, feature = "native-tls"))]
+    let channel_binding = ironrdp_tls::endpoint_channel_binding(&stream)
+        .map_err(|e| custom_err!("get TLS endpoint channel binding", e))?;
+    #[cfg(not(all(windows, feature = "native-tls")))]
+    let channel_binding = None;
+
+    Ok(GatewayTlsConnection {
+        stream: Box::new(stream),
+        channel_binding,
+    })
 }
 
 fn parse_gateway_endpoint(endpoint: &str) -> Result<GatewayEndpoint, Error> {
@@ -818,7 +832,7 @@ fn select_gateway_tls_upgrade(
 }
 
 async fn open_transport_with_out_stream<F, Fut>(
-    out_stream: GatewayStream,
+    out_stream: GatewayTlsConnection,
     client_addr: core::net::SocketAddr,
     gw_host: &str,
     target: &GwConnectTarget,
@@ -826,9 +840,14 @@ async fn open_transport_with_out_stream<F, Fut>(
 ) -> Result<(GatewayTransport, core::net::SocketAddr), Error>
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<GatewayStream, Error>>,
+    Fut: Future<Output = Result<GatewayTlsConnection, Error>>,
 {
+    let GatewayTlsConnection {
+        stream: out_stream,
+        channel_binding,
+    } = out_stream;
     let connection_id = format!("{{{}}}", uuid::Uuid::new_v4());
+    let websocket_key = generate_key();
     let spn = format!("HTTP/{gw_host}");
     let out_io = hyper_util::rt::tokio::TokioIo::new(out_stream);
     let (mut out_sender, out_conn) = hyper::client::conn::http1::handshake(out_io)
@@ -857,9 +876,17 @@ where
         gw_host,
         connection_id: &connection_id,
         target,
-        websocket_upgrade: true,
+        websocket_key: Some(&websocket_key),
     };
-    let authenticated = authenticated_rdg_request(&mut out_sender, &context, &spn, &mut cookies, None).await?;
+    let authenticated = authenticated_rdg_request(
+        &mut out_sender,
+        &context,
+        &spn,
+        &mut cookies,
+        channel_binding.as_deref(),
+        None,
+    )
+    .await?;
     let session_authentication = authenticated.session_authentication;
     let response = authenticated.response;
 
@@ -931,13 +958,18 @@ pub(crate) async fn open_test_transport(
         .parse()
         .map_err(|e| custom_err!("parse test client address", e))?;
     open_transport_with_out_stream(
-        Box::new(out_stream),
+        GatewayTlsConnection {
+            stream: Box::new(out_stream),
+            channel_binding: None,
+        },
         client_addr,
         "gateway.test",
         &target,
         move || async move {
-            let stream: GatewayStream = Box::new(in_stream);
-            Ok(stream)
+            Ok(GatewayTlsConnection {
+                stream: Box::new(in_stream),
+                channel_binding: None,
+            })
         },
     )
     .await
@@ -949,7 +981,7 @@ pub(crate) async fn open_test_transport(
     reason = "carries both established dual HTTP channel states"
 )]
 async fn open_in_channel(
-    in_stream: GatewayStream,
+    in_stream: GatewayTlsConnection,
     gw_host: &str,
     target: &GwConnectTarget,
     connection_id: &str,
@@ -961,6 +993,10 @@ async fn open_in_channel(
     out_conn: tokio::task::JoinHandle<()>,
     session_authentication: GwSessionAuthentication,
 ) -> Result<PacketIo, Error> {
+    let GatewayTlsConnection {
+        stream: in_stream,
+        channel_binding,
+    } = in_stream;
     let in_io = hyper_util::rt::tokio::TokioIo::new(in_stream);
     let (mut in_sender, in_conn) = hyper::client::conn::http1::handshake(in_io)
         .await
@@ -976,10 +1012,17 @@ async fn open_in_channel(
         gw_host,
         connection_id,
         target,
-        websocket_upgrade: false,
+        websocket_key: None,
     };
-    let authenticated =
-        authenticated_rdg_request(&mut in_sender, &context, spn, cookies, Some(session_authentication)).await?;
+    let authenticated = authenticated_rdg_request(
+        &mut in_sender,
+        &context,
+        spn,
+        cookies,
+        channel_binding.as_deref(),
+        Some(session_authentication),
+    )
+    .await?;
     let response = authenticated.response;
     if response.status() != http::StatusCode::OK {
         let status = response.status();
@@ -1020,12 +1063,14 @@ async fn authenticated_rdg_request(
     context: &RdgRequestContext<'_>,
     spn: &str,
     cookies: &mut GatewayCookies,
+    channel_binding: Option<&[u8]>,
     requested_session_authentication: Option<GwSessionAuthentication>,
 ) -> Result<AuthenticatedRdgResponse, Error> {
     let mut http_auth: Option<GatewayHttpAuth> = None;
     let mut session_authentication = requested_session_authentication.unwrap_or_default();
     let mut authorization =
         (session_authentication == GwSessionAuthentication::NtlmSspi).then(|| "SSPI_NTLM".to_owned());
+    let channel_binding = channel_binding.map(ToOwned::to_owned);
     let mut use_basic = false;
     const MAX_AUTH_ROUNDS: usize = 8;
 
@@ -1105,9 +1150,17 @@ async fn authenticated_rdg_request(
             http_auth = Some(auth);
             step
         } else {
+            let channel_binding = channel_binding.clone();
             let (auth, step) = run_http_auth(move || {
                 let refs: Vec<&str> = challenges.iter().map(String::as_str).collect();
-                GatewayHttpAuth::from_challenges(&user, &pass, smart_card.as_deref(), Some(target_name), &refs)
+                GatewayHttpAuth::from_challenges_with_channel_binding(
+                    &user,
+                    &pass,
+                    smart_card.as_deref(),
+                    Some(target_name),
+                    channel_binding.as_deref(),
+                    &refs,
+                )
             })
             .await?;
             http_auth = auth;
@@ -1157,12 +1210,12 @@ fn build_rdg_request(
     if let Some(cookie_header) = cookies.header_value() {
         request = request.header(hyper::header::COOKIE, cookie_header);
     }
-    if context.websocket_upgrade {
+    if let Some(websocket_key) = context.websocket_key {
         request = request
             .header(hyper::header::CONNECTION, "Upgrade")
             .header(hyper::header::UPGRADE, "websocket")
             .header(hyper::header::SEC_WEBSOCKET_VERSION, "13")
-            .header(hyper::header::SEC_WEBSOCKET_KEY, generate_key());
+            .header(hyper::header::SEC_WEBSOCKET_KEY, websocket_key);
     }
     if use_basic {
         request = request.header(

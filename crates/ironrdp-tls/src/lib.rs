@@ -38,6 +38,8 @@ compile_error!(
     "a TLS backend must be selected by enabling a single feature out of: `rustls`, `native-tls`, `stub` (the rustls crypto provider is chosen via `rustls`/`rustls-aws-lc-rs`/`rustls-ring`/`rustls-no-provider`)"
 );
 
+#[cfg(all(feature = "native-tls", windows))]
+pub use impl_::endpoint_channel_binding;
 #[cfg(any(feature = "stub", feature = "native-tls", feature = "rustls-no-provider"))]
 pub use impl_::{
     TlsStream, negotiated, upgrade, upgrade_with_certificate_validation, upgrade_with_certificate_validation_callback,

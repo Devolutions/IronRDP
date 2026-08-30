@@ -13,6 +13,7 @@ This crate
 - lets applications inspect and accept or decline a consent message synchronously through [`GwClient::connect_with_consent`] or [`GwClient::connect_with_port_and_consent`],
 - does not implement reconnection, Detect, or a live UDP/DTLS side channel,
 - authenticates gateway setup with HTTP Negotiate (Kerberos then NTLM), NTLM, Basic fallback, or MS-TSGU `SSPI_NTLM` extended authentication when negotiated,
+- uses native Windows SSPI for regular HTTP Negotiate/NTLM when the native TLS transport supplies endpoint binding and the portable backend otherwise,
 - can use Kerberos PKINIT with application-supplied UPN `smartcard` credentials for HTTP Negotiate authentication only,
 - rejects unsupported `HTTP_EXTENDED_AUTH_SC` and PAA exchanges without a credential-provider UI,
 - encodes and decodes RDG-UDP PDUs (`CONNECT_PKT`, `DATA_PKT`, `DISC_PKT`, and correlation info) without opening that side channel,
