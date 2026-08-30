@@ -61,6 +61,21 @@ async fn test_client_server() {
     .await
 }
 
+/// Advertising the Graphics Pipeline early-capability bit must not disturb connection establishment.
+///
+/// The core testsuite separately decodes the emitted Connect Initial PDU and verifies the capability flag.
+#[tokio::test]
+async fn test_client_server_advertising_dyn_vc_gfx_protocol() {
+    client_server(
+        connector::Config {
+            support_dyn_vc_gfx_protocol: true,
+            ..default_client_config()
+        },
+        |stage, _activation_factory, framed, _display_tx| async { (stage, framed) },
+    )
+    .await
+}
+
 #[tokio::test]
 async fn test_deactivation_reactivation() {
     let client_config = default_client_config();
@@ -1072,6 +1087,7 @@ fn default_client_config() -> connector::Config {
         enable_server_pointer: true,
         pointer_software_rendering: true,
         multitransport_flags: None,
+        support_dyn_vc_gfx_protocol: false,
         performance_flags: Default::default(),
         timezone_info: Default::default(),
         alternate_shell: String::new(),
