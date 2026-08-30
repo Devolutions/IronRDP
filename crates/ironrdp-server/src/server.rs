@@ -1,6 +1,6 @@
 use core::fmt;
 use core::net::SocketAddr;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::time::Duration;
 #[cfg(feature = "usb")]
 use std::collections::HashMap;
@@ -59,6 +59,7 @@ use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResu
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
+use crate::heartbeat::HeartbeatConfig;
 use crate::rdpei::RdpeiServerFactory;
 #[cfg(feature = "usb")]
 use crate::urbdrc::{
@@ -604,6 +605,7 @@ pub struct RdpServer {
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
+    heartbeat: Option<HeartbeatConfig>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     /// True while the client has sent `SuppressOutput { desktop_rect: None }`
     /// — the standard RDP "I don't need display updates right now" signal
@@ -849,6 +851,7 @@ impl RdpServer {
             credential_validator: None,
             local_addr: None,
             autodetect: None,
+            heartbeat: None,
             connection_handler,
             display_suppressed: display_suppressed.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
             autodetect_rtt: {
@@ -1182,6 +1185,17 @@ impl RdpServer {
     /// query results with [`rtt_snapshot()`](Self::rtt_snapshot).
     pub fn enable_autodetect(&mut self) {
         self.autodetect = Some(AutoDetectManager::new());
+    }
+
+    /// Enable periodic Server Heartbeat PDUs (MS-RDPBCGR 2.2.16.1).
+    ///
+    /// Heartbeats ride the MCS message channel, so they are only emitted
+    /// when the client requested one AND advertised
+    /// `RNS_UD_CS_SUPPORT_HEARTBEAT_PDU` in its early capability flags, and,
+    /// per the spec's idle-only SHOULD, only when no other PDU went out
+    /// during the previous heartbeat interval.
+    pub fn enable_heartbeat(&mut self, config: HeartbeatConfig) {
+        self.heartbeat = Some(config);
     }
 
     /// Get the latest auto-detect RTT snapshot.
@@ -2221,6 +2235,10 @@ impl RdpServer {
         Ok(RunState::Continue)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "private per-connection entry point; the parameters are the connection's negotiated identifiers"
+    )]
     async fn client_loop<R, W>(
         &mut self,
         reader: &mut Framed<R>,
@@ -2228,6 +2246,7 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
+        client_supports_heartbeat: bool,
         mut encoder: UpdateEncoder,
     ) -> ServerResult<RunState>
     where
@@ -2235,11 +2254,18 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Starting client loop");
+        let heartbeat = if client_supports_heartbeat {
+            self.heartbeat
+        } else {
+            None
+        };
         let mut display_updates = self.display.lock().await.updates().await?;
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
         let mut auto_reconnect_writer = writer.clone();
+        let mut heartbeat_writer = writer.clone();
+        let write_counter = writer.write_counter();
         let ev_receiver = Arc::clone(&self.ev_receiver);
         let s = Rc::new(Mutex::new(self));
 
@@ -2398,11 +2424,50 @@ impl RdpServer {
             }
         };
 
+        let send_heartbeats = async move {
+            let (Some(config), Some(message_channel_id)) = (heartbeat, message_channel_id) else {
+                return core::future::pending::<ServerResult<RunState>>().await;
+            };
+            // 2.2.16.1: `period` is in seconds. A zero period is meaningless
+            // (and would panic tokio's interval), so it is bumped to one.
+            let period = Duration::from_secs(u64::from(config.period_secs.max(1)));
+            let mut interval = tokio::time::interval(period);
+            // A stalled write (TCP back-pressure) can hold this future past
+            // several tick deadlines; Burst (the default) would then fire the
+            // missed ticks back-to-back and emit a run of consecutive
+            // heartbeats on an otherwise idle link. Skip fires at the next
+            // period boundary instead.
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await; // first tick completes immediately; real waits start below
+
+            let mut writes_at_last_tick = write_counter.load(Ordering::Relaxed);
+            loop {
+                interval.tick().await;
+                let writes_now = write_counter.load(Ordering::Relaxed);
+                if writes_now != writes_at_last_tick {
+                    // 2.2.16.1: heartbeats SHOULD only be sent when no other
+                    // PDU went out in the interval; ordinary traffic doubles
+                    // as the liveness signal.
+                    writes_at_last_tick = writes_now;
+                    continue;
+                }
+                let data = encode_heartbeat(&config, message_channel_id, user_channel_id)?;
+                heartbeat_writer
+                    .write_all(&data)
+                    .await
+                    .map_err(|e| ServerError::io("send heartbeat", e))?;
+                // Re-read so the heartbeat's own write does not read as
+                // foreign traffic on the next tick.
+                writes_at_last_tick = write_counter.load(Ordering::Relaxed);
+            }
+        };
+
         let state = tokio::select!(
             state = dispatch_pdu => state,
             state = dispatch_display => state,
             state = dispatch_events => state,
             state = refresh_auto_reconnect_cookie => state,
+            state = send_heartbeats => state,
         );
 
         debug!("End of client loop: {state:?}");
@@ -2631,6 +2696,9 @@ impl RdpServer {
                 result.io_channel_id,
                 result.user_channel_id,
                 result.message_channel_id,
+                result
+                    .client_early_capability_flags
+                    .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_HEART_BEAT_PDU),
                 encoder,
             )
             .await?;
@@ -2969,6 +3037,30 @@ fn encode_autodetect_request(
     encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
 }
 
+/// Encode a server-initiated Heartbeat PDU for the MCS message channel.
+///
+/// Like auto-detect (see [`encode_autodetect_request`]), heartbeats are framed
+/// by a Basic Security Header (SEC_HEARTBEAT) and ride the message channel,
+/// not a Share Control / Share Data header on the I/O channel
+/// (MS-RDPBCGR 2.2.16.1).
+fn encode_heartbeat(config: &HeartbeatConfig, message_channel_id: u16, user_channel_id: u16) -> ServerResult<Vec<u8>> {
+    let pdu = rdp::heartbeat::HeartbeatPdu {
+        security_header: rdp::headers::BasicSecurityHeader {
+            flags: rdp::headers::BasicSecurityHeaderFlags::HEARTBEAT,
+        },
+        period: config.period_secs,
+        count1: config.warning_count,
+        count2: config.reconnect_count,
+    };
+    let user_data = encode_vec(&pdu).map_err(ServerError::encode)?.into();
+    let mcs_pdu = SendDataIndication {
+        initiator_id: user_channel_id,
+        channel_id: message_channel_id,
+        user_data,
+    };
+    encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
+}
+
 /// Encode a Share Data PDU wrapped in a Share Control header and carried in an
 /// MCS Send Data Indication on the I/O channel.
 ///
@@ -3050,12 +3142,18 @@ async fn send_access_denied(
 
 struct SharedWriter<'w, W: FramedWrite> {
     writer: Rc<Mutex<&'w mut W>>,
+    /// Count of successful `write_all` calls across all clones. The heartbeat
+    /// loop compares it across ticks to honor 2.2.16.1's idle-only SHOULD: a
+    /// changed count means ordinary traffic already served as the liveness
+    /// signal for that interval.
+    writes: Arc<AtomicU64>,
 }
 
 impl<W: FramedWrite> Clone for SharedWriter<'_, W> {
     fn clone(&self) -> Self {
         Self {
             writer: Rc::clone(&self.writer),
+            writes: Arc::clone(&self.writes),
         }
     }
 }
@@ -3102,6 +3200,9 @@ where
             } else {
                 tracing::debug!(bytes = len, lock_wait_ms = wait_ms, write_ms, "SharedWriter.write_all");
             }
+            if res.is_ok() {
+                self.writes.fetch_add(1, Ordering::Relaxed);
+            }
             res
         })
     }
@@ -3111,7 +3212,12 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
     fn new(writer: &'a mut W) -> Self {
         Self {
             writer: Rc::new(Mutex::new(writer)),
+            writes: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn write_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.writes)
     }
 }
 
