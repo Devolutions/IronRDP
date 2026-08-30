@@ -325,34 +325,32 @@ impl<'de> Decode<'de> for ShareControlHeader {
         };
 
         if pdu_type == ShareControlPduType::DataPdu {
-            // Note this is the *re-encoded* size, not the bytes that were on the wire. The two
-            // diverge for a header-only Server Font Map: `ShareDataPdu::from_type` substitutes
-            // `FontPdu::default()` on an empty cursor, so the re-encoded size counts an 8-byte
-            // body that was never sent, and a conformant server declaring 18 was measured
-            // against 26. That is why an honest header-only Font Map was rejected, and it is
-            // the reason the exception below is keyed on the PDU type rather than on arithmetic.
+            // This is the re-encoded size, which differs from the received size for a supported
+            // header-only Server Font Map because decoding substitutes `FontPdu::default()`.
             let header_length = header.size();
 
             // An empty Update/Pointer PDU is a legitimate no-op carrying a zero length.
-            let is_empty_output_pdu = matches!(
-                &header.share_control_pdu,
-                ShareControlPdu::Data(ShareDataHeader {
-                    share_data_pdu: ShareDataPdu::Update(data) | ShareDataPdu::Pointer(data),
-                    ..
-                }) if data.is_empty()
-            );
+            let is_zero_length_empty_output_pdu = total_length == 0
+                && matches!(
+                    &header.share_control_pdu,
+                    ShareControlPdu::Data(ShareDataHeader {
+                        share_data_pdu: ShareDataPdu::Update(data) | ShareDataPdu::Pointer(data),
+                        ..
+                    }) if data.is_empty()
+                );
 
             // VirtualBox's VRDP declares only the two headers of a Server Font Map (18) and
-            // never counts the 8-byte body that follows, so it under-declares by exactly the
-            // body it did send. Narrowed to this PDU type rather than allowed for Data PDUs at
-            // large, so a malformed non-output PDU declaring 1..17 is still rejected.
-            let is_font_map = matches!(
-                &header.share_control_pdu,
-                ShareControlPdu::Data(ShareDataHeader {
-                    share_data_pdu: ShareDataPdu::FontMap(_),
-                    ..
-                })
-            );
+            // omits the 8-byte body from the declared length. Keep this exception to that exact
+            // declaration; this decoder is also used for untrusted client-to-server PDUs.
+            let is_header_length_font_map = total_length
+                == ShareControlHeader::FIXED_PART_SIZE + ShareDataHeader::FIXED_PART_SIZE
+                && matches!(
+                    &header.share_control_pdu,
+                    ShareControlPdu::Data(ShareDataHeader {
+                        share_data_pdu: ShareDataPdu::FontMap(_),
+                        ..
+                    })
+                );
 
             if total_length > header_length {
                 // Over-declared: some Windows versions append padding past the inner unit.
@@ -360,7 +358,7 @@ impl<'de> Decode<'de> for ShareControlHeader {
                 let padding = total_length - header_length;
                 ensure_size!(in: src, size: padding);
                 read_padding!(src, padding);
-            } else if total_length < header_length && !is_font_map && !is_empty_output_pdu {
+            } else if total_length < header_length && !is_header_length_font_map && !is_zero_length_empty_output_pdu {
                 return Err(not_enough_bytes_err!(total_length, header_length));
             }
         }
@@ -951,6 +949,21 @@ mod tests {
                 ..
             }) if data.is_empty()
         ));
+    }
+
+    #[test]
+    fn reject_nonzero_under_declared_empty_output_data_pdu() {
+        for pdu_type in [0x02, 0x1B] {
+            for total_length in 1u16..18 {
+                let mut encoded = zero_length_empty_data_pdu(pdu_type);
+                encoded[..2].copy_from_slice(&total_length.to_le_bytes());
+
+                assert!(
+                    decode::<ShareControlHeader>(&encoded).is_err(),
+                    "accepted PDU type {pdu_type:#04x} with totalLength {total_length}"
+                );
+            }
+        }
     }
 
     #[test]

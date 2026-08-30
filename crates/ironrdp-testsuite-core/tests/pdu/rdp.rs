@@ -90,12 +90,11 @@ fn from_buffer_with_under_declared_total_length_parses_rdp_pdu_server_font_map()
 }
 
 /// A header-only Server Font Map that declares its own length honestly: 18 bytes sent, 18
-/// declared. Nothing about it is malformed, and it is the encoding a server is most likely to
-/// send in the field.
+/// declared. The decoder supports this compatibility encoding by substituting default Font Map
+/// fields when the body is absent.
 ///
-/// It is pinned separately because it is the case the old check got wrong, for a reason that is
-/// easy to reintroduce: `ShareDataPdu::from_type` defaults a `FontPdu` in when the cursor is
-/// empty, so the re-encoded size is 26 and comparing 18 against it rejected a conformant PDU.
+/// It is pinned separately because `ShareDataPdu::from_type` defaults a `FontPdu` in when the
+/// cursor is empty, so the re-encoded size is 26 and comparing 18 against it rejected the PDU.
 /// Anyone reinstating a comparison against the re-encoded size will fail here. The neighbouring
 /// `from_header_only_buffer_defaults` test does not cover it — its fixture still declares 26.
 #[test]
@@ -104,6 +103,19 @@ fn from_header_only_buffer_with_matching_total_length_parses_rdp_pdu_server_font
     buf[0] = 18;
 
     assert_eq!(SERVER_FONT_MAP.clone(), decode(buf.as_slice()).unwrap());
+}
+
+#[test]
+fn from_buffer_rejects_other_under_declared_total_lengths_for_server_font_map() {
+    for total_length in (0u16..26).filter(|length| *length != 18) {
+        let mut buf = SERVER_FONT_MAP_BUFFER;
+        buf[..2].copy_from_slice(&total_length.to_le_bytes());
+
+        assert!(
+            decode::<ironrdp_pdu::rdp::headers::ShareControlHeader>(buf.as_ref()).is_err(),
+            "accepted Server Font Map with totalLength {total_length}"
+        );
+    }
 }
 
 #[test]
