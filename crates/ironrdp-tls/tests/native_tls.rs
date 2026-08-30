@@ -1,3 +1,5 @@
+#![allow(unused_crate_dependencies)] // rustls verifier support is shared with RDPEUDP in native-TLS builds.
+
 use ironrdp_tls::{CertificateValidation, upgrade, upgrade_with_certificate_validation};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_native_tls::TlsAcceptor;

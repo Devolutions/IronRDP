@@ -124,6 +124,29 @@ pub fn dependencies(sh: &Shell) -> anyhow::Result<()> {
         anyhow::bail!("forbidden dependency edge(s) detected, see output above");
     }
 
+    for &(target, expected_backend, unexpected_backend) in &[
+        ("x86_64-pc-windows-msvc", "native-tls", "rustls"),
+        ("x86_64-unknown-linux-gnu", "rustls", "native-tls"),
+    ] {
+        let graph = cmd!(sh, "{CARGO} tree --locked --workspace --target {target} -e features")
+            .read()
+            .with_context(|| format!("resolve ironrdp-agent TLS features for {target}"))?;
+
+        for package in ["ironrdp-client", "ironrdp-mstsgu"] {
+            let expected = format!("{package} feature \"{expected_backend}\"");
+            let unexpected = format!("{package} feature \"{unexpected_backend}\"");
+
+            if !graph.contains(&expected) {
+                anyhow::bail!("{target} must enable {expected_backend} for {package}");
+            }
+            if graph.contains(&unexpected) {
+                anyhow::bail!("{target} must not enable {unexpected_backend} for {package}");
+            }
+        }
+
+        println!("{target} resolves {expected_backend} only for workspace client/gateway TLS (good)");
+    }
+
     println!("All good!");
 
     Ok(())
