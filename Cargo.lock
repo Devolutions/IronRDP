@@ -3684,6 +3684,7 @@ dependencies = [
  "rstest",
  "semver",
  "serde_json",
+ "sspi",
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
