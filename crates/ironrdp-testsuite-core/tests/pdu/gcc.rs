@@ -249,6 +249,23 @@ fn from_buffer_correctly_parses_client_cluster_data() {
 }
 
 #[test]
+fn cluster_data_with_undefined_flag_bits_decodes_and_retains_them() {
+    // [MS-RDPBCGR] 3.3.5.3.3 never asks the server to validate this bit set;
+    // an unknown flag must not fail the GCC exchange. The bit is retained so
+    // re-encoding preserves the wire value.
+    const UNDEFINED_BIT: u32 = 0x0000_0080; // undefined in 2.2.1.3.5
+
+    let mut buffer = CLUSTER_DATA_BUFFER.to_vec();
+    let flags = u32::from_le_bytes(buffer[0..4].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[0..4].copy_from_slice(&flags.to_le_bytes());
+
+    let data: ClientClusterData = decode(buffer.as_slice()).expect("undefined redirection bits are not fatal");
+
+    assert_ne!(data.flags.bits() & UNDEFINED_BIT, 0);
+    assert_eq!(encode_vec(&data).unwrap(), buffer);
+}
+
+#[test]
 fn to_buffer_correctly_serializes_client_cluster_data() {
     let data = CLUSTER_DATA.clone();
     let expected_buffer = CLUSTER_DATA_BUFFER;
@@ -428,6 +445,49 @@ fn from_buffer_correctly_parses_server_core_data_without_optional_fields() {
 }
 
 #[test]
+fn client_core_data_with_undefined_protocol_echo_bits_decodes_and_retains_them() {
+    // serverSelectedProtocol echoes the X.224 negotiation value, which
+    // nego.rs already accepts with retain; the echo must not be stricter.
+    // [MS-RDPBCGR] 3.3.5.3.3 handles this field by value comparison, so the
+    // value has to survive decode. The bit is retained so re-encoding
+    // preserves the wire value.
+    const UNDEFINED_BIT: u32 = 0x0000_0020; // undefined in 2.2.1.1.1
+
+    let mut buffer = CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL_BUFFER.to_vec();
+    let at = buffer.len() - 4;
+    let protocol = u32::from_le_bytes(buffer[at..].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[at..].copy_from_slice(&protocol.to_le_bytes());
+
+    let data: ClientCoreData = decode(buffer.as_slice()).expect("undefined echo bits are not fatal");
+
+    assert_ne!(
+        data.optional_data.server_selected_protocol.unwrap().bits() & UNDEFINED_BIT,
+        0
+    );
+    assert_eq!(encode_vec(&data).unwrap(), buffer);
+}
+
+#[test]
+fn server_core_data_with_undefined_protocol_echo_bits_decodes_and_retains_them() {
+    // clientRequestedProtocols echoes the client's own X.224 request; the
+    // client compares it against what it actually requested rather than
+    // validating the bit set.
+    const UNDEFINED_BIT: u32 = 0x0000_0020; // undefined in 2.2.1.1.1
+
+    let mut buffer = SERVER_CORE_DATA_TO_REQUESTED_PROTOCOL_BUFFER.to_vec();
+    let protocol = u32::from_le_bytes(buffer[4..8].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[4..8].copy_from_slice(&protocol.to_le_bytes());
+
+    let data: ServerCoreData = decode(buffer.as_slice()).expect("undefined echo bits are not fatal");
+
+    assert_ne!(
+        data.optional_data.client_requested_protocols.unwrap().bits() & UNDEFINED_BIT,
+        0
+    );
+    assert_eq!(encode_vec(&data).unwrap(), buffer);
+}
+
+#[test]
 fn from_buffer_correctly_parses_server_core_data_without_few_optional_fields() {
     let buffer = SERVER_CORE_DATA_TO_REQUESTED_PROTOCOL_BUFFER;
 
@@ -556,6 +616,25 @@ fn from_buffer_correctly_parses_client_monitor_data_with_monitors() {
 }
 
 #[test]
+fn monitor_with_undefined_flag_bits_decodes_and_retains_them() {
+    // [MS-RDPBCGR] 2.2.1.3.6.1 defines only TS_MONITOR_PRIMARY; a vendor or
+    // future bit must not refuse a multimon client at GCC. The bit is
+    // retained so re-encoding preserves the wire value.
+    const UNDEFINED_BIT: u32 = 0x0000_0002; // undefined in 2.2.1.3.6.1
+
+    let mut buffer = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITH_MONITORS_BUFFER.to_vec();
+    // First monitor starts after the 8-byte header; its flags are the fifth
+    // dword of the 20-byte TS_MONITOR_DEF.
+    let flags = u32::from_le_bytes(buffer[24..28].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[24..28].copy_from_slice(&flags.to_le_bytes());
+
+    let data: ClientMonitorData = decode(buffer.as_slice()).expect("undefined monitor bits are not fatal");
+
+    assert_ne!(data.monitors[0].flags.bits() & UNDEFINED_BIT, 0);
+    assert_eq!(encode_vec(&data).unwrap(), buffer);
+}
+
+#[test]
 fn to_buffer_correctly_serializes_client_monitor_data_without_monitors() {
     let data = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITHOUT_MONITORS.clone();
     let expected_buffer = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER;
@@ -664,6 +743,24 @@ fn from_buffer_correctly_parses_server_multi_transport_channel_data() {
         *ironrdp_testsuite_core::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK,
         decode(buffer).unwrap()
     );
+}
+
+#[test]
+fn multi_transport_with_undefined_flag_bits_decodes_and_retains_them() {
+    // [MS-RDPBCGR] 2.2.1.3.8's transportFlags list has grown before; an
+    // unknown bit must not fail the GCC exchange. The bit is retained so
+    // re-encoding preserves the wire value.
+    const UNDEFINED_BIT: u32 = 0x0000_0002; // undefined in 2.2.1.3.8
+
+    let mut buffer =
+        ironrdp_testsuite_core::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER.to_vec();
+    let flags = u32::from_le_bytes(buffer[0..4].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[0..4].copy_from_slice(&flags.to_le_bytes());
+
+    let data: MultiTransportChannelData = decode(buffer.as_slice()).expect("undefined transport bits are not fatal");
+
+    assert_ne!(data.flags.bits() & UNDEFINED_BIT, 0);
+    assert_eq!(encode_vec(&data).unwrap(), buffer);
 }
 
 #[test]
@@ -801,6 +898,24 @@ fn from_buffer_correctly_parses_client_security_data() {
     let buffer = CLIENT_SECURITY_DATA_BUFFER.as_ref();
 
     assert_eq!(*CLIENT_SECURITY_DATA, decode(buffer).unwrap());
+}
+
+#[test]
+fn client_security_data_with_undefined_method_bits_decodes_and_retains_them() {
+    // [MS-RDPBCGR] 2.2.1.3.3: encryptionMethods is an advertisement and the
+    // server selects only methods it knows; an unknown bit must not fail the
+    // GCC exchange. The bit is retained so re-encoding preserves the wire
+    // value. The server-selected method in ServerSecurityData stays strict.
+    const UNDEFINED_BIT: u32 = 0x0000_0004; // undefined in 2.2.1.3.3
+
+    let mut buffer = CLIENT_SECURITY_DATA_BUFFER.to_vec();
+    let methods = u32::from_le_bytes(buffer[0..4].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[0..4].copy_from_slice(&methods.to_le_bytes());
+
+    let data: ClientSecurityData = decode(buffer.as_slice()).expect("undefined method bits are not fatal");
+
+    assert_ne!(data.encryption_methods.bits() & UNDEFINED_BIT, 0);
+    assert_eq!(encode_vec(&data).unwrap(), buffer);
 }
 
 #[test]

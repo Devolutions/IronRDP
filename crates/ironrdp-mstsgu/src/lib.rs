@@ -90,6 +90,10 @@ impl fmt::Debug for GwSmartCardCredentials {
 
 #[derive(Clone, Debug)]
 pub struct GwConnectTarget {
+    /// Gateway host with an optional port.
+    ///
+    /// Omitted ports use the HTTPS default of 443.
+    /// Bracket IPv6 literals, such as `[2001:db8::1]:8443`.
     pub gw_endpoint: String,
     pub gw_user: String,
     pub gw_pass: String,
@@ -209,18 +213,6 @@ impl Display for GwErrorKind {
 }
 
 impl core::error::Error for GwErrorKind {}
-
-fn extended_authentication_method(extended_auth: HttpExtendedAuth) -> GwExtendedAuthentication {
-    if extended_auth.contains(HttpExtendedAuth::HTTP_EXTENDED_AUTH_SC) {
-        GwExtendedAuthentication::SmartCard
-    } else if extended_auth.contains(HttpExtendedAuth::HTTP_EXTENDED_AUTH_PAA) {
-        GwExtendedAuthentication::PluggableAuthentication
-    } else if extended_auth.contains(HttpExtendedAuth::HTTP_EXTENDED_AUTH_SSPI_NTLM) {
-        GwExtendedAuthentication::NtlmSspi
-    } else {
-        GwExtendedAuthentication::Unknown(extended_auth.bits())
-    }
-}
 
 struct GwConn {
     client_name: String,
@@ -686,12 +678,6 @@ impl GwConn {
         }
 
         match session_authentication {
-            GwSessionAuthentication::Http if !resp.extended_auth.is_empty() => {
-                return Err(Error::new(
-                    "Handshake",
-                    GwErrorKind::UnsupportedExtendedAuthentication(extended_authentication_method(resp.extended_auth)),
-                ));
-            }
             GwSessionAuthentication::NtlmSspi
                 if !resp
                     .extended_auth

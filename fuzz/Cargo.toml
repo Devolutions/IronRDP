@@ -172,3 +172,24 @@ path = "fuzz_targets/message_decoding_invariants.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "egfx_avc444_decode"
+path = "fuzz_targets/egfx_avc444_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "egfx_zgfx_decompress"
+path = "fuzz_targets/egfx_zgfx_decompress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "egfx_surface_state"
+path = "fuzz_targets/egfx_surface_state.rs"
+test = false
+doc = false
+bench = false

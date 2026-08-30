@@ -1,6 +1,6 @@
 use core::fmt;
 use core::net::{IpAddr, SocketAddr};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::time::Duration;
 #[cfg(feature = "usb")]
 use std::collections::HashMap;
@@ -27,7 +27,7 @@ use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
 use ironrdp_pdu::rdp::capability_sets::{
-    BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, EntropyBits, GeneralExtraFlags,
+    BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, EntropyBits, GeneralExtraFlags, LargePointerSupportFlags,
 };
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
@@ -59,6 +59,7 @@ use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResu
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxServerFactory};
 use crate::handler::RdpServerInputHandler;
+use crate::heartbeat::HeartbeatConfig;
 use crate::rdpei::RdpeiServerFactory;
 #[cfg(feature = "usb")]
 use crate::urbdrc::{
@@ -652,6 +653,7 @@ pub struct RdpServer {
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
+    heartbeat: Option<HeartbeatConfig>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     /// Anti-storm net for [`RdpServerOptions::preempt_existing_session`]: the
     /// peer most recently EVICTED by a takeover, and when it last tried to
@@ -1373,6 +1375,7 @@ impl RdpServer {
             credential_validator: None,
             local_addr: None,
             autodetect: None,
+            heartbeat: None,
             connection_handler,
             recently_evicted: None,
             display_suppressed: display_suppressed.unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
@@ -1747,6 +1750,17 @@ impl RdpServer {
     /// query results with [`rtt_snapshot()`](Self::rtt_snapshot).
     pub fn enable_autodetect(&mut self) {
         self.autodetect = Some(AutoDetectManager::new());
+    }
+
+    /// Enable periodic Server Heartbeat PDUs (MS-RDPBCGR 2.2.16.1).
+    ///
+    /// Heartbeats ride the MCS message channel, so they are only emitted
+    /// when the client requested one AND advertised
+    /// `RNS_UD_CS_SUPPORT_HEARTBEAT_PDU` in its early capability flags, and,
+    /// per the spec's idle-only SHOULD, only when no other PDU went out
+    /// during the previous heartbeat interval.
+    pub fn enable_heartbeat(&mut self, config: HeartbeatConfig) {
+        self.heartbeat = Some(config);
     }
 
     /// Get the latest auto-detect RTT snapshot.
@@ -3153,6 +3167,10 @@ impl RdpServer {
         Ok(RunState::Continue)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "private per-connection entry point; the parameters are the connection's negotiated identifiers"
+    )]
     async fn client_loop<R, W>(
         &mut self,
         reader: &mut Framed<R>,
@@ -3160,6 +3178,7 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
+        client_supports_heartbeat: bool,
         mut encoder: UpdateEncoder,
     ) -> ServerResult<RunState>
     where
@@ -3167,11 +3186,18 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Starting client loop");
+        let heartbeat = if client_supports_heartbeat {
+            self.heartbeat
+        } else {
+            None
+        };
         let mut display_updates = self.display.lock().await.updates().await?;
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
         let mut auto_reconnect_writer = writer.clone();
+        let mut heartbeat_writer = writer.clone();
+        let write_counter = writer.write_counter();
         let ev_receiver = Arc::clone(&self.ev_receiver);
         let s = Rc::new(Mutex::new(self));
 
@@ -3179,8 +3205,19 @@ impl RdpServer {
         let dispatch_pdu = async move {
             loop {
                 let (action, bytes) = reader.read_pdu().await.map_err(|e| ServerError::io("read pdu", e))?;
+                // D8: per-PDU lock-acquisition + dispatch timing. The `this`
+                // mutex is shared with dispatch_events; when an outbound
+                // event batch is in flight, this lock wait is the latency
+                // that a FrameAcknowledge sees before it reaches its
+                // handler. Log when the dispatch itself or the lock wait
+                // exceeds 50ms.
+                let pdu_len = bytes.len();
+                let lock_start = Instant::now();
                 let mut this = this.lock().await;
-                match this
+                let lock_wait_ms = u64::try_from(lock_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+                let dispatch_start = Instant::now();
+                let result = this
                     .dispatch_pdu(
                         action,
                         bytes,
@@ -3189,8 +3226,28 @@ impl RdpServer {
                         user_channel_id,
                         message_channel_id,
                     )
-                    .await?
-                {
+                    .await?;
+                let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+                if lock_wait_ms >= 50 {
+                    tracing::warn!(
+                        pdu_len,
+                        lock_wait_ms,
+                        dispatch_ms,
+                        "dispatch_pdu delayed acquiring this.lock, contended with outbound batch (dispatch_events/dispatch_display)"
+                    );
+                } else if dispatch_ms >= 50 {
+                    tracing::warn!(
+                        pdu_len,
+                        lock_wait_ms,
+                        dispatch_ms,
+                        "dispatch_pdu ran long after acquiring this.lock immediately, handler or runtime stall, not lock contention"
+                    );
+                } else {
+                    tracing::debug!(pdu_len, lock_wait_ms, dispatch_ms, "dispatch_pdu");
+                }
+
+                match result {
                     RunState::Continue => continue,
                     state => break Ok(state),
                 }
@@ -3245,8 +3302,19 @@ impl RdpServer {
                 while let Ok(ev) = ev_receiver.try_recv() {
                     events.push(ev);
                 }
+
+                // D7: per-batch dispatch_events timing. The events Vec can
+                // grow up to 100+ entries; dispatch_server_events holds the
+                // `this` mutex AND the SharedWriter mutex for the full
+                // batch. Log batch size + total dispatch time so operators
+                // can see when an event batch ties up both locks.
+                let batch_size = events.len();
+                let lock_start = Instant::now();
                 let mut this = this.lock().await;
-                match this
+                let lock_wait_ms = u64::try_from(lock_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+                let dispatch_start = Instant::now();
+                let result = this
                     .dispatch_server_events(
                         &mut events,
                         &mut event_writer,
@@ -3254,8 +3322,21 @@ impl RdpServer {
                         user_channel_id,
                         message_channel_id,
                     )
-                    .await?
-                {
+                    .await?;
+                let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+                if lock_wait_ms >= 50 || dispatch_ms >= 100 {
+                    tracing::warn!(
+                        batch_size,
+                        lock_wait_ms,
+                        dispatch_ms,
+                        "dispatch_events batch stalled, long write or lock contention"
+                    );
+                } else if batch_size > 1 {
+                    tracing::debug!(batch_size, lock_wait_ms, dispatch_ms, "dispatch_events batch");
+                }
+
+                match result {
                     RunState::Continue => continue,
                     state => break Ok(state),
                 }
@@ -3275,11 +3356,50 @@ impl RdpServer {
             }
         };
 
+        let send_heartbeats = async move {
+            let (Some(config), Some(message_channel_id)) = (heartbeat, message_channel_id) else {
+                return core::future::pending::<ServerResult<RunState>>().await;
+            };
+            // 2.2.16.1: `period` is in seconds. A zero period is meaningless
+            // (and would panic tokio's interval), so it is bumped to one.
+            let period = Duration::from_secs(u64::from(config.period_secs.max(1)));
+            let mut interval = tokio::time::interval(period);
+            // A stalled write (TCP back-pressure) can hold this future past
+            // several tick deadlines; Burst (the default) would then fire the
+            // missed ticks back-to-back and emit a run of consecutive
+            // heartbeats on an otherwise idle link. Skip fires at the next
+            // period boundary instead.
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await; // first tick completes immediately; real waits start below
+
+            let mut writes_at_last_tick = write_counter.load(Ordering::Relaxed);
+            loop {
+                interval.tick().await;
+                let writes_now = write_counter.load(Ordering::Relaxed);
+                if writes_now != writes_at_last_tick {
+                    // 2.2.16.1: heartbeats SHOULD only be sent when no other
+                    // PDU went out in the interval; ordinary traffic doubles
+                    // as the liveness signal.
+                    writes_at_last_tick = writes_now;
+                    continue;
+                }
+                let data = encode_heartbeat(&config, message_channel_id, user_channel_id)?;
+                heartbeat_writer
+                    .write_all(&data)
+                    .await
+                    .map_err(|e| ServerError::io("send heartbeat", e))?;
+                // Re-read so the heartbeat's own write does not read as
+                // foreign traffic on the next tick.
+                writes_at_last_tick = write_counter.load(Ordering::Relaxed);
+            }
+        };
+
         let state = tokio::select!(
             state = dispatch_pdu => state,
             state = dispatch_display => state,
             state = dispatch_events => state,
             state = refresh_auto_reconnect_cookie => state,
+            state = send_heartbeats => state,
         );
 
         debug!("End of client loop: {state:?}");
@@ -3379,6 +3499,10 @@ impl RdpServer {
         let mut update_codecs = UpdateEncoderCodecs::new();
         let mut surface_flags = CmdFlags::empty();
         let mut pointer_cache_size: u16 = 0;
+        // Absence means the client did not send a Large Pointer Capability Set at all,
+        // which per MS-RDPBCGR 2.2.7.2.7 leaves the pointer size ceiling at 32x32 (the
+        // base Color/New Pointer Update limit with no large-pointer flags set).
+        let mut large_pointer_flags = LargePointerSupportFlags::empty();
         for c in result.capabilities {
             match c {
                 CapabilitySet::General(c) => {
@@ -3472,6 +3596,14 @@ impl RdpServer {
                     // else in this crate populates that cache via the Color Pointer Update.
                     pointer_cache_size = p.pointer_cache_size;
                 }
+                CapabilitySet::LargePointer(lp) => {
+                    // MS-RDPBCGR 2.2.7.2.7: LARGE_POINTER_FLAG_96x96 raises the Color/New
+                    // Pointer Update ceiling from 32x32 to 96x96; LARGE_POINTER_FLAG_384x384
+                    // additionally unlocks the dedicated Fast-Path Large Pointer Update, up to
+                    // 384x384. `UpdateEncoder` uses these flags to decide which pointer
+                    // updates it can send at all, and at what size.
+                    large_pointer_flags = lp.flags;
+                }
                 _ => {}
             }
         }
@@ -3483,6 +3615,7 @@ impl RdpServer {
             update_codecs,
             self.opts.max_request_size,
             pointer_cache_size,
+            large_pointer_flags,
         )?;
 
         self.send_next_auto_reconnect_cookie(writer, result.io_channel_id, result.user_channel_id)
@@ -3495,6 +3628,9 @@ impl RdpServer {
                 result.io_channel_id,
                 result.user_channel_id,
                 result.message_channel_id,
+                result
+                    .client_early_capability_flags
+                    .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_HEART_BEAT_PDU),
                 encoder,
             )
             .await?;
@@ -3833,6 +3969,30 @@ fn encode_autodetect_request(
     encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
 }
 
+/// Encode a server-initiated Heartbeat PDU for the MCS message channel.
+///
+/// Like auto-detect (see [`encode_autodetect_request`]), heartbeats are framed
+/// by a Basic Security Header (SEC_HEARTBEAT) and ride the message channel,
+/// not a Share Control / Share Data header on the I/O channel
+/// (MS-RDPBCGR 2.2.16.1).
+fn encode_heartbeat(config: &HeartbeatConfig, message_channel_id: u16, user_channel_id: u16) -> ServerResult<Vec<u8>> {
+    let pdu = rdp::heartbeat::HeartbeatPdu {
+        security_header: rdp::headers::BasicSecurityHeader {
+            flags: rdp::headers::BasicSecurityHeaderFlags::HEARTBEAT,
+        },
+        period: config.period_secs,
+        count1: config.warning_count,
+        count2: config.reconnect_count,
+    };
+    let user_data = encode_vec(&pdu).map_err(ServerError::encode)?.into();
+    let mcs_pdu = SendDataIndication {
+        initiator_id: user_channel_id,
+        channel_id: message_channel_id,
+        user_data,
+    };
+    encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
+}
+
 /// Encode a Share Data PDU wrapped in a Share Control header and carried in an
 /// MCS Send Data Indication on the I/O channel.
 ///
@@ -3922,12 +4082,18 @@ async fn send_access_denied(
 
 struct SharedWriter<'w, W: FramedWrite> {
     writer: Rc<Mutex<&'w mut W>>,
+    /// Count of successful `write_all` calls across all clones. The heartbeat
+    /// loop compares it across ticks to honor 2.2.16.1's idle-only SHOULD: a
+    /// changed count means ordinary traffic already served as the liveness
+    /// signal for that interval.
+    writes: Arc<AtomicU64>,
 }
 
 impl<W: FramedWrite> Clone for SharedWriter<'_, W> {
     fn clone(&self) -> Self {
         Self {
             writer: Rc::clone(&self.writer),
+            writes: Arc::clone(&self.writes),
         }
     }
 }
@@ -3942,11 +4108,42 @@ where
         Self: 'write;
 
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
-        Box::pin(async {
+        Box::pin(async move {
+            // D1: time both the lock acquisition and the actual write.
+            // Three concurrent tasks (dispatch_pdu, dispatch_display,
+            // dispatch_events) share this Rc<Mutex<W>>. When the kernel TCP
+            // send buffer fills (slow client), write_all blocks while still
+            // holding the mutex — starving the other two tasks. Logging
+            // both phases tells us whether a stall is "waiting in line for
+            // the writer" (lock-wait) or "TLS write held up by TCP back-
+            // pressure" (write-time).
+            let len = buf.len();
+            let wait_start = Instant::now();
             let mut writer = self.writer.lock().await;
+            let wait_ms = u64::try_from(wait_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-            writer.write_all(buf).await?;
-            Ok(())
+            let write_start = Instant::now();
+            let res = writer.write_all(buf).await;
+            let write_ms = u64::try_from(write_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+            // Threshold: 50ms total budget for one write_all. Anything above
+            // is operationally interesting on a healthy LAN. Logged at WARN
+            // when stalled, DEBUG when fast (so wire-time samples are still
+            // visible during routine debugging).
+            if wait_ms + write_ms >= 50 {
+                tracing::warn!(
+                    bytes = len,
+                    lock_wait_ms = wait_ms,
+                    write_ms,
+                    "SharedWriter.write_all stalled, possible TCP back-pressure or writer-mutex contention"
+                );
+            } else {
+                tracing::debug!(bytes = len, lock_wait_ms = wait_ms, write_ms, "SharedWriter.write_all");
+            }
+            if res.is_ok() {
+                self.writes.fetch_add(1, Ordering::Relaxed);
+            }
+            res
         })
     }
 }
@@ -3955,7 +4152,12 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
     fn new(writer: &'a mut W) -> Self {
         Self {
             writer: Rc::new(Mutex::new(writer)),
+            writes: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn write_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.writes)
     }
 }
 

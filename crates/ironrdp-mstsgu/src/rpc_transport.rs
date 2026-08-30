@@ -5,6 +5,7 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use crate::{Error, GwErrorKind};
 
 const MAX_RESPONSE_HEADERS: usize = 16 * 1024;
+const MAX_AUTH_RESPONSE_BODY: u32 = 16 * 1024;
 
 /// The TS Proxy RPC interface UUID advertised in `Pragma: ResourceTypeUuid`.
 ///
@@ -37,6 +38,137 @@ pub(crate) struct RpchRequestHead<'a> {
     /// See [MS-RPCH] 2.1.2.1.1 and 2.1.2.1.2.
     pub(crate) session_id: Option<&'a str>,
     pub(crate) expect_continue: bool,
+}
+
+/// An RPCH IN request whose streaming body is committed after authentication.
+///
+/// Authentication probes use a zero-length request body.
+/// The final authenticated request reserves the full body length before the caller writes any RPC bytes.
+pub(crate) struct RpchInRequest<S> {
+    stream: S,
+    host: String,
+    target: String,
+    remaining: u32,
+    body_committed: bool,
+}
+
+impl<S> RpchInRequest<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    /// Opens the IN channel with a zero-length authentication probe.
+    pub(crate) async fn open(
+        mut stream: S,
+        host: &str,
+        target: &str,
+        authorization: Option<&str>,
+    ) -> Result<Self, Error> {
+        write_rpch_request_head(
+            &mut stream,
+            RpchRequestHead {
+                method: "RPC_IN_DATA",
+                host,
+                target,
+                content_length: 0,
+                authorization,
+                cookie: None,
+                session_id: None,
+                expect_continue: false,
+            },
+        )
+        .await?;
+
+        Ok(Self {
+            stream,
+            host: host.to_owned(),
+            target: target.to_owned(),
+            remaining: 0,
+            body_committed: false,
+        })
+    }
+
+    /// Reads the response to the current request head.
+    ///
+    /// Bounded authentication challenge bodies are drained before a retry can reuse the connection.
+    pub(crate) async fn receive_response(&mut self) -> Result<RpchResponseHead, Error> {
+        let response = read_rpch_response_head(&mut self.stream).await?;
+        if response.status == 401 {
+            let length = response.content_length.ok_or_else(|| {
+                Error::new(
+                    "rpch authentication response missing content length",
+                    GwErrorKind::Decode,
+                )
+            })?;
+            if length > MAX_AUTH_RESPONSE_BODY {
+                return Err(Error::new(
+                    "rpch authentication response body exceeds limit",
+                    GwErrorKind::Decode,
+                ));
+            }
+            drain_body(&mut self.stream, length).await?;
+        }
+        Ok(response)
+    }
+
+    /// Retries the request head after an authentication challenge.
+    ///
+    /// A nonzero `content_length` commits the streaming body.
+    pub(crate) async fn retry(mut self, authorization: Option<&str>, content_length: u32) -> Result<Self, Error> {
+        if self.body_committed {
+            return Err(Error::new("rpch IN retry after body", GwErrorKind::Connect));
+        }
+
+        write_rpch_request_head(
+            &mut self.stream,
+            RpchRequestHead {
+                method: "RPC_IN_DATA",
+                host: &self.host,
+                target: &self.target,
+                content_length,
+                authorization,
+                cookie: None,
+                session_id: None,
+                expect_continue: false,
+            },
+        )
+        .await?;
+        self.remaining = content_length;
+        self.body_committed = content_length != 0;
+
+        Ok(self)
+    }
+
+    /// Writes bytes into the committed streaming body.
+    pub(crate) async fn write_body(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        if !self.body_committed {
+            return Err(Error::new("rpch IN body before authentication", GwErrorKind::Connect));
+        }
+
+        let length = u32::try_from(bytes.len()).map_err(|_| Error::new("rpch IN body length", GwErrorKind::Encode))?;
+        if length > self.remaining {
+            return Err(Error::new("rpch IN body exceeds content length", GwErrorKind::Encode));
+        }
+
+        self.stream
+            .write_all(bytes)
+            .await
+            .map_err(|error| custom_err!("write rpch IN body", error))?;
+        self.remaining -= length;
+
+        Ok(())
+    }
+
+    pub(crate) const fn remaining(&self) -> u32 {
+        self.remaining
+    }
+
+    /// Flushes buffered body bytes to the gateway.
+    pub(crate) async fn flush(&mut self) -> Result<(), Error> {
+        self.stream
+            .flush()
+            .await
+            .map_err(|error| custom_err!("flush rpch IN body", error))
+    }
 }
 
 /// Writes an RPCH IN or OUT channel request head without committing any body bytes.
@@ -137,7 +269,10 @@ fn validate_request_head(head: &RpchRequestHead<'_>) -> Result<Option<uuid::Uuid
         .map_err(|_| Error::new("invalid RPCH session ID", GwErrorKind::Encode))?;
 
     match head.method {
-        "RPC_IN_DATA" if !(MIN_IN_CONTENT_LENGTH..=MAX_IN_CONTENT_LENGTH).contains(&head.content_length) => {
+        "RPC_IN_DATA"
+            if head.content_length != 0
+                && !(MIN_IN_CONTENT_LENGTH..=MAX_IN_CONTENT_LENGTH).contains(&head.content_length) =>
+        {
             Err(Error::new("invalid RPCH IN content length", GwErrorKind::Encode))
         }
         "RPC_OUT_DATA" if !matches!(head.content_length, 76 | 120) => {

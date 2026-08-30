@@ -1676,6 +1676,10 @@ fn create_gcc_blocks<'a>(
                         early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU;
                     }
 
+                    if config.support_dyn_vc_gfx_protocol {
+                        early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
+                    }
+
                     Some(early_capability_flags)
                 },
                 dig_product_id: Some(config.dig_product_id.clone()),
@@ -1884,6 +1888,7 @@ mod tests {
             enable_server_pointer: false,
             pointer_software_rendering: false,
             multitransport_flags: None,
+            support_dyn_vc_gfx_protocol: false,
         };
 
         let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
@@ -1939,6 +1944,7 @@ mod tests {
             enable_server_pointer: false,
             pointer_software_rendering: false,
             multitransport_flags: None,
+            support_dyn_vc_gfx_protocol: false,
         };
 
         let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
@@ -2003,6 +2009,7 @@ mod tests {
             enable_server_pointer: false,
             pointer_software_rendering: false,
             multitransport_flags: None,
+            support_dyn_vc_gfx_protocol: false,
         };
 
         let blocks = create_gcc_blocks(

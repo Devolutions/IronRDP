@@ -8,6 +8,7 @@ type Error = ironrdp_error::Error<GwErrorKind>;
 
 #[derive(Debug)]
 enum GwErrorKind {
+    Connect,
     PacketEof,
     Custom,
     Encode,
@@ -32,6 +33,7 @@ impl GwErrorExt for Error {
 impl fmt::Display for GwErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::Connect => "connection error",
             Self::PacketEof => "packet EOF",
             Self::Custom => "custom",
             Self::Encode => "encode",
@@ -212,7 +214,7 @@ async fn request_head_rejects_invalid_values_before_writing() {
 #[tokio::test]
 async fn request_head_rejects_invalid_rpch_content_lengths() {
     for (method, content_length) in [
-        ("RPC_IN_DATA", 128 * 1024 - 1),
+        ("RPC_IN_DATA", 1),
         ("RPC_IN_DATA", 2 * 1024 * 1024 * 1024 + 1),
         ("RPC_OUT_DATA", 75),
         ("RPC_OUT_DATA", 77),
@@ -236,6 +238,95 @@ async fn request_head_rejects_invalid_rpch_content_lengths() {
             .is_err()
         );
     }
+}
+
+#[tokio::test]
+async fn in_authentication_probe_precedes_the_committed_body() {
+    let (client, mut server) = tokio::io::duplex(4096);
+    let server_task = tokio::spawn(async move {
+        assert!(read_head(&mut server).await.contains("Content-Length: 0"));
+        server
+            .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 4\r\n\r\ndeny")
+            .await
+            .expect("write authentication challenge");
+        let request = read_head(&mut server).await;
+        assert!(request.contains("Content-Length: 131072"));
+        assert!(request.contains("Authorization: NTLM token"));
+        let mut body = [0; 4];
+        server.read_exact(&mut body).await.expect("read committed body");
+        assert_eq!(body, *b"B1!!");
+    });
+
+    let mut request = rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", None)
+        .await
+        .expect("open authentication probe");
+    assert!(request.write_body(b"B1!!").await.is_err());
+    assert_eq!(request.receive_response().await.expect("read challenge").status, 401);
+    request = request
+        .retry(Some("NTLM token"), 128 * 1024)
+        .await
+        .expect("commit authenticated request");
+    request.write_body(b"B1!!").await.expect("write body");
+    assert_eq!(request.remaining(), 128 * 1024 - 4);
+    assert!(request.write_body(&vec![0; 128 * 1024]).await.is_err());
+    request.flush().await.expect("flush body");
+    server_task.await.expect("join server");
+}
+
+#[tokio::test]
+async fn in_authentication_response_requires_a_bounded_body() {
+    for response in [
+        b"HTTP/1.1 401 Unauthorized\r\n\r\n".as_slice(),
+        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 16385\r\n\r\n",
+    ] {
+        let (client, mut server) = tokio::io::duplex(4096);
+        let server_task = tokio::spawn(async move {
+            server.write_all(response).await.expect("write authentication response");
+        });
+
+        let mut request = rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", None)
+            .await
+            .expect("open authentication probe");
+        let error = request
+            .receive_response()
+            .await
+            .expect_err("reject unbounded authentication response");
+        assert_eq!(error.kind().to_string(), "decode");
+        server_task.await.expect("join server");
+    }
+}
+
+#[tokio::test]
+async fn in_authentication_response_drains_body_at_limit() {
+    let (client, mut server) = tokio::io::duplex(32 * 1024);
+    let server_task = tokio::spawn(async move {
+        server
+            .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 16384\r\n\r\n")
+            .await
+            .expect("write authentication response head");
+        server
+            .write_all(&[b'x'; 16 * 1024])
+            .await
+            .expect("write authentication response body");
+        server
+            .write_all(b"HTTP/1.1 200 OK\r\n\r\n")
+            .await
+            .expect("write following response");
+    });
+
+    let mut request = rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", None)
+        .await
+        .expect("open authentication probe");
+    assert_eq!(request.receive_response().await.expect("read challenge").status, 401);
+    assert_eq!(
+        request
+            .receive_response()
+            .await
+            .expect("read following response")
+            .status,
+        200
+    );
+    server_task.await.expect("join server");
 }
 
 #[tokio::test]

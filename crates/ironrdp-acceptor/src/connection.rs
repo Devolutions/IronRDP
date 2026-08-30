@@ -36,6 +36,7 @@ pub struct Acceptor {
     keyboard_type: gcc::KeyboardType,
     ime_file_name: String,
     multitransport_flags: gcc::MultiTransportFlags,
+    early_capability_flags: gcc::ClientEarlyCapabilityFlags,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
@@ -113,6 +114,13 @@ pub struct AcceptorResult {
     ///
     /// Populated for East Asian IME-based input locales; empty otherwise.
     pub ime_file_name: String,
+    /// Early capability flags announced by the client in its GCC Client Core
+    /// Data (section 2.2.1.3.2, `earlyCapabilityFlags`).
+    ///
+    /// Empty when the client did not send the optional field. Servers use it
+    /// to gate optional features the client has to opt into, e.g. Server
+    /// Heartbeat PDUs (`RNS_UD_CS_SUPPORT_HEARTBEAT_PDU`, section 2.2.16.1).
+    pub client_early_capability_flags: gcc::ClientEarlyCapabilityFlags,
     /// Multitransport (MS-RDPEMT) capability flags announced by the client in
     /// its GCC `MultiTransportChannelData` block (section 2.2.1.3.8).
     ///
@@ -156,6 +164,7 @@ impl Acceptor {
             keyboard_type: gcc::KeyboardType(0),
             ime_file_name: String::new(),
             multitransport_flags: gcc::MultiTransportFlags::empty(),
+            early_capability_flags: gcc::ClientEarlyCapabilityFlags::empty(),
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
@@ -244,6 +253,7 @@ impl Acceptor {
             keyboard_type: consumed.keyboard_type,
             ime_file_name: consumed.ime_file_name,
             multitransport_flags: consumed.multitransport_flags,
+            early_capability_flags: consumed.early_capability_flags,
             server_capabilities: consumed.server_capabilities,
             static_channels,
             saved_for_reactivation,
@@ -343,6 +353,7 @@ impl Acceptor {
                 keyboard_type: self.keyboard_type,
                 ime_file_name: self.ime_file_name.clone(),
                 multitransport_flags: self.multitransport_flags,
+                client_early_capability_flags: self.early_capability_flags,
                 reactivation: self.reactivation,
                 credentials: self.received_credentials.take(),
                 auto_reconnect: self.received_auto_reconnect.take(),
@@ -605,6 +616,7 @@ impl Sequence for Acceptor {
 
                 let gcc_blocks = settings_initial.conference_create_request.into_gcc_blocks();
                 let early_capability = gcc_blocks.core.optional_data.early_capability_flags;
+                self.early_capability_flags = early_capability.unwrap_or(gcc::ClientEarlyCapabilityFlags::empty());
                 let client_wants_message_channel = gcc_blocks.message_channel.is_some();
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
                 self.keyboard_type = gcc_blocks.core.keyboard_type;

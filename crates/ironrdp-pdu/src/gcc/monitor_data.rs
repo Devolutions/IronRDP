@@ -116,8 +116,11 @@ impl<'de> Decode<'de> for Monitor {
         let top = src.read_i32();
         let right = src.read_i32();
         let bottom = src.read_i32();
-        let flags = MonitorFlags::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_field_err!("flags", "invalid monitor flags", in: src))?;
+        // [MS-RDPBCGR] 2.2.1.3.6.1 defines only TS_MONITOR_PRIMARY here, and
+        // 3.3.5.3.3 never asks the server to validate the bit set; retain
+        // unknown bits (crate-wide policy since #1144) rather than refusing a
+        // multimon client at GCC.
+        let flags = MonitorFlags::from_bits_retain(src.read_u32());
 
         Ok(Self {
             left,

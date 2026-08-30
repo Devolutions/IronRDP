@@ -149,8 +149,13 @@ impl<'de> Decode<'de> for ClientInfo {
         let code_page = src.read_u32();
         let flags_with_compression_type = src.read_u32();
 
-        let flags = ClientInfoFlags::from_bits(flags_with_compression_type & !COMPRESSION_TYPE_MASK)
-            .ok_or_else(|| invalid_field_err!("flags", "invalid ClientInfoFlags", in: src))?;
+        // [MS-RDPBCGR] 3.3.5.3.11 asks the server to validate lengths and to
+        // test the UNICODE flag, never to validate this bit set, and the
+        // INFO_* list has grown several times; refusing unknown bits would
+        // reject newer clients at the login step. Retain them instead
+        // (crate-wide policy since #1144) so re-encoding preserves the wire
+        // value.
+        let flags = ClientInfoFlags::from_bits_retain(flags_with_compression_type & !COMPRESSION_TYPE_MASK);
         let compression_type = CompressionType::from_u32((flags_with_compression_type & COMPRESSION_TYPE_MASK) >> 9)
             .ok_or_else(|| invalid_field_err!("flags", "invalid CompressionType", in: src))?;
 

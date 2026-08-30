@@ -8,7 +8,7 @@ use std::io::Write as _;
 use std::time::Instant;
 
 use anyhow::Context as _;
-use ironrdp::pdu::rdp::capability_sets::{CmdFlags, EntropyBits};
+use ironrdp::pdu::rdp::capability_sets::{CmdFlags, EntropyBits, LargePointerSupportFlags};
 use ironrdp::server::bench::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 use ironrdp::server::{BitmapUpdate, DesktopSize, DisplayUpdate, PixelFormat, RdpServerDisplayUpdates};
 use tokio::fs::File;
@@ -59,15 +59,17 @@ async fn main() -> Result<(), anyhow::Error> {
         OptCodec::QoiZ => update_codecs.set_qoiz(Some(0)),
     };
 
-    // u16::MAX: this benchmark replays a fixed update file and isn't exercising the
-    // client capability gate, so don't let a default of 0 silently start dropping any
-    // pointer updates the replay file happens to contain.
+    // u16::MAX / LargePointerSupportFlags::all(): this benchmark replays a fixed update
+    // file and isn't exercising the client capability gates, so don't let a
+    // no-capability default silently start dropping any pointer updates the replay
+    // file happens to contain.
     let mut encoder = UpdateEncoder::new(
         DesktopSize { width, height },
         flags,
         update_codecs,
         8 * 1024 * 1024,
         u16::MAX,
+        LargePointerSupportFlags::all(),
     )
     .context("failed to initialize update encoder")?;
 

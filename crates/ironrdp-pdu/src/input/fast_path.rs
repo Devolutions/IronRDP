@@ -198,8 +198,13 @@ impl<'de> Decode<'de> for FastPathInputEvent {
             FastpathInputEventType::ScanCode => {
                 ensure_size!(in: src, size: 1);
                 let code = src.read_u8();
-                let flags = KeyboardFlags::from_bits(flags)
-                    .ok_or_else(|| invalid_field_err!("flags", "input keyboard flags unsupported", in: src))?;
+                // Retain unknown eventFlags bits (crate-wide policy since
+                // #1144): the slow-path decoder for the same keystroke
+                // already does (scan_code.rs), and a rejection here is
+                // session-fatal mid-use. [MS-RDPBCGR] 3.3.5.8.2's SHOULD-drop
+                // covers unknown event TYPES, which stays enforced above,
+                // not unknown flag bits.
+                let flags = KeyboardFlags::from_bits_retain(flags);
                 FastPathInputEvent::KeyboardEvent(flags, code)
             }
             FastpathInputEventType::Mouse => {
@@ -215,15 +220,16 @@ impl<'de> Decode<'de> for FastPathInputEvent {
                 FastPathInputEvent::MouseEventRel(mouse_event)
             }
             FastpathInputEventType::Sync => {
-                let flags = SynchronizeFlags::from_bits(flags)
-                    .ok_or_else(|| invalid_field_err!("flags", "input synchronize flags unsupported", in: src))?;
+                // Same rationale as ScanCode above; the slow-path sync
+                // decoder (sync.rs) already retains unknown toggle bits.
+                let flags = SynchronizeFlags::from_bits_retain(flags);
                 FastPathInputEvent::SyncEvent(flags)
             }
             FastpathInputEventType::Unicode => {
                 ensure_size!(in: src, size: 2);
                 let code = src.read_u16();
-                let flags = KeyboardFlags::from_bits(flags)
-                    .ok_or_else(|| invalid_field_err!("flags", "input keyboard flags unsupported", in: src))?;
+                // Same rationale as ScanCode above.
+                let flags = KeyboardFlags::from_bits_retain(flags);
                 FastPathInputEvent::UnicodeKeyboardEvent(flags, code)
             }
             FastpathInputEventType::QoeTimestamp => {
