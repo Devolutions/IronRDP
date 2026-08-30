@@ -295,28 +295,39 @@ async fn extended_sspi_ntlm_sends_an_initial_token_and_rejects_an_empty_challeng
 }
 
 #[tokio::test]
-async fn unsupported_extended_authentication_is_reported_precisely() {
+async fn ordinary_http_authentication_ignores_advertised_extended_authentication_capabilities() {
     let (out_client, out_server) = tokio::io::duplex(4096);
     let (in_client, in_server) = tokio::io::duplex(4096);
     let out_server = tokio::spawn(mock_out_server(
         out_server,
-        vec![packet(2, &handshake_response_with_extended_auth(0, 0x0001))],
+        vec![
+            packet(2, &handshake_response_with_extended_auth(0, 0x0003)),
+            packet(5, &tunnel_response(0, &[])),
+            packet(7, &control_response(0)),
+            packet(9, &control_response(0)),
+        ],
     ));
     let in_server = tokio::spawn(async move {
         let service = service_fn(move |mut request: Request<hyper::body::Incoming>| async move {
+            assert_eq!(request.method(), "RDG_IN_DATA");
             if request.headers().get("content-type").is_none() {
                 return Ok::<_, Infallible>(response(StatusCode::OK, Bytes::new()));
             }
-            let handshake = request
-                .body_mut()
-                .frame()
-                .await
-                .expect("handshake frame")
-                .expect("handshake frame result")
-                .into_data()
-                .expect("handshake data frame");
-            assert_eq!(packet_type(&handshake), 1);
-            assert_eq!(&handshake[12..14], &0u16.to_le_bytes());
+
+            for expected_packet_type in [1, 4, 6, 8] {
+                let frame = request
+                    .body_mut()
+                    .frame()
+                    .await
+                    .expect("IN request frame")
+                    .expect("IN request frame result")
+                    .into_data()
+                    .expect("IN request data frame");
+                assert_eq!(packet_type(&frame), expected_packet_type);
+                if expected_packet_type == 1 {
+                    assert_eq!(&frame[12..14], &0u16.to_le_bytes());
+                }
+            }
             Ok::<_, Infallible>(response(StatusCode::OK, Bytes::new()))
         });
         http1::Builder::new()
@@ -328,14 +339,68 @@ async fn unsupported_extended_authentication_is_reported_precisely() {
     let transport = GatewayTransport::connect(out_client, in_client)
         .await
         .expect("connect transport");
-    let error = match transport.connect_tunnel(test_target(), "client.test", 3389, None).await {
-        Ok(_) => panic!("unsupported extended authentication"),
+    let client = transport
+        .connect_tunnel(test_target(), "client.test", 3389, None)
+        .await
+        .expect("connect tunnel");
+
+    drop(client);
+    out_server.await.expect("OUT task");
+    in_server.await.expect("IN task");
+}
+
+#[tokio::test]
+async fn extended_sspi_ntlm_requires_advertised_sspi_ntlm_capability() {
+    let (out_client, out_server) = tokio::io::duplex(4096);
+    let (in_client, in_server) = tokio::io::duplex(4096);
+    let out_server = tokio::spawn(mock_out_server(
+        out_server,
+        vec![packet(2, &handshake_response_with_extended_auth(0, 0x0003))],
+    ));
+    let in_server = tokio::spawn(async move {
+        let service = service_fn(move |mut request: Request<hyper::body::Incoming>| async move {
+            assert_eq!(request.method(), "RDG_IN_DATA");
+            if request.headers().get("content-type").is_none() {
+                return Ok::<_, Infallible>(response(StatusCode::OK, Bytes::new()));
+            }
+
+            let handshake = request
+                .body_mut()
+                .frame()
+                .await
+                .expect("handshake frame")
+                .expect("handshake frame result")
+                .into_data()
+                .expect("handshake data frame");
+            assert_eq!(packet_type(&handshake), 1);
+            assert_eq!(&handshake[12..14], &0x0004u16.to_le_bytes());
+            Ok::<_, Infallible>(response(StatusCode::OK, Bytes::new()))
+        });
+        http1::Builder::new()
+            .serve_connection(TokioIo::new(in_server), service)
+            .await
+            .expect("serve IN");
+    });
+
+    let transport = GatewayTransport::connect(out_client, in_client)
+        .await
+        .expect("connect transport");
+    let error = match transport
+        .connect_tunnel_with_session_authentication(
+            test_target(),
+            "client.test",
+            3389,
+            GwSessionAuthentication::NtlmSspi,
+        )
+        .await
+    {
+        Ok(_) => panic!("missing SSPI_NTLM capability"),
         Err(error) => error,
     };
 
     assert!(matches!(
         error.kind(),
-        GwErrorKind::UnsupportedExtendedAuthentication(GwExtendedAuthentication::SmartCard)
+        GwErrorKind::UnsupportedExtendedAuthentication(GwExtendedAuthentication::NtlmSspi)
     ));
     out_server.await.expect("OUT task");
     in_server.await.expect("IN task");
