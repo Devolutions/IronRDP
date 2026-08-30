@@ -19,7 +19,7 @@ test = false
 [[test]]
 name = "http_auth"
 path = "tests/http_auth.rs"
-required-features = ["native-tls"]
+required-features = ["native-tls", "test-support"]
 
 [[test]]
 name = "udp"
@@ -72,7 +72,7 @@ required-features = ["native-tls", "test-support"]
 [features]
 default = []
 rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
-native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls"]
+native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls", "dep:windows"]
 test-support = ["tokio/io-util"]
 smartcard = [
     "sspi/scard",
@@ -81,7 +81,6 @@ smartcard = [
     "dep:picky-asn1-der",
     "dep:picky-asn1-x509",
 ]
-
 [dependencies]
 base64 = "0.22"
 bitflags = "2.11"
@@ -112,4 +111,4 @@ tokio-native-tls = "0.3"
 workspace = true
 
 [target."cfg(windows)".dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials"], optional = true }

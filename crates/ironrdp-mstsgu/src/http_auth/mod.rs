@@ -5,7 +5,7 @@
 //! Pure NTLM is used when the server only offers the NTLM scheme.
 
 #[cfg(all(windows, feature = "native-tls"))]
-mod native_http_auth;
+pub(crate) mod native_http_auth;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;

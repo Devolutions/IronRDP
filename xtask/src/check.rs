@@ -243,12 +243,17 @@ pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
     .run()?;
     cmd!(
         sh,
-        "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls --locked --no-run"
+        "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls,test-support --locked --no-run"
     )
     .run()?;
     cmd!(
         sh,
-        "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls,smartcard --locked --no-run"
+        "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls,smartcard,test-support --locked --no-run"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-mstsgu --test packet_io --features native-tls,test-support --locked --no-run"
     )
     .run()?;
     println!("All good!");
@@ -265,12 +270,17 @@ pub fn tests_run(sh: &Shell) -> anyhow::Result<()> {
     .run()?;
     cmd!(
         sh,
-        "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls --locked"
+        "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls,test-support --locked"
     )
     .run()?;
     cmd!(
         sh,
-        "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls,smartcard --locked"
+        "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls,smartcard,test-support --locked"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-mstsgu --test packet_io --features native-tls,test-support --locked"
     )
     .run()?;
     println!("All good!");

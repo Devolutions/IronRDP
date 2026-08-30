@@ -4,6 +4,8 @@ use hyper::body::Bytes;
 use tokio::io::AsyncWriteExt as _;
 
 use crate::http_auth::basic_authorization;
+#[cfg(all(windows, feature = "native-tls"))]
+use crate::http_auth::native_http_auth::NativeHttpAuth as NativeHttpAuthInner;
 use crate::packet_io::{
     GatewayTransport as NetworkGatewayTransport, gateway_endpoint_is_valid as endpoint_is_valid,
     gateway_endpoint_summary as endpoint_summary, open_gateway_transport, open_test_transport, parse_proxy_url,
@@ -13,6 +15,24 @@ use crate::{ConsentFallback, Error, GwClient, GwConnectTarget, GwConsentCallback
 
 /// In-memory gateway transport used by the registered integration tests.
 pub struct GatewayTransport(NetworkGatewayTransport);
+
+/// Native Windows SSPI HTTP authentication test hook.
+#[cfg(all(windows, feature = "native-tls"))]
+pub struct NativeHttpAuth(NativeHttpAuthInner);
+
+#[cfg(all(windows, feature = "native-tls"))]
+impl NativeHttpAuth {
+    /// Create the native NTLM state machine with channel binding data.
+    pub fn ntlm(username: &str, password: &str, target_name: &str, channel_binding: &[u8]) -> Result<Self, Error> {
+        NativeHttpAuthInner::new(username, password, target_name, channel_binding, "NTLM").map(Self)
+    }
+
+    /// Initialize or continue the native SSPI exchange.
+    pub fn initialize(&mut self, input_token: Option<&[u8]>) -> Result<(Vec<u8>, bool), Error> {
+        let step = self.0.initialize(input_token)?;
+        Ok((step.token, step.complete))
+    }
+}
 
 impl GatewayTransport {
     /// Connect the client side of the mock OUT and IN HTTP connections.

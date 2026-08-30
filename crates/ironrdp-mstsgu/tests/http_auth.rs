@@ -70,6 +70,72 @@ fn ntlm_type1_from_challenge() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn native_ntlm_state_machine_accepts_channel_binding_on_every_exchange() {
+    let mut auth = ironrdp_mstsgu::test_support::NativeHttpAuth::ntlm(
+        r"CONTOSO\alice",
+        "secret",
+        "HTTP/rdg.contoso.com",
+        &channel_binding(),
+    )
+    .expect("create native NTLM auth");
+
+    let (type_one, complete) = auth.initialize(None).expect("initialize native NTLM auth");
+    assert!(!complete);
+    assert!(type_one.starts_with(b"NTLMSSP\0"));
+
+    let (type_three, _) = auth
+        .initialize(Some(&ntlm_type_two_challenge()))
+        .expect("continue native NTLM auth");
+    assert!(type_three.starts_with(b"NTLMSSP\0"));
+}
+
+#[cfg(windows)]
+fn channel_binding() -> Vec<u8> {
+    let application_data = [b"tls-server-end-point:".as_slice(), &[0xA5; 32]].concat();
+    let mut binding = vec![0; 32];
+    let application_data_length = u32::try_from(application_data.len()).expect("fixed channel binding length fits u32");
+    binding[24..28].copy_from_slice(&application_data_length.to_le_bytes());
+    binding[28..32].copy_from_slice(&32u32.to_le_bytes());
+    binding.extend_from_slice(&application_data);
+    binding
+}
+
+#[cfg(windows)]
+fn ntlm_type_two_challenge() -> Vec<u8> {
+    const NEGOTIATE_FLAGS: u32 = 0xE288_82B7;
+    const TARGET_NAME_OFFSET: u32 = 56;
+    const TARGET_INFO_OFFSET: u32 = 64;
+    const TARGET_NAME: &[u8] = &[b'W', 0, b'I', 0, b'N', 0, b'7', 0];
+    const TARGET_INFO: &[u8] = &[
+        0x02, 0x00, 0x08, 0x00, b'W', 0x00, b'I', 0x00, b'N', 0x00, b'7', 0x00, // MsvAvNbDomainName
+        0x01, 0x00, 0x08, 0x00, b'W', 0x00, b'I', 0x00, b'N', 0x00, b'7', 0x00, // MsvAvNbComputerName
+        0x04, 0x00, 0x08, 0x00, b'w', 0x00, b'i', 0x00, b'n', 0x00, b'7', 0x00, // MsvAvDnsDomainName
+        0x03, 0x00, 0x08, 0x00, b'w', 0x00, b'i', 0x00, b'n', 0x00, b'7', 0x00, // MsvAvDnsComputerName
+        0x07, 0x00, 0x08, 0x00, 0xA9, 0x8D, 0x9B, 0x1A, 0x6C, 0xB0, 0xCB, 0x01, // MsvAvTimestamp
+        0x00, 0x00, 0x00, 0x00, // MsvAvEOL
+    ];
+
+    let target_info_length = u16::try_from(TARGET_INFO.len()).expect("fixed target info length fits u16");
+    let mut challenge = Vec::with_capacity(128);
+    challenge.extend_from_slice(b"NTLMSSP\0");
+    challenge.extend_from_slice(&2u32.to_le_bytes());
+    challenge.extend_from_slice(&8u16.to_le_bytes()); // TargetNameLen
+    challenge.extend_from_slice(&8u16.to_le_bytes()); // TargetNameMaxLen
+    challenge.extend_from_slice(&TARGET_NAME_OFFSET.to_le_bytes());
+    challenge.extend_from_slice(&NEGOTIATE_FLAGS.to_le_bytes());
+    challenge.extend_from_slice(&[0x26, 0x6E, 0xCD, 0x75, 0xAA, 0x41, 0xE7, 0x6F]); // ServerChallenge
+    challenge.extend_from_slice(&[0; 8]); // Reserved
+    challenge.extend_from_slice(&target_info_length.to_le_bytes()); // TargetInfoLen
+    challenge.extend_from_slice(&target_info_length.to_le_bytes()); // TargetInfoMaxLen
+    challenge.extend_from_slice(&TARGET_INFO_OFFSET.to_le_bytes());
+    challenge.extend_from_slice(&[0x06, 0x01, 0xB0, 0x1D, 0x00, 0x00, 0x00, 0x0F]); // Version
+    challenge.extend_from_slice(TARGET_NAME);
+    challenge.extend_from_slice(TARGET_INFO);
+    challenge
+}
+
 #[test]
 fn try_basic_when_only_basic_offered() {
     let (auth, step) =

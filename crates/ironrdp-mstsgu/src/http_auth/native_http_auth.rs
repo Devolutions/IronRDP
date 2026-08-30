@@ -13,7 +13,7 @@ use crate::{Error, GwErrorExt as _, GwErrorKind};
 
 const MAX_NEGOTIATE_TOKEN_SIZE: usize = 64 * 1024;
 
-pub(super) struct NativeHttpAuth {
+pub(crate) struct NativeHttpAuth {
     credentials: SecHandle,
     context: Option<SecHandle>,
     target_name: Vec<u16>,
@@ -21,13 +21,13 @@ pub(super) struct NativeHttpAuth {
     request_mutual_auth: bool,
 }
 
-pub(super) struct InitializeStep {
-    pub(super) token: Vec<u8>,
-    pub(super) complete: bool,
+pub(crate) struct InitializeStep {
+    pub(crate) token: Vec<u8>,
+    pub(crate) complete: bool,
 }
 
 impl NativeHttpAuth {
-    pub(super) fn new(
+    pub(crate) fn new(
         username: &str,
         password: &str,
         target_name: &str,
@@ -64,7 +64,7 @@ impl NativeHttpAuth {
         })
     }
 
-    pub(super) fn initialize(&mut self, input_token: Option<&[u8]>) -> Result<InitializeStep, Error> {
+    pub(crate) fn initialize(&mut self, input_token: Option<&[u8]>) -> Result<InitializeStep, Error> {
         let has_context = self.context.is_some();
         let mut input_token = input_token.unwrap_or_default().to_vec();
         let mut input_buffers = Vec::with_capacity(2);
