@@ -428,6 +428,49 @@ fn from_buffer_correctly_parses_server_core_data_without_optional_fields() {
 }
 
 #[test]
+fn client_core_data_with_undefined_protocol_echo_bits_decodes_and_retains_them() {
+    // serverSelectedProtocol echoes the X.224 negotiation value, which
+    // nego.rs already accepts with retain; the echo must not be stricter.
+    // [MS-RDPBCGR] 3.3.5.3.3 handles this field by value comparison, so the
+    // value has to survive decode. The bit is retained so re-encoding
+    // preserves the wire value.
+    const UNDEFINED_BIT: u32 = 0x0000_0020; // undefined in 2.2.1.1.1
+
+    let mut buffer = CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL_BUFFER.to_vec();
+    let at = buffer.len() - 4;
+    let protocol = u32::from_le_bytes(buffer[at..].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[at..].copy_from_slice(&protocol.to_le_bytes());
+
+    let data: ClientCoreData = decode(buffer.as_slice()).expect("undefined echo bits are not fatal");
+
+    assert_ne!(
+        data.optional_data.server_selected_protocol.unwrap().bits() & UNDEFINED_BIT,
+        0
+    );
+    assert_eq!(encode_vec(&data).unwrap(), buffer);
+}
+
+#[test]
+fn server_core_data_with_undefined_protocol_echo_bits_decodes_and_retains_them() {
+    // clientRequestedProtocols echoes the client's own X.224 request; the
+    // client compares it against what it actually requested rather than
+    // validating the bit set.
+    const UNDEFINED_BIT: u32 = 0x0000_0020; // undefined in 2.2.1.1.1
+
+    let mut buffer = SERVER_CORE_DATA_TO_REQUESTED_PROTOCOL_BUFFER.to_vec();
+    let protocol = u32::from_le_bytes(buffer[4..8].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[4..8].copy_from_slice(&protocol.to_le_bytes());
+
+    let data: ServerCoreData = decode(buffer.as_slice()).expect("undefined echo bits are not fatal");
+
+    assert_ne!(
+        data.optional_data.client_requested_protocols.unwrap().bits() & UNDEFINED_BIT,
+        0
+    );
+    assert_eq!(encode_vec(&data).unwrap(), buffer);
+}
+
+#[test]
 fn from_buffer_correctly_parses_server_core_data_without_few_optional_fields() {
     let buffer = SERVER_CORE_DATA_TO_REQUESTED_PROTOCOL_BUFFER;
 
