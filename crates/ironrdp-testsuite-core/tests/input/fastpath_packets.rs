@@ -361,3 +361,52 @@ fn wheel_rotations_out_of_range_is_clamped(#[case] rotation_units: i16, #[case] 
         })
     );
 }
+
+#[test]
+fn fastpath_keyboard_event_with_undefined_flag_bits_decodes_and_retains_them() {
+    // The 5-bit fast-path eventFlags field defines RELEASE, EXTENDED and
+    // EXTENDED1 for keyboard events ([MS-RDPBCGR] 2.2.8.1.2.2.1); an unknown
+    // bit must not kill a live session, and the slow-path decoder for the
+    // same keystroke already tolerates it. The bit is retained so
+    // re-encoding preserves the wire value.
+    const UNDEFINED_BIT: u8 = 0x10;
+
+    // eventCode = FASTPATH_INPUT_EVENT_SCANCODE (0) in bits 5..8,
+    // eventFlags = RELEASE | UNDEFINED_BIT in bits 0..5, then the scancode.
+    let buffer = [0x01 | UNDEFINED_BIT, 0x1d];
+
+    let event: FastPathInputEvent = ironrdp_core::decode(&buffer).expect("undefined flag bits are not fatal");
+
+    let FastPathInputEvent::KeyboardEvent(flags, code) = event else {
+        panic!("expected a keyboard event");
+    };
+    assert_eq!(code, 0x1d);
+    assert!(flags.contains(KeyboardFlags::RELEASE));
+    assert_ne!(flags.bits() & UNDEFINED_BIT, 0);
+    assert_eq!(
+        ironrdp_core::encode_vec(&FastPathInputEvent::KeyboardEvent(flags, code)).unwrap(),
+        buffer
+    );
+}
+
+#[test]
+fn fastpath_sync_event_with_undefined_flag_bits_decodes_and_retains_them() {
+    // [MS-RDPBCGR] 2.2.8.1.2.2.5 defines the four lock flags; bit 0x10 of
+    // the 5-bit eventFlags field is undefined and must not be fatal.
+    const UNDEFINED_BIT: u8 = 0x10;
+
+    // eventCode = FASTPATH_INPUT_EVENT_SYNC (3) in bits 5..8.
+    let buffer = [(3 << 5) | 0x01 | UNDEFINED_BIT];
+
+    let event: FastPathInputEvent = ironrdp_core::decode(&buffer).expect("undefined flag bits are not fatal");
+
+    let FastPathInputEvent::SyncEvent(flags) = event else {
+        panic!("expected a sync event");
+    };
+    assert!(flags.contains(SynchronizeFlags::SCROLL_LOCK));
+    assert_ne!(flags.bits() & UNDEFINED_BIT, 0);
+    assert_eq!(
+        ironrdp_core::encode_vec(&FastPathInputEvent::SyncEvent(flags)).unwrap(),
+        buffer
+    );
+}
