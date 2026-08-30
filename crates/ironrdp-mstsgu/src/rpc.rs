@@ -2500,7 +2500,7 @@ fn decode_syntax_identifier(source: &[u8]) -> Result<RpcSyntaxIdentifier, RpcPdu
     dead_code,
     reason = "the control codecs are staged before an RPC transport consumes them"
 )]
-mod tsgu {
+pub(crate) mod tsgu {
     use core::fmt;
 
     use super::RpcSyntaxVersion;
