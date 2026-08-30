@@ -892,13 +892,38 @@ pub trait GraphicsPipelineHandler: Send {
 
     /// Returns the server's preferred capabilities
     ///
-    /// Override this to customize codec support. The default enables
-    /// AVC420/AVC444 with V10.7 and V8.1 as fallback.
+    /// Override this to customize codec support. The default declares every
+    /// capability version this build can interpret, in priority order, with
+    /// H.264 enabled from V8.1 up (V10 and later enable AVC by the absence
+    /// of `AVC_DISABLED`). Declaring the complete ladder matters because
+    /// negotiation matches exact versions: a client advertising only a
+    /// mid-tier version (Windows App builds do) would otherwise fail to
+    /// negotiate any V10-level set and lose H.264 or the channel entirely.
     fn preferred_capabilities(&self) -> Vec<CapabilitySet> {
         vec![
             CapabilitySet::V10_7 {
                 flags: CapabilitiesV107Flags::SMALL_CACHE,
             },
+            CapabilitySet::V10_6Err {
+                flags: CapabilitiesV104Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_6 {
+                flags: CapabilitiesV104Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_5 {
+                flags: CapabilitiesV104Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_4 {
+                flags: CapabilitiesV104Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_3 {
+                // V10.3 defines no SMALL_CACHE flag; empty means AVC enabled.
+                flags: CapabilitiesV103Flags::empty(),
+            },
+            CapabilitySet::V10_2 {
+                flags: CapabilitiesV10Flags::SMALL_CACHE,
+            },
+            CapabilitySet::V10_1,
             CapabilitySet::V10 {
                 flags: CapabilitiesV10Flags::SMALL_CACHE,
             },
@@ -2255,6 +2280,68 @@ mod capability_negotiation_tests {
         for (client, server, expected) in cases {
             assert_eq!(sanitize_capabilities_for_confirm(client.clone()), expected);
             assert_eq!(negotiate_capabilities(&[client], &[server]), Some(expected));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DefaultsHandler;
+
+    impl GraphicsPipelineHandler for DefaultsHandler {
+        fn capabilities_advertise(&mut self, _pdu: &CapabilitiesAdvertisePdu) {}
+        fn on_ready(&mut self, _negotiated: &CapabilitySet) {}
+    }
+
+    /// Negotiation matches exact versions, so the default ladder must declare
+    /// every version this build can interpret: a client advertising only a
+    /// mid-tier V10 variant previously fell through every rung and lost the
+    /// channel.
+    #[test]
+    fn mid_tier_only_client_negotiates_its_version() {
+        let server_caps = DefaultsHandler.preferred_capabilities();
+        let client_caps = [CapabilitySet::V10_6 {
+            flags: CapabilitiesV104Flags::empty(),
+        }];
+
+        let negotiated = negotiate_capabilities(&client_caps, &server_caps).expect("V10.6-only client negotiates");
+
+        assert!(matches!(negotiated, CapabilitySet::V10_6 { .. }));
+        assert!(CodecCapabilities::from_capability_set(&negotiated).avc444);
+    }
+
+    #[test]
+    fn higher_mid_tier_wins_when_client_advertises_several() {
+        let server_caps = DefaultsHandler.preferred_capabilities();
+        let client_caps = [
+            CapabilitySet::V10_3 {
+                flags: CapabilitiesV103Flags::empty(),
+            },
+            CapabilitySet::V10_6 {
+                flags: CapabilitiesV104Flags::empty(),
+            },
+        ];
+
+        let negotiated = negotiate_capabilities(&client_caps, &server_caps).expect("negotiates");
+
+        assert!(matches!(negotiated, CapabilitySet::V10_6 { .. }));
+    }
+
+    #[test]
+    fn every_declared_version_negotiates_as_sole_client_cap() {
+        let server_caps = DefaultsHandler.preferred_capabilities();
+
+        for cap in &server_caps {
+            let client_caps = [cap.clone()];
+            let negotiated = negotiate_capabilities(&client_caps, &server_caps)
+                .unwrap_or_else(|| panic!("ladder entry failed to negotiate: {cap:?}"));
+            assert_eq!(
+                core::mem::discriminant(&negotiated),
+                core::mem::discriminant(cap),
+                "negotiated a different version than the sole client cap"
+            );
         }
     }
 }
