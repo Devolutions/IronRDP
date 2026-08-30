@@ -79,6 +79,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 tokio-native-tls = "0.3"
 tokio-tungstenite = "0.29"
 ironrdp-error = { path = "../ironrdp-error" }
+sspi = { version = "0.21", features = ["network_client"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"

@@ -3466,6 +3466,7 @@ dependencies = [
  "ironrdp-vmconnect",
  "rcgen",
  "semver",
+ "sspi",
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
