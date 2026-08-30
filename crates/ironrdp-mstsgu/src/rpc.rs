@@ -1,9 +1,9 @@
-//! DCE/RPC common-header, fragment, and RPCH v2 setup codecs.
+//! DCE/RPC common-header, fragment, NTLM association, and RPCH v2 setup codecs.
 //!
 //! This module frames connection-oriented DCE/RPC PDUs and the initial RPC-over-HTTP v2 RTS exchange.
 //! It is not a live RPC-over-HTTP transport.
 //! The staged TsProxy NDR control codecs do not provide a live RPC-over-HTTP transport.
-//! Packet-integrity signing and the RPCH client belong in later work.
+//! Authenticated request/response packet-integrity processing and the RPCH client belong in later work.
 //!
 //! [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 //! [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
@@ -11,7 +11,13 @@
 
 use core::{fmt, time::Duration};
 
+use sspi::{
+    AuthIdentity, AuthIdentityBuffers, BufferType, ClientRequestFlags, CredentialUse, DataRepresentation,
+    InitializeSecurityContextResult, Ntlm, SecurityBuffer, SecurityStatus, Sspi as _, SspiImpl as _, Username,
+};
 use uuid::Uuid;
+
+use crate::{Error, GwErrorExt as _, GwErrorKind};
 
 /// DCE/RPC common-header size.
 ///
@@ -33,6 +39,8 @@ const RPC_REQUEST_HEADER_SIZE: usize =
 const RPC_RESPONSE_HEADER_SIZE: usize =
     4 /* alloc_hint */ + 2 /* p_cont_id */ + 1 /* cancel_count */ + 1 /* reserved */;
 const RPC_FAULT_HEADER_SIZE: usize = RPC_RESPONSE_HEADER_SIZE + 4 /* status */ + 4 /* reserved2 */;
+const RPC_SEC_TRAILER_SIZE: usize =
+    1 /* auth_type */ + 1 /* auth_level */ + 1 /* auth_pad_length */ + 1 /* auth_reserved */ + 4; /* auth_context_id */
 const RPC_BIND_HEADER_SIZE: usize =
     2 /* max_xmit_frag */ + 2 /* max_recv_frag */ + 4 /* assoc_group_id */ + 1 /* n_context_elem */ + 1 /* reserved */ + 2 /* reserved2 */;
 const RPC_BIND_ACK_HEADER_SIZE: usize =
@@ -54,6 +62,8 @@ pub const RPC_DREP_LITTLE_ENDIAN: [u8; 4] = [0x10, 0, 0, 0];
 pub const PFC_FIRST_FRAG: u8 = 0x01;
 /// Last fragment of a fragmented PDU ([C706] 12.6.2).
 pub const PFC_LAST_FRAG: u8 = 0x02;
+/// Security provider supports protecting PDU headers ([MS-RPCE] 2.2.2.3).
+pub const PFC_SUPPORT_HEADER_SIGN: u8 = 0x04;
 
 /// `response` PDU type ([C706] 12.6.4.9).
 ///
@@ -79,6 +89,10 @@ pub const PTYPE_BIND_ACK: u8 = 12;
 ///
 /// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
 pub const PTYPE_BIND_NAK: u8 = 13;
+/// `rpc_auth_3` PDU type ([MS-RPCE] 2.2.2.10).
+///
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+pub const PTYPE_RPC_AUTH_3: u8 = 16;
 /// `rts` PDU type ([MS-RPCH] 2.2.3.2).
 pub const PTYPE_RTS: u8 = 20;
 
@@ -96,6 +110,9 @@ pub const DEFAULT_FRAGMENT_SIZE: u16 = 0x10b8;
 pub const MAX_PENDING_RPC_FRAGMENTS: usize = 16;
 
 const MAXIMUM_RESPONSE_ALLOC_HINT: usize = 0x7fff_ffff;
+const RPC_AUTH_TYPE_WINNT: u8 = 0x0a;
+const RPC_AUTH_LEVEL_PACKET_INTEGRITY: u8 = 0x05;
+const RPC_AUTH_CONTEXT_ID: u32 = 1;
 const RTS_HEADER_SIZE: usize = RPC_COMMON_HEADER_SIZE + 4 /* flags and command count */;
 const RTS_PFC_FLAGS: u8 = PFC_FIRST_FRAG | PFC_LAST_FRAG;
 const RTS_FLAG_NONE: u16 = 0;
@@ -134,6 +151,15 @@ pub enum RpcPduError {
     InvalidFragmentLength { fragment_length: u16 },
     IncompleteFragment { actual: usize, fragment_length: u16 },
     AuthenticationUnsupported { auth_length: u16 },
+    AuthenticationRequired,
+    InvalidSecurityTrailer { fragment_length: u16, auth_length: u16 },
+    InvalidAuthenticationPadding { actual: u8 },
+    NonZeroAuthenticationPadding,
+    NonZeroAuthenticationReserved { actual: u8 },
+    UnexpectedAuthenticationType { expected: u8, actual: u8 },
+    UnexpectedAuthenticationLevel { expected: u8, actual: u8 },
+    UnexpectedAuthenticationContextId { expected: u32, actual: u32 },
+    EmptyAuthenticationToken,
     UnexpectedPduType { expected: u8, actual: u8 },
     FragmentedPduUnsupported { flags: u8 },
     UnexpectedResponseFragment { flags: u8 },
@@ -193,6 +219,36 @@ impl fmt::Display for RpcPduError {
                     "rpc authentication verifier of length {auth_length} is not supported"
                 )
             }
+            Self::AuthenticationRequired => f.write_str("rpc authentication token is required"),
+            Self::InvalidSecurityTrailer {
+                fragment_length,
+                auth_length,
+            } => {
+                write!(
+                    f,
+                    "invalid rpc security trailer for {fragment_length}-byte fragment and {auth_length}-byte token"
+                )
+            }
+            Self::InvalidAuthenticationPadding { actual } => {
+                write!(f, "rpc authentication padding {actual} exceeds the pdu body")
+            }
+            Self::NonZeroAuthenticationPadding => f.write_str("rpc authentication padding is not zero"),
+            Self::NonZeroAuthenticationReserved { actual } => {
+                write!(f, "nonzero rpc authentication reserved byte {actual}")
+            }
+            Self::UnexpectedAuthenticationType { expected, actual } => {
+                write!(f, "unexpected rpc authentication type {actual}, expected {expected}")
+            }
+            Self::UnexpectedAuthenticationLevel { expected, actual } => {
+                write!(f, "unexpected rpc authentication level {actual}, expected {expected}")
+            }
+            Self::UnexpectedAuthenticationContextId { expected, actual } => {
+                write!(
+                    f,
+                    "unexpected rpc authentication context id {actual}, expected {expected}"
+                )
+            }
+            Self::EmptyAuthenticationToken => f.write_str("empty rpc authentication token"),
             Self::UnexpectedPduType { expected, actual } => {
                 write!(f, "unexpected rpc pdu type {actual}, expected {expected}")
             }
@@ -398,6 +454,157 @@ pub struct RpcBindAck<'a> {
     pub association_group_id: u32,
     pub secondary_address: &'a [u8],
     pub results: Vec<RpcPresentationResult>,
+}
+
+/// An authenticated RPC bind acknowledgement and its server authentication token.
+///
+/// [MS-RPCE] 2.2.2.11 and 2.2.2.12.
+///
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RpcAuthenticatedBindAck<'a> {
+    bind_ack: RpcBindAck<'a>,
+    token: &'a [u8],
+    supports_header_signing: bool,
+}
+
+impl RpcAuthenticatedBindAck<'_> {
+    /// The validated bind acknowledgement.
+    pub const fn bind_ack(&self) -> &RpcBindAck<'_> {
+        &self.bind_ack
+    }
+
+    /// The server authentication token from the DCE/RPC security trailer.
+    pub const fn token(&self) -> &[u8] {
+        self.token
+    }
+
+    /// Whether the server acknowledged header-signing support.
+    pub const fn supports_header_signing(&self) -> bool {
+        self.supports_header_signing
+    }
+}
+
+/// Client-side NTLM association state for the DCE/RPC security context.
+///
+/// This state owns an independent NTLM package and credential handle.
+/// It must not be shared with the HTTP authentication context.
+///
+/// [MS-RPCE] 3.3.1.5.2.1 / [MS-NLMP] 3.1.5.1.
+///
+/// [MS-NLMP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/a82d61d7-0851-48aa-93ed-5c534c075a40
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+pub struct RpcNtlmAuth {
+    ntlm: Ntlm,
+    credentials_handle: Option<AuthIdentityBuffers>,
+    state: RpcNtlmAuthState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RpcNtlmAuthState {
+    Initial,
+    AwaitingChallenge,
+    Established,
+}
+
+impl RpcNtlmAuth {
+    /// Creates a client-side NTLM security context for one DCE/RPC connection.
+    pub fn new(username: &str, password: &str) -> Result<Self, Error> {
+        let username = Username::parse(username)
+            .or_else(|_| Username::new(username, None))
+            .map_err(|error| Error::custom("parse rpc username", error))?;
+        let identity = AuthIdentity {
+            username,
+            password: password.to_owned().into(),
+        };
+        let mut ntlm = Ntlm::new();
+        let credentials_handle = ntlm
+            .acquire_credentials_handle()
+            .with_credential_use(CredentialUse::Outbound)
+            .with_auth_data(&identity)
+            .execute(&mut ntlm)
+            .map_err(|error| Error::custom("acquire rpc ntlm credentials", error))?
+            .credentials_handle;
+
+        Ok(Self {
+            ntlm,
+            credentials_handle,
+            state: RpcNtlmAuthState::Initial,
+        })
+    }
+
+    /// Produces the NTLM Type-1 token for an authenticated bind PDU.
+    pub fn initial_token(&mut self) -> Result<Vec<u8>, Error> {
+        if self.state != RpcNtlmAuthState::Initial {
+            return Err(Error::new("rpc ntlm initial token", GwErrorKind::Connect));
+        }
+
+        let token = self.next_token(None)?;
+        if self.state != RpcNtlmAuthState::AwaitingChallenge {
+            return Err(Error::new("rpc ntlm initial token", GwErrorKind::Connect));
+        }
+
+        Ok(token)
+    }
+
+    /// Consumes the bind_ack Type-2 token and produces the rpc_auth_3 Type-3 token.
+    pub fn continue_token(&mut self, challenge: &[u8]) -> Result<Vec<u8>, Error> {
+        if self.state != RpcNtlmAuthState::AwaitingChallenge || challenge.is_empty() {
+            return Err(Error::new("rpc ntlm continuation token", GwErrorKind::Connect));
+        }
+
+        let token = self.next_token(Some(challenge))?;
+        if self.state != RpcNtlmAuthState::Established {
+            return Err(Error::new("rpc ntlm continuation token", GwErrorKind::Connect));
+        }
+
+        Ok(token)
+    }
+
+    /// Whether the Type-3 token has completed this NTLM association.
+    pub fn is_complete(&self) -> bool {
+        self.state == RpcNtlmAuthState::Established
+    }
+
+    fn next_token(&mut self, input: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+        let mut input_token = [SecurityBuffer::new(
+            input.map(<[u8]>::to_vec).unwrap_or_default(),
+            BufferType::Token,
+        )];
+        let mut output_token = [SecurityBuffer::new(Vec::with_capacity(1024), BufferType::Token)];
+        let mut builder = self
+            .ntlm
+            .initialize_security_context()
+            .with_credentials_handle(&mut self.credentials_handle)
+            .with_context_requirements(
+                ClientRequestFlags::USE_DCE_STYLE
+                    | ClientRequestFlags::INTEGRITY
+                    | ClientRequestFlags::REPLAY_DETECT
+                    | ClientRequestFlags::SEQUENCE_DETECT
+                    | ClientRequestFlags::ALLOCATE_MEMORY,
+            )
+            .with_target_data_representation(DataRepresentation::Native)
+            .with_input(&mut input_token)
+            .with_output(&mut output_token);
+
+        let InitializeSecurityContextResult { status, .. } = self
+            .ntlm
+            .initialize_security_context_impl(&mut builder)
+            .map_err(|error| Error::custom("initialize rpc ntlm security context", error))?
+            .resolve_to_result()
+            .map_err(|error| Error::custom("initialize rpc ntlm security context", error))?;
+
+        match status {
+            SecurityStatus::Ok => self.state = RpcNtlmAuthState::Established,
+            SecurityStatus::ContinueNeeded => self.state = RpcNtlmAuthState::AwaitingChallenge,
+            other => {
+                return Err(Error::new("rpc ntlm security status", GwErrorKind::Connect)
+                    .with_source(std::io::Error::other(format!("unexpected ntlm status: {other:?}"))));
+            }
+        }
+
+        Ok(core::mem::take(&mut output_token[0].buffer))
+    }
 }
 
 /// An RPC runtime version advertised in a bind rejection.
@@ -860,6 +1067,39 @@ pub fn encode_rpc_bind(
     association_group_id: u32,
     presentation_contexts: &[RpcPresentationContext<'_>],
 ) -> Result<Vec<u8>, RpcPduError> {
+    let body = encode_rpc_bind_body(fragment_sizes, association_group_id, presentation_contexts)?;
+    ensure_fragment_fits(body.len(), fragment_sizes.max_xmit())?;
+    encode_unprotected_pdu(PTYPE_BIND, call_id, body)
+}
+
+/// Encodes one complete NTLM-authenticated RPC bind PDU.
+///
+/// The caller supplies the Type-1 token produced by [`RpcNtlmAuth::initial_token`].
+/// This configures packet-integrity authentication for the association but does not
+/// encode signed RPC request or response PDUs.
+///
+/// [MS-RPCE] 2.2.2.11, 2.2.2.12, and 4.2 / [C706] 12.6.4.3.
+///
+/// [C706]: https://pubs.opengroup.org/onlinepubs/9629399/toc.htm
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+pub fn encode_rpc_bind_with_ntlm_auth(
+    call_id: u32,
+    fragment_sizes: RpcFragmentSizes,
+    association_group_id: u32,
+    presentation_contexts: &[RpcPresentationContext<'_>],
+    type1_token: &[u8],
+) -> Result<Vec<u8>, RpcPduError> {
+    let body = encode_rpc_bind_body(fragment_sizes, association_group_id, presentation_contexts)?;
+    let pdu = encode_authenticated_pdu(PTYPE_BIND, call_id, body, type1_token)?;
+    ensure_encoded_fragment_fits(&pdu, fragment_sizes.max_xmit())?;
+    Ok(pdu)
+}
+
+fn encode_rpc_bind_body(
+    fragment_sizes: RpcFragmentSizes,
+    association_group_id: u32,
+    presentation_contexts: &[RpcPresentationContext<'_>],
+) -> Result<Vec<u8>, RpcPduError> {
     if presentation_contexts.is_empty() {
         return Err(RpcPduError::EmptyPresentationContexts);
     }
@@ -904,7 +1144,6 @@ pub fn encode_rpc_bind(
             })
             .ok_or(RpcPduError::LengthOverflow)?;
     }
-    ensure_fragment_fits(body_length, fragment_sizes.max_xmit())?;
 
     let mut body = Vec::with_capacity(body_length);
     body.extend_from_slice(&fragment_sizes.max_xmit().to_le_bytes());
@@ -923,7 +1162,7 @@ pub fn encode_rpc_bind(
         }
     }
 
-    encode_unprotected_pdu(PTYPE_BIND, call_id, body)
+    Ok(body)
 }
 
 /// Decodes one complete, unauthenticated RPC bind acknowledgement.
@@ -936,6 +1175,56 @@ pub fn decode_rpc_bind_ack(
     offered_fragment_sizes: RpcFragmentSizes,
 ) -> Result<RpcBindAck<'_>, RpcPduError> {
     let (header, body) = decode_unprotected_single_fragment(source, PTYPE_BIND_ACK, offered_fragment_sizes.max_recv())?;
+    decode_rpc_bind_ack_body(header, body, offered_fragment_sizes)
+}
+
+/// Decodes an NTLM-authenticated RPC bind acknowledgement and extracts its Type-2 token.
+///
+/// This validates the DCE/RPC security trailer and header-signing negotiation.
+/// Use [`RpcAuthenticatedBindAck::supports_header_signing`] to retain the server result.
+/// The caller passes the extracted token to [`RpcNtlmAuth::continue_token`].
+///
+/// [MS-RPCE] 2.2.2.3, 2.2.2.11, 2.2.2.12, and 4.2.
+///
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+pub fn decode_rpc_bind_ack_with_ntlm_auth(
+    source: &[u8],
+    offered_fragment_sizes: RpcFragmentSizes,
+) -> Result<RpcAuthenticatedBindAck<'_>, RpcPduError> {
+    let (header, body, token) =
+        decode_authenticated_single_fragment(source, PTYPE_BIND_ACK, offered_fragment_sizes.max_recv())?;
+    let bind_ack = decode_rpc_bind_ack_body(header, body, offered_fragment_sizes)?;
+    let supports_header_signing = header.pfc_flags() & PFC_SUPPORT_HEADER_SIGN != 0;
+    Ok(RpcAuthenticatedBindAck {
+        bind_ack,
+        token,
+        supports_header_signing,
+    })
+}
+
+/// Encodes the NTLM Type-3 continuation token in an rpc_auth_3 PDU.
+///
+/// The caller supplies the Type-3 token produced by [`RpcNtlmAuth::continue_token`].
+/// It does not enable signed RPC request or response PDUs.
+///
+/// [MS-RPCE] 2.2.2.10, 2.2.2.11, 2.2.2.12, and 4.2.
+///
+/// [MS-RPCE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c8d
+pub fn encode_rpc_auth_3(
+    call_id: u32,
+    fragment_sizes: RpcFragmentSizes,
+    type3_token: &[u8],
+) -> Result<Vec<u8>, RpcPduError> {
+    let pdu = encode_authenticated_pdu(PTYPE_RPC_AUTH_3, call_id, vec![0; 4], type3_token)?;
+    ensure_encoded_fragment_fits(&pdu, fragment_sizes.max_xmit())?;
+    Ok(pdu)
+}
+
+fn decode_rpc_bind_ack_body<'a>(
+    header: RpcCommonHeader,
+    body: &'a [u8],
+    offered_fragment_sizes: RpcFragmentSizes,
+) -> Result<RpcBindAck<'a>, RpcPduError> {
     let fixed = body.get(..RPC_BIND_ACK_HEADER_SIZE).ok_or(RpcPduError::Truncated {
         actual: body.len(),
         required: RPC_BIND_ACK_HEADER_SIZE,
@@ -1298,6 +1587,136 @@ fn decode_unprotected_single_fragment(
     Ok((header, body))
 }
 
+fn encode_authenticated_pdu(ptype: u8, call_id: u32, mut body: Vec<u8>, token: &[u8]) -> Result<Vec<u8>, RpcPduError> {
+    if token.is_empty() {
+        return Err(RpcPduError::EmptyAuthenticationToken);
+    }
+
+    let auth_length = u16::try_from(token.len()).map_err(|_| RpcPduError::LengthOverflow)?;
+    let padding_length = (16 - body.len() % 16) % 16;
+    body.resize(
+        body.len()
+            .checked_add(padding_length)
+            .ok_or(RpcPduError::LengthOverflow)?,
+        0,
+    );
+    let header = RpcCommonHeader::encode(
+        ptype,
+        PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_SUPPORT_HEADER_SIGN,
+        call_id,
+        body.len(),
+        auth_length,
+    )?;
+    let mut pdu = Vec::with_capacity(
+        RPC_COMMON_HEADER_SIZE
+            .checked_add(body.len())
+            .and_then(|length| length.checked_add(RPC_SEC_TRAILER_SIZE))
+            .and_then(|length| length.checked_add(token.len()))
+            .ok_or(RpcPduError::LengthOverflow)?,
+    );
+    pdu.extend_from_slice(&header);
+    pdu.extend_from_slice(&body);
+    pdu.push(RPC_AUTH_TYPE_WINNT);
+    pdu.push(RPC_AUTH_LEVEL_PACKET_INTEGRITY);
+    pdu.push(u8::try_from(padding_length).map_err(|_| RpcPduError::LengthOverflow)?);
+    pdu.push(0); // auth_reserved
+    pdu.extend_from_slice(&RPC_AUTH_CONTEXT_ID.to_le_bytes());
+    pdu.extend_from_slice(token);
+    Ok(pdu)
+}
+
+fn decode_authenticated_single_fragment(
+    source: &[u8],
+    expected_ptype: u8,
+    maximum_fragment_size: u16,
+) -> Result<(RpcCommonHeader, &[u8], &[u8]), RpcPduError> {
+    let header = RpcCommonHeader::decode(source)?;
+    if header.ptype() != expected_ptype {
+        return Err(RpcPduError::UnexpectedPduType {
+            expected: expected_ptype,
+            actual: header.ptype(),
+        });
+    }
+    if header.fragment_length() > maximum_fragment_size {
+        return Err(RpcPduError::FragmentExceedsMaximum {
+            fragment_length: header.fragment_length(),
+            maximum: maximum_fragment_size,
+        });
+    }
+    if header.auth_length() == 0 {
+        return Err(RpcPduError::AuthenticationRequired);
+    }
+    validate_single_fragment(header)?;
+
+    let fragment_length = usize::from(header.fragment_length());
+    let trailer_offset = fragment_length
+        .checked_sub(usize::from(header.auth_length()))
+        .and_then(|offset| offset.checked_sub(RPC_SEC_TRAILER_SIZE))
+        .ok_or_else(|| RpcPduError::InvalidSecurityTrailer {
+            fragment_length: header.fragment_length(),
+            auth_length: header.auth_length(),
+        })?;
+    if trailer_offset < RPC_COMMON_HEADER_SIZE {
+        return Err(RpcPduError::InvalidSecurityTrailer {
+            fragment_length: header.fragment_length(),
+            auth_length: header.auth_length(),
+        });
+    }
+
+    let trailer_end = trailer_offset
+        .checked_add(RPC_SEC_TRAILER_SIZE)
+        .ok_or(RpcPduError::LengthOverflow)?;
+    let trailer = source
+        .get(trailer_offset..trailer_end)
+        .ok_or_else(|| RpcPduError::InvalidSecurityTrailer {
+            fragment_length: header.fragment_length(),
+            auth_length: header.auth_length(),
+        })?;
+    if trailer[0] != RPC_AUTH_TYPE_WINNT {
+        return Err(RpcPduError::UnexpectedAuthenticationType {
+            expected: RPC_AUTH_TYPE_WINNT,
+            actual: trailer[0],
+        });
+    }
+    if trailer[1] != RPC_AUTH_LEVEL_PACKET_INTEGRITY {
+        return Err(RpcPduError::UnexpectedAuthenticationLevel {
+            expected: RPC_AUTH_LEVEL_PACKET_INTEGRITY,
+            actual: trailer[1],
+        });
+    }
+    if trailer[3] != 0 {
+        return Err(RpcPduError::NonZeroAuthenticationReserved { actual: trailer[3] });
+    }
+    let auth_context_id = u32::from_le_bytes(trailer[4..8].try_into().map_err(|_| RpcPduError::LengthOverflow)?);
+    if auth_context_id != RPC_AUTH_CONTEXT_ID {
+        return Err(RpcPduError::UnexpectedAuthenticationContextId {
+            expected: RPC_AUTH_CONTEXT_ID,
+            actual: auth_context_id,
+        });
+    }
+
+    let body_with_padding = &source[RPC_COMMON_HEADER_SIZE..trailer_offset];
+    let padding_length = usize::from(trailer[2]);
+    // The gateway profile accepts canonical zero-filled padding and uses
+    // auth_pad_length rather than a fixed bind_ack layout.
+    let body_length = body_with_padding
+        .len()
+        .checked_sub(padding_length)
+        .ok_or(RpcPduError::InvalidAuthenticationPadding { actual: trailer[2] })?;
+    if body_with_padding[body_length..].iter().any(|&byte| byte != 0) {
+        return Err(RpcPduError::NonZeroAuthenticationPadding);
+    }
+
+    let token = source
+        .get(trailer_end..fragment_length)
+        .ok_or_else(|| RpcPduError::InvalidSecurityTrailer {
+            fragment_length: header.fragment_length(),
+            auth_length: header.auth_length(),
+        })?;
+    debug_assert_eq!(token.len(), usize::from(header.auth_length()));
+    Ok((header, &body_with_padding[..body_length], token))
+}
+
 fn encode_unprotected_pdu(ptype: u8, call_id: u32, body: Vec<u8>) -> Result<Vec<u8>, RpcPduError> {
     encode_unprotected_pdu_with_flags(ptype, PFC_FIRST_FRAG | PFC_LAST_FRAG, call_id, body)
 }
@@ -1330,6 +1749,18 @@ fn ensure_fragment_fits(body_length: usize, maximum_fragment_size: u16) -> Resul
         .checked_add(body_length)
         .ok_or(RpcPduError::LengthOverflow)?;
     let fragment_length = u16::try_from(fragment_length).map_err(|_| RpcPduError::LengthOverflow)?;
+    if fragment_length > maximum_fragment_size {
+        return Err(RpcPduError::FragmentExceedsMaximum {
+            fragment_length,
+            maximum: maximum_fragment_size,
+        });
+    }
+
+    Ok(())
+}
+
+fn ensure_encoded_fragment_fits(pdu: &[u8], maximum_fragment_size: u16) -> Result<(), RpcPduError> {
+    let fragment_length = u16::try_from(pdu.len()).map_err(|_| RpcPduError::LengthOverflow)?;
     if fragment_length > maximum_fragment_size {
         return Err(RpcPduError::FragmentExceedsMaximum {
             fragment_length,
