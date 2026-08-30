@@ -109,10 +109,15 @@ impl<'de> Decode<'de> for ServerCoreOptionalData {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let mut optional_data = Self::default();
 
-        optional_data.client_requested_protocols = Some(
-            SecurityProtocol::from_bits(try_or_return!(src.try_read_u32(), optional_data))
-                .ok_or_else(|| invalid_field_err!("clientReqProtocols", "invalid server security protocol", in: src))?,
-        );
+        // Echo of the requestedProtocols from the X.224 RDP Negotiation
+        // Request, which nego.rs already decodes with from_bits_retain; the
+        // echo must not be stricter than the original, and the client
+        // compares it against what it actually requested rather than
+        // validating the bit set.
+        optional_data.client_requested_protocols = Some(SecurityProtocol::from_bits_retain(try_or_return!(
+            src.try_read_u32(),
+            optional_data
+        )));
 
         optional_data.early_capability_flags = Some(
             ServerEarlyCapabilityFlags::from_bits(try_or_return!(src.try_read_u32(), optional_data))
