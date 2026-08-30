@@ -901,6 +901,24 @@ fn from_buffer_correctly_parses_client_security_data() {
 }
 
 #[test]
+fn client_security_data_with_undefined_method_bits_decodes_and_retains_them() {
+    // [MS-RDPBCGR] 2.2.1.3.3: encryptionMethods is an advertisement and the
+    // server selects only methods it knows; an unknown bit must not fail the
+    // GCC exchange. The bit is retained so re-encoding preserves the wire
+    // value. The server-selected method in ServerSecurityData stays strict.
+    const UNDEFINED_BIT: u32 = 0x0000_0004; // undefined in 2.2.1.3.3
+
+    let mut buffer = CLIENT_SECURITY_DATA_BUFFER.to_vec();
+    let methods = u32::from_le_bytes(buffer[0..4].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[0..4].copy_from_slice(&methods.to_le_bytes());
+
+    let data: ClientSecurityData = decode(buffer.as_slice()).expect("undefined method bits are not fatal");
+
+    assert_ne!(data.encryption_methods.bits() & UNDEFINED_BIT, 0);
+    assert_eq!(encode_vec(&data).unwrap(), buffer);
+}
+
+#[test]
 fn to_buffer_correctly_serializes_client_security_data() {
     let security_data = CLIENT_SECURITY_DATA.clone();
     let expected_buffer = CLIENT_SECURITY_DATA_BUFFER;
