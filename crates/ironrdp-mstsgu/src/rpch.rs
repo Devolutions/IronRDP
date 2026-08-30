@@ -1,6 +1,7 @@
 //! Test-only orchestration for a transport-independent MS-RPCH/MS-TSGU session.
 
 use core::time::Duration;
+use std::collections::VecDeque;
 
 use hyper::body::Bytes;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
@@ -28,6 +29,7 @@ use crate::{Error, GwErrorKind};
 
 const IN_CONTENT_LENGTH: u32 = 128 * 1024;
 const MAX_RESPONSE_STUB_SIZE: usize = 32 * 1024;
+const MAX_TUNNEL_MESSAGE_STUB_SIZE: usize = 256 * 1024;
 
 struct RpchSession {
     out: OutChannel,
@@ -36,11 +38,13 @@ struct RpchSession {
     ping: RpchPingSchedule,
     fragment_sizes: RpcFragmentSizes,
     responses: RpcResponseReassembler,
+    tunnel_message_responses: RpcResponseReassembler,
     call_id: u32,
     tunnel_message_call_id: Option<u32>,
     receive_pipe_call_id: Option<u32>,
     tunnel_context: Option<NonNullRpcContextHandle>,
     channel_context: Option<NonNullRpcContextHandle>,
+    messages: VecDeque<TsProxyTunnelMessage>,
 }
 
 async fn rpch_connect(
@@ -150,11 +154,13 @@ async fn rpch_connect(
             .map_err(|error| custom_err!("create rpch ping schedule", error))?,
         fragment_sizes: RpcFragmentSizes::DEFAULT,
         responses: RpcResponseReassembler::new(MAX_RESPONSE_STUB_SIZE),
+        tunnel_message_responses: RpcResponseReassembler::new(MAX_TUNNEL_MESSAGE_STUB_SIZE),
         call_id: 0,
         tunnel_message_call_id: None,
         receive_pipe_call_id: None,
         tunnel_context: None,
         channel_context: None,
+        messages: VecDeque::new(),
     };
     session.bind().await?;
     Ok(session)
@@ -207,6 +213,9 @@ impl RpchSession {
     }
 
     async fn read_data(&mut self) -> Result<RpchRead, Error> {
+        if let Some(message) = self.messages.pop_front() {
+            return Ok(RpchRead::Message(message));
+        }
         loop {
             let pdu = self.out.read_pdu().await?;
             self.flow_control
@@ -223,14 +232,8 @@ impl RpchSession {
                     let response = decode_rpc_response_fragment(&pdu, self.fragment_sizes.max_recv())
                         .map_err(|error| custom_err!("decode rpch response", error))?;
                     if self.tunnel_message_call_id == Some(response.call_id) {
-                        let message = decode_tsgu_make_tunnel_call_response(response.stub)
-                            .map_err(|error| custom_err!("decode tunnel message", error))?;
-                        self.tunnel_message_call_id = None;
-                        self.consume_out_pdu(pdu.len()).await?;
-                        if let Some(tunnel_context) = self.tunnel_context {
-                            self.queue_tunnel_message_call(tunnel_context).await?;
-                        }
-                        if !matches!(message, TsProxyTunnelMessage::None) {
+                        self.handle_tunnel_message_response(pdu.len(), response).await?;
+                        if let Some(message) = self.messages.pop_front() {
                             return Ok(RpchRead::Message(message));
                         }
                     } else if self.receive_pipe_call_id == Some(response.call_id) {
@@ -314,21 +317,52 @@ impl RpchSession {
                 Some(PTYPE_RESPONSE) => {
                     let response = decode_rpc_response_fragment(&pdu, self.fragment_sizes.max_recv())
                         .map_err(|error| custom_err!("decode tsproxy response", error))?;
+                    if self.tunnel_message_call_id == Some(response.call_id) {
+                        self.handle_tunnel_message_response(pdu.len(), response).await?;
+                        continue;
+                    }
+                    if response.call_id != call_id {
+                        self.consume_out_pdu(pdu.len()).await?;
+                        return Err(Error::new("unexpected tsproxy response call ID", GwErrorKind::Decode));
+                    }
                     let response = self
                         .responses
                         .push(response)
                         .map_err(|error| custom_err!("reassemble tsproxy response", error))?;
                     self.consume_out_pdu(pdu.len()).await?;
                     if let Some(response) = response {
-                        if response.call_id != call_id {
-                            return Err(Error::new("unexpected tsproxy response call ID", GwErrorKind::Decode));
-                        }
                         return Ok(response.stub);
                     }
                 }
                 _ => return Err(Error::new("unexpected rpch OUT pdu", GwErrorKind::Decode)),
             }
         }
+    }
+
+    async fn handle_tunnel_message_response(
+        &mut self,
+        pdu_len: usize,
+        response: crate::rpc::RpcResponse<'_>,
+    ) -> Result<(), Error> {
+        let response = self
+            .tunnel_message_responses
+            .push(response)
+            .map_err(|error| custom_err!("reassemble tunnel message", error))?;
+        self.consume_out_pdu(pdu_len).await?;
+        let Some(response) = response else {
+            return Ok(());
+        };
+
+        let message = decode_tsgu_make_tunnel_call_response(&response.stub)
+            .map_err(|error| custom_err!("decode tunnel message", error))?;
+        self.tunnel_message_call_id = None;
+        if let Some(tunnel_context) = self.tunnel_context {
+            self.queue_tunnel_message_call(tunnel_context).await?;
+        }
+        if !matches!(message, TsProxyTunnelMessage::None) {
+            self.messages.push_back(message);
+        }
+        Ok(())
     }
 
     async fn queue_tunnel_message_call(&mut self, tunnel_context: NonNullRpcContextHandle) -> Result<(), Error> {
@@ -494,6 +528,25 @@ mod tests {
                 assert_eq!(tunnel_context, 0x0123_4567_89ab_cdef);
             }
             event => panic!("expected reauthentication message, got {event:?}"),
+        }
+        proxy.abort();
+    }
+
+    #[tokio::test]
+    async fn rpch_session_queues_tunnel_messages_before_control_responses() {
+        let (mut session, proxy) = open_session(MockRpchScenario::MessageBeforeCreateChannel(
+            MockTunnelMessage::Service("scheduled maintenance"),
+        ))
+        .await;
+        match session.read_data().await.expect("read queued service message") {
+            RpchRead::Message(TsProxyTunnelMessage::Service {
+                display_mandatory,
+                text,
+            }) => {
+                assert!(display_mandatory);
+                assert_eq!(text, "scheduled maintenance");
+            }
+            event => panic!("expected service message, got {event:?}"),
         }
         proxy.abort();
     }

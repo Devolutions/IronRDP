@@ -20,6 +20,7 @@ const CHANNEL_CONTEXT: [u8; 20] = [0xbb; 20];
 pub(crate) enum MockRpchScenario {
     Echo,
     Message(MockTunnelMessage),
+    MessageBeforeCreateChannel(MockTunnelMessage),
     ReceivePipeError(u32),
     InvalidOutFragmentLength,
 }
@@ -73,9 +74,10 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
         _ => None,
     };
     let mut message = match scenario {
-        MockRpchScenario::Message(message) => Some(message),
+        MockRpchScenario::Message(message) | MockRpchScenario::MessageBeforeCreateChannel(message) => Some(message),
         _ => None,
     };
+    let message_before_create_channel = matches!(scenario, MockRpchScenario::MessageBeforeCreateChannel(_));
     let mut tunnel_message_call_id = None;
     let mut receive_pipe_call_id = None;
     let mut bytes_received = 0u32;
@@ -116,16 +118,12 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
                         {
                             return;
                         }
-                    } else if let (Some(message), Some(call_id)) = (message.take(), tunnel_message_call_id) {
-                        let response = match message {
-                            MockTunnelMessage::Service(text) => service_message_response(text),
-                            MockTunnelMessage::Reauthenticate(tunnel_context) => {
-                                reauthenticate_message_response(tunnel_context)
-                            }
-                        };
-                        if write_response(&mut out, call_id, &response).await.is_err() {
-                            return;
-                        }
+                    } else if let (Some(message), Some(call_id)) = (message.take(), tunnel_message_call_id)
+                        && write_fragmented_response(&mut out, call_id, &tunnel_message_response(message))
+                            .await
+                            .is_err()
+                    {
+                        return;
                     }
                     continue;
                 }
@@ -157,6 +155,16 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
                         }
                     }
                     TSPROXY_CREATE_CHANNEL_OPNUM => {
+                        if message_before_create_channel {
+                            if let (Some(message), Some(call_id)) = (message.take(), tunnel_message_call_id) {
+                                if write_response(&mut out, call_id, &tunnel_message_response(message))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                        }
                         if write_response(&mut out, request_call_id, &create_channel_response(&CHANNEL_CONTEXT, 3))
                             .await
                             .is_err()
@@ -423,6 +431,13 @@ fn create_channel_response(channel_context: &[u8; 20], channel_id: u32) -> Vec<u
         0u32.to_le_bytes().as_slice(),
     ]
     .concat()
+}
+
+fn tunnel_message_response(message: MockTunnelMessage) -> Vec<u8> {
+    match message {
+        MockTunnelMessage::Service(text) => service_message_response(text),
+        MockTunnelMessage::Reauthenticate(tunnel_context) => reauthenticate_message_response(tunnel_context),
+    }
 }
 
 fn service_message_response(text: &str) -> Vec<u8> {
