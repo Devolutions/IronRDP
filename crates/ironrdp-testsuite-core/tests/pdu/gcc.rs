@@ -249,6 +249,23 @@ fn from_buffer_correctly_parses_client_cluster_data() {
 }
 
 #[test]
+fn cluster_data_with_undefined_flag_bits_decodes_and_retains_them() {
+    // [MS-RDPBCGR] 3.3.5.3.3 never asks the server to validate this bit set;
+    // an unknown flag must not fail the GCC exchange. The bit is retained so
+    // re-encoding preserves the wire value.
+    const UNDEFINED_BIT: u32 = 0x0000_0080; // undefined in 2.2.1.3.5
+
+    let mut buffer = CLUSTER_DATA_BUFFER.to_vec();
+    let flags = u32::from_le_bytes(buffer[0..4].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[0..4].copy_from_slice(&flags.to_le_bytes());
+
+    let data: ClientClusterData = decode(buffer.as_slice()).expect("undefined redirection bits are not fatal");
+
+    assert_ne!(data.flags.bits() & UNDEFINED_BIT, 0);
+    assert_eq!(encode_vec(&data).unwrap(), buffer);
+}
+
+#[test]
 fn to_buffer_correctly_serializes_client_cluster_data() {
     let data = CLUSTER_DATA.clone();
     let expected_buffer = CLUSTER_DATA_BUFFER;
@@ -556,6 +573,25 @@ fn from_buffer_correctly_parses_client_monitor_data_with_monitors() {
 }
 
 #[test]
+fn monitor_with_undefined_flag_bits_decodes_and_retains_them() {
+    // [MS-RDPBCGR] 2.2.1.3.6.1 defines only TS_MONITOR_PRIMARY; a vendor or
+    // future bit must not refuse a multimon client at GCC. The bit is
+    // retained so re-encoding preserves the wire value.
+    const UNDEFINED_BIT: u32 = 0x0000_0002; // undefined in 2.2.1.3.6.1
+
+    let mut buffer = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITH_MONITORS_BUFFER.to_vec();
+    // First monitor starts after the 8-byte header; its flags are the fifth
+    // dword of the 20-byte TS_MONITOR_DEF.
+    let flags = u32::from_le_bytes(buffer[24..28].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[24..28].copy_from_slice(&flags.to_le_bytes());
+
+    let data: ClientMonitorData = decode(buffer.as_slice()).expect("undefined monitor bits are not fatal");
+
+    assert_ne!(data.monitors[0].flags.bits() & UNDEFINED_BIT, 0);
+    assert_eq!(encode_vec(&data).unwrap(), buffer);
+}
+
+#[test]
 fn to_buffer_correctly_serializes_client_monitor_data_without_monitors() {
     let data = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITHOUT_MONITORS.clone();
     let expected_buffer = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER;
@@ -664,6 +700,24 @@ fn from_buffer_correctly_parses_server_multi_transport_channel_data() {
         *ironrdp_testsuite_core::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK,
         decode(buffer).unwrap()
     );
+}
+
+#[test]
+fn multi_transport_with_undefined_flag_bits_decodes_and_retains_them() {
+    // [MS-RDPBCGR] 2.2.1.3.8's transportFlags list has grown before; an
+    // unknown bit must not fail the GCC exchange. The bit is retained so
+    // re-encoding preserves the wire value.
+    const UNDEFINED_BIT: u32 = 0x0000_0002; // undefined in 2.2.1.3.8
+
+    let mut buffer =
+        ironrdp_testsuite_core::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER.to_vec();
+    let flags = u32::from_le_bytes(buffer[0..4].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[0..4].copy_from_slice(&flags.to_le_bytes());
+
+    let data: MultiTransportChannelData = decode(buffer.as_slice()).expect("undefined transport bits are not fatal");
+
+    assert_ne!(data.flags.bits() & UNDEFINED_BIT, 0);
+    assert_eq!(encode_vec(&data).unwrap(), buffer);
 }
 
 #[test]
