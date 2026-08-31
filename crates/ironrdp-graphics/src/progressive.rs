@@ -657,7 +657,6 @@ fn clamp_u8(value: i64) -> u8 {
 /// the fixed-point products overflow i32. Widening keeps the arithmetic
 /// exact for every input a tile can hold, and `clamp_u8` still bounds the
 /// result.
-#[expect(clippy::similar_names, reason = "y/cb/cr are standard YCbCr component names")]
 fn ycbcr_to_rgb(y: i16, cb: i16, cr: i16) -> [u8; 3] {
     let y = i64::from(y) + 128;
     let cb = i64::from(cb);
@@ -2210,7 +2209,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::similar_names, reason = "Cb and Cr are standard YCbCr component names")]
     fn ycbcr_to_rgb_handles_full_i16_range() {
         // These products overflow i32: `cr * 91881` for |cr| > 23372,
         // `cb * 116130` for |cb| > 18492, and the `cb`/`cr` sum.
