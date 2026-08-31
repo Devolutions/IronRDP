@@ -572,6 +572,7 @@ impl ActiveStage {
     ///
     /// If the Display Control Virtual Channel is not available, not yet connected, or has not
     /// received its required server capabilities PDU, this method returns `None`.
+    /// Returns an error when Soft-Sync routes the channel through a multitransport tunnel.
     ///
     /// Per [2.2.2.2.1]:
     /// - The `width` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels, and MUST NOT be an odd value.
@@ -582,7 +583,7 @@ impl ActiveStage {
     /// Use [`ironrdp_displaycontrol::pdu::MonitorLayoutEntry::adjust_display_size`] to adjust `width` and `height` before calling this function
     /// to ensure the display size is within the valid range.
     ///
-    /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
+    /// [2.2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
     pub fn encode_resize(
         &mut self,
         width: u32,
@@ -591,7 +592,7 @@ impl ActiveStage {
         physical_dims: Option<(u32, u32)>,
     ) -> Option<SessionResult<Vec<u8>>> {
         let prepared = self.prepare_resize(width, height, scale_factor, physical_dims)?;
-        Some(prepared.and_then(|batch| self.encode_dvc_messages(batch.into_messages())))
+        Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
     }
 
     /// Returns whether the RDPEI channel is available and ready (SC_READY / CS_READY exchanged).
@@ -644,9 +645,10 @@ impl ActiveStage {
     /// Fully encodes a touch event for the RDPEI dynamic channel.
     ///
     /// Returns `None` when the channel is unavailable, not ready, or suspended.
+    /// Returns an error when Soft-Sync routes the channel through a multitransport tunnel.
     pub fn encode_rdpei_touch(&mut self, event: ironrdp_rdpei::pdu::TouchEventPdu) -> Option<SessionResult<Vec<u8>>> {
         let prepared = self.prepare_rdpei_touch(event)?;
-        Some(prepared.and_then(|batch| self.encode_dvc_messages(batch.into_messages())))
+        Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
     }
 
     /// Prepares a dismiss-hovering-touch-contact PDU for routing over TCP or a Soft-Sync tunnel.
@@ -668,9 +670,11 @@ impl ActiveStage {
     }
 
     /// Fully encodes a dismiss-hovering-touch-contact PDU on the RDPEI channel.
+    ///
+    /// Returns an error when Soft-Sync routes the channel through a multitransport tunnel.
     pub fn encode_rdpei_dismiss_hovering(&mut self, contact_id: u8) -> Option<SessionResult<Vec<u8>>> {
         let prepared = self.prepare_rdpei_dismiss_hovering(contact_id)?;
-        Some(prepared.and_then(|batch| self.encode_dvc_messages(batch.into_messages())))
+        Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
     }
 
     /// Prepares a pen event for routing over TCP or a Soft-Sync tunnel.
@@ -709,13 +713,24 @@ impl ActiveStage {
     /// Fully encodes a pen event for the RDPEI dynamic channel.
     ///
     /// Returns `None` when the channel is unavailable, not ready, suspended, or pen is not allowed.
+    /// Returns an error when Soft-Sync routes the channel through a multitransport tunnel.
     pub fn encode_rdpei_pen(&mut self, event: ironrdp_rdpei::pdu::PenEventPdu) -> Option<SessionResult<Vec<u8>>> {
         let prepared = self.prepare_rdpei_pen(event)?;
-        Some(prepared.and_then(|batch| self.encode_dvc_messages(batch.into_messages())))
+        Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
     }
 
     pub fn encode_dvc_messages(&mut self, messages: Vec<SvcMessage>) -> SessionResult<Vec<u8>> {
         self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(messages))
+    }
+
+    fn encode_dvc_batch_over_tcp(&mut self, batch: DvcMessageBatch) -> SessionResult<Vec<u8>> {
+        if self.dvc_tunnel_for_channel(batch.channel_id()).is_some() {
+            return Err(SessionError::general(
+                "dynamic channel is routed through a multitransport tunnel",
+            ));
+        }
+
+        self.encode_dvc_messages(batch.into_messages())
     }
 }
 
@@ -1345,6 +1360,20 @@ mod tests {
 
         assert_eq!(stage.dvc_tunnel_for_channel(2), Some(SoftSyncTunnelType::RELIABLE_UDP));
         assert!(stage.reliable_udp_dvc_tunnel_in_use());
+        assert!(stage.encode_resize(1024, 768, None, None).unwrap().is_err());
+        assert!(
+            stage
+                .encode_rdpei_touch(TouchEventPdu::new(0, Vec::new()))
+                .unwrap()
+                .is_err()
+        );
+        assert!(stage.encode_rdpei_dismiss_hovering(3).unwrap().is_err());
+        assert!(
+            stage
+                .encode_rdpei_pen(PenEventPdu::new(0, Vec::new()))
+                .unwrap()
+                .is_err()
+        );
 
         let rdpei_ready = encode_vec(&RdpeiPdu::ScReady(ScReadyPdu::new(RdpInputProtocolVersion::V200))).unwrap();
         let tunnel_data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
