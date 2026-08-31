@@ -8,14 +8,6 @@ mod http_control;
 mod packet_io;
 #[cfg(feature = "rustls")]
 mod packet_io_rustls;
-#[expect(dead_code, unreachable_pub, reason = "tests import private protocol structures")]
-#[path = "../../../ironrdp-mstsgu/src/proto.rs"]
-#[expect(
-    clippy::allow_attributes,
-    reason = "the imported protocol source contains an intentionally unfulfilled expectation"
-)]
-#[allow(unfulfilled_lint_expectations)]
-mod proto;
 #[cfg(feature = "native-tls")]
 mod proxy;
 mod rpc_pdu;
