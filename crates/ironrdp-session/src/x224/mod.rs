@@ -6,7 +6,7 @@ use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareDataCtx, ShareDataPdu,
+    BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, IoChannelPdu, ShareDataCtx, ShareDataPdu,
 };
 use ironrdp_pdu::rdp::heartbeat::HeartbeatPdu;
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
@@ -255,6 +255,15 @@ impl Processor {
     ) -> SessionResult<Vec<ProcessorOutput>> {
         debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
 
+        // Multitransport PDUs use BasicSecurityHeader, so the first two bytes are flags
+        // rather than Share Control totalLength. Delegate before walking concatenated PDUs.
+        if matches!(
+            ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx),
+            Ok(IoChannelPdu::MultitransportRequest(_))
+        ) {
+            return self.process_io_channel(data_ctx, bulk_decompressor);
+        }
+
         let mut outputs = Vec::new();
         let mut offset = 0usize;
         let data = data_ctx.user_data;
@@ -296,15 +305,15 @@ impl Processor {
         let io_channel = ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx).map_err(SessionError::decode)?;
 
         match io_channel {
-            ironrdp_pdu::rdp::headers::IoChannelPdu::Data(ctx) => Self::process_share_data(ctx, bulk_decompressor),
-            ironrdp_pdu::rdp::headers::IoChannelPdu::MultitransportRequest(pdu) => {
+            IoChannelPdu::Data(ctx) => Self::process_share_data(ctx, bulk_decompressor),
+            IoChannelPdu::MultitransportRequest(pdu) => {
                 debug!(
                     request_id = pdu.request_id,
                     "Ignoring Initiate Multitransport Request received outside the MCS message channel"
                 );
                 Ok(Vec::new())
             }
-            ironrdp_pdu::rdp::headers::IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll]),
+            IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll]),
         }
     }
 
@@ -652,7 +661,7 @@ mod tests {
         let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, Some(1004), 0);
 
         let outputs = processor
-            .process_io_channel(
+            .process_io_channel_data_indication(
                 SendDataIndicationCtx {
                     initiator_id: 1002,
                     channel_id: 1003,
