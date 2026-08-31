@@ -7,7 +7,10 @@ pub(crate) type Error = ironrdp_error::Error<GwErrorKind>;
 #[derive(Debug)]
 pub(crate) enum GwErrorKind {
     Connect,
+    GatewayCode(u32),
+    HttpStatus(u16),
     PacketEof,
+    UnsupportedFeature,
     Custom,
     Encode,
     Decode,
@@ -32,7 +35,10 @@ impl fmt::Display for GwErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Connect => "connection error",
+            Self::GatewayCode(code) => return write!(f, "gateway error 0x{code:08x}"),
+            Self::HttpStatus(status) => return write!(f, "unexpected http status {status}"),
             Self::PacketEof => "packet EOF",
+            Self::UnsupportedFeature => "unsupported feature",
             Self::Custom => "custom",
             Self::Encode => "encode",
             Self::Decode => "decode",
