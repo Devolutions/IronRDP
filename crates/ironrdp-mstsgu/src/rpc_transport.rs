@@ -99,12 +99,6 @@ where
                     GwErrorKind::Decode,
                 )
             })?;
-            if length > MAX_AUTH_RESPONSE_BODY {
-                return Err(Error::new(
-                    "rpch authentication response body exceeds limit",
-                    GwErrorKind::Decode,
-                ));
-            }
             drain_body(&mut self.stream, length).await?;
         }
         Ok(response)
@@ -311,6 +305,13 @@ pub(crate) async fn drain_body<S>(stream: &mut S, length: u32) -> Result<(), Err
 where
     S: AsyncRead + Unpin,
 {
+    if length > MAX_AUTH_RESPONSE_BODY {
+        return Err(Error::new(
+            "rpch authentication response body exceeds limit",
+            GwErrorKind::Decode,
+        ));
+    }
+
     let mut remaining = usize::try_from(length).map_err(|_| Error::new("rpch body length", GwErrorKind::Decode))?;
     let mut chunk = [0u8; 4096];
     while remaining > 0 {

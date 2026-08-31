@@ -14,7 +14,6 @@ categories.workspace = true
 
 [lib]
 doctest = false
-test = false
 
 [[test]]
 name = "http_auth"
@@ -44,10 +43,6 @@ path = "tests/rpc_tsgu_stubs.rs"
 [[test]]
 name = "rpch_http"
 path = "tests/rpch_http.rs"
-
-[[test]]
-name = "rpch_session"
-path = "tests/rpch_session.rs"
 
 [[test]]
 name = "tunnel_policy"
