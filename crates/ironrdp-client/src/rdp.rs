@@ -19,10 +19,10 @@ use ironrdp_connector::{ConnectionResult, ConnectorResult};
 use ironrdp_core::WriteBuf;
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_displaycontrol::pdu::MonitorLayoutEntry;
-#[cfg(any(all(windows, feature = "dvc-com-plugin"), feature = "sound"))]
-use ironrdp_dvc::{DvcChannelListener, DvcClientProcessor, DynamicChannelId};
 use ironrdp_dvc::DvcMessageBatch;
 use ironrdp_dvc::pdu::SoftSyncTunnelType;
+#[cfg(any(all(windows, feature = "dvc-com-plugin"), feature = "sound"))]
+use ironrdp_dvc::{DvcChannelListener, DvcClientProcessor, DynamicChannelId};
 use ironrdp_echo::client::EchoClient;
 use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
 use ironrdp_graphics::image_processing::PixelFormat;
