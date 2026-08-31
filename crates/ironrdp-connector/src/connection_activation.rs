@@ -662,12 +662,17 @@ fn requested_bitmap_color_depth(bitmap: Option<&crate::BitmapConfig>) -> Connect
 
 #[cfg(test)]
 mod tests {
-    use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, Rail, RailSupportLevel, WindowList, WindowSupportLevel};
+    use ironrdp_pdu::gcc;
+    use ironrdp_pdu::rdp::capability_sets::{
+        BitmapCodecs, CapabilitySet, Codec, CodecProperty, FrameAcknowledge, Rail, RailSupportLevel, WindowList,
+        WindowSupportLevel,
+    };
 
     use super::{
-        negotiated_window_support_level, remote_app_rail_capability, requested_bitmap_color_depth, server_window_list,
+        create_client_confirm_active, negotiated_window_support_level, remote_app_rail_capability,
+        requested_bitmap_color_depth, server_window_list,
     };
-    use crate::BitmapConfig;
+    use crate::{BitmapConfig, Config, Credentials, DesktopSize};
 
     #[test]
     fn bitmap_capability_uses_requested_color_depth() {
@@ -676,7 +681,7 @@ mod tests {
             let bitmap = BitmapConfig {
                 color_depth: u32::from(expected_color_depth),
                 lossy_compression: false,
-                codecs: ironrdp_pdu::rdp::capability_sets::BitmapCodecs(Vec::new()),
+                codecs: BitmapCodecs(Vec::new()),
             };
 
             assert_eq!(
@@ -759,5 +764,143 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn confirm_active_omits_surface_capabilities_without_bitmap_codecs() {
+        for bitmap in [
+            None,
+            Some(BitmapConfig {
+                color_depth: 32,
+                lossy_compression: false,
+                codecs: BitmapCodecs(Vec::new()),
+            }),
+        ] {
+            let confirm = create_client_confirm_active(
+                &test_config(bitmap),
+                Vec::new(),
+                DesktopSize {
+                    width: 1024,
+                    height: 768,
+                },
+                None,
+            )
+            .unwrap();
+
+            assert!(
+                !confirm
+                    .pdu
+                    .capability_sets
+                    .iter()
+                    .any(|capability| matches!(capability, CapabilitySet::SurfaceCommands(_))),
+                "legacy graphics must omit SurfaceCommands"
+            );
+            assert!(
+                !confirm
+                    .pdu
+                    .capability_sets
+                    .iter()
+                    .any(|capability| matches!(capability, CapabilitySet::BitmapCodecs(_))),
+                "legacy graphics must omit BitmapCodecs"
+            );
+            assert!(
+                !confirm
+                    .pdu
+                    .capability_sets
+                    .iter()
+                    .any(|capability| matches!(capability, CapabilitySet::FrameAcknowledge(_))),
+                "legacy graphics must omit FrameAcknowledge"
+            );
+        }
+    }
+
+    #[test]
+    fn confirm_active_advertises_surface_capabilities_with_bitmap_codecs() {
+        let codecs = BitmapCodecs(vec![Codec {
+            id: 1,
+            property: CodecProperty::Ignore,
+        }]);
+        let confirm = create_client_confirm_active(
+            &test_config(Some(BitmapConfig {
+                color_depth: 32,
+                lossy_compression: false,
+                codecs: codecs.clone(),
+            })),
+            Vec::new(),
+            DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            confirm
+                .pdu
+                .capability_sets
+                .iter()
+                .any(|capability| matches!(capability, CapabilitySet::SurfaceCommands(_)))
+        );
+        assert!(
+            confirm
+                .pdu
+                .capability_sets
+                .contains(&CapabilitySet::BitmapCodecs(codecs))
+        );
+        assert!(confirm.pdu.capability_sets.iter().any(|capability| matches!(
+            capability,
+            CapabilitySet::FrameAcknowledge(FrameAcknowledge {
+                max_unacknowledged_frame_count: 20,
+            })
+        )));
+    }
+
+    fn test_config(bitmap: Option<BitmapConfig>) -> Config {
+        Config {
+            desktop_size: DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            monitor_layout: None,
+            desktop_scale_factor: 0,
+            enable_tls: true,
+            enable_credssp: false,
+            enable_standard_rdp_security: false,
+            credentials: Credentials::UsernamePassword {
+                username: "test".into(),
+                password: "test".into(),
+            },
+            domain: None,
+            client_build: 0,
+            client_name: "test".into(),
+            keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
+            keyboard_subtype: 0,
+            keyboard_layout: 0,
+            keyboard_functional_keys_count: 12,
+            connection_type: gcc::ConnectionType::Lan,
+            ime_file_name: String::new(),
+            bitmap,
+            dig_product_id: String::new(),
+            client_dir: String::new(),
+            platform: ironrdp_pdu::rdp::capability_sets::MajorPlatformType::UNIX,
+            hardware_id: None,
+            request_data: None,
+            autologon: false,
+            enable_audio_playback: false,
+            enable_audio_capture: false,
+            license_cache: None,
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+            multitransport_flags: None,
+            support_dyn_vc_gfx_protocol: false,
+            performance_flags: Default::default(),
+            timezone_info: Default::default(),
+            alternate_shell: String::new(),
+            work_dir: String::new(),
+            remote_application_mode: false,
+            rail_support_level: RailSupportLevel::SUPPORTED,
+        }
     }
 }
