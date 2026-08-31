@@ -2652,7 +2652,7 @@ dependencies = [
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
  "ironrdp-rpc",
- "md-5 0.10.6",
+ "md-5 0.11.0",
  "serde",
  "serde_json",
  "tokio",
