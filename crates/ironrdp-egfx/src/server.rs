@@ -1370,9 +1370,8 @@ impl GraphicsPipelineServer {
 
     /// Compute bounding rectangle from regions.
     ///
-    /// Avc420Region uses inclusive bounds; the wire format (RDPGFX_RECT16) is
-    /// exclusive, so the returned ExclusiveRectangle adds 1 to the max right
-    /// and bottom of the inclusive bounding box.
+    /// `Avc420Region` and the wire-format `RDPGFX_RECT16` both use exclusive
+    /// right and bottom bounds.
     fn compute_dest_rect(regions: &[Avc420Region], default_width: u16, default_height: u16) -> ExclusiveRectangle {
         if let Some(first) = regions.first() {
             let mut left = first.left;
@@ -1390,8 +1389,8 @@ impl GraphicsPipelineServer {
             ExclusiveRectangle {
                 left,
                 top,
-                right: right.saturating_add(1),
-                bottom: bottom.saturating_add(1),
+                right,
+                bottom,
             }
         } else {
             ExclusiveRectangle {
@@ -1465,6 +1464,87 @@ impl GraphicsPipelineServer {
         chroma_regions: Option<&[Avc420Region]>,
         timestamp_ms: u32,
     ) -> Option<u32> {
+        let (encoding, stream2_data, stream2_regions) =
+            if let (Some(chroma_data), Some(chroma_regions)) = (chroma_data, chroma_regions) {
+                (Encoding::LUMA_AND_CHROMA, Some(chroma_data), Some(chroma_regions))
+            } else {
+                (Encoding::LUMA, None, None)
+            };
+
+        self.send_avc444_frame_with_encoding(
+            Codec1Type::Avc444,
+            surface_id,
+            encoding,
+            luma_data,
+            luma_regions,
+            stream2_data,
+            stream2_regions,
+            timestamp_ms,
+        )
+    }
+
+    /// Queue an H.264 AVC444v2 frame for transmission.
+    ///
+    /// `encoding` selects the AVC444v2 stream layout: LC=0 carries luma in
+    /// stream 1 and chroma in stream 2, LC=1 carries luma in stream 1, and LC=2
+    /// carries chroma in stream 1.
+    ///
+    /// Returns `Some(frame_id)` if queued, `None` if the stream shape is
+    /// invalid, AVC444 is not supported, or backpressure is active.
+    ///
+    /// [2.2.4.6 RFX_AVC444V2_BITMAP_STREAM]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/3b337b87-f478-4786-a63b-97794aa72075
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the public API mirrors the two AVC444v2 streams"
+    )]
+    pub fn send_avc444v2_frame(
+        &mut self,
+        surface_id: u16,
+        encoding: Encoding,
+        stream1_data: &[u8],
+        stream1_regions: &[Avc420Region],
+        stream2_data: Option<&[u8]>,
+        stream2_regions: Option<&[Avc420Region]>,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
+        self.send_avc444_frame_with_encoding(
+            Codec1Type::Avc444v2,
+            surface_id,
+            encoding,
+            stream1_data,
+            stream1_regions,
+            stream2_data,
+            stream2_regions,
+            timestamp_ms,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the shared implementation receives both AVC444 streams"
+    )]
+    fn send_avc444_frame_with_encoding(
+        &mut self,
+        codec_id: Codec1Type,
+        surface_id: u16,
+        encoding: Encoding,
+        stream1_data: &[u8],
+        stream1_regions: &[Avc420Region],
+        stream2_data: Option<&[u8]>,
+        stream2_regions: Option<&[Avc420Region]>,
+        timestamp_ms: u32,
+    ) -> Option<u32> {
+        let valid_stream_shape = if encoding == Encoding::LUMA_AND_CHROMA {
+            stream2_data.is_some() && stream2_regions.is_some()
+        } else if encoding == Encoding::LUMA || encoding == Encoding::CHROMA {
+            stream2_data.is_none() && stream2_regions.is_none()
+        } else {
+            false
+        };
+        if !valid_stream_shape {
+            return None;
+        }
+
         if !self.is_ready() {
             return None;
         }
@@ -1481,29 +1561,28 @@ impl GraphicsPipelineServer {
         let timestamp = Self::make_timestamp(timestamp_ms);
         let frame_id = self.frames.begin_frame(timestamp);
 
-        let luma_rectangles: Vec<_> = luma_regions.iter().map(Avc420Region::to_rectangle).collect();
-        let luma_quant_vals: Vec<_> = luma_regions.iter().map(Avc420Region::to_quant_quality).collect();
+        let stream1_rectangles: Vec<_> = stream1_regions.iter().map(Avc420Region::to_rectangle).collect();
+        let stream1_quant_vals: Vec<_> = stream1_regions.iter().map(Avc420Region::to_quant_quality).collect();
 
         let stream1 = Avc420BitmapStream {
-            rectangles: luma_rectangles,
-            quant_qual_vals: luma_quant_vals,
-            data: luma_data,
+            rectangles: stream1_rectangles,
+            quant_qual_vals: stream1_quant_vals,
+            data: stream1_data,
         };
 
-        let (encoding, stream2) = if let (Some(chroma), Some(chroma_regs)) = (chroma_data, chroma_regions) {
-            let chroma_rectangles: Vec<_> = chroma_regs.iter().map(Avc420Region::to_rectangle).collect();
-            let chroma_quant_vals: Vec<_> = chroma_regs.iter().map(Avc420Region::to_quant_quality).collect();
+        let stream2 = if encoding == Encoding::LUMA_AND_CHROMA {
+            let stream2_data = stream2_data?;
+            let stream2_regions = stream2_regions?;
+            let stream2_rectangles: Vec<_> = stream2_regions.iter().map(Avc420Region::to_rectangle).collect();
+            let stream2_quant_vals: Vec<_> = stream2_regions.iter().map(Avc420Region::to_quant_quality).collect();
 
-            (
-                Encoding::LUMA_AND_CHROMA,
-                Some(Avc420BitmapStream {
-                    rectangles: chroma_rectangles,
-                    quant_qual_vals: chroma_quant_vals,
-                    data: chroma,
-                }),
-            )
+            Some(Avc420BitmapStream {
+                rectangles: stream2_rectangles,
+                quant_qual_vals: stream2_quant_vals,
+                data: stream2_data,
+            })
         } else {
-            (Encoding::LUMA, None)
+            None
         };
 
         let avc444_stream = Avc444BitmapStream {
@@ -1513,14 +1592,18 @@ impl GraphicsPipelineServer {
         };
 
         let encoded_stream = encode_avc444_bitmap_stream(&avc444_stream);
-        let target_rect = Self::compute_dest_rect(luma_regions, surface.width, surface.height);
+        let target_rect = if let Some(stream2_regions) = stream2_regions {
+            Self::compute_dest_rect_for_streams(stream1_regions, stream2_regions, surface.width, surface.height)
+        } else {
+            Self::compute_dest_rect(stream1_regions, surface.width, surface.height)
+        };
 
         self.output_queue
             .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
 
         self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
             surface_id,
-            codec_id: Codec1Type::Avc444,
+            codec_id,
             pixel_format: surface.pixel_format,
             destination_rectangle: target_rect,
             bitmap_data: encoded_stream,
@@ -1529,6 +1612,23 @@ impl GraphicsPipelineServer {
         self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
 
         Some(frame_id)
+    }
+
+    fn compute_dest_rect_for_streams(
+        stream1_regions: &[Avc420Region],
+        stream2_regions: &[Avc420Region],
+        default_width: u16,
+        default_height: u16,
+    ) -> ExclusiveRectangle {
+        let stream1 = Self::compute_dest_rect(stream1_regions, default_width, default_height);
+        let stream2 = Self::compute_dest_rect(stream2_regions, default_width, default_height);
+
+        ExclusiveRectangle {
+            left: stream1.left.min(stream2.left),
+            top: stream1.top.min(stream2.top),
+            right: stream1.right.max(stream2.right),
+            bottom: stream1.bottom.max(stream2.bottom),
+        }
     }
 
     /// Queue a pre-encoded RDP6 Planar bitmap stream for transmission via EGFX.
