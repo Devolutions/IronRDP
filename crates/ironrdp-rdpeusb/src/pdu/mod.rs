@@ -68,6 +68,7 @@ impl UrbdrcServerControlPdu {
 }
 
 pub enum UrbdrcServerDevicePdu {
+    Caps(RimExchangeCapabilityRequest),
     ChanCreated(ChannelCreated),
     IfaceRelease(InterfaceRelease),
     QueryIfaceReq(QueryInterfaceRequest),
@@ -82,6 +83,19 @@ pub enum UrbdrcServerDevicePdu {
 }
 
 impl UrbdrcServerDevicePdu {
+    fn decode_caps(src: &mut ReadCursor<'_>, f_id: FunctionId, header: SharedMsgHeader) -> DecodeResult<Self> {
+        match f_id {
+            FunctionId::RIM_EXCHANGE_CAPABILITY_REQUEST => {
+                RimExchangeCapabilityRequest::decode(src, header).map(Self::Caps)
+            }
+            FunctionId::RIMCALL_RELEASE => Ok(Self::IfaceRelease(InterfaceRelease::from_header(header))),
+            FunctionId::RIMCALL_QUERYINTERFACE => QueryInterfaceRequest::decode(src, header).map(Self::QueryIfaceReq),
+            _ => Err(invalid_field_err!(
+                "SHARED_MSG_HEADER",
+                "invalid RIM_EXCHANGE_CAPABILITY_REQUEST header"
+            )),
+        }
+    }
     fn decode_notification(src: &mut ReadCursor<'_>, f_id: FunctionId, header: SharedMsgHeader) -> DecodeResult<Self> {
         match f_id {
             FunctionId::CHANNEL_CREATED => ChannelCreated::decode(src, header).map(Self::ChanCreated),
@@ -114,6 +128,7 @@ impl Decode<'_> for UrbdrcServerDevicePdu {
         let f_id = header.function_id.expect("missing function id");
 
         match unpack(header.iface_id)? {
+            (InterfaceId::CAPABILITIES, Mask::None) => Self::decode_caps(src, f_id, header),
             (InterfaceId::NOTIFY_CLIENT, Mask::Proxy) => Self::decode_notification(src, f_id, header),
             (udev_iface, Mask::Proxy) => match f_id {
                 FunctionId::RIMCALL_RELEASE => Ok(Self::IfaceRelease(InterfaceRelease::from_header(header))),
@@ -166,6 +181,7 @@ macro_rules! fill_server_dev_pdu_arms {
     ($pdu:expr, $($tokens:tt)*) => {{
         use UrbdrcServerDevicePdu::*;
         match <&UrbdrcServerDevicePdu>::from($pdu) {
+            Caps(rim_exchange_capability_request) => rim_exchange_capability_request$($tokens)*,
             ChanCreated(channel_created) => channel_created$($tokens)*,
             IfaceRelease(iface_release) => iface_release$($tokens)*,
             QueryIfaceReq(query_iface_req) => query_iface_req$($tokens)*,
@@ -219,6 +235,7 @@ pub enum UrbdrcClientControlPdu {
 }
 
 pub enum UrbdrcClientDevicePdu<P> {
+    Caps(RimExchangeCapabilityResponse),
     ChanCreated(ChannelCreated),
     AddDev(AddDevice),
     DevTextRsp(QueryDeviceTextRsp),
@@ -307,6 +324,9 @@ impl Decode<'_> for UrbdrcClientDevicePdu<Raw> {
         let header = SharedMsgHeader::decode(src)?;
 
         match unpack(header.iface_id)? {
+            (InterfaceId::CAPABILITIES, Mask::None) => {
+                RimExchangeCapabilityResponse::decode(src, header).map(Self::Caps)
+            }
             (InterfaceId::DEVICE_SINK, Mask::Proxy) => Self::decode_sink(src, header),
             (InterfaceId::NOTIFY_SERVER, Mask::Proxy) => Self::decode_notification(src, header),
             (udev_iface, Mask::Stub) => {
@@ -356,6 +376,7 @@ macro_rules! fill_client_dev_pdu_arms {
     ($pdu:expr, $($tokens:tt)*) => {{
         use UrbdrcClientDevicePdu::*;
         match <&UrbdrcClientDevicePdu<TsUrbResultPayload>>::from($pdu) {
+            Caps(rim_exchange_capability_response) => rim_exchange_capability_response$($tokens)*,
             ChanCreated(channel_created) => channel_created$($tokens)*,
             IfaceRelease(iface_release) => iface_release$($tokens)*,
             QueryIfaceReq(query_iface_req) => query_iface_req$($tokens)*,

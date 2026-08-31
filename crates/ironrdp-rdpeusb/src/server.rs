@@ -238,6 +238,8 @@ pub struct UrbdrcDeviceServer {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DeviceState {
+    AwaitingCaps,
+    AwaitingChanCreated,
     AwaitingDevice,
     Ready,
     Retracted,
@@ -303,7 +305,7 @@ impl UrbdrcDeviceServer {
         Ok(Self {
             msg_alloc: IdAllocator::new(),
             request_id_alloc: RequestIdAllocator::new(),
-            state: DeviceState::AwaitingDevice,
+            state: DeviceState::AwaitingCaps,
             udev_iface: None,
             comp_iface,
             no_ack_isoch_write_jitter_buf_size: None,
@@ -655,9 +657,9 @@ impl DvcProcessor for UrbdrcDeviceServer {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        Ok(vec![Box::new(ChannelCreated {
+        Ok(vec![Box::new(RimExchangeCapabilityRequest {
             msg_id: self.msg_alloc.alloc(),
-            direction: crate::pdu::notify::Direction::ToClient,
+            capability: crate::pdu::caps::Capability::RimCapabilityVersion01,
         })])
     }
 
@@ -675,11 +677,30 @@ impl DvcProcessor for UrbdrcDeviceServer {
 
         use UrbdrcClientDevicePdu::*;
         match pdu {
+            Caps(_caps_response_pdu) => {
+                if self.state != DeviceState::AwaitingCaps {
+                    return Err(pdu_other_err!("invalid state"));
+                }
+                resp.push(Box::new(InterfaceRelease {
+                    iface_id: InterfaceId::CAPABILITIES.with_mask(Mask::None),
+                    msg_id: self.msg_alloc.alloc(),
+                }));
+                resp.push(Box::new(ChannelCreated {
+                    msg_id: self.msg_alloc.alloc(),
+                    direction: crate::pdu::notify::Direction::ToClient,
+                }));
+                self.state = DeviceState::AwaitingChanCreated;
+                Ok(resp)
+            }
             ChanCreated(_channel_created_pdu) => {
+                if self.state != DeviceState::AwaitingChanCreated {
+                    return Err(pdu_other_err!("invalid state"));
+                }
                 resp.push(Box::new(InterfaceRelease {
                     msg_id: self.msg_alloc.alloc(),
                     iface_id: InterfaceId::NOTIFY_CLIENT.with_mask(Mask::Proxy),
                 }));
+                self.state = DeviceState::AwaitingDevice;
                 Ok(resp)
             }
             AddDev(add_dev_pdu) => {

@@ -502,6 +502,11 @@ impl DvcProcessor for UrbdrcDeviceClient {
 
         use UrbdrcServerDevicePdu::*;
         match pdu {
+            Caps(caps_req_pdu) => Ok(vec![Box::new(RimExchangeCapabilityResponse {
+                msg_id: caps_req_pdu.msg_id,
+                capability: Capability::RimCapabilityVersion01,
+                result: 0,
+            })]),
             ChanCreated(chan_created_pdu) => Ok(vec![Box::new(ChannelCreated {
                 msg_id: chan_created_pdu.msg_id,
                 direction: crate::pdu::notify::Direction::ToServer,
