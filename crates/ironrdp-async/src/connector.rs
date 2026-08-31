@@ -62,7 +62,7 @@ where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
 {
-    connect_finalize_with_multitransport(
+    Box::pin(connect_finalize_with_multitransport(
         upgraded,
         connector,
         framed,
@@ -75,20 +75,23 @@ where
                 ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu::E_ABORT,
             ))
         },
-    )
+    ))
     .await
 }
 
 /// Completes the connection sequence with application-owned multitransport setup.
 ///
-/// The handler receives one Initiate Multitransport Request at a time and returns
-/// the result to send over the main RDP connection.
+/// The handler receives one Initiate Multitransport Request at a time and returns the result to send over the main RDP connection.
+///
+/// Returning `MultitransportResult::Failure` reports setup failure and continues connection finalization over TCP.
+/// Returning an error aborts connection finalization after attempting to report `E_ABORT` to the server.
+/// The handler owns any successfully established transport and must retain it for use after this function returns.
 #[expect(
     clippy::too_many_arguments,
     reason = "extends the established connection-finalization API with a multitransport callback"
 )]
 #[instrument(skip_all)]
-pub async fn connect_finalize_with_multitransport<S, N, H, F>(
+pub async fn connect_finalize_with_multitransport<S, N, H>(
     _: Upgraded,
     mut connector: ClientConnector,
     framed: &mut Framed<S>,
@@ -101,8 +104,10 @@ pub async fn connect_finalize_with_multitransport<S, N, H, F>(
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
-    H: FnMut(ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu, bool) -> F,
-    F: Future<Output = ConnectorResult<ironrdp_connector::MultitransportResult>>,
+    H: AsyncFnMut(
+        ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu,
+        bool,
+    ) -> ConnectorResult<ironrdp_connector::MultitransportResult>,
 {
     let mut buf = WriteBuf::new();
 
