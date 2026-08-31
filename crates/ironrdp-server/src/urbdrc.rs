@@ -1414,7 +1414,7 @@ struct RawPending {
 
 /// Identity and completion channel of one in-flight I/O request.
 #[derive(Debug)]
-pub struct PendingIo {
+pub(crate) struct PendingIo {
     pub(super) rx: oneshot::Receiver<CompletionData>,
     pub(super) id: RequestId,
 }

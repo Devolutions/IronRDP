@@ -55,7 +55,7 @@ pub use server::{
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 #[cfg(feature = "usb")]
 pub use urbdrc::{
-    CompletionFut, DeviceFactory, PendingHandle, PendingIo, PendingRequest, RdpUsbDeviceAnnounceInfo, UsbDeviceHandle,
+    CompletionFut, DeviceFactory, PendingHandle, PendingRequest, RdpUsbDeviceAnnounceInfo, UsbDeviceHandle,
     UsbRedirDevice, UsbRequestCompletion,
 };
 #[cfg(feature = "__bench")]
