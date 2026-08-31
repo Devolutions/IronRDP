@@ -23,6 +23,7 @@ pub(crate) enum MockRpchScenario {
     MessageBeforeCreateChannel(MockTunnelMessage),
     ReceivePipeError(u32),
     InvalidOutFragmentLength,
+    BasicAuthentication,
 }
 
 #[derive(Clone, Copy)]
@@ -39,10 +40,11 @@ pub(crate) fn mock_rpch_proxy(scenario: MockRpchScenario) -> (DuplexStream, Dupl
 }
 
 async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: MockRpchScenario) {
-    let Some(in_cookie) = accept_in_channel(&mut input).await else {
+    let requires_basic_auth = matches!(scenario, MockRpchScenario::BasicAuthentication);
+    if !begin_in_channel(&mut input, requires_basic_auth).await {
         return;
-    };
-    if !accept_out_channel(&mut out).await {
+    }
+    if !accept_out_channel(&mut out, requires_basic_auth).await {
         return;
     }
     if write_all(
@@ -54,6 +56,9 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
     {
         return;
     }
+    let Some(in_cookie) = complete_in_channel(&mut input).await else {
+        return;
+    };
     if matches!(scenario, MockRpchScenario::InvalidOutFragmentLength) {
         let mut invalid = [0; 16];
         invalid[..8].copy_from_slice(&[5, 0, PTYPE_RTS, 3, 0x10, 0, 0, 0]);
@@ -183,9 +188,13 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
                         )) else {
                             return;
                         };
-                        let response_call_id = receive_pipe_call_id.unwrap_or(request_call_id);
                         if write_all(&mut out, &ack).await.is_err()
-                            || write_response(&mut out, response_call_id, data).await.is_err()
+                            || write_response(&mut out, request_call_id, &0u32.to_le_bytes())
+                                .await
+                                .is_err()
+                            || write_response(&mut out, receive_pipe_call_id.unwrap_or(request_call_id), data)
+                                .await
+                                .is_err()
                         {
                             return;
                         }
@@ -199,46 +208,103 @@ async fn run_proxy(mut out: DuplexStream, mut input: DuplexStream, scenario: Moc
     }
 }
 
-async fn accept_in_channel(input: &mut DuplexStream) -> Option<RtsCookie> {
-    if read_request_content_length(input).await? != 0 {
-        return None;
+async fn begin_in_channel(input: &mut DuplexStream, requires_basic_auth: bool) -> bool {
+    let Some(request) = read_request_head(input).await else {
+        return false;
+    };
+    if !valid_in_request(&request, false) {
+        return false;
     }
-    write_all(input, b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-        .await
-        .ok()?;
-    if read_request_content_length(input).await? == 0 {
-        return None;
+    if write_all(
+        input,
+        if requires_basic_auth {
+            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nWWW-Authenticate: Basic\r\n\r\n"
+        } else {
+            b"HTTP/1.1 100 Continue\r\n\r\n"
+        },
+    )
+    .await
+    .is_err()
+    {
+        return false;
     }
+
+    if requires_basic_auth {
+        let Some(request) = read_request_head(input).await else {
+            return false;
+        };
+        if !valid_in_request(&request, true) || write_all(input, b"HTTP/1.1 100 Continue\r\n\r\n").await.is_err() {
+            return false;
+        }
+    }
+
+    true
+}
+
+async fn complete_in_channel(input: &mut DuplexStream) -> Option<RtsCookie> {
     let conn_b1 = read_pdu(input).await?;
     conn_b1.get(52..68)?.try_into().ok().map(RtsCookie::new)
 }
 
-async fn accept_out_channel(out: &mut DuplexStream) -> bool {
-    if read_request_content_length(out).await != Some(0) {
+async fn accept_out_channel(out: &mut DuplexStream, requires_basic_auth: bool) -> bool {
+    let Some(request) = read_request_head(out).await else {
+        return false;
+    };
+    if !valid_out_request(&request, false) || !read_out_body(out).await {
         return false;
     }
-    if write_all(out, b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+
+    if requires_basic_auth {
+        if write_all(
+            out,
+            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nWWW-Authenticate: Basic\r\n\r\n",
+        )
         .await
         .is_err()
-    {
-        return false;
+        {
+            return false;
+        }
+        let Some(request) = read_request_head(out).await else {
+            return false;
+        };
+        valid_out_request(&request, true) && read_out_body(out).await
+    } else {
+        true
     }
-    if read_request_content_length(out).await != Some(76) {
-        return false;
-    }
+}
+
+async fn read_out_body(out: &mut DuplexStream) -> bool {
     let mut conn_a1 = [0; 76];
     out.read_exact(&mut conn_a1).await.is_ok()
 }
 
-async fn read_request_content_length(stream: &mut DuplexStream) -> Option<usize> {
-    let head = read_http_head(stream).await?;
-    let text = core::str::from_utf8(&head).ok()?;
-    text.split("\r\n").find_map(|line| {
+async fn read_request_head(stream: &mut DuplexStream) -> Option<String> {
+    String::from_utf8(read_http_head(stream).await?).ok()
+}
+
+fn request_content_length(request: &str) -> Option<usize> {
+    request.split("\r\n").find_map(|line| {
         let (name, value) = line.split_once(':')?;
         name.trim()
             .eq_ignore_ascii_case("content-length")
             .then(|| value.trim().parse().ok())?
     })
+}
+
+fn request_has_basic_auth(request: &str) -> bool {
+    request
+        .split("\r\n")
+        .any(|line| line == "Authorization: Basic Q09OVE9TT1xhbGljZTpzZWNyZXQ=")
+}
+
+fn valid_in_request(request: &str, has_basic_auth: bool) -> bool {
+    request_content_length(request).is_some_and(|length| length >= 128 * 1024)
+        && request.contains("Expect: 100-continue")
+        && request_has_basic_auth(request) == has_basic_auth
+}
+
+fn valid_out_request(request: &str, has_basic_auth: bool) -> bool {
+    request_content_length(request) == Some(76) && request_has_basic_auth(request) == has_basic_auth
 }
 
 async fn read_http_head(stream: &mut DuplexStream) -> Option<Vec<u8>> {

@@ -9,12 +9,18 @@ mod macros;
 
 #[doc(hidden)]
 pub mod http_auth;
+#[cfg(test)]
+mod mock_rpch;
 mod packet_io;
 mod proto;
 #[doc(hidden)]
 pub mod rpc;
-#[expect(dead_code)]
 mod rpc_transport;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "live RPCH transport wiring is intentionally deferred")
+)]
+mod rpch;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod test_support;

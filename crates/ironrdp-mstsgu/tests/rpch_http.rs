@@ -241,10 +241,12 @@ async fn request_head_rejects_invalid_rpch_content_lengths() {
 }
 
 #[tokio::test]
-async fn in_authentication_probe_precedes_the_committed_body() {
+async fn in_authentication_waits_for_continue_before_the_body() {
     let (client, mut server) = tokio::io::duplex(4096);
     let server_task = tokio::spawn(async move {
-        assert!(read_head(&mut server).await.contains("Content-Length: 0"));
+        let request = read_head(&mut server).await;
+        assert!(request.contains("Content-Length: 131072"));
+        assert!(request.contains("Expect: 100-continue"));
         server
             .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 4\r\n\r\ndeny")
             .await
@@ -252,20 +254,27 @@ async fn in_authentication_probe_precedes_the_committed_body() {
         let request = read_head(&mut server).await;
         assert!(request.contains("Content-Length: 131072"));
         assert!(request.contains("Authorization: NTLM token"));
+        assert!(request.contains("Expect: 100-continue"));
+        server
+            .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+            .await
+            .expect("write continue response");
         let mut body = [0; 4];
         server.read_exact(&mut body).await.expect("read committed body");
         assert_eq!(body, *b"B1!!");
     });
 
-    let mut request = rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", None)
-        .await
-        .expect("open authentication probe");
+    let mut request =
+        rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
+            .await
+            .expect("open authentication probe");
     assert!(request.write_body(b"B1!!").await.is_err());
     assert_eq!(request.receive_response().await.expect("read challenge").status, 401);
     request = request
-        .retry(Some("NTLM token"), 128 * 1024)
+        .retry(Some("NTLM token"))
         .await
-        .expect("commit authenticated request");
+        .expect("retry authenticated request");
+    assert_eq!(request.receive_response().await.expect("read continue").status, 100);
     request.write_body(b"B1!!").await.expect("write body");
     assert_eq!(request.remaining(), 128 * 1024 - 4);
     assert!(request.write_body(&vec![0; 128 * 1024]).await.is_err());
@@ -284,9 +293,10 @@ async fn in_authentication_response_requires_a_bounded_body() {
             server.write_all(response).await.expect("write authentication response");
         });
 
-        let mut request = rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", None)
-            .await
-            .expect("open authentication probe");
+        let mut request =
+            rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
+                .await
+                .expect("open authentication probe");
         let error = request
             .receive_response()
             .await
@@ -309,14 +319,15 @@ async fn in_authentication_response_drains_body_at_limit() {
             .await
             .expect("write authentication response body");
         server
-            .write_all(b"HTTP/1.1 200 OK\r\n\r\n")
+            .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
             .await
             .expect("write following response");
     });
 
-    let mut request = rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", None)
-        .await
-        .expect("open authentication probe");
+    let mut request =
+        rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
+            .await
+            .expect("open authentication probe");
     assert_eq!(request.receive_response().await.expect("read challenge").status, 401);
     assert_eq!(
         request
@@ -324,7 +335,7 @@ async fn in_authentication_response_drains_body_at_limit() {
             .await
             .expect("read following response")
             .status,
-        200
+        100
     );
     server_task.await.expect("join server");
 }

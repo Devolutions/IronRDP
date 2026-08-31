@@ -497,6 +497,16 @@ pub fn basic_authorization(username: &str, password: &str) -> String {
     format!("Basic {token}")
 }
 
+pub(crate) async fn run_http_auth<T, F>(f: F) -> Result<T, Error>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, Error> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|error| custom_err!("http auth task", error))?
+}
+
 fn auth_identity(username: &str, password: &str) -> Result<AuthIdentity, Error> {
     let username = Username::parse(username)
         .or_else(|_| Username::new(username, None))

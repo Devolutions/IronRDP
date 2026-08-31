@@ -1,4 +1,4 @@
-#![allow(dead_code, unreachable_pub, unused_crate_dependencies)]
+#![allow(unreachable_pub, unused_crate_dependencies)]
 
 use core::fmt;
 
@@ -10,6 +10,7 @@ enum GwErrorKind {
     GatewayCode(u32),
     HttpStatus(u16),
     PacketEof,
+    UnsupportedFeature,
     Custom,
     Encode,
     Decode,
@@ -37,6 +38,7 @@ impl fmt::Display for GwErrorKind {
             Self::GatewayCode(code) => write!(f, "gateway error 0x{code:08x}"),
             Self::HttpStatus(status) => write!(f, "unexpected http status {status}"),
             Self::PacketEof => f.write_str("packet eof"),
+            Self::UnsupportedFeature => f.write_str("unsupported feature"),
             Self::Custom => f.write_str("custom"),
             Self::Encode => f.write_str("encode"),
             Self::Decode => f.write_str("decode"),
@@ -50,9 +52,22 @@ macro_rules! custom_err {
     ( $context:expr, $source:expr $(,)? ) => {{ <$crate::Error as $crate::GwErrorExt>::custom($context, $source) }};
 }
 
+#[derive(Clone)]
+struct GwSmartCardCredentials;
+
+#[path = "../src/http_auth.rs"]
+#[expect(
+    dead_code,
+    reason = "the integration harness only exercises shared HTTP authentication through RPCH"
+)]
+mod http_auth;
 #[path = "../src/mock_rpch.rs"]
 mod mock_rpch;
 #[path = "../src/rpc.rs"]
+#[expect(
+    dead_code,
+    reason = "the integration harness exercises only the RPCH session codec subset"
+)]
 mod rpc;
 #[path = "../src/rpc_transport.rs"]
 mod rpc_transport;
