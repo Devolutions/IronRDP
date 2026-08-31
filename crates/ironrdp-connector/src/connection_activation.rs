@@ -82,6 +82,7 @@ pub struct ConnectionActivationFactory {
     config: Config,
     io_channel_id: u16,
     user_channel_id: u16,
+    multitransport_soft_sync: bool,
 }
 
 impl ConnectionActivationFactory {
@@ -90,7 +91,17 @@ impl ConnectionActivationFactory {
             config,
             io_channel_id,
             user_channel_id,
+            multitransport_soft_sync: false,
         }
+    }
+
+    pub(crate) fn with_multitransport_soft_sync(mut self, multitransport_soft_sync: bool) -> Self {
+        self.multitransport_soft_sync = multitransport_soft_sync;
+        self
+    }
+
+    pub(crate) fn multitransport_soft_sync(&self) -> bool {
+        self.multitransport_soft_sync
     }
 
     pub fn io_channel_id(&self) -> u16 {

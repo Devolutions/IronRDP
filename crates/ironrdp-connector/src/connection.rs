@@ -112,6 +112,30 @@ pub enum MultitransportResult {
     Failure(u32),
 }
 
+impl MultitransportResult {
+    const fn response_required(&self, soft_sync: bool) -> bool {
+        soft_sync || matches!(self, Self::Failure(_))
+    }
+
+    /// Builds the required response PDU for this outcome and request.
+    ///
+    /// Successful initiation without Soft-Sync does not require a response.
+    pub fn response_pdu(
+        &self,
+        request_id: u32,
+        soft_sync: bool,
+    ) -> Option<rdp::multitransport::MultitransportResponsePdu> {
+        if !self.response_required(soft_sync) {
+            return None;
+        }
+
+        Some(match self {
+            Self::Success => rdp::multitransport::MultitransportResponsePdu::success(request_id),
+            Self::Failure(hr) => multitransport_response(request_id, *hr),
+        })
+    }
+}
+
 /// Why a runtime-defined static virtual channel could not be registered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DynamicStaticChannelAttachError {
@@ -162,6 +186,13 @@ pub struct ConnectionResult {
     pub activation_factory: ConnectionActivationFactory,
     /// The bulk compression type that was negotiated, if any.
     pub compression_type: Option<rdp::client_info::CompressionType>,
+}
+
+impl ConnectionResult {
+    /// Whether both peers advertised Soft-Sync support for multitransport.
+    pub fn multitransport_soft_sync(&self) -> bool {
+        self.activation_factory.multitransport_soft_sync()
+    }
 }
 
 #[derive(Default, Debug)]
@@ -646,6 +677,16 @@ impl ClientConnector {
         }
     }
 
+    /// Returns whether both peers advertised Soft-Sync for the pending request.
+    ///
+    /// `None` means no multitransport request is pending.
+    pub fn multitransport_soft_sync_negotiated(&self) -> Option<bool> {
+        match &self.state {
+            ClientConnectorState::MultitransportPending { soft_sync, .. } => Some(*soft_sync),
+            _ => None,
+        }
+    }
+
     /// Report the outcome of the multitransport request currently surfaced by
     /// [`multitransport_request()`](Self::multitransport_request).
     ///
@@ -710,27 +751,26 @@ impl ClientConnector {
             return Ok(None);
         };
 
-        match (*soft_sync, result) {
+        if !result.response_required(*soft_sync) {
+            return Ok(None);
+        }
+
+        match *soft_sync {
             // Soft-Sync obliges a response either way, and presupposes the
             // message channel. Falling back to the I/O channel would put the
             // response somewhere the server is not reading, so its absence is an
             // error rather than a reason to improvise.
-            (true, _) => message_channel_id
+            true => message_channel_id
                 .ok_or_else(|| {
                     general_err!("Soft-Sync was negotiated but the server never offered an MCS message channel")
                 })
                 .map(Some),
-            // `S_OK` is the one value 2.2.15.2 forbids here, so success and only
-            // success is withheld. The outcome is still consumed and the
-            // handshake proceeds, so a caller that established the transport does
-            // not have to know which mode is in play.
-            (false, MultitransportResult::Success) => Ok(None),
             // A failure is still reported: 3.2.5.15.1 asks for it whenever the
             // client could not initiate the channel, with no Soft-Sync condition.
             // It is a SHOULD, so a missing message channel means staying silent
             // rather than failing a connection over an optional report. In
             // practice one exists, since 2.2.15.1 puts the request on it.
-            (false, MultitransportResult::Failure(_)) => Ok(*message_channel_id),
+            false => Ok(*message_channel_id),
         }
     }
 
@@ -756,7 +796,7 @@ impl ClientConnector {
             message_channel_id,
             request,
             requests_seen,
-            ..
+            soft_sync,
         } = &self.state
         else {
             return Err(reason_err!(
@@ -764,8 +804,13 @@ impl ClientConnector {
                 "{caller} called outside MultitransportPending state",
             ));
         };
-        let (io_channel_id, user_channel_id, message_channel_id, requests_seen) =
-            (*io_channel_id, *user_channel_id, *message_channel_id, *requests_seen);
+        let (io_channel_id, user_channel_id, message_channel_id, requests_seen, soft_sync) = (
+            *io_channel_id,
+            *user_channel_id,
+            *message_channel_id,
+            *requests_seen,
+            *soft_sync,
+        );
         let request_id = request.request_id;
 
         let response_channel = self.multitransport_response_channel(&result)?;
@@ -775,10 +820,9 @@ impl ClientConnector {
         // Soft-Sync. Either way the outcome is consumed and the handshake
         // proceeds.
         let total_written = if let Some(response_channel) = response_channel {
-            let response = match result {
-                MultitransportResult::Success => rdp::multitransport::MultitransportResponsePdu::success(request_id),
-                MultitransportResult::Failure(hr) => multitransport_response(request_id, hr),
-            };
+            let response = result
+                .response_pdu(request_id, soft_sync)
+                .ok_or_else(|| general_err!("multitransport response channel selected without a required response"))?;
 
             encode_send_data_request(user_channel_id, response_channel, &response, output)?
         } else {
@@ -1556,7 +1600,8 @@ impl Sequence for ClientConnector {
                                         self.config.clone(),
                                         connection_activation.io_channel_id(),
                                         connection_activation.user_channel_id(),
-                                    ),
+                                    )
+                                    .with_multitransport_soft_sync(self.soft_sync_negotiated()),
                                     compression_type: self.config.compression_type,
                                 },
                             }

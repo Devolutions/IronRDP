@@ -505,6 +505,10 @@ fn should_perform_multitransport_reflects_pending_state() {
     let connector = multitransport_pending_connector(true, multitransport_request(1, RequestedProtocol::UdpFecR));
     assert!(connector.should_perform_multitransport());
     assert_eq!(connector.multitransport_request().unwrap().request_id, 1);
+    assert_eq!(connector.multitransport_soft_sync_negotiated(), Some(true));
+
+    let connector = multitransport_pending_connector(false, multitransport_request(2, RequestedProtocol::UdpFecR));
+    assert_eq!(connector.multitransport_soft_sync_negotiated(), Some(false));
 }
 
 #[test]
