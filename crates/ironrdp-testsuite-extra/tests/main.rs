@@ -3,7 +3,7 @@
 #![allow(
     dead_code,
     unreachable_pub,
-    reason = "Mstsgu integration tests import private protocol sources"
+    reason = "Mstsgu integration tests compile private HTTP and RPC source modules"
 )]
 
 macro_rules! custom_err {
