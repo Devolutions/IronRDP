@@ -651,6 +651,25 @@ fn clamp_u8(value: i64) -> u8 {
     value.clamp(0, 255) as u8
 }
 
+/// ITU-R BT.601 YCbCr to RGB with 16-bit fixed point.
+///
+/// The samples come off the wire and can reach the full i16 range, where
+/// the fixed-point products overflow i32. Widening keeps the arithmetic
+/// exact for every input a tile can hold, and `clamp_u8` still bounds the
+/// result.
+#[expect(clippy::similar_names, reason = "y/cb/cr are standard YCbCr component names")]
+fn ycbcr_to_rgb(y: i16, cb: i16, cr: i16) -> [u8; 3] {
+    let y = i64::from(y) + 128;
+    let cb = i64::from(cb);
+    let cr = i64::from(cr);
+
+    let r = y + ((cr * 91881 + 32768) >> 16);
+    let g = y - ((cb * 22554 + cr * 46802 + 32768) >> 16);
+    let b = y + ((cb * 116130 + 32768) >> 16);
+
+    [clamp_u8(r), clamp_u8(g), clamp_u8(b)]
+}
+
 /// Clamp i32 to i16 range.
 #[expect(
     clippy::as_conversions,
@@ -958,25 +977,12 @@ impl TileState {
         }
 
         // YCbCr to RGBA conversion.
-        //
-        // The coefficients come off the wire, so a malformed stream can drive
-        // them to the full i16 range, where the fixed-point products overflow
-        // i32. Widening keeps the arithmetic exact for every input a tile can
-        // hold, and `clamp_u8` still bounds the result.
         for i in 0..64 * 64 {
-            let y = i64::from(y_buf[i]) + 128;
-            let cb = i64::from(cb_buf[i]);
-            let cr = i64::from(cr_buf[i]);
-
-            // ITU-R BT.601 YCbCr to RGB conversion
-            let r = y + ((cr * 91881 + 32768) >> 16);
-            let g = y - ((cb * 22554 + cr * 46802 + 32768) >> 16);
-            let b = y + ((cb * 116130 + 32768) >> 16);
-
+            let [r, g, b] = ycbcr_to_rgb(y_buf[i], cb_buf[i], cr_buf[i]);
             let off = i * 4;
-            pixels[off] = clamp_u8(r);
-            pixels[off + 1] = clamp_u8(g);
-            pixels[off + 2] = clamp_u8(b);
+            pixels[off] = r;
+            pixels[off + 1] = g;
+            pixels[off + 2] = b;
             pixels[off + 3] = 0xFF;
         }
     }
@@ -2204,19 +2210,24 @@ mod tests {
     }
 
     #[test]
-    fn reconstruct_handles_out_of_range_coefficients() {
-        // Tile coefficients come off the wire and can reach the full i16 range,
-        // where the fixed-point YCbCr products overflowed i32.
-        let mut tile = TileState::new();
-        let mut pixels = vec![0u8; 64 * 64 * 4];
-
-        for value in [i16::MIN, -20000, 20000, i16::MAX] {
-            tile.coefficients = [[value; COEFFICIENTS_PER_COMPONENT]; 3];
-            tile.reconstruct_to_rgba(&mut pixels);
-
-            for pixel in pixels.chunks_exact(4) {
-                assert_eq!(pixel[3], 0xFF);
-            }
+    #[expect(clippy::similar_names, reason = "Cb and Cr are standard YCbCr component names")]
+    fn ycbcr_to_rgb_handles_full_i16_range() {
+        // These products overflow i32: `cr * 91881` for |cr| > 23372,
+        // `cb * 116130` for |cb| > 18492, and the `cb`/`cr` sum.
+        let cases: [(i16, i16, i16, [u8; 3]); 10] = [
+            (0, 0, 0, [128, 128, 128]),
+            (0, 0, i16::MAX, [255, 0, 128]),
+            (0, i16::MAX, 0, [128, 0, 255]),
+            (0, i16::MAX, i16::MAX, [255, 0, 255]),
+            (0, 0, i16::MIN, [0, 255, 128]),
+            (0, i16::MIN, 0, [128, 255, 0]),
+            (i16::MIN, i16::MIN, i16::MIN, [0, 255, 0]),
+            (i16::MAX, i16::MAX, i16::MAX, [255, 0, 255]),
+            (-20000, -20000, -20000, [0, 255, 0]),
+            (20000, 20000, 20000, [255, 0, 255]),
+        ];
+        for (y, cb, cr, expected) in cases {
+            assert_eq!(ycbcr_to_rgb(y, cb, cr), expected, "y={y} cb={cb} cr={cr}");
         }
     }
 
