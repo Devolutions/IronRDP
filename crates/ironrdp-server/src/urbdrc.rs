@@ -18,13 +18,12 @@ use ironrdp_rdpeusb::{
     },
     pdu::{
         completion::ts_urb_result::{TsUrbSelectConfigResult, TsUrbSelectInterfaceResult, TsUsbdInterfaceInfoResult},
-        sink::DeviceSpeed,
         utils::{ConfigHandle, PipeHandle},
     },
     server::{UrbdrcControlServerBackend, UrbdrcDeviceServerBackend},
 };
 use ironrdp_usb::{
-    InterfaceSelection, TransferType, UsbSpeed,
+    InterfaceSelection, TransferType,
     control::GetDescriptorRequest,
     descriptor::{ConfigurationDescriptorSet, InterfaceDescriptor, ValidConfigurationDescriptorSet},
     endpoint::EndpointAddress,
@@ -314,8 +313,7 @@ impl UsbDeviceHandle {
                         alternate_setting: interface.alternate_setting(),
                     })
                     .collect();
-                let speed = self.lock_usb_state().speed()?;
-                let packet = ironrdp_rdpeusb::usb::select_configuration(descriptor, &active_interfaces, speed)
+                let packet = ironrdp_rdpeusb::usb::select_configuration(descriptor, &active_interfaces)
                     .map_err(|e| ServerError::custom("failed to translate usb configuration selection", e))?;
                 let plan = ConfigurationSelectionPlan::Configure {
                     descriptor: descriptor.as_set().as_bytes().to_vec(),
@@ -371,12 +369,11 @@ impl UsbDeviceHandle {
 
         let (rx, transition) = {
             let mut state = self.lock_usb_state();
-            let speed = state.speed()?;
             let config_handle = state.interface_plan(descriptor, selection)?;
             let transition = state.reserve_transition(StatefulTransitionKind::SelectInterface {
                 interface: selection.interface,
             })?;
-            let packet = ironrdp_rdpeusb::usb::select_interface(config_handle, descriptor, selection, speed)
+            let packet = ironrdp_rdpeusb::usb::select_interface(config_handle, descriptor, selection)
                 .map_err(|e| ServerError::custom("failed to translate usb interface selection", e))?;
             let rx = self.enqueue_io_message(ServerDeviceIoReq::TransferIn(packet))?;
             if let Err(error) = state.activate_interface_transition(transition, selection.interface) {
@@ -489,18 +486,6 @@ impl UsbDeviceHandle {
         };
         let inner = self.resolve_pending(rx).await?;
         Ok(PendingRequest::new(inner, PendingOperation::Transfer))
-    }
-
-    fn initialize_usb_capabilities(&self, device_speed: DeviceSpeed) {
-        let speed = match device_speed.to_u32() {
-            value if value == DeviceSpeed::FULL_SPEED.to_u32() => Some(UsbSpeed::Full),
-            value if value == DeviceSpeed::HIGH_SPEED.to_u32() => Some(UsbSpeed::High),
-            value => {
-                tracing::warn!(value, "RDPEUSB device reported an unsupported USB speed");
-                None
-            }
-        };
-        self.lock_usb_state().capabilities = Some(UsbCapabilities { speed });
     }
 
     fn lock_usb_state(&self) -> MutexGuard<'_, UsbSharedState> {
@@ -635,7 +620,6 @@ impl ServerUsbDevice {
 
 #[derive(Debug)]
 struct UsbSharedState {
-    capabilities: Option<UsbCapabilities>,
     binding: BindingState,
     transition: TransitionState,
     next_generation: u64,
@@ -644,17 +628,11 @@ struct UsbSharedState {
 impl Default for UsbSharedState {
     fn default() -> Self {
         Self {
-            capabilities: None,
             binding: BindingState::Unconfigured,
             transition: TransitionState::Idle,
             next_generation: 0,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct UsbCapabilities {
-    speed: Option<UsbSpeed>,
 }
 
 #[derive(Debug, Clone)]
@@ -731,13 +709,6 @@ struct InterfaceSelectionPlan {
 }
 
 impl UsbSharedState {
-    fn speed(&self) -> ServerResult<UsbSpeed> {
-        self.capabilities
-            .ok_or_else(|| ServerError::reason("usb capabilities", "usb device capabilities have not been announced"))?
-            .speed
-            .ok_or_else(|| ServerError::reason("usb capabilities", "usb device speed is not supported by the facade"))
-    }
-
     fn reserve_transition(&mut self, kind: StatefulTransitionKind) -> ServerResult<StatefulTransition> {
         match self.transition {
             TransitionState::Idle => {}
@@ -1536,8 +1507,6 @@ impl UsbRedirServer {
 
 impl UrbdrcDeviceServerBackend for UsbRedirServer {
     fn add_device(&mut self, device: DeviceAnnounce) -> PduResult<()> {
-        self.handle
-            .initialize_usb_capabilities(device.usb_device_caps.device_speed);
         self.device.device_added(RdpUsbDeviceAnnounceInfo {
             announce: device,
             usb_handle: self.handle.clone(),
