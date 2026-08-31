@@ -25,7 +25,9 @@ use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::{Message, http};
 
-use crate::http_auth::{AuthStep, GatewayHttpAuth, basic_authorization, split_auth_challenge, www_authenticate_values};
+use crate::http_auth::{
+    AuthStep, GatewayHttpAuth, basic_authorization, run_http_auth, split_auth_challenge, www_authenticate_values,
+};
 use crate::proto::PktHdr;
 use crate::{Error, GwConnectTarget, GwErrorKind, GwSessionAuthentication};
 
@@ -1264,14 +1266,4 @@ async fn drain_response_body(mut body: Incoming, context: &'static str) -> Resul
         }
     }
     Ok(())
-}
-
-async fn run_http_auth<T, F>(f: F) -> Result<T, Error>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, Error> + Send + 'static,
-{
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| custom_err!("http auth task", e))?
 }

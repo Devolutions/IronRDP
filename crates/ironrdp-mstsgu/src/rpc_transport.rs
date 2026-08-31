@@ -40,27 +40,29 @@ pub(crate) struct RpchRequestHead<'a> {
     pub(crate) expect_continue: bool,
 }
 
-/// An RPCH IN request whose streaming body is committed after authentication.
+/// An RPCH IN request whose streaming body is authorized after authentication.
 ///
-/// Authentication probes use a zero-length request body.
-/// The final authenticated request reserves the full body length before the caller writes any RPC bytes.
+/// The initial request reserves the full body length but uses `Expect: 100-continue`.
+/// This lets the caller authenticate without sending bytes from the RPCH stream.
 pub(crate) struct RpchInRequest<S> {
     stream: S,
     host: String,
     target: String,
+    content_length: u32,
     remaining: u32,
-    body_committed: bool,
+    body_authorized: bool,
 }
 
 impl<S> RpchInRequest<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    /// Opens the IN channel with a zero-length authentication probe.
+    /// Opens the IN channel without sending its streaming body.
     pub(crate) async fn open(
         mut stream: S,
         host: &str,
         target: &str,
+        content_length: u32,
         authorization: Option<&str>,
     ) -> Result<Self, Error> {
         write_rpch_request_head(
@@ -69,11 +71,11 @@ where
                 method: "RPC_IN_DATA",
                 host,
                 target,
-                content_length: 0,
+                content_length,
                 authorization,
                 cookie: None,
                 session_id: None,
-                expect_continue: false,
+                expect_continue: true,
             },
         )
         .await?;
@@ -82,8 +84,9 @@ where
             stream,
             host: host.to_owned(),
             target: target.to_owned(),
-            remaining: 0,
-            body_committed: false,
+            content_length,
+            remaining: content_length,
+            body_authorized: false,
         })
     }
 
@@ -100,15 +103,17 @@ where
                 )
             })?;
             drain_body(&mut self.stream, length).await?;
+        } else if response.status == 100 {
+            self.body_authorized = true;
         }
         Ok(response)
     }
 
     /// Retries the request head after an authentication challenge.
     ///
-    /// A nonzero `content_length` commits the streaming body.
-    pub(crate) async fn retry(mut self, authorization: Option<&str>, content_length: u32) -> Result<Self, Error> {
-        if self.body_committed {
+    /// The request body remains blocked until the proxy returns `100 Continue`.
+    pub(crate) async fn retry(mut self, authorization: Option<&str>) -> Result<Self, Error> {
+        if self.body_authorized {
             return Err(Error::new("rpch IN retry after body", GwErrorKind::Connect));
         }
 
@@ -118,23 +123,22 @@ where
                 method: "RPC_IN_DATA",
                 host: &self.host,
                 target: &self.target,
-                content_length,
+                content_length: self.content_length,
                 authorization,
                 cookie: None,
                 session_id: None,
-                expect_continue: false,
+                expect_continue: true,
             },
         )
         .await?;
-        self.remaining = content_length;
-        self.body_committed = content_length != 0;
+        self.remaining = self.content_length;
 
         Ok(self)
     }
 
     /// Writes bytes into the committed streaming body.
     pub(crate) async fn write_body(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        if !self.body_committed {
+        if !self.body_authorized {
             return Err(Error::new("rpch IN body before authentication", GwErrorKind::Connect));
         }
 
