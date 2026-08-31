@@ -24,7 +24,7 @@ use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
-use ironrdp::pdu::rdp::capability_sets::client_codecs_capabilities;
+use ironrdp::pdu::rdp::capability_sets::{BitmapCodecs, client_codecs_capabilities};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp::rdpdr::Rdpdr;
 use ironrdp::rdpdr::pdu::efs::{DEFAULT_PRINTER_DRIVER_NAME, MICROSOFT_PRINT_TO_PDF_DRIVER_NAME};
@@ -91,6 +91,7 @@ struct SessionBuilderInner {
 
     use_display_control: bool,
     enable_credssp: bool,
+    legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
 }
 
@@ -133,6 +134,7 @@ impl Default for SessionBuilderInner {
 
             use_display_control: false,
             enable_credssp: true,
+            legacy_graphics: false,
             outbound_message_size_limit: None,
         }
     }
@@ -251,6 +253,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
             |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
+            |legacy_graphics: bool| { self.0.borrow_mut().legacy_graphics = legacy_graphics };
             |outbound_message_size_limit: f64| {
                 let limit = if outbound_message_size_limit >= 0.0 && outbound_message_size_limit <= f64::from(u32::MAX) {
                     #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -357,6 +360,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_device_id,
             printer_driver_name,
             outbound_message_size_limit,
+            legacy_graphics,
         );
 
         {
@@ -399,6 +403,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_device_id = inner.printer_device_id;
             printer_driver_name = inner.printer_driver_name.clone();
             outbound_message_size_limit = inner.outbound_message_size_limit;
+            legacy_graphics = inner.legacy_graphics;
         }
 
         if pcb.is_some() && vmconnect.is_some() {
@@ -407,7 +412,14 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         info!("Connect to RDP host");
 
-        let mut config = build_config(username, password, server_domain, client_name.clone(), desktop_size);
+        let mut config = build_config(
+            username,
+            password,
+            server_domain,
+            client_name.clone(),
+            desktop_size,
+            legacy_graphics,
+        );
 
         let enable_credssp = self.0.borrow().enable_credssp;
         config.enable_credssp = enable_credssp;
@@ -1440,7 +1452,23 @@ fn build_config(
     domain: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
+    legacy_graphics: bool,
 ) -> connector::Config {
+    // Win7-class servers need 32-bpp lossless bitmaps and no advertised codecs.
+    let bitmap = if legacy_graphics {
+        connector::BitmapConfig {
+            color_depth: 32,
+            lossy_compression: false,
+            codecs: BitmapCodecs(Vec::new()),
+        }
+    } else {
+        connector::BitmapConfig {
+            color_depth: 16,
+            lossy_compression: true,
+            codecs: client_codecs_capabilities(&[]).expect("can't panic for &[]"),
+        }
+    };
+
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
@@ -1460,11 +1488,7 @@ fn build_config(
             height: desktop_size.height,
         },
         monitor_layout: None,
-        bitmap: Some(connector::BitmapConfig {
-            color_depth: 16,
-            lossy_compression: true,
-            codecs: client_codecs_capabilities(&[]).expect("can't panic for &[]"),
-        }),
+        bitmap: Some(bitmap),
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "fine unless we end up with an insanely big version"
