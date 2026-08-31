@@ -3410,6 +3410,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "bitflags 2.13.1",
  "futures-util",
  "http-body-util",
@@ -3445,6 +3446,10 @@ dependencies = [
  "ironrdp-tokio",
  "ironrdp-viewer",
  "ironrdp-vmconnect",
+ "log",
+ "picky",
+ "picky-asn1-der",
+ "picky-asn1-x509",
  "rcgen",
  "semver",
  "sspi",
