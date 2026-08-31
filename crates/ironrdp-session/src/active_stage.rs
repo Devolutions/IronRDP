@@ -13,7 +13,7 @@ use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
-use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
+use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
 use ironrdp_pdu::rdp::refresh_rectangle::RefreshRectanglePdu;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::rdp::suppress_output::SuppressOutputPdu;
@@ -423,6 +423,11 @@ impl ActiveStage {
     /// Send a pdu on the static global channel. Typically used to send input events
     pub fn encode_static(&self, output: &mut WriteBuf, pdu: ShareDataPdu) -> SessionResult<usize> {
         self.x224_processor.encode_static(output, pdu)
+    }
+
+    /// Encodes an Initiate Multitransport Response on the negotiated MCS message channel.
+    pub fn encode_multitransport_response(&self, response: &MultitransportResponsePdu) -> SessionResult<Vec<u8>> {
+        self.x224_processor.encode_multitransport_response(response)
     }
 
     pub fn get_svc_processor<T: SvcProcessor + 'static>(&mut self) -> Option<&T> {
@@ -917,6 +922,32 @@ mod tests {
 
         assert_eq!(stage.request_full_redraw(1024, 768, true, false).unwrap().len(), 1);
         assert!(stage.request_full_redraw(1024, 768, false, false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn multitransport_response_encoder_is_exposed_through_active_stage() {
+        let stage = ActiveStageBuilder {
+            static_channels: StaticChannelSet::new(),
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: Some(1004),
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let response = MultitransportResponsePdu::success(42);
+
+        assert_eq!(
+            stage
+                .encode_multitransport_response(&response)
+                .expect("encode through ActiveStage"),
+            stage
+                .x224_processor
+                .encode_multitransport_response(&response)
+                .expect("encode through X.224 processor")
+        );
     }
 
     #[test]

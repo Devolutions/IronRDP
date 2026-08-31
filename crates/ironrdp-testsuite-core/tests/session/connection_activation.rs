@@ -16,6 +16,8 @@ use ironrdp_pdu::rdp::headers::{
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
+use ironrdp_session::x224::{Processor, ProcessorOutput};
+use ironrdp_svc::StaticChannelSet;
 
 use ironrdp_testsuite_core::capsets::SERVER_DEMAND_ACTIVE;
 
@@ -402,6 +404,28 @@ fn multitransport_request_is_surfaced_without_waiting_for_another_pdu() {
         "the request must be surfaced on arrival, not held pending a following PDU"
     );
     assert_eq!(connector.multitransport_request().unwrap().request_id, 1);
+}
+
+#[test]
+fn active_processor_surfaces_multitransport_request_on_message_channel() {
+    let request = multitransport_request(42, RequestedProtocol::UdpFecR);
+    let frame = encode_server_multitransport_request(&request, MESSAGE_CHANNEL_ID);
+    let mut processor = Processor::new(
+        StaticChannelSet::new(),
+        USER_CHANNEL_ID,
+        IO_CHANNEL_ID,
+        Some(MESSAGE_CHANNEL_ID),
+        SHARE_ID,
+    );
+
+    let outputs = processor
+        .process(&frame, &mut None)
+        .expect("active processor should surface multitransport request");
+
+    assert!(matches!(
+        outputs.as_slice(),
+        [ProcessorOutput::MultitransportRequest(decoded)] if decoded == &request
+    ));
 }
 
 #[test]
