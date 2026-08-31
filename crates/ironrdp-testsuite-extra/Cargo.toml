@@ -17,7 +17,7 @@ default = ["full", "rustls"]
 full = ["dep:ironrdp-agent", "dep:ironrdp-daemon", "dep:ironrdp-viewer"]
 rustls = ["ironrdp-mstsgu/rustls", "ironrdp-tls/rustls"]
 native-tls = ["ironrdp-mstsgu/native-tls", "ironrdp-tls/native-tls"]
-smartcard = ["ironrdp-mstsgu/smartcard"]
+smartcard = ["ironrdp-mstsgu/smartcard", "sspi/scard", "sspi/dns_resolver"]
 
 [dependencies]
 ironrdp-agent = { path = "../ironrdp-agent", optional = true }
@@ -36,6 +36,7 @@ harness = true
 [dev-dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+base64 = "0.22"
 ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo"] }
 ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-async.path = "../ironrdp-async"
@@ -79,6 +80,10 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 tokio-native-tls = "0.3"
 tokio-tungstenite = "0.29"
 ironrdp-error = { path = "../ironrdp-error" }
+log = "0.4"
+picky = "=7.0.0-rc.25"
+picky-asn1-der = "0.5"
+picky-asn1-x509 = "0.15"
 sspi = { version = "0.21", features = ["network_client"] }
 
 [target.'cfg(windows)'.dev-dependencies]
