@@ -1800,6 +1800,7 @@ trait AsyncReadWrite: AsyncRead + AsyncWrite {}
 impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite {}
 type UpgradedFramed = ironrdp_tokio::TokioFramed<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>;
 
+// mstsc's input handler reads this threshold from the `EventsAtOnce` property, whose default is 10.
 const INPUT_BATCH_EVENT_LIMIT: usize = 10;
 
 struct FastPathInputBatcher {

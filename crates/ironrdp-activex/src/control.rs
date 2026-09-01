@@ -10759,7 +10759,7 @@ impl Control {
             .with_audio_quality_mode(audio_quality_mode)
             .with_load_balance_info(load_balance_info)
             .with_input_send_interval(Duration::from_millis(
-                u64::try_from(min_input_send_interval_ms).expect("validated ActiveX input interval"),
+                u64::try_from(min_input_send_interval_ms).map_err(|_| Error::from_hresult(E_INVALIDARG))?,
             ))
             .with_administrative_session(administrative_session)
             .with_certificate_validation(certificate_validation)
