@@ -152,6 +152,16 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 - `dismiss-hovering [--contact-id N]`            Dismiss a hovering touch contact.
 - `resize --width W --height H`                  Resize the remote desktop.
 
+## Clipboard
+
+Plain Unicode text only (`CF_UNICODETEXT`); no files, no HTML, no images.
+
+- `clipboard-get`               Print the last text received from the remote clipboard, or
+                                 `(empty)` if none has arrived yet. Requires an active session.
+- `clipboard-set --text TEXT`   Set the local clipboard text and advertise it to the remote.
+                                 Works before a session connects too: the text is remembered and
+                                 advertised as soon as the clipboard channel initializes.
+
 ## NOW remote execution (requires an active, connected RDP session)
 
 The daemon allocates one private `Devolutions::Now::Agent` DVC endpoint for each RDP session. It

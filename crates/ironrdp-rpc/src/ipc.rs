@@ -438,8 +438,10 @@ pub enum Request {
     },
     /// Queue a validated RAIL Execute request.
     RailExecute(RailExecuteRequest),
-    // TODO: add clipboard support (CLIPRDR), e.g. requests to read the remote clipboard text and to
-    // set it, so an LLM can copy/paste to and from the session.
+    /// Return the last text received from the remote clipboard, if any.
+    ClipboardGet,
+    /// Set the local clipboard text and advertise it to the remote (`CF_UNICODETEXT` only).
+    ClipboardSet { text: String },
 }
 
 // Manual `Debug` so the `Connect` payload's property *values* (which may include a password before
@@ -555,6 +557,9 @@ impl fmt::Debug for Request {
                 .field("timeout_ms", timeout_ms)
                 .finish(),
             Self::RailExecute(request) => f.debug_tuple("RailExecute").field(request).finish(),
+            Self::ClipboardGet => f.write_str("ClipboardGet"),
+            // Never print clipboard contents.
+            Self::ClipboardSet { text } => f.debug_struct("ClipboardSet").field("text_len", &text.len()).finish(),
         }
     }
 }
@@ -631,6 +636,8 @@ pub enum Payload {
     RailEvents(RailEventDump),
     /// A locally assigned RAIL launch identifier.
     RailLaunch(RailLaunchInfo),
+    /// The remote clipboard's last `CF_UNICODETEXT` text, or `None` if unavailable.
+    ClipboardText(Option<String>),
 }
 
 impl fmt::Debug for Payload {
@@ -655,6 +662,11 @@ impl fmt::Debug for Payload {
             Self::RailStatus(status) => f.debug_tuple("RailStatus").field(status).finish(),
             Self::RailEvents(events) => f.debug_tuple("RailEvents").field(events).finish(),
             Self::RailLaunch(launch) => f.debug_tuple("RailLaunch").field(launch).finish(),
+            // Never print clipboard contents.
+            Self::ClipboardText(text) => f
+                .debug_tuple("ClipboardText")
+                .field(&text.as_ref().map(String::len))
+                .finish(),
         }
     }
 }
@@ -1973,6 +1985,10 @@ impl Encode for Payload {
                 dst.write_u8(12);
                 launch.encode(dst)?;
             }
+            Self::ClipboardText(text) => {
+                dst.write_u8(13);
+                write_opt_string(dst, text.as_deref())?;
+            }
         }
         Ok(())
     }
@@ -1997,6 +2013,7 @@ impl Encode for Payload {
                 Self::RailStatus(status) => status.size(),
                 Self::RailEvents(events) => events.size(),
                 Self::RailLaunch(launch) => launch.size(),
+                Self::ClipboardText(text) => opt_string_size(text.as_deref()),
             }
     }
 }
@@ -2040,6 +2057,7 @@ impl Decode<'_> for Payload {
             10 => Ok(Self::RailStatus(RailStatusInfo::decode(src)?)),
             11 => Ok(Self::RailEvents(RailEventDump::decode(src)?)),
             12 => Ok(Self::RailLaunch(RailLaunchInfo::decode(src)?)),
+            13 => Ok(Self::ClipboardText(read_opt_string(src)?)),
             _ => Err(ironrdp_core::invalid_field_err!("payload", "unknown tag", in: src)),
         }
     }
@@ -2255,6 +2273,12 @@ impl Encode for Request {
                 dst.write_u8(28);
                 dst.write_u8(*contact_id);
             }
+            // Tags 29-30: free after DismissHoveringTouchContact (28).
+            Self::ClipboardGet => dst.write_u8(29),
+            Self::ClipboardSet { text } => {
+                dst.write_u8(30);
+                write_string(dst, text)?;
+            }
         }
         Ok(())
     }
@@ -2275,7 +2299,8 @@ impl Encode for Request {
                 | Self::NowCapabilities
                 | Self::NowList
                 | Self::NowDiagnostics
-                | Self::RailStatus => 0,
+                | Self::RailStatus
+                | Self::ClipboardGet => 0,
                 Self::QueryProps { filter } => 1 /* presence */ + filter.as_ref().map_or(0, Encode::size),
                 Self::QueryLogs { substring, last } => {
                     opt_string_size(substring.as_deref()) + 1 /* presence */ + last.map_or(0, |_| 4)
@@ -2314,6 +2339,7 @@ impl Encode for Request {
                             .sum::<usize>()
                 }
                 Self::DismissHoveringTouchContact { .. } => 1 /* contact_id */,
+                Self::ClipboardSet { text } => string_size(text),
             }
     }
 }
@@ -2504,6 +2530,10 @@ impl Decode<'_> for Request {
                     timeout_ms: src.read_u32(),
                 })
             }
+            29 => Ok(Self::ClipboardGet),
+            30 => Ok(Self::ClipboardSet {
+                text: read_string(src)?,
+            }),
             _ => Err(ironrdp_core::invalid_field_err!("request", "unknown tag", in: src)),
         }
     }

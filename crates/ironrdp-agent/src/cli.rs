@@ -108,6 +108,13 @@ enum Command {
         #[arg(long, value_parser = parse_unicode_text)]
         text: String,
     },
+    /// Print the last text received from the remote clipboard, if any.
+    ClipboardGet,
+    /// Set the local clipboard text and advertise it to the remote (`CF_UNICODETEXT` only).
+    ClipboardSet {
+        #[arg(long)]
+        text: String,
+    },
     /// Send one MS-RDPEI touch contact sample (legal flag sets only).
     Touch {
         #[arg(long, default_value_t = 0)]
@@ -922,6 +929,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::KeyScancode { scancode, pressed } => Request::KeyScancode { scancode, pressed },
         Command::KeyUnicode { character, pressed } => Request::KeyUnicode { ch: character, pressed },
         Command::TypeUnicode { text } => Request::UnicodeText { text },
+        Command::ClipboardGet => Request::ClipboardGet,
+        Command::ClipboardSet { text } => Request::ClipboardSet { text },
         Command::Touch {
             contact_id,
             x,
@@ -2092,6 +2101,10 @@ fn print_payload(payload: Payload) {
         Payload::RailLaunch(launch) => {
             println!("queued RAIL launch {}: {}", launch.launch_id, launch.executable);
         }
+        Payload::ClipboardText(text) => match text {
+            Some(text) => println!("{text}"),
+            None => println!("(empty)"),
+        },
     }
 }
 

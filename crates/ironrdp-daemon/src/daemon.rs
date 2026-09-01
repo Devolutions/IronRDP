@@ -20,6 +20,8 @@ use ironrdp_client::rdp::{
     RailExecuteFailureReason as ClientRailExecuteFailureReason, RdpClient, RdpInputEvent, RdpInputSender,
     RdpOutputEvent,
 };
+use ironrdp_cliprdr::backend::ClipboardMessage;
+use ironrdp_cliprdr::pdu::{ClipboardFormat, ClipboardFormatId};
 use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
@@ -254,6 +256,10 @@ pub struct Daemon {
     smartcard_default: bool,
     #[cfg(windows)]
     rdpdr_backend_factory: Option<WindowsRdpdrBackendFactory>,
+    /// Clipboard text, daemon-lifetime so it survives a reconnect. Read and written by
+    /// `Request::ClipboardGet` / `Request::ClipboardSet`; read and written by the `CLIPRDR`
+    /// backend built fresh for each session (see `crate::clipboard`).
+    clipboard: Arc<Mutex<crate::clipboard::ClipboardState>>,
     /// Notifies an optional GUI frontend whenever retained live state changes.
     notification: Option<mpsc::Sender<()>>,
     shutdown: tokio::sync::watch::Sender<()>,
@@ -506,6 +512,7 @@ impl Daemon {
             smartcard_default,
             #[cfg(windows)]
             rdpdr_backend_factory,
+            clipboard: Arc::new(Mutex::new(crate::clipboard::ClipboardState::default())),
             notification: None,
             shutdown,
         })
@@ -570,6 +577,8 @@ impl Daemon {
                 DaemonResponse::Single(self.query_logs(substring.as_deref(), last))
             }
             Request::Screenshot => DaemonResponse::Single(self.screenshot()),
+            Request::ClipboardGet => DaemonResponse::Single(self.clipboard_get()),
+            Request::ClipboardSet { text } => DaemonResponse::Single(self.clipboard_set(text)),
             Request::MouseMove { x, y } => {
                 DaemonResponse::Single(self.input(Operation::MouseMove(MousePosition { x, y })))
             }
@@ -777,6 +786,10 @@ impl Daemon {
             None => client,
         };
         let input_tx = client.input_sender();
+        let client = client.with_cliprdr_backend_factory(Box::new(crate::clipboard::AgentCliprdrBackendFactory::new(
+            Arc::clone(&self.clipboard),
+            input_tx.clone(),
+        )));
 
         let rail_notify = Arc::new(tokio::sync::Notify::new());
         let live = Arc::new(Mutex::new(Live {
@@ -1088,6 +1101,36 @@ impl Daemon {
                 format!("failed to encode screenshot: {error:#}"),
             ),
         }
+    }
+
+    /// Returns the last text received from the remote clipboard, if any.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_get(&self) -> Response {
+        let text = self.clipboard.lock().expect("clipboard state poisoned").remote.clone();
+        Response::Ok(Payload::ClipboardText(text))
+    }
+
+    /// Sets the local clipboard text and, if a session is connected, advertises it to the remote.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_set(&self, text: String) -> Response {
+        self.clipboard.lock().expect("clipboard state poisoned").local = Some(text);
+        // Only a connected session can advertise the change immediately; an unconnected daemon
+        // still remembers it and advertises it once `CLIPRDR` initializes on the next connect (see
+        // `AgentCliprdrBackend::on_request_format_list`).
+        if let Some(session) = self.state.lock().expect("daemon state poisoned").as_ref() {
+            let _ = session
+                .input_tx
+                .send_clipboard(ClipboardMessage::SendInitiateCopy(vec![ClipboardFormat::new(
+                    ClipboardFormatId::CF_UNICODETEXT,
+                )]));
+        }
+        Response::ok()
     }
 
     /// Requests that the active RDP session resize.
