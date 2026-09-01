@@ -1026,7 +1026,7 @@ async fn client_server_with_connector<F, Fut, C>(
         .await;
 }
 
-fn default_client_config() -> connector::Config {
+pub(super) fn default_client_config() -> connector::Config {
     connector::Config {
         desktop_size: DesktopSize {
             width: DESKTOP_WIDTH,
