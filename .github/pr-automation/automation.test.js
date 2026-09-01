@@ -71,8 +71,13 @@ function workflowJob(workflow, name) {
   return workflow.slice(start, following === -1 ? undefined : start + following + 1);
 }
 
+function readWorkflow(githubDirectory = path.join(__dirname, "..")) {
+  return fs.readFileSync(path.join(githubDirectory, "workflows", "labeler.yml"), "utf8")
+    .replace(/\r\n/g, "\n");
+}
+
 test("workflow uses one generic Helmcode action and one sequential review pipeline", () => {
-  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  const workflow = readWorkflow();
   assert.doesNotMatch(workflow, /core\.setOutput\("result"/);
   assert.doesNotMatch(workflow, /^\s{6}result:\s+\$\{\{\s*steps\./m);
   assert.doesNotMatch(workflow, /needs\.[\w-]+\.outputs\.result\b/);
@@ -89,14 +94,14 @@ test("workflow uses one generic Helmcode action and one sequential review pipeli
 });
 
 test("workflow does not resolve or write state after cancellation", () => {
-  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  const workflow = readWorkflow();
   for (const name of ["resolve-classification-state", "resolve-review-state", "write-state"]) {
     assert.match(workflowJob(workflow, name), /^    if: always\(\) && !cancelled\(\) &&/m);
   }
 });
 
 test("workflow isolates CI completion concurrency by source commit", () => {
-  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  const workflow = readWorkflow();
   assert.match(workflow, /pr-automation-\$\{\{ github\.event_name }}-\$\{\{/);
   assert.match(workflow, /github\.event\.workflow_run\.head_sha \|\|/);
   assert.match(workflow, /github\.event\.label\.name == 'ai-review\/allow-oversized'/);
@@ -105,7 +110,7 @@ test("workflow isolates CI completion concurrency by source commit", () => {
 });
 
 test("workflow force mode bypasses model policy gates without changing automatic branches", () => {
-  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  const workflow = readWorkflow();
   assert.match(workflow, /^\s{6}force:\n\s{8}description:/m);
   assert.doesNotMatch(workflow, /bypass-ci|bypassCi|BYPASS_CI/);
 
@@ -150,7 +155,7 @@ test("workflow force mode bypasses model policy gates without changing automatic
 test("review skills own methodology while stage prompts own pipeline contracts", () => {
   const githubDirectory = path.join(__dirname, "..");
   const repositoryRoot = path.join(githubDirectory, "..");
-  const workflow = fs.readFileSync(path.join(githubDirectory, "workflows", "labeler.yml"), "utf8");
+  const workflow = readWorkflow(githubDirectory);
   const prompt = (name) => fs.readFileSync(path.join(__dirname, "prompts", `${name}.md`), "utf8");
   const skill = (name) => fs.readFileSync(
     path.join(repositoryRoot, ".agents", "skills", name, "SKILL.md"),
@@ -280,7 +285,7 @@ test("review context is bounded and tied to the reviewed head", async () => {
 
 test("LLM evidence is bound to the resolved pull request base", () => {
   const githubDirectory = path.join(__dirname, "..");
-  const workflow = fs.readFileSync(path.join(githubDirectory, "workflows", "labeler.yml"), "utf8");
+  const workflow = readWorkflow(githubDirectory);
   const evidenceScript = fs.readFileSync(path.join(__dirname, "fetch-pr-evidence.sh"), "utf8");
   for (const name of ["classifier", "review-pipeline"]) {
     const job = workflowJob(workflow, name);
@@ -297,7 +302,7 @@ test("LLM evidence is bound to the resolved pull request base", () => {
 
 test("oversized evidence fails closed and leaves pull request guidance", () => {
   const githubDirectory = path.join(__dirname, "..");
-  const workflow = fs.readFileSync(path.join(githubDirectory, "workflows", "labeler.yml"), "utf8");
+  const workflow = readWorkflow(githubDirectory);
   const evidenceScript = fs.readFileSync(path.join(__dirname, "fetch-pr-evidence.sh"), "utf8");
   const reason = "pull request diff exceeds the 1 MiB evidence limit";
   assert.match(evidenceScript, /failure-reason\.txt/);
@@ -830,7 +835,7 @@ test("force is dispatch-only and bypasses draft and bot eligibility", async () =
 });
 
 test("only the persistent oversized-review label starts automation from a label event", async () => {
-  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  const workflow = readWorkflow();
   assert.match(workflow, /types: \[opened, reopened, synchronize, ready_for_review, edited, labeled\]/);
   assert.match(workflowJob(workflow, "classifier"),
     /contains\(fromJSON\(needs\.resolve-pr\.outputs\.labels\), 'ai-review\/allow-oversized'\)/);
@@ -1553,7 +1558,7 @@ test("writer upgrades a neutral automated review check instead of creating a dup
 });
 
 test("oversized opt-in dispatches review from a cached classification", async () => {
-  const workflow = fs.readFileSync(path.join(__dirname, "..", "workflows", "labeler.yml"), "utf8");
+  const workflow = readWorkflow();
   const requestReview = workflowJob(workflow, "request-review");
   assert.match(requestReview, /needs: \[resolve-pr, classification-gate\]/);
   assert.match(requestReview, /needs\.resolve-pr\.outputs\.review-requested == 'true'/);
