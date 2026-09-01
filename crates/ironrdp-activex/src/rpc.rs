@@ -445,6 +445,10 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
                 "RAIL audit endpoints are unavailable through ActiveX",
             )
         }
+        Request::ClipboardGet | Request::ClipboardSet { .. } => Response::typed_error(
+            AgentErrorCategory::Unavailable,
+            "clipboard access is unavailable through ActiveX",
+        ),
         Request::Resize { width, height } => {
             queue_command(shared, dispatcher, |response| Command::Resize {
                 width,
