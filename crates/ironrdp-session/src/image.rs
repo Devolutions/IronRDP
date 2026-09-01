@@ -200,6 +200,27 @@ impl DecodedImage {
         self.height
     }
 
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
+    pub(crate) fn reset_preserving_pointer(&mut self, width: u16, height: u16) -> SessionResult<()> {
+        let mut reset = Self::new(self.pixel_format, width, height);
+        reset.pointer_x = self.pointer_x;
+        reset.pointer_y = self.pointer_y;
+        reset.pointer = self.pointer.clone();
+        reset.show_pointer = self.show_pointer;
+
+        if reset.pointer.is_some() {
+            reset.show_pointer = true;
+            reset.recalculate_pointer_geometry();
+            reset.show_pointer = self.show_pointer;
+            if reset.show_pointer {
+                reset.apply_pointer_layer(PointerLayer::Pointer)?;
+            }
+        }
+
+        *self = reset;
+        Ok(())
+    }
+
     /// Returns `true` if the rectangle fits entirely within the image bounds.
     fn rect_fits(&self, rect: &InclusiveRectangle) -> bool {
         rect.left <= rect.right
@@ -343,6 +364,7 @@ impl DecodedImage {
         Ok(Some(dest_rect))
     }
 
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn show_pointer(&mut self) -> SessionResult<Option<InclusiveRectangle>> {
         if !self.show_pointer {
             self.show_pointer = true;
@@ -352,6 +374,7 @@ impl DecodedImage {
         }
     }
 
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn hide_pointer(&mut self) -> SessionResult<Option<InclusiveRectangle>> {
         if self.show_pointer {
             self.show_pointer = false;
@@ -429,6 +452,7 @@ impl DecodedImage {
         self.pointer_draw_y = draw_y;
     }
 
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn move_pointer(&mut self, x: u16, y: u16) -> SessionResult<Option<InclusiveRectangle>> {
         self.pointer_x = x;
         self.pointer_y = y;
@@ -449,6 +473,7 @@ impl DecodedImage {
         }
     }
 
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn update_pointer(&mut self, pointer: Arc<DecodedPointer>) -> SessionResult<Option<InclusiveRectangle>> {
         self.show_pointer = true;
 

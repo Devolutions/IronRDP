@@ -638,6 +638,7 @@ const CONTROL_CLOSE_WAIT_FOR_EVENTS: i32 = 1;
 const MAX_ACTIVEX_STATIC_CHANNELS: usize = 28;
 const MAX_RECONNECT_ATTEMPTS: u32 = 200;
 const MAX_PENDING_WORKER_EVENTS: usize = 64;
+const MAX_PENDING_FRAME_PIXELS: usize = 256 * 1024 * 1024 / size_of::<u32>();
 const CERTIFICATE_WARNING_CONTINUE_BUTTON: i32 = 100;
 const SECURITY_WARNING_CONTINUE_BUTTON: i32 = 101;
 const INFORMATION_DIALOG_CLOSE_BUTTON: i32 = 102;
@@ -16894,7 +16895,41 @@ fn queue_worker_event(
     }
 
     let queued = match &event {
-        WorkerEvent::Image { generation, .. } => {
+        WorkerEvent::Image { generation, update } => {
+            let incoming_pixels = update.buffer.len();
+            if incoming_pixels > MAX_PENDING_FRAME_PIXELS {
+                tracing::warn!(
+                    incoming_pixels,
+                    limit = MAX_PENDING_FRAME_PIXELS,
+                    "Discarding ActiveX frame update larger than the queue budget"
+                );
+                return false;
+            }
+            loop {
+                let queued_pixels = queue
+                    .iter()
+                    .filter_map(|event| match event {
+                        WorkerEvent::Image { update, .. } => Some(update.buffer.len()),
+                        _ => None,
+                    })
+                    .try_fold(0usize, usize::checked_add)
+                    .unwrap_or(usize::MAX);
+                if queue.len() < MAX_PENDING_WORKER_EVENTS
+                    && queued_pixels
+                        .checked_add(incoming_pixels)
+                        .is_some_and(|total| total <= MAX_PENDING_FRAME_PIXELS)
+                {
+                    break;
+                }
+                queue = match events.space_available.wait(queue) {
+                    Ok(queue) => queue,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                if events.closed.load(Ordering::Acquire) {
+                    return false;
+                }
+            }
+
             if let Some(index) = queue.iter().rposition(|pending| {
                 matches!(pending, WorkerEvent::Image { generation: pending_generation, .. } if *pending_generation == *generation)
             }) {
@@ -16916,28 +16951,10 @@ fn queue_worker_event(
                 {
                     true
                 } else {
-                    while queue.len() >= MAX_PENDING_WORKER_EVENTS {
-                        queue = match events.space_available.wait(queue) {
-                            Ok(queue) => queue,
-                            Err(poisoned) => poisoned.into_inner(),
-                        };
-                        if events.closed.load(Ordering::Acquire) {
-                            return false;
-                        }
-                    }
                     queue.push(event);
                     true
                 }
             } else {
-                while queue.len() >= MAX_PENDING_WORKER_EVENTS {
-                    queue = match events.space_available.wait(queue) {
-                        Ok(queue) => queue,
-                        Err(poisoned) => poisoned.into_inner(),
-                    };
-                    if events.closed.load(Ordering::Acquire) {
-                        return false;
-                    }
-                }
                 queue.push(event);
                 true
             }
@@ -16952,10 +16969,12 @@ fn queue_worker_event(
         }
         WorkerEvent::AutoReconnecting { .. } => {
             while queue.len() >= MAX_PENDING_WORKER_EVENTS {
-                if let Some(index) = queue
-                    .iter()
-                    .position(|pending| matches!(pending, WorkerEvent::Image { .. } | WorkerEvent::StaticChannelData { .. }))
-                {
+                if let Some(index) = queue.iter().position(|pending| {
+                    matches!(
+                        pending,
+                        WorkerEvent::Image { .. } | WorkerEvent::StaticChannelData { .. }
+                    )
+                }) {
                     queue.remove(index);
                 } else {
                     return false;
