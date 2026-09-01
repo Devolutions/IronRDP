@@ -99,7 +99,8 @@ Microsoft's deprecated `RemoteActionSnap` value remains a successful no-op, matc
 JPEG and BMP snapshots return `E_INVALIDARG`.
 Snapshot RGB data is capped at 16 MiB before encoding.
 
-`attachEvent` and `detachEvent` retain and release `IDispatch` callbacks by exact documented event name.
+`attachEvent` and `detachEvent` retain and release `IDispatch` callbacks for `OnConnecting`, `OnConnected`, `OnLoginCompleted`, `OnDisconnected`, `OnAutoReconnecting`, `OnAutoReconnected`, `OnDialogDisplaying`, `OnDialogDismissed`, and `OnRemoteDesktopSizeChanged`.
+Other event names return `E_INVALIDARG` until IronRDP has an equivalent event source.
 Callbacks run on the creating apartment with the documented modern argument order, and detaching one registration does not affect duplicate registrations.
 
 `TouchPointer` returns `E_NOTIMPL` and a null interface because Microsoft's touch-pointer feature translates local touch into remote mouse input, while IronRDP's existing touch path sends native [MS-RDPEI] contacts.

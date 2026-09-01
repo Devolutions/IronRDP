@@ -551,21 +551,16 @@ const DISPID_ON_AUTHENTICATION_WARNING_DISMISSED: i32 = 19;
 const DISPID_ON_REMOTE_PROGRAM_RESULT: i32 = 20;
 const DISPID_ON_AUTO_RECONNECTED: i32 = 33;
 const DISPID_ON_AUTO_RECONNECTING2: i32 = 34;
-const MODERN_EVENT_NAMES: &[&str] = &[
+const SUPPORTED_MODERN_EVENT_NAMES: &[&str] = &[
     "OnConnecting",
     "OnConnected",
     "OnLoginCompleted",
     "OnDisconnected",
     "OnAutoReconnecting",
     "OnAutoReconnected",
-    "OnStatusChanged",
     "OnDialogDisplaying",
     "OnDialogDismissed",
-    "OnAdminMessageReceived",
-    "OnNetworkStatusChanged",
-    "OnKeyCombinationPressed",
     "OnRemoteDesktopSizeChanged",
-    "OnTouchPointerCursorMoved",
 ];
 
 const WM_DISPATCH_EVENTS: u32 = WM_APP + 0x52;
@@ -6011,7 +6006,12 @@ impl ModernClientSettings {
     }
 
     fn get_rdp_property(&self, name: &str) -> Result<VARIANT> {
-        property_variant(&self.bridge.control()?.modern_rdp_property(name)?)
+        let value = self.bridge.control()?.modern_rdp_property(name)?;
+        if is_boolean_modern_property(name) {
+            Ok(variant_bool_value(property_bool(&value)?))
+        } else {
+            property_variant(&value)
+        }
     }
 
     fn set_rdp_property(&self, name: &str, value: &VARIANT) -> Result<()> {
@@ -8025,6 +8025,17 @@ fn is_sensitive_modern_property(name: &str) -> bool {
     )
 }
 
+fn is_boolean_modern_property(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "redirectclipboard"
+            | "enablecredsspsupport"
+            | "compression"
+            | "administrative session"
+            | "remoteapplicationmode"
+    )
+}
+
 fn validate_modern_rdp_property(name: &str, value: &Value) -> Result<()> {
     if is_sensitive_modern_property(name) {
         return Err(Error::from_hresult(E_ACCESSDENIED));
@@ -8037,7 +8048,10 @@ fn validate_modern_rdp_property(name: &str, value: &Value) -> Result<()> {
         | "loadbalanceinfo"
         | "remoteapplicationprogram"
         | "remoteapplicationcmdline" => {
-            let _ = property_string(value)?;
+            let value = property_string(value)?;
+            if value.contains(['\r', '\n', '\0']) {
+                return Err(Error::from_hresult(E_INVALIDARG));
+            }
             Ok(())
         }
 
@@ -8293,8 +8307,15 @@ impl Control {
         ));
         let settings = self.settings.borrow();
         properties.insert("full address", settings.server.clone());
+        if !properties
+            .iter()
+            .any(|(name, _)| name.as_ref() == "alternate full address")
+        {
+            properties.insert("alternate full address", String::new());
+        }
         properties.insert("username", settings.username.clone());
         properties.insert("domain", settings.domain.clone());
+        properties.insert("session bpp", settings.color_depth);
         drop(settings);
         let compatibility = self.compatibility.borrow();
         properties.insert("enablecredsspsupport", compatibility.enable_credssp.unwrap_or(true));
@@ -8441,7 +8462,7 @@ impl Control {
     }
 
     fn canonical_modern_event_name(name: &str) -> Result<&'static str> {
-        MODERN_EVENT_NAMES
+        SUPPORTED_MODERN_EVENT_NAMES
             .iter()
             .copied()
             .find(|candidate| *candidate == name)
@@ -20981,10 +21002,17 @@ mod tests {
         let credssp_name = BSTR::from("enablecredsspsupport");
         unsafe { settings.GetRdpProperty(credssp_name.as_ptr(), &mut credssp) }
             .expect("retrieve effective CredSSP default");
+        assert!(variant_bool(&credssp, ptr::null_mut()).expect("CredSSP default is Boolean"));
+
+        let mut alternate = VARIANT::default();
+        let alternate_name = BSTR::from("alternate full address");
+        unsafe { settings.GetRdpProperty(alternate_name.as_ptr(), &mut alternate) }
+            .expect("retrieve alternate-address default");
         assert_eq!(
-            variant_i32_value(&credssp, ptr::null_mut()).expect("CredSSP default is an integer"),
-            1
+            variant_bstr_value(&alternate).expect("alternate-address default is a BSTR"),
+            ""
         );
+        free_owned_bstr_variant(&mut alternate);
 
         let mut serialized: *const u16 = ptr::null();
         unsafe { settings.RetrieveSettings(&mut serialized) }.expect("serialize RDP settings");
@@ -21033,6 +21061,11 @@ mod tests {
         let error = unsafe { settings.SetRdpProperty(unsupported_name.as_ptr(), unsupported) }
             .expect_err("unmapped modern settings must fail explicitly");
         assert_eq!(error.code(), E_NOTIMPL);
+
+        let injected = Value::Str("alice\nfull address:s:other-host".to_owned());
+        let error = validate_modern_rdp_property("username", &injected)
+            .expect_err("RDP string properties must not inject additional lines");
+        assert_eq!(error.code(), E_INVALIDARG);
     }
 
     #[test]
@@ -21102,6 +21135,11 @@ mod tests {
             calls: Arc::clone(&calls),
         }
         .into();
+
+        let error = control
+            .attach_modern_event("OnStatusChanged", callback.as_raw())
+            .expect_err("callbacks without an event source fail explicitly");
+        assert_eq!(error.code(), E_INVALIDARG);
 
         control
             .attach_modern_event("OnConnected", callback.as_raw())
