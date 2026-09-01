@@ -8,7 +8,7 @@ const { ActionError, fail } = require("./errors");
 const {
   MAX_LINE_BYTES, MAX_LIST_ENTRIES, MAX_PATH_BYTES, MAX_QUERY_BYTES, MAX_READ_LINES,
   MAX_RECURSION_DEPTH, MAX_SEARCH_FILES, MAX_SEARCH_RESULTS, MAX_SOURCE_FILE_BYTES,
-  MAX_TOOL_RESULT_BYTES,
+  MAX_TOOL_RESULT_BYTES, MAX_WALK_ENTRIES,
 } = require("./limits");
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -178,7 +178,7 @@ class WorkspaceSandbox {
     }
     const target = this.resolve(args.path, "directory");
     const entries = [];
-    this.walk(target, args.recursive === true, ({ relative, metadata }) => {
+    const traversal = this.walk(target, args.recursive === true, ({ relative, metadata }) => {
       if (entries.length >= MAX_LIST_ENTRIES) return false;
       entries.push({ path: relative, type: metadata.isDirectory() ? "directory" : "file" });
       return true;
@@ -187,7 +187,7 @@ class WorkspaceSandbox {
       ok: true,
       path: target.relative,
       recursive: args.recursive === true,
-      truncated: entries.length >= MAX_LIST_ENTRIES,
+      truncated: traversal.truncated,
       entries,
     });
   }
@@ -213,6 +213,7 @@ class WorkspaceSandbox {
 
     const results = [];
     let filesSearched = 0;
+    let traversal = { truncated: false };
     const searchFile = (file) => {
       if (filesSearched >= MAX_SEARCH_FILES || results.length >= MAX_SEARCH_RESULTS) return false;
       filesSearched++;
@@ -240,7 +241,7 @@ class WorkspaceSandbox {
     if (fs.lstatSync(target.real).isFile()) {
       searchFile(target);
     } else {
-      this.walk(target, true, ({ lexical, real, relative, metadata }) => {
+      traversal = this.walk(target, true, ({ lexical, real, relative, metadata }) => {
         if (!metadata.isFile()) return true;
         return searchFile({ lexical, real, relative });
       });
@@ -249,20 +250,25 @@ class WorkspaceSandbox {
       ok: true,
       path: target.relative,
       files_searched: filesSearched,
-      truncated: filesSearched >= MAX_SEARCH_FILES || results.length >= MAX_SEARCH_RESULTS,
+      truncated: traversal.truncated ||
+        filesSearched >= MAX_SEARCH_FILES || results.length >= MAX_SEARCH_RESULTS,
       matches: results,
     });
   }
 
   walk(root, recursive, visitor) {
+    let remainingEntries = MAX_WALK_ENTRIES;
+    let truncated = false;
+
     const visit = (directory, depth) => {
-      if (depth > MAX_RECURSION_DEPTH) return true;
-      let names;
-      try {
-        names = fs.readdirSync(directory.real).sort((left, right) => left.localeCompare(right, "en"));
-      } catch {
-        fail("directory is unavailable");
+      if (remainingEntries === 0) {
+        truncated = true;
+        return true;
       }
+      const directoryEntries = readDirectoryNames(directory.real, remainingEntries);
+      remainingEntries -= directoryEntries.names.length;
+      truncated ||= directoryEntries.truncated;
+      const names = directoryEntries.names.sort((left, right) => left.localeCompare(right, "en"));
       for (const name of names) {
         if (name.toLowerCase() === ".git") continue;
         let relative;
@@ -283,13 +289,40 @@ class WorkspaceSandbox {
         const real = fs.realpathSync(lexical);
         if (!isInside(root.real, real) || !isInside(this.workspace, real)) continue;
         const entry = { lexical, real, relative, metadata };
-        if (visitor(entry) === false) return false;
-        if (recursive && metadata.isDirectory() &&
-            visit({ lexical, real, relative }, depth + 1) === false) return false;
+        if (visitor(entry) === false) {
+          truncated = true;
+          return false;
+        }
+        if (recursive && metadata.isDirectory()) {
+          if (depth >= MAX_RECURSION_DEPTH || remainingEntries === 0) {
+            truncated = true;
+          } else if (visit({ lexical, real, relative }, depth + 1) === false) {
+            return false;
+          }
+        }
       }
       return true;
     };
     visit(root, 1);
+    return { truncated };
+  }
+}
+
+function readDirectoryNames(directory, maximumEntries) {
+  let handle;
+  try {
+    handle = fs.opendirSync(directory);
+    const names = [];
+    while (names.length < maximumEntries) {
+      const entry = handle.readSync();
+      if (entry === null) return { names, truncated: false };
+      names.push(entry.name);
+    }
+    return { names, truncated: handle.readSync() !== null };
+  } catch {
+    fail("directory is unavailable");
+  } finally {
+    if (handle !== undefined) handle.closeSync();
   }
 }
 

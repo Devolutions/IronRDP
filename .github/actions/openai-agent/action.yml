@@ -18,7 +18,7 @@ outputs:
   failure-reason:
     description: Bounded failure category when no valid output was produced
   turn-count:
-    description: Number of provider completion requests attempted
+    description: Number of model turns attempted, excluding SDK retries
   tool-call-count:
     description: Number of model tool calls processed
 

@@ -19,6 +19,7 @@ test("action metadata exposes only configured inputs and required outputs on nod
   ]) {
     assert.match(action, new RegExp(`^  ${output}:\\r?$`, "m"));
   }
+  assert.match(action, /Number of model turns attempted, excluding SDK retries/);
   assert.equal(fs.existsSync(path.join(__dirname, "..", "dist", "index.js")), true);
   assert.equal(fs.existsSync(path.join(__dirname, "..", "dist", "licenses.txt")), true);
 });

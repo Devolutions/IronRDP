@@ -7,7 +7,7 @@ const assert = require("node:assert/strict");
 
 const {
   MAX_LIST_ENTRIES, MAX_RECURSION_DEPTH, MAX_SEARCH_RESULTS, MAX_SOURCE_FILE_BYTES,
-  MAX_TOOL_RESULT_BYTES,
+  MAX_TOOL_RESULT_BYTES, MAX_WALK_ENTRIES,
 } = require("../src/limits");
 const { WorkspaceSandbox, boundJson, normalizeRepositoryPath } = require("../src/sandbox");
 const { scratchWorkspace, write } = require("./helpers");
@@ -114,6 +114,9 @@ test("list_files is deterministic, bounded by recursion, and requires an allowed
     const listed = JSON.parse(current.sandbox.listFiles({ path: "root", recursive: true }));
     assert.equal(listed.entries[0].path, "root/a.txt");
     assert.equal(listed.entries.some((entry) => entry.path.includes(`d${MAX_RECURSION_DEPTH}`)), false);
+    assert.equal(listed.truncated, true);
+    const searched = JSON.parse(current.sandbox.searchText({ path: "root", query: "absent" }));
+    assert.equal(searched.truncated, true);
     assert.throws(
       () => current.sandbox.listFiles({ path: "root/a.txt" }),
       /directory/,
@@ -122,6 +125,31 @@ test("list_files is deterministic, bounded by recursion, and requires an allowed
       () => current.sandbox.listFiles({ path: "single.txt" }),
       /directory/,
     );
+  } finally {
+    current.cleanup();
+  }
+});
+
+test("directory traversal stops at the aggregate entry budget", (t) => {
+  const current = fixture();
+  const originalOpen = fs.opendirSync;
+  let reads = 0;
+  try {
+    t.mock.method(fs, "opendirSync", (directory) => {
+      if (path.resolve(directory) !== path.resolve(current.directory, "root")) {
+        return originalOpen(directory);
+      }
+      return {
+        readSync() {
+          reads++;
+          return { name: `missing-${reads}` };
+        },
+        closeSync() {},
+      };
+    });
+    const listed = JSON.parse(current.sandbox.listFiles({ path: "root", recursive: true }));
+    assert.equal(listed.truncated, true);
+    assert.equal(reads, MAX_WALK_ENTRIES + 1);
   } finally {
     current.cleanup();
   }
