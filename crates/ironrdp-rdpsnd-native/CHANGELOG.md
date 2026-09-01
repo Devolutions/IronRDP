@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.7.0...ironrdp-rdpsnd-native-v0.7.1)] - 2026-09-01
+
+### <!-- 1 -->Features
+
+- Harden Windows client playback path ([#1648](https://github.com/Devolutions/IronRDP/issues/1648)) ([2d9a9bf114](https://github.com/Devolutions/IronRDP/commit/2d9a9bf114dcf41a1ddc7343f564bc2e8d1d06db)) 
+
+  Keep client format order for wFormatNo, play pre-v8 Wave PDUs, and apply
+  volume on a broader CPAL PCM offer so ActiveX mode 0 can redirect remote
+  audio reliably.
+  
+  Also fix clippy noise in the RDPSND client suite and keep interleaved
+  volume L/R phase stable across wave blocks. Volume scaling is a simple
+  amplitude map, not a logarithmic MS-RDPEA model.
+
+- Wire MS-RDPEAI capture into Windows client and ActiveX ([#1642](https://github.com/Devolutions/IronRDP/issues/1642)) ([205fe038cc](https://github.com/Devolutions/IronRDP/commit/205fe038cc693598adf803fe181526b789b2ec3d)) 
+
+  Add the client MS-RDPEAI capture path on top of hardened RDPSND
+  playback: connector CFG + static channel wiring, CPAL PCM capture
+  backend, ironrdp-client --audio-capture, and ActiveX
+  AudioCaptureRedirectionMode.
+  
+  PCM capture only accepts encode formats that match the Open capture
+  stream, rejects non-16-bit capture (Data PDU size contract), and gates
+  the capture backend behind ironrdp-rdpsnd-native/capture.
+  
+  Depends on #1648 (playback).
+
+### <!-- 4 -->Bug Fixes
+
+- Make source locations opt-in ([#1480](https://github.com/Devolutions/IronRDP/issues/1480)) ([f84cd01450](https://github.com/Devolutions/IronRDP/commit/f84cd01450e18d12838b225859878b311802b805)) 
+
+  Default error display omits locations; alternate formatting and reports
+  with explicit location opt-in preserve diagnostic context.
+
+- Stop blocking the real-time playback callback ([#1803](https://github.com/Devolutions/IronRDP/issues/1803)) ([850f654673](https://github.com/Devolutions/IronRDP/commit/850f6546730cff1a6b858864f6fbf9cb7d6264fd)) 
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.6.0...ironrdp-rdpsnd-native-v0.7.0)] - 2026-07-10
 
 ### <!-- 4 -->Bug Fixes
