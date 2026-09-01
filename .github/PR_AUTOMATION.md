@@ -6,8 +6,7 @@ Automatic routes stop at `ai-reviewed/2` unless a maintainer uses force mode.
 ## Review pipeline
 
 Classification and review use [Helmcode's OpenAI-compatible endpoint](https://api.helmcode.com/v1).
-The classifier uses `qwen3.6`.
-The protocol, skeptical, code-compressor, and general reviewers use `glm-5.2`.
+The classifier and all reviewers use `glm-5.2`.
 
 The pipeline performs these stages:
 

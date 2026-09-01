@@ -159,7 +159,7 @@ test("review skills own methodology while stage prompts own pipeline contracts",
 
   for (const agent of ["classifier", "protocol", "skeptical", "code-compressor", "general-reviewer"]) {
     const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", `${agent}.json`), "utf8"));
-    assert.equal(config.model, agent === "classifier" ? "qwen3.6" : "glm-5.2");
+    assert.equal(config.model, "glm-5.2");
     assert.equal(config.max_tool_calls > 0, true);
   }
 
