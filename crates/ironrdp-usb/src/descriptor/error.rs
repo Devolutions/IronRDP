@@ -3,7 +3,6 @@
 use core::fmt;
 
 use super::super::endpoint::EndpointAddress;
-use crate::UsbSpeed;
 
 /// Field associated with an invalid descriptor value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,24 +219,17 @@ impl fmt::Display for DescriptorError {
 
 impl core::error::Error for DescriptorError {}
 
-/// Speed-dependent device-descriptor semantic error.
+/// `bMaxPacketSize0` matches neither endpoint-zero packet size encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceDescriptorError {
-    speed: UsbSpeed,
     encoded_max_packet_size_0: u8,
 }
 
 impl DeviceDescriptorError {
-    pub(super) const fn new(speed: UsbSpeed, encoded_max_packet_size_0: u8) -> Self {
+    pub(super) const fn new(encoded_max_packet_size_0: u8) -> Self {
         Self {
-            speed,
             encoded_max_packet_size_0,
         }
-    }
-
-    #[must_use]
-    pub const fn speed(self) -> UsbSpeed {
-        self.speed
     }
 
     #[must_use]
@@ -248,11 +240,7 @@ impl DeviceDescriptorError {
 
 impl fmt::Display for DeviceDescriptorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "invalid bMaxPacketSize0 {} for {:?} speed",
-            self.encoded_max_packet_size_0, self.speed
-        )
+        write!(f, "invalid bMaxPacketSize0 {}", self.encoded_max_packet_size_0)
     }
 }
 

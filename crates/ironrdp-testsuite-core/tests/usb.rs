@@ -170,13 +170,27 @@ fn device_descriptor_validate_rejects_non_decimal_bcd_nibbles() {
 }
 
 #[test]
-fn endpoint_zero_max_packet_size_is_speed_dependent() {
-    let descriptor = DeviceDescriptor::parse(&DEVICE_DESCRIPTOR).unwrap();
-    assert_eq!(descriptor.endpoint_zero_max_packet_size(UsbSpeed::High), Ok(64));
-    assert_eq!(descriptor.endpoint_zero_max_packet_size(UsbSpeed::Full), Ok(64));
-    assert!(descriptor.endpoint_zero_max_packet_size(UsbSpeed::Low).is_err());
-    // SuperSpeed encodes the size as an exponent, so only 9 (meaning 512) is valid.
-    assert!(descriptor.endpoint_zero_max_packet_size(UsbSpeed::Super).is_err());
+fn endpoint_zero_max_packet_size_decodes_by_encoding() {
+    for (encoded, expected) in [(8, 8), (64, 64), (DeviceDescriptor::SUPERSPEED_MAX_PACKET_SIZE_0, 512)] {
+        let mut bytes = DEVICE_DESCRIPTOR;
+        bytes[7] = encoded;
+        let descriptor = DeviceDescriptor::parse(&bytes).unwrap();
+
+        assert_eq!(descriptor.endpoint_zero_max_packet_size(), Ok(expected));
+    }
+}
+
+#[test]
+fn endpoint_zero_max_packet_size_rejects_an_unknown_encoding() {
+    // Neither a literal USB 2.0 size nor the SuperSpeed exponent.
+    for encoded in [0, 10] {
+        let mut bytes = DEVICE_DESCRIPTOR;
+        bytes[7] = encoded;
+        let descriptor = DeviceDescriptor::parse(&bytes).unwrap();
+
+        let error = descriptor.endpoint_zero_max_packet_size().unwrap_err();
+        assert_eq!(error.encoded_max_packet_size_0(), encoded);
+    }
 }
 
 #[test]
