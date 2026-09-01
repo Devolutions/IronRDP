@@ -257,6 +257,9 @@ pub trait GraphicsPipelineHandler: Send {
     /// Called when the server resets the graphics output buffer
     fn on_reset_graphics(&mut self, _width: u32, _height: u32) {}
 
+    /// Called when a graphics-output reset exceeds the client's allocation limits.
+    fn on_reset_graphics_rejected(&mut self, _width: u32, _height: u32) {}
+
     /// Called when a surface is created by the server
     fn on_surface_created(&mut self, _surface: &Surface) {}
 
@@ -688,13 +691,12 @@ impl GraphicsPipelineClient {
     }
 
     fn handle_reset_graphics(&mut self, width: u32, height: u32) -> PduResult<()> {
-        let output_size = Compositor::materializable_output_size(width, height)
-            .ok_or_else(|| pdu_other_err!("reset graphics output dimensions exceed compositor limits"))?;
+        let output_size = Compositor::materializable_output_size(width, height);
 
         // Per spec, ResetGraphics implicitly destroys all surfaces
         self.surfaces.clear();
         self.compositor.reset(width, height);
-        self.pending_output_reset = Some(output_size);
+        self.pending_output_reset = output_size;
 
         // Reset frame tracking state so subsequent FrameAcknowledge PDUs
         // don't report stale queue depth from a previous stream.
@@ -720,9 +722,16 @@ impl GraphicsPipelineClient {
         // drop the glyph cache, so a legitimate post-reset GLYPH_HIT would fail unless the
         // server redundantly re-sent every glyph.
 
-        debug!(width, height, "Graphics reset");
-        self.handler.on_reset_graphics(width, height);
-        Ok(())
+        if output_size.is_some() {
+            debug!(width, height, "Graphics reset");
+            self.handler.on_reset_graphics(width, height);
+            Ok(())
+        } else {
+            self.handler.on_reset_graphics_rejected(width, height);
+            Err(pdu_other_err!(
+                "reset graphics output dimensions exceed compositor limits"
+            ))
+        }
     }
 
     fn handle_create_surface(&mut self, surface_id: u16, width: u16, height: u16, pixel_format: PixelFormat) {
@@ -1794,6 +1803,14 @@ mod tests {
             .expect("wide multimon output fits compositor limits");
         assert_eq!(client.take_output_reset(), Some((19_200, 1080)));
         assert_eq!(client.take_output_reset(), None);
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 7,
+                width: 1,
+                height: 1,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .expect("create surface before rejected reset");
 
         assert!(
             client
@@ -1804,6 +1821,10 @@ mod tests {
                 }))
                 .is_err(),
             "an output over the memory budget must be rejected before framebuffer allocation"
+        );
+        assert!(
+            client.get_surface(7).is_none(),
+            "ResetGraphics destroys prior surfaces even when its output extent is rejected"
         );
         assert!(
             client
