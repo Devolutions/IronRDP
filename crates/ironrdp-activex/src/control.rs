@@ -206,6 +206,40 @@ const MAX_MODERN_SNAPSHOT_RGB_BYTES: usize = 16 * 1024 * 1024;
 const ACTIVEX_DVC_PLUGIN_OPT_IN: &str = "IRONRDP_ACTIVEX_ENABLE_DVC_PLUGINS";
 const MAX_ACTIVEX_DVC_PLUGINS: usize = 16;
 
+struct ActiveXPrinterWorkerGuard {
+    module_raw: isize,
+    active: bool,
+}
+
+impl Drop for ActiveXPrinterWorkerGuard {
+    fn drop(&mut self) {
+        if self.active {
+            com::release_worker();
+            com::release_module_reference(HMODULE(self.module_raw as *mut c_void));
+        }
+    }
+}
+
+impl ironrdp_rdpdr_native::RdpdrWorkerThreadGuard for ActiveXPrinterWorkerGuard {
+    fn exit(self: Box<Self>) -> ! {
+        let this = ManuallyDrop::new(self);
+        let module = HMODULE(this.module_raw as *mut c_void);
+        com::release_worker();
+        unsafe { com::release_module_and_exit_worker(module) }
+    }
+}
+
+fn acquire_activex_printer_worker_guard() -> ironrdp_rdpdr_native::RdpdrWorkerThreadGuardResult {
+    let module = com::retain_module_for_worker().map_err(|error| {
+        Box::new(std::io::Error::other(error.to_string())) as Box<dyn core::error::Error + Send + Sync>
+    })?;
+    com::add_worker();
+    Ok(Box::new(ActiveXPrinterWorkerGuard {
+        module_raw: module.0 as isize,
+        active: true,
+    }))
+}
+
 #[derive(Default)]
 struct RemoteApplicationConfiguration {
     enabled: bool,
@@ -1389,6 +1423,7 @@ struct CompatibilitySettings {
     redirect_webauthn: bool,
     redirect_drives: bool,
     redirect_dynamic_drives: bool,
+    redirect_printers: bool,
     redirect_smart_cards: bool,
     disable_rdpdr: bool,
     drive_catalog: Rc<RefCell<DriveCatalog>>,
@@ -1471,6 +1506,7 @@ impl Default for CompatibilitySettings {
             redirect_webauthn: true,
             redirect_drives: false,
             redirect_dynamic_drives: false,
+            redirect_printers: false,
             redirect_smart_cards: false,
             disable_rdpdr: false,
             drive_catalog: Rc::new(RefCell::new(DriveCatalog::new())),
@@ -2531,7 +2567,6 @@ advanced_put_not_implemented!(
     (7, advanced_put_plugin_dlls, Bstr),
     (93, advanced_put_bitmap_persistence, i32),
     (95, advanced_put_minutes_to_idle_timeout, i32),
-    (116, advanced_put_redirect_printers, i16),
     (118, advanced_put_redirect_ports, i16),
     (150, advanced_put_redirect_devices, i16),
     (161, advanced_put_pcb, Bstr),
@@ -2543,7 +2578,6 @@ advanced_put_not_implemented!(
 advanced_get_not_implemented!(
     (94, advanced_get_bitmap_persistence, i32),
     (96, advanced_get_minutes_to_idle_timeout, i32),
-    (117, advanced_get_redirect_printers, i16),
     (119, advanced_get_redirect_ports, i16),
     (151, advanced_get_redirect_devices, i16),
     (174, advanced_get_video_playback_mode, u32),
@@ -3183,6 +3217,34 @@ unsafe extern "system" fn advanced_get_redirect_drives(this: *mut c_void, value:
     write_out(
         value,
         if object.settings.borrow().redirect_drives {
+            VARIANT_TRUE.0
+        } else {
+            VARIANT_FALSE.0
+        },
+    )
+    .map_or_else(|error| error.code(), |_| S_OK)
+}
+
+unsafe extern "system" fn advanced_put_redirect_printers(this: *mut c_void, value: i16) -> HRESULT {
+    let value = match normalize_variant_bool(value) {
+        Ok(value) => value == VARIANT_TRUE.0,
+        Err(error) => return error.code(),
+    };
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    settings.redirect_printers = value;
+    mark_compatibility_persistence_dirty(&settings);
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_redirect_printers(this: *mut c_void, value: *mut i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    write_out(
+        value,
+        if object.settings.borrow().redirect_printers {
             VARIANT_TRUE.0
         } else {
             VARIANT_FALSE.0
@@ -8016,6 +8078,7 @@ fn active_x_property_snapshot(settings: &Settings, compatibility: &Compatibility
     );
     properties.insert("redirectclipboard", compatibility.redirect_clipboard);
     properties.insert("redirectwebauthn", compatibility.redirect_webauthn);
+    properties.insert("redirectprinters", compatibility.redirect_printers);
     properties.insert("ironrdp_smartcard", compatibility.redirect_smart_cards);
     properties.insert("compression", compatibility.compression.unwrap_or(true));
     properties
@@ -11396,6 +11459,7 @@ impl Control {
         let warn_about_credentials = compatibility.warn_about_sending_credentials;
         let warn_about_clipboard = clipboard && compatibility.warn_about_clipboard_redirection;
         let redirect_dynamic_drives = !compatibility.disable_rdpdr && compatibility.redirect_dynamic_drives;
+        let redirect_printers = !compatibility.disable_rdpdr && compatibility.redirect_printers;
         let (configured_drives, initial_drive_ids) = if compatibility.disable_rdpdr {
             (Vec::new(), Vec::new())
         } else {
@@ -11405,7 +11469,11 @@ impl Control {
             (catalog.configured_drives()?, initial_drive_ids)
         };
         let redirect_smart_cards = !compatibility.disable_rdpdr && compatibility.redirect_smart_cards;
-        let rdpdr_factory = if initial_drive_ids.is_empty() && !redirect_dynamic_drives && !redirect_smart_cards {
+        let rdpdr_factory = if initial_drive_ids.is_empty()
+            && !redirect_dynamic_drives
+            && !redirect_printers
+            && !redirect_smart_cards
+        {
             None
         } else {
             Some(
@@ -11415,6 +11483,10 @@ impl Control {
                 )
                 .map_err(|error| Error::new(E_FAIL, format!("invalid redirected-drive configuration: {error}")))?
                 .with_dynamic_drives(redirect_dynamic_drives)
+                .with_default_printer(redirect_printers)
+                .with_worker_thread_hooks(ironrdp_rdpdr_native::RdpdrWorkerThreadHooks::new(
+                    acquire_activex_printer_worker_guard,
+                ))
                 .with_smartcard(redirect_smart_cards),
             )
         };
@@ -18975,6 +19047,23 @@ mod tests {
             S_OK
         );
         assert_eq!(redirect_drives, VARIANT_TRUE.0);
+
+        assert_eq!(unsafe { advanced_put_redirect_printers(this, VARIANT_TRUE.0) }, S_OK);
+        let mut redirect_printers = VARIANT_FALSE.0;
+        assert_eq!(
+            unsafe { advanced_get_redirect_printers(this, &mut redirect_printers) },
+            S_OK
+        );
+        assert_eq!(redirect_printers, VARIANT_TRUE.0);
+        assert_eq!(unsafe { advanced_put_redirect_printers(this, 1) }, E_INVALIDARG);
+        assert_eq!(
+            unsafe { advanced_get_redirect_printers(this, ptr::null_mut()) },
+            E_POINTER
+        );
+        settings.borrow_mut().connection_settings_sealed = true;
+        assert_eq!(unsafe { advanced_put_redirect_printers(this, VARIANT_FALSE.0) }, E_FAIL);
+        assert!(settings.borrow().redirect_printers);
+        settings.borrow_mut().connection_settings_sealed = false;
 
         assert_eq!(unsafe { advanced_put_redirect_smart_cards(this, VARIANT_TRUE.0) }, S_OK);
         let mut redirect_smart_cards = VARIANT_FALSE.0;

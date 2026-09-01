@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use ironrdp_core::impl_as_any;
 use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_rdpdr::RdpdrBackend;
 use ironrdp_rdpdr::pdu::efs::{
-    AnyIoCtlCode, DecodedDeviceControlRequest, DeviceControlRequest, ServerDeviceAnnounceResponse, ServerDriveIoRequest,
+    AnyIoCtlCode, DecodedDeviceControlRequest, DeviceControlRequest, PrinterIoRequest, ServerDeviceAnnounceResponse,
+    ServerDriveIoRequest,
 };
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_svc::SvcMessage;
@@ -14,6 +16,7 @@ use super::file_table::FileTable;
 use super::handles::{FileHandle, RootDirectory};
 use super::path::RelativePath;
 use super::pending::DeferredOperations;
+use super::printer::{PrinterWorker, RdpdrWorkerThreadHooks};
 use super::scard::ScardSession;
 use super::status::from_open_directory;
 use super::{control, directory, file, locks, security, volume};
@@ -32,6 +35,9 @@ pub struct WindowsRdpdrBackend {
     pub(super) open_files: FileTable<OpenFile>,
     deferred_operations: DeferredOperations,
     scard: ScardSession,
+    configured_printer: Option<ironrdp_rdpdr::RdpdrPrinter>,
+    printer_worker: Option<Mutex<PrinterWorker>>,
+    worker_thread_hooks: Option<RdpdrWorkerThreadHooks>,
 }
 
 impl WindowsRdpdrBackend {
@@ -41,12 +47,23 @@ impl WindowsRdpdrBackend {
     }
 
     pub(crate) fn from_drives(drives: Vec<RedirectedDrive>) -> Self {
+        Self::from_configuration(drives, None, None)
+    }
+
+    pub(super) fn from_configuration(
+        drives: Vec<RedirectedDrive>,
+        configured_printer: Option<ironrdp_rdpdr::RdpdrPrinter>,
+        worker_thread_hooks: Option<RdpdrWorkerThreadHooks>,
+    ) -> Self {
         Self {
             drives: drives.into_iter().map(|drive| (drive.device_id(), drive)).collect(),
             roots: HashMap::new(),
             open_files: FileTable::new(DEFAULT_MAX_OPEN_FILES),
             deferred_operations: DeferredOperations::new(),
             scard: ScardSession::new(),
+            configured_printer,
+            printer_worker: None,
+            worker_thread_hooks,
         }
     }
 
@@ -154,6 +171,12 @@ impl RdpdrBackend for WindowsRdpdrBackend {
         self.scard.reset();
         self.open_files.clear();
         self.roots.clear();
+        if let Some(worker) = &mut self.printer_worker {
+            worker
+                .get_mut()
+                .map_err(|_| pdu_other_err!("Windows printer worker lock is poisoned"))?
+                .restart()?;
+        }
         Ok(())
     }
 
@@ -207,9 +230,50 @@ impl RdpdrBackend for WindowsRdpdrBackend {
         control::handle(self, req.request, &req.input_buffer)
     }
 
+    fn handle_printer_io_request(&mut self, req: PrinterIoRequest) -> PduResult<Vec<SvcMessage>> {
+        if self.printer_worker.is_none() {
+            let printer = self
+                .configured_printer
+                .clone()
+                .ok_or_else(|| pdu_other_err!("printer IRP reached an unconfigured Windows RDPDR backend"))?;
+            self.printer_worker = Some(Mutex::new(PrinterWorker::new(printer, self.worker_thread_hooks)?));
+        }
+        self.printer_worker
+            .as_mut()
+            .expect("printer worker was initialized")
+            .get_mut()
+            .map_err(|_| pdu_other_err!("Windows printer worker lock is poisoned"))?
+            .handle(req)
+    }
+
+    fn reject_printer_write(&mut self, req: ironrdp_rdpdr::pdu::efs::DeviceIoRequest) -> PduResult<Vec<SvcMessage>> {
+        if self.printer_worker.is_none() {
+            let printer = self
+                .configured_printer
+                .clone()
+                .ok_or_else(|| pdu_other_err!("printer write reached an unconfigured Windows RDPDR backend"))?;
+            self.printer_worker = Some(Mutex::new(PrinterWorker::new(printer, self.worker_thread_hooks)?));
+        }
+        Ok(self
+            .printer_worker
+            .as_mut()
+            .expect("printer worker was initialized")
+            .get_mut()
+            .map_err(|_| pdu_other_err!("Windows printer worker lock is poisoned"))?
+            .reject_write(req))
+    }
+
     fn poll_deferred_messages(&mut self) -> PduResult<Vec<SvcMessage>> {
         let mut messages = self.deferred_operations.poll();
         messages.extend(self.scard.poll());
+        if let Some(worker) = &mut self.printer_worker {
+            messages.extend(
+                worker
+                    .get_mut()
+                    .map_err(|_| pdu_other_err!("Windows printer worker lock is poisoned"))?
+                    .poll()?,
+            );
+        }
         Ok(messages)
     }
 }

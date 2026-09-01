@@ -332,14 +332,33 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | --- | --- |
 | Legacy RDP 6.1 through 11 host selection | The six published `MsRdpClient*NotSafeForScripting` class identifiers are accepted by `DllGetClassObject` and preserve their requested `IPersist` class identity. They are explicit backend aliases, not global COM registrations. |
 | WinForms `AxHost` lifecycle | Windowed OLE activation, focus, sizing, the inherited `IMsRdpClient` through `IMsRdpClient10` raw interfaces, and the RDM virtual channels `RDMJump`, `RDMLog`, and `RDMCmd` are supported. |
-| Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio and quality policy, clipboard, CredSSP, administrative session, load-balance routing token, client-device name, RemoteApp, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
+| Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio and quality policy, clipboard, default-printer redirection, CredSSP, administrative session, load-balance routing token, client-device name, RemoteApp, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
 | Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, writable confirm-close, and worker-backed warning and auto-reconnect events are delivered on the creating apartment. |
 | Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. `IMsRdpCameraRedirConfigCollection` exposes connected Windows camera metadata and offline configurations, but camera stream redirection remains unavailable. Non-filesystem device, monitor, and preferred-redirection capabilities remain unavailable. |
 | Smartcard redirection | `IMsRdpClientAdvancedSettings::RedirectSmartCards` enables WinSCard RDPDR smartcard redirection (smartcard-only sessions are valid without redirected drives). |
+| Printer redirection | `IMsRdpClientAdvancedSettings::RedirectPrinters` redirects the current user's default Windows printer through RDPDR when the remote server has the same printer driver. |
 
-The audit also identified unsupported `AdvancedSettings` members: plug-in DLL loading, idle policy, printer/port/generic-device redirection, persistent bitmap caching, video policy, PCB, super-pan, and security-layer negotiation.
+The audit also identified unsupported `AdvancedSettings` members: plug-in DLL loading, idle policy, port and generic-device redirection, persistent bitmap caching, video policy, PCB, super-pan, and security-layer negotiation.
 Their audited vtable slots use published ABI signatures, initialize getter outputs, and return `E_NOTIMPL`; the control does not report success for settings that cannot affect the connection.
 `IMsRdpClientNonScriptable8::StartWorkspaceExtension` independently returns `E_NOTIMPL` because IronRDP does not implement Microsoft workspace extensions.
+
+### Default-printer redirection
+
+Set `RedirectPrinters` to `VARIANT_TRUE` before connecting to redirect one printer.
+The control snapshots the current user's default Windows queue, announces its local driver name, and streams each remote print job to that same queue with the Windows `RAW` spooler data type.
+If no default printer exists, the connection proceeds without a printer or an otherwise-empty RDPDR channel.
+`DisableRdpdr` overrides this setting, and changing it after connection settings are sealed returns `E_FAIL`.
+
+The remote server must permit printer redirection and have a compatible driver registered under the announced name.
+IronRDP does not implement Easy Print/XPS negotiation, printer cache PDUs, multiple-printer enumeration, printer hotplug, or printer entries in `IMsRdpDeviceCollection`.
+Print operations run on a bounded worker, allow at most 16 concurrent jobs, 16 MiB per write, and 128 MiB per job, reject nonempty create paths, and abort incomplete jobs on write failure, reset, reconnect, or teardown.
+
+To opt in to the ignored smoke test, confirm that creating a real empty job on the current user's default queue is acceptable, then run:
+
+```powershell
+$env:IRONRDP_RDPDR_PRINTER_SMOKE = "1"
+cargo test -p ironrdp-rdpdr-native authorized_default_printer_smoke -- --ignored
+```
 
 The control exposes a standard `IConnectionPointContainer` and an event connection point for the
 published `IMsTscAxEvents` IID `{336D5562-EFA8-482E-8CB3-C5C0FC7A7DB6}`. Lifecycle events are delivered
@@ -867,8 +886,8 @@ The worker translates supported Automation settings into `ironrdp-client::Config
 Connection points retain sinks through `Advise`/`Unadvise`, enumerate correctly, and query the supplied
 sink for the event interface IID before retaining its `IDispatch`.
 
-This is an Automation, lifecycle, hosting, framebuffer, basic input, RemoteApp projection, persistence, static virtual-channel, and bounded read-only OLE clipboard-snapshot foundation.
-It does not implement writable or file-backed OLE clipboard exchange, monikers, non-filesystem RDPDR device redirection, or arbitrary persisted designer state.
+This is an Automation, lifecycle, hosting, framebuffer, basic input, RemoteApp projection, persistence, static virtual-channel, default-printer redirection, and bounded read-only OLE clipboard-snapshot foundation.
+It does not implement writable or file-backed OLE clipboard exchange, monikers, serial/parallel or generic PnP/USB redirection, or arbitrary persisted designer state.
 Those contracts must be added as exact ABI implementations before advertising their individual methods as supported.
 
 [MS-RDPEFS sections 3.2.5.1.9 and 3.2.5.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5

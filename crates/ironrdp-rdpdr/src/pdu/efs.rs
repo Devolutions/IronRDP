@@ -286,6 +286,13 @@ impl CoreCapability {
         }
     }
 
+    /// Returns whether this capability set advertises printer redirection.
+    pub fn supports_printer(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability.header.cap_type == CapabilityType::Printer)
+    }
+
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
         dst.write_u16(cast_length!(
@@ -1094,10 +1101,22 @@ impl Devices {
 
     /// Announce a virtual printer device with an explicit server-side driver.
     pub fn add_printer_with_driver(&mut self, device_id: u32, print_name: String, driver_name: String) {
-        self.push(DeviceAnnounceHeader::new_printer_with_driver(
+        self.add_printer_with_driver_and_network(device_id, print_name, driver_name, true);
+    }
+
+    /// Announce a printer with an explicit driver and network-queue classification.
+    pub fn add_printer_with_driver_and_network(
+        &mut self,
+        device_id: u32,
+        print_name: String,
+        driver_name: String,
+        network: bool,
+    ) {
+        self.push(DeviceAnnounceHeader::new_printer_with_driver_and_network(
             device_id,
             print_name,
             driver_name,
+            network,
         ));
     }
 
@@ -1219,6 +1238,20 @@ impl DeviceAnnounceHeader {
     /// `u32::MAX` bytes. Real printer names are well under 200 bytes,
     /// so this is unreachable in practice.
     pub fn new_printer_with_driver(device_id: u32, print_name: String, driver_name: String) -> Self {
+        Self::new_printer_with_driver_and_network(device_id, print_name, driver_name, true)
+    }
+
+    /// Construct a printer announce with an explicit driver and network-queue classification.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either UTF-16 name exceeds `u32::MAX` encoded bytes.
+    pub fn new_printer_with_driver_and_network(
+        device_id: u32,
+        print_name: String,
+        driver_name: String,
+        network: bool,
+    ) -> Self {
         // [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE device_data layout:
         //   Flags            u32 LE
         //   CodePage         u32 LE   (reserved; MUST be ignored)
@@ -1240,16 +1273,20 @@ impl DeviceAnnounceHeader {
         let driver_name_bytes = utf16le_with_nul(&driver_name);
         let print_name_bytes = utf16le_with_nul(&print_name);
 
-        // [MS-RDPEPC 2.2.2.3] Flags. We match FreeRDP's PostScript
-        // redirection behavior: mark the queue as the session default and as
-        // a network printer. We intentionally leave the others off:
+        // [MS-RDPEPC 2.2.2.3] Flags. Mark the single configured queue as the
+        // session default and preserve its network classification. We intentionally leave the others off:
         //  - XPSFORMAT (0x10): advertises *client* XPS-consumption support;
         //    our driver is PostScript so this is irrelevant and could nudge
         //    mixed-driver hosts toward the XPS path.
         //  - TSPRINTER (0x08): "printer is from a previous terminal server
         //    session" (i.e. nested-hop re-redirection). We're a first-hop
         //    client, so setting it would be a lie.
-        let flags: u32 = RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER | RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER;
+        let flags: u32 = RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER
+            | if network {
+                RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER
+            } else {
+                0
+            };
         let code_page: u32 = 0;
         let pnp_name_len: u32 = 0;
         let cached_fields_len: u32 = 0;

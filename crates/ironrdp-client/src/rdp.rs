@@ -38,7 +38,9 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::pdu_other_err;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 #[cfg(feature = "rdpdr")]
-pub use ironrdp_rdpdr::backend::{RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive};
+pub use ironrdp_rdpdr::backend::{
+    RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPrinter,
+};
 use ironrdp_rdpei::RdpeiClient;
 use ironrdp_rdpei::pdu::TouchEventPdu;
 #[cfg(feature = "location")]
@@ -1325,6 +1327,7 @@ fn build_rdpdr_channel(
         .build_rdpdr_backend()
         .map_err(|error| ironrdp_connector::custom_err!("build RDPDR backend", RdpdrBackendBuildError(error)))?;
     let drive_hotplug = allow_drives && product.drive_hotplug();
+    let printer = product.printer().cloned();
     let (backend, initial_drives) = product.into_parts();
     // Gateway drive restrictions do not apply to smartcard redirection, which shares RDPDR.
     let initial_drives = if allow_drives { initial_drives } else { Vec::new() };
@@ -1334,7 +1337,23 @@ fn build_rdpdr_channel(
     #[cfg(not(feature = "smartcard"))]
     let smartcard = false;
 
-    if initial_drives.is_empty() && !smartcard && !drive_hotplug {
+    if let Some(printer) = &printer {
+        let collides_with_drive = initial_drives
+            .iter()
+            .any(|drive| drive.device_id() == printer.device_id());
+        let collides_with_smartcard = smartcard && printer.device_id() == 0;
+        if collides_with_drive || collides_with_smartcard {
+            return Err(ironrdp_connector::custom_err!(
+                "build RDPDR channel",
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RDPDR printer device ID is already configured"
+                )
+            ));
+        }
+    }
+
+    if initial_drives.is_empty() && !smartcard && !drive_hotplug && printer.is_none() {
         return Ok(None);
     }
 
@@ -1350,6 +1369,10 @@ fn build_rdpdr_channel(
     let mut rdpdr_channel = ironrdp_rdpdr::Rdpdr::new(backend, "IronRDP".to_owned());
     if !initial_drives.is_empty() || drive_hotplug {
         rdpdr_channel = rdpdr_channel.with_drives(Some(initial_drives));
+    }
+    if let Some(printer) = printer {
+        let (device_id, name, driver_name, network) = printer.into_parts();
+        rdpdr_channel = rdpdr_channel.with_printer_driver_and_network(device_id, name, driver_name, network);
     }
 
     #[cfg(feature = "smartcard")]
@@ -3861,6 +3884,7 @@ mod tests {
         builds: AtomicUsize,
         initial_drives: Vec<RdpdrDrive>,
         drive_hotplug: bool,
+        printer: Option<RdpdrPrinter>,
     }
 
     #[cfg(feature = "rdpdr")]
@@ -3870,11 +3894,17 @@ mod tests {
                 builds: AtomicUsize::new(0),
                 initial_drives,
                 drive_hotplug: false,
+                printer: None,
             }
         }
 
         fn with_drive_hotplug(mut self) -> Self {
             self.drive_hotplug = true;
+            self
+        }
+
+        fn with_printer(mut self, printer: RdpdrPrinter) -> Self {
+            self.printer = Some(printer);
             self
         }
     }
@@ -3883,10 +3913,13 @@ mod tests {
     impl RdpdrBackendFactory for CountingRdpdrFactory {
         fn build_rdpdr_backend(&self) -> RdpdrBackendFactoryResult<RdpdrBackendProduct> {
             let instance = self.builds.fetch_add(1, Ordering::SeqCst) + 1;
-            Ok(
+            let mut product =
                 RdpdrBackendProduct::new(Box::new(TestRdpdrBackend::new(instance)), self.initial_drives.clone())
-                    .with_drive_hotplug(self.drive_hotplug),
-            )
+                    .with_drive_hotplug(self.drive_hotplug);
+            if let Some(printer) = &self.printer {
+                product = product.with_printer(printer.clone());
+            }
+            Ok(product)
         }
     }
 
@@ -4110,6 +4143,90 @@ mod tests {
                 .is_none()
         );
         assert_eq!(factory.builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn printer_only_rdpdr_product_attaches_the_channel() {
+        let factory = CountingRdpdrFactory::new(Vec::new()).with_printer(
+            RdpdrPrinter::new(42, "Office Printer".to_owned(), "Office Driver".to_owned()).with_network(false),
+        );
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+        };
+
+        let mut rdpdr = build_rdpdr_channel(Some(&factory), &config, true)
+            .expect("printer-only RDPDR product should build")
+            .expect("printer metadata keeps the RDPDR channel attached");
+        let client_id = 0x1234_5678;
+        rdpdr
+            .process(
+                &encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+                    version_major: 1,
+                    version_minor: VERSION_MINOR_12,
+                    client_id,
+                    kind: VersionAndIdPduKind::ServerAnnounceRequest,
+                }))
+                .expect("encode server announce"),
+            )
+            .expect("process server announce");
+        rdpdr
+            .process(
+                &encode_vec(&RdpdrPdu::CoreCapability(CoreCapability {
+                    capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_printer()],
+                    kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
+                }))
+                .expect("encode server capability"),
+            )
+            .expect("process server capability");
+        assert!(
+            rdpdr
+                .process(
+                    &encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+                        version_major: 1,
+                        version_minor: VERSION_MINOR_12,
+                        client_id,
+                        kind: VersionAndIdPduKind::ServerClientIdConfirm,
+                    }))
+                    .expect("encode client ID confirm"),
+                )
+                .expect("process client ID confirm")
+                .is_empty()
+        );
+
+        let announcements = rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on");
+        assert_eq!(announcements.len(), 1);
+        let wire = announcements[0]
+            .encode_unframed_pdu()
+            .expect("encode printer announcement");
+        assert_eq!(
+            u32::from_le_bytes(wire[8..12].try_into().unwrap()),
+            u32::from(DeviceType::Print)
+        );
+        assert_eq!(u32::from_le_bytes(wire[12..16].try_into().unwrap()), 42);
+        assert_eq!(
+            u32::from_le_bytes(wire[28..32].try_into().unwrap()),
+            ironrdp_rdpdr::pdu::efs::RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER
+        );
+    }
+
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn rdpdr_rejects_duplicate_printer_and_drive_device_ids() {
+        let factory = CountingRdpdrFactory::new(vec![RdpdrDrive::new(42, "drive".to_owned())]).with_printer(
+            RdpdrPrinter::new(42, "Office Printer".to_owned(), "Office Driver".to_owned()),
+        );
+        let config = crate::config::RdpdrConfig {
+            enabled: true,
+            #[cfg(feature = "smartcard")]
+            smartcard: false,
+        };
+
+        assert!(build_rdpdr_channel(Some(&factory), &config, true).is_err());
     }
 
     #[cfg(feature = "rdpdr")]

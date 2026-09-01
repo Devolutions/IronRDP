@@ -17,4 +17,7 @@ pub use nix::backend;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{RedirectedDrive, RedirectedDriveError, WindowsRdpdrBackend, WindowsRdpdrBackendFactory};
+pub use windows::{
+    RdpdrWorkerThreadGuard, RdpdrWorkerThreadGuardResult, RdpdrWorkerThreadHooks, RedirectedDrive,
+    RedirectedDriveError, WindowsRdpdrBackend, WindowsRdpdrBackendFactory,
+};
