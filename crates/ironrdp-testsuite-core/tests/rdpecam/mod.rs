@@ -88,6 +88,11 @@ impl CameraBackend for FakeCamera {
         self.sample_count += 1;
         Ok(vec![0x55; 12])
     }
+
+    fn shutdown(&mut self) {
+        self.stop_count += 1;
+        self.deactivate_count += 1;
+    }
 }
 
 #[test]
@@ -277,6 +282,94 @@ fn decoder_bounds_arrays_before_allocating_and_retains_unknown_advertisement_bit
     assert_eq!(decode::<DevicePdu>(&encoded).unwrap(), pdu);
 }
 
+#[test]
+fn wire_fixtures_match_ms_rdpecam_version_1_layouts() {
+    let descriptor = DeviceDescriptor::new("A".into(), "C".into()).unwrap();
+    let enumeration_fixtures = [
+        (EnumerationPdu::SelectVersionRequest(ProtocolVersion::V1), vec![1, 3]),
+        (EnumerationPdu::SelectVersionResponse(ProtocolVersion::V1), vec![1, 4]),
+        (
+            EnumerationPdu::DeviceAdded {
+                version: ProtocolVersion::V1,
+                device: descriptor,
+            },
+            vec![1, 5, b'A', 0, 0, 0, b'C', 0],
+        ),
+        (
+            EnumerationPdu::DeviceRemoved {
+                version: ProtocolVersion::V1,
+                channel_name: "C".into(),
+            },
+            vec![1, 6, b'C', 0],
+        ),
+    ];
+    for (pdu, expected) in enumeration_fixtures {
+        assert_eq!(encode_vec(&pdu).unwrap(), expected);
+        assert_eq!(decode::<EnumerationPdu>(&expected).unwrap(), pdu);
+    }
+
+    let media_type = media_type();
+    let media = media_type_fixture();
+    let mut stream_list = vec![1, 10];
+    stream_list.extend_from_slice(&[1, 0, 1, 1, 0]);
+    let mut media_list = vec![1, 12];
+    media_list.extend_from_slice(&media);
+    let mut current_media = vec![1, 14];
+    current_media.extend_from_slice(&media);
+    let mut start_streams = vec![1, 15, 2];
+    start_streams.extend_from_slice(&media);
+    let device_fixtures = [
+        (DevicePdu::SuccessResponse, vec![1, 1]),
+        (
+            DevicePdu::ErrorResponse(ErrorCode::InvalidRequest),
+            vec![1, 2, 4, 0, 0, 0],
+        ),
+        (DevicePdu::ActivateDeviceRequest, vec![1, 7]),
+        (DevicePdu::DeactivateDeviceRequest, vec![1, 8]),
+        (DevicePdu::StreamListRequest, vec![1, 9]),
+        (
+            DevicePdu::StreamListResponse(vec![StreamDescription::color(true, false)]),
+            stream_list,
+        ),
+        (DevicePdu::MediaTypeListRequest(2), vec![1, 11, 2]),
+        (DevicePdu::MediaTypeListResponse(vec![media_type]), media_list),
+        (DevicePdu::CurrentMediaTypeRequest(2), vec![1, 13, 2]),
+        (DevicePdu::CurrentMediaTypeResponse(media_type), current_media),
+        (
+            DevicePdu::StartStreamsRequest(vec![StartStreamInfo {
+                stream_index: 2,
+                media_type,
+            }]),
+            start_streams,
+        ),
+        (DevicePdu::StopStreamsRequest, vec![1, 16]),
+        (DevicePdu::SampleRequest(2), vec![1, 17, 2]),
+        (
+            DevicePdu::SampleResponse {
+                stream_index: 2,
+                sample: vec![0xAA, 0xBB],
+            },
+            vec![1, 18, 2, 0xAA, 0xBB],
+        ),
+        (
+            DevicePdu::SampleErrorResponse {
+                stream_index: 2,
+                error: ErrorCode::InvalidStreamNumber,
+            },
+            vec![1, 19, 2, 5, 0, 0, 0],
+        ),
+    ];
+    for (pdu, expected) in device_fixtures {
+        assert_eq!(encode_vec(&pdu).unwrap(), expected);
+        assert_eq!(decode::<DevicePdu>(&expected).unwrap(), pdu);
+    }
+
+    assert!(decode::<DevicePdu>(&[1, 2, 4, 0, 0]).is_err());
+    assert!(decode::<DevicePdu>(&[1, 7, 0]).is_err());
+    assert!(decode::<DevicePdu>(&[1, 11]).is_err());
+    assert!(decode::<DevicePdu>(&[1, 19, 0, 5, 0, 0]).is_err());
+}
+
 fn exchange(client: &mut DeviceClient<FakeCamera>, channel_id: u32, request: DevicePdu) -> DevicePdu {
     let encoded = encode_vec(&request).unwrap();
     let response = client.process(channel_id, &encoded).unwrap();
@@ -294,6 +387,19 @@ where
 
 fn media_type() -> MediaType {
     MediaType::new(MediaFormat::Rgb24, 2, 2, 30, 1, 1, 1, 0).unwrap()
+}
+
+fn media_type_fixture() -> Vec<u8> {
+    vec![
+        6, // Format
+        2, 0, 0, 0, // Width
+        2, 0, 0, 0, // Height
+        30, 0, 0, 0, // FrameRateNumerator
+        1, 0, 0, 0, // FrameRateDenominator
+        1, 0, 0, 0, // PixelAspectRatioNumerator
+        1, 0, 0, 0, // PixelAspectRatioDenominator
+        0, // Flags
+    ]
 }
 
 fn negotiated_device() -> ironrdp_rdpecam::RedirectedDevice {

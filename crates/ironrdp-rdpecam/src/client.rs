@@ -280,6 +280,9 @@ impl DvcClientProcessor for EnumerationClient {}
 /// Methods are synchronous and must not block indefinitely on device I/O.
 pub trait CameraBackend: Send + 'static {
     fn activate(&mut self) -> Result<(), ErrorCode>;
+    /// Deactivates the device.
+    ///
+    /// On error, the device must remain activated and retryable.
     fn deactivate(&mut self) -> Result<(), ErrorCode>;
     fn streams(&mut self) -> Result<Vec<StreamDescription>, ErrorCode>;
     fn media_types(&mut self, stream_index: u8) -> Result<Vec<MediaType>, ErrorCode>;
@@ -288,8 +291,13 @@ pub trait CameraBackend: Send + 'static {
     ///
     /// On error, any prior stream selection must remain active.
     fn start_streams(&mut self, streams: &[StartStreamInfo]) -> Result<(), ErrorCode>;
+    /// Stops all active streams.
+    ///
+    /// On error, the current streams must remain active and retryable.
     fn stop_streams(&mut self) -> Result<(), ErrorCode>;
     fn sample(&mut self, stream_index: u8) -> Result<Vec<u8>, ErrorCode>;
+    /// Infallibly stops capture and releases device resources during channel teardown.
+    fn shutdown(&mut self);
 }
 
 /// Per-device RDPECAM client processor.
@@ -499,16 +507,10 @@ where
     }
 
     fn shutdown(&mut self) {
-        if self.streaming.take().is_some()
-            && let Err(error) = self.backend.stop_streams()
-        {
-            warn!(?error, "Camera backend failed to stop while closing channel");
+        if self.streaming.is_some() || self.activation_depth != 0 {
+            self.backend.shutdown();
         }
-        if self.activation_depth != 0
-            && let Err(error) = self.backend.deactivate()
-        {
-            warn!(?error, "Camera backend failed to deactivate while closing channel");
-        }
+        self.streaming = None;
         self.activation_depth = 0;
     }
 }

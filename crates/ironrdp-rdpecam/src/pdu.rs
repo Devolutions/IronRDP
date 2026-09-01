@@ -815,7 +815,8 @@ fn decode_utf16z(src: &mut ReadCursor<'_>) -> DecodeResult<String> {
 
 fn decode_ansiz(src: &mut ReadCursor<'_>) -> DecodeResult<String> {
     let remaining = src.remaining();
-    let terminator = remaining
+    let search_len = remaining.len().min(MAX_CHANNEL_NAME_LEN + 1);
+    let terminator = remaining[..search_len]
         .iter()
         .position(|byte| *byte == 0)
         .ok_or_else(|| invalid_field_err!("VirtualChannelName", "channel name is not terminated", in: src))?;
