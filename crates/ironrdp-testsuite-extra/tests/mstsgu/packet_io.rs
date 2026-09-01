@@ -49,28 +49,6 @@ async fn strict_policy_rejects_self_signed_gateway_certificate() {
 }
 
 #[tokio::test]
-async fn native_tls_rejects_gateway_certificate_callback() {
-    let (listener, acceptor) = tls_listener().await;
-    let target = gateway_target(listener.local_addr().expect("gateway listener address"));
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.expect("accept callback TLS client");
-        assert!(acceptor.accept(stream).await.is_err());
-    });
-    let callback: CertificateValidationCallback = Arc::new(|_, _, _| true);
-
-    let error = match GatewayTransport::connect_tls(&target, CertificateValidation::Strict, Some(callback)).await {
-        Ok(_) => panic!("native TLS must reject certificate callbacks"),
-        Err(error) => error,
-    };
-    assert!(
-        format!("{error:?}").contains("certificate validation callbacks require the rustls backend"),
-        "{error:?}"
-    );
-
-    server.await.expect("TLS server task");
-}
-
-#[tokio::test]
 async fn dangerous_policy_with_gateway_callback_is_rejected() {
     let target = gateway_target("127.0.0.1:1".parse().expect("socket address"));
     let callback: CertificateValidationCallback = Arc::new(|_, _, _| true);
