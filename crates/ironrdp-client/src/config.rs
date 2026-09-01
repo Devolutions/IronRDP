@@ -102,6 +102,8 @@ pub struct Config {
     #[cfg(all(windows, feature = "vmconnect"))]
     pub(crate) vmconnect_current_user: bool,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
+    pub(crate) input_send_interval: Option<Duration>,
+    pub(crate) input_keepalive_interval: Option<Duration>,
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
     pub(crate) administrative_session: bool,
@@ -195,6 +197,16 @@ impl Config {
         self.kerberos_config.as_ref()
     }
 
+    /// Minimum interval between non-forced input batches.
+    pub fn input_send_interval(&self) -> Option<Duration> {
+        self.input_send_interval
+    }
+
+    /// Interval between synthetic input keepalive events.
+    pub fn input_keepalive_interval(&self) -> Option<Duration> {
+        self.input_keepalive_interval
+    }
+
     /// Idle anti-lock fake-events interval, if enabled.
     pub fn fake_events_interval(&self) -> Option<Duration> {
         self.fake_events_interval
@@ -269,6 +281,8 @@ impl fmt::Debug for Config {
             );
         }
         s.field("kerberos_config", &self.kerberos_config);
+        s.field("input_send_interval", &self.input_send_interval);
+        s.field("input_keepalive_interval", &self.input_keepalive_interval);
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
         s.field("administrative_session", &self.administrative_session);
@@ -766,6 +780,8 @@ pub struct ConfigBuilder {
     vmconnect_current_user: bool,
     rdcleanpath_token: Option<String>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
+    input_send_interval: Option<Duration>,
+    input_keepalive_interval: Option<Duration>,
     fake_events_interval: Option<Duration>,
     channels: ChannelConfig,
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
@@ -1307,6 +1323,26 @@ impl ConfigBuilder {
             self.properties.clear_kdc_proxy_url();
         }
         self.kerberos_config = Some(cfg);
+        self
+    }
+
+    /// Set the minimum interval between non-forced input batches.
+    ///
+    /// Mouse movement is batched until this interval elapses.
+    /// Keyboard, button, wheel, synchronization, and QoE events remain immediate.
+    #[must_use]
+    pub fn with_input_send_interval(mut self, interval: Duration) -> Self {
+        self.input_send_interval = Some(interval);
+        self
+    }
+
+    /// Set the interval between synthetic input keepalive events.
+    ///
+    /// Unlike [`with_fake_events_interval`](Self::with_fake_events_interval), this does not write the minute-based `ironrdp_fakeeventsinterval` compatibility property.
+    /// When both intervals are configured, the shorter interval controls synthetic input.
+    #[must_use]
+    pub fn with_input_keepalive_interval(mut self, interval: Duration) -> Self {
+        self.input_keepalive_interval = Some(interval);
         self
     }
 
@@ -1930,6 +1966,8 @@ impl ConfigBuilder {
             #[cfg(all(windows, feature = "vmconnect"))]
             vmconnect_current_user: self.vmconnect_current_user,
             kerberos_config,
+            input_send_interval: self.input_send_interval,
+            input_keepalive_interval: self.input_keepalive_interval,
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,
             administrative_session: self.administrative_session,
@@ -2051,6 +2089,15 @@ impl ConfigBuilder {
         }
         if let Some(minutes) = ps.fake_events_interval() {
             self.fake_events_interval = Some(Duration::from_secs(u64::from(minutes) * 60));
+        }
+        if let Some(milliseconds) = ps.get::<u32>("mininputsendinterval") {
+            if milliseconds > 2_000 {
+                anyhow::bail!("invalid minimum input send interval: valid values are 0 through 2000 milliseconds");
+            }
+            self.input_send_interval = Some(Duration::from_millis(u64::from(milliseconds)));
+        }
+        if let Some(seconds) = ps.get::<u32>("keepaliveinterval") {
+            self.input_keepalive_interval = (seconds != 0).then(|| Duration::from_secs(u64::from(seconds)));
         }
         if let Some(level) = ps.compression_level() {
             self.compression_type = Some(compression_type_from_level(level)?);
@@ -2316,6 +2363,8 @@ fn kerberos_config_from_properties(
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
+
     use ironrdp_cfg::PropertySetExt as _;
     use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 
@@ -2347,6 +2396,34 @@ mod tests {
             .build()
             .expect("terminator-only load-balance info clears the token");
         assert!(cleared.load_balance_info().is_none());
+    }
+
+    #[test]
+    fn input_timing_configuration_preserves_subminute_precision() {
+        let config = complete_builder()
+            .with_input_send_interval(Duration::from_millis(100))
+            .with_input_keepalive_interval(Duration::from_secs(5))
+            .build()
+            .expect("valid input timing configuration");
+
+        assert_eq!(config.input_send_interval(), Some(Duration::from_millis(100)));
+        assert_eq!(config.input_keepalive_interval(), Some(Duration::from_secs(5)));
+        assert_eq!(config.fake_events_interval(), None);
+        assert_eq!(config.properties.get::<u32>("ironrdp_fakeeventsinterval"), None);
+
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.insert("mininputsendinterval", 2_000u32);
+        properties.insert("keepaliveinterval", 30u32);
+        let config = complete_builder()
+            .with_property_set(&properties)
+            .expect("valid input timing properties")
+            .build()
+            .expect("valid input timing configuration");
+        assert_eq!(config.input_send_interval(), Some(Duration::from_secs(2)));
+        assert_eq!(config.input_keepalive_interval(), Some(Duration::from_secs(30)));
+
+        properties.insert("mininputsendinterval", 2_001u32);
+        assert!(complete_builder().with_property_set(&properties).is_err());
     }
 
     #[cfg(any(feature = "sound", feature = "rdpdr"))]

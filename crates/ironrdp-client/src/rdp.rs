@@ -1004,6 +1004,11 @@ impl RdpClient {
                 }
             }
 
+            let input_keepalive_interval =
+                match (self.config.input_keepalive_interval, self.config.fake_events_interval) {
+                    (Some(input_keepalive), Some(fake_events)) => Some(input_keepalive.min(fake_events)),
+                    (input_keepalive, fake_events) => input_keepalive.or(fake_events),
+                };
             match active_session(
                 framed,
                 connection_result,
@@ -1013,7 +1018,8 @@ impl RdpClient {
                 &mut self.clipboard_event_receiver,
                 &mut self.close_receiver,
                 &mut self.graceful_close_receiver,
-                self.config.fake_events_interval,
+                self.config.input_send_interval,
+                input_keepalive_interval,
                 &mut auto_reconnect_cookie,
                 &mut reconnect_attempt,
             )
@@ -1794,6 +1800,73 @@ trait AsyncReadWrite: AsyncRead + AsyncWrite {}
 impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite {}
 type UpgradedFramed = ironrdp_tokio::TokioFramed<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>;
 
+const INPUT_BATCH_EVENT_LIMIT: usize = 10;
+
+struct FastPathInputBatcher {
+    interval: Duration,
+    last_send: tokio::time::Instant,
+    pending: SmallVec<[FastPathInputEvent; INPUT_BATCH_EVENT_LIMIT]>,
+}
+
+impl FastPathInputBatcher {
+    fn new(interval: Option<Duration>, now: tokio::time::Instant) -> Self {
+        Self {
+            interval: interval.unwrap_or(Duration::ZERO),
+            last_send: now,
+            pending: SmallVec::new(),
+        }
+    }
+
+    fn deadline(&self) -> Option<tokio::time::Instant> {
+        (!self.pending.is_empty()).then_some(self.last_send + self.interval)
+    }
+
+    fn queue(
+        &mut self,
+        events: impl IntoIterator<Item = FastPathInputEvent>,
+        now: tokio::time::Instant,
+    ) -> Option<SmallVec<[FastPathInputEvent; INPUT_BATCH_EVENT_LIMIT]>> {
+        let mut force = false;
+        for event in events {
+            force |= !matches!(
+                event,
+                FastPathInputEvent::MouseEvent(MousePdu {
+                    flags: PointerFlags::MOVE,
+                    number_of_wheel_rotation_units: 0,
+                    ..
+                })
+            );
+            self.pending.push(event);
+        }
+        if force
+            || self.interval.is_zero()
+            || self.pending.len() >= INPUT_BATCH_EVENT_LIMIT
+            || now.duration_since(self.last_send) >= self.interval
+        {
+            self.flush(now)
+        } else {
+            None
+        }
+    }
+
+    fn queue_forced(
+        &mut self,
+        events: impl IntoIterator<Item = FastPathInputEvent>,
+        now: tokio::time::Instant,
+    ) -> SmallVec<[FastPathInputEvent; INPUT_BATCH_EVENT_LIMIT]> {
+        self.pending.extend(events);
+        self.flush(now).unwrap_or_default()
+    }
+
+    fn flush(&mut self, now: tokio::time::Instant) -> Option<SmallVec<[FastPathInputEvent; INPUT_BATCH_EVENT_LIMIT]>> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        self.last_send = now;
+        Some(core::mem::take(&mut self.pending))
+    }
+}
+
 /// Direct TCP → TLS connection (no gateway).
 async fn connect_direct(
     config: &Config,
@@ -2545,6 +2618,7 @@ async fn active_session(
     clipboard_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
     close_receiver: &mut watch::Receiver<bool>,
     graceful_close_receiver: &mut watch::Receiver<bool>,
+    input_send_interval: Option<Duration>,
     fake_events_interval: Option<Duration>,
     auto_reconnect_cookie: &mut Option<ServerAutoReconnect>,
     reconnect_attempt: &mut u32,
@@ -2589,8 +2663,10 @@ async fn active_session(
     // synthesize a no-op mouse move when the session has been idle for too long. Default to the
     // middle of the screen so a synthetic move before any real input doesn't snap the pointer to a
     // corner.
-    let mut last_input = tokio::time::Instant::now();
+    let now = tokio::time::Instant::now();
+    let mut last_input = now;
     let mut last_mouse_pos = (desktop_size.width / 2, desktop_size.height / 2);
+    let mut input_batcher = FastPathInputBatcher::new(input_send_interval, now);
     let mut fake_events_interval =
         fake_events_interval.map(|interval| tokio::time::interval(core::cmp::max(interval, Duration::from_secs(1))));
     let mut resize_queue = ResizeQueue::default();
@@ -2614,6 +2690,7 @@ async fn active_session(
 
     let disconnect_reason = 'outer: loop {
         let resize_deadline = resize_queue.deadline();
+        let input_batch_deadline = input_batcher.deadline();
         let mut malformed_bitmap_redraw_queued = false;
         let clipboard_event = async {
             #[cfg(feature = "clipboard")]
@@ -2792,7 +2869,10 @@ async fn active_session(
                                 last_mouse_pos = (mouse.x_position, mouse.y_position);
                             }
                         }
-                        active_stage.process_fastpath_input(&mut image, &events)?
+                        match input_batcher.queue(events, tokio::time::Instant::now()) {
+                            Some(events) => active_stage.process_fastpath_input(&mut image, &events)?,
+                            None => Vec::new(),
+                        }
                     }
                     RdpInputEvent::Touch(event) => {
                         trace!(frames = event.frames.len(), "RDPEI touch event");
@@ -3074,6 +3154,17 @@ async fn active_session(
                         None => Vec::new(),
                     }
                 }
+                _ = async {
+                    match input_batch_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => core::future::pending().await,
+                    }
+                } => {
+                    match input_batcher.flush(tokio::time::Instant::now()) {
+                        Some(events) => active_stage.process_fastpath_input(&mut image, &events)?,
+                        None => Vec::new(),
+                    }
+                }
                 _ = async { match fake_events_interval.as_mut() {
                 Some(interval) => interval.tick().await,
                 None => core::future::pending().await,
@@ -3089,6 +3180,7 @@ async fn active_session(
                         x_position: last_mouse_pos.0,
                         y_position: last_mouse_pos.1,
                     }));
+                    let events = input_batcher.queue_forced(events, tokio::time::Instant::now());
                     active_stage.process_fastpath_input(&mut image, &events)?
                 } else {
                     Vec::new()
@@ -3587,6 +3679,7 @@ mod tests {
 
     #[cfg(feature = "rdpdr")]
     use ironrdp_core::encode_vec;
+    use ironrdp_pdu::input::fast_path::KeyboardFlags;
     #[cfg(feature = "rdpdr")]
     use ironrdp_rdpdr::RdpdrBackend;
     #[cfg(feature = "rdpdr")]
@@ -3600,6 +3693,70 @@ mod tests {
     use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
     #[cfg(feature = "rdpdr")]
     use ironrdp_svc::{StaticChannelSet, SvcProcessor as _};
+
+    fn mouse_move(x: u16, y: u16) -> FastPathInputEvent {
+        FastPathInputEvent::MouseEvent(MousePdu {
+            flags: PointerFlags::MOVE,
+            number_of_wheel_rotation_units: 0,
+            x_position: x,
+            y_position: y,
+        })
+    }
+
+    #[test]
+    fn input_batcher_delays_mouse_moves_until_the_minimum_interval() {
+        let start = tokio::time::Instant::now();
+        let mut batcher = FastPathInputBatcher::new(Some(Duration::from_millis(100)), start);
+
+        assert!(batcher.queue([mouse_move(1, 1)], start).is_none());
+        assert_eq!(batcher.deadline(), Some(start + Duration::from_millis(100)));
+        assert!(
+            batcher
+                .queue([mouse_move(2, 2)], start + Duration::from_millis(99))
+                .is_none()
+        );
+
+        let events = batcher
+            .flush(start + Duration::from_millis(100))
+            .expect("pending mouse movement");
+        assert_eq!(events.as_slice(), [mouse_move(1, 1), mouse_move(2, 2)]);
+        assert_eq!(batcher.deadline(), None);
+    }
+
+    #[test]
+    fn input_batcher_sends_forced_and_full_batches_immediately() {
+        let start = tokio::time::Instant::now();
+        let mut batcher = FastPathInputBatcher::new(Some(Duration::from_millis(100)), start);
+        assert!(batcher.queue([mouse_move(1, 1)], start).is_none());
+
+        let events = batcher
+            .queue(
+                [FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1e)],
+                start + Duration::from_millis(1),
+            )
+            .expect("keyboard input forces the pending batch");
+        assert_eq!(events.len(), 2);
+
+        let events = batcher
+            .queue(
+                (0..INPUT_BATCH_EVENT_LIMIT).map(|position| {
+                    let position = u16::try_from(position).expect("test event count fits in u16");
+                    mouse_move(position, position)
+                }),
+                start + Duration::from_millis(2),
+            )
+            .expect("the native event-count threshold forces the batch");
+        assert_eq!(events.len(), INPUT_BATCH_EVENT_LIMIT);
+
+        assert!(
+            batcher
+                .queue([mouse_move(20, 20)], start + Duration::from_millis(3))
+                .is_none()
+        );
+        let events = batcher.queue_forced([mouse_move(20, 20)], start + Duration::from_millis(4));
+        assert_eq!(events.as_slice(), [mouse_move(20, 20), mouse_move(20, 20)]);
+        assert_eq!(batcher.deadline(), None);
+    }
 
     #[cfg(feature = "location")]
     #[test]
