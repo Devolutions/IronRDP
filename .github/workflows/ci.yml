@@ -68,6 +68,34 @@ jobs:
       - name: typos (check)
         run: cargo xtask check typos -v
 
+  # TODO: Move this action to a dedicated repository.
+  openai-agent:
+    name: OpenAI agent action [${{ matrix.os }}]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        working-directory: .github/actions/openai-agent
+        run: npm ci
+
+      - name: Run tests
+        working-directory: .github/actions/openai-agent
+        run: npm test
+
+      - name: Build action
+        working-directory: .github/actions/openai-agent
+        run: npm run build
+
+      - name: Verify bundled action
+        working-directory: .github/actions/openai-agent
+        run: git diff --exit-code -- dist
+
   checks:
     name: Checks [${{ matrix.os }}]
     needs: [formatting]
@@ -266,7 +294,7 @@ jobs:
   success:
     name: Success
     if: ${{ always() }}
-    needs: [formatting, test-settings, typos, checks, fuzz, web, ffi, feature-matrix-setup, feature-matrix]
+    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, web, ffi, feature-matrix-setup, feature-matrix]
     runs-on: ubuntu-latest
 
     steps:
