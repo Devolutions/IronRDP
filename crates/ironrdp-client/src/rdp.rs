@@ -3715,6 +3715,8 @@ async fn active_session(
             }
         }
 
+        let mut desktop_damage_regions = active_stage.take_damage_regions();
+        let mut desktop_damage_delivered = false;
         for out in iteration.outputs {
             match out {
                 ActiveStageOutput::AutoReconnectCookie(cookie) => {
@@ -3743,19 +3745,33 @@ async fn active_session(
                     let height = NonZeroU16::new(image.height())
                         .ok_or_else(|| ironrdp_session::general_err!("height is zero"))?;
                     if let Some(handler) = desktop_update_handler {
+                        if desktop_damage_delivered {
+                            continue;
+                        }
+                        desktop_damage_delivered = true;
                         let extent = (width, height);
-                        let region = if desktop_update_extent == Some(extent) {
-                            region
-                        } else {
+                        if desktop_update_extent != Some(extent) {
                             desktop_update_extent = Some(extent);
-                            InclusiveRectangle {
-                                left: 0,
-                                top: 0,
-                                right: width.get() - 1,
-                                bottom: height.get() - 1,
+                            handler(pack_desktop_update(
+                                &image,
+                                width,
+                                height,
+                                InclusiveRectangle {
+                                    left: 0,
+                                    top: 0,
+                                    right: width.get() - 1,
+                                    bottom: height.get() - 1,
+                                },
+                            )?);
+                            desktop_damage_regions.clear();
+                        } else {
+                            if desktop_damage_regions.is_empty() {
+                                desktop_damage_regions.push(region);
                             }
-                        };
-                        handler(pack_desktop_update(&image, width, height, region)?);
+                            for region in desktop_damage_regions.drain(..) {
+                                handler(pack_desktop_update(&image, width, height, region)?);
+                            }
+                        }
                         continue;
                     }
 

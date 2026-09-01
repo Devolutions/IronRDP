@@ -715,7 +715,7 @@ settings, or private Microsoft state. Loading or initializing while connected or
 activation returns `E_UNEXPECTED` so a container cannot mutate a live session.
 
 The child window retains the decoded `RgbA32` desktop in an STA-owned top-down 32-bpp DIB section and scales that surface to the ActiveX bounds.
-The RDP worker sends tightly packed dirty regions; fully covered pending unions are coalesced, while disjoint regions retain order under bounded backpressure.
+The RDP worker sends tightly packed dirty regions; fully covered pending unions are coalesced, while disjoint regions retain order under a 64-event and 256 MiB pixel-data budget that backpressures the producer.
 The STA copies each region into the retained DIB by row and maps it through smart sizing and zoom to the GDI invalidation rectangle.
 The first update after activation, `ResetGraphics`, or an extent change covers the full framebuffer so resize and reactivation never depend on stale surface contents.
 Each paint composes the black letterbox areas and scaled frame into a retained client-size memory backbuffer, then copies the clipped result to the visible window so the intermediate clear is not exposed.
