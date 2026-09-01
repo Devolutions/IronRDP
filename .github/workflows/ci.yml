@@ -68,6 +68,7 @@ jobs:
       - name: typos (check)
         run: cargo xtask check typos -v
 
+  # TODO: Move this action to a dedicated repository.
   openai-agent:
     name: OpenAI agent action
     runs-on: ubuntu-latest
