@@ -495,7 +495,9 @@ impl ActiveStage {
         Ok(())
     }
 
-    /// Marks the reliable UDP tunnel as unavailable before any DVC is moved to it.
+    /// Marks the reliable UDP tunnel as unavailable for future Soft-Sync requests.
+    ///
+    /// DVCs already routed through the tunnel are unaffected.
     pub fn disable_reliable_udp_dvc_tunnel(&mut self) -> SessionResult<()> {
         self.get_svc_processor_mut::<DrdynvcClient>()
             .ok_or_else(|| SessionError::general("DRDYNVC static channel is not available"))?
