@@ -257,7 +257,7 @@ pub trait GraphicsPipelineHandler: Send {
     /// Called when the server resets the graphics output buffer
     fn on_reset_graphics(&mut self, _width: u32, _height: u32) {}
 
-    /// Called when a graphics-output reset exceeds the client's allocation limits.
+    /// Called when a graphics-output reset has invalid dimensions or exceeds the output allocation limit.
     fn on_reset_graphics_rejected(&mut self, _width: u32, _height: u32) {}
 
     /// Called when a surface is created by the server
@@ -500,8 +500,8 @@ impl GraphicsPipelineClient {
 
     /// Take the most recent graphics-output extent announced by `ResetGraphics`.
     ///
-    /// The returned dimensions are validated against the compositor's per-surface
-    /// and total allocation limits and are reported once.
+    /// The returned dimensions satisfy the protocol's output limit and the
+    /// compositor's output-framebuffer allocation limit and are reported once.
     #[must_use]
     pub fn take_output_reset(&mut self) -> Option<(u16, u16)> {
         self.pending_output_reset.take()

@@ -4596,8 +4596,8 @@ impl WorkerEvent {
 /// Bounded worker-to-UI event queue.
 ///
 /// RAIL lifecycle orders wait for UI capacity so an authoritative server
-/// transition cannot be discarded, while bitmap and static-channel payloads
-/// retain the existing lossy behavior.
+/// transition cannot be discarded. Desktop updates wait for event and byte
+/// capacity, while static-channel payloads retain the existing lossy behavior.
 #[derive(Debug)]
 struct WorkerEventQueue {
     events: Mutex<Vec<WorkerEvent>>,
