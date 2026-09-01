@@ -415,10 +415,11 @@ jobs:
     environment: llm-providers
     outputs:
       output: ${{ steps.agent.outputs.structured-output }}
-      failure-reason: ${{ steps.agent.outputs.failure-reason }}
+      failure-reason: ${{ steps.evidence.outputs.failure-reason || steps.agent.outputs.failure-reason }}
       duplicate-candidates: ${{ steps.duplicate-candidates.outputs.manifest }}
     steps:
-      - name: Fetch base and PR head without credentials
+      - id: evidence
+        name: Fetch base and PR head without credentials
         shell: bash
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
@@ -432,7 +433,14 @@ jobs:
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git fetch --no-tags origin +master:refs/remotes/origin/master
           git checkout --detach origin/master
-          bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"
+          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"; then
+            reason="pull request evidence unavailable"
+            if test -f pr-evidence/failure-reason.txt; then
+              reason="$(cat pr-evidence/failure-reason.txt)"
+            fi
+            echo "failure-reason=$reason" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
       - id: duplicate-candidates
         name: Fetch bounded duplicate candidates
@@ -695,9 +703,10 @@ jobs:
       OPENSPECS_COMMIT: 3a5ef220a6cc92453171e7b62129ed7740628c93
     outputs:
       output: ${{ steps.final.outputs.output }}
-      failure-reason: ${{ steps.final.outputs.reason }}
+      failure-reason: ${{ steps.evidence.outputs.failure-reason || steps.final.outputs.reason }}
     steps:
-      - name: Prepare review evidence once
+      - id: evidence
+        name: Prepare review evidence once
         shell: bash
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
@@ -711,7 +720,14 @@ jobs:
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git fetch --no-tags origin +master:refs/remotes/origin/master
           git checkout --detach origin/master
-          bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"
+          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"; then
+            reason="pull request evidence unavailable"
+            if test -f pr-evidence/failure-reason.txt; then
+              reason="$(cat pr-evidence/failure-reason.txt)"
+            fi
+            echo "failure-reason=$reason" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
       - name: Fetch bounded review and location context
         uses: actions/github-script@v8

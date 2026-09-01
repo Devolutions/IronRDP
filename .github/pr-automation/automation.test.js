@@ -16,8 +16,8 @@ const { buildSpecialistAggregate, validateSpecialistRun } = require("./review-pi
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
   resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER,
-  LEGACY_XL_MARKER, LEGITIMACY_LABEL, LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER,
-  OVERSIZED_REVIEW_LABEL,
+  EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL, LEGITIMACY_MARKER_PREFIX,
+  OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL,
 } = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
 const {
@@ -293,6 +293,44 @@ test("LLM evidence is bound to the resolved pull request base", () => {
     /origin\/pull-request-base\.\.\.origin\/pull-request-head > pr-evidence\/changed-files\.txt/,
   );
   assert.doesNotMatch(evidenceScript, /origin\/master/);
+});
+
+test("oversized evidence fails closed and leaves pull request guidance", () => {
+  const githubDirectory = path.join(__dirname, "..");
+  const workflow = fs.readFileSync(path.join(githubDirectory, "workflows", "labeler.yml"), "utf8");
+  const evidenceScript = fs.readFileSync(path.join(__dirname, "fetch-pr-evidence.sh"), "utf8");
+  const reason = "pull request diff exceeds the 1 MiB evidence limit";
+  assert.match(evidenceScript, /failure-reason\.txt/);
+  assert.match(evidenceScript, /exit 1/);
+  assert.doesNotMatch(evidenceScript, /pull-request\.diff\.truncated/);
+  for (const name of ["classifier", "review-pipeline"]) {
+    const job = workflowJob(workflow, name);
+    assert.match(job, /id: evidence/);
+    assert.match(job, /steps\.evidence\.outputs\.failure-reason \|\|/);
+  }
+
+  const deterministic = {
+    ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/XXL",
+    sizeLabels: ["size/XL", "size/XXL"], firstTime: false,
+  };
+  const classification = resolveClassificationState({
+    expectedSha: SHA, labels: [OVERSIZED_REVIEW_LABEL], deterministic,
+    classifierReason: reason, semver: { head_sha: SHA, status: "not-suspected" },
+  });
+  assert.equal(classification.failed, true);
+  assert.deepEqual(classification.comments, [{
+    kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER,
+  }]);
+  assert.match(markerBody(classification.comments[0]), /No model was invoked with partial evidence/);
+
+  const reviewFailure = resolveReviewState({
+    expectedSha: SHA, labels: [], gate: { force: true, head_sha: SHA },
+    reviewerReason: reason, force: true, reviewMarkerId: "1",
+  });
+  assert.equal(reviewFailure.failed, true);
+  assert.deepEqual(reviewFailure.comments, [{
+    kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER,
+  }]);
 });
 
 test("every deterministic label is declared and the repository rules classify tooling changes", () => {
@@ -1050,7 +1088,7 @@ test("an oversized change retains deterministic labels without a classifier", ()
     .automaticReviewEligible, false);
   // No model ran, so a duplicate or legitimacy verdict from an earlier head is neither confirmed
   // nor refuted and must be left in place.
-  assert.deepEqual(state.removeCommentMarkers, [LEGACY_XL_MARKER]);
+  assert.deepEqual(state.removeCommentMarkers, [EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER]);
 
   const unavailable = resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic, classifier: undefined,

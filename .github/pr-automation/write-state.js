@@ -58,6 +58,9 @@ function markerBody(comment, owner, repo) {
   if (comment.kind === "global-quota") {
     return `${comment.marker}\n\nAutomated classification and review capacity for fork pull requests has reached its daily UTC limit.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Maintainer review is required.`;
   }
+  if (comment.kind === "evidence-limit") {
+    return `${comment.marker}\n\nAutomated model analysis stopped because this pull request's diff exceeds the 1 MiB evidence limit. No model was invoked with partial evidence.\n\nPlease split the change into focused pull requests or reduce generated content before requesting automated review again. Maintainer review is required.`;
+  }
   throw new Error("unsupported issue comment");
 }
 
@@ -255,6 +258,9 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
     await applyLabels(github, owner, repo, prNumber, state, latestLabels);
     for (const comment of comments.filter((comment) => comment.kind !== "review")) {
       await upsertMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
+    }
+    for (const marker of new Set(state.removeCommentMarkers || [])) {
+      await deleteMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, marker);
     }
   } else {
     await applyLabels(github, owner, repo, prNumber, state);

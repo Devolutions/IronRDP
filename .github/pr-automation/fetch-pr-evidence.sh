@@ -44,21 +44,14 @@ git -C pr-head diff --no-color --find-renames --name-status \
 git -C pr-head diff --no-color --find-renames --unified=3 \
   origin/pull-request-base...origin/pull-request-head > pr-evidence/pull-request.diff
 
-# A single oversized file would otherwise crowd out the rest of the evidence. Oversized pull
-# requests are already excluded upstream, so this only guards against pathological single changes.
+# Partial diffs cannot support complete classification or review, including when a maintainer opts
+# an oversized pull request into automation.
 max_bytes=$((1024 * 1024))
 if [ "$(wc -c < pr-evidence/pull-request.diff)" -gt "$max_bytes" ]; then
-  head -c "$max_bytes" pr-evidence/pull-request.diff > pr-evidence/pull-request.diff.truncated
-  for _ in 1 2 3; do
-    if iconv -f UTF-8 -t UTF-8 pr-evidence/pull-request.diff.truncated >/dev/null 2>&1; then
-      break
-    fi
-    truncate -s -1 pr-evidence/pull-request.diff.truncated
-  done
-  iconv -f UTF-8 -t UTF-8 pr-evidence/pull-request.diff.truncated >/dev/null
-  printf '\n[diff truncated at %s bytes; read the full tree in pr-head]\n' "$max_bytes" \
-    >> pr-evidence/pull-request.diff.truncated
-  mv pr-evidence/pull-request.diff.truncated pr-evidence/pull-request.diff
+  reason="pull request diff exceeds the 1 MiB evidence limit"
+  printf '%s\n' "$reason" > pr-evidence/failure-reason.txt
+  printf 'error: %s\n' "$reason" >&2
+  exit 1
 fi
 
 test -s pr-evidence/changed-files.txt

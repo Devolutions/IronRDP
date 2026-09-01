@@ -17,6 +17,8 @@ const OVERSIZED_MARKER = "<!-- ironrdp-pr-automation:oversized -->";
 const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
 const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -->";
+const EVIDENCE_LIMIT_MARKER = "<!-- ironrdp-pr-automation:evidence-limit -->";
+const EVIDENCE_LIMIT_REASON = "pull request diff exceeds the 1 MiB evidence limit";
 const ELIGIBLE_MERGED_PRS = 3;
 
 function labelsOf(labels) {
@@ -34,6 +36,12 @@ function quotaComment(rateLimit) {
   }
   if (rateLimit.scope === "global") return { kind: "global-quota", marker: GLOBAL_QUOTA_MARKER };
   return null;
+}
+
+function evidenceLimitComment(reason) {
+  return reason === EVIDENCE_LIMIT_REASON
+    ? { kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER }
+    : null;
 }
 
 function deterministicLabelSets(deterministic) {
@@ -62,7 +70,7 @@ function classificationMachineState({
 }
 
 function failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus) {
-  const comment = quotaComment(rateLimit);
+  const comments = [quotaComment(rateLimit), evidenceLimitComment(reason)].filter(Boolean);
   return {
     ok: true, mode: "classification", expectedSha, failed: true, reason,
     labelSets: [
@@ -72,7 +80,9 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
         ? [{ owned: ["breaking-change"], desired: ["breaking-change"] }]
         : []),
     ],
-    addLabels: ["maintainer-required"], comments: comment ? [comment] : [],
+    addLabels: ["maintainer-required"], comments,
+    removeCommentMarkers: comments.some((comment) => comment.kind === "evidence-limit")
+      ? [] : [EVIDENCE_LIMIT_MARKER],
     check: {
       name: "AI classification",
       externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
@@ -103,7 +113,7 @@ function oversizedClassification(expectedSha, deterministic, semverStatus) {
     comments: [{ kind: "oversized", marker: OVERSIZED_MARKER }],
     // Duplicate and legitimacy verdicts are model-derived. No model ran, so a previously posted
     // verdict is neither confirmed nor refuted here and is left untouched.
-    removeCommentMarkers: [LEGACY_XL_MARKER],
+    removeCommentMarkers: [EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER],
     check: {
       name: "AI classification",
       externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
@@ -215,6 +225,7 @@ function resolveClassificationState({
       // A later push can make a previously reported duplicate or oversized verdict wrong, and stale
       // guidance would then contradict the labels this run just wrote.
       ...(duplicate ? [] : [DUPLICATE_MARKER]),
+      EVIDENCE_LIMIT_MARKER,
       ...(oversized && !forced ? [LEGACY_XL_MARKER] : [OVERSIZED_MARKER, LEGACY_XL_MARKER]),
     ],
     check: {
@@ -282,10 +293,15 @@ function resolveReviewState({
   const existing = labelsOf(labels);
   const forced = force === true;
   const fail = (reason, report = false) => {
-    const comment = forced ? null : quotaComment(rateLimit);
+    const comments = [
+      forced ? null : quotaComment(rateLimit),
+      evidenceLimitComment(reason),
+    ].filter(Boolean);
     return {
       ok: true, mode: "review", expectedSha, failed: true, reason,
-      labelSets: [], addLabels: ["maintainer-required"], comments: comment ? [comment] : [],
+      labelSets: [], addLabels: ["maintainer-required"], comments,
+      removeCommentMarkers: comments.some((comment) => comment.kind === "evidence-limit")
+        ? [] : [EVIDENCE_LIMIT_MARKER],
       ...(report ? { check: {
         name: "AI automated review", externalId: `${REVIEWER_SCHEMA_VERSION}:${expectedSha}`,
         title: "Automated review unavailable",
@@ -353,6 +369,7 @@ function resolveReviewState({
     removeLabels: nextCount === "ai-reviewed/1" && hasFindings ? ["maintainer-required"] : [],
     comments: hasFindings ? [{ kind: "review", marker: reviewMarker,
       review: reviewerResult.value }] : [],
+    removeCommentMarkers: [EVIDENCE_LIMIT_MARKER],
     check: { name: "AI automated review", externalId: `${REVIEWER_SCHEMA_VERSION}:${expectedSha}` },
     expectedReviewCount,
     forced,
@@ -361,7 +378,8 @@ function resolveReviewState({
 }
 
 module.exports = {
-  AI_COUNTS, DUPLICATE_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
+  AI_COUNTS, DUPLICATE_MARKER, EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER,
+  LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_REVIEW_LABEL, RISK, OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
   contributorEligibility, isExcludedHistory, qualifyingMergedPrs, resolveClassificationState,
   resolveReviewState, reviewPolicyEligible,
