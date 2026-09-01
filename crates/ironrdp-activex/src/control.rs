@@ -21,8 +21,8 @@ use ironrdp_client::config::{
 use ironrdp_client::output_channel::output_channel;
 use ironrdp_client::rail::RailInputEvent;
 use ironrdp_client::rdp::{
-    AutoReconnectDecision, CliprdrBackendFactory, LocationInputError, RdpClient, RdpInputEvent, RdpInputSender,
-    RdpOutputEvent,
+    AutoReconnectDecision, CliprdrBackendFactory, DesktopUpdate, LocationInputError, RdpClient, RdpInputEvent,
+    RdpInputSender, RdpOutputEvent,
 };
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp_cliprdr_format::bitmap::{validate_dib, validate_dibv5};
@@ -35,6 +35,7 @@ use ironrdp_pdu::gcc::{
     ChannelName, ChannelOptions, ClientMonitorData, ConnectionType, KeyboardType, MONITOR_COUNT_MAX, Monitor,
     MonitorFlags,
 };
+use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::rdp::{
     capability_sets::{MajorPlatformType, RailSupportLevel},
     client_info::PerformanceFlags,
@@ -4511,9 +4512,7 @@ enum WorkerEvent {
     },
     Image {
         generation: u64,
-        buffer: Vec<u32>,
-        width: u16,
-        height: u16,
+        update: FrameUpdate,
     },
     DisplayResizeFallback {
         generation: u64,
@@ -4861,6 +4860,177 @@ struct Frame {
     height: u16,
 }
 
+#[derive(Debug)]
+struct FrameUpdate {
+    buffer: Vec<u32>,
+    width: u16,
+    height: u16,
+    region: InclusiveRectangle,
+}
+
+impl FrameUpdate {
+    fn full(buffer: Vec<u32>, width: u16, height: u16) -> Option<Self> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        Self::new(
+            buffer,
+            width,
+            height,
+            InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: width - 1,
+                bottom: height - 1,
+            },
+        )
+    }
+
+    fn from_desktop_update(update: DesktopUpdate) -> Self {
+        let (buffer, width, height, region) = update.into_parts();
+        Self {
+            buffer,
+            width: width.get(),
+            height: height.get(),
+            region,
+        }
+    }
+
+    fn new(buffer: Vec<u32>, width: u16, height: u16, region: InclusiveRectangle) -> Option<Self> {
+        let (region_width, region_height) = region_dimensions(&region)?;
+        if width == 0 || height == 0 || region.right >= width || region.bottom >= height {
+            return None;
+        }
+        let pixel_count = region_width.checked_mul(region_height)?;
+        (buffer.len() == pixel_count).then_some(Self {
+            buffer,
+            width,
+            height,
+            region,
+        })
+    }
+
+    fn is_full_frame(&self) -> bool {
+        self.region.left == 0
+            && self.region.top == 0
+            && self.region.right.checked_add(1) == Some(self.width)
+            && self.region.bottom.checked_add(1) == Some(self.height)
+    }
+
+    fn merge_from(&mut self, newer: &Self) -> bool {
+        if self.width != newer.width || self.height != newer.height {
+            return false;
+        }
+
+        let union = self.region.union(&newer.region);
+        if union == self.region {
+            return copy_packed_region(&mut self.buffer, &self.region, &newer.buffer, &newer.region);
+        }
+
+        let Some((union_width, union_height)) = region_dimensions(&union) else {
+            return false;
+        };
+        let Some(pixel_count) = union_width.checked_mul(union_height) else {
+            return false;
+        };
+        let Some((current_width, current_height)) = region_dimensions(&self.region) else {
+            return false;
+        };
+        let Some((newer_width, newer_height)) = region_dimensions(&newer.region) else {
+            return false;
+        };
+        let intersection_width = self
+            .region
+            .right
+            .min(newer.region.right)
+            .checked_sub(self.region.left.max(newer.region.left))
+            .and_then(|width| width.checked_add(1))
+            .map_or(0, usize::from);
+        let intersection_height = self
+            .region
+            .bottom
+            .min(newer.region.bottom)
+            .checked_sub(self.region.top.max(newer.region.top))
+            .and_then(|height| height.checked_add(1))
+            .map_or(0, usize::from);
+        let Some(covered_pixels) = current_width
+            .checked_mul(current_height)
+            .and_then(|current| {
+                newer_width
+                    .checked_mul(newer_height)
+                    .and_then(|newer| current.checked_add(newer))
+            })
+            .and_then(|combined| {
+                intersection_width
+                    .checked_mul(intersection_height)
+                    .and_then(|intersection| combined.checked_sub(intersection))
+            })
+        else {
+            return false;
+        };
+        if covered_pixels != pixel_count {
+            return false;
+        }
+
+        let mut buffer = Vec::new();
+        if buffer.try_reserve_exact(pixel_count).is_err() {
+            return false;
+        }
+        buffer.resize(pixel_count, 0);
+        if !copy_packed_region(&mut buffer, &union, &self.buffer, &self.region)
+            || !copy_packed_region(&mut buffer, &union, &newer.buffer, &newer.region)
+        {
+            return false;
+        }
+
+        self.buffer = buffer;
+        self.region = union;
+        true
+    }
+}
+
+fn region_dimensions(region: &InclusiveRectangle) -> Option<(usize, usize)> {
+    let width = region.right.checked_sub(region.left)?.checked_add(1)?;
+    let height = region.bottom.checked_sub(region.top)?.checked_add(1)?;
+    Some((usize::from(width), usize::from(height)))
+}
+
+fn copy_packed_region(
+    destination: &mut [u32],
+    destination_region: &InclusiveRectangle,
+    source: &[u32],
+    source_region: &InclusiveRectangle,
+) -> bool {
+    if source_region.left < destination_region.left
+        || source_region.top < destination_region.top
+        || source_region.right > destination_region.right
+        || source_region.bottom > destination_region.bottom
+    {
+        return false;
+    }
+    let Some((destination_width, destination_height)) = region_dimensions(destination_region) else {
+        return false;
+    };
+    let Some((source_width, source_height)) = region_dimensions(source_region) else {
+        return false;
+    };
+    if destination.len() != destination_width.saturating_mul(destination_height)
+        || source.len() != source_width.saturating_mul(source_height)
+    {
+        return false;
+    }
+
+    let x_offset = usize::from(source_region.left - destination_region.left);
+    let y_offset = usize::from(source_region.top - destination_region.top);
+    for row in 0..source_height {
+        let source_start = row * source_width;
+        let destination_start = (y_offset + row) * destination_width + x_offset;
+        destination[destination_start..destination_start + source_width]
+            .copy_from_slice(&source[source_start..source_start + source_width]);
+    }
+    true
+}
+
 struct PresentationSurface {
     device_context: HDC,
     bitmap: HBITMAP,
@@ -4955,7 +5125,10 @@ fn top_down_rgb32_bitmap_info(width: i32, height: i32) -> BITMAPINFO {
 }
 
 impl PresentationSurface {
-    fn new(frame: &Frame, buffer: &[u32]) -> Result<Self> {
+    fn new(frame: &Frame, update: &FrameUpdate) -> Result<Self> {
+        if !update.is_full_frame() {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
         let bitmap_info = top_down_rgb32_bitmap_info(i32::from(frame.width), i32::from(frame.height));
         let mut pixels = ptr::null_mut();
         let bitmap = unsafe { CreateDIBSection(None, &bitmap_info, DIB_RGB_COLORS, &mut pixels, None, 0)? };
@@ -4992,7 +5165,9 @@ impl PresentationSurface {
             height: frame.height,
             sequence: frame.sequence,
         };
-        surface.copy_from(frame, buffer);
+        if !surface.copy_from(frame, update) {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
         Ok(surface)
     }
 
@@ -5004,13 +5179,23 @@ impl PresentationSurface {
         self.matches_extent(frame) && self.sequence == frame.sequence
     }
 
-    fn copy_from(&mut self, frame: &Frame, buffer: &[u32]) {
-        debug_assert!(self.matches_extent(frame));
-        debug_assert_eq!(buffer.len(), usize::from(frame.width) * usize::from(frame.height));
-        unsafe {
-            ptr::copy_nonoverlapping(buffer.as_ptr(), self.pixels, buffer.len());
+    fn copy_from(&mut self, frame: &Frame, update: &FrameUpdate) -> bool {
+        if !self.matches_extent(frame) || self.width != update.width || self.height != update.height {
+            return false;
+        }
+        let destination_region = InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: self.width - 1,
+            bottom: self.height - 1,
+        };
+        let destination =
+            unsafe { slice::from_raw_parts_mut(self.pixels, usize::from(self.width) * usize::from(self.height)) };
+        if !copy_packed_region(destination, &destination_region, &update.buffer, &update.region) {
+            return false;
         }
         self.sequence = frame.sequence;
+        true
     }
 }
 
@@ -6382,12 +6567,11 @@ impl IRemoteDesktopClientActions_Impl for ModernClientActions_Impl {
 }
 
 impl Frame {
-    fn new(buffer: &[u32], width: u16, height: u16, sequence: u64) -> Option<Self> {
+    fn new(width: u16, height: u16, sequence: u64) -> Option<Self> {
         if width == 0 || height == 0 {
             return None;
         }
-        let pixel_count = usize::from(width).checked_mul(usize::from(height))?;
-        (buffer.len() == pixel_count).then_some(Self {
+        Some(Self {
             sequence,
             width,
             height,
@@ -10797,21 +10981,18 @@ impl Control {
                         self.fire_event(DISPID_ON_LOGIN_COMPLETE, &[]);
                     }
                 }
-                WorkerEvent::Image {
-                    buffer, width, height, ..
-                } => {
-                    let width = i32::from(width);
-                    let height = i32::from(height);
+                WorkerEvent::Image { update, .. } => {
+                    let width = i32::from(update.width);
+                    let height = i32::from(update.height);
                     if self.state.get() == ConnectionState::Connected
                         && self.remote_size.replace(Some((width, height))) != Some((width, height))
                     {
                         self.fire_event(DISPID_ON_REMOTE_DESKTOP_SIZE_CHANGE, &[width, height]);
                     }
-                    if let (Some(rpc), Ok(width), Ok(height)) = (&self.rpc, u16::try_from(width), u16::try_from(height))
-                    {
-                        rpc.retain_frame(width, height, &buffer);
+                    if let Some(rpc) = &self.rpc {
+                        rpc.retain_frame_region(update.width, update.height, update.region.clone(), &update.buffer);
                     }
-                    self.present_frame(buffer, width, height);
+                    self.present_frame(update);
                 }
                 WorkerEvent::DisplayResizeFallback { .. } => self.report_display_resize_fallback(),
                 WorkerEvent::RailWindowingOrders { data, .. } => {
@@ -11817,7 +11998,20 @@ impl Control {
         let rpc_destination = config.destination().to_string();
         drop(settings);
         let (output_sender, mut output_receiver) = output_channel(32);
-        let client = RdpClient::new(config, output_sender);
+        let desktop_update_events = Arc::clone(&self.events);
+        let desktop_update_posted = Arc::clone(&self.event_posted);
+        let desktop_update_hwnd = hwnd.0 as isize;
+        let client = RdpClient::new(config, output_sender).with_desktop_update_handler(move |update| {
+            let _ = queue_worker_event(
+                &desktop_update_events,
+                &desktop_update_posted,
+                HWND(desktop_update_hwnd as *mut c_void),
+                WorkerEvent::Image {
+                    generation,
+                    update: FrameUpdate::from_desktop_update(update),
+                },
+            );
+        });
         let client = if let Some(maximum_attempts) = auto_reconnect_maximum_attempts {
             client.with_auto_reconnect(maximum_attempts)
         } else {
@@ -11893,17 +12087,22 @@ impl Control {
                                     while let Some(output) = output_receiver.recv().await {
                                         match output {
                                             RdpOutputEvent::Image { buffer, width, height } => {
-                                                let _ = queue_worker_event(
-                                                    &worker_events,
-                                                    &worker_event_posted,
-                                                    hwnd,
-                                                    WorkerEvent::Image {
-                                                        generation,
-                                                        buffer,
-                                                        width: width.get(),
-                                                        height: height.get(),
-                                                    },
-                                                );
+                                                if let Some(update) =
+                                                    FrameUpdate::full(buffer, width.get(), height.get())
+                                                {
+                                                    let _ = queue_worker_event(
+                                                        &worker_events,
+                                                        &worker_event_posted,
+                                                        hwnd,
+                                                        WorkerEvent::Image { generation, update },
+                                                    );
+                                                } else {
+                                                    tracing::warn!(
+                                                        width = width.get(),
+                                                        height = height.get(),
+                                                        "Discarding inconsistent full-frame output"
+                                                    );
+                                                }
                                             }
                                             RdpOutputEvent::WindowingOrders(data) => {
                                                 if !queue_worker_event(
@@ -12671,14 +12870,14 @@ impl Control {
         }
     }
 
-    fn present_frame(&self, buffer: Vec<u32>, width: i32, height: i32) {
-        let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
-            tracing::debug!(width, height, "Discarding ActiveX frame with invalid dimensions");
-            return;
-        };
+    fn present_frame(&self, update: FrameUpdate) {
         let sequence = self.next_frame_sequence.get().wrapping_add(1).max(1);
-        let Some(frame) = Frame::new(&buffer, width, height, sequence) else {
-            tracing::debug!(width, height, "Discarding ActiveX frame with invalid pixel count");
+        let Some(frame) = Frame::new(update.width, update.height, sequence) else {
+            tracing::debug!(
+                width = update.width,
+                height = update.height,
+                "Discarding ActiveX frame with invalid dimensions"
+            );
             return;
         };
         if self.screen_updates_suspended.get() {
@@ -12686,13 +12885,17 @@ impl Control {
             return;
         }
 
-        if let Err(error) = self.update_presentation_surface(&frame, &buffer) {
-            trace_host_call("Renderer::SurfaceUpdateFailed");
-            tracing::warn!(?error, "Unable to retain ActiveX frame presentation surface");
-            return;
-        }
+        let full_repaint = match self.update_presentation_surface(&frame, &update) {
+            Ok(full_repaint) => full_repaint,
+            Err(error) => {
+                trace_host_call("Renderer::SurfaceUpdateFailed");
+                tracing::warn!(?error, "Unable to retain ActiveX frame presentation surface");
+                return;
+            }
+        };
 
         self.next_frame_sequence.set(sequence);
+        let dirty_region = update.region.clone();
         *self.frame.borrow_mut() = Some(frame);
         let layout_generation = self.presentation_layout_generation.get();
         if layout_generation != 0 && self.traced_frame_layout_generation.replace(layout_generation) != layout_generation
@@ -12704,7 +12907,10 @@ impl Control {
         let window = self.activex_window.get();
         if !window.0.is_null() && unsafe { IsWindow(Some(window)) }.as_bool() {
             unsafe {
-                let _ = InvalidateRect(Some(window), None, false);
+                let mut client_rect = RECT::default();
+                let damage = (!full_repaint && GetClientRect(window, &mut client_rect).is_ok())
+                    .then(|| self.frame_damage_rect(&client_rect, update.width, update.height, dirty_region));
+                let _ = InvalidateRect(Some(window), damage.as_ref().map(|rect| rect as *const RECT), false);
             }
         }
         self.rail_windows.borrow().invalidate_presentation();
@@ -12729,18 +12935,20 @@ impl Control {
         }
     }
 
-    fn update_presentation_surface(&self, frame: &Frame, buffer: &[u32]) -> Result<()> {
+    fn update_presentation_surface(&self, frame: &Frame, update: &FrameUpdate) -> Result<bool> {
         let mut surface = self.presentation_surface.borrow_mut();
         if let Some(surface) = surface.as_mut()
             && surface.matches_extent(frame)
         {
-            surface.copy_from(frame, buffer);
-            return Ok(());
+            if !surface.copy_from(frame, update) {
+                return Err(Error::from_hresult(E_INVALIDARG));
+            }
+            return Ok(false);
         }
 
-        let surface_for_frame = PresentationSurface::new(frame, buffer)?;
+        let surface_for_frame = PresentationSurface::new(frame, update)?;
         *surface = Some(surface_for_frame);
-        Ok(())
+        Ok(true)
     }
 
     fn update_presentation_backbuffer(&self, width: i32, height: i32) -> Result<()> {
@@ -13244,6 +13452,35 @@ impl Control {
         let width = (base_width * zoom_level / 100).clamp(1, i64::from(i32::MAX)) as i32;
         let height = (base_height * zoom_level / 100).clamp(1, i64::from(i32::MAX)) as i32;
         ((client_width - width) / 2, (client_height - height) / 2, width, height)
+    }
+
+    fn frame_damage_rect(
+        &self,
+        client_rect: &RECT,
+        frame_width: u16,
+        frame_height: u16,
+        region: InclusiveRectangle,
+    ) -> RECT {
+        let (destination_x, destination_y, destination_width, destination_height) =
+            self.frame_viewport(client_rect, frame_width, frame_height);
+        let frame_width = i64::from(frame_width);
+        let frame_height = i64::from(frame_height);
+        let destination_width = i64::from(destination_width);
+        let destination_height = i64::from(destination_height);
+        let left = i64::from(destination_x) + i64::from(region.left) * destination_width / frame_width;
+        let top = i64::from(destination_y) + i64::from(region.top) * destination_height / frame_height;
+        let right_numerator = i64::from(region.right) + 1;
+        let bottom_numerator = i64::from(region.bottom) + 1;
+        let right = i64::from(destination_x) + (right_numerator * destination_width + frame_width - 1) / frame_width;
+        let bottom =
+            i64::from(destination_y) + (bottom_numerator * destination_height + frame_height - 1) / frame_height;
+
+        RECT {
+            left: i32::try_from((left - 1).max(i64::from(client_rect.left))).unwrap_or(client_rect.left),
+            top: i32::try_from((top - 1).max(i64::from(client_rect.top))).unwrap_or(client_rect.top),
+            right: i32::try_from((right + 1).min(i64::from(client_rect.right))).unwrap_or(client_rect.right),
+            bottom: i32::try_from((bottom + 1).min(i64::from(client_rect.bottom))).unwrap_or(client_rect.bottom),
+        }
     }
 
     fn apply_mouse_operation(&self, window: HWND, lparam: LPARAM, operation: Operation) {
@@ -16658,31 +16895,54 @@ fn queue_worker_event(
 
     let queued = match &event {
         WorkerEvent::Image { generation, .. } => {
-            if let Some(pending) = queue.iter_mut().rev().find(|pending| {
+            if let Some(index) = queue.iter().rposition(|pending| {
                 matches!(pending, WorkerEvent::Image { generation: pending_generation, .. } if *pending_generation == *generation)
             }) {
-                *pending = event;
-                true
-            } else {
-                if queue.len() >= MAX_PENDING_WORKER_EVENTS
-                    && let Some(index) = queue.iter().position(|pending| matches!(pending, WorkerEvent::Image { .. }))
+                let same_extent = matches!(
+                    (&queue[index], &event),
+                    (
+                        WorkerEvent::Image { update: pending, .. },
+                        WorkerEvent::Image { update: incoming, .. }
+                    ) if pending.width == incoming.width && pending.height == incoming.height
+                );
+                if !same_extent {
+                    queue[index] = event;
+                    true
+                } else if let (
+                    WorkerEvent::Image { update: pending, .. },
+                    WorkerEvent::Image { update: incoming, .. },
+                ) = (&mut queue[index], &event)
+                    && pending.merge_from(incoming)
                 {
-                    queue.remove(index);
-                }
-                if queue.len() < MAX_PENDING_WORKER_EVENTS {
-                    queue.push(event);
                     true
                 } else {
-                    false
+                    while queue.len() >= MAX_PENDING_WORKER_EVENTS {
+                        queue = match events.space_available.wait(queue) {
+                            Ok(queue) => queue,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        if events.closed.load(Ordering::Acquire) {
+                            return false;
+                        }
+                    }
+                    queue.push(event);
+                    true
                 }
+            } else {
+                while queue.len() >= MAX_PENDING_WORKER_EVENTS {
+                    queue = match events.space_available.wait(queue) {
+                        Ok(queue) => queue,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    if events.closed.load(Ordering::Acquire) {
+                        return false;
+                    }
+                }
+                queue.push(event);
+                true
             }
         }
         WorkerEvent::StaticChannelData { .. } => {
-            if queue.len() >= MAX_PENDING_WORKER_EVENTS
-                && let Some(index) = queue.iter().position(|pending| matches!(pending, WorkerEvent::Image { .. }))
-            {
-                queue.remove(index);
-            }
             if queue.len() < MAX_PENDING_WORKER_EVENTS {
                 queue.push(event);
                 true
@@ -17793,6 +18053,11 @@ mod tests {
         IRemoteDesktopClientTouchPointer, IRemoteDesktopClientTouchPointer_Vtbl, ITSRemoteProgram,
         ITSRemoteProgram_Vtbl, ITSRemoteProgram2, ITSRemoteProgram2_Vtbl, ITSRemoteProgram3, ITSRemoteProgram3_Vtbl,
     };
+
+    fn full_frame_update(width: u16, height: u16, pixel: u32) -> FrameUpdate {
+        FrameUpdate::full(vec![pixel; usize::from(width) * usize::from(height)], width, height)
+            .expect("valid full-frame update")
+    }
 
     #[test]
     fn activex_does_not_advertise_remotefx() {
@@ -20402,16 +20667,14 @@ try {
     }
 
     #[test]
-    fn frame_requires_a_nonempty_exact_pixel_buffer() {
-        let pixels = vec![0x00ff_0000; 4];
-        let frame = Frame::new(&pixels, 2, 2, 1).expect("valid RGB frame");
+    fn frame_requires_nonzero_dimensions() {
+        let frame = Frame::new(2, 2, 1).expect("valid RGB frame");
         assert_eq!(frame.sequence, 1);
         assert_eq!(frame.width, 2);
         assert_eq!(frame.height, 2);
 
-        assert!(Frame::new(&[0; 3], 2, 2, 2).is_none());
-        assert!(Frame::new(&[], 0, 1, 2).is_none());
-        assert!(Frame::new(&[], 1, 0, 2).is_none());
+        assert!(Frame::new(0, 1, 2).is_none());
+        assert!(Frame::new(1, 0, 2).is_none());
     }
 
     #[test]
@@ -20979,9 +21242,7 @@ try {
             WorkerEvent::Connected { generation: 7 },
             WorkerEvent::Image {
                 generation: 7,
-                buffer: vec![0],
-                width: 800,
-                height: 600,
+                update: full_frame_update(800, 600, 0),
             },
         ]);
 
@@ -21043,9 +21304,7 @@ try {
             WorkerEvent::Connected { generation: 7 },
             WorkerEvent::Image {
                 generation: 7,
-                buffer: vec![0],
-                width: 1,
-                height: 1,
+                update: full_frame_update(1, 1, 0),
             },
         ]);
 
@@ -23910,9 +24169,7 @@ try {
             .expect("event queue is available")
             .push(WorkerEvent::Image {
                 generation: 7,
-                buffer: vec![0],
-                width: 1,
-                height: 1,
+                update: full_frame_update(1, 1, 0),
             });
         control.dispatch_pending_events();
         assert_eq!(control.state.get(), ConnectionState::Connecting);
@@ -23969,9 +24226,10 @@ try {
     #[test]
     fn retained_presentation_surface_tracks_complete_frame_snapshots() {
         let initial_pixels = [0x0011_2233, 0x0044_5566, 0x0077_8899, 0x00aa_bbcc];
-        let initial_frame = Frame::new(&initial_pixels, 2, 2, 1).expect("complete frame");
+        let initial_frame = Frame::new(2, 2, 1).expect("complete frame");
+        let initial_update = FrameUpdate::full(initial_pixels.to_vec(), 2, 2).expect("complete update");
         let mut surface =
-            PresentationSurface::new(&initial_frame, &initial_pixels).expect("create presentation surface");
+            PresentationSurface::new(&initial_frame, &initial_update).expect("create presentation surface");
 
         assert!(surface.matches_frame(&initial_frame));
         assert_eq!(
@@ -23980,13 +24238,188 @@ try {
         );
 
         let updated_pixels = [0x00cc_bbaa, 0x0099_8877, 0x0066_5544, 0x0033_2211];
-        let updated_frame = Frame::new(&updated_pixels, 2, 2, 2).expect("complete replacement frame");
-        surface.copy_from(&updated_frame, &updated_pixels);
+        let updated_frame = Frame::new(2, 2, 2).expect("complete replacement frame");
+        let updated_update = FrameUpdate::full(updated_pixels.to_vec(), 2, 2).expect("complete update");
+        assert!(surface.copy_from(&updated_frame, &updated_update));
 
         assert!(surface.matches_frame(&updated_frame));
         assert_eq!(
             unsafe { slice::from_raw_parts(surface.pixels, updated_pixels.len()) },
             updated_pixels
+        );
+    }
+
+    #[test]
+    fn retained_presentation_surface_applies_only_the_dirty_region() {
+        let initial_frame = Frame::new(3, 2, 1).expect("complete frame");
+        let initial_update = full_frame_update(3, 2, 0);
+        let mut surface =
+            PresentationSurface::new(&initial_frame, &initial_update).expect("create presentation surface");
+        let partial = FrameUpdate::new(
+            vec![1, 2, 3, 4],
+            3,
+            2,
+            InclusiveRectangle {
+                left: 1,
+                top: 0,
+                right: 2,
+                bottom: 1,
+            },
+        )
+        .expect("valid partial update");
+        let next_frame = Frame::new(3, 2, 2).expect("next frame");
+
+        assert!(surface.copy_from(&next_frame, &partial));
+        assert_eq!(unsafe { slice::from_raw_parts(surface.pixels, 6) }, [0, 1, 2, 0, 3, 4]);
+        assert!(surface.matches_frame(&next_frame));
+    }
+
+    #[test]
+    fn frame_update_rejects_malformed_regions() {
+        assert!(
+            FrameUpdate::new(
+                vec![1],
+                2,
+                2,
+                InclusiveRectangle {
+                    left: 1,
+                    top: 1,
+                    right: 0,
+                    bottom: 1,
+                },
+            )
+            .is_none()
+        );
+        assert!(
+            FrameUpdate::new(
+                vec![1],
+                2,
+                2,
+                InclusiveRectangle {
+                    left: 2,
+                    top: 0,
+                    right: 2,
+                    bottom: 0,
+                },
+            )
+            .is_none()
+        );
+        assert!(
+            FrameUpdate::new(
+                vec![1],
+                2,
+                2,
+                InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 1,
+                    bottom: 0,
+                },
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn pending_frame_updates_reject_uncovered_union_pixels() {
+        let mut pending = FrameUpdate::new(
+            vec![1, 2, 3, 4],
+            4,
+            3,
+            InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 1,
+                bottom: 1,
+            },
+        )
+        .expect("first update");
+        let newer = FrameUpdate::new(
+            vec![5, 6, 7, 8, 9, 10],
+            4,
+            3,
+            InclusiveRectangle {
+                left: 1,
+                top: 1,
+                right: 3,
+                bottom: 2,
+            },
+        )
+        .expect("newer update");
+
+        assert!(!pending.merge_from(&newer));
+        assert_eq!(
+            pending.region,
+            InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 1,
+                bottom: 1,
+            }
+        );
+        assert_eq!(pending.buffer, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn pending_frame_updates_merge_fully_covered_unions() {
+        let mut pending = FrameUpdate::new(
+            vec![1, 3],
+            2,
+            2,
+            InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 1,
+            },
+        )
+        .expect("first update");
+        let newer = FrameUpdate::new(
+            vec![2, 4],
+            2,
+            2,
+            InclusiveRectangle {
+                left: 1,
+                top: 0,
+                right: 1,
+                bottom: 1,
+            },
+        )
+        .expect("newer update");
+
+        assert!(pending.merge_from(&newer));
+        assert!(pending.is_full_frame());
+        assert_eq!(pending.buffer, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn damage_rect_tracks_smart_sizing_and_includes_filter_edges() {
+        let control = Control::new();
+        control.compatibility.borrow_mut().smart_sizing = true;
+
+        assert_eq!(
+            control.frame_damage_rect(
+                &RECT {
+                    left: 0,
+                    top: 0,
+                    right: 200,
+                    bottom: 100,
+                },
+                100,
+                50,
+                InclusiveRectangle {
+                    left: 10,
+                    top: 5,
+                    right: 19,
+                    bottom: 9,
+                },
+            ),
+            RECT {
+                left: 19,
+                top: 9,
+                right: 41,
+                bottom: 21,
+            }
         );
     }
 
@@ -24053,9 +24486,7 @@ try {
             dispatcher,
             WorkerEvent::Image {
                 generation: 7,
-                buffer: vec![1],
-                width: 1,
-                height: 1,
+                update: full_frame_update(1, 1, 1),
             },
         ));
         assert!(queue_worker_event(
@@ -24064,16 +24495,32 @@ try {
             dispatcher,
             WorkerEvent::Image {
                 generation: 7,
-                buffer: vec![2],
-                width: 1,
-                height: 1,
+                update: full_frame_update(1, 1, 2),
             },
         ));
         {
             let queue = events.events.lock().expect("event queue is available");
             assert!(matches!(
                 queue.as_slice(),
-                [WorkerEvent::Image { generation: 7, buffer, .. }] if buffer == &[2]
+                [WorkerEvent::Image { generation: 7, update, .. }] if update.buffer == [2]
+            ));
+        }
+
+        assert!(queue_worker_event(
+            &events,
+            &event_posted,
+            dispatcher,
+            WorkerEvent::Image {
+                generation: 7,
+                update: full_frame_update(2, 1, 4),
+            },
+        ));
+        {
+            let queue = events.events.lock().expect("event queue is available");
+            assert!(matches!(
+                queue.as_slice(),
+                [WorkerEvent::Image { generation: 7, update, .. }]
+                    if update.width == 2 && update.height == 1 && update.buffer == [4, 4]
             ));
         }
 
@@ -24090,16 +24537,15 @@ try {
             dispatcher,
             WorkerEvent::Image {
                 generation: 7,
-                buffer: vec![3],
-                width: 1,
-                height: 1,
+                update: full_frame_update(1, 1, 3),
             },
         ));
         {
             let queue = events.events.lock().expect("event queue is available");
             assert!(matches!(
                 queue.as_slice(),
-                [WorkerEvent::Connected { generation: 7 }, WorkerEvent::Image { buffer, .. }] if buffer == &[3]
+                [WorkerEvent::Connected { generation: 7 }, WorkerEvent::Image { update, .. }]
+                    if update.buffer == [3]
             ));
         }
 
@@ -24126,17 +24572,6 @@ try {
                 data: vec![0],
             },
         ));
-        assert!(!queue_worker_event(
-            &events,
-            &event_posted,
-            dispatcher,
-            WorkerEvent::Image {
-                generation: 7,
-                buffer: vec![9],
-                width: 1,
-                height: 1,
-            },
-        ));
         assert!(
             events
                 .events
@@ -24145,6 +24580,50 @@ try {
                 .iter()
                 .all(|event| matches!(event, WorkerEvent::StaticChannelData { .. }))
         );
+    }
+
+    #[test]
+    fn worker_image_waits_for_capacity_instead_of_dropping_pixels() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(true));
+        for index in 0..MAX_PENDING_WORKER_EVENTS {
+            assert!(queue_worker_event(
+                &events,
+                &event_posted,
+                HWND(ptr::null_mut()),
+                WorkerEvent::StaticChannelData {
+                    generation: 7,
+                    channel_name: "alpha".to_owned(),
+                    data: vec![u8::try_from(index).expect("queue capacity fits in u8")],
+                },
+            ));
+        }
+
+        let queued_events = Arc::clone(&events);
+        let queued_posted = Arc::clone(&event_posted);
+        let pending = std::thread::spawn(move || {
+            queue_worker_event(
+                &queued_events,
+                &queued_posted,
+                HWND(ptr::null_mut()),
+                WorkerEvent::Image {
+                    generation: 7,
+                    update: full_frame_update(1, 1, 9),
+                },
+            )
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            !pending.is_finished(),
+            "image producer must wait for bounded queue space"
+        );
+
+        assert_eq!(events.take().len(), MAX_PENDING_WORKER_EVENTS);
+        assert!(pending.join().expect("image producer"));
+        assert!(matches!(
+            events.events.lock().expect("event queue is available").as_slice(),
+            [WorkerEvent::Image { update, .. }] if update.buffer == [9]
+        ));
     }
 
     #[test]

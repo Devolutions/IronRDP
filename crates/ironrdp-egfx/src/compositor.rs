@@ -31,6 +31,7 @@ const BYTES_PER_PIXEL: usize = 4;
 /// bound the per-surface allocation so a malformed or hostile `CreateSurface`
 /// cannot request an unbounded buffer.
 const MAX_SURFACE_DIM: u16 = 16384;
+const MAX_OUTPUT_DIM: u16 = 32766;
 
 /// Upper bound on the pixel bytes the compositor will hold at once, across every
 /// surface and every cache slot.
@@ -146,6 +147,21 @@ pub(crate) struct Compositor {
 }
 
 impl Compositor {
+    pub(crate) fn materializable_output_size(width: u32, height: u32) -> Option<(u16, u16)> {
+        let width = u16::try_from(width).ok()?;
+        let height = u16::try_from(height).ok()?;
+        let byte_len = usize::from(width)
+            .checked_mul(usize::from(height))?
+            .checked_mul(BYTES_PER_PIXEL)?;
+
+        (width != 0
+            && height != 0
+            && width <= MAX_OUTPUT_DIM
+            && height <= MAX_OUTPUT_DIM
+            && byte_len <= MAX_COMPOSITOR_BYTES)
+            .then_some((width, height))
+    }
+
     /// Handle `ResetGraphics`: set the output size and drop all surfaces, cache and
     /// pending output.
     ///

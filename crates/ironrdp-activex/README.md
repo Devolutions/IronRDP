@@ -714,10 +714,20 @@ compatibility defaults. It never serializes passwords, gateway credentials, chan
 settings, or private Microsoft state. Loading or initializing while connected or after window
 activation returns `E_UNEXPECTED` so a container cannot mutate a live session.
 
-The child window copies each complete decoded `RgbA32` snapshot into an STA-owned, retained top-down
-32-bpp DIB section and scales that surface to the ActiveX bounds. Each paint composes the black
-letterbox areas and scaled frame into a retained client-size memory backbuffer, then copies that
-finished image to the visible window in one GDI operation so the intermediate clear is not exposed.
+The child window retains the decoded `RgbA32` desktop in an STA-owned top-down 32-bpp DIB section and scales that surface to the ActiveX bounds.
+The RDP worker sends tightly packed dirty regions; fully covered pending unions are coalesced, while disjoint regions retain order under bounded backpressure.
+The STA copies each region into the retained DIB by row and maps it through smart sizing and zoom to the GDI invalidation rectangle.
+The first update after activation, `ResetGraphics`, or an extent change covers the full framebuffer so resize and reactivation never depend on stale surface contents.
+Each paint composes the black letterbox areas and scaled frame into a retained client-size memory backbuffer, then copies the clipped result to the visible window so the intermediate clear is not exposed.
+Consumers that do not opt into dirty-region delivery keep receiving complete `RdpOutputEvent::Image` snapshots.
+
+Every connection registers the `Microsoft::Windows::RDS::Graphics` dynamic virtual channel.
+The ActiveX path supplies no H.264 decoder, so its EGFX capability advertisement is limited to `RDPGFX_CAPSET_VERSION8` with `RDPGFX_CAPS_FLAG_SMALL_CACHE`; AVC420, AVC444, and AVC444v2 are not advertised.
+The selected V8 path composes ClearCodec, Planar, uncompressed, and RemoteFX Progressive surface updates, including surface IDs, mappings, cache operations, frame ordering, and acknowledgements, into the same retained GDI framebuffer used by legacy bitmap updates.
+This does not advertise the legacy RemoteFX bitmap codec from the Confirm Active capability set, enable lossy bitmap compression, or implement GPU presentation.
+`ResetGraphics` resizes the software output only when each dimension fits the protocol's 32,766-pixel limit and the complete output fits the 256 MiB compositor budget; malformed or oversized resets are rejected before allocating the session framebuffer.
+GDI remains the presentation fallback for every negotiated graphics path, and `RedirectDirectX` remains explicitly unsupported with `E_NOTIMPL`.
+
 Keyboard scan-code messages and mouse movement, buttons, extended buttons, and wheel input are
 forwarded as RDP fast-path input. The legacy
 `IMsRdpClientNonScriptable::SendKeys` method is also supported for an active session: it accepts

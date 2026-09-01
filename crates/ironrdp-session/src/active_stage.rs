@@ -6,6 +6,7 @@ use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_dvc::pdu::SoftSyncTunnelType;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessageBatch, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_egfx::client::GraphicsPipelineClient;
+use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
@@ -47,6 +48,7 @@ pub struct ActiveStage {
     bulk_decompressor: Option<BulkCompressor>,
     enable_server_pointer: bool,
     window_support_level: Option<WindowSupportLevel>,
+    graphics_output_needs_full_refresh: bool,
 }
 
 /// Builder for [`ActiveStage`].
@@ -103,6 +105,7 @@ impl ActiveStageBuilder {
             bulk_decompressor: new_bulk_decompressor(compression_type),
             enable_server_pointer,
             window_support_level: None,
+            graphics_output_needs_full_refresh: false,
         }
     }
 }
@@ -223,10 +226,17 @@ impl ActiveStage {
                 // data only ever arrives over a DVC, which is X224-carried, so this stays
                 // out of the Action::FastPath arm rather than running on every fast-path
                 // frame (the highest-frequency path in a session).
-                let graphics_updates = self
+                let (output_reset, graphics_updates) = self
                     .get_dvc_mut::<GraphicsPipelineClient>()
-                    .map(|mut gfx| gfx.processor_mut().drain_output())
+                    .map(|mut gfx| {
+                        let gfx = gfx.processor_mut();
+                        (gfx.take_output_reset(), gfx.drain_output())
+                    })
                     .unwrap_or_default();
+                if let Some((width, height)) = output_reset {
+                    *image = DecodedImage::new(PixelFormat::RgbA32, width, height);
+                    self.graphics_output_needs_full_refresh = true;
+                }
                 if let Some(region) =
                     composite_graphics_updates(image, graphics_updates.into_iter().map(|u| (u.region, u.data)))?
                 {
@@ -263,6 +273,20 @@ impl ActiveStage {
                     stage_outputs.push(ActiveStageOutput::PointerBitmap(pointer));
                 }
             }
+        }
+
+        if self.graphics_output_needs_full_refresh
+            && let Some(ActiveStageOutput::GraphicsUpdate(region)) = stage_outputs
+                .iter_mut()
+                .find(|output| matches!(output, ActiveStageOutput::GraphicsUpdate(_)))
+        {
+            *region = InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: image.width().saturating_sub(1),
+                bottom: image.height().saturating_sub(1),
+            };
+            self.graphics_output_needs_full_refresh = false;
         }
 
         Ok(stage_outputs)
@@ -973,11 +997,9 @@ fn composite_graphics_updates(
         // which is `(0, 0, 0, 0)` and not distinguishable from a real 1x1 update at the
         // origin. Checking fit here first, rather than branching on that return value,
         // means the delta is skipped outright rather than folded into the accumulator
-        // as a phantom region. This can happen for real: the compositor clips to the
-        // dimensions ResetGraphics declared, while `image` is sized from the desktop
-        // size negotiated at connection time and is never resized on ResetGraphics, so
-        // a server that reports a larger graphics output than the desktop hits this on
-        // every delta outside the desktop bounds.
+        // as a phantom region. A successful ResetGraphics resizes `image` to the
+        // compositor output before deltas are drained; this guard remains for deltas
+        // received before the first reset and future accounting mismatches.
         let fits = region.left <= region.right
             && region.top <= region.bottom
             && region.right < image.width()
@@ -1011,7 +1033,6 @@ mod tests {
     use ironrdp_dvc::pdu::{
         CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
     };
-    use ironrdp_graphics::image_processing::PixelFormat;
     use ironrdp_pdu::gcc::MonitorFlags;
     use ironrdp_pdu::input::MousePdu;
     use ironrdp_pdu::input::fast_path::KeyboardFlags;
