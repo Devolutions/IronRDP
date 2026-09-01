@@ -21,7 +21,7 @@ The pipeline performs these stages:
 7. Validate its candidate dispositions, findings, locations, and provenance.
 8. Resolve validated state and publish through the serialized writer.
 
-The classifier can suggest specialists but cannot suppress mandatory review.
+Workflow routing selects the code-compressor for every eligible review.
 Protocol-related changes always require the protocol specialist.
 Medium- and high-risk changes always require the skeptical specialist.
 IronRDP configures sequential execution only, and model output cannot select parallelism.

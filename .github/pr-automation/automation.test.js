@@ -35,12 +35,12 @@ const {
 const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
 const classifier = (changes = {}) => ({
-  schema_version: "2", head_sha: SHA, risk: "low", technical_debt: false, documentation_only: false,
+  schema_version: "1", head_sha: SHA, risk: "low", technical_debt: false, documentation_only: false,
   cross_cutting: false,
   duplicate: { detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "" },
   likely_non_legitimate: false, non_legitimate_confidence: 0, non_legitimate_reason: "",
   breaking_change_suspected: false, breaking_change_rationale: "", breaking_change_surface: "",
-  protocol_related: false, specialist_reviewers: [], summary: "safe",
+  protocol_related: false, summary: "safe",
   ...changes,
 });
 
@@ -945,6 +945,7 @@ test("model-owned labels coexist with path scopes and are withdrawn when no long
   assert.deepEqual(desired.sort(), [
     "kind/protocol", "kind/technical-debt", "risk/low", "scope/core", "scope/cross-cutting", "scope/web", "size/S",
   ]);
+  assert.deepEqual(classified.check.machineState.specialistReviewers, ["protocol", "code-compressor"]);
 
   const narrow = resolveClassificationState({
     expectedSha: SHA,

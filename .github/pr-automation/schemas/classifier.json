@@ -1,10 +1,10 @@
 {
-  "$id": "https://github.com/Devolutions/IronRDP/pr-automation/classifier-v2",
+  "$id": "https://github.com/Devolutions/IronRDP/pr-automation/classifier-v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "head_sha", "risk", "technical_debt", "documentation_only", "cross_cutting", "duplicate", "likely_non_legitimate", "non_legitimate_confidence", "non_legitimate_reason", "breaking_change_suspected", "breaking_change_rationale", "breaking_change_surface", "protocol_related", "specialist_reviewers", "summary"],
+  "required": ["schema_version", "head_sha", "risk", "technical_debt", "documentation_only", "cross_cutting", "duplicate", "likely_non_legitimate", "non_legitimate_confidence", "non_legitimate_reason", "breaking_change_suspected", "breaking_change_rationale", "breaking_change_surface", "protocol_related", "summary"],
   "properties": {
-    "schema_version": { "const": "2" },
+    "schema_version": { "const": "1" },
     "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "risk": { "enum": ["low", "medium", "high"] },
     "technical_debt": { "type": "boolean" },
@@ -29,12 +29,6 @@
     "breaking_change_rationale": { "type": "string", "maxLength": 500 },
     "breaking_change_surface": { "type": "string", "maxLength": 200 },
     "protocol_related": { "type": "boolean" },
-    "specialist_reviewers": {
-      "type": "array",
-      "items": { "enum": ["protocol", "skeptical", "code-compressor"] },
-      "uniqueItems": true,
-      "maxItems": 3
-    },
     "summary": { "type": "string", "maxLength": 1000 }
   }
 }

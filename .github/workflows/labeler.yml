@@ -629,7 +629,7 @@ jobs:
               if (force) {
                 const route = resolveReviewerRoute({
                   suggestedReviewers: protocolState?.specialistReviewers || [],
-                  deterministicReviewers: ["skeptical"],
+                  deterministicReviewers: ["skeptical", "code-compressor"],
                   protocolRelated,
                   risk: protocolState?.risk || "unknown",
                 });
@@ -638,7 +638,7 @@ jobs:
                   legitimacyStopped, ciGreen: false, secondReviewEligible: true,
                   policyEligible: true, labels: resolvedLabels, protocolRelated,
                   risk: protocolState?.risk || "unknown",
-                  specialistReviewers: route.ok ? route.reviewers : ["skeptical"],
+                  specialistReviewers: route.ok ? route.reviewers : ["skeptical", "code-compressor"],
                   contributor: { status: "forced" },
                 });
                 return;
@@ -677,7 +677,7 @@ jobs:
                 ok: force, force, head_sha: headSha, classificationCheck: false,
                 legitimacyStopped: false, ciGreen: false, secondReviewEligible: force,
                 policyEligible: force, labels: force ? resolvedLabels : [], protocolRelated: false,
-                risk: "unknown", specialistReviewers: force ? ["skeptical"] : [],
+                risk: "unknown", specialistReviewers: force ? ["skeptical", "code-compressor"] : [],
                 contributor: force ? { status: "forced" } : { status: "unavailable" },
                 reason: error.message,
               }, force);
@@ -983,7 +983,7 @@ jobs:
              const gate = parse(process.env.GATE, force ? {
                ok: true, force: true, head_sha: process.env.HEAD_SHA,
                labels: parse(process.env.LABELS, []), protocolRelated: false, risk: "unknown",
-               specialistReviewers: ["skeptical"], contributor: { status: "forced" },
+               specialistReviewers: ["skeptical", "code-compressor"], contributor: { status: "forced" },
              } : {});
              const state = resolveReviewState({
                expectedSha: process.env.HEAD_SHA,

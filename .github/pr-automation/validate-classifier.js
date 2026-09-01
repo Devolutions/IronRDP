@@ -1,7 +1,7 @@
 "use strict";
 
 const { SHA, exactKeys, invalid, normalizeText, parseJson } = require("./validation");
-const { normalizeReviewerIds, validateReviewerRoute } = require("./routing");
+const { validateReviewerRoute } = require("./routing");
 
 const SCHEMA_VERSION = "classifier-v3";
 // Machine-readable classifier state persisted on the SHA-bound check, because the review route runs
@@ -30,10 +30,10 @@ function validateClassifier(raw, {
     "schema_version", "head_sha", "risk", "technical_debt", "documentation_only", "cross_cutting", "duplicate",
     "likely_non_legitimate", "non_legitimate_confidence", "non_legitimate_reason",
     "breaking_change_suspected", "breaking_change_rationale", "breaking_change_surface",
-    "protocol_related", "specialist_reviewers", "summary",
+    "protocol_related", "summary",
   ];
   if (!exactKeys(value, required)) return invalid("invalid classifier object");
-  if (value.schema_version !== "2" || !SHA.test(value.head_sha) || value.head_sha !== expectedSha) {
+  if (value.schema_version !== "1" || !SHA.test(value.head_sha) || value.head_sha !== expectedSha) {
     return invalid("classifier schema version or SHA mismatch");
   }
   if (!["low", "medium", "high"].includes(value.risk) ||
@@ -96,8 +96,6 @@ function validateClassifier(raw, {
   if (value.documentation_only && value.technical_debt) {
     return invalid("documentation-only conflicts with technical debt");
   }
-  const specialistReviewers = normalizeReviewerIds(value.specialist_reviewers);
-  if (!specialistReviewers) return invalid("invalid specialist reviewers");
   const normalized = {
     schema_version: value.schema_version, head_sha: value.head_sha, risk: value.risk, technical_debt: value.technical_debt,
     documentation_only: value.documentation_only, cross_cutting: value.cross_cutting, duplicate: {
@@ -109,7 +107,7 @@ function validateClassifier(raw, {
     non_legitimate_reason: nonLegitimateReason,
     breaking_change_suspected: value.breaking_change_suspected,
     breaking_change_rationale: breakingRationale, breaking_change_surface: breakingSurface,
-    protocol_related: value.protocol_related, specialist_reviewers: specialistReviewers, summary,
+    protocol_related: value.protocol_related, summary,
   };
   if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > 4096) return invalid("classifier output too large");
   return { ok: true, status: "valid", schemaVersion: SCHEMA_VERSION, value: normalized };

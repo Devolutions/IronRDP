@@ -54,11 +54,11 @@ function deterministicLabelSets(deterministic) {
 }
 
 function classificationMachineState({
-  risk = "unknown", protocolRelated = false, suggestedReviewers = [],
+  risk = "unknown", protocolRelated = false,
   automaticReviewEligible = false,
 } = {}) {
   const route = resolveReviewerRoute({
-    suggestedReviewers, protocolRelated, risk,
+    deterministicReviewers: ["code-compressor"], protocolRelated, risk,
   });
   if (!route.ok) return null;
   return {
@@ -179,7 +179,6 @@ function resolveClassificationState({
   const machineState = classificationMachineState({
     risk,
     protocolRelated: model.protocol_related,
-    suggestedReviewers: model.specialist_reviewers,
     automaticReviewEligible: !forced,
   });
   if (!machineState) {
