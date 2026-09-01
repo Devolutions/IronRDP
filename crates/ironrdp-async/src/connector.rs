@@ -85,7 +85,7 @@ where
 ///
 /// Returning `MultitransportResult::Failure` reports setup failure and continues connection finalization over TCP.
 /// Returning an error aborts connection finalization after attempting to report `E_ABORT` to the server.
-/// The handler owns any successfully established transport and must retain it for use after this function returns.
+/// Store each successfully established transport in application state that outlives this call.
 #[expect(
     clippy::too_many_arguments,
     reason = "extends the established connection-finalization API with a multitransport callback"
