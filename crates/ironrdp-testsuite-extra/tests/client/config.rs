@@ -670,6 +670,18 @@ fn complete_builder() -> ConfigBuilder {
 }
 
 #[test]
+fn reliable_udp_is_opt_in() {
+    let config = complete_builder().build().expect("default config");
+    assert!(!config.udp_transport_enabled());
+
+    let config = complete_builder()
+        .with_udp_transport(true)
+        .build()
+        .expect("UDP-enabled config");
+    assert!(config.udp_transport_enabled());
+}
+
+#[test]
 fn remote_application_mode_requires_remote_programs_support() {
     let error = complete_builder()
         .with_remote_application_mode(true)

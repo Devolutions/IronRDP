@@ -91,6 +91,8 @@ pub struct Config {
     pub(crate) connector: ironrdp_connector::Config,
     pub(crate) destination: Destination,
     pub(crate) transport: Transport,
+    #[cfg(feature = "udp")]
+    pub(crate) udp_transport_enabled: bool,
     pub(crate) certificate_validation: ironrdp_tls::CertificateValidation,
     pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
 
@@ -154,6 +156,12 @@ impl Config {
     /// Selected transport (Direct, Gateway, or RDCleanPath).
     pub fn transport(&self) -> &Transport {
         &self.transport
+    }
+
+    /// Whether reliable RDP-UDP2 is enabled for eligible direct connections.
+    #[cfg(feature = "udp")]
+    pub fn udp_transport_enabled(&self) -> bool {
+        self.udp_transport_enabled
     }
 
     /// TLS peer-certificate validation policy.
@@ -263,6 +271,8 @@ impl fmt::Debug for Config {
         s.field("connector", &self.connector);
         s.field("destination", &self.destination);
         s.field("transport", &self.transport);
+        #[cfg(feature = "udp")]
+        s.field("udp_transport_enabled", &self.udp_transport_enabled);
         s.field("certificate_validation", &self.certificate_validation);
         s.field(
             "certificate_validation_callback",
@@ -772,6 +782,8 @@ pub struct ConfigBuilder {
     rail_client_status_flags: Option<u32>,
 
     transport: TransportKind,
+    #[cfg(feature = "udp")]
+    udp_transport_enabled: bool,
     #[cfg(feature = "vmconnect")]
     vm_id: Option<String>,
     #[cfg(feature = "vmconnect")]
@@ -1255,6 +1267,17 @@ impl ConfigBuilder {
             }
         }
         self.transport = transport;
+        self
+    }
+
+    /// Enables reliable RDP-UDP2 for eligible direct connections.
+    ///
+    /// Unsupported carriers remain TCP-only, and a failed UDP bootstrap falls
+    /// back to the main TCP connection.
+    #[cfg(feature = "udp")]
+    #[must_use]
+    pub fn with_udp_transport(mut self, enabled: bool) -> Self {
+        self.udp_transport_enabled = enabled;
         self
     }
 
@@ -1957,6 +1980,8 @@ impl ConfigBuilder {
             connector,
             destination: self.destination.context("server address is required")?,
             transport,
+            #[cfg(feature = "udp")]
+            udp_transport_enabled: self.udp_transport_enabled,
             certificate_validation,
             certificate_validation_callback: self.certificate_validation_callback,
             #[cfg(feature = "vmconnect")]
