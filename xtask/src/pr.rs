@@ -33,6 +33,7 @@ const CANONICAL_SCOPES: &[&str] = &[
     "echo",
     "egfx",
     "rdpeusb",
+    "usb",
     "rdpeudp",
     "rdpemt",
     "rdcleanpath",
