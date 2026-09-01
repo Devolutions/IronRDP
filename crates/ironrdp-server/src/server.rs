@@ -35,8 +35,6 @@ use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, Se
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpdr as rdpdr;
-#[cfg(feature = "usb")]
-use ironrdp_rdpeusb::io::RequestId;
 use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
@@ -63,12 +61,12 @@ use crate::heartbeat::HeartbeatConfig;
 use crate::rdpei::RdpeiServerFactory;
 #[cfg(feature = "usb")]
 use crate::urbdrc::{
-    DeviceFactory, RawPending, ServerDeviceIoReq, UrbdrcDeviceServerMessage, UrbdrcServerMessage, UsbControlHandle,
-    UsbDeviceHandle, UsbDeviceLifecycle,
+    DeviceFactory, ServerDeviceIoReq, ServerUsbDevice, UrbdrcDeviceServerMessage, UrbdrcServerMessage,
+    UsbControlHandle, UsbDeviceHandle,
 };
 use crate::{RdpdrServerFactory, SoundServerFactory, builder, capabilities};
 #[cfg(feature = "usb")]
-use ironrdp_rdpeusb::{InterfaceAlloc, io::CompletionData, server::UrbdrcControlServer, server::UrbdrcDeviceServer};
+use ironrdp_rdpeusb::{InterfaceAlloc, server::UrbdrcControlServer, server::UrbdrcDeviceServer};
 
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
@@ -484,16 +482,7 @@ impl DisplayControlHandler for DisplayControlBackend {
 struct ServerUsbManager {
     factory: Box<dyn DeviceFactory>,
     comp_iface_alloc: InterfaceAlloc,
-    router: HashMap<DynamicChannelId, ServerUsbDevice>,
-}
-
-#[cfg(feature = "usb")]
-struct ServerUsbDevice {
-    lifecycle: Arc<UsbDeviceLifecycle>,
-    /// Handle attached to a submitted request, so dropping the request cancels
-    /// it. Kept per device rather than per message to keep [`ServerEvent`] small.
-    handle: UsbDeviceHandle,
-    pending: HashMap<RequestId, oneshot::Sender<CompletionData>>,
+    router: HashMap<DynamicChannelId, Arc<ServerUsbDevice>>,
 }
 
 #[cfg(feature = "usb")]
@@ -1089,18 +1078,20 @@ impl RdpServer {
             return;
         };
 
-        if let Some(device) = usb_man.router.remove(&dvc_id) {
-            // Set the terminal state before dropping completion senders. A woken
-            // PendingRequest must not enqueue CANCEL_REQUEST for a removed DVC.
-            device.lifecycle.mark_closed();
-            debug!(
-                dvc_id,
-                pending_requests = device.pending.len(),
-                "Removed closed USB device from request router"
-            );
-        } else {
+        let Some(device) = usb_man.router.remove(&dvc_id) else {
             trace!(dvc_id, "Closed USB device is absent from request router");
-        }
+            return;
+        };
+
+        // Set the terminal state before failing waiters: a woken PendingRequest
+        // must not enqueue CANCEL_REQUEST for a removed DVC. The pending map is
+        // shared, so dropping the router entry no longer drops it.
+        device.mark_closed();
+        let pending_requests = device.drain_pending();
+        debug!(
+            dvc_id,
+            pending_requests, "Removed closed USB device from request router"
+        );
     }
 
     /// Returns the shared "display suppressed" flag — `true` while the
@@ -1971,15 +1962,8 @@ impl RdpServer {
 
                             drdynvc
                                 .create_channel_with(|dvc_id| {
-                                    let lifecycle = Arc::new(UsbDeviceLifecycle::new());
-                                    let handle =
-                                        UsbDeviceHandle::new(self.ev_sender.clone(), dvc_id, Arc::clone(&lifecycle));
-                                    let device = ServerUsbDevice {
-                                        lifecycle,
-                                        handle: handle.clone(),
-                                        pending: HashMap::new(),
-                                    };
-                                    if usb_man.router.insert(dvc_id, device).is_some() {
+                                    let handle = UsbDeviceHandle::new(self.ev_sender.clone(), dvc_id);
+                                    if usb_man.router.insert(dvc_id, handle.device()).is_some() {
                                         warn!(dvc_id = dvc_id, "Replacing USB device pending-request map");
                                     }
                                     Ok::<_, PduError>(
@@ -2006,11 +1990,11 @@ impl RdpServer {
                             .map_err(|e| ServerError::io("write_all", e))?;
                     }
                     UrbdrcServerMessage::Device { dvc_id, dev_msg } => {
-                        let Some(lifecycle) = self
+                        let Some(device) = self
                             .usb_man
                             .as_ref()
                             .and_then(|usb_man| usb_man.router.get(&dvc_id))
-                            .map(|device| Arc::clone(&device.lifecycle))
+                            .map(Arc::clone)
                         else {
                             warn!(dvc_id, "Missing USB device state");
                             continue;
@@ -2019,123 +2003,78 @@ impl RdpServer {
                         // Handle checks are an early rejection for callers. This event-loop check
                         // is authoritative because a request may already be queued when retract or
                         // channel close changes the shared lifecycle state.
-                        if !lifecycle.is_open() {
+                        if !device.is_open() {
                             trace!(dvc_id, "Dropping request for closing or closed USB device");
                             continue;
                         }
 
-                        let (dvc_msgs, io_reply, close_dev) = {
-                            let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
-                                warn!("No drdynvc channel, dropping URBDRC request");
-                                continue;
-                            };
+                        let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>() else {
+                            warn!("No drdynvc channel, dropping URBDRC request");
+                            continue;
+                        };
 
-                            let Some(mut dvc) = drdynvc.dvc_by_id_mut::<UrbdrcDeviceServer>(dvc_id) else {
-                                warn!(dvc_id, "USB dynamic channel ID mismatch");
-                                continue;
-                            };
-                            let processor = dvc.processor_mut();
+                        let Some(mut dvc) = drdynvc.dvc_by_id_mut::<UrbdrcDeviceServer>(dvc_id) else {
+                            warn!(dvc_id, "USB dynamic channel ID mismatch");
+                            continue;
+                        };
+                        let processor = dvc.processor_mut();
 
-                            match dev_msg {
-                                UrbdrcDeviceServerMessage::QueryDeviceText { text_type, locale_id } => {
-                                    let text = processor
-                                        .query_device_text(text_type, locale_id)
-                                        .map_err_kind("query USB device text", ServerErrorKind::Pdu)?;
-                                    (vec![text], None, false)
+                        let (dvc_msgs, close_dev) = match dev_msg {
+                            UrbdrcDeviceServerMessage::QueryDeviceText { text_type, locale_id } => {
+                                let text = processor
+                                    .query_device_text(text_type, locale_id)
+                                    .map_err_kind("query USB device text", ServerErrorKind::Pdu)?;
+                                (vec![text], false)
+                            }
+                            UrbdrcDeviceServerMessage::IoReq { data, tx } => {
+                                if tx.is_closed() {
+                                    continue;
                                 }
-                                UrbdrcDeviceServerMessage::IoComp { request_id, completion } => {
-                                    let Some(usb_man) = self.usb_man.as_mut() else {
-                                        warn!("Missing USB device factory");
-                                        continue;
-                                    };
-                                    let Some(device) = usb_man.router.get_mut(&dvc_id) else {
-                                        warn!(dvc_id, "Missing USB device state");
-                                        continue;
-                                    };
-                                    let Some(sender) = device.pending.remove(&request_id) else {
-                                        warn!(dvc_id, request_id, "Missing pending USB I/O request");
-                                        continue;
-                                    };
 
-                                    if sender.send(completion).is_err() {
-                                        trace!(dvc_id, request_id, "USB I/O completion receiver dropped");
+                                let request = match data {
+                                    ServerDeviceIoReq::IoControl(packet) => processor.io_control(packet),
+                                    ServerDeviceIoReq::InternalIoControl(packet) => {
+                                        processor.internal_io_control(packet)
                                     }
-                                    (Vec::new(), None, false)
+                                    ServerDeviceIoReq::TransferOut(packet) => processor.transfer_out(packet),
+                                    ServerDeviceIoReq::TransferIn(packet) => processor.transfer_in(packet),
                                 }
-                                UrbdrcDeviceServerMessage::IoReq { data, tx } => {
-                                    if tx.is_closed() {
-                                        continue;
-                                    }
+                                .map_err_kind("USB I/O request", ServerErrorKind::Pdu)?;
 
-                                    let request = match data {
-                                        ServerDeviceIoReq::IoControl(packet) => processor.io_control(packet),
-                                        ServerDeviceIoReq::InternalIoControl(packet) => {
-                                            processor.internal_io_control(packet)
-                                        }
-                                        ServerDeviceIoReq::TransferOut(packet) => processor.transfer_out(packet),
-                                        ServerDeviceIoReq::TransferIn(packet) => processor.transfer_in(packet),
-                                    }
-                                    .map_err_kind("USB I/O request", ServerErrorKind::Pdu)?;
+                                let pending = request
+                                    .expects_completion
+                                    .then(|| device.register_pending(request.request_id));
 
-                                    let pending = if request.expects_completion {
-                                        let Some(usb_man) = self.usb_man.as_mut() else {
-                                            warn!("Missing USB device factory");
-                                            continue;
-                                        };
-                                        let Some(device) = usb_man.router.get_mut(&dvc_id) else {
-                                            error!(dvc_id, "Missing USB device state");
-                                            continue;
-                                        };
-
-                                        let (comp_tx, comp_rx) = oneshot::channel();
-                                        if device.pending.insert(request.request_id, comp_tx).is_some() {
-                                            warn!(
-                                                dvc_id,
-                                                request_id = request.request_id,
-                                                "Replacing pending USB I/O request"
-                                            );
-                                        }
-
-                                        Some(RawPending {
-                                            rx: comp_rx,
-                                            id: request.request_id,
-                                            handle: device.handle.clone(),
-                                        })
-                                    } else {
-                                        None
-                                    };
-
-                                    (vec![request.message], Some((tx, pending)), false)
+                                // Reply before the write so the caller owns cancel-on-drop as early
+                                // as possible. A CANCEL_REQUEST it enqueues in response lands in a
+                                // later batch, so it cannot overtake this request on the wire.
+                                if tx.send(pending).is_err() && request.expects_completion {
+                                    trace!(dvc_id, "USB I/O request receiver dropped");
+                                    device.forget_pending(request.request_id);
+                                    processor.abandon_unsent(request);
+                                    (Vec::new(), false)
+                                } else {
+                                    (vec![request.message], false)
                                 }
-                                UrbdrcDeviceServerMessage::Retract(reason) => {
-                                    let request = processor
-                                        .retract_device(reason)
-                                        .map_err_kind("retract USB device", ServerErrorKind::Pdu)?;
-                                    lifecycle.mark_retracting();
-                                    (vec![request], None, true)
+                            }
+                            UrbdrcDeviceServerMessage::Retract(reason) => {
+                                let request = processor
+                                    .retract_device(reason)
+                                    .map_err_kind("retract USB device", ServerErrorKind::Pdu)?;
+                                device.mark_retracting();
+                                (vec![request], true)
+                            }
+                            UrbdrcDeviceServerMessage::CancelRequest(request_id) => {
+                                if !device.is_pending(request_id) {
+                                    trace!(dvc_id, request_id, "USB I/O request is no longer pending");
+                                    continue;
                                 }
-                                UrbdrcDeviceServerMessage::CancelRequest(request_id) => {
-                                    let request = processor
-                                        .cancel_request(request_id)
-                                        .map_err_kind("cancel USB I/O request", ServerErrorKind::Pdu)?;
-                                    let Some(usb_man) = self.usb_man.as_mut() else {
-                                        warn!("Missing USB device factory");
-                                        continue;
-                                    };
-                                    let Some(device) = usb_man.router.get_mut(&dvc_id) else {
-                                        warn!(dvc_id, "Missing USB device state");
-                                        continue;
-                                    };
 
-                                    // A completion may have won the race with PendingRequest::drop.
-                                    // Only emit CANCEL_REQUEST while the request is still pending.
-                                    if !device.pending.contains_key(&request_id) {
-                                        trace!(dvc_id, request_id, "USB I/O request is no longer pending");
-                                        continue;
-                                    }
+                                let request = processor
+                                    .cancel_request(request_id)
+                                    .map_err_kind("cancel USB I/O request", ServerErrorKind::Pdu)?;
 
-                                    (vec![request], None, false)
-                                }
+                                (vec![request], false)
                             }
                         };
 
@@ -2163,13 +2102,6 @@ impl RdpServer {
                             .write_all(&data)
                             .await
                             .map_err(|e| ServerError::io("write_all", e))?;
-
-                        if let Some((tx, pending)) = io_reply {
-                            if let Err(pending) = tx.send(pending) {
-                                trace!(dvc_id, "USB I/O request receiver dropped");
-                                drop(pending);
-                            }
-                        }
                     }
                     UrbdrcServerMessage::DeviceClosed { dvc_id } => {
                         self.remove_usb_device(dvc_id);

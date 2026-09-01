@@ -457,6 +457,14 @@ impl UrbdrcDeviceServer {
         })
     }
 
+    /// Cancel Request Message ([MS-RDPEUSB] section 2.2.6.1):
+    ///
+    /// Asks the client to stop processing `request_id`. This does not release
+    /// the request: a transmitted request is always answered by a completion,
+    /// and a cancelled one completes with a failure `HRESULT` ([MS-RDPEUSB]
+    /// sections 3.3.5.3.1 and 3.3.5.3.6). That completion is what releases the
+    /// tracking state, so releasing it here would make the completion look
+    /// unsolicited.
     pub fn cancel_request(&mut self, request_id: RequestId) -> PduResult<DvcMessage> {
         let udev_iface = self.usb_device_iface()?;
         Ok(Box::new(CancelRequest {
@@ -464,6 +472,26 @@ impl UrbdrcDeviceServer {
             udev_iface,
             req_id: request_id,
         }))
+    }
+
+    /// Releases a request that was built but never handed to the DVC transport.
+    ///
+    /// Every transmitted request is eventually answered by a completion, and
+    /// handling that completion is what releases the request's tracking state.
+    /// A request that never reached the transport is never answered, so without
+    /// this its state would be held until the channel closes.
+    ///
+    /// `request` MUST NOT have been transmitted. Passing it by value keeps the
+    /// normal path honest, since writing a request moves
+    /// [`ServerIoRequest::message`] out of it. That is a convention rather than
+    /// enforcement: encoding the message through a shared borrow leaves the
+    /// request intact, and abandoning it afterwards makes the completion that
+    /// does arrive look unsolicited.
+    ///
+    /// Use [`Self::cancel_request`] instead to stop a request already in flight.
+    pub fn abandon_unsent(&mut self, request: ServerIoRequest) {
+        // Vacant for a no-ack request, which is tracked nowhere to begin with.
+        self.pending_io.remove(&request.request_id);
     }
 
     pub fn retract_device(&mut self, reason: UsbRetractReason) -> PduResult<DvcMessage> {
