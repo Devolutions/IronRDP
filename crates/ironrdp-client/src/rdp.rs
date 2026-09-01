@@ -2281,7 +2281,7 @@ where
             (&config.destination).into(),
             server_public_key,
             config.kerberos_config.clone(),
-            move |request, soft_sync| {
+            move |request: ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu, soft_sync: bool| {
                 let state = Arc::clone(&state_for_handler);
                 let udp_config = config_for_handler.clone();
                 async move {
@@ -2780,7 +2780,7 @@ async fn active_session(
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let desktop_size = connection_result.desktop_size;
-    let multitransport_soft_sync = connection_result.multitransport_soft_sync;
+    let multitransport_soft_sync = connection_result.multitransport_soft_sync();
     let mut refresh_rect_support = connection_result.refresh_rect_support;
     let mut suppress_output_support = connection_result.suppress_output_support;
     let window_support_level = connection_result.window_support_level;
@@ -3795,8 +3795,7 @@ async fn active_session(
                         ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu::E_ABORT,
                     );
 
-                    if outcome.response_required(multitransport_soft_sync) {
-                        let response = outcome.response_pdu(request.request_id);
+                    if let Some(response) = outcome.response_pdu(request.request_id, multitransport_soft_sync) {
                         let frame = active_stage.encode_multitransport_response(&response)?;
                         let Some(result) = cancelable_operation(writer.write_all(&frame), close_receiver).await else {
                             return Ok(RdpControlFlow::TerminatedGracefully(
