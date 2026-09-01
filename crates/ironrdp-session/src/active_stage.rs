@@ -617,7 +617,8 @@ impl ActiveStage {
 
     /// Prepares a touch event for routing over TCP or a Soft-Sync tunnel.
     ///
-    /// Returns `None` when the channel is unavailable, not ready, or suspended.
+    /// Returns `None` when the channel is unavailable.
+    /// Returns an error when the channel is not ready or suspended, or when the request cannot be encoded or batched.
     pub fn prepare_rdpei_touch(
         &mut self,
         event: ironrdp_rdpei::pdu::TouchEventPdu,
@@ -644,8 +645,8 @@ impl ActiveStage {
 
     /// Fully encodes a touch event for the RDPEI dynamic channel.
     ///
-    /// Returns `None` when the channel is unavailable, not ready, or suspended.
-    /// Returns an error when Soft-Sync routes the channel through a multitransport tunnel.
+    /// Returns `None` when the channel is unavailable.
+    /// Returns an error when preparation fails or Soft-Sync routes the channel through a multitransport tunnel.
     pub fn encode_rdpei_touch(&mut self, event: ironrdp_rdpei::pdu::TouchEventPdu) -> Option<SessionResult<Vec<u8>>> {
         let prepared = self.prepare_rdpei_touch(event)?;
         Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
