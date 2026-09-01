@@ -18,6 +18,53 @@ pub(crate) type Bstr = *const u16;
 pub(crate) type BstrOut = *mut *const u16;
 pub(crate) type InterfaceOut = *mut *mut c_void;
 
+#[interface("48A0F2A7-2713-431F-BBAC-6F4558E7D64D")]
+pub(crate) unsafe trait IRemoteDesktopClientSettings: IDispatch {
+    pub(crate) fn ApplySettings(&self, rdp_file_contents: Bstr) -> Result<()>;
+    pub(crate) fn RetrieveSettings(&self, rdp_file_contents: BstrOut) -> Result<()>;
+    pub(crate) fn GetRdpProperty(&self, property_name: Bstr, value: *mut VARIANT) -> Result<()>;
+    pub(crate) fn SetRdpProperty(&self, property_name: Bstr, value: VARIANT) -> Result<()>;
+}
+
+#[interface("7D54BC4E-1028-45D4-8B0A-B9B6BFFBA176")]
+pub(crate) unsafe trait IRemoteDesktopClientActions: IDispatch {
+    pub(crate) fn SuspendScreenUpdates(&self) -> Result<()>;
+    pub(crate) fn ResumeScreenUpdates(&self) -> Result<()>;
+    pub(crate) fn ExecuteRemoteAction(&self, remote_action: i32) -> Result<()>;
+    pub(crate) fn GetSnapshot(
+        &self,
+        snapshot_encoding: i32,
+        snapshot_format: i32,
+        snapshot_width: u32,
+        snapshot_height: u32,
+        snapshot_data: BstrOut,
+    ) -> Result<()>;
+}
+
+#[interface("260EC22D-8CBC-44B5-9E88-2A37F6C93AE9")]
+pub(crate) unsafe trait IRemoteDesktopClientTouchPointer: IDispatch {
+    pub(crate) fn put_Enabled(&self, enabled: i16) -> Result<()>;
+    pub(crate) fn get_Enabled(&self, enabled: *mut i16) -> Result<()>;
+    pub(crate) fn put_EventsEnabled(&self, events_enabled: i16) -> Result<()>;
+    pub(crate) fn get_EventsEnabled(&self, events_enabled: *mut i16) -> Result<()>;
+    pub(crate) fn put_PointerSpeed(&self, pointer_speed: u32) -> Result<()>;
+    pub(crate) fn get_PointerSpeed(&self, pointer_speed: *mut u32) -> Result<()>;
+}
+
+#[interface("57D25668-625A-4905-BE4E-304CAA13F89C")]
+pub(crate) unsafe trait IRemoteDesktopClient: IDispatch {
+    pub(crate) fn Connect(&self) -> Result<()>;
+    pub(crate) fn Disconnect(&self) -> Result<()>;
+    pub(crate) fn Reconnect(&self, width: u32, height: u32) -> Result<()>;
+    pub(crate) fn get_Settings(&self, settings: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_Actions(&self, actions: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_TouchPointer(&self, touch_pointer: InterfaceOut) -> Result<()>;
+    pub(crate) fn DeleteSavedCredentials(&self, server_name: Bstr) -> Result<()>;
+    pub(crate) fn UpdateSessionDisplaySettings(&self, width: u32, height: u32) -> Result<()>;
+    pub(crate) fn attachEvent(&self, event_name: Bstr, callback: *mut c_void) -> Result<()>;
+    pub(crate) fn detachEvent(&self, event_name: Bstr, callback: *mut c_void) -> Result<()>;
+}
+
 #[interface("FDD029F9-467A-4C49-8529-64B521DBD1B4")]
 pub(crate) unsafe trait ITSRemoteProgram: IDispatch {
     pub(crate) fn put_RemoteProgramMode(&self, value: i16) -> Result<()>;

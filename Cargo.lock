@@ -2608,6 +2608,7 @@ name = "ironrdp-activex"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "embed-resource",
  "ironrdp-cfg",
  "ironrdp-client",
@@ -2623,6 +2624,7 @@ dependencies = [
  "ironrdp-rail",
  "ironrdp-rdpdr-native",
  "ironrdp-rdpei",
+ "ironrdp-rdpfile",
  "ironrdp-rpc",
  "ironrdp-session",
  "ironrdp-svc",

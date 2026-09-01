@@ -20,6 +20,7 @@ doctest = false
 
 [target.'cfg(windows)'.dependencies]
 anyhow = "1"
+base64 = "0.22"
 ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["clipboard", "dvc-com-plugin", "gateway", "location", "rdpdr", "rustls", "smartcard", "sound", "webauthn"] }
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.7" }
 ironrdp-cliprdr-format = { path = "../ironrdp-cliprdr-format", version = "0.2.0" }
@@ -31,6 +32,7 @@ ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" }
 ironrdp-input = { path = "../ironrdp-input", version = "0.7" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" }
 ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.1" }
+ironrdp-rdpfile = { path = "../ironrdp-rdpfile", version = "0.1.0" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
 ironrdp-rail = { path = "../ironrdp-rail", version = "0.1" }
 ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.7" }

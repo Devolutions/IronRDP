@@ -1,10 +1,8 @@
 //! Windows COM Automation server foundation for IronRDP.
 //!
-//! This crate exposes a carefully scoped compatibility surface for the classic
-//! MSTSCLib control and runs the resulting RDP connection with IronRDP. It
-//! implements the complete inherited raw client-interface hierarchy through
-//! `IMsRdpClient10` and the OLE contracts required for fresh windowed ActiveX
-//! hosting, while unsupported semantic members continue to fail explicitly.
+//! This crate exposes a carefully scoped compatibility surface for the classic MSTSCLib control and the modern `IRemoteDesktopClient` facade.
+//! It runs the resulting RDP connection with IronRDP, implements the complete raw client-interface hierarchy through `IMsRdpClient10`, and provides the OLE contracts required for fresh windowed ActiveX hosting.
+//! Unsupported semantic members continue to fail explicitly.
 
 #![cfg_attr(windows, allow(clippy::inline_always))]
 #![cfg_attr(windows, allow(clippy::as_pointer_underscore))]

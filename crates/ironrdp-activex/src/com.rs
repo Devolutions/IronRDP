@@ -344,7 +344,7 @@ mod tests {
     use windows::Win32::System::Ole::IOleObject;
 
     use crate::control::{CLSID_MS_RDP_CLIENT, RDM_COMPATIBILITY_CLSIDS};
-    use crate::mstsc::{IMsRdpClient6, IMsRdpClient10};
+    use crate::mstsc::{IMsRdpClient6, IMsRdpClient10, IRemoteDesktopClient};
 
     #[test]
     fn zero_tracked_references_allow_unloading() {
@@ -440,6 +440,18 @@ mod tests {
         let factory = unsafe { IClassFactory::from_raw(raw_factory) };
         let client: IMsRdpClient10 = unsafe { factory.CreateInstance(None) }.expect("create raw IMsRdpClient10");
         assert!(client.cast::<IMsRdpClient6>().is_ok());
+    }
+
+    #[test]
+    fn ironrdp_class_factory_creates_the_modern_client_contract() {
+        let mut raw_factory = ptr::null_mut();
+        let result = unsafe { DllGetClassObject(&CLSID_IRONRDP_ACTIVEX, &IClassFactory::IID, &mut raw_factory) };
+        assert_eq!(result, S_OK);
+
+        let factory = unsafe { IClassFactory::from_raw(raw_factory) };
+        let client: IRemoteDesktopClient =
+            unsafe { factory.CreateInstance(None) }.expect("create modern IRemoteDesktopClient");
+        assert!(client.cast::<IMsRdpClient10>().is_ok());
     }
 
     #[test]
