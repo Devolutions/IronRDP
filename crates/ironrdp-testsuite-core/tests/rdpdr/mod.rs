@@ -153,11 +153,16 @@ fn encoded_printer_device_io_request(major_function: MajorFunction) -> Vec<u8> {
 }
 
 fn encoded_printer_device_control_request() -> Vec<u8> {
+    encoded_printer_device_control_request_with_input(&[])
+}
+
+fn encoded_printer_device_control_request_with_input(input: &[u8]) -> Vec<u8> {
     let mut encoded = encoded_printer_device_io_request(MajorFunction::DeviceControl);
     encoded.extend_from_slice(&0u32.to_le_bytes()); // OutputBufferLength
-    encoded.extend_from_slice(&0u32.to_le_bytes()); // InputBufferLength
+    encoded.extend_from_slice(&u32::try_from(input.len()).unwrap().to_le_bytes());
     encoded.extend_from_slice(&0u32.to_le_bytes()); // IoControlCode
     encoded.extend_from_slice(&[0; 20]); // Padding
+    encoded.extend_from_slice(input);
     encoded
 }
 
@@ -591,6 +596,21 @@ fn printer_device_control_is_completed_with_empty_success_response() {
     assert_eq!(&encoded[..4], &[0x72, 0x44, 0x43, 0x49]); // RDPDR + DEVICE_IOCOMPLETION
     assert_eq!(ntstatus_at(&encoded, 12), NtStatus::SUCCESS);
     assert_eq!(read_u32(&encoded[16..]), 0); // OutputBufferLength
+}
+
+#[test]
+fn printer_device_control_consumes_declared_input_before_trailing_check() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+    acknowledge_printer(&mut rdpdr, NtStatus::SUCCESS);
+
+    let responses = rdpdr
+        .process(&encoded_printer_device_control_request_with_input(&[1, 2, 3]))
+        .unwrap();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        ntstatus_at(&responses[0].encode_unframed_pdu().unwrap(), 12),
+        NtStatus::SUCCESS
+    );
 }
 
 #[test]

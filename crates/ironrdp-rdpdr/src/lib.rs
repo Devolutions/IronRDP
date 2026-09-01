@@ -698,7 +698,7 @@ impl Rdpdr {
 
                 match dev_io_req.major_function {
                     MajorFunction::DeviceControl => {
-                        let req = DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src)
+                        let req = DeviceControlRequest::<AnyIoCtlCode>::decode_with_input_buffer(dev_io_req, src)
                             .map_err(|e| decode_err!(e))?;
                         if !src.is_empty() {
                             return Err(pdu_other_err!(
@@ -708,7 +708,7 @@ impl Rdpdr {
                         debug!(?req, "Completing printer device-control IRP");
 
                         Ok(vec![SvcMessage::from(RdpdrPdu::DeviceControlResponse(
-                            DeviceControlResponse::new(req, NtStatus::SUCCESS, None),
+                            DeviceControlResponse::new(req.request, NtStatus::SUCCESS, None),
                         ))])
                     }
                     MajorFunction::Create | MajorFunction::Write | MajorFunction::Close => {

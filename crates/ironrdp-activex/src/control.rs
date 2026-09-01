@@ -221,9 +221,10 @@ impl Drop for ActiveXPrinterWorkerGuard {
 }
 
 impl ironrdp_rdpdr_native::RdpdrWorkerThreadGuard for ActiveXPrinterWorkerGuard {
-    fn exit(self: Box<Self>) -> ! {
-        let this = ManuallyDrop::new(self);
-        let module = HMODULE(this.module_raw as *mut c_void);
+    fn exit(mut self: Box<Self>) -> ! {
+        let module = HMODULE(self.module_raw as *mut c_void);
+        self.active = false;
+        drop(self);
         com::release_worker();
         unsafe { com::release_module_and_exit_worker(module) }
     }

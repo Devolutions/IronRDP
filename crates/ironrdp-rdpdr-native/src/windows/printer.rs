@@ -513,7 +513,7 @@ impl PrinterWorker {
 
     pub(super) fn poll(&mut self) -> PduResult<Vec<SvcMessage>> {
         if self.completion_disconnected {
-            return Ok(Vec::new());
+            return Err(pdu_other_err!("Windows printer worker completion channel disconnected"));
         }
         let mut messages = Vec::new();
         loop {
@@ -522,8 +522,11 @@ impl PrinterWorker {
                 Err(TryRecvError::Empty) => return Ok(messages),
                 Err(TryRecvError::Disconnected) => {
                     warn!("Windows printer worker completion channel disconnected");
-                    self.completion_disconnected = true;
                     self.request_stop();
+                    if messages.is_empty() {
+                        return Err(pdu_other_err!("Windows printer worker completion channel disconnected"));
+                    }
+                    self.completion_disconnected = true;
                     return Ok(messages);
                 }
             }
@@ -975,6 +978,21 @@ mod tests {
             assert!(Instant::now() < deadline, "printer worker shutdown timed out");
             std::thread::yield_now();
         }
+    }
+
+    #[test]
+    fn disconnected_worker_propagates_an_error() {
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let mut worker =
+            PrinterWorker::with_spooler(printer(), Box::new(FakeSpooler(Arc::clone(&state))), None).unwrap();
+        worker.request_stop();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !worker.finished.load(std::sync::atomic::Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "printer worker shutdown timed out");
+            std::thread::yield_now();
+        }
+
+        assert!(worker.poll().is_err());
     }
 
     #[test]
