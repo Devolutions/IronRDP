@@ -176,8 +176,8 @@ Agent configuration lives in `.github/pr-automation/agents` on the base branch.
 Configuration fixes model selection, prompts, schemas, methodologies, filesystem capabilities, and execution limits.
 Models cannot alter these values or the Helmcode endpoint.
 
-To migrate final-review stages to GLM-5.3, update the base-branch `model` fields after Helmcode exposes the model and the action's mocked provider and schema tests pass unchanged.
-Keep classification on a separate model while concurrency isolation remains useful.
+To migrate the agents to GLM-5.3, update the base-branch `model` fields after Helmcode exposes the model and the action's mocked provider and schema tests pass unchanged.
+Keep classification in a separate job while concurrency isolation remains useful.
 
 ## Label setup
 
