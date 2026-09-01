@@ -1,5 +1,6 @@
 // FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
 
+#[cfg(not(windows))]
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::path::Path;
@@ -397,7 +398,13 @@ async fn tls_validation_preserves_the_default_and_strict_is_explicit() {
     let address = listener.local_addr().expect("TLS test listener address");
 
     let server = tokio::spawn(async move {
-        for expected_success in [true, false, true] {
+        // native-tls reports strict validation failure after the server completes its TLS handshake.
+        #[cfg(windows)]
+        let expected_successes = &[true, true];
+        #[cfg(not(windows))]
+        let expected_successes = &[true, false, true];
+
+        for &expected_success in expected_successes {
             let (stream, _) = listener.accept().await.expect("accept TLS test connection");
             let result = acceptor.accept(stream).await;
             assert_eq!(result.is_ok(), expected_success);
@@ -423,22 +430,26 @@ async fn tls_validation_preserves_the_default_and_strict_is_explicit() {
         "strict validation must reject the self-signed test certificate"
     );
 
-    let callback_called = Arc::new(AtomicBool::new(false));
-    let callback_called_for_callback = Arc::clone(&callback_called);
-    let callback: ironrdp_tls::CertificateValidationCallback = Arc::new(move |certificate, server_name, reason| {
-        callback_called_for_callback.store(true, Ordering::Relaxed);
-        !certificate.is_empty() && server_name == "localhost" && !reason.is_empty()
-    });
-    let (tls_stream, _) = ironrdp_tls::upgrade_with_certificate_validation_callback(
-        TcpStream::connect(address).await.expect("connect callback TLS client"),
-        "localhost",
-        callback,
-    )
-    .await
-    .expect("TLS callback accepts the self-signed test certificate");
-    drop(tls_stream);
+    #[cfg(not(windows))]
+    {
+        let callback_called = Arc::new(AtomicBool::new(false));
+        let callback_called_for_callback = Arc::clone(&callback_called);
+        let callback: ironrdp_tls::CertificateValidationCallback = Arc::new(move |certificate, server_name, reason| {
+            callback_called_for_callback.store(true, Ordering::Relaxed);
+            !certificate.is_empty() && server_name == "localhost" && !reason.is_empty()
+        });
+        let (tls_stream, _) = ironrdp_tls::upgrade_with_certificate_validation_callback(
+            TcpStream::connect(address).await.expect("connect callback TLS client"),
+            "localhost",
+            callback,
+        )
+        .await
+        .expect("TLS callback accepts the self-signed test certificate");
+        drop(tls_stream);
 
-    assert!(callback_called.load(Ordering::Relaxed));
+        assert!(callback_called.load(Ordering::Relaxed));
+    }
+
     server.await.expect("TLS test server task");
 }
 

@@ -21,7 +21,8 @@ name = "ironrdp-viewer"
 test = false
 
 [features]
-default = ["rustls"]
+# The target-specific dependencies below choose the default TLS backend.
+default = []
 rustls = ["ironrdp/rustls"]
 native-tls = ["ironrdp/native-tls"]
 qoi = ["ironrdp/qoi"]
@@ -61,7 +62,11 @@ raw-window-handle = "0.6"
 url = "2"
 
 [target.'cfg(windows)'.dependencies]
+ironrdp = { path = "../ironrdp", version = "0.17", features = ["native-tls"] }
 ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.7" }
+
+[target.'cfg(not(windows))'.dependencies]
+ironrdp = { path = "../ironrdp", version = "0.17", features = ["rustls"] }
 
 [lints]
 workspace = true

@@ -49,7 +49,6 @@ ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", features = ["captur
 ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }
 ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-tokio.path = "../ironrdp-tokio"
-ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", features = ["__test"] }
 rcgen = "0.14"
 semver = "1.0"
@@ -64,6 +63,10 @@ uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"
+ironrdp-tls = { path = "../ironrdp-tls", features = ["native-tls"] }
+
+[target.'cfg(not(windows))'.dev-dependencies]
+ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
 
 [lints]
 workspace = true

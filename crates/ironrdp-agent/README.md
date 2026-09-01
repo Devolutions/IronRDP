@@ -51,6 +51,7 @@ Connect-time `ironrdp_smartcard:i:0` disables it for that session even when the 
 The daemon performs strict certificate and hostname validation by default.
 For an explicitly authorized test endpoint, start the daemon with `--skip-certificate-check`.
 This startup-only flag accepts any certificate and server name, so it is vulnerable to on-path attacks and is unavailable through `connect`.
+On Windows, daemon-backed RDP sessions and `gw-forward` select native TLS for RD Gateway connections; other targets select Rustls.
 
 ## Headless RemoteApp validation
 
