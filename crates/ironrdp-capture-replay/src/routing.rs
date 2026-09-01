@@ -834,7 +834,7 @@ struct ReplayGraphicsOutput {
     width: AtomicU32,
     height: AtomicU32,
     reset_generation: AtomicUsize,
-    unsupported_avc420: AtomicBool,
+    unsupported: AtomicBool,
 }
 
 struct ReplayGraphicsHandler {
@@ -848,6 +848,10 @@ impl GraphicsPipelineHandler for ReplayGraphicsHandler {
         self.output.width.store(width, Ordering::SeqCst);
         self.output.height.store(height, Ordering::SeqCst);
         self.output.reset_generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn on_reset_graphics_rejected(&mut self, _width: u32, _height: u32) {
+        self.output.unsupported.store(true, Ordering::SeqCst);
     }
 
     fn on_surface_created(&mut self, _surface: &Surface) {}
@@ -877,7 +881,7 @@ impl ReplayEgfxChannel {
             width: AtomicU32::new(0),
             height: AtomicU32::new(0),
             reset_generation: AtomicUsize::new(0),
-            unsupported_avc420: AtomicBool::new(false),
+            unsupported: AtomicBool::new(false),
         });
         let handler = ReplayGraphicsHandler {
             output: Arc::clone(&output),
@@ -907,7 +911,7 @@ impl ReplayEgfxChannel {
     }
 
     fn take_unsupported_codec(&mut self) -> bool {
-        self.output.unsupported_avc420.swap(false, Ordering::SeqCst)
+        self.output.unsupported.swap(false, Ordering::SeqCst)
     }
 }
 
@@ -917,7 +921,7 @@ struct UnsupportedH264Decoder {
 
 impl H264Decoder for UnsupportedH264Decoder {
     fn decode(&mut self, _data: &[u8]) -> DecoderResult<DecodedFrame> {
-        self.unsupported.unsupported_avc420.store(true, Ordering::SeqCst);
+        self.unsupported.unsupported.store(true, Ordering::SeqCst);
         Err(DecoderError::msg("AVC420 replay is unsupported"))
     }
 }
