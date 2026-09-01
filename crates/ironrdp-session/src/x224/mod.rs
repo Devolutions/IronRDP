@@ -6,7 +6,7 @@ use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage
 use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareDataCtx, ShareDataPdu,
+    BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, IoChannelPdu, ShareDataCtx, ShareDataPdu,
 };
 use ironrdp_pdu::rdp::heartbeat::HeartbeatPdu;
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
@@ -233,7 +233,7 @@ impl Processor {
         let channel_id = data_ctx.channel_id;
 
         if channel_id == self.io_channel_id {
-            self.process_io_channel(data_ctx, bulk_decompressor)
+            self.process_io_channel_data_indication(data_ctx, bulk_decompressor)
         } else if self.message_channel_id == Some(channel_id) {
             self.process_message_channel(data_ctx)
         } else {
@@ -248,6 +248,53 @@ impl Processor {
         }
     }
 
+    fn process_io_channel_data_indication(
+        &mut self,
+        data_ctx: SendDataIndicationCtx<'_>,
+        bulk_decompressor: &mut Option<BulkCompressor>,
+    ) -> SessionResult<Vec<ProcessorOutput>> {
+        debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
+
+        // Multitransport PDUs use BasicSecurityHeader, so the first two bytes are flags
+        // rather than Share Control totalLength. Delegate before walking concatenated PDUs.
+        if matches!(
+            ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx),
+            Ok(IoChannelPdu::MultitransportRequest(_))
+        ) {
+            return self.process_io_channel(data_ctx, bulk_decompressor);
+        }
+
+        let mut outputs = Vec::new();
+        let mut offset = 0usize;
+        let data = data_ctx.user_data;
+        while offset < data.len() {
+            if offset + 2 > data.len() {
+                return Err(reason_err!("X224", "truncated Share Control PDU length"));
+            }
+
+            let total_length = usize::from(u16::from_le_bytes([data[offset], data[offset + 1]]));
+            if total_length == 0 || offset + total_length > data.len() {
+                if offset == 0 {
+                    return self.process_io_channel(data_ctx, bulk_decompressor);
+                }
+                return Err(reason_err!(
+                    "X224",
+                    "invalid concatenated Share Control PDU length: {total_length}"
+                ));
+            }
+
+            let part_ctx = SendDataIndicationCtx {
+                initiator_id: data_ctx.initiator_id,
+                channel_id: data_ctx.channel_id,
+                user_data: &data[offset..offset + total_length],
+            };
+            outputs.extend(self.process_io_channel(part_ctx, bulk_decompressor)?);
+            offset += total_length;
+        }
+
+        Ok(outputs)
+    }
+
     fn process_io_channel(
         &mut self,
         data_ctx: SendDataIndicationCtx<'_>,
@@ -258,15 +305,15 @@ impl Processor {
         let io_channel = ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx).map_err(SessionError::decode)?;
 
         match io_channel {
-            ironrdp_pdu::rdp::headers::IoChannelPdu::Data(ctx) => Self::process_share_data(ctx, bulk_decompressor),
-            ironrdp_pdu::rdp::headers::IoChannelPdu::MultitransportRequest(pdu) => {
+            IoChannelPdu::Data(ctx) => Self::process_share_data(ctx, bulk_decompressor),
+            IoChannelPdu::MultitransportRequest(pdu) => {
                 debug!(
                     request_id = pdu.request_id,
                     "Ignoring Initiate Multitransport Request received outside the MCS message channel"
                 );
                 Ok(Vec::new())
             }
-            ironrdp_pdu::rdp::headers::IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll]),
+            IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll]),
         }
     }
 
@@ -614,7 +661,7 @@ mod tests {
         let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, Some(1004), 0);
 
         let outputs = processor
-            .process_io_channel(
+            .process_io_channel_data_indication(
                 SendDataIndicationCtx {
                     initiator_id: 1002,
                     channel_id: 1003,
@@ -813,5 +860,100 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn header_only_deactivate_all() -> [u8; 6] {
+        [
+            0x06, 0x00, // totalLength
+            0x16, 0x00, // pduType (Deactivate All) + protocolVersion
+            0xE9, 0x03, // pduSource
+        ]
+    }
+
+    #[test]
+    fn processor_splits_concatenated_share_control_pdus() {
+        let pdu = header_only_deactivate_all();
+        let mut user_data = Vec::from(pdu);
+        user_data.extend_from_slice(&pdu);
+        let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, None, 0);
+
+        let outputs = processor
+            .process_io_channel_data_indication(
+                SendDataIndicationCtx {
+                    initiator_id: 1002,
+                    channel_id: 1003,
+                    user_data: &user_data,
+                },
+                &mut None,
+            )
+            .expect("concatenated Share Control PDUs should be split");
+
+        assert!(matches!(
+            outputs.as_slice(),
+            [ProcessorOutput::DeactivateAll, ProcessorOutput::DeactivateAll]
+        ));
+    }
+
+    #[test]
+    fn processor_rejects_truncated_share_control_pdu_length() {
+        let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, None, 0);
+
+        let error = processor
+            .process_io_channel_data_indication(
+                SendDataIndicationCtx {
+                    initiator_id: 1002,
+                    channel_id: 1003,
+                    user_data: &[0x06],
+                },
+                &mut None,
+            )
+            .expect_err("a truncated totalLength field is invalid");
+
+        assert!(error.to_string().contains("truncated Share Control PDU length"));
+    }
+
+    #[test]
+    fn processor_rejects_invalid_concatenated_share_control_pdu_length() {
+        let mut user_data = Vec::from(header_only_deactivate_all());
+        user_data.extend_from_slice(&[0x10, 0x00]);
+        let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, None, 0);
+
+        let error = processor
+            .process_io_channel_data_indication(
+                SendDataIndicationCtx {
+                    initiator_id: 1002,
+                    channel_id: 1003,
+                    user_data: &user_data,
+                },
+                &mut None,
+            )
+            .expect_err("an overrunning concatenated totalLength is invalid");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid concatenated Share Control PDU length: 16")
+        );
+    }
+
+    #[test]
+    fn processor_falls_back_for_invalid_first_share_control_pdu_length() {
+        let mut user_data = Vec::from(header_only_deactivate_all());
+        user_data[0] = 0x64;
+        user_data[1] = 0x00;
+        let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, None, 0);
+
+        let outputs = processor
+            .process_io_channel_data_indication(
+                SendDataIndicationCtx {
+                    initiator_id: 1002,
+                    channel_id: 1003,
+                    user_data: &user_data,
+                },
+                &mut None,
+            )
+            .expect("invalid first totalLength should fall back to whole-buffer decode");
+
+        assert!(matches!(outputs.as_slice(), [ProcessorOutput::DeactivateAll]));
     }
 }
