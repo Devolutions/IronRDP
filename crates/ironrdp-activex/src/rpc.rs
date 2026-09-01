@@ -275,6 +275,17 @@ impl ActiveXRpc {
     }
 
     pub(crate) fn retain_frame_region(&self, width: u16, height: u16, region: InclusiveRectangle, pixels: &[u32]) {
+        self.retain_frame_region_with_limit(width, height, region, pixels, MAX_SCREENSHOT_PIXELS);
+    }
+
+    fn retain_frame_region_with_limit(
+        &self,
+        width: u16,
+        height: u16,
+        region: InclusiveRectangle,
+        pixels: &[u32],
+        max_pixels: usize,
+    ) {
         let Some(region_width) = region
             .right
             .checked_sub(region.left)
@@ -301,7 +312,6 @@ impl ActiveXRpc {
         };
         if width == 0
             || height == 0
-            || pixel_count > MAX_SCREENSHOT_PIXELS
             || region.right >= width
             || region.bottom >= height
             || pixels.len() != update_pixel_count
@@ -313,6 +323,16 @@ impl ActiveXRpc {
         let mut live = lock(&self.shared.live);
         live.properties.insert("desktopwidth", i64::from(width));
         live.properties.insert("desktopheight", i64::from(height));
+        if pixel_count > max_pixels {
+            live.frame = None;
+            tracing::warn!(
+                width,
+                height,
+                max_pixels,
+                "Not retaining RPC frame above the pixel limit"
+            );
+            return;
+        }
         let frame = if let Some(frame) = live
             .frame
             .as_mut()
@@ -940,6 +960,29 @@ mod tests {
         );
 
         assert!(lock(&rpc.shared.live).frame.is_none());
+    }
+
+    #[test]
+    fn oversized_rpc_frame_clears_stale_retained_frame() {
+        let rpc = rpc();
+        rpc.retain_frame(1, 1, &[0x0011_2233]);
+        rpc.retain_frame_region_with_limit(
+            2,
+            1,
+            InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 1,
+                bottom: 0,
+            },
+            &[0x0044_5566, 0x0077_8899],
+            1,
+        );
+
+        let live = lock(&rpc.shared.live);
+        assert!(live.frame.is_none());
+        assert_eq!(live.properties.get::<i64>("desktopwidth"), Some(2));
+        assert_eq!(live.properties.get::<i64>("desktopheight"), Some(1));
     }
 
     #[tokio::test]
