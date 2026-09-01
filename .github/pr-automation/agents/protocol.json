@@ -1,0 +1,21 @@
+{
+  "id": "protocol",
+  "model": "glm-5.2",
+  "prompt_file": ".github/pr-automation/prompts/protocol-reviewer.md",
+  "schema_file": ".github/pr-automation/schemas/candidate-review.json",
+  "methodology_files": [
+    ".agents/skills/protocol-reviewer/SKILL.md"
+  ],
+  "allowed_roots": [
+    "pr-head",
+    "review-sources/windows-protocols"
+  ],
+  "allowed_files": [
+    "pr-automation-context.json",
+    "pr-evidence/changed-files.txt",
+    "pr-evidence/pull-request.diff"
+  ],
+  "max_output_bytes": 32768,
+  "max_turns": 30,
+  "max_tool_calls": 120
+}

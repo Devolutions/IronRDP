@@ -1,8 +1,9 @@
 "use strict";
 
 const { SHA, exactKeys, invalid, normalizeText, parseJson } = require("./validation");
+const { validateReviewerRoute } = require("./routing");
 
-const SCHEMA_VERSION = "classifier-v2";
+const SCHEMA_VERSION = "classifier-v3";
 // Machine-readable classifier state persisted on the SHA-bound check, because the review route runs
 // in a later workflow run and cannot read classifier job outputs.
 const CHECK_STATE_MARKER = "ironrdp-pr-automation-state:";
@@ -18,7 +19,12 @@ function isDocumentationPath(path) {
   );
 }
 
-function validateClassifier(raw, { expectedSha, changedPaths, documentationOnlyPaths, prNumber } = {}) {
+function validateClassifier(raw, {
+  expectedSha, changedPaths, documentationOnlyPaths, duplicateCandidates, prNumber,
+} = {}) {
+  if (prNumber !== undefined && (!Number.isSafeInteger(prNumber) || prNumber < 1)) {
+    return invalid("invalid classifier validation context");
+  }
   const value = parseJson(raw, 4096);
   const required = [
     "schema_version", "head_sha", "risk", "technical_debt", "documentation_only", "cross_cutting", "duplicate",
@@ -69,7 +75,12 @@ function validateClassifier(raw, { expectedSha, changedPaths, documentationOnlyP
   if (duplicate.detected) {
     if (duplicate.similar_pr_number === null || duplicate.similar_pr_url === null ||
         duplicate.confidence < 0.85 || duplicate.similar_pr_number === prNumber ||
-        !duplicate.similar_pr_url.endsWith(`/pull/${duplicate.similar_pr_number}`)) {
+        !duplicate.similar_pr_url.endsWith(`/pull/${duplicate.similar_pr_number}`) ||
+        !Array.isArray(duplicateCandidates) || duplicateCandidates.length > 30 ||
+        !duplicateCandidates.some((candidate) =>
+          exactKeys(candidate, ["number", "url"]) &&
+          candidate.number === duplicate.similar_pr_number &&
+          candidate.url === duplicate.similar_pr_url)) {
       return invalid("invalid duplicate reference");
     }
   } else if (duplicate.similar_pr_number !== null || duplicate.similar_pr_url !== null ||
@@ -102,14 +113,20 @@ function validateClassifier(raw, { expectedSha, changedPaths, documentationOnlyP
   return { ok: true, status: "valid", schemaVersion: SCHEMA_VERSION, value: normalized };
 }
 
-function encodeCheckState({ protocolRelated, automaticReviewEligible = true } = {}) {
+function encodeCheckState({
+  protocolRelated, risk, specialistReviewers, automaticReviewEligible = true,
+} = {}) {
   if (typeof protocolRelated !== "boolean") throw new Error("protocolRelated must be a boolean");
+  const route = validateReviewerRoute({ reviewers: specialistReviewers, protocolRelated, risk });
+  if (!route.ok) throw new Error(route.reason);
   if (typeof automaticReviewEligible !== "boolean") {
     throw new Error("automaticReviewEligible must be a boolean");
   }
   return `${CHECK_STATE_MARKER} ${JSON.stringify({
     schema_version: SCHEMA_VERSION,
     protocol_related: protocolRelated,
+    risk,
+    specialist_reviewers: route.reviewers,
     automatic_review_eligible: automaticReviewEligible,
   })}`;
 }
@@ -121,15 +138,23 @@ function parseCheckState(text) {
   if (!line) return null;
   let parsed;
   try { parsed = JSON.parse(line.slice(CHECK_STATE_MARKER.length)); } catch { return null; }
-  const legacyKeys = ["schema_version", "protocol_related"];
-  const currentKeys = [...legacyKeys, "automatic_review_eligible"];
-  if ((!exactKeys(parsed, legacyKeys) && !exactKeys(parsed, currentKeys)) ||
-      parsed.schema_version !== SCHEMA_VERSION || typeof parsed.protocol_related !== "boolean" ||
-      (parsed.automatic_review_eligible !== undefined &&
-      typeof parsed.automatic_review_eligible !== "boolean")) return null;
+  const keys = [
+    "schema_version", "protocol_related", "risk", "specialist_reviewers", "automatic_review_eligible",
+  ];
+  if (!exactKeys(parsed, keys) || parsed.schema_version !== SCHEMA_VERSION ||
+      typeof parsed.protocol_related !== "boolean" ||
+      typeof parsed.automatic_review_eligible !== "boolean") return null;
+  const route = validateReviewerRoute({
+    reviewers: parsed.specialist_reviewers,
+    protocolRelated: parsed.protocol_related,
+    risk: parsed.risk,
+  });
+  if (!route.ok) return null;
   return {
     protocolRelated: parsed.protocol_related,
-    automaticReviewEligible: parsed.automatic_review_eligible ?? true,
+    risk: parsed.risk,
+    specialistReviewers: route.reviewers,
+    automaticReviewEligible: parsed.automatic_review_eligible,
   };
 }
 

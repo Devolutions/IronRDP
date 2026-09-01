@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-# Materializes the untrusted pull request head beside the trusted base checkout and derives the
-# evidence the LLM stages are given. It runs without repository credentials and writes nothing back.
+# Materializes the untrusted pull request head beside the base checkout and derives the evidence the LLM stages are given.
+# It runs without repository credentials and writes nothing back.
 #
-# The stages run claude-code-action in explicit-prompt mode, which supplies only the prompt: no
-# changed-file context is injected, and Bash is denied, so the model cannot compute a diff itself.
-# The diff and manifest produced here are therefore the only reliable statement of what the pull
-# request changes.
+# The model runtime receives only explicitly allowed files and has no command execution or Git access.
+# The diff and manifest produced here are therefore the only authoritative statement of what the pull request changes.
 #
-# This is shared by every stage on purpose. The removal of contributor-controlled instruction files
-# below is a security boundary, and three hand-maintained copies of it would eventually drift.
+# This is shared by every stage because the instruction-file removal below is a security boundary that duplicated scripts would eventually drift from.
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -28,16 +25,15 @@ git -C pr-head fetch --no-tags origin "+$head_sha:refs/remotes/origin/pull-reque
 git -C pr-head fetch --no-tags origin "+$base_sha:refs/remotes/origin/pull-request-base"
 git -C pr-head checkout --detach origin/pull-request-head
 
-# The head tree is contributor-controlled. Remove symlinks before granting filesystem-reading tools
-# access so they cannot escape the checkout and disclose runner-local files or environment secrets.
+# The head tree is contributor-controlled.
+# Remove symlinks before granting filesystem-reading tools access so they cannot escape the checkout and disclose runner-local files or environment secrets.
 find pr-head -type l -delete
 
-# Claude Code discovers agent instruction files in every directory it reads, not just the root of
-# the tree it is given. These files are contributor-controlled here, so a nested pr-head/sub/CLAUDE.md
-# or pr-head/sub/.claude would otherwise escape the evidence-only boundary. The removal is recursive.
+# Agent runtimes may discover instruction files in every directory they read, not just the root of the tree they are given.
+# These files are contributor-controlled, so removing them recursively keeps the head tree an evidence-only capability.
 find pr-head -depth \
-  \( -name CLAUDE.md -o -name CLAUDE.local.md -o -name AGENTS.md \
-     -o -name .claude -o -name .cursor -o -name .cursorrules \) \
+  \( -name CLAUDE.md -o -name CLAUDE.local.md -o -name GEMINI.md -o -name AGENTS.md \
+     -o -name .claude -o -name .gemini -o -name .cursor -o -name .cursorrules \) \
   -exec rm -rf {} +
 rm -rf pr-head/.github/copilot-instructions.md pr-head/.github/instructions
 
@@ -48,14 +44,14 @@ git -C pr-head diff --no-color --find-renames --name-status \
 git -C pr-head diff --no-color --find-renames --unified=3 \
   origin/pull-request-base...origin/pull-request-head > pr-evidence/pull-request.diff
 
-# A single oversized file would otherwise crowd out the rest of the evidence. Oversized pull
-# requests are already excluded upstream, so this only guards against pathological single changes.
+# Partial diffs cannot support complete classification or review, including when a maintainer opts
+# an oversized pull request into automation.
 max_bytes=$((1024 * 1024))
 if [ "$(wc -c < pr-evidence/pull-request.diff)" -gt "$max_bytes" ]; then
-  head -c "$max_bytes" pr-evidence/pull-request.diff > pr-evidence/pull-request.diff.truncated
-  printf '\n[diff truncated at %s bytes; read the full tree in pr-head]\n' "$max_bytes" \
-    >> pr-evidence/pull-request.diff.truncated
-  mv pr-evidence/pull-request.diff.truncated pr-evidence/pull-request.diff
+  reason="pull request diff exceeds the 1 MiB evidence limit"
+  printf '%s\n' "$reason" > pr-evidence/failure-reason.txt
+  printf 'error: %s\n' "$reason" >&2
+  exit 1
 fi
 
 test -s pr-evidence/changed-files.txt

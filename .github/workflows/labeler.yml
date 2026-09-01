@@ -410,12 +410,16 @@ jobs:
       needs.fork-rate-limit.outputs.allowed == 'true' &&
       !contains(fromJSON(needs.resolve-pr.outputs.labels), 'ai-reviewed/2')))
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      pull-requests: read
     environment: llm-providers
     outputs:
-      output: ${{ steps.claude.outputs.structured_output }}
+      output: ${{ steps.agent.outputs.structured-output }}
+      failure-reason: ${{ steps.evidence.outputs.failure-reason || steps.agent.outputs.failure-reason }}
+      duplicate-candidates: ${{ steps.duplicate-candidates.outputs.manifest }}
     steps:
-      - name: Fetch trusted base and untrusted PR head without credentials
+      - id: evidence
+        name: Fetch base and PR head without credentials
         shell: bash
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
@@ -429,9 +433,45 @@ jobs:
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git fetch --no-tags origin +master:refs/remotes/origin/master
           git checkout --detach origin/master
-          bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"
+          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"; then
+            reason="pull request evidence unavailable"
+            if test -f pr-evidence/failure-reason.txt; then
+              reason="$(cat pr-evidence/failure-reason.txt)"
+            fi
+            echo "failure-reason=$reason" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
-      - id: claude-args
+      - id: duplicate-candidates
+        name: Fetch bounded duplicate candidates
+        uses: actions/github-script@v8
+        env:
+          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { data } = await github.rest.pulls.list({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: "open", sort: "updated", direction: "desc", per_page: 100,
+            });
+            const current = Number(process.env.PULL_REQUEST_NUMBER);
+            const candidates = data.filter((pull) => pull.number !== current).slice(0, 30)
+              .map((pull) => ({
+                number: pull.number,
+                url: pull.html_url,
+                title: String(pull.title || "").slice(0, 300),
+                body: String(pull.body || "").slice(0, 1000),
+                head_sha: pull.head?.sha || "",
+              }));
+            fs.writeFileSync(
+              "pr-evidence/duplicate-candidates.json",
+              JSON.stringify({ candidates }, null, 2),
+            );
+            core.setOutput("manifest", JSON.stringify(
+              candidates.map(({ number, url }) => ({ number, url })),
+            ));
+
+      - name: Write classifier context
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
@@ -441,36 +481,14 @@ jobs:
               "pr-automation-context.json",
               JSON.stringify({ head_sha: process.env.HEAD_SHA }, null, 2),
             );
-            // Read the prompt from the trusted base checkout so the model receives it as instructions
-            // rather than discovering it through the untrusted evidence filesystem.
-            core.setOutput("prompt", require("node:fs").readFileSync(
-              ".github/pr-automation/prompts/classifier.md",
-              "utf8",
-            ));
-            const schema = JSON.stringify(require("./.github/pr-automation/schemas/classifier.json"));
-            // Triage runs on every push and only fills a small, schema-bound record, so it takes
-            // Sonnet at its lowest effort: the heavy stages are where deep reasoning is worth
-            // paying for. Haiku is cheaper still but supports no effort control at all.
-            const common = `--model sonnet --effort low --add-dir pr-head --add-dir pr-evidence --allowedTools "Read,Glob,Grep" --disallowedTools "Bash,Edit,Write,WebFetch,Task" --json-schema '${schema}'`;
-            core.setOutput("value", `${common} --max-turns 10`);
-            core.setOutput("retry", `${common} --max-turns 3`);
 
-      - id: claude
-        uses: ./.github/actions/resilient-review-output
+      - id: agent
+        continue-on-error: true
+        uses: ./.github/actions/openai-agent
         with:
-          stage: classifier
-          expected_sha: ${{ needs.resolve-pr.outputs.head-sha }}
-          pr_number: ${{ needs.resolve-pr.outputs.pr-number }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_CLASSIFIER }}
-          claude_args: ${{ steps.claude-args.outputs.value }}
-          retry_claude_args: ${{ steps.claude-args.outputs.retry }}
-          settings: >-
-            {"permissions":{"allow":["Read","Glob","Grep"],"deny":["Bash","Edit","Write","WebFetch","Task"]}}
-          prompt: ${{ steps.claude-args.outputs.prompt }}
-          retry_prompt: >-
-            Finish AI classification now using the analysis already completed in this session.
-            Do not investigate further. Correct the reported validation problem and return only the
-            required schema-bound JSON for head ${{ needs.resolve-pr.outputs.head-sha }}.
+          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
+          base-url: https://api.helmcode.com/v1
+          config-file: .github/pr-automation/agents/classifier.json
 
   resolve-classification-state:
     name: Resolve classification state
@@ -498,6 +516,8 @@ jobs:
           PR_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           DETERMINISTIC: ${{ needs.deterministic-analysis.outputs.analysis }}
           CLASSIFIER: ${{ needs.classifier.outputs.output }}
+          CLASSIFIER_REASON: ${{ needs.classifier.outputs.failure-reason }}
+          DUPLICATE_CANDIDATES: ${{ needs.classifier.outputs.duplicate-candidates }}
           CLASSIFICATION_GATE_AVAILABLE: ${{ needs.classification-gate.outputs.available }}
           CLASSIFICATION_GATE_REASON: ${{ needs.classification-gate.outputs.reason }}
           FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
@@ -513,6 +533,8 @@ jobs:
               prNumber: Number(process.env.PR_NUMBER),
               deterministic: parse(process.env.DETERMINISTIC, {}),
               classifier: process.env.CLASSIFIER || "",
+              classifierReason: process.env.CLASSIFIER_REASON || "",
+              duplicateCandidates: parse(process.env.DUPLICATE_CANDIDATES, []),
               classificationGate: {
                 available: process.env.CLASSIFICATION_GATE_AVAILABLE === "true",
                 reason: process.env.CLASSIFICATION_GATE_REASON || "",
@@ -522,7 +544,13 @@ jobs:
               force: process.env.FORCE === "true",
             });
             core.setOutput("state", JSON.stringify(state));
-            core.info(JSON.stringify({ event: "pr-automation.classification-state", decision: state }));
+            core.info(JSON.stringify({
+              event: "pr-automation.classification-state",
+              decision: {
+                ok: state.ok, mode: state.mode, failed: state.failed === true,
+                oversized: state.oversized === true, expectedSha: state.expectedSha,
+              },
+            }));
 
   review-gate:
     name: Gate automated review
@@ -540,7 +568,7 @@ jobs:
     outputs:
       gate: ${{ steps.gate.outputs.gate }}
       eligible: ${{ steps.gate.outputs.eligible }}
-      protocol-related: ${{ steps.gate.outputs.protocol-related }}
+      specialist-reviewers: ${{ steps.gate.outputs.specialist-reviewers }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -554,21 +582,25 @@ jobs:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           ROUTE: ${{ needs.resolve-pr.outputs.route }}
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
+          AUTHOR: ${{ needs.resolve-pr.outputs.author }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
         with:
           script: |
             const { SCHEMA_VERSION, parseCheckState } = require("./.github/pr-automation/validate-classifier");
-            const { SCHEMA_VERSION: REVIEWER_SCHEMA_VERSION } = require("./.github/pr-automation/validate-reviewer");
-            const { reviewPolicyEligible } = require("./.github/pr-automation/resolve-state");
+            const { SCHEMA_VERSION: REVIEWER_SCHEMA_VERSION } = require("./.github/pr-automation/validate-final-review");
+            const { contributorEligibility, reviewPolicyEligible } = require("./.github/pr-automation/resolve-state");
+            const { resolveReviewerRoute } = require("./.github/pr-automation/routing");
             const prNumber = Number(process.env.PULL_REQUEST_NUMBER);
             const headSha = process.env.HEAD_SHA;
             const force = process.env.FORCE === "true";
             let resolvedLabels = [];
+            let author = null;
             try { resolvedLabels = JSON.parse(process.env.LABELS || "[]"); } catch {}
+            try { author = JSON.parse(process.env.AUTHOR || "null"); } catch {}
             const publish = (gate, eligible = gate.ok) => {
               core.setOutput("gate", JSON.stringify(gate));
               core.setOutput("eligible", eligible);
-              core.setOutput("protocol-related", gate.protocolRelated === true);
+              core.setOutput("specialist-reviewers", JSON.stringify(gate.specialistReviewers || []));
               core.info(JSON.stringify({
                 event: "pr-automation.review-gate",
                 decision: gate,
@@ -583,20 +615,31 @@ jobs:
                 .filter((run) => run.external_id === externalId)
                 .sort((left, right) => right.id - left.id)[0];
               const classification = completed(classificationRuns, `${SCHEMA_VERSION}:${headSha}`);
-              const trusted = classification?.conclusion === "success" && classification.app?.slug === "github-actions";
+              const classificationOwned = classification?.conclusion === "success" &&
+                classification.app?.slug === "github-actions";
               // A check without the current machine-readable state predates this contract: fail closed
               // and wait for a later classification event to rewrite it.
-              const protocolState = trusted ? parseCheckState(classification.output?.summary) : null;
-              const classificationCheck = trusted && protocolState !== null &&
+              const protocolState = classificationOwned ? parseCheckState(classification.output?.summary) : null;
+              const classificationCheck = classificationOwned && protocolState !== null &&
                 protocolState.automaticReviewEligible === true &&
                 classification.output?.title === "Classification complete";
-              const legitimacyStopped = trusted && classification.output?.title === "Automation stopped";
+              const legitimacyStopped = classificationOwned &&
+                classification.output?.title === "Automation stopped";
               const protocolRelated = protocolState?.protocolRelated === true;
               if (force) {
+                const route = resolveReviewerRoute({
+                  suggestedReviewers: protocolState?.specialistReviewers || [],
+                  deterministicReviewers: ["skeptical", "code-compressor"],
+                  protocolRelated,
+                  risk: protocolState?.risk || "unknown",
+                });
                 publish({
                   ok: true, force: true, head_sha: headSha, classificationCheck,
                   legitimacyStopped, ciGreen: false, secondReviewEligible: true,
                   policyEligible: true, labels: resolvedLabels, protocolRelated,
+                  risk: protocolState?.risk || "unknown",
+                  specialistReviewers: route.ok ? route.reviewers : ["skeptical", "code-compressor"],
+                  contributor: { status: "forced" },
                 });
                 return;
               }
@@ -616,11 +659,17 @@ jobs:
               const ciGreen = workflowRuns.some((run) => run?.name === "CI" && run?.conclusion === "success");
               const secondReviewEligible = !labels.includes("ai-reviewed/1") || !reviewAtHead;
               const policyEligible = reviewPolicyEligible({ labels, legitimacyStopped, protocolRelated });
+              const contributor = await contributorEligibility({
+                github, owner: context.repo.owner, repo: context.repo.repo, author,
+                currentPrNumber: prNumber,
+              });
               publish({
-                ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible,
+                ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible &&
+                  contributor.status === "eligible",
                 force: false, head_sha: headSha, classificationCheck, legitimacyStopped,
-                ciGreen, secondReviewEligible, policyEligible, labels,
-                protocolRelated,
+                ciGreen, secondReviewEligible, policyEligible, labels, contributor,
+                protocolRelated, risk: protocolState?.risk || "unknown",
+                specialistReviewers: protocolState?.specialistReviewers || [],
               });
             } catch (error) {
               core.warning(`Review gate unavailable: ${error.message}`);
@@ -628,275 +677,36 @@ jobs:
                 ok: force, force, head_sha: headSha, classificationCheck: false,
                 legitimacyStopped: false, ciGreen: false, secondReviewEligible: force,
                 policyEligible: force, labels: force ? resolvedLabels : [], protocolRelated: false,
+                risk: "unknown", specialistReviewers: force ? ["skeptical", "code-compressor"] : [],
+                contributor: force ? { status: "forced" } : { status: "unavailable" },
                 reason: error.message,
               }, force);
             }
 
-  contributor-history:
-    name: Check contributor history
-    needs: [resolve-pr, review-gate]
-    if: always() && needs.resolve-pr.outputs.ok == 'true' &&
-      needs.review-gate.outputs.gate != ''
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      history: ${{ steps.history.outputs.history }}
-      eligible: ${{ steps.history.outputs.eligible }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: master
-          persist-credentials: false
-
-      - id: history
-        uses: actions/github-script@v8
-        env:
-          AUTHOR: ${{ needs.resolve-pr.outputs.author }}
-          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
-          FORCE: ${{ needs.resolve-pr.outputs.force }}
-        with:
-          script: |
-            const { contributorEligibility } = require("./.github/pr-automation/resolve-state");
-            if (process.env.FORCE === "true") {
-              const result = { status: "forced" };
-              core.setOutput("history", JSON.stringify(result));
-              core.setOutput("eligible", true);
-              core.info(JSON.stringify({ event: "pr-automation.contributor-history", decision: result }));
-              return;
-            }
-            let author = null;
-            try { author = JSON.parse(process.env.AUTHOR); } catch {}
-            const result = await contributorEligibility({
-              github, owner: context.repo.owner, repo: context.repo.repo, author,
-              currentPrNumber: Number(process.env.PULL_REQUEST_NUMBER),
-            });
-            core.setOutput("history", JSON.stringify(result));
-            core.setOutput("eligible", result.status === "eligible");
-            core.info(JSON.stringify({ event: "pr-automation.contributor-history", decision: result }));
-
-  protocol-reviewer:
-    name: Analyze protocol conformance
-    needs: [resolve-pr, fork-rate-limit, review-gate, contributor-history]
+  review-pipeline:
+    name: Run automated review pipeline
+    needs: [resolve-pr, fork-rate-limit, review-gate]
     if: >-
       always() && !cancelled() &&
       needs.resolve-pr.outputs.ok == 'true' &&
       needs.resolve-pr.outputs.review-route == 'true' &&
-      needs.review-gate.outputs.protocol-related == 'true' &&
       (needs.resolve-pr.outputs.force == 'true' ||
       (needs.fork-rate-limit.result == 'success' &&
       needs.fork-rate-limit.outputs.allowed == 'true' &&
-      needs.review-gate.outputs.eligible == 'true' &&
-      needs.contributor-history.outputs.eligible == 'true'))
+      needs.review-gate.outputs.eligible == 'true'))
     runs-on: ubuntu-latest
-    permissions: {}
-    environment: llm-providers
-    outputs:
-      output: ${{ steps.claude.outputs.structured_output }}
-      failure-reason: ${{ steps.claude.outputs.failure_reason }}
-      openspecs-sha: ${{ steps.sources.outputs.openspecs-sha }}
-    steps:
-      - name: Fetch trusted base, PR head, and protocol skills
-        id: sources
-        shell: bash
-        env:
-          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
-          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
-        run: |
-          set -euo pipefail
-          export GIT_CONFIG_NOSYSTEM=1
-          export GIT_CONFIG_GLOBAL=/dev/null
-          git init .
-          git config --local core.hooksPath /dev/null
-          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
-          git fetch --no-tags origin +master:refs/remotes/origin/master
-          git checkout --detach origin/master
-          bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"
-          # Stage the skill from the corpus default branch. It is a Devolutions-maintained
-          # repository, so tracking master keeps the specifications current. No npm, package
-          # lifecycle script, or repository credential is involved. The resolved commit is exported
-          # so the validation stage reads the exact corpus this review saw, even if master moves.
-          git -C "$RUNNER_TEMP" init openspecs
-          git -C "$RUNNER_TEMP/openspecs" config --local core.hooksPath /dev/null
-          git -C "$RUNNER_TEMP/openspecs" remote add origin https://github.com/awakecoding/openspecs.git
-          git -C "$RUNNER_TEMP/openspecs" fetch --depth=1 --no-tags origin +master:refs/remotes/origin/master
-          git -C "$RUNNER_TEMP/openspecs" checkout --detach origin/master
-          echo "openspecs-sha=$(git -C "$RUNNER_TEMP/openspecs" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          mkdir -p .claude/skills
-          cp -R "$RUNNER_TEMP/openspecs/skills/windows-protocols" .claude/skills/windows-protocols
-          cp -R .agents/skills/protocol-reviewer .claude/skills/protocol-reviewer
-          test -f .claude/skills/windows-protocols/SKILL.md
-          test -f .claude/skills/protocol-reviewer/SKILL.md
-
-      - id: claude-args
-        uses: actions/github-script@v8
-        env:
-          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
-        with:
-          script: |
-           const schema = JSON.stringify(require("./.github/pr-automation/schemas/protocol-reviewer.json"));
-           require("node:fs").writeFileSync(
-             "pr-automation-context.json",
-             JSON.stringify({ head_sha: process.env.HEAD_SHA }, null, 2),
-           );
-           core.setOutput("prompt", require("node:fs").readFileSync(
-             ".github/pr-automation/prompts/protocol-reviewer.md",
-             "utf8",
-           ));
-           const common = `--model sonnet --effort high --add-dir pr-head --add-dir pr-evidence --allowedTools "Read,Glob,Grep,Skill" --disallowedTools "Bash,Edit,Write,WebFetch,Task" --json-schema '${schema}'`;
-           core.setOutput("value", `${common} --max-turns 30`);
-           core.setOutput("retry", `${common} --max-turns 6`);
-
-      - id: claude
-        uses: ./.github/actions/resilient-review-output
-        with:
-          stage: protocol-analysis
-          expected_sha: ${{ needs.resolve-pr.outputs.head-sha }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_REVIEWER }}
-          claude_args: ${{ steps.claude-args.outputs.value }}
-          retry_claude_args: ${{ steps.claude-args.outputs.retry }}
-          settings: >-
-            {"permissions":{"allow":["Read","Glob","Grep","Skill"],"deny":["Bash","Edit","Write","WebFetch","Task"]}}
-          prompt: ${{ steps.claude-args.outputs.prompt }}
-          retry_prompt: >-
-            Finish the protocol handoff now using the analysis already completed in this session.
-            Do not investigate further. Correct the reported validation problem and return only the
-            required schema-bound JSON for head ${{ needs.resolve-pr.outputs.head-sha }}.
-
-  validate-protocol-review:
-    name: Validate protocol handoff
-    needs: [resolve-pr, fork-rate-limit, review-gate, contributor-history, protocol-reviewer]
-    if: always() && !cancelled() && needs.resolve-pr.outputs.ok == 'true' &&
-      needs.resolve-pr.outputs.review-route == 'true' &&
-      (needs.resolve-pr.outputs.force == 'true' ||
-      (needs.review-gate.outputs.eligible == 'true' &&
-      needs.contributor-history.outputs.eligible == 'true' &&
-      needs.fork-rate-limit.outputs.allowed == 'true'))
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      status: ${{ steps.validate.outputs.status }}
-      handoff: ${{ steps.validate.outputs.handoff }}
-      reason: ${{ steps.validate.outputs.reason }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: master
-          persist-credentials: false
-
-      - id: cited
-        if: needs.review-gate.outputs.protocol-related == 'true' && needs.protocol-reviewer.outputs.output != ''
-        uses: actions/github-script@v8
-        env:
-          RAW_OUTPUT: ${{ needs.protocol-reviewer.outputs.output }}
-        with:
-          script: |
-            const { PROTOCOL_ID } = require("./.github/pr-automation/validate-protocol-review");
-            // Only a bounded set of regex-validated identifiers reaches the sparse-checkout file.
-            const cited = (process.env.RAW_OUTPUT || "").match(/"(?:MS|MC)-[A-Z0-9]+"/g) || [];
-            const ids = [...new Set(cited.map((entry) => entry.slice(1, -1)))]
-              .filter((id) => PROTOCOL_ID.test(id)).slice(0, 40);
-            core.setOutput("paths", ids.map((id) => `/skills/windows-protocols/${id}/`).join("\n"));
-
-      - name: Fetch cited specifications from the reviewed corpus
-        if: needs.review-gate.outputs.protocol-related == 'true' && needs.protocol-reviewer.outputs.output != ''
-        shell: bash
-        env:
-          OPENSPECS_SHA: ${{ needs.protocol-reviewer.outputs.openspecs-sha }}
-          CITED_PATHS: ${{ steps.cited.outputs.paths }}
-        run: |
-          set -euo pipefail
-          export GIT_CONFIG_NOSYSTEM=1
-          export GIT_CONFIG_GLOBAL=/dev/null
-          # Validation must read the same corpus commit the review stage read, or a push to the
-          # corpus between the two jobs would invalidate citations that were correct when made.
-          if [[ ! "$OPENSPECS_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "protocol review did not report a corpus commit" >&2
-            exit 1
-          fi
-          git -C "$RUNNER_TEMP" init openspecs
-          git -C "$RUNNER_TEMP/openspecs" config --local core.hooksPath /dev/null
-          git -C "$RUNNER_TEMP/openspecs" config --local core.sparseCheckout true
-          git -C "$RUNNER_TEMP/openspecs" remote add origin https://github.com/awakecoding/openspecs.git
-          printf '%s\n' "$CITED_PATHS" > "$RUNNER_TEMP/openspecs/.git/info/sparse-checkout"
-          git -C "$RUNNER_TEMP/openspecs" fetch --depth=1 --filter=blob:none --no-tags origin "$OPENSPECS_SHA"
-          git -C "$RUNNER_TEMP/openspecs" checkout --detach "$OPENSPECS_SHA"
-          test "$(git -C "$RUNNER_TEMP/openspecs" rev-parse HEAD)" = "$OPENSPECS_SHA"
-
-      - id: validate
-        uses: actions/github-script@v8
-        env:
-          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
-          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
-          PROTOCOL_RELATED: ${{ needs.review-gate.outputs.protocol-related }}
-          RAW_OUTPUT: ${{ needs.protocol-reviewer.outputs.output }}
-          MODEL_REASON: ${{ needs.protocol-reviewer.outputs.failure-reason }}
-        with:
-          script: |
-            const { listPrFiles } = require("./.github/pr-automation/deterministic-analysis");
-            const {
-              corpusFromDirectory, notApplicableHandoff, validateProtocolReview,
-            } = require("./.github/pr-automation/validate-protocol-review");
-            const publish = (result) => {
-              core.setOutput("status", result.ok ? result.status : "unavailable");
-              core.setOutput("handoff", result.ok ? JSON.stringify(result) : "");
-              core.setOutput("reason", result.ok ? "" : result.reason);
-              core.info(JSON.stringify({
-                event: "pr-automation.protocol-handoff",
-                decision: result,
-              }));
-              if (!result.ok) core.warning(`Protocol handoff unavailable: ${result.reason}`);
-            };
-            if (process.env.PROTOCOL_RELATED !== "true") return publish(notApplicableHandoff());
-            if (!process.env.RAW_OUTPUT) {
-              return publish({
-                ok: false,
-                reason: process.env.MODEL_REASON || "protocol analysis did not produce structured output",
-              });
-            }
-            let changedPaths;
-            try {
-              changedPaths = (await listPrFiles(github, {
-                owner: context.repo.owner, repo: context.repo.repo,
-                prNumber: Number(process.env.PULL_REQUEST_NUMBER),
-              })).map((file) => file.filename);
-            } catch {
-              return publish({ ok: false, reason: "changed file retrieval unavailable" });
-            }
-            publish(validateProtocolReview(process.env.RAW_OUTPUT || "", {
-              expectedSha: process.env.HEAD_SHA,
-              changedPaths,
-              corpus: corpusFromDirectory(`${process.env.RUNNER_TEMP}/openspecs/skills/windows-protocols`),
-            }));
-
-  skeptical-reviewer:
-    name: Review pull request
-    needs: [resolve-pr, fork-rate-limit, review-gate, contributor-history, validate-protocol-review]
-    if: >-
-      always() && !cancelled() &&
-      needs.resolve-pr.outputs.ok == 'true' &&
-      needs.resolve-pr.outputs.review-route == 'true' &&
-      (needs.validate-protocol-review.outputs.status == 'valid' ||
-      needs.validate-protocol-review.outputs.status == 'not_applicable') &&
-      (needs.resolve-pr.outputs.force == 'true' ||
-      (needs.fork-rate-limit.result == 'success' &&
-      needs.fork-rate-limit.outputs.allowed == 'true' &&
-      needs.review-gate.outputs.eligible == 'true' &&
-      needs.contributor-history.outputs.eligible == 'true'))
-    runs-on: ubuntu-latest
-    # Read-only access is used by the trusted context step; the model receives only untrusted data files.
     permissions:
       issues: read
       pull-requests: read
     environment: llm-providers
+    env:
+      OPENSPECS_COMMIT: 3a5ef220a6cc92453171e7b62129ed7740628c93
     outputs:
-      output: ${{ steps.claude.outputs.structured_output }}
-      failure-reason: ${{ steps.claude.outputs.failure_reason }}
+      output: ${{ steps.final.outputs.output }}
+      failure-reason: ${{ steps.evidence.outputs.failure-reason || steps.final.outputs.reason }}
     steps:
-      - name: Fetch trusted base and untrusted PR head without credentials
+      - id: evidence
+        name: Prepare review evidence once
         shell: bash
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
@@ -910,82 +720,242 @@ jobs:
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git fetch --no-tags origin +master:refs/remotes/origin/master
           git checkout --detach origin/master
-          bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"
-          mkdir -p .claude/skills
-          cp -R .agents/skills/skeptical-reviewer .claude/skills/skeptical-reviewer
-          test -f .claude/skills/skeptical-reviewer/SKILL.md
+          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"; then
+            reason="pull request evidence unavailable"
+            if test -f pr-evidence/failure-reason.txt; then
+              reason="$(cat pr-evidence/failure-reason.txt)"
+            fi
+            echo "failure-reason=$reason" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
-      - name: Fetch untrusted pull request context
+      - name: Fetch bounded review and location context
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
         with:
           script: |
+            const fs = require("node:fs");
+            const { addedLinesByPath, listPrFiles } = require("./.github/pr-automation/deterministic-analysis");
             const { fetchReviewContext } = require("./.github/pr-automation/fetch-review-context");
+            const pullNumber = Number(process.env.PULL_REQUEST_NUMBER);
+            const expectedSha = process.env.HEAD_SHA;
+            const assertHead = async () => {
+              const { data } = await github.rest.pulls.get({
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: pullNumber,
+              });
+              if (data.state !== "open" || data.head?.sha !== expectedSha) {
+                throw new Error("pull request head is no longer current");
+              }
+            };
+            await assertHead();
             const reviewContext = await fetchReviewContext({
-              github,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pullNumber: Number(process.env.PULL_REQUEST_NUMBER),
-              expectedHeadSha: process.env.HEAD_SHA,
+              github, owner: context.repo.owner, repo: context.repo.repo,
+              pullNumber, expectedHeadSha: expectedSha,
             });
-            require("node:fs").writeFileSync(
+            const files = await listPrFiles(github, {
+              owner: context.repo.owner, repo: context.repo.repo, prNumber: pullNumber,
+            });
+            await assertHead();
+            fs.writeFileSync(
               "pr-evidence/pull-request-context.json",
               JSON.stringify(reviewContext, null, 2),
             );
+            fs.writeFileSync(
+              "pr-evidence/validation-context.json",
+              JSON.stringify({
+                changed_paths: files.map((file) => file.filename),
+                changed_lines: addedLinesByPath(files),
+              }),
+            );
+            fs.writeFileSync(
+              "pr-automation-context.json",
+              JSON.stringify({ head_sha: expectedSha }),
+            );
 
-      - id: claude-args
+      - name: Fetch and sanitize the pinned protocol corpus
+        id: protocol-sources
+        if: contains(fromJSON(needs.review-gate.outputs.specialist-reviewers), 'protocol')
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          git -C "$RUNNER_TEMP" init openspecs
+          git -C "$RUNNER_TEMP/openspecs" config --local core.hooksPath /dev/null
+          git -C "$RUNNER_TEMP/openspecs" remote add origin https://github.com/awakecoding/openspecs.git
+          git -C "$RUNNER_TEMP/openspecs" fetch --depth=1 --no-tags origin "$OPENSPECS_COMMIT"
+          git -C "$RUNNER_TEMP/openspecs" checkout --detach "$OPENSPECS_COMMIT"
+          openspecs_sha="$(git -C "$RUNNER_TEMP/openspecs" rev-parse HEAD)"
+          test "$openspecs_sha" = "$OPENSPECS_COMMIT"
+          bash ./.github/pr-automation/prepare-review-sources.sh \
+            "$RUNNER_TEMP/openspecs" "$openspecs_sha"
+          echo "openspecs-sha=$openspecs_sha" >> "$GITHUB_OUTPUT"
+
+      - id: protocol
+        name: Run protocol specialist
+        if: contains(fromJSON(needs.review-gate.outputs.specialist-reviewers), 'protocol')
+        continue-on-error: true
+        uses: ./.github/actions/openai-agent
+        with:
+          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
+          base-url: https://api.helmcode.com/v1
+          config-file: .github/pr-automation/agents/protocol.json
+
+      - id: skeptical
+        name: Run skeptical specialist
+        if: contains(fromJSON(needs.review-gate.outputs.specialist-reviewers), 'skeptical')
+        continue-on-error: true
+        uses: ./.github/actions/openai-agent
+        with:
+          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
+          base-url: https://api.helmcode.com/v1
+          config-file: .github/pr-automation/agents/skeptical.json
+
+      - id: code-compressor
+        name: Run code-compressor specialist
+        if: contains(fromJSON(needs.review-gate.outputs.specialist-reviewers), 'code-compressor')
+        continue-on-error: true
+        uses: ./.github/actions/openai-agent
+        with:
+          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
+          base-url: https://api.helmcode.com/v1
+          config-file: .github/pr-automation/agents/code-compressor.json
+
+      - id: aggregate
+        name: Build validated specialist findings
         uses: actions/github-script@v8
         env:
-          HANDOFF: ${{ needs.validate-protocol-review.outputs.handoff }}
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          SPECIALIST_REVIEWERS: ${{ needs.review-gate.outputs.specialist-reviewers }}
+          GATE: ${{ needs.review-gate.outputs.gate }}
+          OPENSPECS_SHA: ${{ steps.protocol-sources.outputs.openspecs-sha }}
+          PROTOCOL_OUTPUT: ${{ steps.protocol.outputs.structured-output }}
+          PROTOCOL_REASON: ${{ steps.protocol.outputs.failure-reason }}
+          SKEPTICAL_OUTPUT: ${{ steps.skeptical.outputs.structured-output }}
+          SKEPTICAL_REASON: ${{ steps.skeptical.outputs.failure-reason }}
+          COMPRESSOR_OUTPUT: ${{ steps.code-compressor.outputs.structured-output }}
+          COMPRESSOR_REASON: ${{ steps.code-compressor.outputs.failure-reason }}
         with:
           script: |
-           // The handoff is written as a data file by trusted code: it is never interpolated into
-           // a shell command or into the prompt.
-           const handoff = JSON.parse(process.env.HANDOFF);
-           require("node:fs").writeFileSync("protocol-handoff.json", JSON.stringify(handoff.value, null, 2));
-           const received = handoff.status === "valid";
-           require("node:fs").writeFileSync(
-             "pr-automation-context.json",
-             JSON.stringify({ head_sha: process.env.HEAD_SHA, protocol_handoff_received: received }, null, 2),
-           );
-           core.setOutput("received", received);
-           core.setOutput("prompt", require("node:fs").readFileSync(
-             ".github/pr-automation/prompts/skeptical-reviewer.md",
-             "utf8",
-           ));
-           const schema = JSON.stringify(require("./.github/pr-automation/schemas/reviewer.json"));
-           const common = `--model sonnet --effort high --add-dir pr-head --add-dir pr-evidence --allowedTools "Read,Glob,Grep,Skill" --disallowedTools "Bash,Edit,Write,WebFetch,Task" --json-schema '${schema}'`;
-           core.setOutput("value", `${common} --max-turns 20`);
-           core.setOutput("retry", `${common} --max-turns 6`);
+            const fs = require("node:fs");
+            const {
+              buildSpecialistAggregate, validateSpecialistRun,
+            } = require("./.github/pr-automation/review-pipeline");
+            const { corpusFromDirectory } = require("./.github/pr-automation/validate-protocol-review");
+            const selected = JSON.parse(process.env.SPECIALIST_REVIEWERS);
+            const gate = JSON.parse(process.env.GATE);
+            const validation = JSON.parse(fs.readFileSync(
+              "pr-evidence/validation-context.json", "utf8",
+            ));
+            const output = {
+              protocol: process.env.PROTOCOL_OUTPUT,
+              skeptical: process.env.SKEPTICAL_OUTPUT,
+              "code-compressor": process.env.COMPRESSOR_OUTPUT,
+            };
+            const reason = {
+              protocol: process.env.PROTOCOL_REASON,
+              skeptical: process.env.SKEPTICAL_REASON,
+              "code-compressor": process.env.COMPRESSOR_REASON,
+            };
+            const corpus = selected.includes("protocol")
+              ? corpusFromDirectory("review-sources/windows-protocols", {
+                expectedCorpusSha: process.env.OPENSPECS_SHA,
+              })
+              : undefined;
+            const runs = selected.map((reviewer) => validateSpecialistRun(
+              output[reviewer] || "",
+              {
+                reviewer, expectedSha: process.env.HEAD_SHA,
+                changedPaths: validation.changed_paths,
+                changedLines: validation.changed_lines,
+                corpus,
+                expectedCorpusSha: process.env.OPENSPECS_SHA,
+                failureReason: reason[reviewer],
+              },
+            ).value);
+            const result = buildSpecialistAggregate({
+              expectedSha: process.env.HEAD_SHA,
+              selectedReviewers: selected,
+              runs,
+              protocolRelated: gate.protocolRelated,
+              risk: gate.risk,
+            });
+            if (!result.ok) throw new Error(result.reason);
+            fs.writeFileSync(
+              "validated-specialist-findings.json",
+              JSON.stringify(result.value, null, 2),
+            );
+            core.setOutput("ready", result.mandatoryFailure === "");
+            core.setOutput("reason", result.mandatoryFailure);
+            core.info(JSON.stringify({
+              event: "pr-automation.specialists",
+              reviewers: result.value.reviewers.map(({ reviewer, status }) => ({ reviewer, status })),
+              mandatoryFailure: result.mandatoryFailure !== "",
+            }));
 
-      - id: claude
-        uses: ./.github/actions/resilient-review-output
+      - id: general
+        name: Run independent general reviewer
+        if: steps.aggregate.outputs.ready == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/openai-agent
         with:
-          stage: skeptical-review
-          expected_sha: ${{ needs.resolve-pr.outputs.head-sha }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_REVIEWER }}
-          claude_args: ${{ steps.claude-args.outputs.value }}
-          retry_claude_args: ${{ steps.claude-args.outputs.retry }}
-          settings: >-
-            {"permissions":{"allow":["Read","Glob","Grep","Skill"],"deny":["Bash","Edit","Write","WebFetch","Task"]}}
-          prompt: ${{ steps.claude-args.outputs.prompt }}
-          retry_prompt: >-
-            Finish the skeptical review now using the analysis already completed in this session.
-            Do not investigate further. Correct the reported validation problem and return only the
-            required schema-bound JSON for head ${{ needs.resolve-pr.outputs.head-sha }}.
+          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
+          base-url: https://api.helmcode.com/v1
+          config-file: .github/pr-automation/agents/general-reviewer.json
+
+      - id: final
+        name: Validate final review
+        if: always()
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          RAW_OUTPUT: ${{ steps.general.outputs.structured-output }}
+          MODEL_REASON: ${{ steps.general.outputs.failure-reason }}
+          AGGREGATE_READY: ${{ steps.aggregate.outputs.ready }}
+          AGGREGATE_REASON: ${{ steps.aggregate.outputs.reason }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { validateFinalReview } = require("./.github/pr-automation/validate-final-review");
+            const finish = (output, reason) => {
+              core.setOutput("output", output);
+              core.setOutput("reason", reason);
+              core.info(JSON.stringify({
+                event: "pr-automation.final-review",
+                valid: output !== "",
+                reason: output === "" ? reason : null,
+              }));
+            };
+            if (process.env.AGGREGATE_READY !== "true") {
+              return finish("", process.env.AGGREGATE_REASON || "specialist validation unavailable");
+            }
+            if (!process.env.RAW_OUTPUT) {
+              return finish("", process.env.MODEL_REASON || "general reviewer unavailable");
+            }
+            const validation = JSON.parse(fs.readFileSync(
+              "pr-evidence/validation-context.json", "utf8",
+            ));
+            const aggregate = JSON.parse(fs.readFileSync(
+              "validated-specialist-findings.json", "utf8",
+            ));
+            const result = validateFinalReview(process.env.RAW_OUTPUT, {
+              expectedSha: process.env.HEAD_SHA,
+              changedPaths: validation.changed_paths,
+              changedLines: validation.changed_lines,
+              specialistAggregate: aggregate,
+            });
+            finish(result.ok ? JSON.stringify(result.value) : "", result.ok ? "" : result.reason);
 
   resolve-review-state:
     name: Resolve review state
-    needs: [resolve-pr, fork-rate-limit, review-gate, contributor-history, validate-protocol-review, skeptical-reviewer]
+    needs: [resolve-pr, fork-rate-limit, review-gate, review-pipeline]
     if: always() && !cancelled() && needs.resolve-pr.outputs.ok == 'true' &&
       needs.resolve-pr.outputs.review-route == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       state: ${{ steps.resolve.outputs.state }}
     steps:
@@ -999,60 +969,47 @@ jobs:
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           GATE: ${{ needs.review-gate.outputs.gate }}
-          CONTRIBUTOR: ${{ needs.contributor-history.outputs.history }}
           FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
-          PROTOCOL_STATUS: ${{ needs.validate-protocol-review.outputs.status }}
-          PROTOCOL_REASON: ${{ needs.validate-protocol-review.outputs.reason }}
-          RAW_OUTPUT: ${{ needs.skeptical-reviewer.outputs.output }}
-          REVIEWER_REASON: ${{ needs.skeptical-reviewer.outputs.failure-reason }}
-          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          RAW_OUTPUT: ${{ needs.review-pipeline.outputs.output }}
+          REVIEWER_REASON: ${{ needs.review-pipeline.outputs.failure-reason }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
           REVIEW_MARKER_ID: ${{ github.run_id }}
         with:
           script: |
-            const { addedLinesByPath, listPrFiles } = require("./.github/pr-automation/deterministic-analysis");
-            const { resolveReviewState } = require("./.github/pr-automation/resolve-state");
-            const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
-            const force = process.env.FORCE === "true";
-            const gate = parse(process.env.GATE, force ? {
-              ok: true, force: true, head_sha: process.env.HEAD_SHA,
-              labels: parse(process.env.LABELS, []), protocolRelated: false,
-            } : {});
-            let files = [];
-            let evidenceReason;
-            try {
-              files = await listPrFiles(github, {
-                owner: context.repo.owner, repo: context.repo.repo,
-                prNumber: Number(process.env.PULL_REQUEST_NUMBER),
-              });
-            } catch {
-              evidenceReason = "changed file retrieval unavailable";
-            }
-            const state = resolveReviewState({
-              expectedSha: process.env.HEAD_SHA,
-              labels: gate.labels ?? [],
-              gate,
-              contributor: parse(process.env.CONTRIBUTOR, {}),
-              rateLimit: parse(process.env.FORK_RATE_LIMIT, {}),
-              protocolStatus: process.env.PROTOCOL_STATUS,
-              protocolReason: process.env.PROTOCOL_REASON,
-              reviewer: process.env.RAW_OUTPUT || "",
-              reviewerReason: process.env.REVIEWER_REASON,
-              evidenceReason,
-              changedPaths: files.map((file) => file.filename),
-              changedLines: addedLinesByPath(files),
-              force,
-              reviewMarkerId: process.env.REVIEW_MARKER_ID,
-            });
-            core.setOutput("state", JSON.stringify(state));
-            core.info(JSON.stringify({ event: "pr-automation.review-state", decision: state }));
+             const { resolveReviewState } = require("./.github/pr-automation/resolve-state");
+             const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
+             const force = process.env.FORCE === "true";
+             const gate = parse(process.env.GATE, force ? {
+               ok: true, force: true, head_sha: process.env.HEAD_SHA,
+               labels: parse(process.env.LABELS, []), protocolRelated: false, risk: "unknown",
+               specialistReviewers: ["skeptical", "code-compressor"], contributor: { status: "forced" },
+             } : {});
+             const state = resolveReviewState({
+               expectedSha: process.env.HEAD_SHA,
+               labels: gate.labels ?? [],
+               gate,
+               contributor: gate.contributor ?? {},
+               rateLimit: parse(process.env.FORK_RATE_LIMIT, {}),
+               reviewer: parse(process.env.RAW_OUTPUT, null),
+               reviewerReason: process.env.REVIEWER_REASON,
+               force,
+               reviewMarkerId: process.env.REVIEW_MARKER_ID,
+             });
+             core.setOutput("state", JSON.stringify(state));
+             core.info(JSON.stringify({
+               event: "pr-automation.review-state",
+               decision: {
+                 ok: state.ok, mode: state.mode, failed: state.failed === true,
+                 expectedSha: state.expectedSha, hasReview: (state.comments || [])
+                   .some((comment) => comment.kind === "review"),
+               },
+             }));
 
   write-state:
     name: Write pull request state
     needs: [resolve-pr, classification-gate, deterministic-analysis, fork-rate-limit, semver,
-      classifier, resolve-classification-state, review-gate, contributor-history, protocol-reviewer,
-      validate-protocol-review, skeptical-reviewer, resolve-review-state]
+      classifier, resolve-classification-state, review-gate, review-pipeline, resolve-review-state]
     if: always() && !cancelled() && needs.resolve-pr.outputs.ok == 'true'
     runs-on: ubuntu-latest
     concurrency:
@@ -1075,7 +1032,7 @@ jobs:
           CLASSIFICATION_STATE: ${{ needs.resolve-classification-state.outputs.state }}
           REVIEW_STATE: ${{ needs.resolve-review-state.outputs.state }}
           UPSTREAM_RESULTS: >-
-            {"classification-gate":"${{ needs.classification-gate.result }}","deterministic-analysis":"${{ needs.deterministic-analysis.result }}","fork-rate-limit":"${{ needs.fork-rate-limit.result }}","semver":"${{ needs.semver.result }}","classifier":"${{ needs.classifier.result }}","resolve-classification-state":"${{ needs.resolve-classification-state.result }}","review-gate":"${{ needs.review-gate.result }}","contributor-history":"${{ needs.contributor-history.result }}","protocol-reviewer":"${{ needs.protocol-reviewer.result }}","validate-protocol-review":"${{ needs.validate-protocol-review.result }}","skeptical-reviewer":"${{ needs.skeptical-reviewer.result }}","resolve-review-state":"${{ needs.resolve-review-state.result }}"}
+            {"classification-gate":"${{ needs.classification-gate.result }}","deterministic-analysis":"${{ needs.deterministic-analysis.result }}","fork-rate-limit":"${{ needs.fork-rate-limit.result }}","semver":"${{ needs.semver.result }}","classifier":"${{ needs.classifier.result }}","resolve-classification-state":"${{ needs.resolve-classification-state.result }}","review-gate":"${{ needs.review-gate.result }}","review-pipeline":"${{ needs.review-pipeline.result }}","resolve-review-state":"${{ needs.resolve-review-state.result }}"}
         with:
           script: |
             const { writeState } = require("./.github/pr-automation/write-state");
@@ -1085,7 +1042,10 @@ jobs:
             core.info(JSON.stringify({
               event: "pr-automation.write-state",
               upstreamResults,
-              selectedState: state,
+              selectedState: state ? {
+                ok: state.ok, mode: state.mode, failed: state.failed === true,
+                expectedSha: state.expectedSha,
+              } : null,
             }));
             if (!state) {
               core.warning("No normalized state was available; no PR mutation was attempted");
