@@ -2517,6 +2517,7 @@ advanced_get_not_implemented!(
     (180, advanced_get_negotiate_security_layer, i16),
 );
 
+// Re-run the ignored `native_mstsc_input_timing_properties_match` parity test after Windows updates.
 const DEFAULT_MIN_INPUT_SEND_INTERVAL_MS: i32 = 100;
 const MAX_MIN_INPUT_SEND_INTERVAL_MS: i32 = 2_000;
 
@@ -2536,6 +2537,8 @@ unsafe extern "system" fn advanced_get_min_input_send_interval(this: *mut c_void
 
 unsafe extern "system" fn advanced_put_keep_alive_interval(this: *mut c_void, value: i32) -> HRESULT {
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    // Current mstscax stores the public LONG as an unsigned property without validation. Its input
+    // handler later multiplies that value by 1000 before comparing it with millisecond tick counts.
     object.settings.borrow_mut().keep_alive_interval_seconds = value;
     S_OK
 }
@@ -10831,6 +10834,7 @@ impl Control {
         } else {
             builder
         };
+        // Preserve mstscax's unsigned interpretation of the public LONG property.
         let keep_alive_interval_seconds = u32::from_ne_bytes(keep_alive_interval_seconds.to_ne_bytes());
         let builder = if keep_alive_interval_seconds == 0 {
             builder
@@ -16608,6 +16612,8 @@ fn dispid_for_name(name: &str) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use super::*;
     use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
     use ironrdp_pdu::rdp::capability_sets::{CodecProperty, client_codecs_capabilities};
@@ -18325,6 +18331,61 @@ mod tests {
         assert_eq!(unsafe { advanced_put_audio_quality_mode(this, 1) }, E_FAIL);
         assert_eq!(unsafe { advanced_put_min_input_send_interval(this, 1) }, S_OK);
         assert_eq!(unsafe { advanced_put_keep_alive_interval(this, 1) }, S_OK);
+    }
+
+    #[test]
+    #[ignore = "probes the registered Microsoft mstscax.dll"]
+    fn native_mstsc_input_timing_properties_match() {
+        let script = r#"
+$ErrorActionPreference = 'Stop'
+$clsid = [guid]'1df7c823-b2d4-4b54-975a-f2ac5d7cf8b8'
+$control = [Activator]::CreateInstance([type]::GetTypeFromCLSID($clsid))
+$advanced = $control.AdvancedSettings9
+try {
+    "min.default=$($advanced.MinInputSendInterval)"
+    $advanced.MinInputSendInterval = 2000
+    "min.2000=$($advanced.MinInputSendInterval)"
+    try {
+        $advanced.MinInputSendInterval = 2001
+        'min.2001=OK'
+    } catch {
+        $exception = $_.Exception
+        while ($exception.InnerException) {
+            $exception = $exception.InnerException
+        }
+        'min.2001=0x{0:X8}' -f $exception.HResult
+    }
+    "keep.default=$($advanced.KeepAliveInterval)"
+    $advanced.KeepAliveInterval = [int]::MinValue
+    "keep.min=$($advanced.KeepAliveInterval)"
+    $advanced.KeepAliveInterval = [int]::MaxValue
+    "keep.max=$($advanced.KeepAliveInterval)"
+} finally {
+    [Runtime.InteropServices.Marshal]::FinalReleaseComObject($advanced) | Out-Null
+    [Runtime.InteropServices.Marshal]::FinalReleaseComObject($control) | Out-Null
+}
+"#;
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Sta", "-Command", script])
+            .output()
+            .expect("launch native mstsc parity probe");
+        assert!(
+            output.status.success(),
+            "native mstsc parity probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).expect("PowerShell output is UTF-8");
+        assert_eq!(
+            stdout.lines().collect::<Vec<_>>(),
+            [
+                "min.default=100",
+                "min.2000=2000",
+                "min.2001=0x80070057",
+                "keep.default=0",
+                "keep.min=-2147483648",
+                "keep.max=2147483647",
+            ]
+        );
     }
 
     #[test]
