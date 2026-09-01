@@ -1,0 +1,65 @@
+{
+  "$id": "https://github.com/Devolutions/IronRDP/pr-automation/final-review-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["head_sha", "summary", "candidate_dispositions", "findings"],
+  "properties": {
+    "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "candidate_dispositions": {
+      "type": "array",
+      "maxItems": 60,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reviewer", "finding_id", "disposition", "rationale"],
+        "properties": {
+          "reviewer": { "enum": ["protocol", "skeptical", "code-compressor"] },
+          "finding_id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+          "disposition": { "enum": ["accepted", "refined", "rejected"] },
+          "rationale": { "type": "string", "minLength": 1, "maxLength": 800 }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["classification", "severity", "path", "start_line", "end_line", "title", "rationale", "confidence", "sources"],
+        "properties": {
+          "classification": { "enum": ["blocking", "non_blocking", "question"] },
+          "severity": { "enum": ["critical", "high", "medium", "low"] },
+          "path": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$)).+$" },
+          "start_line": { "type": ["integer", "null"], "minimum": 1 },
+          "end_line": { "type": ["integer", "null"], "minimum": 1 },
+          "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "rationale": { "type": "string", "minLength": 1, "maxLength": 1200 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "sources": {
+            "type": "array",
+            "maxItems": 60,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["reviewer", "finding_id"],
+              "properties": {
+                "reviewer": { "enum": ["protocol", "skeptical", "code-compressor"] },
+                "finding_id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "start_line": { "type": "null" } }, "required": ["start_line"] },
+            "then": { "properties": { "end_line": { "type": "null" } } },
+            "else": { "properties": { "end_line": { "type": "integer", "minimum": 1 } } }
+          }
+        ]
+      }
+    }
+  }
+}
