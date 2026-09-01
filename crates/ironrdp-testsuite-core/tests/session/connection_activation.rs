@@ -505,6 +505,10 @@ fn should_perform_multitransport_reflects_pending_state() {
     let connector = multitransport_pending_connector(true, multitransport_request(1, RequestedProtocol::UdpFecR));
     assert!(connector.should_perform_multitransport());
     assert_eq!(connector.multitransport_request().unwrap().request_id, 1);
+    assert_eq!(connector.multitransport_soft_sync_negotiated(), Some(true));
+
+    let connector = multitransport_pending_connector(false, multitransport_request(2, RequestedProtocol::UdpFecR));
+    assert_eq!(connector.multitransport_soft_sync_negotiated(), Some(false));
 }
 
 #[test]
@@ -578,7 +582,9 @@ fn skip_multitransport_declines_with_e_abort_under_soft_sync() {
     // MS-RDPBCGR 3.2.5.15.1 requires a response to every request once Soft-Sync
     // is mutually negotiated, whatever the outcome. Both the async and blocking
     // drivers skip automatically, so a silent skip leaves a compliant server
-    // waiting on a response it is entitled to.
+    // The blocking driver and the async compatibility entry point skip
+    // automatically, so a silent skip leaves a compliant server waiting on a
+    // response it is entitled to.
     let mut connector = multitransport_pending_connector(true, multitransport_request(1, RequestedProtocol::UdpFecR));
     let mut output = WriteBuf::new();
 
