@@ -142,9 +142,10 @@ async function runAgent({ client, config, methodologies, prompt, sandbox, schema
   }
 
   async function runModel(messages) {
-    while (state.providerCalls < config.max_turns) {
-      const allowTools = state.toolCalls < config.max_tool_calls;
-      const response = await completion(messages, allowTools);
+    const reservedFinalTurns = Math.min(config.max_turns, 2);
+    while (state.providerCalls < config.max_turns - reservedFinalTurns &&
+        state.toolCalls < config.max_tool_calls) {
+      const response = await completion(messages, true);
       const message = firstMessage(response);
       messages.push(message);
       const calls = message.tool_calls;
@@ -166,7 +167,29 @@ async function runAgent({ client, config, methodologies, prompt, sandbox, schema
         });
       }
     }
-    throw new AgentFailure("maximum turn count exceeded", undefined, state);
+    return finalize(messages);
+  }
+
+  async function finalize(messages) {
+    if (state.providerCalls >= config.max_turns) {
+      throw new AgentFailure("maximum turn count exceeded", undefined, state);
+    }
+    messages.push({
+      role: "user",
+      content: [
+        "Investigation is complete.",
+        "Do not call tools or investigate further. Return only the final JSON.",
+      ].join("\n"),
+    });
+    const response = await completion(messages, false);
+    const message = firstMessage(response);
+    messages.push(message);
+    if (Array.isArray(message.tool_calls) && message.tool_calls.length !== 0) {
+      throw new AgentFailure("final response attempted a tool call", undefined, state);
+    }
+    const candidate = validateOutput(textContent(message.content));
+    if (candidate.ok) return result(candidate.output, state);
+    return repair(messages, candidate.reason);
   }
 
   async function repair(messages, validationReason) {

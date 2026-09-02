@@ -16,6 +16,6 @@
     "pr-evidence/pull-request.diff"
   ],
   "max_output_bytes": 32768,
-  "max_turns": 30,
+  "max_turns": 50,
   "max_tool_calls": 120
 }
