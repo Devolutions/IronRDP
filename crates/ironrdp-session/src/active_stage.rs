@@ -152,7 +152,7 @@ impl ActiveStage {
 
         // If mouse was moved by client - we should update framebuffer to reflect new
         // pointer position
-        let mouse_pos = events.iter().find_map(|event| match event {
+        let mouse_pos = events.iter().rev().find_map(|event| match event {
             FastPathInputEvent::MouseEvent(event) => Some((event.x_position, event.y_position)),
             FastPathInputEvent::MouseEventEx(event) => Some((event.x_position, event.y_position)),
             _ => None,
@@ -1013,7 +1013,9 @@ mod tests {
     };
     use ironrdp_graphics::image_processing::PixelFormat;
     use ironrdp_pdu::gcc::MonitorFlags;
+    use ironrdp_pdu::input::MousePdu;
     use ironrdp_pdu::input::fast_path::KeyboardFlags;
+    use ironrdp_pdu::input::mouse::PointerFlags;
     use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
     use ironrdp_rdpei::pdu::{PenEventPdu, RdpInputProtocolVersion, RdpeiPdu, ScReadyPdu, TouchEventPdu};
 
@@ -1107,6 +1109,59 @@ mod tests {
                 .flat_map(FastPathInput::input_events)
                 .collect::<Vec<_>>(),
             events.iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn fastpath_input_renders_the_last_mouse_position_in_a_batch() {
+        let mut stage = ActiveStageBuilder {
+            static_channels: StaticChannelSet::new(),
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: true,
+            pointer_software_rendering: true,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 8, 8);
+        image
+            .update_pointer(Arc::new(DecodedPointer {
+                width: 1,
+                height: 1,
+                hotspot_x: 0,
+                hotspot_y: 0,
+                bitmap_data: vec![0xff; 4],
+            }))
+            .expect("set software pointer");
+        let mouse_move = |x, y| {
+            FastPathInputEvent::MouseEvent(MousePdu {
+                flags: PointerFlags::MOVE,
+                number_of_wheel_rotation_units: 0,
+                x_position: x,
+                y_position: y,
+            })
+        };
+
+        let output = stage
+            .process_fastpath_input(&mut image, &[mouse_move(1, 1), mouse_move(5, 5)])
+            .expect("process batched mouse input");
+        let region = output
+            .iter()
+            .find_map(|output| match output {
+                ActiveStageOutput::GraphicsUpdate(region) => Some(region),
+                _ => None,
+            })
+            .expect("software pointer movement redraw");
+        assert_eq!(
+            *region,
+            InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 5,
+                bottom: 5,
+            }
         );
     }
 

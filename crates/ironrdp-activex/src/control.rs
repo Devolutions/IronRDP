@@ -1343,6 +1343,8 @@ struct CompatibilitySettings {
     grab_focus_on_connect: bool,
     enable_credssp: Option<bool>,
     compression: Option<bool>,
+    min_input_send_interval_ms: i32,
+    keep_alive_interval_seconds: i32,
     load_balance_info: String,
     administrative_session: bool,
     audio_quality_mode: AudioQualityMode,
@@ -1423,6 +1425,8 @@ impl Default for CompatibilitySettings {
             grab_focus_on_connect: false,
             enable_credssp: None,
             compression: None,
+            min_input_send_interval_ms: DEFAULT_MIN_INPUT_SEND_INTERVAL_MS,
+            keep_alive_interval_seconds: 0,
             load_balance_info: String::new(),
             administrative_session: false,
             audio_quality_mode: AudioQualityMode::Dynamic,
@@ -2491,8 +2495,6 @@ macro_rules! advanced_get_not_implemented {
 
 advanced_put_not_implemented!(
     (7, advanced_put_plugin_dlls, Bstr),
-    (69, advanced_put_min_input_send_interval, i32),
-    (75, advanced_put_keep_alive_interval, i32),
     (93, advanced_put_bitmap_persistence, i32),
     (95, advanced_put_minutes_to_idle_timeout, i32),
     (116, advanced_put_redirect_printers, i16),
@@ -2505,8 +2507,6 @@ advanced_put_not_implemented!(
 );
 
 advanced_get_not_implemented!(
-    (70, advanced_get_min_input_send_interval, i32),
-    (76, advanced_get_keep_alive_interval, i32),
     (94, advanced_get_bitmap_persistence, i32),
     (96, advanced_get_minutes_to_idle_timeout, i32),
     (117, advanced_get_redirect_printers, i16),
@@ -2516,6 +2516,37 @@ advanced_get_not_implemented!(
     (176, advanced_get_enable_super_pan, i16),
     (180, advanced_get_negotiate_security_layer, i16),
 );
+
+// Re-run the ignored `native_mstsc_input_timing_properties_match` parity test after Windows updates.
+const DEFAULT_MIN_INPUT_SEND_INTERVAL_MS: i32 = 100;
+const MAX_MIN_INPUT_SEND_INTERVAL_MS: i32 = 2_000;
+
+unsafe extern "system" fn advanced_put_min_input_send_interval(this: *mut c_void, value: i32) -> HRESULT {
+    if !(0..=MAX_MIN_INPUT_SEND_INTERVAL_MS).contains(&value) {
+        return E_INVALIDARG;
+    }
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    object.settings.borrow_mut().min_input_send_interval_ms = value;
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_min_input_send_interval(this: *mut c_void, value: *mut i32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    write_out(value, object.settings.borrow().min_input_send_interval_ms).map_or_else(|error| error.code(), |_| S_OK)
+}
+
+unsafe extern "system" fn advanced_put_keep_alive_interval(this: *mut c_void, value: i32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    // Current mstscax stores the public LONG as an unsigned property without validation. Its input
+    // handler later multiplies that value by 1000 before comparing it with millisecond tick counts.
+    object.settings.borrow_mut().keep_alive_interval_seconds = value;
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_keep_alive_interval(this: *mut c_void, value: *mut i32) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    write_out(value, object.settings.borrow().keep_alive_interval_seconds).map_or_else(|error| error.code(), |_| S_OK)
+}
 
 const MAX_LOAD_BALANCE_INFO_BYTES: usize = ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH;
 
@@ -7606,6 +7637,11 @@ fn active_x_property_snapshot(settings: &Settings, compatibility: &Compatibility
         properties.insert("loadbalanceinfo", compatibility.load_balance_info.clone());
     }
     properties.insert("administrative session", compatibility.administrative_session);
+    properties.insert("mininputsendinterval", compatibility.min_input_send_interval_ms);
+    properties.insert(
+        "keepaliveinterval",
+        u32::from_ne_bytes(compatibility.keep_alive_interval_seconds.to_ne_bytes()),
+    );
     properties.insert(
         "audioqualitymode",
         match compatibility.audio_quality_mode {
@@ -10239,6 +10275,15 @@ impl Control {
             compatibility.fake_events_interval_minutes = config
                 .fake_events_interval()
                 .map(|interval| u32::try_from(interval.as_secs() / 60).unwrap_or(u32::MAX));
+            compatibility.keep_alive_interval_seconds = config
+                .input_keepalive_interval()
+                .map(|interval| u32::try_from(interval.as_secs()).unwrap_or(u32::MAX))
+                .map(|seconds| i32::from_ne_bytes(seconds.to_ne_bytes()))
+                .unwrap_or(0);
+            compatibility.min_input_send_interval_ms = config
+                .input_send_interval()
+                .map(|interval| i32::try_from(interval.as_millis()).unwrap_or(i32::MAX))
+                .unwrap_or(DEFAULT_MIN_INPUT_SEND_INTERVAL_MS);
             compatibility.audio_redirection_mode = if connector.enable_audio_playback { 0 } else { 2 };
             compatibility.audio_capture_redirection_mode = if connector.enable_audio_capture {
                 VARIANT_TRUE.0
@@ -10574,6 +10619,8 @@ impl Control {
         let ime_file_name = compatibility.ime_file_name.clone();
         let digital_product_id = compatibility.digital_product_id.clone();
         let fake_events_interval_minutes = compatibility.fake_events_interval_minutes;
+        let min_input_send_interval_ms = compatibility.min_input_send_interval_ms;
+        let keep_alive_interval_seconds = compatibility.keep_alive_interval_seconds;
         let authentication_level = compatibility.authentication_level;
         let authentication_level_set = compatibility.authentication_level_set;
         let public_mode = compatibility.public_mode;
@@ -10711,6 +10758,9 @@ impl Control {
             .with_audio_capture(audio_capture_enabled)
             .with_audio_quality_mode(audio_quality_mode)
             .with_load_balance_info(load_balance_info)
+            .with_input_send_interval(Duration::from_millis(
+                u64::try_from(min_input_send_interval_ms).map_err(|_| Error::from_hresult(E_INVALIDARG))?,
+            ))
             .with_administrative_session(administrative_session)
             .with_certificate_validation(certificate_validation)
             // The GDI presenter has no hardware-cursor overlay, so cursor updates must be
@@ -10783,6 +10833,13 @@ impl Control {
             builder.with_fake_events_interval(Duration::from_secs(u64::from(minutes) * 60))
         } else {
             builder
+        };
+        // Preserve mstscax's unsigned interpretation of the public LONG property.
+        let keep_alive_interval_seconds = u32::from_ne_bytes(keep_alive_interval_seconds.to_ne_bytes());
+        let builder = if keep_alive_interval_seconds == 0 {
+            builder
+        } else {
+            builder.with_input_keepalive_interval(Duration::from_secs(u64::from(keep_alive_interval_seconds)))
         };
         let using_rdcleanpath = matches!(&transport, ActiveXTransport::RDCleanPath(_));
         let builder = match transport {
@@ -16555,6 +16612,8 @@ fn dispid_for_name(name: &str) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use super::*;
     use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
     use ironrdp_pdu::rdp::capability_sets::{CodecProperty, client_codecs_capabilities};
@@ -18196,6 +18255,40 @@ mod tests {
         assert_eq!(audio_quality_mode, 2);
         assert_eq!(unsafe { advanced_put_audio_quality_mode(this, 3) }, E_INVALIDARG);
 
+        let mut min_input_send_interval = i32::MAX;
+        assert_eq!(
+            unsafe { advanced_get_min_input_send_interval(this, &mut min_input_send_interval) },
+            S_OK
+        );
+        assert_eq!(min_input_send_interval, DEFAULT_MIN_INPUT_SEND_INTERVAL_MS);
+        assert_eq!(unsafe { advanced_put_min_input_send_interval(this, -1) }, E_INVALIDARG);
+        assert_eq!(
+            unsafe { advanced_put_min_input_send_interval(this, MAX_MIN_INPUT_SEND_INTERVAL_MS + 1) },
+            E_INVALIDARG
+        );
+        assert_eq!(
+            unsafe { advanced_put_min_input_send_interval(this, MAX_MIN_INPUT_SEND_INTERVAL_MS) },
+            S_OK
+        );
+        assert_eq!(
+            unsafe { advanced_get_min_input_send_interval(this, &mut min_input_send_interval) },
+            S_OK
+        );
+        assert_eq!(min_input_send_interval, MAX_MIN_INPUT_SEND_INTERVAL_MS);
+
+        let mut keep_alive_interval = i32::MAX;
+        assert_eq!(
+            unsafe { advanced_get_keep_alive_interval(this, &mut keep_alive_interval) },
+            S_OK
+        );
+        assert_eq!(keep_alive_interval, 0);
+        assert_eq!(unsafe { advanced_put_keep_alive_interval(this, i32::MIN) }, S_OK);
+        assert_eq!(
+            unsafe { advanced_get_keep_alive_interval(this, &mut keep_alive_interval) },
+            S_OK
+        );
+        assert_eq!(keep_alive_interval, i32::MIN);
+
         let snapshot = active_x_property_snapshot(&Settings::default(), &settings.borrow());
         assert_eq!(
             snapshot.get::<&str>("loadbalanceinfo").map(str::len),
@@ -18203,6 +18296,14 @@ mod tests {
         );
         assert_eq!(snapshot.get::<bool>("administrative session"), Some(true));
         assert_eq!(snapshot.get::<u32>("audioqualitymode"), Some(2));
+        assert_eq!(
+            snapshot.get::<i32>("mininputsendinterval"),
+            Some(MAX_MIN_INPUT_SEND_INTERVAL_MS)
+        );
+        assert_eq!(
+            snapshot.get::<u32>("keepaliveinterval"),
+            Some(u32::from_ne_bytes(i32::MIN.to_ne_bytes()))
+        );
 
         let mut authentication_level = u32::MAX;
         assert_eq!(
@@ -18218,13 +18319,6 @@ mod tests {
         );
         assert_eq!(redirect_devices, VARIANT_FALSE.0);
 
-        let mut keep_alive_interval = i32::MAX;
-        assert_eq!(
-            unsafe { advanced_get_keep_alive_interval(this, &mut keep_alive_interval) },
-            E_NOTIMPL
-        );
-        assert_eq!(keep_alive_interval, 0);
-
         object.settings.borrow_mut().connection_settings_sealed = true;
         assert_eq!(
             unsafe { advanced_put_connect_to_administer_server(this, VARIANT_FALSE.0) },
@@ -18235,6 +18329,63 @@ mod tests {
             E_FAIL
         );
         assert_eq!(unsafe { advanced_put_audio_quality_mode(this, 1) }, E_FAIL);
+        assert_eq!(unsafe { advanced_put_min_input_send_interval(this, 1) }, S_OK);
+        assert_eq!(unsafe { advanced_put_keep_alive_interval(this, 1) }, S_OK);
+    }
+
+    #[test]
+    #[ignore = "probes the registered Microsoft mstscax.dll"]
+    fn native_mstsc_input_timing_properties_match() {
+        let script = r#"
+$ErrorActionPreference = 'Stop'
+$clsid = [guid]'1df7c823-b2d4-4b54-975a-f2ac5d7cf8b8'
+$control = [Activator]::CreateInstance([type]::GetTypeFromCLSID($clsid))
+$advanced = $control.AdvancedSettings9
+try {
+    "min.default=$($advanced.MinInputSendInterval)"
+    $advanced.MinInputSendInterval = 2000
+    "min.2000=$($advanced.MinInputSendInterval)"
+    try {
+        $advanced.MinInputSendInterval = 2001
+        'min.2001=OK'
+    } catch {
+        $exception = $_.Exception
+        while ($exception.InnerException) {
+            $exception = $exception.InnerException
+        }
+        'min.2001=0x{0:X8}' -f $exception.HResult
+    }
+    "keep.default=$($advanced.KeepAliveInterval)"
+    $advanced.KeepAliveInterval = [int]::MinValue
+    "keep.min=$($advanced.KeepAliveInterval)"
+    $advanced.KeepAliveInterval = [int]::MaxValue
+    "keep.max=$($advanced.KeepAliveInterval)"
+} finally {
+    [Runtime.InteropServices.Marshal]::FinalReleaseComObject($advanced) | Out-Null
+    [Runtime.InteropServices.Marshal]::FinalReleaseComObject($control) | Out-Null
+}
+"#;
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Sta", "-Command", script])
+            .output()
+            .expect("launch native mstsc parity probe");
+        assert!(
+            output.status.success(),
+            "native mstsc parity probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).expect("PowerShell output is UTF-8");
+        assert_eq!(
+            stdout.lines().collect::<Vec<_>>(),
+            [
+                "min.default=100",
+                "min.2000=2000",
+                "min.2001=0x80070057",
+                "keep.default=0",
+                "keep.min=-2147483648",
+                "keep.max=2147483647",
+            ]
+        );
     }
 
     #[test]
@@ -18516,6 +18667,11 @@ mod tests {
         assert_eq!(vtable.slots[2], advanced_settings_stub_2 as *const () as usize);
         assert_eq!(vtable.slots[82], advanced_settings_stub_82 as *const () as usize);
         assert_eq!(vtable.slots[0], advanced_put_compress as *const () as usize);
+        assert_eq!(
+            vtable.slots[69],
+            advanced_put_min_input_send_interval as *const () as usize
+        );
+        assert_eq!(vtable.slots[75], advanced_put_keep_alive_interval as *const () as usize);
         assert_eq!(vtable.slots[97], advanced_put_smart_sizing as *const () as usize);
         assert_eq!(
             vtable.slots[136],

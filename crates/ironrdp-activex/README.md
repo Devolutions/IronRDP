@@ -305,7 +305,7 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. `IMsRdpCameraRedirConfigCollection` exposes connected Windows camera metadata and offline configurations, but camera stream redirection remains unavailable. Non-filesystem device, monitor, and preferred-redirection capabilities remain unavailable. |
 | Smartcard redirection | `IMsRdpClientAdvancedSettings::RedirectSmartCards` enables WinSCard RDPDR smartcard redirection (smartcard-only sessions are valid without redirected drives). |
 
-The audit also identified unsupported `AdvancedSettings` members: plug-in DLL loading, input throttling, keepalive and idle policy, printer/port/generic-device redirection, persistent bitmap caching, video policy, PCB, super-pan, and security-layer negotiation.
+The audit also identified unsupported `AdvancedSettings` members: plug-in DLL loading, idle policy, printer/port/generic-device redirection, persistent bitmap caching, video policy, PCB, super-pan, and security-layer negotiation.
 Their audited vtable slots use published ABI signatures, initialize getter outputs, and return `E_NOTIMPL`; the control does not report success for settings that cannot affect the connection.
 `IMsRdpClientNonScriptable8::StartWorkspaceExtension` independently returns `E_NOTIMPL` because IronRDP does not implement Microsoft workspace extensions.
 
@@ -476,14 +476,7 @@ The `AdvancedSettings` through `AdvancedSettings9`, `SecuredSettings` through `S
 and `TransportSettings` through `TransportSettings4` getters return reference-counted, non-null
 settings objects with the published vtable lengths required by mstsc.exe and MsRdpEx. Returned
 settings objects keep the server loaded until their final `Release`, even if their parent control
-has already been released. The currently mapped members are `SmartSizing`, `EnableCredSspSupport`,
-`KeyboardHookMode`, keyboard type,
-subtype, and functional-key count, secured `StartProgram`/`WorkDir`, both public
-`AudioRedirectionMode` slots, both public `AudioCaptureRedirectionMode` slots,
-`AudioQualityMode`, `LoadBalanceInfo`, `ConnectToServerConsole`/`ConnectToAdministerServer`,
-`GrabFocusOnConnect`, `Compress`, `RDPPort`,
-`AuthenticationLevel`, and `PublicMode`,
-`RedirectClipboard`, `PerformanceFlags`, and RD Gateway transport selection.
+has already been released. The currently mapped members are `SmartSizing`, `EnableCredSspSupport`, `MinInputSendInterval`, `KeepAliveInterval`, `KeyboardHookMode`, keyboard type, subtype, and functional-key count, secured `StartProgram`/`WorkDir`, both public `AudioRedirectionMode` slots, both public `AudioCaptureRedirectionMode` slots, `AudioQualityMode`, `LoadBalanceInfo`, `ConnectToServerConsole`/`ConnectToAdministerServer`, `GrabFocusOnConnect`, `Compress`, `RDPPort`, `AuthenticationLevel`, `PublicMode`, `RedirectClipboard`, `PerformanceFlags`, and RD Gateway transport selection.
 `StartProgram` and `WorkDir` retain their caller-owned BSTR values and configure IronRDP's next
 Client Info PDU alternate shell and working directory. The keyboard fields configure the next GCC
 Client Core Data block.
@@ -505,6 +498,11 @@ with the Windows CPAL capture backend and sets `INFO_AUDIOCAPTURE` on Client Inf
 When requested,
 `GrabFocusOnConnect` focuses the ActiveX renderer only after its first remote frame arrives.
 Invalid audio modes and keyboard types return `E_INVALIDARG`.
+`MinInputSendInterval` defaults to 100 milliseconds and accepts values from 0 through 2000.
+It batches mouse-movement events until the interval expires or ten events accumulate, while keyboard, button, wheel, synchronization, and QoE events remain immediate.
+`KeepAliveInterval` defaults to zero and sends no synthetic input when disabled.
+Nonzero values are read back unchanged and reinterpreted as unsigned seconds, scheduling a no-op mouse movement after that much idle time.
+Both timing settings can be changed while a connection is active and apply to the next connection.
 `Compress`, `RDPPort`, and `RedirectClipboard` configure the next IronRDP connection. Clipboard
 redirection creates its Windows CLIPRDR listener on the ActiveX creating apartment, where its hidden
 window is serviced by the host message loop; the RDP worker receives only the thread-safe backend
