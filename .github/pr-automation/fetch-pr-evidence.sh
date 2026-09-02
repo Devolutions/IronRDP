@@ -15,6 +15,7 @@ fi
 
 head_sha="$1"
 base_sha="$2"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL=/dev/null
 
@@ -24,6 +25,9 @@ git -C pr-head remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
 git -C pr-head fetch --no-tags origin "+$head_sha:refs/remotes/origin/pull-request-head"
 git -C pr-head fetch --no-tags origin "+$base_sha:refs/remotes/origin/pull-request-base"
 git -C pr-head checkout --detach origin/pull-request-head
+
+# Apply the trusted evidence policy instead of contributor-controlled diff attributes.
+install -m 600 "$script_dir/evidence-diff-attributes" pr-head/.git/info/attributes
 
 # The head tree is contributor-controlled.
 # Remove symlinks before granting filesystem-reading tools access so they cannot escape the checkout and disclose runner-local files or environment secrets.

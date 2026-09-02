@@ -153,13 +153,36 @@ test("runtime enforces aggregate tool-call and turn bounds", async () => {
 
   await assert.rejects(
     runAgent({
-      client: clientFrom([message(null, [calls[0]])]),
+      client: clientFrom([message("not-json")]),
       config: { ...baseConfig, max_turns: 1 },
       methodologies: [], prompt: "p", sandbox, schema,
     }),
     (error) => error.reason === "maximum turn count exceeded" &&
-      error.turnCount === 1 && error.toolCallCount === 1,
+      error.turnCount === 1 && error.toolCallCount === 0,
   );
+});
+
+test("runtime reserves tool-free finalization and repair turns", async () => {
+  const requests = [];
+  const result = await runAgent({
+    client: clientFrom([
+      message(null, [call("one", "read_file", { path: "x" })]),
+      message(null, [call("two", "read_file", { path: "x" })]),
+      message("not-json"),
+      message('{"answer":"repaired"}'),
+    ], requests),
+    config: baseConfig,
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+  });
+
+  assert.equal(result.output, '{"answer":"repaired"}');
+  assert.equal(result.turnCount, 4);
+  assert.equal(result.toolCallCount, 2);
+  assert.deepEqual(requests.map((request) => request.tools !== undefined), [true, true, false, false]);
+  assert.match(requests[2].messages.at(-1).content, /Investigation is complete/);
 });
 
 test("runtime stops advertising tools after exhausting the configured budget", async () => {

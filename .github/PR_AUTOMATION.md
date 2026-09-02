@@ -2,7 +2,8 @@
 
 `.github/workflows/labeler.yml` classifies ready, open pull requests and runs at most two automated reviews.
 Automatic routes stop at `ai-reviewed/2` unless a maintainer uses force mode.
-Model analysis also fails closed when the complete pull request diff exceeds the 1 MiB evidence limit.
+Model analysis fails closed when the reviewable pull request diff exceeds the 1 MiB evidence limit.
+The trusted `evidence-diff-attributes` policy represents reproducibly verified generated artifacts with binary-change markers.
 The automation posts guidance on the pull request instead of invoking a model with partial evidence.
 
 ## Review pipeline

@@ -1,0 +1,5 @@
+# Ignore contributor-controlled diff attributes while preserving Git's automatic binary detection.
+* !diff
+
+# Represent reproducibly verified generated artifacts as binary changes.
+.github/actions/openai-agent/dist/** -diff
