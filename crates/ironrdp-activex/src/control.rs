@@ -13,6 +13,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex, mpsc as std_mpsc};
 use std::time::Duration;
 
+use base64::Engine as _;
 use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
 use ironrdp_client::config::{
     AudioQualityMode, ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind,
@@ -40,7 +41,7 @@ use ironrdp_pdu::rdp::{
 };
 use ironrdp_pdu::window::try_decode_slow_path_windowing_orders;
 use ironrdp_pdu::{PduError, PduErrorKind, PduResult};
-use ironrdp_propertyset::PropertySet;
+use ironrdp_propertyset::{PropertySet, Value};
 use ironrdp_rail::pdu::{
     ActivatePdu, ExecutePdu, ExecuteResult, ExecuteResultPdu, RailPdu, SystemCommand, SystemCommandPdu,
 };
@@ -64,11 +65,11 @@ use windows::Win32::Devices::Properties::{
 };
 use windows::Win32::Foundation::{
     DATA_S_SAMEFORMATETC, DISP_E_BADPARAMCOUNT, DISP_E_MEMBERNOTFOUND, DISP_E_TYPEMISMATCH, DISP_E_UNKNOWNNAME,
-    DV_E_DVASPECT, DV_E_DVTARGETDEVICE, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_ABORT, E_FAIL, E_INVALIDARG,
-    E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, E_UNEXPECTED, ERROR_CANCELLED, ERROR_CLASS_DOES_NOT_EXIST, ERROR_GEN_FAILURE,
-    ERROR_NOT_FOUND, FreeLibrary, GlobalFree, HGLOBAL, HMODULE, HWND, LPARAM, LRESULT, OLE_E_ADVISENOTSUPPORTED,
-    OLE_E_NOCONNECTION, OLE_E_NOTRUNNING, OLEOBJ_S_INVALIDVERB, POINT, RECT, RECTL, S_FALSE, S_OK, SIZE, SysStringLen,
-    VARIANT_BOOL, VARIANT_FALSE, VARIANT_TRUE, WPARAM,
+    DV_E_DVASPECT, DV_E_DVTARGETDEVICE, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_ABORT, E_ACCESSDENIED, E_FAIL,
+    E_INVALIDARG, E_NOTIMPL, E_OUTOFMEMORY, E_POINTER, E_UNEXPECTED, ERROR_CANCELLED, ERROR_CLASS_DOES_NOT_EXIST,
+    ERROR_GEN_FAILURE, ERROR_NOT_FOUND, FreeLibrary, GlobalFree, HGLOBAL, HMODULE, HWND, LPARAM, LRESULT,
+    OLE_E_ADVISENOTSUPPORTED, OLE_E_NOCONNECTION, OLE_E_NOTRUNNING, OLEOBJ_S_INVALIDVERB, POINT, RECT, RECTL, S_FALSE,
+    S_OK, SIZE, SysAllocStringLen, SysStringLen, VARIANT_BOOL, VARIANT_FALSE, VARIANT_TRUE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateRectRgn,
@@ -111,7 +112,7 @@ use windows::Win32::System::Registry::{
     RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
 use windows::Win32::System::Variant::{
-    VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_BSTR, VT_BYREF, VT_EMPTY, VT_I4, VT_UI4,
+    VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_BSTR, VT_BYREF, VT_DISPATCH, VT_EMPTY, VT_I4, VT_UI4,
 };
 use windows::Win32::UI::Controls::{
     TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TDCBF_CANCEL_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION, TDF_SIZE_TO_CONTENT,
@@ -164,7 +165,9 @@ use crate::mstsc::{
     IMsRdpClipboard_Impl, IMsRdpDeviceCollection, IMsRdpDeviceCollection_Impl, IMsRdpDrive, IMsRdpDrive_Impl,
     IMsRdpDriveCollection, IMsRdpDriveCollection_Impl, IMsRdpExtendedSettings, IMsRdpExtendedSettings_Impl,
     IMsRdpPreferredRedirectionInfo, IMsRdpPreferredRedirectionInfo_Impl, IMsTscAx_Impl, IMsTscAx_Redist_Impl,
-    IMsTscNonScriptable, IMsTscNonScriptable_Impl, InterfaceOut,
+    IMsTscNonScriptable, IMsTscNonScriptable_Impl, IRemoteDesktopClient, IRemoteDesktopClient_Impl,
+    IRemoteDesktopClientActions, IRemoteDesktopClientActions_Impl, IRemoteDesktopClientSettings,
+    IRemoteDesktopClientSettings_Impl, InterfaceOut,
 };
 use crate::rpc::{self, ActiveXRpc, Command as RpcCommand};
 use crate::touch::{TouchContactTracker, TouchSample};
@@ -199,6 +202,7 @@ const ACTIVEX_REMOTE_PROGRAM_MODE_PROPERTY: &str = "IronRdpRemoteProgramMode";
 const ACTIVEX_REMOTE_APPLICATION_PROGRAM_PROPERTY: &str = "IronRdpRemoteApplicationProgram";
 const ACTIVEX_REMOTE_APPLICATION_ARGS_PROPERTY: &str = "IronRdpRemoteApplicationArgs";
 const MAX_ACTIVEX_EXTENDED_SETTING_STRING_BYTES: usize = 8 * 1024;
+const MAX_MODERN_SNAPSHOT_RGB_BYTES: usize = 16 * 1024 * 1024;
 const ACTIVEX_DVC_PLUGIN_OPT_IN: &str = "IRONRDP_ACTIVEX_ENABLE_DVC_PLUGINS";
 const MAX_ACTIVEX_DVC_PLUGINS: usize = 16;
 
@@ -491,6 +495,24 @@ const DISPID_REMOTE_APPLICATION_NAME: i32 = 202;
 const DISPID_REMOTE_APPLICATION_PROGRAM: i32 = 203;
 const DISPID_REMOTE_APPLICATION_ARGS: i32 = 204;
 const DISPID_SERVER_START_APP: i32 = 205;
+const DISPID_MODERN_CONNECT: i32 = 701;
+const DISPID_MODERN_DISCONNECT: i32 = 702;
+const DISPID_MODERN_RECONNECT: i32 = 703;
+const DISPID_MODERN_DELETE_SAVED_CREDENTIALS: i32 = 704;
+const DISPID_MODERN_UPDATE_SESSION_DISPLAY_SETTINGS: i32 = 705;
+const DISPID_MODERN_ATTACH_EVENT: i32 = 706;
+const DISPID_MODERN_DETACH_EVENT: i32 = 707;
+const DISPID_MODERN_SETTINGS: i32 = 710;
+const DISPID_MODERN_ACTIONS: i32 = 711;
+const DISPID_MODERN_TOUCH_POINTER: i32 = 712;
+const DISPID_MODERN_SET_RDP_PROPERTY: i32 = 720;
+const DISPID_MODERN_GET_RDP_PROPERTY: i32 = 721;
+const DISPID_MODERN_APPLY_SETTINGS: i32 = 722;
+const DISPID_MODERN_RETRIEVE_SETTINGS: i32 = 723;
+const DISPID_MODERN_SUSPEND_SCREEN_UPDATES: i32 = 730;
+const DISPID_MODERN_RESUME_SCREEN_UPDATES: i32 = 731;
+const DISPID_MODERN_EXECUTE_REMOTE_ACTION: i32 = 732;
+const DISPID_MODERN_GET_SNAPSHOT: i32 = 733;
 const DISPID_IRONRDP_PASSWORD: i32 = 0x10000;
 const DISPID_PROPERTYPUT: i32 = -3;
 const REMOTE_SESSION_ACTION_CHARMS: i32 = 0;
@@ -529,6 +551,17 @@ const DISPID_ON_AUTHENTICATION_WARNING_DISMISSED: i32 = 19;
 const DISPID_ON_REMOTE_PROGRAM_RESULT: i32 = 20;
 const DISPID_ON_AUTO_RECONNECTED: i32 = 33;
 const DISPID_ON_AUTO_RECONNECTING2: i32 = 34;
+const SUPPORTED_MODERN_EVENT_NAMES: &[&str] = &[
+    "OnConnecting",
+    "OnConnected",
+    "OnLoginCompleted",
+    "OnDisconnected",
+    "OnAutoReconnecting",
+    "OnAutoReconnected",
+    "OnDialogDisplaying",
+    "OnDialogDismissed",
+    "OnRemoteDesktopSizeChanged",
+];
 
 const WM_DISPATCH_EVENTS: u32 = WM_APP + 0x52;
 const WM_DESTROY_CONTROL_WINDOW: u32 = WM_APP + 0x53;
@@ -978,6 +1011,7 @@ impl NativeMstscPreflight {
     }
 }
 
+#[derive(Clone)]
 struct Settings {
     server: String,
     domain: String,
@@ -5959,6 +5993,331 @@ impl Drop for ServerObjectLifetime {
     }
 }
 
+struct ModernClientBridge {
+    _owner: IUnknown,
+    control: *const Control_Impl,
+}
+
+impl ModernClientBridge {
+    fn control(&self) -> Result<&Control_Impl> {
+        unsafe { self.control.as_ref() }.ok_or_else(|| Error::from_hresult(E_FAIL))
+    }
+}
+
+#[implement(IRemoteDesktopClientSettings)]
+struct ModernClientSettings {
+    bridge: ModernClientBridge,
+}
+
+impl ModernClientSettings {
+    fn apply_settings(&self, contents: &str) -> Result<()> {
+        if contents.lines().any(|line| {
+            line.split_once(':')
+                .is_some_and(|(name, _)| is_sensitive_modern_property(name))
+        }) {
+            return Err(Error::from_hresult(E_ACCESSDENIED));
+        }
+        let parsed = ironrdp_rdpfile::parse(contents);
+        if !parsed.errors.is_empty() {
+            return Err(Error::new(
+                E_INVALIDARG,
+                parsed
+                    .errors
+                    .first()
+                    .map_or_else(|| "invalid RDP settings".to_owned(), ToString::to_string),
+            ));
+        }
+        self.bridge.control()?.apply_modern_property_set(parsed.properties)
+    }
+
+    fn retrieve_settings(&self) -> Result<String> {
+        Ok(ironrdp_rdpfile::write(
+            &self.bridge.control()?.modern_property_snapshot(),
+        ))
+    }
+
+    fn get_rdp_property(&self, name: &str) -> Result<VARIANT> {
+        let value = self.bridge.control()?.modern_rdp_property(name)?;
+        if is_boolean_modern_property(name) {
+            Ok(variant_bool_value(property_bool(&value)?))
+        } else {
+            property_variant(&value)
+        }
+    }
+
+    fn set_rdp_property(&self, name: &str, value: &VARIANT) -> Result<()> {
+        self.bridge
+            .control()?
+            .set_modern_rdp_property(name.to_owned(), modern_property_value(value)?)
+    }
+}
+
+#[implement(IRemoteDesktopClientActions)]
+struct ModernClientActions {
+    bridge: ModernClientBridge,
+}
+
+impl ModernClientActions {
+    fn execute_remote_action(&self, action: i32) -> Result<()> {
+        if self.bridge.control()?.state.get() != ConnectionState::Connected {
+            return Err(Error::from_hresult(E_UNEXPECTED));
+        }
+        match action {
+            REMOTE_SESSION_ACTION_SNAP => Ok(()),
+            REMOTE_SESSION_ACTION_CHARMS
+            | REMOTE_SESSION_ACTION_APPBAR
+            | REMOTE_SESSION_ACTION_START_SCREEN
+            | REMOTE_SESSION_ACTION_APP_SWITCH => self.bridge.control()?.send_remote_action(action),
+            _ => Err(Error::from_hresult(E_INVALIDARG)),
+        }
+    }
+}
+
+fn dispatch_get_ids(
+    riid: *const GUID,
+    names: *const PCWSTR,
+    count: u32,
+    dispids: *mut i32,
+    resolve: impl Fn(&str) -> Option<i32>,
+) -> Result<()> {
+    if names.is_null() || dispids.is_null() {
+        return Err(Error::from_hresult(E_POINTER));
+    }
+    if !riid.is_null() && unsafe { *riid } != GUID::zeroed() {
+        return Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND));
+    }
+    unsafe {
+        slice::from_raw_parts_mut(dispids, count as usize).fill(DISPID_UNKNOWN);
+    }
+    for index in 0..count as usize {
+        let name = unsafe { (*names.add(index)).to_string() }.map_err(|_| Error::from_hresult(DISP_E_UNKNOWNNAME))?;
+        let dispid = resolve(&name).ok_or_else(|| Error::from_hresult(DISP_E_UNKNOWNNAME))?;
+        unsafe {
+            dispids.add(index).write(dispid);
+        }
+    }
+    Ok(())
+}
+
+fn dispatch_params<'a>(params: *const DISPPARAMS) -> Result<&'a DISPPARAMS> {
+    unsafe { params.as_ref() }.ok_or_else(|| Error::from_hresult(E_POINTER))
+}
+
+fn dispatch_arguments(params: &DISPPARAMS) -> Result<&[VARIANT]> {
+    if params.cArgs == 0 {
+        return Ok(&[]);
+    }
+    if params.rgvarg.is_null() {
+        return Err(Error::from_hresult(E_POINTER));
+    }
+    Ok(unsafe { slice::from_raw_parts(params.rgvarg, params.cArgs as usize) })
+}
+
+fn dispatch_variant_u32(value: &VARIANT) -> Result<u32> {
+    let header = variant_header(value);
+    match header.vt {
+        VT_UI4 => Ok(unsafe { header.Anonymous.ulVal }),
+        VT_I4 => u32::try_from(unsafe { header.Anonymous.lVal }).map_err(|_| Error::from_hresult(E_INVALIDARG)),
+        _ => Err(Error::from_hresult(DISP_E_TYPEMISMATCH)),
+    }
+}
+
+impl IDispatch_Impl for ModernClientSettings_Impl {
+    fn GetTypeInfoCount(&self) -> Result<u32> {
+        Ok(0)
+    }
+
+    fn GetTypeInfo(&self, _itinfo: u32, _lcid: u32) -> Result<ITypeInfo> {
+        Err(Error::from_hresult(E_NOTIMPL))
+    }
+
+    fn GetIDsOfNames(
+        &self,
+        riid: *const GUID,
+        names: *const PCWSTR,
+        count: u32,
+        _lcid: u32,
+        dispids: *mut i32,
+    ) -> Result<()> {
+        dispatch_get_ids(riid, names, count, dispids, |name| {
+            match name.to_ascii_lowercase().as_str() {
+                "setrdpproperty" => Some(DISPID_MODERN_SET_RDP_PROPERTY),
+                "getrdpproperty" => Some(DISPID_MODERN_GET_RDP_PROPERTY),
+                "applysettings" => Some(DISPID_MODERN_APPLY_SETTINGS),
+                "retrievesettings" => Some(DISPID_MODERN_RETRIEVE_SETTINGS),
+                _ => None,
+            }
+        })
+    }
+
+    fn Invoke(
+        &self,
+        dispid: i32,
+        riid: *const GUID,
+        _lcid: u32,
+        flags: DISPATCH_FLAGS,
+        params: *const DISPPARAMS,
+        result: *mut VARIANT,
+        _exception: *mut EXCEPINFO,
+        _argument_error: *mut u32,
+    ) -> Result<()> {
+        if !riid.is_null() && unsafe { *riid } != GUID::zeroed() {
+            return Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND));
+        }
+        if !flags.contains(DISPATCH_METHOD) {
+            return Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND));
+        }
+        let arguments = dispatch_arguments(dispatch_params(params)?)?;
+        match dispid {
+            DISPID_MODERN_APPLY_SETTINGS if arguments.len() == 1 => {
+                self.apply_settings(&variant_string(&arguments[0], ptr::null_mut())?)
+            }
+            DISPID_MODERN_RETRIEVE_SETTINGS if arguments.is_empty() => {
+                write_optional_variant(result, variant_bstr_fallible(&self.retrieve_settings()?)?)
+            }
+            DISPID_MODERN_GET_RDP_PROPERTY if arguments.len() == 1 => write_optional_variant(
+                result,
+                self.get_rdp_property(&variant_string(&arguments[0], ptr::null_mut())?)?,
+            ),
+            DISPID_MODERN_SET_RDP_PROPERTY if arguments.len() == 2 => {
+                self.set_rdp_property(&variant_string(&arguments[1], ptr::null_mut())?, &arguments[0])
+            }
+            DISPID_MODERN_APPLY_SETTINGS
+            | DISPID_MODERN_RETRIEVE_SETTINGS
+            | DISPID_MODERN_GET_RDP_PROPERTY
+            | DISPID_MODERN_SET_RDP_PROPERTY => Err(Error::from_hresult(DISP_E_BADPARAMCOUNT)),
+            _ => Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND)),
+        }
+    }
+}
+
+impl IRemoteDesktopClientSettings_Impl for ModernClientSettings_Impl {
+    unsafe fn ApplySettings(&self, rdp_file_contents: Bstr) -> Result<()> {
+        self.apply_settings(&string_from_bstr(rdp_file_contents)?)
+    }
+
+    unsafe fn RetrieveSettings(&self, rdp_file_contents: BstrOut) -> Result<()> {
+        write_bstr(rdp_file_contents, &self.retrieve_settings()?)
+    }
+
+    unsafe fn GetRdpProperty(&self, property_name: Bstr, value: *mut VARIANT) -> Result<()> {
+        write_out(value, VARIANT::default())?;
+        write_out(value, self.get_rdp_property(&string_from_bstr(property_name)?)?)
+    }
+
+    unsafe fn SetRdpProperty(&self, property_name: Bstr, value: VARIANT) -> Result<()> {
+        self.set_rdp_property(&string_from_bstr(property_name)?, &value)
+    }
+}
+
+impl IDispatch_Impl for ModernClientActions_Impl {
+    fn GetTypeInfoCount(&self) -> Result<u32> {
+        Ok(0)
+    }
+
+    fn GetTypeInfo(&self, _itinfo: u32, _lcid: u32) -> Result<ITypeInfo> {
+        Err(Error::from_hresult(E_NOTIMPL))
+    }
+
+    fn GetIDsOfNames(
+        &self,
+        riid: *const GUID,
+        names: *const PCWSTR,
+        count: u32,
+        _lcid: u32,
+        dispids: *mut i32,
+    ) -> Result<()> {
+        dispatch_get_ids(riid, names, count, dispids, |name| {
+            match name.to_ascii_lowercase().as_str() {
+                "suspendscreenupdates" => Some(DISPID_MODERN_SUSPEND_SCREEN_UPDATES),
+                "resumescreenupdates" => Some(DISPID_MODERN_RESUME_SCREEN_UPDATES),
+                "executeremoteaction" => Some(DISPID_MODERN_EXECUTE_REMOTE_ACTION),
+                "getsnapshot" => Some(DISPID_MODERN_GET_SNAPSHOT),
+                _ => None,
+            }
+        })
+    }
+
+    fn Invoke(
+        &self,
+        dispid: i32,
+        riid: *const GUID,
+        _lcid: u32,
+        flags: DISPATCH_FLAGS,
+        params: *const DISPPARAMS,
+        result: *mut VARIANT,
+        _exception: *mut EXCEPINFO,
+        _argument_error: *mut u32,
+    ) -> Result<()> {
+        if !riid.is_null() && unsafe { *riid } != GUID::zeroed() {
+            return Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND));
+        }
+        if !flags.contains(DISPATCH_METHOD) {
+            return Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND));
+        }
+        let arguments = dispatch_arguments(dispatch_params(params)?)?;
+        match dispid {
+            DISPID_MODERN_SUSPEND_SCREEN_UPDATES if arguments.is_empty() => {
+                self.bridge.control()?.set_screen_updates_suspended(true)
+            }
+            DISPID_MODERN_RESUME_SCREEN_UPDATES if arguments.is_empty() => {
+                self.bridge.control()?.set_screen_updates_suspended(false)
+            }
+            DISPID_MODERN_EXECUTE_REMOTE_ACTION if arguments.len() == 1 => {
+                self.execute_remote_action(variant_i32_value(&arguments[0], ptr::null_mut())?)
+            }
+            DISPID_MODERN_GET_SNAPSHOT if arguments.len() == 4 => {
+                let data = self.bridge.control()?.snapshot_data_uri(
+                    variant_i32_value(&arguments[3], ptr::null_mut())?,
+                    variant_i32_value(&arguments[2], ptr::null_mut())?,
+                    dispatch_variant_u32(&arguments[1])?,
+                    dispatch_variant_u32(&arguments[0])?,
+                )?;
+                write_optional_variant(result, variant_bstr_fallible(&data)?)
+            }
+            DISPID_MODERN_SUSPEND_SCREEN_UPDATES
+            | DISPID_MODERN_RESUME_SCREEN_UPDATES
+            | DISPID_MODERN_EXECUTE_REMOTE_ACTION
+            | DISPID_MODERN_GET_SNAPSHOT => Err(Error::from_hresult(DISP_E_BADPARAMCOUNT)),
+            _ => Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND)),
+        }
+    }
+}
+
+impl IRemoteDesktopClientActions_Impl for ModernClientActions_Impl {
+    unsafe fn SuspendScreenUpdates(&self) -> Result<()> {
+        self.bridge.control()?.set_screen_updates_suspended(true)
+    }
+
+    unsafe fn ResumeScreenUpdates(&self) -> Result<()> {
+        self.bridge.control()?.set_screen_updates_suspended(false)
+    }
+
+    unsafe fn ExecuteRemoteAction(&self, remote_action: i32) -> Result<()> {
+        self.execute_remote_action(remote_action)
+    }
+
+    unsafe fn GetSnapshot(
+        &self,
+        snapshot_encoding: i32,
+        snapshot_format: i32,
+        snapshot_width: u32,
+        snapshot_height: u32,
+        snapshot_data: BstrOut,
+    ) -> Result<()> {
+        write_out(snapshot_data, ptr::null())?;
+        write_bstr(
+            snapshot_data,
+            &self.bridge.control()?.snapshot_data_uri(
+                snapshot_encoding,
+                snapshot_format,
+                snapshot_width,
+                snapshot_height,
+            )?,
+        )
+    }
+}
+
 impl Frame {
     fn new(buffer: &[u32], width: u16, height: u16, sequence: u64) -> Option<Self> {
         if width == 0 || height == 0 {
@@ -7418,6 +7777,7 @@ fn validated_unicode_text_snapshot(data: &[u8]) -> Result<Option<Vec<u8>>> {
 }
 
 #[implement(
+    IRemoteDesktopClient,
     IMsRdpClient10,
     IMsRdpClient9,
     IMsRdpClient8,
@@ -7473,6 +7833,8 @@ pub(crate) struct Control {
     input_database: Rc<RefCell<InputDatabase>>,
     touch_tracker: RefCell<TouchContactTracker>,
     sinks: Rc<RefCell<BTreeMap<u32, EventSink>>>,
+    modern_callbacks: RefCell<BTreeMap<&'static str, Vec<IDispatch>>>,
+    modern_properties: RefCell<PropertySet>,
     next_cookie: Rc<Cell<u32>>,
     ole_advise_sinks: Rc<RefCell<BTreeMap<u32, IAdviseSink>>>,
     next_ole_advise_cookie: Rc<Cell<u32>>,
@@ -7504,6 +7866,8 @@ pub(crate) struct Control {
     presentation_surface: Rc<RefCell<Option<PresentationSurface>>>,
     rail_windows: RefCell<RailWindowManager>,
     presentation_backbuffer: RefCell<Option<PresentationBackbuffer>>,
+    screen_updates_suspended: Cell<bool>,
+    suspended_frame: RefCell<Option<(Vec<u32>, u16, u16)>>,
     next_frame_sequence: Cell<u64>,
     presentation_layout_generation: Cell<u64>,
     traced_frame_layout_generation: Cell<u64>,
@@ -7657,6 +8021,127 @@ fn active_x_property_snapshot(settings: &Settings, compatibility: &Compatibility
     properties
 }
 
+fn normalized_rdp_properties(properties: PropertySet) -> PropertySet {
+    let mut normalized = PropertySet::new();
+    for (key, value) in properties {
+        normalized.insert(key.to_ascii_lowercase(), value);
+    }
+    normalized
+}
+
+fn property_string(value: &Value) -> Result<String> {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| Error::from_hresult(DISP_E_TYPEMISMATCH))
+}
+
+fn property_i32(value: &Value) -> Result<i32> {
+    value
+        .as_int()
+        .and_then(|value| i32::try_from(value).ok())
+        .ok_or_else(|| Error::from_hresult(DISP_E_TYPEMISMATCH))
+}
+
+fn property_bool(value: &Value) -> Result<bool> {
+    Ok(property_i32(value)? != 0)
+}
+
+fn is_sensitive_modern_property(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "cleartextpassword"
+            | "password 51"
+            | "winrtencryptedpassword"
+            | "gatewaypassword"
+            | "gatewayencryptedauthcookie"
+            | "gatewayaccesstoken"
+            | "rdcleanpathtoken"
+            | "ironrdp_rdcleanpathtoken"
+    )
+}
+
+fn is_boolean_modern_property(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "redirectclipboard"
+            | "enablecredsspsupport"
+            | "compression"
+            | "administrative session"
+            | "remoteapplicationmode"
+    )
+}
+
+fn validate_modern_rdp_property(name: &str, value: &Value) -> Result<()> {
+    if is_sensitive_modern_property(name) {
+        return Err(Error::from_hresult(E_ACCESSDENIED));
+    }
+    match name {
+        "full address"
+        | "alternate full address"
+        | "username"
+        | "domain"
+        | "loadbalanceinfo"
+        | "remoteapplicationprogram"
+        | "remoteapplicationcmdline" => {
+            let value = property_string(value)?;
+            if value.contains(['\r', '\n', '\0']) {
+                return Err(Error::from_hresult(E_INVALIDARG));
+            }
+            Ok(())
+        }
+
+        "desktopwidth" | "desktopheight" => {
+            let value = property_i32(value)?;
+            if value <= 0 || u16::try_from(value).is_err() {
+                return Err(Error::from_hresult(E_INVALIDARG));
+            }
+            Ok(())
+        }
+        "session bpp" | "ironrdp_colordepth" => match property_i32(value)? {
+            16 | 32 => Ok(()),
+            _ => Err(Error::from_hresult(E_INVALIDARG)),
+        },
+        "redirectclipboard"
+        | "enablecredsspsupport"
+        | "compression"
+        | "administrative session"
+        | "remoteapplicationmode" => {
+            let _ = property_bool(value)?;
+            Ok(())
+        }
+        "audioqualitymode" => match property_i32(value)? {
+            0..=2 => Ok(()),
+            _ => Err(Error::from_hresult(E_INVALIDARG)),
+        },
+        "desktopscalefactor" => match property_i32(value)? {
+            100..=500 => Ok(()),
+            _ => Err(Error::from_hresult(E_INVALIDARG)),
+        },
+        _ => Err(Error::from_hresult(E_NOTIMPL)),
+    }
+}
+
+fn modern_property_value(value: &VARIANT) -> Result<Value> {
+    let header = variant_header(value);
+    match header.vt {
+        VT_BSTR => Ok(Value::Str(variant_string(value, ptr::null_mut())?)),
+        VT_I4 => Ok(Value::Int(i64::from(unsafe { header.Anonymous.lVal }))),
+        VT_UI4 => Ok(Value::Int(i64::from(unsafe { header.Anonymous.ulVal }))),
+        VT_BOOL => Ok(Value::Int(i64::from(unsafe { header.Anonymous.boolVal }.0 != 0))),
+        _ => Err(Error::from_hresult(DISP_E_TYPEMISMATCH)),
+    }
+}
+
+fn property_variant(value: &Value) -> Result<VARIANT> {
+    match value {
+        Value::Str(value) => variant_bstr_fallible(value),
+        Value::Int(value) => i32::try_from(*value)
+            .map(variant_i32)
+            .map_err(|_| Error::from_hresult(E_INVALIDARG)),
+    }
+}
+
 impl Control {
     #[cfg(test)]
     pub(crate) fn new() -> Self {
@@ -7719,6 +8204,8 @@ impl Control {
             input_database,
             touch_tracker: RefCell::new(TouchContactTracker::new()),
             sinks: Rc::new(RefCell::new(BTreeMap::new())),
+            modern_callbacks: RefCell::new(BTreeMap::new()),
+            modern_properties: RefCell::new(PropertySet::new()),
             next_cookie: Rc::new(Cell::new(1)),
             ole_advise_sinks: Rc::new(RefCell::new(BTreeMap::new())),
             next_ole_advise_cookie: Rc::new(Cell::new(1)),
@@ -7750,6 +8237,8 @@ impl Control {
             presentation_surface,
             rail_windows,
             presentation_backbuffer: RefCell::new(None),
+            screen_updates_suspended: Cell::new(false),
+            suspended_frame: RefCell::new(None),
             next_frame_sequence: Cell::new(0),
             presentation_layout_generation: Cell::new(0),
             traced_frame_layout_generation: Cell::new(0),
@@ -7760,6 +8249,329 @@ impl Control {
             rpc_transport: RefCell::new(None),
             rpc_kerberos_config: RefCell::new(None),
             rpc_log_directive: RefCell::new(None),
+        }
+    }
+
+    fn apply_modern_property_set(&self, properties: PropertySet) -> Result<()> {
+        if self.state.get() != ConnectionState::Disconnected {
+            return Err(Error::from_hresult(E_UNEXPECTED));
+        }
+
+        let properties = normalized_rdp_properties(properties);
+        for (name, value) in properties.iter() {
+            validate_modern_rdp_property(name, value)?;
+        }
+        for (name, value) in properties.iter() {
+            self.apply_modern_rdp_property(name, value);
+        }
+        *self.modern_properties.borrow_mut() = properties;
+        self.persistence_dirty.set(true);
+        Ok(())
+    }
+
+    fn apply_modern_rdp_property(&self, name: &str, value: &Value) {
+        match name {
+            "full address" | "alternate full address" => {
+                self.settings.borrow_mut().server = value.as_str().unwrap_or_default().to_owned();
+            }
+            "username" => self.settings.borrow_mut().username = value.as_str().unwrap_or_default().to_owned(),
+            "domain" => self.settings.borrow_mut().domain = value.as_str().unwrap_or_default().to_owned(),
+            "desktopwidth" => {
+                self.settings.borrow_mut().desktop_width = value.as_int().unwrap_or_default() as u16;
+            }
+            "desktopheight" => {
+                self.settings.borrow_mut().desktop_height = value.as_int().unwrap_or_default() as u16;
+            }
+            "session bpp" | "ironrdp_colordepth" => {
+                self.settings.borrow_mut().color_depth = value.as_int().unwrap_or_default() as u32;
+            }
+            "redirectclipboard" => {
+                self.compatibility.borrow_mut().redirect_clipboard = value.as_int().unwrap_or_default() != 0;
+            }
+            "enablecredsspsupport" => {
+                self.compatibility.borrow_mut().enable_credssp = Some(value.as_int().unwrap_or_default() != 0);
+            }
+            "compression" => {
+                self.compatibility.borrow_mut().compression = Some(value.as_int().unwrap_or_default() != 0);
+            }
+            "administrative session" => {
+                self.compatibility.borrow_mut().administrative_session = value.as_int().unwrap_or_default() != 0;
+            }
+            "loadbalanceinfo" => {
+                self.compatibility.borrow_mut().load_balance_info = value.as_str().unwrap_or_default().to_owned();
+            }
+            "audioqualitymode" => {
+                self.compatibility.borrow_mut().audio_quality_mode = match value.as_int().unwrap_or_default() {
+                    1 => AudioQualityMode::Medium,
+                    2 => AudioQualityMode::High,
+                    _ => AudioQualityMode::Dynamic,
+                };
+            }
+            "desktopscalefactor" => {
+                self.compatibility.borrow_mut().desktop_scale_factor = Some(value.as_int().unwrap_or_default() as u32);
+            }
+            "remoteapplicationmode" => {
+                self.remote_application.borrow_mut().enabled = value.as_int().unwrap_or_default() != 0;
+            }
+            "remoteapplicationprogram" => {
+                self.remote_application.borrow_mut().program = value.as_str().unwrap_or_default().to_owned();
+            }
+            "remoteapplicationcmdline" => {
+                self.remote_application.borrow_mut().arguments = value.as_str().unwrap_or_default().to_owned();
+            }
+            _ => {}
+        }
+    }
+
+    fn set_modern_rdp_property(&self, name: String, value: Value) -> Result<()> {
+        if self.state.get() != ConnectionState::Disconnected {
+            return Err(Error::from_hresult(E_UNEXPECTED));
+        }
+        let name = name.to_ascii_lowercase();
+        validate_modern_rdp_property(&name, &value)?;
+        self.apply_modern_rdp_property(&name, &value);
+        self.modern_properties.borrow_mut().insert(name, value);
+        self.persistence_dirty.set(true);
+        Ok(())
+    }
+
+    fn modern_property_snapshot(&self) -> PropertySet {
+        let mut properties = self.modern_properties.borrow().clone();
+        properties.merge(&active_x_property_snapshot(
+            &self.settings.borrow(),
+            &self.compatibility.borrow(),
+        ));
+        let settings = self.settings.borrow();
+        properties.insert("full address", settings.server.clone());
+        if !properties
+            .iter()
+            .any(|(name, _)| name.as_ref() == "alternate full address")
+        {
+            properties.insert("alternate full address", String::new());
+        }
+        properties.insert("username", settings.username.clone());
+        properties.insert("domain", settings.domain.clone());
+        properties.insert("session bpp", settings.color_depth);
+        drop(settings);
+        let compatibility = self.compatibility.borrow();
+        properties.insert("enablecredsspsupport", compatibility.enable_credssp.unwrap_or(true));
+        properties.insert("desktopscalefactor", compatibility.desktop_scale_factor.unwrap_or(100));
+        properties.insert("loadbalanceinfo", compatibility.load_balance_info.clone());
+        drop(compatibility);
+        let remote_application = self.remote_application.borrow();
+        properties.insert("remoteapplicationmode", remote_application.enabled);
+        properties.insert("remoteapplicationprogram", remote_application.program.clone());
+        properties.insert("remoteapplicationcmdline", remote_application.arguments.clone());
+        drop(remote_application);
+        let sensitive = properties
+            .iter()
+            .filter_map(|(name, _)| is_sensitive_modern_property(name).then_some(name.clone()))
+            .collect::<Vec<_>>();
+        for name in sensitive {
+            properties.remove(&name);
+        }
+        properties
+    }
+
+    fn modern_rdp_property(&self, name: &str) -> Result<Value> {
+        let name = name.to_ascii_lowercase();
+        if is_sensitive_modern_property(&name) {
+            return Err(Error::from_hresult(E_ACCESSDENIED));
+        }
+        self.modern_property_snapshot()
+            .into_iter()
+            .find_map(|(candidate, value)| (candidate == name).then_some(value))
+            .ok_or_else(|| Error::from_hresult(E_INVALIDARG))
+    }
+
+    fn set_screen_updates_suspended(&self, suspended: bool) -> Result<()> {
+        if self.state.get() != ConnectionState::Connected {
+            return Err(Error::from_hresult(E_UNEXPECTED));
+        }
+        if self.screen_updates_suspended.replace(suspended) && !suspended {
+            let pending = self.suspended_frame.borrow_mut().take();
+            if let Some((buffer, width, height)) = pending {
+                self.present_frame(buffer, i32::from(width), i32::from(height));
+                return Ok(());
+            }
+            self.notify_ole_advise_view_change();
+            let window = self.activex_window.get();
+            if !window.0.is_null() && unsafe { IsWindow(Some(window)) }.as_bool() {
+                unsafe {
+                    let _ = InvalidateRect(Some(window), None, false);
+                }
+            }
+            self.rail_windows.borrow().invalidate_presentation();
+        }
+        Ok(())
+    }
+
+    fn snapshot_data_uri(&self, encoding: i32, format: i32, width: u32, height: u32) -> Result<String> {
+        if encoding != 0 || format != 0 || width == 0 || height == 0 || width > 16_384 || height > 16_384 {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+        if self.state.get() != ConnectionState::Connected {
+            return Err(Error::from_hresult(E_UNEXPECTED));
+        }
+
+        let surface = self.presentation_surface.borrow();
+        let surface = surface.as_ref().ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?;
+        let source_width = usize::from(surface.width);
+        let source_height = usize::from(surface.height);
+        let source_len = source_width
+            .checked_mul(source_height)
+            .ok_or_else(|| Error::from_hresult(E_OUTOFMEMORY))?;
+        let source = unsafe { slice::from_raw_parts(surface.pixels, source_len) };
+        let output_width = usize::try_from(width).map_err(|_| Error::from_hresult(E_INVALIDARG))?;
+        let output_height = usize::try_from(height).map_err(|_| Error::from_hresult(E_INVALIDARG))?;
+        let rgb_len = output_width
+            .checked_mul(output_height)
+            .and_then(|pixels| pixels.checked_mul(3))
+            .ok_or_else(|| Error::from_hresult(E_OUTOFMEMORY))?;
+        if rgb_len > MAX_MODERN_SNAPSHOT_RGB_BYTES {
+            return Err(Error::from_hresult(E_OUTOFMEMORY));
+        }
+        let mut rgb = Vec::new();
+        rgb.try_reserve_exact(rgb_len)
+            .map_err(|_| Error::from_hresult(E_OUTOFMEMORY))?;
+        for y in 0..output_height {
+            let source_y = y * source_height / output_height;
+            for x in 0..output_width {
+                let source_x = x * source_width / output_width;
+                let pixel = source[source_y * source_width + source_x];
+                rgb.extend_from_slice(&[
+                    ((pixel >> 16) & 0xff) as u8,
+                    ((pixel >> 8) & 0xff) as u8,
+                    (pixel & 0xff) as u8,
+                ]);
+            }
+        }
+
+        let mut png_data = Vec::new();
+        let encoded_capacity = rgb_len
+            .checked_add(rgb_len / 100)
+            .and_then(|capacity| capacity.checked_add(1024 * 1024))
+            .ok_or_else(|| Error::from_hresult(E_OUTOFMEMORY))?;
+        png_data
+            .try_reserve_exact(encoded_capacity)
+            .map_err(|_| Error::from_hresult(E_OUTOFMEMORY))?;
+        {
+            let mut png_encoder = png::Encoder::new(&mut png_data, width, height);
+            png_encoder.set_color(png::ColorType::Rgb);
+            png_encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = png_encoder
+                .write_header()
+                .map_err(|error| Error::new(E_FAIL, format!("unable to encode snapshot header: {error}")))?;
+            writer
+                .write_image_data(&rgb)
+                .map_err(|error| Error::new(E_FAIL, format!("unable to encode snapshot pixels: {error}")))?;
+        }
+        let base64_len = png_data
+            .len()
+            .checked_add(2)
+            .and_then(|length| length.checked_div(3))
+            .and_then(|groups| groups.checked_mul(4))
+            .ok_or_else(|| Error::from_hresult(E_OUTOFMEMORY))?;
+        let mut base64 = Vec::new();
+        base64
+            .try_reserve_exact(base64_len)
+            .map_err(|_| Error::from_hresult(E_OUTOFMEMORY))?;
+        base64.resize(base64_len, 0);
+        let written = base64::engine::general_purpose::STANDARD
+            .encode_slice(&png_data, &mut base64)
+            .map_err(|_| Error::from_hresult(E_FAIL))?;
+        base64.truncate(written);
+        let base64 = core::str::from_utf8(&base64).map_err(|_| Error::from_hresult(E_FAIL))?;
+        let prefix = "data:image/png;base64,";
+        let mut data_uri = String::new();
+        data_uri
+            .try_reserve_exact(
+                prefix
+                    .len()
+                    .checked_add(base64.len())
+                    .ok_or_else(|| Error::from_hresult(E_OUTOFMEMORY))?,
+            )
+            .map_err(|_| Error::from_hresult(E_OUTOFMEMORY))?;
+        data_uri.push_str(prefix);
+        data_uri.push_str(base64);
+        Ok(data_uri)
+    }
+
+    fn canonical_modern_event_name(name: &str) -> Result<&'static str> {
+        SUPPORTED_MODERN_EVENT_NAMES
+            .iter()
+            .copied()
+            .find(|candidate| *candidate == name)
+            .ok_or_else(|| Error::from_hresult(E_INVALIDARG))
+    }
+
+    fn attach_modern_event(&self, name: &str, callback: *mut c_void) -> Result<()> {
+        if callback.is_null() {
+            return Err(Error::from_hresult(E_POINTER));
+        }
+        let name = Self::canonical_modern_event_name(name)?;
+        let callback = ManuallyDrop::new(unsafe { IDispatch::from_raw(callback) });
+        self.modern_callbacks
+            .borrow_mut()
+            .entry(name)
+            .or_default()
+            .push((*callback).clone());
+        Ok(())
+    }
+
+    fn detach_modern_event(&self, name: &str, callback: *mut c_void) -> Result<()> {
+        if callback.is_null() {
+            return Err(Error::from_hresult(E_POINTER));
+        }
+        let name = Self::canonical_modern_event_name(name)?;
+        let removed = {
+            let mut callback_lists = self.modern_callbacks.borrow_mut();
+            let callbacks = callback_lists
+                .get_mut(name)
+                .ok_or_else(|| Error::from_hresult(E_INVALIDARG))?;
+            let index = callbacks
+                .iter()
+                .position(|registered| registered.as_raw() == callback)
+                .ok_or_else(|| Error::from_hresult(E_INVALIDARG))?;
+            callbacks.remove(index)
+        };
+        drop(removed);
+        Ok(())
+    }
+
+    fn fire_modern_event(&self, name: &'static str, arguments: Vec<VariantValue>) {
+        if self.events_are_frozen() {
+            return;
+        }
+        let callbacks = self.modern_callbacks.borrow().get(name).cloned().unwrap_or_default();
+        if callbacks.is_empty() {
+            return;
+        }
+
+        let mut variants = arguments
+            .into_iter()
+            .rev()
+            .map(|argument| unsafe { argument.into_variant() })
+            .collect::<Vec<_>>();
+        let params = DISPPARAMS {
+            rgvarg: variants.as_mut_ptr(),
+            rgdispidNamedArgs: ptr::null_mut(),
+            cArgs: variants.len() as u32,
+            cNamedArgs: 0,
+        };
+        let iid_null = GUID::zeroed();
+        for callback in callbacks {
+            if let Err(error) = unsafe { callback.Invoke(0, &iid_null, 0, DISPATCH_METHOD, &params, None, None, None) }
+            {
+                tracing::debug!(
+                    ?error,
+                    event_name = name,
+                    "Modern ActiveX event callback rejected event"
+                );
+            }
+        }
+        for variant in &mut variants {
+            free_owned_bstr_variant(variant);
         }
     }
 
@@ -9243,6 +10055,35 @@ impl Control {
                 tracing::debug!(?error, event_dispid = dispid, "ActiveX event sink rejected event");
             }
         }
+
+        match dispid {
+            DISPID_ON_CONNECTING => self.fire_modern_event("OnConnecting", Vec::new()),
+            DISPID_ON_CONNECTED => self.fire_modern_event("OnConnected", Vec::new()),
+            DISPID_ON_LOGIN_COMPLETE => self.fire_modern_event("OnLoginCompleted", Vec::new()),
+            DISPID_ON_DISCONNECTED => {
+                let disconnect = self.last_disconnect.get();
+                self.fire_modern_event(
+                    "OnDisconnected",
+                    vec![
+                        VariantValue::Integer(disconnect.event_reason),
+                        VariantValue::Integer(disconnect.extended_reason),
+                        VariantValue::String(disconnect.description.to_owned()),
+                    ],
+                );
+            }
+            DISPID_ON_REMOTE_DESKTOP_SIZE_CHANGE if args.len() == 2 => self.fire_modern_event(
+                "OnRemoteDesktopSizeChanged",
+                vec![VariantValue::Integer(args[0]), VariantValue::Integer(args[1])],
+            ),
+            DISPID_ON_AUTHENTICATION_WARNING_DISPLAYED => {
+                self.fire_modern_event("OnDialogDisplaying", Vec::new());
+            }
+            DISPID_ON_AUTHENTICATION_WARNING_DISMISSED => {
+                self.fire_modern_event("OnDialogDismissed", Vec::new());
+            }
+            DISPID_ON_AUTO_RECONNECTED => self.fire_modern_event("OnAutoReconnected", Vec::new()),
+            _ => {}
+        }
     }
 
     fn fire_auto_reconnecting_event(&self, disconnect_reason: i32, attempt: i32) -> i32 {
@@ -9944,6 +10785,18 @@ impl Control {
                     let disconnect_reason = i32::try_from(disconnect_reason).unwrap_or(i32::MAX);
                     let attempt = i32::try_from(attempt).unwrap_or(i32::MAX);
                     let maximum_attempts = i32::try_from(maximum_attempts).unwrap_or(i32::MAX);
+                    let disconnect = self.last_disconnect.get();
+                    self.fire_modern_event(
+                        "OnAutoReconnecting",
+                        vec![
+                            VariantValue::Integer(disconnect_reason),
+                            VariantValue::Integer(disconnect.extended_reason),
+                            VariantValue::String(disconnect.description.to_owned()),
+                            VariantValue::Bool(false),
+                            VariantValue::Integer(attempt),
+                            VariantValue::Integer(maximum_attempts),
+                        ],
+                    );
                     let decision = match self.fire_auto_reconnecting_event(disconnect_reason, attempt) {
                         0 => {
                             self.fire_auto_reconnecting2_event(disconnect_reason, false, attempt, maximum_attempts);
@@ -11755,6 +12608,10 @@ impl Control {
             tracing::debug!(width, height, "Discarding ActiveX frame with invalid pixel count");
             return;
         };
+        if self.screen_updates_suspended.get() {
+            *self.suspended_frame.borrow_mut() = Some((buffer, width, height));
+            return;
+        }
 
         if let Err(error) = self.update_presentation_surface(&frame, &buffer) {
             trace_host_call("Renderer::SurfaceUpdateFailed");
@@ -11781,6 +12638,8 @@ impl Control {
     }
 
     fn clear_frame(&self) {
+        self.screen_updates_suspended.set(false);
+        self.suspended_frame.borrow_mut().take();
         let had_frame = self.frame.borrow_mut().take().is_some();
         self.presentation_surface.borrow_mut().take();
         self.presentation_backbuffer.borrow_mut().take();
@@ -12594,6 +13453,35 @@ impl IDispatch_Impl for Control_Impl {
             if params.cArgs != 0 {
                 return Err(Error::from_hresult(DISP_E_BADPARAMCOUNT));
             }
+            if matches!(dispid, DISPID_MODERN_SETTINGS | DISPID_MODERN_ACTIONS) {
+                if result.is_null() {
+                    return Ok(());
+                }
+                let owner: IUnknown = self.to_interface();
+                let dispatch: IDispatch = if dispid == DISPID_MODERN_SETTINGS {
+                    let settings: IRemoteDesktopClientSettings = ModernClientSettings {
+                        bridge: ModernClientBridge {
+                            _owner: owner,
+                            control: self,
+                        },
+                    }
+                    .into();
+                    settings.cast()?
+                } else {
+                    let actions: IRemoteDesktopClientActions = ModernClientActions {
+                        bridge: ModernClientBridge {
+                            _owner: owner,
+                            control: self,
+                        },
+                    }
+                    .into();
+                    actions.cast()?
+                };
+                return write_out(result, variant_dispatch(dispatch));
+            }
+            if dispid == DISPID_MODERN_TOUCH_POINTER {
+                return Err(Error::from_hresult(E_NOTIMPL));
+            }
             return self.get_property(dispid, result);
         }
 
@@ -12602,18 +13490,136 @@ impl IDispatch_Impl for Control_Impl {
         }
 
         if flags.contains(DISPATCH_METHOD) {
-            if params.cArgs != 0 || params.cNamedArgs != 0 {
-                return Err(Error::from_hresult(DISP_E_BADPARAMCOUNT));
-            }
-
+            let arguments = dispatch_arguments(params)?;
             return match dispid {
-                DISPID_CONNECT => self.start_connection(),
-                DISPID_DISCONNECT => self.stop_connection(),
+                DISPID_CONNECT | DISPID_MODERN_CONNECT if arguments.is_empty() => self.start_connection(),
+                DISPID_DISCONNECT | DISPID_MODERN_DISCONNECT if arguments.is_empty() => self.stop_connection(),
+                DISPID_MODERN_RECONNECT if arguments.len() == 2 => {
+                    let mut status = CONTROL_RECONNECT_BLOCKED;
+                    self.reconnect(
+                        dispatch_variant_u32(&arguments[1])?,
+                        dispatch_variant_u32(&arguments[0])?,
+                        &mut status,
+                    )
+                }
+                DISPID_MODERN_DELETE_SAVED_CREDENTIALS if arguments.len() == 1 => {
+                    let server = variant_string(&arguments[0], argument_error)?;
+                    if server.trim().is_empty() {
+                        Err(Error::from_hresult(E_INVALIDARG))
+                    } else {
+                        Ok(())
+                    }
+                }
+                DISPID_MODERN_UPDATE_SESSION_DISPLAY_SETTINGS if arguments.len() == 2 => {
+                    self.update_display_layout(DisplayLayout {
+                        desktop_width: dispatch_variant_u32(&arguments[1])?,
+                        desktop_height: dispatch_variant_u32(&arguments[0])?,
+                        physical_width: 0,
+                        physical_height: 0,
+                        orientation: 0,
+                        desktop_scale_factor: 100,
+                        device_scale_factor: 100,
+                    })
+                }
+                DISPID_MODERN_ATTACH_EVENT | DISPID_MODERN_DETACH_EVENT if arguments.len() == 2 => {
+                    let event_name = variant_string(&arguments[1], argument_error)?;
+                    let callback = variant_dispatch_pointer(&arguments[0])?;
+                    if dispid == DISPID_MODERN_ATTACH_EVENT {
+                        self.attach_modern_event(&event_name, callback)
+                    } else {
+                        self.detach_modern_event(&event_name, callback)
+                    }
+                }
+                DISPID_CONNECT
+                | DISPID_DISCONNECT
+                | DISPID_MODERN_CONNECT
+                | DISPID_MODERN_DISCONNECT
+                | DISPID_MODERN_RECONNECT
+                | DISPID_MODERN_DELETE_SAVED_CREDENTIALS
+                | DISPID_MODERN_UPDATE_SESSION_DISPLAY_SETTINGS
+                | DISPID_MODERN_ATTACH_EVENT
+                | DISPID_MODERN_DETACH_EVENT => Err(Error::from_hresult(DISP_E_BADPARAMCOUNT)),
                 _ => Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND)),
             };
         }
 
         Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND))
+    }
+}
+
+impl IRemoteDesktopClient_Impl for Control_Impl {
+    unsafe fn Connect(&self) -> Result<()> {
+        self.remember_callback_owner(self);
+        self.start_connection()
+    }
+
+    unsafe fn Disconnect(&self) -> Result<()> {
+        self.stop_connection()
+    }
+
+    unsafe fn Reconnect(&self, width: u32, height: u32) -> Result<()> {
+        let mut status = CONTROL_RECONNECT_BLOCKED;
+        self.reconnect(width, height, &mut status)
+    }
+
+    unsafe fn get_Settings(&self, output: InterfaceOut) -> Result<()> {
+        write_out(output, ptr::null_mut())?;
+        let owner: IUnknown = self.to_interface();
+        let settings: IRemoteDesktopClientSettings = ModernClientSettings {
+            bridge: ModernClientBridge {
+                _owner: owner,
+                control: self,
+            },
+        }
+        .into();
+        write_out(output, settings.into_raw().cast())
+    }
+
+    unsafe fn get_Actions(&self, output: InterfaceOut) -> Result<()> {
+        write_out(output, ptr::null_mut())?;
+        let owner: IUnknown = self.to_interface();
+        let actions: IRemoteDesktopClientActions = ModernClientActions {
+            bridge: ModernClientBridge {
+                _owner: owner,
+                control: self,
+            },
+        }
+        .into();
+        write_out(output, actions.into_raw().cast())
+    }
+
+    unsafe fn get_TouchPointer(&self, touch_pointer: InterfaceOut) -> Result<()> {
+        write_out(touch_pointer, ptr::null_mut())?;
+        Err(Error::from_hresult(E_NOTIMPL))
+    }
+
+    unsafe fn DeleteSavedCredentials(&self, server_name: Bstr) -> Result<()> {
+        let server_name = string_from_bstr(server_name)?;
+        if server_name.trim().is_empty() {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+        // IronRDP never persists credentials, so deletion is idempotently complete.
+        Ok(())
+    }
+
+    unsafe fn UpdateSessionDisplaySettings(&self, width: u32, height: u32) -> Result<()> {
+        self.update_display_layout(DisplayLayout {
+            desktop_width: width,
+            desktop_height: height,
+            physical_width: 0,
+            physical_height: 0,
+            orientation: 0,
+            desktop_scale_factor: 100,
+            device_scale_factor: 100,
+        })
+    }
+
+    unsafe fn attachEvent(&self, event_name: Bstr, callback: *mut c_void) -> Result<()> {
+        self.attach_modern_event(&string_from_bstr(event_name)?, callback)
+    }
+
+    unsafe fn detachEvent(&self, event_name: Bstr, callback: *mut c_void) -> Result<()> {
+        self.detach_modern_event(&string_from_bstr(event_name)?, callback)
     }
 }
 
@@ -15127,7 +16133,27 @@ fn channel_data_to_automation_string(data: &[u8]) -> String {
 }
 
 fn write_bstr(out: BstrOut, value: &str) -> Result<()> {
-    write_out(out, BSTR::from(value).into_raw())
+    write_out(out, ptr::null())?;
+    let value = allocate_bstr(value)?;
+    write_out(out, value.into_raw())
+}
+
+fn allocate_bstr(value: &str) -> Result<BSTR> {
+    let unit_count = value.encode_utf16().count();
+    if unit_count > u32::MAX as usize {
+        return Err(Error::from_hresult(E_OUTOFMEMORY));
+    }
+    let mut utf16 = Vec::new();
+    utf16
+        .try_reserve_exact(unit_count)
+        .map_err(|_| Error::from_hresult(E_OUTOFMEMORY))?;
+    utf16.extend(value.encode_utf16());
+    let value = unsafe { SysAllocStringLen(Some(&utf16)) };
+    let value = value.into_raw();
+    if !utf16.is_empty() && value.is_null() {
+        return Err(Error::from_hresult(E_OUTOFMEMORY));
+    }
+    Ok(unsafe { BSTR::from_raw(value) })
 }
 
 fn ole_user_type() -> Result<windows_core::PWSTR> {
@@ -16467,14 +17493,70 @@ fn variant_bstr(value: String) -> VARIANT {
     unsafe { VariantValue::String(value).into_variant() }
 }
 
+fn variant_bstr_fallible(value: &str) -> Result<VARIANT> {
+    let value = allocate_bstr(value)?;
+    Ok(VARIANT {
+        Anonymous: VARIANT_0 {
+            Anonymous: ManuallyDrop::new(VARIANT_0_0 {
+                vt: VT_BSTR,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: VARIANT_0_0_0 {
+                    bstrVal: ManuallyDrop::new(value),
+                },
+            }),
+        },
+    })
+}
+
+fn variant_dispatch(value: IDispatch) -> VARIANT {
+    VARIANT {
+        Anonymous: VARIANT_0 {
+            Anonymous: ManuallyDrop::new(VARIANT_0_0 {
+                vt: VT_DISPATCH,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: VARIANT_0_0_0 {
+                    pdispVal: ManuallyDrop::new(Some(value)),
+                },
+            }),
+        },
+    }
+}
+
+fn variant_dispatch_pointer(value: &VARIANT) -> Result<*mut c_void> {
+    let header = variant_header(value);
+    if header.vt != VT_DISPATCH {
+        return Err(Error::from_hresult(DISP_E_TYPEMISMATCH));
+    }
+    let dispatch =
+        unsafe { &*(&header.Anonymous.pdispVal as *const ManuallyDrop<Option<IDispatch>> as *const Option<IDispatch>) };
+    dispatch
+        .as_ref()
+        .map(|dispatch| dispatch.as_raw())
+        .ok_or_else(|| Error::from_hresult(E_POINTER))
+}
+
 fn free_owned_bstr_variant(value: &mut VARIANT) {
     let header = variant_header_mut(value);
-    if header.vt == VT_BSTR {
-        unsafe {
-            ManuallyDrop::drop(&mut header.Anonymous.bstrVal);
+    unsafe {
+        match header.vt {
+            VT_BSTR => ManuallyDrop::drop(&mut header.Anonymous.bstrVal),
+            VT_DISPATCH => ManuallyDrop::drop(&mut header.Anonymous.pdispVal),
+            _ => return,
         }
-        header.vt = VT_EMPTY;
     }
+    header.vt = VT_EMPTY;
+}
+
+fn write_optional_variant(output: *mut VARIANT, mut value: VARIANT) -> Result<()> {
+    if output.is_null() {
+        free_owned_bstr_variant(&mut value);
+        return Ok(());
+    }
+    write_out(output, value)
 }
 
 fn variant_bool_byref(value: &mut VARIANT_BOOL) -> VARIANT {
@@ -16605,6 +17687,14 @@ fn dispid_for_name(name: &str) -> Option<i32> {
         "extendeddisconnectreason" => Some(DISPID_EXTENDED_DISCONNECT_REASON),
         "fullscreen" => Some(DISPID_FULLSCREEN),
         "connectedstatustext" => Some(DISPID_CONNECTED_STATUS_TEXT),
+        "settings" => Some(DISPID_MODERN_SETTINGS),
+        "actions" => Some(DISPID_MODERN_ACTIONS),
+        "touchpointer" => Some(DISPID_MODERN_TOUCH_POINTER),
+        "reconnect" => Some(DISPID_MODERN_RECONNECT),
+        "deletesavedcredentials" => Some(DISPID_MODERN_DELETE_SAVED_CREDENTIALS),
+        "updatesessiondisplaysettings" => Some(DISPID_MODERN_UPDATE_SESSION_DISPLAY_SETTINGS),
+        "attachevent" => Some(DISPID_MODERN_ATTACH_EVENT),
+        "detachevent" => Some(DISPID_MODERN_DETACH_EVENT),
         "ironrdppassword" => Some(DISPID_IRONRDP_PASSWORD),
         _ => None,
     }
@@ -16626,8 +17716,9 @@ mod tests {
     use crate::mstsc::{
         IMsRdpCameraRedirConfig_Vtbl, IMsRdpClient6_Vtbl, IMsRdpClient7_Vtbl, IMsRdpClient8_Vtbl, IMsRdpClient9_Vtbl,
         IMsRdpClient10_Vtbl, IMsRdpClientNonScriptable7_Vtbl, IMsRdpClientNonScriptable8_Vtbl, IMsTscAx,
-        ITSRemoteProgram, ITSRemoteProgram_Vtbl, ITSRemoteProgram2, ITSRemoteProgram2_Vtbl, ITSRemoteProgram3,
-        ITSRemoteProgram3_Vtbl,
+        IRemoteDesktopClient_Vtbl, IRemoteDesktopClientActions_Vtbl, IRemoteDesktopClientSettings_Vtbl,
+        IRemoteDesktopClientTouchPointer, IRemoteDesktopClientTouchPointer_Vtbl, ITSRemoteProgram,
+        ITSRemoteProgram_Vtbl, ITSRemoteProgram2, ITSRemoteProgram2_Vtbl, ITSRemoteProgram3, ITSRemoteProgram3_Vtbl,
     };
 
     #[test]
@@ -17270,6 +18361,51 @@ mod tests {
             let params = unsafe { params.as_ref() }.ok_or_else(|| Error::from_hresult(E_POINTER))?;
             assert_eq!(params.cArgs, 0);
             self.seen.lock().expect("lifecycle events are available").push(dispid);
+            Ok(())
+        }
+    }
+
+    #[implement(IDispatch)]
+    struct ModernCallbackSink {
+        calls: Arc<AtomicU32>,
+    }
+
+    impl IDispatch_Impl for ModernCallbackSink_Impl {
+        fn GetTypeInfoCount(&self) -> Result<u32> {
+            Ok(0)
+        }
+
+        fn GetTypeInfo(&self, _itinfo: u32, _lcid: u32) -> Result<ITypeInfo> {
+            Err(Error::from_hresult(E_NOTIMPL))
+        }
+
+        fn GetIDsOfNames(
+            &self,
+            _riid: *const GUID,
+            _names: *const PCWSTR,
+            _count: u32,
+            _lcid: u32,
+            _dispids: *mut i32,
+        ) -> Result<()> {
+            Err(Error::from_hresult(DISP_E_UNKNOWNNAME))
+        }
+
+        fn Invoke(
+            &self,
+            dispid: i32,
+            _riid: *const GUID,
+            _lcid: u32,
+            flags: DISPATCH_FLAGS,
+            params: *const DISPPARAMS,
+            _result: *mut VARIANT,
+            _exception: *mut EXCEPINFO,
+            _argument_error: *mut u32,
+        ) -> Result<()> {
+            assert_eq!(dispid, 0);
+            assert!(flags.contains(DISPATCH_METHOD));
+            let params = unsafe { params.as_ref() }.ok_or_else(|| Error::from_hresult(E_POINTER))?;
+            assert_eq!(params.cArgs, 0);
+            self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
     }
@@ -19970,6 +21106,229 @@ try {
         assert_eq!(size_of::<IMsRdpClient8_Vtbl>(), 67 * pointer_size);
         assert_eq!(size_of::<IMsRdpClient9_Vtbl>(), 72 * pointer_size);
         assert_eq!(size_of::<IMsRdpClient10_Vtbl>(), 73 * pointer_size);
+    }
+
+    #[test]
+    fn modern_client_interfaces_match_the_public_vtable_abi() {
+        let client: IRemoteDesktopClient = Control::new().into();
+        assert!(client.cast::<IRemoteDesktopClient>().is_ok());
+        assert!(client.cast::<IRemoteDesktopClientSettings>().is_err());
+        assert!(client.cast::<IRemoteDesktopClientActions>().is_err());
+        assert!(client.cast::<IRemoteDesktopClientTouchPointer>().is_err());
+
+        let pointer_size = size_of::<usize>();
+        assert_eq!(size_of::<IRemoteDesktopClient_Vtbl>(), 17 * pointer_size);
+        assert_eq!(size_of::<IRemoteDesktopClientSettings_Vtbl>(), 11 * pointer_size);
+        assert_eq!(size_of::<IRemoteDesktopClientActions_Vtbl>(), 11 * pointer_size);
+        assert_eq!(size_of::<IRemoteDesktopClientTouchPointer_Vtbl>(), 13 * pointer_size);
+    }
+
+    #[test]
+    fn modern_settings_apply_round_trip_and_keep_the_control_alive() {
+        let client: IRemoteDesktopClient = Control::new().into();
+        let mut raw_settings = ptr::null_mut();
+        unsafe { client.get_Settings(&mut raw_settings) }.expect("retrieve modern settings");
+        let settings = unsafe { IRemoteDesktopClientSettings::from_raw(raw_settings) };
+        let dispatch = settings
+            .cast::<IDispatch>()
+            .expect("modern settings are Automation-compatible");
+        let retrieve_name = wide_string("RetrieveSettings");
+        let retrieve_name = PCWSTR(retrieve_name.as_ptr());
+        let mut retrieve_dispid = DISPID_UNKNOWN;
+        unsafe { dispatch.GetIDsOfNames(&GUID::zeroed(), &retrieve_name, 1, 0, &mut retrieve_dispid) }
+            .expect("resolve modern settings Automation name");
+        assert_eq!(retrieve_dispid, DISPID_MODERN_RETRIEVE_SETTINGS);
+        drop(client);
+
+        let contents = BSTR::from(
+            "full address:s:rdp.example.test\nusername:s:alice\ndesktopwidth:i:1280\ndesktopheight:i:720\nredirectclipboard:i:0\n",
+        );
+        unsafe { settings.ApplySettings(contents.as_ptr()) }.expect("apply supported RDP settings");
+
+        let mut server = VARIANT::default();
+        let server_name = BSTR::from("full address");
+        unsafe { settings.GetRdpProperty(server_name.as_ptr(), &mut server) }.expect("retrieve full address");
+        assert_eq!(
+            variant_bstr_value(&server).expect("full address is a BSTR"),
+            "rdp.example.test"
+        );
+        free_owned_bstr_variant(&mut server);
+
+        let mut credssp = VARIANT::default();
+        let credssp_name = BSTR::from("enablecredsspsupport");
+        unsafe { settings.GetRdpProperty(credssp_name.as_ptr(), &mut credssp) }
+            .expect("retrieve effective CredSSP default");
+        assert!(variant_bool(&credssp, ptr::null_mut()).expect("CredSSP default is Boolean"));
+
+        let mut alternate = VARIANT::default();
+        let alternate_name = BSTR::from("alternate full address");
+        unsafe { settings.GetRdpProperty(alternate_name.as_ptr(), &mut alternate) }
+            .expect("retrieve alternate-address default");
+        assert_eq!(
+            variant_bstr_value(&alternate).expect("alternate-address default is a BSTR"),
+            ""
+        );
+        free_owned_bstr_variant(&mut alternate);
+
+        let mut serialized: *const u16 = ptr::null();
+        unsafe { settings.RetrieveSettings(&mut serialized) }.expect("serialize RDP settings");
+        let serialized = unsafe { BSTR::from_raw(serialized.cast_mut()) };
+        let serialized = String::try_from(&serialized).expect("serialized settings are UTF-16");
+        assert!(serialized.contains("full address:s:rdp.example.test"));
+        assert!(serialized.contains("desktopwidth:i:1280"));
+        assert!(!serialized.to_ascii_lowercase().contains("password"));
+
+        let params = DISPPARAMS::default();
+        let mut automation_result = VARIANT::default();
+        unsafe {
+            dispatch.Invoke(
+                retrieve_dispid,
+                &GUID::zeroed(),
+                0,
+                DISPATCH_METHOD,
+                &params,
+                Some(&mut automation_result),
+                None,
+                None,
+            )
+        }
+        .expect("invoke modern settings through IDispatch");
+        assert!(
+            variant_bstr_value(&automation_result)
+                .expect("Automation result is a BSTR")
+                .contains("full address:s:rdp.example.test")
+        );
+        free_owned_bstr_variant(&mut automation_result);
+
+        let password_name = BSTR::from("ClearTextPassword");
+        let password = variant_i32(1);
+        let error = unsafe { settings.SetRdpProperty(password_name.as_ptr(), password) }
+            .expect_err("modern settings must not retain clear-text credentials");
+        assert_eq!(error.code(), E_ACCESSDENIED);
+
+        let token_name = BSTR::from("ironrdp_rdcleanpathtoken");
+        let token = variant_i32(1);
+        let error = unsafe { settings.SetRdpProperty(token_name.as_ptr(), token) }
+            .expect_err("modern settings must not retain RDCleanPath tokens");
+        assert_eq!(error.code(), E_ACCESSDENIED);
+
+        let unsupported_name = BSTR::from("gatewayhostname");
+        let unsupported = variant_i32(1);
+        let error = unsafe { settings.SetRdpProperty(unsupported_name.as_ptr(), unsupported) }
+            .expect_err("unmapped modern settings must fail explicitly");
+        assert_eq!(error.code(), E_NOTIMPL);
+
+        let injected = Value::Str("alice\nfull address:s:other-host".to_owned());
+        let error = validate_modern_rdp_property("username", &injected)
+            .expect_err("RDP string properties must not inject additional lines");
+        assert_eq!(error.code(), E_INVALIDARG);
+    }
+
+    #[test]
+    fn modern_actions_control_presentation_and_return_png_data_uris() {
+        let control = Control::new();
+        control.state.set(ConnectionState::Connected);
+        control.present_frame(vec![0x00ff_0000, 0x0000_ff00], 2, 1);
+
+        control
+            .set_screen_updates_suspended(true)
+            .expect("suspend modern screen updates");
+        assert!(control.screen_updates_suspended.get());
+        let visible_sequence = control
+            .presentation_surface
+            .borrow()
+            .as_ref()
+            .expect("initial frame is visible")
+            .sequence;
+        control.present_frame(vec![0x0000_00ff, 0x00ff_ffff], 2, 1);
+        assert_eq!(
+            control
+                .presentation_surface
+                .borrow()
+                .as_ref()
+                .expect("suspended frame preserves the visible surface")
+                .sequence,
+            visible_sequence
+        );
+        control
+            .set_screen_updates_suspended(false)
+            .expect("resume modern screen updates");
+        assert!(!control.screen_updates_suspended.get());
+        assert_ne!(
+            control
+                .presentation_surface
+                .borrow()
+                .as_ref()
+                .expect("pending frame is published on resume")
+                .sequence,
+            visible_sequence
+        );
+
+        let snapshot = control.snapshot_data_uri(0, 0, 1, 1).expect("encode PNG snapshot");
+        let payload = snapshot
+            .strip_prefix("data:image/png;base64,")
+            .expect("snapshot uses the documented data URI encoding");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .expect("snapshot payload is base64");
+        assert_eq!(&decoded[..8], b"\x89PNG\r\n\x1a\n");
+
+        let error = control
+            .snapshot_data_uri(0, 1, 1, 1)
+            .expect_err("JPEG snapshots are not implemented");
+        assert_eq!(error.code(), E_INVALIDARG);
+        let error = control
+            .snapshot_data_uri(0, 0, 10_000, 10_000)
+            .expect_err("oversized snapshots are rejected before allocation");
+        assert_eq!(error.code(), E_OUTOFMEMORY);
+    }
+
+    #[test]
+    fn modern_callbacks_detach_one_exact_registration() {
+        let control = Control::new();
+        let calls = Arc::new(AtomicU32::new(0));
+        let callback: IDispatch = ModernCallbackSink {
+            calls: Arc::clone(&calls),
+        }
+        .into();
+
+        let error = control
+            .attach_modern_event("OnStatusChanged", callback.as_raw())
+            .expect_err("callbacks without an event source fail explicitly");
+        assert_eq!(error.code(), E_INVALIDARG);
+
+        control
+            .attach_modern_event("OnConnected", callback.as_raw())
+            .expect("attach first callback");
+        control
+            .attach_modern_event("OnConnected", callback.as_raw())
+            .expect("attach duplicate callback");
+        control
+            .detach_modern_event("OnConnected", callback.as_raw())
+            .expect("detach one callback");
+        control.fire_event(DISPID_ON_CONNECTED, &[]);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        control
+            .detach_modern_event("OnConnected", callback.as_raw())
+            .expect("detach final callback");
+        control.fire_event(DISPID_ON_CONNECTED, &[]);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        let error = control
+            .detach_modern_event("OnConnected", callback.as_raw())
+            .expect_err("detaching an absent callback is deterministic");
+        assert_eq!(error.code(), E_INVALIDARG);
+    }
+
+    #[test]
+    fn modern_facade_clears_the_unsupported_touch_pointer_output() {
+        let client: IRemoteDesktopClient = Control::new().into();
+        let mut touch_pointer = ptr::dangling_mut::<c_void>();
+        let error = unsafe { client.get_TouchPointer(&mut touch_pointer) }
+            .expect_err("touch-pointer mouse emulation is not implemented");
+        assert_eq!(error.code(), E_NOTIMPL);
+        assert!(touch_pointer.is_null());
     }
 
     #[test]
