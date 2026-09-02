@@ -94,6 +94,12 @@ test("workflow uses bounded classifier lanes and one parallel review pipeline", 
   assert.equal((combined.match(/secrets\.HELMCODE_GLM_API_KEY/g) || []).length, 3);
   assert.doesNotMatch(reviewWorkflow, /OPENSPECS_COMMIT/);
   assert.match(reviewWorkflow, /openspecs" fetch .*origin \+master:refs\/remotes\/origin\/master/);
+  assert.match(reviewWorkflow, /WORKFLOW_SHA: \$\{\{ github\.workflow_sha \}\}/);
+  assert.match(reviewWorkflow,
+    /git fetch --no-tags origin "\+\$WORKFLOW_SHA:refs\/remotes\/origin\/automation"/);
+  assert.equal((reviewWorkflow.match(/ref: \$\{\{ github\.workflow_sha \}\}/g) || []).length, 4);
+  assert.doesNotMatch(reviewWorkflow, /ref: master/);
+  assert.equal((reviewWorkflow.match(/overwrite: true/g) || []).length, 4);
 
   const classifier = workflowJob(workflow, "classifier");
   assert.match(workflowJob(workflow, "resolve-pr"),

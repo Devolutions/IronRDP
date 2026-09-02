@@ -50,6 +50,7 @@ jobs:
         env:
           HEAD_SHA: ${{ inputs.head-sha }}
           BASE_SHA: ${{ inputs.base-sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
           export GIT_CONFIG_NOSYSTEM=1
@@ -57,8 +58,8 @@ jobs:
           git init .
           git config --local core.hooksPath /dev/null
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
-          git fetch --no-tags origin +master:refs/remotes/origin/master
-          git checkout --detach origin/master
+          git fetch --no-tags origin "+$WORKFLOW_SHA:refs/remotes/origin/automation"
+          git checkout --detach origin/automation
           if ! bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"; then
             reason="pull request evidence unavailable"
             if test -f pr-evidence/failure-reason.txt; then
@@ -147,6 +148,7 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 1
+          overwrite: true
 
   specialists:
     name: Review with ${{ matrix.reviewer }}
@@ -164,7 +166,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: master
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Download review evidence
@@ -243,6 +245,7 @@ jobs:
           path: specialist-results/${{ matrix.reviewer }}.json
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
   aggregate:
     name: Aggregate specialist findings
@@ -257,7 +260,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: master
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Download specialist results
@@ -311,6 +314,7 @@ jobs:
           path: validated-specialist-findings.json
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
   general:
     name: Run independent general reviewer
@@ -323,7 +327,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: master
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Download review evidence
@@ -373,6 +377,7 @@ jobs:
           path: general-review/result.json
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
   validate:
     name: Validate final review
@@ -387,7 +392,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: master
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Download review evidence
