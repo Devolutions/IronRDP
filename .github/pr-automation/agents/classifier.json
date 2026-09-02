@@ -1,6 +1,6 @@
 {
   "id": "classifier",
-  "model": "deepseek-v4-flash",
+  "model": "glm-5.2",
   "prompt_file": ".github/pr-automation/prompts/classifier.md",
   "schema_file": ".github/pr-automation/schemas/classifier.json",
   "methodology_files": [],
