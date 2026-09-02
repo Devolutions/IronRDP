@@ -206,11 +206,6 @@ function resolveClassificationState({
   };
 }
 
-function isExcludedHistory(pr) {
-  const labels = labelsOf(pr.labels);
-  return labels.has("trivial") || labels.has("reverted") || /^revert\b/i.test(pr.title || "");
-}
-
 function isBot(user) {
   return user?.type === "Bot" || /\[bot\]$/i.test(user?.login || "");
 }
@@ -229,8 +224,8 @@ async function qualifyingMergedPrs({ github, owner, repo, authorNodeId, currentP
           (typeof pr.merged_at !== "string" || Number.isNaN(Date.parse(pr.merged_at)))) {
         throw new Error("invalid pull request timestamp");
       }
-      if (pr.number === currentPrNumber || !pr.merged_at || pr.user?.node_id !== authorNodeId ||
-          isBot(pr.user) || isExcludedHistory(pr)) continue;
+      if (pr.number === currentPrNumber || !pr.merged_at || pr.base?.ref !== "master" ||
+          pr.user?.node_id !== authorNodeId || isBot(pr.user)) continue;
       merged += 1;
       if (merged >= stopAt) return merged;
     }
@@ -358,6 +353,6 @@ module.exports = {
   AI_COUNTS, DUPLICATE_MARKER, EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER,
   LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_REVIEW_LABEL, RISK, OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
-  contributorEligibility, isExcludedHistory, qualifyingMergedPrs, resolveClassificationState,
+  contributorEligibility, qualifyingMergedPrs, resolveClassificationState,
   resolveReviewState, reviewPolicyEligible,
 };

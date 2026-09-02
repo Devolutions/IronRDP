@@ -68,7 +68,7 @@ Run automated review after CI succeeds for the exact classified head.
 Run the second review after a later push reaches green exact-head CI, and stop automatic review at `ai-reviewed/2`.
 
 `OWNER` and `MEMBER` authors are always eligible.
-Other authors need one merged pull request from the same immutable human author, excluding `trivial`, `reverted`, and revert-titled pull requests.
+Other authors need one pull request from the same immutable human author merged into `master`.
 
 Block review for duplicates at confidence 0.85 or greater and likely non-legitimate changes.
 Unavailable or invalid classification fails closed to maintainer review.

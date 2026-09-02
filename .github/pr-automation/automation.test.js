@@ -1826,6 +1826,7 @@ function pull(number, changes = {}) {
     number, created_at: "2026-08-03T12:00:00Z", merged_at: null, title: "change", labels: [],
     user: { node_id: "author", login: "author", type: "User" },
     head: { repo: { full_name: "contributor/IronRDP" } },
+    base: { ref: "master" },
     ...changes,
   };
 }
@@ -1930,28 +1931,32 @@ test("owner and member authors are eligible without contributor history", async 
   }
 });
 
-test("other human authors need one qualifying merged pull request", async () => {
-  const history = [
+test("other human authors need one same-author pull request merged into master", async () => {
+  const author = { nodeId: "author", login: "author", type: "User", association: "CONTRIBUTOR" };
+  for (const candidate of [
     pull(2, { merged_at: "2026-01-01T00:00:00Z", labels: ["trivial"] }),
     pull(3, { merged_at: "2026-01-01T00:00:00Z", labels: ["reverted"] }),
     pull(4, { merged_at: "2026-01-01T00:00:00Z", title: "Revert bad change" }),
     pull(5, {
       merged_at: "2026-01-01T00:00:00Z",
-      user: { node_id: "different-author", login: "author", type: "User" },
-    }),
-    pull(6),
-    pull(7, {
-      merged_at: "2026-01-01T00:00:00Z",
       user: { node_id: "author", login: "renamed-author", type: "User" },
     }),
-  ];
-  const author = { nodeId: "author", login: "author", type: "User", association: "CONTRIBUTOR" };
+  ]) {
+    assert.deepEqual(await contributorEligibility({
+      github: paginated({ closed: [[candidate]] }), owner: "Devolutions", repo: "IronRDP",
+      author, currentPrNumber: 1,
+    }), { status: "eligible", merged: 1 });
+  }
+
   assert.deepEqual(await contributorEligibility({
-    github: paginated({ closed: [history] }), owner: "Devolutions", repo: "IronRDP",
-    author, currentPrNumber: 1,
-  }), { status: "eligible", merged: 1 });
-  assert.deepEqual(await contributorEligibility({
-    github: paginated({ closed: [history.slice(0, 5)] }), owner: "Devolutions", repo: "IronRDP",
+    github: paginated({ closed: [[
+      pull(6),
+      pull(7, { merged_at: "2026-01-01T00:00:00Z", base: { ref: "release" } }),
+      pull(8, {
+        merged_at: "2026-01-01T00:00:00Z",
+        user: { node_id: "different-author", login: "author", type: "User" },
+      }),
+    ]] }), owner: "Devolutions", repo: "IronRDP",
     author, currentPrNumber: 1,
   }), { status: "ineligible", merged: 0 });
 });

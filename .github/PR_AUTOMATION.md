@@ -115,7 +115,7 @@ The classifier controls `scope/cross-cutting`, `kind/technical-debt`, and docume
 Automatic review runs for every non-draft pull request that passes the remaining gates.
 `OWNER` and `MEMBER` authors are eligible without contributor history.
 Other human authors need one qualifying merged IronRDP pull request from the same immutable author.
-Qualifying pull requests are merged, are not labeled `trivial` or `reverted`, and do not have a title beginning with `revert`.
+A qualifying pull request is any pull request from that author merged into `master`.
 Automatic review requires successful CI for the exact classified head.
 After the first review, a later push starts the second review when CI succeeds for that new head.
 Duplicates at confidence 0.85 or greater, legitimacy triage, and `ai-reviewed/2` block automatic review.
