@@ -2936,6 +2936,7 @@ async fn active_session(
     let mut rail_queue_release_deadline = None;
     let mut graceful_shutdown_sent = false;
     let mut post_logon_redraw_requested = false;
+    let mut pending_udp_payload: Option<Vec<u8>> = None;
     let mut initial_outputs = if *graceful_close_receiver.borrow_and_update() {
         graceful_shutdown_sent = true;
         Some(active_stage.graceful_shutdown()?)
@@ -2971,9 +2972,27 @@ async fn active_session(
             #[cfg(not(feature = "rdpdr"))]
             core::future::pending::<()>().await;
         };
+        let buffered_udp_iteration = if initial_outputs.is_none() && active_stage.reliable_udp_dvc_tunnel_in_use() {
+            match pending_udp_payload.take() {
+                Some(payload) => Some(ActiveSessionIteration::dvc(
+                    active_stage.process_dvc_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &payload)?,
+                )),
+                None => None,
+            }
+        } else {
+            None
+        };
         let mut iteration = if let Some(outputs) = initial_outputs.take() {
             ActiveSessionIteration::outputs(outputs)
+        } else if let Some(iteration) = buffered_udp_iteration {
+            iteration
         } else {
+            #[cfg(feature = "udp")]
+            if active_stage.reliable_udp_dvc_tunnel_in_use() && udp_tunnel.transport.is_none() {
+                return Ok(RdpControlFlow::TransportFailure(ironrdp_session::general_err!(
+                    "reliable UDP tunnel closed"
+                )));
+            }
             tokio::select! {
                 _ = close_receiver.changed() => {
                     break 'outer GracefulDisconnectReason::UserInitiated;
@@ -3063,9 +3082,11 @@ async fn active_session(
                 udp_payload = async {
                     #[cfg(feature = "udp")]
                     {
-                        match udp_tunnel.transport.as_mut() {
-                            Some(transport) => transport.recv().await,
-                            None => core::future::pending().await,
+                        match (udp_tunnel.transport.as_mut(), pending_udp_payload.is_none()) {
+                            (Some(transport), true) => transport.recv().await,
+                            (Some(_), false) | (None, _) => {
+                                core::future::pending::<Option<Vec<u8>>>().await
+                            }
                         }
                     }
                     #[cfg(not(feature = "udp"))]
@@ -3093,9 +3114,17 @@ async fn active_session(
                         ActiveSessionIteration::outputs(Vec::new())
                     }
                     Some(payload) => {
-                        let batch =
-                            active_stage.process_dvc_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &payload)?;
-                        ActiveSessionIteration::dvc(batch)
+                        if active_stage.reliable_udp_dvc_tunnel_in_use() {
+                            let batch =
+                                active_stage.process_dvc_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &payload)?;
+                            ActiveSessionIteration::dvc(batch)
+                        } else {
+                            // The server can send on UDP immediately after its Soft-Sync request,
+                            // before the independently ordered request arrives over TCP. Stop
+                            // polling here so the transport retains subsequent ordered payloads.
+                            pending_udp_payload = Some(payload);
+                            ActiveSessionIteration::outputs(Vec::new())
+                        }
                     }
                     }
                 }
@@ -3912,7 +3941,14 @@ async fn active_session(
                             )
                         };
                     #[cfg(not(feature = "udp"))]
-                    let outcome = ironrdp_connector::MultitransportResult::Failure(MultitransportResponsePdu::E_ABORT);
+                    let outcome = {
+                        debug!(
+                            request_id = request.request_id,
+                            requested_protocol = ?request.requested_protocol,
+                            "Rejecting multitransport request because UDP support is disabled"
+                        );
+                        ironrdp_connector::MultitransportResult::Failure(MultitransportResponsePdu::E_ABORT)
+                    };
 
                     if let Some(response) = outcome.response_pdu(request.request_id, multitransport_soft_sync) {
                         let frame = active_stage.encode_multitransport_response(&response)?;
