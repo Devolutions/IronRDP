@@ -89,11 +89,11 @@ Final publication rechecks the current head before mutation.
 ## Protocol corpus
 
 The protocol specialist reads the Microsoft Open Specifications as inert data under `review-sources/windows-protocols`.
-The workflow pins a reviewed `awakecoding/openspecs` commit, fetches that exact SHA without credentials, and copies only allowlisted regular Markdown files.
+The workflow fetches the latest `awakecoding/openspecs` master without credentials and copies only allowlisted regular Markdown files.
 It excludes skills, instruction files, symlinks, submodules, executables, and lifecycle content.
 
 Citation validation uses the same corpus commit that the specialist read.
-Every protocol ID, section number, and heading must exist at that exact commit.
+Every protocol ID, section number, and heading must exist in that fetched commit.
 An unavailable corpus, protocol specialist, or protocol validation blocks publication for a mandatory protocol review.
 
 ## Classification and review policy

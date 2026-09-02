@@ -92,8 +92,8 @@ test("workflow uses bounded classifier lanes and one parallel review pipeline", 
   assert.equal((combined.match(/uses: \.\/\.github\/actions\/openai-agent/g) || []).length, 3);
   assert.equal((combined.match(/environment: llm-providers/g) || []).length, 3);
   assert.equal((combined.match(/secrets\.HELMCODE_GLM_API_KEY/g) || []).length, 3);
-  assert.match(reviewWorkflow, /OPENSPECS_COMMIT: [0-9a-f]{40}/);
-  assert.doesNotMatch(reviewWorkflow, /openspecs" fetch .*origin \+master/);
+  assert.doesNotMatch(reviewWorkflow, /OPENSPECS_COMMIT/);
+  assert.match(reviewWorkflow, /openspecs" fetch .*origin \+master:refs\/remotes\/origin\/master/);
 
   const classifier = workflowJob(workflow, "classifier");
   assert.match(workflowJob(workflow, "resolve-pr"),

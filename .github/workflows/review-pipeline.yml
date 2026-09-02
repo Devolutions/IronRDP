@@ -33,9 +33,6 @@ on:
 
 permissions: {}
 
-env:
-  OPENSPECS_COMMIT: 3a5ef220a6cc92453171e7b62129ed7740628c93
-
 jobs:
   evidence:
     name: Prepare review evidence
@@ -116,7 +113,7 @@ jobs:
               JSON.stringify({ head_sha: expectedSha }),
             );
 
-      - name: Fetch and sanitize the pinned protocol corpus
+      - name: Fetch and sanitize the latest protocol corpus
         id: protocol-sources
         if: contains(fromJSON(inputs.specialist-reviewers), 'protocol')
         shell: bash
@@ -127,10 +124,9 @@ jobs:
           git -C "$RUNNER_TEMP" init openspecs
           git -C "$RUNNER_TEMP/openspecs" config --local core.hooksPath /dev/null
           git -C "$RUNNER_TEMP/openspecs" remote add origin https://github.com/awakecoding/openspecs.git
-          git -C "$RUNNER_TEMP/openspecs" fetch --depth=1 --no-tags origin "$OPENSPECS_COMMIT"
-          git -C "$RUNNER_TEMP/openspecs" checkout --detach "$OPENSPECS_COMMIT"
+          git -C "$RUNNER_TEMP/openspecs" fetch --depth=1 --no-tags origin +master:refs/remotes/origin/master
+          git -C "$RUNNER_TEMP/openspecs" checkout --detach origin/master
           openspecs_sha="$(git -C "$RUNNER_TEMP/openspecs" rev-parse HEAD)"
-          test "$openspecs_sha" = "$OPENSPECS_COMMIT"
           bash ./.github/pr-automation/prepare-review-sources.sh \
             "$RUNNER_TEMP/openspecs" "$openspecs_sha"
           echo "openspecs-sha=$openspecs_sha" >> "$GITHUB_OUTPUT"
