@@ -13,7 +13,7 @@
 
 use core::fmt;
 use core::str::FromStr;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
@@ -23,9 +23,10 @@ use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
 use ironrdp_rpc::ipc::{
-    AgentError, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent,
-    OperationEventKind, OperationInfo, OperationState, Payload, PenContactRequest, PenFrameRequest, PropValue,
-    RailEvent, RailEventKind, RailExecuteRequest, Request, Response, TouchContactRequest, TouchFrameRequest,
+    AgentError, KeyFilter, MAX_CLIPBOARD_IMAGE_BYTES, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest,
+    NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload, PenContactRequest,
+    PenFrameRequest, PropValue, RailEvent, RailEventKind, RailExecuteRequest, Request, Response, TouchContactRequest,
+    TouchFrameRequest,
 };
 use ironrdp_rpc::transport::{self, Endpoint};
 
@@ -115,6 +116,11 @@ enum Command {
         #[arg(long)]
         text: String,
     },
+    /// Write the last image received from the remote clipboard to disk as a PNG, if any.
+    ClipboardGetImage(ClipboardGetImageArgs),
+    /// Set the local clipboard image from a PNG file and advertise it to the remote
+    /// (`CF_DIB`/`CF_DIBV5`).
+    ClipboardSetImage(ClipboardSetImageArgs),
     /// Send one MS-RDPEI touch contact sample (legal flag sets only).
     Touch {
         #[arg(long, default_value_t = 0)]
@@ -588,6 +594,18 @@ struct ScreenshotArgs {
     path: Option<PathBuf>,
 }
 
+#[derive(Args, Debug)]
+struct ClipboardGetImageArgs {
+    /// Destination PNG path (defaults to `clipboard.png` in the current directory).
+    path: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct ClipboardSetImageArgs {
+    /// Source PNG path.
+    path: PathBuf,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CliMouseButton {
     Left,
@@ -919,6 +937,42 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             };
             let path = args.path.unwrap_or_else(|| PathBuf::from("screenshot.png"));
             return write_screenshot(width, height, &png, &path);
+        }
+        Command::ClipboardGetImage(args) => {
+            let response = transport::send_request(&endpoint, &Request::ClipboardGetImage).await?;
+            let payload = match response {
+                Response::Ok(payload) => payload,
+                Response::Err(message) => anyhow::bail!("{message}"),
+            };
+            let Payload::ClipboardImage(png) = payload else {
+                anyhow::bail!("unexpected response to clipboard-get-image request");
+            };
+            let Some(png) = png else {
+                println!("no image on the remote clipboard");
+                return Ok(());
+            };
+            let path = args.path.unwrap_or_else(|| PathBuf::from("clipboard.png"));
+            std::fs::write(&path, &png).with_context(|| format!("write {}", path.display()))?;
+            println!("wrote {} ({} bytes)", path.display(), png.len());
+            return Ok(());
+        }
+        Command::ClipboardSetImage(args) => {
+            let file = std::fs::File::open(&args.path).with_context(|| format!("open {}", args.path.display()))?;
+            let mut png = Vec::new();
+            file.take(
+                u64::try_from(MAX_CLIPBOARD_IMAGE_BYTES)
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(1),
+            )
+            .read_to_end(&mut png)
+            .with_context(|| format!("read {}", args.path.display()))?;
+            if png.len() > MAX_CLIPBOARD_IMAGE_BYTES {
+                anyhow::bail!(
+                    "{} exceeds the {MAX_CLIPBOARD_IMAGE_BYTES}-byte clipboard image limit",
+                    args.path.display(),
+                );
+            }
+            Request::ClipboardSetImage { png }
         }
         Command::MouseMove { x, y } => Request::MouseMove { x, y },
         Command::MouseButton { button, pressed } => Request::MouseButton {
@@ -2105,6 +2159,8 @@ fn print_payload(payload: Payload) {
             Some(text) => println!("{text}"),
             None => println!("(empty)"),
         },
+        // Handled out-of-band by the `ClipboardGetImage` command, never printed here.
+        Payload::ClipboardImage(png) => println!("clipboard image ({} bytes)", png.as_ref().map_or(0, Vec::len)),
     }
 }
 

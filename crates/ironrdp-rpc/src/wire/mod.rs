@@ -62,6 +62,38 @@ pub fn read_bytes(src: &mut ReadCursor<'_>) -> DecodeResult<Vec<u8>> {
     Ok(src.read_slice(len).to_vec())
 }
 
+/// Size on the wire of an optional length-prefixed raw byte blob.
+pub fn opt_bytes_size(value: Option<&[u8]>) -> usize {
+    1 /* presence flag */ + value.map_or(0, bytes_size)
+}
+
+pub fn write_opt_bytes(dst: &mut WriteCursor<'_>, value: Option<&[u8]>) -> EncodeResult<()> {
+    ensure_size!(in: dst, size: 1);
+    match value {
+        Some(value) => {
+            dst.write_u8(1);
+            write_bytes(dst, value)
+        }
+        None => {
+            dst.write_u8(0);
+            Ok(())
+        }
+    }
+}
+
+pub fn read_opt_bytes(src: &mut ReadCursor<'_>) -> DecodeResult<Option<Vec<u8>>> {
+    ensure_size!(in: src, size: 1);
+    match src.read_u8() {
+        0 => Ok(None),
+        1 => Ok(Some(read_bytes(src)?)),
+        _ => Err(ironrdp_core::invalid_field_err!(
+            "optional bytes",
+            "invalid presence flag",
+            in: src
+        )),
+    }
+}
+
 pub fn write_opt_string(dst: &mut WriteCursor<'_>, value: Option<&str>) -> EncodeResult<()> {
     ensure_size!(in: dst, size: 1);
     match value {

@@ -2852,6 +2852,7 @@ dependencies = [
  "ironrdp-cfg",
  "ironrdp-client",
  "ironrdp-cliprdr",
+ "ironrdp-cliprdr-format",
  "ironrdp-connector",
  "ironrdp-input",
  "ironrdp-pdu",

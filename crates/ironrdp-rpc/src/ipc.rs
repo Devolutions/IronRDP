@@ -24,15 +24,33 @@ use ironrdp_rdpei::pdu::{
 };
 
 use crate::wire::{
-    bytes_size, opt_string_size, opt_u16_size, opt_u64_size, propertyset, read_bool, read_bytes, read_char,
-    read_mouse_button, read_opt_string, read_opt_u16, read_opt_u64, read_string, string_size, write_bool, write_bytes,
-    write_char, write_mouse_button, write_opt_string, write_opt_u16, write_opt_u64, write_string,
+    bytes_size, opt_bytes_size, opt_string_size, opt_u16_size, opt_u64_size, propertyset, read_bool, read_bytes,
+    read_char, read_mouse_button, read_opt_bytes, read_opt_string, read_opt_u16, read_opt_u64, read_string,
+    string_size, write_bool, write_bytes, write_char, write_mouse_button, write_opt_bytes, write_opt_string,
+    write_opt_u16, write_opt_u64, write_string,
 };
 
 /// Maximum number of Unicode scalar values accepted in one [`Request::UnicodeText`] request.
 ///
 /// The agent reserves one bounded input-queue entry for each character before submitting any text.
 pub const MAX_UNICODE_TEXT_CHARS: usize = 96;
+
+/// Maximum size in bytes of a PNG accepted by [`Request::ClipboardSetImage`].
+///
+/// This is an RPC payload bound, derived from [`crate::transport::MAX_MESSAGE_LEN`] (the hard cap
+/// on one framed message) minus headroom for the rest of the `Request`/`Response` encoding. It is
+/// deliberately not derived from `ironrdp_cliprdr_format::bitmap`'s own internal decoded-buffer
+/// cap: That bounds the *decoded* pixel data, a different and unrelated quantity from this
+/// *compressed* PNG input size. A PNG under this limit can still fail that separate decode-time
+/// check (a highly compressible PNG can expand well past it), and this check alone does not
+/// guarantee a successful conversion.
+pub const MAX_CLIPBOARD_IMAGE_BYTES: usize = crate::transport::MAX_MESSAGE_LEN - CLIPBOARD_IMAGE_FRAME_HEADROOM;
+
+/// Headroom subtracted from [`crate::transport::MAX_MESSAGE_LEN`] to get
+/// [`MAX_CLIPBOARD_IMAGE_BYTES`], covering the rest of the `Request`/`Response` encoding
+/// (discriminant, length prefixes, any other fields). Generous on purpose: The actual overhead is
+/// a handful of bytes, but this only needs to be safely conservative, not exact.
+const CLIPBOARD_IMAGE_FRAME_HEADROOM: usize = 4 * 1024;
 
 /// Maximum contacts in one MS-RDPEI touch frame accepted over RPC.
 pub const MAX_TOUCH_CONTACTS: usize = 10;
@@ -442,6 +460,11 @@ pub enum Request {
     ClipboardGet,
     /// Set the local clipboard text and advertise it to the remote (`CF_UNICODETEXT` only).
     ClipboardSet { text: String },
+    /// Return the last image received from the remote clipboard as PNG bytes, if any.
+    ClipboardGetImage,
+    /// Set the local clipboard image (PNG bytes, at most [`MAX_CLIPBOARD_IMAGE_BYTES`]) and
+    /// advertise it to the remote as `CF_DIB`/`CF_DIBV5`.
+    ClipboardSetImage { png: Vec<u8> },
 }
 
 // Manual `Debug` so the `Connect` payload's property *values* (which may include a password before
@@ -560,6 +583,11 @@ impl fmt::Debug for Request {
             Self::ClipboardGet => f.write_str("ClipboardGet"),
             // Never print clipboard contents.
             Self::ClipboardSet { text } => f.debug_struct("ClipboardSet").field("text_len", &text.len()).finish(),
+            Self::ClipboardGetImage => f.write_str("ClipboardGetImage"),
+            Self::ClipboardSetImage { png } => f
+                .debug_struct("ClipboardSetImage")
+                .field("png_len", &png.len())
+                .finish(),
         }
     }
 }
@@ -638,6 +666,8 @@ pub enum Payload {
     RailLaunch(RailLaunchInfo),
     /// The remote clipboard's last `CF_UNICODETEXT` text, or `None` if unavailable.
     ClipboardText(Option<String>),
+    /// The remote clipboard's last image as PNG bytes, or `None` if unavailable.
+    ClipboardImage(Option<Vec<u8>>),
 }
 
 impl fmt::Debug for Payload {
@@ -666,6 +696,10 @@ impl fmt::Debug for Payload {
             Self::ClipboardText(text) => f
                 .debug_tuple("ClipboardText")
                 .field(&text.as_ref().map(String::len))
+                .finish(),
+            Self::ClipboardImage(png) => f
+                .debug_tuple("ClipboardImage")
+                .field(&png.as_ref().map(Vec::len))
                 .finish(),
         }
     }
@@ -1989,6 +2023,10 @@ impl Encode for Payload {
                 dst.write_u8(13);
                 write_opt_string(dst, text.as_deref())?;
             }
+            Self::ClipboardImage(png) => {
+                dst.write_u8(14);
+                write_opt_bytes(dst, png.as_deref())?;
+            }
         }
         Ok(())
     }
@@ -2014,6 +2052,7 @@ impl Encode for Payload {
                 Self::RailEvents(events) => events.size(),
                 Self::RailLaunch(launch) => launch.size(),
                 Self::ClipboardText(text) => opt_string_size(text.as_deref()),
+                Self::ClipboardImage(png) => opt_bytes_size(png.as_deref()),
             }
     }
 }
@@ -2058,6 +2097,13 @@ impl Decode<'_> for Payload {
             11 => Ok(Self::RailEvents(RailEventDump::decode(src)?)),
             12 => Ok(Self::RailLaunch(RailLaunchInfo::decode(src)?)),
             13 => Ok(Self::ClipboardText(read_opt_string(src)?)),
+            14 => {
+                let png = read_opt_bytes(src)?;
+                if png.as_ref().is_some_and(|png| png.len() > MAX_CLIPBOARD_IMAGE_BYTES) {
+                    return Err(ironrdp_core::invalid_field_err!("clipboard image", "too large"));
+                }
+                Ok(Self::ClipboardImage(png))
+            }
             _ => Err(ironrdp_core::invalid_field_err!("payload", "unknown tag", in: src)),
         }
     }
@@ -2273,11 +2319,16 @@ impl Encode for Request {
                 dst.write_u8(28);
                 dst.write_u8(*contact_id);
             }
-            // Tags 29-30: free after DismissHoveringTouchContact (28).
+            // Tags 29-32: free after DismissHoveringTouchContact (28).
             Self::ClipboardGet => dst.write_u8(29),
             Self::ClipboardSet { text } => {
                 dst.write_u8(30);
                 write_string(dst, text)?;
+            }
+            Self::ClipboardGetImage => dst.write_u8(31),
+            Self::ClipboardSetImage { png } => {
+                dst.write_u8(32);
+                write_bytes(dst, png)?;
             }
         }
         Ok(())
@@ -2300,7 +2351,8 @@ impl Encode for Request {
                 | Self::NowList
                 | Self::NowDiagnostics
                 | Self::RailStatus
-                | Self::ClipboardGet => 0,
+                | Self::ClipboardGet
+                | Self::ClipboardGetImage => 0,
                 Self::QueryProps { filter } => 1 /* presence */ + filter.as_ref().map_or(0, Encode::size),
                 Self::QueryLogs { substring, last } => {
                     opt_string_size(substring.as_deref()) + 1 /* presence */ + last.map_or(0, |_| 4)
@@ -2340,6 +2392,7 @@ impl Encode for Request {
                 }
                 Self::DismissHoveringTouchContact { .. } => 1 /* contact_id */,
                 Self::ClipboardSet { text } => string_size(text),
+                Self::ClipboardSetImage { png } => bytes_size(png),
             }
     }
 }
@@ -2534,6 +2587,14 @@ impl Decode<'_> for Request {
             30 => Ok(Self::ClipboardSet {
                 text: read_string(src)?,
             }),
+            31 => Ok(Self::ClipboardGetImage),
+            32 => {
+                let png = read_bytes(src)?;
+                if png.len() > MAX_CLIPBOARD_IMAGE_BYTES {
+                    return Err(ironrdp_core::invalid_field_err!("clipboard image", "too large"));
+                }
+                Ok(Self::ClipboardSetImage { png })
+            }
             _ => Err(ironrdp_core::invalid_field_err!("request", "unknown tag", in: src)),
         }
     }

@@ -776,7 +776,18 @@ fn decode_png(mut input: &[u8]) -> Result<(png::OutputInfo, Vec<u8>), BitmapErro
     let mut decoder = png::Decoder::new(Cursor::new(&mut input));
 
     // We need to produce 32-bit DIB, so we should expand the palette to 32-bit RGBA.
-    decoder.set_transformations(png::Transformations::ALPHA | png::Transformations::EXPAND);
+    //
+    // `STRIP_16` normalizes 16-bit-per-channel samples to 8-bit; without it, a 16-bit source stays
+    // 16-bit, but `top_down_rgba_to_bottom_up_bgra` below always consumes four one-byte samples per
+    // pixel, silently misreading such a buffer.
+    //
+    // `EXPAND | ALPHA` guarantees an alpha channel and 8-bit samples for indexed and RGB inputs,
+    // but this crate version's `output_color_type()` has no path from Grayscale/GrayscaleAlpha to
+    // Rgba (it declares a `GRAY_TO_RGB` flag but never implements it), so a grayscale source comes
+    // out as `GrayscaleAlpha` (2 channels), not `Rgba` (4). Handled explicitly below.
+    decoder.set_transformations(
+        png::Transformations::ALPHA | png::Transformations::EXPAND | png::Transformations::STRIP_16,
+    );
 
     let mut reader = decoder.read_info()?;
     let Some(output_buffer_len) = reader.output_buffer_size() else {
@@ -787,8 +798,22 @@ fn decode_png(mut input: &[u8]) -> Result<(png::OutputInfo, Vec<u8>), BitmapErro
     ensure(output_buffer_len <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
 
     let mut buffer = vec![0; output_buffer_len];
-    let info = reader.next_frame(&mut buffer)?;
+    let mut info = reader.next_frame(&mut buffer)?;
     buffer.truncate(info.buffer_size());
+
+    // The transformations above guarantee 8-bit samples but, per the comment above, cannot convert
+    // grayscale to RGB in this crate version. Expand it by hand so every caller of this function
+    // can assume `Rgba`.
+    if info.color_type == png::ColorType::GrayscaleAlpha {
+        // This doubles the buffer (2 channels -> 4), so the `MAX_BUFFER_SIZE` check above, which
+        // ran against the pre-expansion size, no longer covers the buffer this function returns.
+        ensure(buffer.len().saturating_mul(2) <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
+        buffer = buffer
+            .chunks_exact(2)
+            .flat_map(|ga| [ga[0], ga[0], ga[0], ga[1]])
+            .collect();
+        info.color_type = png::ColorType::Rgba;
+    }
 
     Ok((info, buffer))
 }

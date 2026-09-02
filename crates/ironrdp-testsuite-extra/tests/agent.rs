@@ -161,6 +161,14 @@ fn request_variants_round_trip() {
             arguments: "audit.txt".to_owned(),
             flags: 0,
         }),
+        Request::ClipboardGet,
+        Request::ClipboardSet {
+            text: "clipboard text".to_owned(),
+        },
+        Request::ClipboardGetImage,
+        Request::ClipboardSetImage {
+            png: vec![0x89, b'P', b'N', b'G', 0, 0xFF],
+        },
     ];
 
     for request in &requests {
@@ -305,6 +313,10 @@ fn response_variants_round_trip() {
             executable: "notepad.exe".to_owned(),
             flags: 0,
         })),
+        Response::Ok(Payload::ClipboardText(None)),
+        Response::Ok(Payload::ClipboardText(Some("clipboard text".to_owned()))),
+        Response::Ok(Payload::ClipboardImage(None)),
+        Response::Ok(Payload::ClipboardImage(Some(vec![0x89, b'P', b'N', b'G', 0, 0xFF]))),
     ];
 
     for response in &responses {
@@ -350,6 +362,44 @@ fn bytes_wire_round_trips() {
     let mut read_cursor = ironrdp_core::ReadCursor::new(&buf);
     let decoded = wire::read_bytes(&mut read_cursor).expect("read_bytes");
     assert_eq!(original, decoded, "bytes wire round-trip mismatch");
+}
+
+#[test]
+fn opt_bytes_wire_round_trips() {
+    for original in [None, Some(vec![0x89, b'P', b'N', b'G', 0x00, 0xFF])] {
+        let size = wire::opt_bytes_size(original.as_deref());
+        let mut buf = vec![0u8; size];
+        let mut cursor = ironrdp_core::WriteCursor::new(&mut buf);
+        wire::write_opt_bytes(&mut cursor, original.as_deref()).expect("write_opt_bytes");
+        assert_eq!(cursor.pos(), size, "written length must match computed size");
+
+        let mut read_cursor = ironrdp_core::ReadCursor::new(&buf);
+        let decoded = wire::read_opt_bytes(&mut read_cursor).expect("read_opt_bytes");
+        assert_eq!(original, decoded, "optional bytes wire round-trip mismatch");
+    }
+}
+
+#[test]
+fn clipboard_debug_redacts_content() {
+    let request = Request::ClipboardSet {
+        text: "secret-text".to_owned(),
+    };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("secret-text"));
+
+    let payload = Payload::ClipboardText(Some("secret-text".to_owned()));
+    let debug = format!("{payload:?}");
+    assert!(!debug.contains("secret-text"));
+
+    let request = Request::ClipboardSetImage {
+        png: b"secret-pixels".to_vec(),
+    };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("secret-pixels"));
+
+    let payload = Payload::ClipboardImage(Some(b"secret-pixels".to_vec()));
+    let debug = format!("{payload:?}");
+    assert!(!debug.contains("secret-pixels"));
 }
 
 #[test]
