@@ -5181,6 +5181,19 @@ impl PresentationSurface {
         self.matches_extent(frame) && self.sequence == frame.sequence
     }
 
+    fn full_update(&self) -> Result<FrameUpdate> {
+        let pixel_count = usize::from(self.width)
+            .checked_mul(usize::from(self.height))
+            .ok_or_else(|| Error::from_hresult(E_OUTOFMEMORY))?;
+        let source = unsafe { slice::from_raw_parts(self.pixels, pixel_count) };
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(pixel_count)
+            .map_err(|_| Error::from_hresult(E_OUTOFMEMORY))?;
+        buffer.extend_from_slice(source);
+        FrameUpdate::full(buffer, self.width, self.height).ok_or_else(|| Error::from_hresult(E_INVALIDARG))
+    }
+
     fn copy_from(&mut self, frame: &Frame, update: &FrameUpdate) -> bool {
         if !self.matches_extent(frame) || self.width != update.width || self.height != update.height {
             return false;
@@ -8116,7 +8129,7 @@ pub(crate) struct Control {
     rail_windows: RefCell<RailWindowManager>,
     presentation_backbuffer: RefCell<Option<PresentationBackbuffer>>,
     screen_updates_suspended: Cell<bool>,
-    suspended_frame: RefCell<Option<(Vec<u32>, u16, u16)>>,
+    suspended_frame: RefCell<Option<FrameUpdate>>,
     next_frame_sequence: Cell<u64>,
     presentation_layout_generation: Cell<u64>,
     traced_frame_layout_generation: Cell<u64>,
@@ -8638,10 +8651,22 @@ impl Control {
         if self.state.get() != ConnectionState::Connected {
             return Err(Error::from_hresult(E_UNEXPECTED));
         }
-        if self.screen_updates_suspended.replace(suspended) && !suspended {
+        if suspended {
+            if self.screen_updates_suspended.get() {
+                return Ok(());
+            }
+            let pending = self
+                .presentation_surface
+                .borrow()
+                .as_ref()
+                .map(PresentationSurface::full_update)
+                .transpose()?;
+            *self.suspended_frame.borrow_mut() = pending;
+            self.screen_updates_suspended.set(true);
+        } else if self.screen_updates_suspended.replace(false) {
             let pending = self.suspended_frame.borrow_mut().take();
-            if let Some((buffer, width, height)) = pending {
-                self.present_frame(buffer, i32::from(width), i32::from(height));
+            if let Some(update) = pending {
+                self.present_frame(update);
                 return Ok(());
             }
             self.notify_ole_advise_view_change();
@@ -12882,7 +12907,21 @@ impl Control {
             return;
         };
         if self.screen_updates_suspended.get() {
-            *self.suspended_frame.borrow_mut() = Some((buffer, width, height));
+            let mut pending = self.suspended_frame.borrow_mut();
+            if pending.as_mut().is_some_and(|pending| pending.merge_from(&update)) {
+                return;
+            }
+            if update.is_full_frame() {
+                *pending = Some(update);
+            } else {
+                pending.take();
+                tracing::warn!(
+                    width = update.width,
+                    height = update.height,
+                    ?update.region,
+                    "Discarding suspended partial frame without a compatible base"
+                );
+            }
             return;
         }
 
@@ -21676,7 +21715,7 @@ try {
     fn modern_actions_control_presentation_and_return_png_data_uris() {
         let control = Control::new();
         control.state.set(ConnectionState::Connected);
-        control.present_frame(vec![0x00ff_0000, 0x0000_ff00], 2, 1);
+        control.present_frame(FrameUpdate::full(vec![0x00ff_0000, 0x0000_ff00], 2, 1).expect("valid initial frame"));
 
         control
             .set_screen_updates_suspended(true)
@@ -21688,7 +21727,34 @@ try {
             .as_ref()
             .expect("initial frame is visible")
             .sequence;
-        control.present_frame(vec![0x0000_00ff, 0x00ff_ffff], 2, 1);
+        control.present_frame(
+            FrameUpdate::new(
+                vec![0x0000_00ff],
+                2,
+                1,
+                InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+            )
+            .expect("valid first suspended region"),
+        );
+        control.present_frame(
+            FrameUpdate::new(
+                vec![0x00ff_ffff],
+                2,
+                1,
+                InclusiveRectangle {
+                    left: 1,
+                    top: 0,
+                    right: 1,
+                    bottom: 0,
+                },
+            )
+            .expect("valid second suspended region"),
+        );
         assert_eq!(
             control
                 .presentation_surface
@@ -21710,6 +21776,20 @@ try {
                 .expect("pending frame is published on resume")
                 .sequence,
             visible_sequence
+        );
+        assert_eq!(
+            unsafe {
+                slice::from_raw_parts(
+                    control
+                        .presentation_surface
+                        .borrow()
+                        .as_ref()
+                        .expect("resumed surface")
+                        .pixels,
+                    2,
+                )
+            },
+            [0x0000_00ff, 0x00ff_ffff]
         );
 
         let snapshot = control.snapshot_data_uri(0, 0, 1, 1).expect("encode PNG snapshot");
