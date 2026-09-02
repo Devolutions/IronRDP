@@ -16,8 +16,8 @@ The pipeline performs these stages:
 1. Prepare a SHA-bound changed-file manifest, diff, pull request context, and read-only head tree.
 2. Classify risk, scope, legitimacy, duplicate likelihood, protocol relevance, and useful specialist reviewers.
 3. Apply workflow-controlled routing rules and persist the canonical review plan in the `AI classification` check.
-4. Run selected specialists sequentially in the order `protocol`, `skeptical`, then `code-compressor`.
-5. Validate each specialist result and write `validated-specialist-findings.json`.
+4. Run selected specialists in a three-job parallel matrix.
+5. Validate each specialist result and aggregate them in canonical order.
 6. Run the general reviewer as an independent reviewer and verifier.
 7. Validate its candidate dispositions, findings, locations, and provenance.
 8. Resolve validated state and publish through the serialized writer.
@@ -25,7 +25,7 @@ The pipeline performs these stages:
 Workflow routing selects the code-compressor for every eligible review.
 Protocol-related changes always require the protocol specialist.
 Medium- and high-risk changes always require the skeptical specialist.
-IronRDP configures sequential execution only, and model output cannot select parallelism.
+Workflow code fixes the matrix at three concurrent specialists, and model output cannot select parallelism.
 
 Specialists use one bounded candidate schema.
 Each candidate binds to the expected head SHA, a configured reviewer ID, a changed path, an optional added-line range, and a unique finding ID.
@@ -63,6 +63,7 @@ It loads a workflow-controlled agent configuration, prompt, output schema, metho
 It exposes only `read_file`, `list_files`, and `search_text`.
 It enforces turn, tool-call, path, byte, line, recursion, result, timeout, and retry limits.
 It validates JSON against the configured schema and permits one tools-disabled correction completion.
+The SDK retries retryable responses twice, honors supported `Retry-After` headers, and then fails closed.
 
 The action exposes no command execution, writes, Git operations, GitHub APIs, environment access, arbitrary network access, or generic URL fetching.
 It logs bounded metadata only and never logs prompts, pull request content, tool arguments, tool results, model responses, provider response bodies, or credentials.
@@ -143,8 +144,13 @@ The default author quota is five pull requests, established contributors can use
 ## State, publication, and failure behavior
 
 SHA-bound GitHub checks carry classification and review state between permission-isolated jobs.
+SHA-bound workflow artifacts carry evidence and validated results between review-pipeline jobs.
 Only the final writer mutates pull request state, and it serializes those mutations per pull request.
 Model-execution jobs have read-only or empty permissions.
+
+Two static classifier concurrency lanes allow at most two classifier jobs to invoke Helmcode at once.
+The reusable review workflow runs under one global caller-job lock and allows at most three specialist requests at once.
+Together these limits keep Helmcode usage within the five-request API-key limit.
 
 Inline comments target only validated added lines.
 Other findings appear in the review body.

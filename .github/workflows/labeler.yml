@@ -58,6 +58,7 @@ jobs:
       review-requested: ${{ steps.resolve.outputs.review-requested }}
       classification-requested: ${{ steps.resolve.outputs.classification-requested }}
       review-route: ${{ steps.resolve.outputs.review-route }}
+      classifier-lane: ${{ steps.resolve.outputs.classifier-lane }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -89,6 +90,7 @@ jobs:
             core.setOutput("review-requested", result.reviewRequested === true);
             core.setOutput("classification-requested", result.classificationRequested === true);
             core.setOutput("review-route", result.reviewRoute === true);
+            core.setOutput("classifier-lane", result.prNumber ? (Number(result.prNumber) % 2) + 1 : "");
             core.info(JSON.stringify({ event: "pr-automation.resolve-pr", decision: result }));
             if (!result.ok) core.warning(`PR automation did not start: ${result.reason}`);
 
@@ -410,6 +412,10 @@ jobs:
       needs.fork-rate-limit.outputs.allowed == 'true' &&
       !contains(fromJSON(needs.resolve-pr.outputs.labels), 'ai-reviewed/2')))
     runs-on: ubuntu-latest
+    concurrency:
+      group: llm-classifier-${{ needs.resolve-pr.outputs.classifier-lane }}
+      cancel-in-progress: false
+      queue: max
     permissions:
       pull-requests: read
     environment: llm-providers
@@ -694,259 +700,21 @@ jobs:
       (needs.fork-rate-limit.result == 'success' &&
       needs.fork-rate-limit.outputs.allowed == 'true' &&
       needs.review-gate.outputs.eligible == 'true'))
-    runs-on: ubuntu-latest
+    concurrency:
+      group: llm-reviewer-pipeline
+      cancel-in-progress: false
+      queue: max
     permissions:
+      contents: read
       issues: read
       pull-requests: read
-    environment: llm-providers
-    env:
-      OPENSPECS_COMMIT: 3a5ef220a6cc92453171e7b62129ed7740628c93
-    outputs:
-      output: ${{ steps.final.outputs.output }}
-      failure-reason: ${{ steps.evidence.outputs.failure-reason || steps.final.outputs.reason }}
-    steps:
-      - id: evidence
-        name: Prepare review evidence once
-        shell: bash
-        env:
-          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
-          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
-        run: |
-          set -euo pipefail
-          export GIT_CONFIG_NOSYSTEM=1
-          export GIT_CONFIG_GLOBAL=/dev/null
-          git init .
-          git config --local core.hooksPath /dev/null
-          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
-          git fetch --no-tags origin +master:refs/remotes/origin/master
-          git checkout --detach origin/master
-          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"; then
-            reason="pull request evidence unavailable"
-            if test -f pr-evidence/failure-reason.txt; then
-              reason="$(cat pr-evidence/failure-reason.txt)"
-            fi
-            echo "failure-reason=$reason" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-      - name: Fetch bounded review and location context
-        uses: actions/github-script@v8
-        env:
-          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
-          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
-        with:
-          script: |
-            const fs = require("node:fs");
-            const { addedLinesByPath, listPrFiles } = require("./.github/pr-automation/deterministic-analysis");
-            const { fetchReviewContext } = require("./.github/pr-automation/fetch-review-context");
-            const pullNumber = Number(process.env.PULL_REQUEST_NUMBER);
-            const expectedSha = process.env.HEAD_SHA;
-            const assertHead = async () => {
-              const { data } = await github.rest.pulls.get({
-                owner: context.repo.owner, repo: context.repo.repo, pull_number: pullNumber,
-              });
-              if (data.state !== "open" || data.head?.sha !== expectedSha) {
-                throw new Error("pull request head is no longer current");
-              }
-            };
-            await assertHead();
-            const reviewContext = await fetchReviewContext({
-              github, owner: context.repo.owner, repo: context.repo.repo,
-              pullNumber, expectedHeadSha: expectedSha,
-            });
-            const files = await listPrFiles(github, {
-              owner: context.repo.owner, repo: context.repo.repo, prNumber: pullNumber,
-            });
-            await assertHead();
-            fs.writeFileSync(
-              "pr-evidence/pull-request-context.json",
-              JSON.stringify(reviewContext, null, 2),
-            );
-            fs.writeFileSync(
-              "pr-evidence/validation-context.json",
-              JSON.stringify({
-                changed_paths: files.map((file) => file.filename),
-                changed_lines: addedLinesByPath(files),
-              }),
-            );
-            fs.writeFileSync(
-              "pr-automation-context.json",
-              JSON.stringify({ head_sha: expectedSha }),
-            );
-
-      - name: Fetch and sanitize the pinned protocol corpus
-        id: protocol-sources
-        if: contains(fromJSON(needs.review-gate.outputs.specialist-reviewers), 'protocol')
-        shell: bash
-        run: |
-          set -euo pipefail
-          export GIT_CONFIG_NOSYSTEM=1
-          export GIT_CONFIG_GLOBAL=/dev/null
-          git -C "$RUNNER_TEMP" init openspecs
-          git -C "$RUNNER_TEMP/openspecs" config --local core.hooksPath /dev/null
-          git -C "$RUNNER_TEMP/openspecs" remote add origin https://github.com/awakecoding/openspecs.git
-          git -C "$RUNNER_TEMP/openspecs" fetch --depth=1 --no-tags origin "$OPENSPECS_COMMIT"
-          git -C "$RUNNER_TEMP/openspecs" checkout --detach "$OPENSPECS_COMMIT"
-          openspecs_sha="$(git -C "$RUNNER_TEMP/openspecs" rev-parse HEAD)"
-          test "$openspecs_sha" = "$OPENSPECS_COMMIT"
-          bash ./.github/pr-automation/prepare-review-sources.sh \
-            "$RUNNER_TEMP/openspecs" "$openspecs_sha"
-          echo "openspecs-sha=$openspecs_sha" >> "$GITHUB_OUTPUT"
-
-      - id: protocol
-        name: Run protocol specialist
-        if: contains(fromJSON(needs.review-gate.outputs.specialist-reviewers), 'protocol')
-        continue-on-error: true
-        uses: ./.github/actions/openai-agent
-        with:
-          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
-          base-url: https://api.helmcode.com/v1
-          config-file: .github/pr-automation/agents/protocol.json
-
-      - id: skeptical
-        name: Run skeptical specialist
-        if: contains(fromJSON(needs.review-gate.outputs.specialist-reviewers), 'skeptical')
-        continue-on-error: true
-        uses: ./.github/actions/openai-agent
-        with:
-          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
-          base-url: https://api.helmcode.com/v1
-          config-file: .github/pr-automation/agents/skeptical.json
-
-      - id: code-compressor
-        name: Run code-compressor specialist
-        if: contains(fromJSON(needs.review-gate.outputs.specialist-reviewers), 'code-compressor')
-        continue-on-error: true
-        uses: ./.github/actions/openai-agent
-        with:
-          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
-          base-url: https://api.helmcode.com/v1
-          config-file: .github/pr-automation/agents/code-compressor.json
-
-      - id: aggregate
-        name: Build validated specialist findings
-        uses: actions/github-script@v8
-        env:
-          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
-          SPECIALIST_REVIEWERS: ${{ needs.review-gate.outputs.specialist-reviewers }}
-          GATE: ${{ needs.review-gate.outputs.gate }}
-          OPENSPECS_SHA: ${{ steps.protocol-sources.outputs.openspecs-sha }}
-          PROTOCOL_OUTPUT: ${{ steps.protocol.outputs.structured-output }}
-          PROTOCOL_REASON: ${{ steps.protocol.outputs.failure-reason }}
-          SKEPTICAL_OUTPUT: ${{ steps.skeptical.outputs.structured-output }}
-          SKEPTICAL_REASON: ${{ steps.skeptical.outputs.failure-reason }}
-          COMPRESSOR_OUTPUT: ${{ steps.code-compressor.outputs.structured-output }}
-          COMPRESSOR_REASON: ${{ steps.code-compressor.outputs.failure-reason }}
-        with:
-          script: |
-            const fs = require("node:fs");
-            const {
-              buildSpecialistAggregate, validateSpecialistRun,
-            } = require("./.github/pr-automation/review-pipeline");
-            const { corpusFromDirectory } = require("./.github/pr-automation/validate-protocol-review");
-            const selected = JSON.parse(process.env.SPECIALIST_REVIEWERS);
-            const gate = JSON.parse(process.env.GATE);
-            const validation = JSON.parse(fs.readFileSync(
-              "pr-evidence/validation-context.json", "utf8",
-            ));
-            const output = {
-              protocol: process.env.PROTOCOL_OUTPUT,
-              skeptical: process.env.SKEPTICAL_OUTPUT,
-              "code-compressor": process.env.COMPRESSOR_OUTPUT,
-            };
-            const reason = {
-              protocol: process.env.PROTOCOL_REASON,
-              skeptical: process.env.SKEPTICAL_REASON,
-              "code-compressor": process.env.COMPRESSOR_REASON,
-            };
-            const corpus = selected.includes("protocol")
-              ? corpusFromDirectory("review-sources/windows-protocols", {
-                expectedCorpusSha: process.env.OPENSPECS_SHA,
-              })
-              : undefined;
-            const runs = selected.map((reviewer) => validateSpecialistRun(
-              output[reviewer] || "",
-              {
-                reviewer, expectedSha: process.env.HEAD_SHA,
-                changedPaths: validation.changed_paths,
-                changedLines: validation.changed_lines,
-                corpus,
-                expectedCorpusSha: process.env.OPENSPECS_SHA,
-                failureReason: reason[reviewer],
-              },
-            ).value);
-            const result = buildSpecialistAggregate({
-              expectedSha: process.env.HEAD_SHA,
-              selectedReviewers: selected,
-              runs,
-              protocolRelated: gate.protocolRelated,
-              risk: gate.risk,
-            });
-            if (!result.ok) throw new Error(result.reason);
-            fs.writeFileSync(
-              "validated-specialist-findings.json",
-              JSON.stringify(result.value, null, 2),
-            );
-            core.setOutput("ready", result.mandatoryFailure === "");
-            core.setOutput("reason", result.mandatoryFailure);
-            core.info(JSON.stringify({
-              event: "pr-automation.specialists",
-              reviewers: result.value.reviewers.map(({ reviewer, status }) => ({ reviewer, status })),
-              mandatoryFailure: result.mandatoryFailure !== "",
-            }));
-
-      - id: general
-        name: Run independent general reviewer
-        if: steps.aggregate.outputs.ready == 'true'
-        continue-on-error: true
-        uses: ./.github/actions/openai-agent
-        with:
-          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
-          base-url: https://api.helmcode.com/v1
-          config-file: .github/pr-automation/agents/general-reviewer.json
-
-      - id: final
-        name: Validate final review
-        if: always()
-        uses: actions/github-script@v8
-        env:
-          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
-          RAW_OUTPUT: ${{ steps.general.outputs.structured-output }}
-          MODEL_REASON: ${{ steps.general.outputs.failure-reason }}
-          AGGREGATE_READY: ${{ steps.aggregate.outputs.ready }}
-          AGGREGATE_REASON: ${{ steps.aggregate.outputs.reason }}
-        with:
-          script: |
-            const fs = require("node:fs");
-            const { validateFinalReview } = require("./.github/pr-automation/validate-final-review");
-            const finish = (output, reason) => {
-              core.setOutput("output", output);
-              core.setOutput("reason", reason);
-              core.info(JSON.stringify({
-                event: "pr-automation.final-review",
-                valid: output !== "",
-                reason: output === "" ? reason : null,
-              }));
-            };
-            if (process.env.AGGREGATE_READY !== "true") {
-              return finish("", process.env.AGGREGATE_REASON || "specialist validation unavailable");
-            }
-            if (!process.env.RAW_OUTPUT) {
-              return finish("", process.env.MODEL_REASON || "general reviewer unavailable");
-            }
-            const validation = JSON.parse(fs.readFileSync(
-              "pr-evidence/validation-context.json", "utf8",
-            ));
-            const aggregate = JSON.parse(fs.readFileSync(
-              "validated-specialist-findings.json", "utf8",
-            ));
-            const result = validateFinalReview(process.env.RAW_OUTPUT, {
-              expectedSha: process.env.HEAD_SHA,
-              changedPaths: validation.changed_paths,
-              changedLines: validation.changed_lines,
-              specialistAggregate: aggregate,
-            });
-            finish(result.ok ? JSON.stringify(result.value) : "", result.ok ? "" : result.reason);
+    uses: ./.github/workflows/review-pipeline.yml
+    with:
+      pr-number: ${{ needs.resolve-pr.outputs.pr-number }}
+      head-sha: ${{ needs.resolve-pr.outputs.head-sha }}
+      base-sha: ${{ needs.resolve-pr.outputs.base-sha }}
+      gate: ${{ needs.review-gate.outputs.gate }}
+      specialist-reviewers: ${{ needs.review-gate.outputs.specialist-reviewers }}
 
   resolve-review-state:
     name: Resolve review state

@@ -1,0 +1,487 @@
+name: Automated review pipeline
+
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: Pull request number to review
+        required: true
+        type: string
+      head-sha:
+        description: Exact pull request head to review
+        required: true
+        type: string
+      base-sha:
+        description: Exact pull request base used for the review diff
+        required: true
+        type: string
+      gate:
+        description: Validated review gate state
+        required: true
+        type: string
+      specialist-reviewers:
+        description: Canonically ordered specialist reviewer IDs
+        required: true
+        type: string
+    outputs:
+      output:
+        description: Validated final review JSON
+        value: ${{ jobs.validate.outputs.output }}
+      failure-reason:
+        description: Bounded failure reason when no valid review was produced
+        value: ${{ jobs.validate.outputs.reason }}
+
+permissions: {}
+
+env:
+  OPENSPECS_COMMIT: 3a5ef220a6cc92453171e7b62129ed7740628c93
+
+jobs:
+  evidence:
+    name: Prepare review evidence
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      pull-requests: read
+    outputs:
+      failure-reason: ${{ steps.evidence.outputs.failure-reason }}
+      openspecs-sha: ${{ steps.protocol-sources.outputs.openspecs-sha }}
+    steps:
+      - id: evidence
+        name: Prepare SHA-bound pull request evidence
+        shell: bash
+        env:
+          HEAD_SHA: ${{ inputs.head-sha }}
+          BASE_SHA: ${{ inputs.base-sha }}
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          git init .
+          git config --local core.hooksPath /dev/null
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags origin +master:refs/remotes/origin/master
+          git checkout --detach origin/master
+          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"; then
+            reason="pull request evidence unavailable"
+            if test -f pr-evidence/failure-reason.txt; then
+              reason="$(cat pr-evidence/failure-reason.txt)"
+            fi
+            echo "failure-reason=$reason" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Fetch bounded review and location context
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ inputs.head-sha }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pr-number }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { addedLinesByPath, listPrFiles } = require("./.github/pr-automation/deterministic-analysis");
+            const { fetchReviewContext } = require("./.github/pr-automation/fetch-review-context");
+            const pullNumber = Number(process.env.PULL_REQUEST_NUMBER);
+            const expectedSha = process.env.HEAD_SHA;
+            const assertHead = async () => {
+              const { data } = await github.rest.pulls.get({
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: pullNumber,
+              });
+              if (data.state !== "open" || data.head?.sha !== expectedSha) {
+                throw new Error("pull request head is no longer current");
+              }
+            };
+            await assertHead();
+            const reviewContext = await fetchReviewContext({
+              github, owner: context.repo.owner, repo: context.repo.repo,
+              pullNumber, expectedHeadSha: expectedSha,
+            });
+            const files = await listPrFiles(github, {
+              owner: context.repo.owner, repo: context.repo.repo, prNumber: pullNumber,
+            });
+            await assertHead();
+            fs.writeFileSync(
+              "pr-evidence/pull-request-context.json",
+              JSON.stringify(reviewContext, null, 2),
+            );
+            fs.writeFileSync(
+              "pr-evidence/validation-context.json",
+              JSON.stringify({
+                changed_paths: files.map((file) => file.filename),
+                changed_lines: addedLinesByPath(files),
+              }),
+            );
+            fs.writeFileSync(
+              "pr-automation-context.json",
+              JSON.stringify({ head_sha: expectedSha }),
+            );
+
+      - name: Fetch and sanitize the pinned protocol corpus
+        id: protocol-sources
+        if: contains(fromJSON(inputs.specialist-reviewers), 'protocol')
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_NOSYSTEM=1
+          export GIT_CONFIG_GLOBAL=/dev/null
+          git -C "$RUNNER_TEMP" init openspecs
+          git -C "$RUNNER_TEMP/openspecs" config --local core.hooksPath /dev/null
+          git -C "$RUNNER_TEMP/openspecs" remote add origin https://github.com/awakecoding/openspecs.git
+          git -C "$RUNNER_TEMP/openspecs" fetch --depth=1 --no-tags origin "$OPENSPECS_COMMIT"
+          git -C "$RUNNER_TEMP/openspecs" checkout --detach "$OPENSPECS_COMMIT"
+          openspecs_sha="$(git -C "$RUNNER_TEMP/openspecs" rev-parse HEAD)"
+          test "$openspecs_sha" = "$OPENSPECS_COMMIT"
+          bash ./.github/pr-automation/prepare-review-sources.sh \
+            "$RUNNER_TEMP/openspecs" "$openspecs_sha"
+          echo "openspecs-sha=$openspecs_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Remove Git metadata from the untrusted head
+        shell: bash
+        run: rm -rf pr-head/.git
+
+      - name: Upload review evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-evidence-${{ inputs.head-sha }}
+          path: |
+            pr-automation-context.json
+            pr-evidence
+            pr-head
+            review-sources
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+
+  specialists:
+    name: Review with ${{ matrix.reviewer }}
+    needs: evidence
+    if: needs.evidence.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: llm-providers
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        reviewer: ${{ fromJSON(inputs.specialist-reviewers) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Download review evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: review-evidence-${{ inputs.head-sha }}
+          path: .
+
+      - id: agent
+        name: Run ${{ matrix.reviewer }} specialist
+        continue-on-error: true
+        uses: ./.github/actions/openai-agent
+        with:
+          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
+          base-url: https://api.helmcode.com/v1
+          config-file: .github/pr-automation/agents/${{ matrix.reviewer }}.json
+
+      - id: validate
+        name: Validate specialist result
+        if: always()
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ inputs.head-sha }}
+          REVIEWER: ${{ matrix.reviewer }}
+          OPENSPECS_SHA: ${{ needs.evidence.outputs.openspecs-sha }}
+          RAW_OUTPUT: ${{ steps.agent.outputs.structured-output }}
+          MODEL_REASON: ${{ steps.agent.outputs.failure-reason }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const {
+              failedRun, validateSpecialistRun,
+            } = require("./.github/pr-automation/review-pipeline");
+            const { corpusFromDirectory } = require("./.github/pr-automation/validate-protocol-review");
+            const reviewer = process.env.REVIEWER;
+            let run;
+            try {
+              const validation = JSON.parse(fs.readFileSync(
+                "pr-evidence/validation-context.json", "utf8",
+              ));
+              const corpus = reviewer === "protocol"
+                ? corpusFromDirectory("review-sources/windows-protocols", {
+                  expectedCorpusSha: process.env.OPENSPECS_SHA,
+                })
+                : undefined;
+              run = validateSpecialistRun(process.env.RAW_OUTPUT || "", {
+                reviewer,
+                expectedSha: process.env.HEAD_SHA,
+                changedPaths: validation.changed_paths,
+                changedLines: validation.changed_lines,
+                corpus,
+                expectedCorpusSha: process.env.OPENSPECS_SHA,
+                failureReason: process.env.MODEL_REASON,
+              }).value;
+            } catch (error) {
+              core.warning(`Specialist validation unavailable: ${error.message}`);
+              run = failedRun(reviewer, "specialist validation unavailable").value;
+            }
+            fs.mkdirSync("specialist-results", { recursive: true });
+            fs.writeFileSync(
+              path.join("specialist-results", `${reviewer}.json`),
+              JSON.stringify(run, null, 2),
+            );
+            core.info(JSON.stringify({
+              event: "pr-automation.specialist",
+              reviewer,
+              status: run.status,
+            }));
+
+      - name: Upload validated specialist result
+        if: always() && steps.validate.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-specialist-${{ inputs.head-sha }}-${{ matrix.reviewer }}
+          path: specialist-results/${{ matrix.reviewer }}.json
+          if-no-files-found: error
+          retention-days: 1
+
+  aggregate:
+    name: Aggregate specialist findings
+    needs: [evidence, specialists]
+    if: always() && needs.evidence.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      ready: ${{ steps.aggregate.outputs.ready }}
+      reason: ${{ steps.aggregate.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Download specialist results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: review-specialist-${{ inputs.head-sha }}-*
+          path: specialist-results
+          merge-multiple: true
+
+      - id: aggregate
+        name: Build validated specialist findings
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ inputs.head-sha }}
+          SPECIALIST_REVIEWERS: ${{ inputs.specialist-reviewers }}
+          GATE: ${{ inputs.gate }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const { buildSpecialistAggregate } = require("./.github/pr-automation/review-pipeline");
+            const selected = JSON.parse(process.env.SPECIALIST_REVIEWERS);
+            const gate = JSON.parse(process.env.GATE);
+            const runs = selected.map((reviewer) => JSON.parse(fs.readFileSync(
+              path.join("specialist-results", `${reviewer}.json`), "utf8",
+            )));
+            const result = buildSpecialistAggregate({
+              expectedSha: process.env.HEAD_SHA,
+              selectedReviewers: selected,
+              runs,
+              protocolRelated: gate.protocolRelated,
+              risk: gate.risk,
+            });
+            if (!result.ok) throw new Error(result.reason);
+            fs.writeFileSync(
+              "validated-specialist-findings.json",
+              JSON.stringify(result.value, null, 2),
+            );
+            core.setOutput("ready", result.mandatoryFailure === "");
+            core.setOutput("reason", result.mandatoryFailure);
+            core.info(JSON.stringify({
+              event: "pr-automation.specialists",
+              reviewers: result.value.reviewers.map(({ reviewer, status }) => ({ reviewer, status })),
+              mandatoryFailure: result.mandatoryFailure !== "",
+            }));
+
+      - name: Upload specialist aggregate
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-aggregate-${{ inputs.head-sha }}
+          path: validated-specialist-findings.json
+          if-no-files-found: error
+          retention-days: 1
+
+  general:
+    name: Run independent general reviewer
+    needs: [evidence, aggregate]
+    if: needs.aggregate.result == 'success' && needs.aggregate.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: llm-providers
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Download review evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: review-evidence-${{ inputs.head-sha }}
+          path: .
+
+      - name: Download specialist aggregate
+        uses: actions/download-artifact@v8
+        with:
+          name: review-aggregate-${{ inputs.head-sha }}
+          path: .
+
+      - id: agent
+        name: Run general reviewer
+        continue-on-error: true
+        uses: ./.github/actions/openai-agent
+        with:
+          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
+          base-url: https://api.helmcode.com/v1
+          config-file: .github/pr-automation/agents/general-reviewer.json
+
+      - name: Persist general review result
+        if: always()
+        uses: actions/github-script@v8
+        env:
+          RAW_OUTPUT: ${{ steps.agent.outputs.structured-output }}
+          MODEL_REASON: ${{ steps.agent.outputs.failure-reason }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            fs.mkdirSync("general-review", { recursive: true });
+            fs.writeFileSync(
+              "general-review/result.json",
+              JSON.stringify({
+                output: process.env.RAW_OUTPUT || "",
+                reason: process.env.MODEL_REASON || "",
+              }),
+            );
+
+      - name: Upload general review result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-general-${{ inputs.head-sha }}
+          path: general-review/result.json
+          if-no-files-found: error
+          retention-days: 1
+
+  validate:
+    name: Validate final review
+    needs: [evidence, aggregate, general]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      output: ${{ steps.final.outputs.output }}
+      reason: ${{ steps.final.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+
+      - name: Download review evidence
+        if: >-
+          needs.aggregate.result == 'success' &&
+          needs.aggregate.outputs.ready == 'true' &&
+          needs.general.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: review-evidence-${{ inputs.head-sha }}
+          path: .
+
+      - name: Download specialist aggregate
+        if: >-
+          needs.aggregate.result == 'success' &&
+          needs.aggregate.outputs.ready == 'true' &&
+          needs.general.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: review-aggregate-${{ inputs.head-sha }}
+          path: .
+
+      - name: Download general review result
+        if: >-
+          needs.aggregate.result == 'success' &&
+          needs.aggregate.outputs.ready == 'true' &&
+          needs.general.result == 'success'
+        uses: actions/download-artifact@v8
+        with:
+          name: review-general-${{ inputs.head-sha }}
+          path: general-review
+
+      - id: final
+        name: Validate general review
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ inputs.head-sha }}
+          EVIDENCE_RESULT: ${{ needs.evidence.result }}
+          EVIDENCE_REASON: ${{ needs.evidence.outputs.failure-reason }}
+          AGGREGATE_RESULT: ${{ needs.aggregate.result }}
+          AGGREGATE_READY: ${{ needs.aggregate.outputs.ready }}
+          AGGREGATE_REASON: ${{ needs.aggregate.outputs.reason }}
+          GENERAL_RESULT: ${{ needs.general.result }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { validateFinalReview } = require("./.github/pr-automation/validate-final-review");
+            const finish = (output, reason) => {
+              core.setOutput("output", output);
+              core.setOutput("reason", reason);
+              core.info(JSON.stringify({
+                event: "pr-automation.final-review",
+                valid: output !== "",
+                reason: output === "" ? reason : null,
+              }));
+            };
+            if (process.env.EVIDENCE_RESULT !== "success") {
+              return finish("", process.env.EVIDENCE_REASON || "pull request evidence unavailable");
+            }
+            if (process.env.AGGREGATE_RESULT !== "success") {
+              return finish("", "specialist validation unavailable");
+            }
+            if (process.env.AGGREGATE_READY !== "true") {
+              return finish("", process.env.AGGREGATE_REASON || "specialist validation unavailable");
+            }
+            if (process.env.GENERAL_RESULT !== "success") {
+              return finish("", "general reviewer unavailable");
+            }
+            try {
+              const validation = JSON.parse(fs.readFileSync(
+                "pr-evidence/validation-context.json", "utf8",
+              ));
+              const aggregate = JSON.parse(fs.readFileSync(
+                "validated-specialist-findings.json", "utf8",
+              ));
+              const general = JSON.parse(fs.readFileSync("general-review/result.json", "utf8"));
+              if (!general.output) {
+                return finish("", general.reason || "general reviewer unavailable");
+              }
+              const result = validateFinalReview(general.output, {
+                expectedSha: process.env.HEAD_SHA,
+                changedPaths: validation.changed_paths,
+                changedLines: validation.changed_lines,
+                specialistAggregate: aggregate,
+              });
+              return finish(
+                result.ok ? JSON.stringify(result.value) : "",
+                result.ok ? "" : result.reason,
+              );
+            } catch (error) {
+              core.warning(`Final review validation unavailable: ${error.message}`);
+              return finish("", "final review validation unavailable");
+            }
