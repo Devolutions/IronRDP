@@ -3571,7 +3571,9 @@ async fn active_session(
                 }
             } else {
                 let frame = active_stage.encode_dvc_messages(messages)?;
-                iteration.outputs.push(ActiveStageOutput::ResponseFrame(frame));
+                // Preserve DVC-before-associated-output ordering, notably Display Control
+                // resize before the corresponding RAIL desktop-size update.
+                iteration.outputs.insert(0, ActiveStageOutput::ResponseFrame(frame));
             }
         }
 
