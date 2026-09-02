@@ -76,21 +76,63 @@ function readWorkflow(githubDirectory = path.join(__dirname, "..")) {
     .replace(/\r\n/g, "\n");
 }
 
-test("workflow uses one generic Helmcode action and one sequential review pipeline", () => {
+function readReviewWorkflow(githubDirectory = path.join(__dirname, "..")) {
+  return fs.readFileSync(path.join(githubDirectory, "workflows", "review-pipeline.yml"), "utf8")
+    .replace(/\r\n/g, "\n");
+}
+
+test("workflow uses bounded classifier lanes and one parallel review pipeline", () => {
   const workflow = readWorkflow();
-  assert.doesNotMatch(workflow, /core\.setOutput\("result"/);
-  assert.doesNotMatch(workflow, /^\s{6}result:\s+\$\{\{\s*steps\./m);
-  assert.doesNotMatch(workflow, /needs\.[\w-]+\.outputs\.result\b/);
-  assert.doesNotMatch(workflow, /anthropic|claude|sonnet|haiku|resilient-review-output/i);
-  assert.equal((workflow.match(/uses: \.\/\.github\/actions\/openai-agent/g) || []).length, 5);
-  assert.equal((workflow.match(/environment: llm-providers/g) || []).length, 2);
-  assert.equal((workflow.match(/secrets\.HELMCODE_GLM_API_KEY/g) || []).length, 5);
-  assert.match(workflow, /OPENSPECS_COMMIT: [0-9a-f]{40}/);
-  assert.doesNotMatch(workflow, /openspecs" fetch .*origin \+master/);
-  const pipeline = workflowJob(workflow, "review-pipeline");
-  const positions = ["id: protocol", "id: skeptical", "id: code-compressor", "id: general"]
-    .map((needle) => pipeline.indexOf(needle));
-  assert.deepEqual([...positions].sort((left, right) => left - right), positions);
+  const reviewWorkflow = readReviewWorkflow();
+  const combined = `${workflow}\n${reviewWorkflow}`;
+  assert.doesNotMatch(combined, /core\.setOutput\("result"/);
+  assert.doesNotMatch(combined, /^\s{6}result:\s+\$\{\{\s*steps\./m);
+  assert.doesNotMatch(combined, /needs\.[\w-]+\.outputs\.result\b/);
+  assert.doesNotMatch(combined, /anthropic|claude|sonnet|haiku|resilient-review-output/i);
+  assert.equal((combined.match(/uses: \.\/\.github\/actions\/openai-agent/g) || []).length, 3);
+  assert.equal((combined.match(/environment: llm-providers/g) || []).length, 3);
+  assert.equal((combined.match(/secrets\.HELMCODE_GLM_API_KEY/g) || []).length, 3);
+  assert.doesNotMatch(reviewWorkflow, /OPENSPECS_COMMIT/);
+  assert.match(reviewWorkflow, /openspecs" fetch .*origin \+master:refs\/remotes\/origin\/master/);
+  assert.match(reviewWorkflow, /awakecoding\/openspecs@\$openspecs_sha.*GITHUB_STEP_SUMMARY/);
+  assert.match(reviewWorkflow, /WORKFLOW_SHA: \$\{\{ github\.workflow_sha \}\}/);
+  assert.match(reviewWorkflow,
+    /git fetch --no-tags origin "\+\$WORKFLOW_SHA:refs\/remotes\/origin\/automation"/);
+  assert.equal((reviewWorkflow.match(/ref: \$\{\{ github\.workflow_sha \}\}/g) || []).length, 4);
+  assert.doesNotMatch(reviewWorkflow, /ref: master/);
+  assert.equal((reviewWorkflow.match(/overwrite: true/g) || []).length, 6);
+
+  const classifier = workflowJob(workflow, "classifier");
+  assert.match(workflowJob(workflow, "resolve-pr"),
+    /core\.setOutput\("classifier-lane", result\.prNumber \? \(Number\(result\.prNumber\) % 2\) \+ 1 : ""\)/);
+  assert.match(classifier, /group: llm-classifier-\$\{\{ needs\.resolve-pr\.outputs\.classifier-lane \}\}/);
+  assert.match(classifier, /cancel-in-progress: false/);
+  assert.match(classifier, /queue: max/);
+
+  const caller = workflowJob(workflow, "review-pipeline");
+  assert.match(caller, /group: llm-reviewer-pipeline/);
+  assert.match(caller, /cancel-in-progress: false/);
+  assert.match(caller, /queue: max/);
+  assert.match(caller, /uses: \.\/\.github\/workflows\/review-pipeline\.yml/);
+  assert.doesNotMatch(caller, /runs-on:/);
+
+  const specialists = workflowJob(reviewWorkflow, "specialists");
+  assert.match(specialists, /max-parallel: 3/);
+  assert.match(specialists, /reviewer: \$\{\{ fromJSON\(inputs\.specialist-reviewers\) \}\}/);
+  assert.match(specialists, /if: matrix\.reviewer == 'protocol'/);
+  assert.match(specialists, /name: review-corpus-\$\{\{ inputs\.head-sha \}\}/);
+  assert.match(specialists, /Upload validated specialist result/);
+  const aggregate = workflowJob(reviewWorkflow, "aggregate");
+  assert.match(aggregate, /needs: \[evidence, specialists\]/);
+  assert.match(aggregate, /pattern: review-specialist-\$\{\{ inputs\.head-sha \}\}-\*/);
+  assert.match(aggregate, /continue-on-error: true/);
+  assert.match(aggregate, /failedRun\(reviewer, "specialist result unavailable"\)/);
+  const general = workflowJob(reviewWorkflow, "general");
+  assert.match(general, /needs: \[evidence, aggregate\]/);
+  assert.match(general, /needs\.aggregate\.outputs\.ready == 'true'/);
+  const validate = workflowJob(reviewWorkflow, "validate");
+  assert.match(validate, /needs: \[evidence, aggregate, general\]/);
+  assert.match(validate, /validateFinalReview/);
 });
 
 test("workflow does not resolve or write state after cancellation", () => {
@@ -98,6 +140,11 @@ test("workflow does not resolve or write state after cancellation", () => {
   for (const name of ["resolve-classification-state", "resolve-review-state", "write-state"]) {
     assert.match(workflowJob(workflow, name), /^    if: always\(\) && !cancelled\(\) &&/m);
   }
+  const reviewWorkflow = readReviewWorkflow();
+  assert.match(workflowJob(reviewWorkflow, "aggregate"),
+    /^    if: always\(\) && !cancelled\(\) &&/m);
+  assert.match(workflowJob(reviewWorkflow, "validate"),
+    /^    if: always\(\) && !cancelled\(\)$/m);
 });
 
 test("workflow isolates CI completion concurrency by source commit", () => {
@@ -155,7 +202,6 @@ test("workflow force mode bypasses model policy gates without changing automatic
 test("review skills own methodology while stage prompts own pipeline contracts", () => {
   const githubDirectory = path.join(__dirname, "..");
   const repositoryRoot = path.join(githubDirectory, "..");
-  const workflow = readWorkflow(githubDirectory);
   const prompt = (name) => fs.readFileSync(path.join(__dirname, "prompts", `${name}.md`), "utf8");
   const skill = (name) => fs.readFileSync(
     path.join(repositoryRoot, ".agents", "skills", name, "SKILL.md"),
@@ -176,6 +222,7 @@ test("review skills own methodology while stage prompts own pipeline contracts",
   const protocolSkill = skill("protocol-reviewer");
   const skepticalSkill = skill("skeptical-reviewer");
   const compressorSkill = skill("code-compressor");
+  const reviewWorkflow = readReviewWorkflow(githubDirectory);
 
   assert.match(protocolSkill, /windows-protocols/);
   assert.match(protocolPrompt, /review-sources\/windows-protocols/);
@@ -191,10 +238,10 @@ test("review skills own methodology while stage prompts own pipeline contracts",
     assert.match(stagePrompt, /Return only .*JSON/);
   }
   assert.match(skepticalPrompt, /pr-evidence\/pull-request-context\.json/);
-  const reviewPipeline = workflowJob(workflow, "review-pipeline");
-  assert.match(reviewPipeline, /issues: read/);
-  assert.match(reviewPipeline, /pull-requests: read/);
-  assert.match(reviewPipeline, /fetchReviewContext/);
+  const evidence = workflowJob(reviewWorkflow, "evidence");
+  assert.match(evidence, /issues: read/);
+  assert.match(evidence, /pull-requests: read/);
+  assert.match(evidence, /fetchReviewContext/);
 });
 
 test("review context is bounded and tied to the reviewed head", async () => {
@@ -289,12 +336,14 @@ test("review context is bounded and tied to the reviewed head", async () => {
 test("LLM evidence is bound to the resolved pull request base", () => {
   const githubDirectory = path.join(__dirname, "..");
   const workflow = readWorkflow(githubDirectory);
+  const reviewWorkflow = readReviewWorkflow(githubDirectory);
   const evidenceScript = fs.readFileSync(path.join(__dirname, "fetch-pr-evidence.sh"), "utf8");
-  for (const name of ["classifier", "review-pipeline"]) {
-    const job = workflowJob(workflow, name);
-    assert.match(job, /BASE_SHA: \$\{\{ needs\.resolve-pr\.outputs\.base-sha \}\}/);
-    assert.match(job, /fetch-pr-evidence\.sh "\$HEAD_SHA" "\$BASE_SHA"/);
-  }
+  const classifier = workflowJob(workflow, "classifier");
+  assert.match(classifier, /BASE_SHA: \$\{\{ needs\.resolve-pr\.outputs\.base-sha \}\}/);
+  assert.match(classifier, /fetch-pr-evidence\.sh "\$HEAD_SHA" "\$BASE_SHA"/);
+  const evidence = workflowJob(reviewWorkflow, "evidence");
+  assert.match(evidence, /BASE_SHA: \$\{\{ inputs\.base-sha \}\}/);
+  assert.match(evidence, /fetch-pr-evidence\.sh "\$HEAD_SHA" "\$BASE_SHA"/);
   assert.match(evidenceScript, /\+\$base_sha:refs\/remotes\/origin\/pull-request-base/);
   assert.match(
     evidenceScript,
@@ -306,6 +355,7 @@ test("LLM evidence is bound to the resolved pull request base", () => {
 test("oversized evidence fails closed and leaves pull request guidance", () => {
   const githubDirectory = path.join(__dirname, "..");
   const workflow = readWorkflow(githubDirectory);
+  const reviewWorkflow = readReviewWorkflow(githubDirectory);
   const evidenceScript = fs.readFileSync(path.join(__dirname, "fetch-pr-evidence.sh"), "utf8");
   const evidenceAttributes = fs.readFileSync(path.join(__dirname, "evidence-diff-attributes"), "utf8");
   const reason = "pull request diff exceeds the 1 MiB evidence limit";
@@ -317,11 +367,14 @@ test("oversized evidence fails closed and leaves pull request guidance", () => {
   assert.match(evidenceScript, /failure-reason\.txt/);
   assert.match(evidenceScript, /exit 1/);
   assert.doesNotMatch(evidenceScript, /pull-request\.diff\.truncated/);
-  for (const name of ["classifier", "review-pipeline"]) {
-    const job = workflowJob(workflow, name);
-    assert.match(job, /id: evidence/);
-    assert.match(job, /steps\.evidence\.outputs\.failure-reason \|\|/);
-  }
+  const classifier = workflowJob(workflow, "classifier");
+  assert.match(classifier, /id: evidence/);
+  assert.match(classifier, /steps\.evidence\.outputs\.failure-reason \|\|/);
+  const evidence = workflowJob(reviewWorkflow, "evidence");
+  assert.match(evidence, /id: evidence/);
+  assert.match(evidence, /failure-reason: \$\{\{ steps\.evidence\.outputs\.failure-reason \}\}/);
+  assert.match(workflowJob(reviewWorkflow, "validate"),
+    /EVIDENCE_REASON: \$\{\{ needs\.evidence\.outputs\.failure-reason \}\}/);
 
   const deterministic = {
     ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/XXL",
@@ -583,7 +636,7 @@ test("specialist validation binds reviewer identity, SHA, paths, and protocol co
   }).ok, false);
 });
 
-test("specialist aggregate preserves explicit failures and canonical sequential order", () => {
+test("specialist aggregate preserves explicit failures and canonical reviewer order", () => {
   const valid = validateSpecialistRun(candidateReview("skeptical"), {
     reviewer: "skeptical", expectedSha: SHA,
     changedPaths: ["src/lib.rs"], changedLines: { "src/lib.rs": [4] },

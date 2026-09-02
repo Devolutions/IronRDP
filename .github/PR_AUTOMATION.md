@@ -1,6 +1,6 @@
 # Pull request automation
 
-`.github/workflows/labeler.yml` classifies ready, open pull requests and runs at most two automated reviews.
+`.github/workflows/labeler.yml` classifies ready, open pull requests and calls `.github/workflows/review-pipeline.yml` for at most two automated reviews.
 Automatic routes stop at `ai-reviewed/2` unless a maintainer uses force mode.
 Model analysis fails closed when the reviewable pull request diff exceeds the 1 MiB evidence limit.
 The trusted `evidence-diff-attributes` policy represents reproducibly verified generated artifacts with binary-change markers.
@@ -16,8 +16,8 @@ The pipeline performs these stages:
 1. Prepare a SHA-bound changed-file manifest, diff, pull request context, and read-only head tree.
 2. Classify risk, scope, legitimacy, duplicate likelihood, protocol relevance, and useful specialist reviewers.
 3. Apply workflow-controlled routing rules and persist the canonical review plan in the `AI classification` check.
-4. Run selected specialists sequentially in the order `protocol`, `skeptical`, then `code-compressor`.
-5. Validate each specialist result and write `validated-specialist-findings.json`.
+4. Run selected specialists as parallel matrix jobs, at most three at once.
+5. Validate each specialist result, then aggregate the results in the canonical order `protocol`, `skeptical`, `code-compressor`.
 6. Run the general reviewer as an independent reviewer and verifier.
 7. Validate its candidate dispositions, findings, locations, and provenance.
 8. Resolve validated state and publish through the serialized writer.
@@ -25,7 +25,7 @@ The pipeline performs these stages:
 Workflow routing selects the code-compressor for every eligible review.
 Protocol-related changes always require the protocol specialist.
 Medium- and high-risk changes always require the skeptical specialist.
-IronRDP configures sequential execution only, and model output cannot select parallelism.
+Model output cannot select parallelism.
 
 Specialists use one bounded candidate schema.
 Each candidate binds to the expected head SHA, a configured reviewer ID, a changed path, an optional added-line range, and a unique finding ID.
@@ -63,6 +63,7 @@ It loads a workflow-controlled agent configuration, prompt, output schema, metho
 It exposes only `read_file`, `list_files`, and `search_text`.
 It enforces turn, tool-call, path, byte, line, recursion, result, timeout, and retry limits.
 It validates JSON against the configured schema and permits one tools-disabled correction completion.
+The SDK retries twice on retryable responses, honors supported `Retry-After` headers, and then fails closed.
 
 The action exposes no command execution, writes, Git operations, GitHub APIs, environment access, arbitrary network access, or generic URL fetching.
 It logs bounded metadata only and never logs prompts, pull request content, tool arguments, tool results, model responses, provider response bodies, or credentials.
@@ -81,18 +82,18 @@ Before model access, the script removes all symlinks and recursively removes den
 Those files remain visible in the authoritative diff as reviewable changes.
 The runtime rejects absolute paths, traversal, `.git`, symlinks, junctions, realpath escapes, binary files, oversized files, and paths outside explicit capabilities.
 
-The review job fetches bounded pull request discussion and line-location data with read-only GitHub permissions.
+The evidence job fetches bounded pull request discussion and line-location data with read-only GitHub permissions.
 It verifies the head before and after collection.
 Final publication rechecks the current head before mutation.
 
 ## Protocol corpus
 
 The protocol specialist reads the Microsoft Open Specifications as inert data under `review-sources/windows-protocols`.
-The workflow pins a reviewed `awakecoding/openspecs` commit, fetches that exact SHA without credentials, and copies only allowlisted regular Markdown files.
+The workflow fetches the latest `awakecoding/openspecs` master without credentials and copies only allowlisted regular Markdown files.
 It excludes skills, instruction files, symlinks, submodules, executables, and lifecycle content.
 
-Citation validation uses the same corpus commit that the specialist read.
-Every protocol ID, section number, and heading must exist at that exact commit.
+Citation validation uses the same corpus commit that the specialist read, and the evidence job records its SHA in the job summary.
+Every protocol ID, section number, and heading must exist in that fetched commit.
 An unavailable corpus, protocol specialist, or protocol validation blocks publication for a mandatory protocol review.
 
 ## Classification and review policy
@@ -143,8 +144,13 @@ The default author quota is five pull requests, established contributors can use
 ## State, publication, and failure behavior
 
 SHA-bound GitHub checks carry classification and review state between permission-isolated jobs.
+SHA-bound workflow artifacts carry evidence and validated results between review-pipeline jobs.
 Only the final writer mutates pull request state, and it serializes those mutations per pull request.
 Model-execution jobs have read-only or empty permissions.
+
+Two static classifier concurrency lanes allow at most two classifier jobs to invoke Helmcode at once.
+The reusable `.github/workflows/review-pipeline.yml` runs under one global caller-job lock and allows at most three specialist requests at once.
+The general reviewer starts only after all specialists finish, so these limits keep Helmcode usage within the five-request API-key limit.
 
 Inline comments target only validated added lines.
 Other findings appear in the review body.
@@ -178,7 +184,7 @@ Configuration fixes model selection, prompts, schemas, methodologies, filesystem
 Models cannot alter these values or the Helmcode endpoint.
 
 To restore GLM, update the base-branch `model` fields after the GLM key is available and the action's mocked provider and schema tests pass unchanged.
-Keep classification in a separate job while concurrency isolation remains useful.
+Keep classification in its own job so the static classifier lanes continue to bound Helmcode concurrency.
 
 ## Label setup
 

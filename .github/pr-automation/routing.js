@@ -1,6 +1,6 @@
 "use strict";
 
-// Persisted routes use this canonical sequential execution order.
+// Persisted routes and aggregates use this canonical reviewer order.
 const REVIEWER_ORDER = Object.freeze(["protocol", "skeptical", "code-compressor"]);
 const REVIEWER_IDS = new Set(REVIEWER_ORDER);
 const RISKS = new Set(["low", "medium", "high", "unknown"]);
