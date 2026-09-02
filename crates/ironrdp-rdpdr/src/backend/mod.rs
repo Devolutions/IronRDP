@@ -125,6 +125,17 @@ pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
             },
         ))])
     }
+
+    /// Rejects an oversized printer write before its server-controlled payload is allocated.
+    ///
+    /// Stateful printer implementations should also poison or abort the target file handle so a
+    /// later close cannot submit a partial job.
+    fn reject_printer_write(&mut self, req: crate::pdu::efs::DeviceIoRequest) -> PduResult<Vec<SvcMessage>> {
+        let _ = req;
+        Err(ironrdp_pdu::pdu_other_err!(
+            "printer backend does not support safe oversized-write rejection"
+        ))
+    }
 }
 
 /// Immutable filesystem-device metadata announced for one RDPDR channel lifetime.
@@ -156,6 +167,59 @@ impl RdpdrDrive {
     }
 }
 
+/// Immutable printer metadata announced for one RDPDR channel lifetime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RdpdrPrinter {
+    device_id: u32,
+    name: String,
+    driver_name: String,
+    network: bool,
+}
+
+impl RdpdrPrinter {
+    /// Creates printer metadata for an RDPDR announcement.
+    pub fn new(device_id: u32, name: String, driver_name: String) -> Self {
+        Self {
+            device_id,
+            name,
+            driver_name,
+            network: true,
+        }
+    }
+
+    /// Records whether the local Windows queue is a network printer.
+    #[must_use]
+    pub fn with_network(mut self, network: bool) -> Self {
+        self.network = network;
+        self
+    }
+
+    /// Returns the device identifier used in RDPDR requests.
+    pub fn device_id(&self) -> u32 {
+        self.device_id
+    }
+
+    /// Returns the local printer queue name announced to the server.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the Windows printer driver name requested on the server.
+    pub fn driver_name(&self) -> &str {
+        &self.driver_name
+    }
+
+    /// Returns whether the queue should carry the MS-RDPEPC network-printer flag.
+    pub fn network(&self) -> bool {
+        self.network
+    }
+
+    /// Splits the metadata into the RDPDR announcement fields.
+    pub fn into_parts(self) -> (u32, String, String, bool) {
+        (self.device_id, self.name, self.driver_name, self.network)
+    }
+}
+
 /// Per-connection product created by an [`RdpdrBackendFactory`].
 ///
 /// The initial list is announced during channel initialization.
@@ -164,6 +228,7 @@ pub struct RdpdrBackendProduct {
     backend: Box<dyn RdpdrBackend>,
     initial_drives: Vec<RdpdrDrive>,
     drive_hotplug: bool,
+    printer: Option<RdpdrPrinter>,
 }
 
 impl RdpdrBackendProduct {
@@ -173,6 +238,7 @@ impl RdpdrBackendProduct {
             backend,
             initial_drives,
             drive_hotplug: false,
+            printer: None,
         }
     }
 
@@ -191,6 +257,18 @@ impl RdpdrBackendProduct {
     /// Returns whether the channel must remain available for later drive announcements.
     pub fn drive_hotplug(&self) -> bool {
         self.drive_hotplug
+    }
+
+    /// Configures one printer announced after the remote user logs on.
+    #[must_use]
+    pub fn with_printer(mut self, printer: RdpdrPrinter) -> Self {
+        self.printer = Some(printer);
+        self
+    }
+
+    /// Returns the configured printer, if any.
+    pub fn printer(&self) -> Option<&RdpdrPrinter> {
+        self.printer.as_ref()
     }
 
     /// Consumes the product into its backend and matching announcement metadata.

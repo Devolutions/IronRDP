@@ -153,12 +153,74 @@ fn encoded_printer_device_io_request(major_function: MajorFunction) -> Vec<u8> {
 }
 
 fn encoded_printer_device_control_request() -> Vec<u8> {
+    encoded_printer_device_control_request_with_input(&[])
+}
+
+fn encoded_printer_device_control_request_with_input(input: &[u8]) -> Vec<u8> {
     let mut encoded = encoded_printer_device_io_request(MajorFunction::DeviceControl);
     encoded.extend_from_slice(&0u32.to_le_bytes()); // OutputBufferLength
-    encoded.extend_from_slice(&0u32.to_le_bytes()); // InputBufferLength
+    encoded.extend_from_slice(&u32::try_from(input.len()).unwrap().to_le_bytes());
     encoded.extend_from_slice(&0u32.to_le_bytes()); // IoControlCode
     encoded.extend_from_slice(&[0; 20]); // Padding
+    encoded.extend_from_slice(input);
     encoded
+}
+
+fn encoded_printer_create_request(path_length: u32) -> Vec<u8> {
+    let mut encoded = encoded_printer_device_io_request(MajorFunction::Create);
+    encoded.extend_from_slice(&0u32.to_le_bytes()); // DesiredAccess
+    encoded.extend_from_slice(&0u64.to_le_bytes()); // AllocationSize
+    encoded.extend_from_slice(&0u32.to_le_bytes()); // FileAttributes
+    encoded.extend_from_slice(&0u32.to_le_bytes()); // SharedAccess
+    encoded.extend_from_slice(&1u32.to_le_bytes()); // CreateDisposition
+    encoded.extend_from_slice(&0u32.to_le_bytes()); // CreateOptions
+    encoded.extend_from_slice(&path_length.to_le_bytes());
+    encoded
+}
+
+fn encoded_printer_write_request(length: u32) -> Vec<u8> {
+    let mut encoded = encoded_printer_device_io_request(MajorFunction::Write);
+    encoded.extend_from_slice(&length.to_le_bytes());
+    encoded
+}
+
+fn negotiate_printer_capability(rdpdr: &mut Rdpdr) {
+    let server_capability = RdpdrPdu::CoreCapability(CoreCapability {
+        capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_printer()],
+        kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
+    });
+    assert_eq!(
+        rdpdr.process(&encode_vec(&server_capability).unwrap()).unwrap().len(),
+        1
+    );
+}
+
+fn acknowledge_printer(rdpdr: &mut Rdpdr, result_code: NtStatus) {
+    let client_id = announce_client_id(rdpdr, 12);
+    negotiate_printer_capability(rdpdr);
+    assert!(
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+    let responses = rdpdr
+        .process(
+            &encode_vec(&RdpdrPdu::ServerDeviceAnnounceResponse(ServerDeviceAnnounceResponse {
+                device_id: 42,
+                result_code,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(responses.is_empty());
 }
 
 fn announced_devices(message: &SvcMessage) -> Vec<(u32, DeviceType)> {
@@ -430,6 +492,7 @@ fn printer_device_announce_is_deferred_until_user_loggedon() {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
 
     let client_id = announce_client_id(&mut rdpdr, 12);
+    negotiate_printer_capability(&mut rdpdr);
     assert!(
         rdpdr
             .process(&encoded_server_client_id_confirm(client_id))
@@ -457,6 +520,7 @@ fn smartcard_device_announce_remains_pre_logon() {
         .with_printer(42, "PrintMe".to_owned());
 
     let client_id = announce_client_id(&mut rdpdr, 12);
+    negotiate_printer_capability(&mut rdpdr);
     let responses = rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap();
     assert_eq!(responses.len(), 1);
 
@@ -475,6 +539,7 @@ fn rdp51_client_id_confirm_announces_all_devices_pre_logon() {
         .with_printer(42, "PrintMe".to_owned());
 
     let client_id = announce_client_id(&mut rdpdr, VERSION_MINOR_RDP51);
+    negotiate_printer_capability(&mut rdpdr);
     let responses = rdpdr
         .process(&encoded_server_client_id_confirm_with_minor(
             VERSION_MINOR_RDP51,
@@ -497,8 +562,32 @@ fn rdp51_client_id_confirm_announces_all_devices_pre_logon() {
 }
 
 #[test]
+fn printer_is_not_announced_without_server_printer_capability() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    let server_capability = RdpdrPdu::CoreCapability(CoreCapability {
+        capabilities: vec![CapabilityMessage::new_general(0)],
+        kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
+    });
+    rdpdr.process(&encode_vec(&server_capability).unwrap()).unwrap();
+    assert!(
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn printer_device_control_is_completed_with_empty_success_response() {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+    acknowledge_printer(&mut rdpdr, NtStatus::SUCCESS);
 
     let responses = rdpdr.process(&encoded_printer_device_control_request()).unwrap();
     assert_eq!(responses.len(), 1);
@@ -510,8 +599,24 @@ fn printer_device_control_is_completed_with_empty_success_response() {
 }
 
 #[test]
+fn printer_device_control_consumes_declared_input_before_trailing_check() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+    acknowledge_printer(&mut rdpdr, NtStatus::SUCCESS);
+
+    let responses = rdpdr
+        .process(&encoded_printer_device_control_request_with_input(&[1, 2, 3]))
+        .unwrap();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        ntstatus_at(&responses[0].encode_unframed_pdu().unwrap(), 12),
+        NtStatus::SUCCESS
+    );
+}
+
+#[test]
 fn unsupported_printer_irp_is_completed_by_svc_processor() {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+    acknowledge_printer(&mut rdpdr, NtStatus::SUCCESS);
 
     let responses = rdpdr
         .process(&encoded_printer_device_io_request(MajorFunction::Read))
@@ -521,6 +626,59 @@ fn unsupported_printer_irp_is_completed_by_svc_processor() {
     let encoded = responses[0].encode_unframed_pdu().unwrap();
     assert_eq!(&encoded[..4], &[0x72, 0x44, 0x43, 0x49]); // RDPDR + DEVICE_IOCOMPLETION
     assert_eq!(ntstatus_at(&encoded, 12), NtStatus::NOT_SUPPORTED);
+}
+
+#[test]
+fn printer_irp_is_ignored_before_announcement_acknowledgement() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+
+    assert!(
+        rdpdr
+            .process(&encoded_printer_device_io_request(MajorFunction::Read))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn printer_irp_is_ignored_after_server_rejection() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+    acknowledge_printer(&mut rdpdr, NtStatus::NOT_SUPPORTED);
+
+    assert!(
+        rdpdr
+            .process(&encoded_printer_device_io_request(MajorFunction::Read))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn printer_create_rejects_nonzero_wire_path_length_before_decoding_path() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+    acknowledge_printer(&mut rdpdr, NtStatus::SUCCESS);
+
+    let responses = rdpdr.process(&encoded_printer_create_request(2)).unwrap();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        ntstatus_at(&responses[0].encode_unframed_pdu().unwrap(), 12),
+        NtStatus::INVALID_PARAMETER
+    );
+}
+
+#[test]
+fn printer_write_rejects_oversized_length_before_allocating_payload() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+    acknowledge_printer(&mut rdpdr, NtStatus::SUCCESS);
+
+    let responses = rdpdr
+        .process(&encoded_printer_write_request(16 * 1024 * 1024 + 1))
+        .unwrap();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        ntstatus_at(&responses[0].encode_unframed_pdu().unwrap(), 12),
+        NtStatus::INVALID_PARAMETER
+    );
 }
 
 #[test]

@@ -9,9 +9,9 @@ use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProce
 use pdu::efs::{
     AnyIoCtlCode, Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest,
     ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME,
-    DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest, DeviceControlResponse, DeviceIoRequest,
-    DeviceIoResponse, DeviceType, Devices, MajorFunction, NtStatus, PrinterIoRequest, ServerDeviceAnnounceResponse,
-    VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
+    DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest, DeviceControlResponse, DeviceCreateResponse,
+    DeviceIoRequest, DeviceIoResponse, DeviceType, Devices, Information, MajorFunction, NtStatus, PrinterIoRequest,
+    ServerDeviceAnnounceResponse, VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
 use pdu::{PacketId, RdpdrPdu, SharedHeader};
@@ -23,9 +23,11 @@ pub mod server;
 
 pub use self::backend::noop::NoopRdpdrBackend;
 pub use self::backend::{
-    RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive,
+    RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPrinter,
 };
 use crate::pdu::efs::ServerDriveIoRequest;
+
+const MAX_PRINTER_WRITE_BYTES: u32 = 16 * 1024 * 1024;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
 ///
@@ -51,6 +53,7 @@ pub struct Rdpdr {
     drive_capability_configured: bool,
     client_id: Option<u32>,
     server_capabilities_received: bool,
+    printer_capability_negotiated: bool,
     client_id_confirmed: bool,
     post_logon_devices_announced: bool,
     pending_device_announcements: Vec<u32>,
@@ -77,6 +80,7 @@ impl Rdpdr {
             drive_capability_configured: false,
             client_id: None,
             server_capabilities_received: false,
+            printer_capability_negotiated: false,
             client_id_confirmed: false,
             post_logon_devices_announced: false,
             pending_device_announcements: Vec::new(),
@@ -140,9 +144,22 @@ impl Rdpdr {
     /// [`DEFAULT_PRINTER_DRIVER_NAME`] for the redirected printer queue.
     #[must_use]
     pub fn with_printer_driver(mut self, device_id: u32, print_name: String, driver_name: String) -> Self {
+        self = self.with_printer_driver_and_network(device_id, print_name, driver_name, true);
+        self
+    }
+
+    /// Adds printer redirection capability with explicit driver and network-queue metadata.
+    #[must_use]
+    pub fn with_printer_driver_and_network(
+        mut self,
+        device_id: u32,
+        print_name: String,
+        driver_name: String,
+        network: bool,
+    ) -> Self {
         self.capabilities.add_printer();
         self.device_list
-            .add_printer_with_driver(device_id, print_name, driver_name);
+            .add_printer_with_driver_and_network(device_id, print_name, driver_name, network);
         self.device_types.push((device_id, DeviceType::Print));
         self
     }
@@ -336,6 +353,7 @@ impl Rdpdr {
         self.backend_active_drive_ids = configured_drive_ids;
 
         self.server_capabilities_received = false;
+        self.printer_capability_negotiated = false;
         self.client_id_confirmed = false;
         self.post_logon_devices_announced = false;
         self.pending_device_announcements.clear();
@@ -376,6 +394,7 @@ impl Rdpdr {
         }
 
         self.server_capabilities_received = true;
+        self.printer_capability_negotiated = req.supports_printer();
         let client_capability_response =
             RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_supported_by(&req)));
         trace!("sending {:?}", client_capability_response);
@@ -403,6 +422,7 @@ impl Rdpdr {
             .zip(self.device_types.iter().copied())
             .filter(|(device, (device_id, _))| {
                 !self.manually_announced_device_ids.contains(device_id)
+                    && (device.device_type() != DeviceType::Print || self.printer_capability_negotiated)
                     && (announce_all_devices || Self::is_pre_logon_device(device))
             })
             .map(|(device, (device_id, _))| (device, device_id))
@@ -432,7 +452,9 @@ impl Rdpdr {
             .into_iter()
             .zip(self.device_types.iter().copied())
             .filter(|(device, (device_id, _))| {
-                !self.manually_announced_device_ids.contains(device_id) && !Self::is_pre_logon_device(device)
+                !self.manually_announced_device_ids.contains(device_id)
+                    && (device.device_type() != DeviceType::Print || self.printer_capability_negotiated)
+                    && !Self::is_pre_logon_device(device)
             })
             .map(|(device, (device_id, _))| (device, device_id))
             .unzip();
@@ -498,6 +520,10 @@ impl Rdpdr {
         }
 
         let device_id = pdu.device_id;
+        let device_type = self
+            .device_list
+            .for_device_type(device_id)
+            .map_err(|e| decode_err!(e))?;
         let accepted = pdu.result_code == NtStatus::SUCCESS;
         self.backend
             .as_mut()
@@ -536,9 +562,11 @@ impl Rdpdr {
             self.unregister_drive(device_id)?;
         }
 
-        messages.push(SvcMessage::from(RdpdrPdu::ClientDeviceListRemove(
-            ClientDeviceListRemove::remove_device(device_id),
-        )));
+        if device_type == DeviceType::Filesystem {
+            messages.push(SvcMessage::from(RdpdrPdu::ClientDeviceListRemove(
+                ClientDeviceListRemove::remove_device(device_id),
+            )));
+        }
         Ok(messages)
     }
 
@@ -648,36 +676,97 @@ impl Rdpdr {
                     .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
                     .handle_drive_io_request(req)?)
             }
-            DeviceType::Print => match dev_io_req.major_function {
-                MajorFunction::DeviceControl => {
-                    let req =
-                        DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
-                    debug!(?req, "Completing printer device-control IRP");
-
-                    Ok(vec![SvcMessage::from(RdpdrPdu::DeviceControlResponse(
-                        DeviceControlResponse::new(req, NtStatus::SUCCESS, None),
-                    ))])
-                }
-                MajorFunction::Create | MajorFunction::Write | MajorFunction::Close => {
-                    let req = PrinterIoRequest::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
-                    debug!(?req, "Dispatching printer IRP to backend");
-                    self.backend
-                        .as_mut()
-                        .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
-                        .handle_printer_io_request(req)
-                }
-                _ => {
-                    debug!(
-                        major = ?dev_io_req.major_function,
-                        minor = ?dev_io_req.minor_function,
+            DeviceType::Print => {
+                if self.rejected_device_ids.contains(&dev_io_req.device_id) {
+                    warn!(
+                        device_id = dev_io_req.device_id,
                         file_id = dev_io_req.file_id,
                         completion_id = dev_io_req.completion_id,
-                        "Completing unsupported printer IRP"
+                        "Ignoring printer IRP for a rejected device"
                     );
-
-                    Ok(vec![Self::unsupported_printer_io_response(dev_io_req)])
+                    return Ok(Vec::new());
                 }
-            },
+                if !self.active_device_ids.contains(&dev_io_req.device_id) {
+                    warn!(
+                        device_id = dev_io_req.device_id,
+                        file_id = dev_io_req.file_id,
+                        completion_id = dev_io_req.completion_id,
+                        "Ignoring printer IRP before device announcement confirmation"
+                    );
+                    return Ok(Vec::new());
+                }
+
+                match dev_io_req.major_function {
+                    MajorFunction::DeviceControl => {
+                        let req = DeviceControlRequest::<AnyIoCtlCode>::decode_with_input_buffer(dev_io_req, src)
+                            .map_err(|e| decode_err!(e))?;
+                        if !src.is_empty() {
+                            return Err(pdu_other_err!(
+                                "received printer device-control IRP with trailing RDPDR data"
+                            ));
+                        }
+                        debug!(?req, "Completing printer device-control IRP");
+
+                        Ok(vec![SvcMessage::from(RdpdrPdu::DeviceControlResponse(
+                            DeviceControlResponse::new(req.request, NtStatus::SUCCESS, None),
+                        ))])
+                    }
+                    MajorFunction::Create | MajorFunction::Write | MajorFunction::Close => {
+                        if dev_io_req.major_function == MajorFunction::Create && src.len() >= 32 {
+                            let path_length =
+                                u32::from_le_bytes(src.remaining()[28..32].try_into().expect("four-byte path length"));
+                            if path_length != 0 {
+                                return Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCreateResponse(
+                                    DeviceCreateResponse {
+                                        device_io_reply: DeviceIoResponse::new(dev_io_req, NtStatus::INVALID_PARAMETER),
+                                        file_id: 0,
+                                        information: Information::empty(),
+                                    },
+                                ))]);
+                            }
+                        }
+                        if dev_io_req.major_function == MajorFunction::Write && src.len() >= 4 {
+                            let write_length =
+                                u32::from_le_bytes(src.remaining()[..4].try_into().expect("four-byte write length"));
+                            if write_length > MAX_PRINTER_WRITE_BYTES {
+                                return self
+                                    .backend
+                                    .as_mut()
+                                    .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+                                    .reject_printer_write(dev_io_req);
+                            }
+                        }
+                        if dev_io_req.major_function == MajorFunction::Close {
+                            const CLOSE_REQUEST_PADDING_SIZE: usize = 32;
+
+                            if src.len() < CLOSE_REQUEST_PADDING_SIZE {
+                                return Err(pdu_other_err!("received truncated printer close IRP"));
+                            }
+                            src.advance(CLOSE_REQUEST_PADDING_SIZE);
+                        }
+                        let req = PrinterIoRequest::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
+                        if !src.is_empty() {
+                            return Err(pdu_other_err!("received printer IRP with trailing RDPDR data"));
+                        }
+                        debug!(?req, "Dispatching printer IRP to backend");
+                        self.backend
+                            .as_mut()
+                            .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+                            .handle_printer_io_request(req)
+                    }
+                    _ => {
+                        debug!(
+                            major = ?dev_io_req.major_function,
+                            minor = ?dev_io_req.minor_function,
+                            file_id = dev_io_req.file_id,
+                            completion_id = dev_io_req.completion_id,
+                            "Completing unsupported printer IRP"
+                        );
+
+                        Ok(vec![Self::unsupported_printer_io_response(dev_io_req)])
+                    }
+                }
+            }
             _ => {
                 // This should never happen, as we only announce devices that we support.
                 warn!(?dev_io_req, "received packet for unsupported device type");
