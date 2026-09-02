@@ -1,6 +1,6 @@
 {
   "id": "protocol",
-  "model": "deepseek-v4-flash",
+  "model": "glm-5.2",
   "prompt_file": ".github/pr-automation/prompts/protocol-reviewer.md",
   "schema_file": ".github/pr-automation/schemas/candidate-review.json",
   "methodology_files": [
