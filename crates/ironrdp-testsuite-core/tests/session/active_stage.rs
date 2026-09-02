@@ -163,6 +163,13 @@ fn reset_graphics_preserves_software_pointer_state() {
         }))
         .expect("show pointer");
 
+    let allocation = image.data().as_ptr();
+    image
+        .reset_preserving_pointer(2, 2)
+        .expect("reset same-size framebuffer with visible pointer");
+    assert_eq!(image.data().as_ptr(), allocation);
+    assert_eq!(&image.data()[12..15], &[0xFF, 0, 0]);
+
     image
         .reset_preserving_pointer(3, 3)
         .expect("resize with visible pointer");
@@ -175,4 +182,25 @@ fn reset_graphics_preserves_software_pointer_state() {
     assert_eq!(&image.data()[20..23], &[0, 0, 0]);
     image.show_pointer().expect("show retained pointer");
     assert_eq!(&image.data()[20..23], &[0xFF, 0, 0]);
+}
+
+#[test]
+fn reset_graphics_clips_a_hotspot_cursor_to_one_pixel() {
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 2, 2);
+    image.move_pointer(0, 0).expect("set pointer position");
+    image
+        .update_pointer(Arc::new(DecodedPointer {
+            width: 32,
+            height: 32,
+            hotspot_x: 16,
+            hotspot_y: 16,
+            bitmap_data: vec![0xFF; 32 * 32 * 4],
+        }))
+        .expect("show clipped pointer");
+
+    image
+        .reset_preserving_pointer(1, 1)
+        .expect("clip pointer to one-pixel framebuffer");
+
+    assert_eq!(image.data(), &[0xFF, 0xFF, 0xFF, 0]);
 }
