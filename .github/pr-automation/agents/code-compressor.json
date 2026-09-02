@@ -1,6 +1,6 @@
 {
   "id": "code-compressor",
-  "model": "glm-5.2",
+  "model": "deepseek-v4-flash",
   "prompt_file": ".github/pr-automation/prompts/code-compressor.md",
   "schema_file": ".github/pr-automation/schemas/candidate-review.json",
   "methodology_files": [
