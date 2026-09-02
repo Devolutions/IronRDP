@@ -584,8 +584,9 @@ Each configuration exposes the friendly name, symbolic link, instance ID, parent
 Rescans preserve configuration identity and retain disconnected or explicitly added symbolic links with `DeviceExists` set to false.
 
 The collection is currently an enabling compatibility layer, not a camera redirection backend.
-IronRDP does not register the MS-RDPECAM enumeration channel or start camera capture, and attempts to enable `Redirected`, `RedirectByDefault`, or an enabled `AddConfig` entry return `E_NOTIMPL`.
-Encoding policy can be read or changed before connecting, but has no effect until an MS-RDPECAM capture backend is available.
+The `ironrdp-rdpecam` crate provides bounded version 1 codecs and DVC state machines, but the ActiveX worker neither registers the RDPECAM channels nor provides a native camera capture backend.
+Attempts to enable `Redirected`, `RedirectByDefault`, or an enabled `AddConfig` entry therefore return `E_NOTIMPL`, and no camera is advertised or activated.
+Encoding policy can be read or changed before connecting, but has no effect until the native backend is available.
 All collection mutations are rejected after connection settings are sealed.
 
 ### DVC COM plugins

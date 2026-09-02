@@ -110,6 +110,11 @@ EGFX dynamic channel implemented as described in MS-RDPEGFX.
 
 AUDIO_INPUT dynamic channel for client microphone capture implemented as described in MS-RDPEAI.
 
+#### [`crates/ironrdp-rdpecam`](./crates/ironrdp-rdpecam)
+
+Video capture dynamic channel client and backend boundary implemented as described in MS-RDPECAM.
+The crate performs no camera I/O and advertises only devices explicitly supplied by its caller.
+
 #### [`crates/ironrdp-rdpel`](./crates/ironrdp-rdpel)
 
 Location dynamic channel client and PDU codecs implemented as described in MS-RDPEL.

@@ -3132,6 +3132,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpecam"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-core 0.2.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-rdpei"
 version = "0.1.0"
 dependencies = [
@@ -3384,6 +3395,7 @@ dependencies = [
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr",
  "ironrdp-rdpeai",
+ "ironrdp-rdpecam",
  "ironrdp-rdpei",
  "ironrdp-rdpel",
  "ironrdp-rdpemt",

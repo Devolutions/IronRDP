@@ -29,6 +29,7 @@ mod propertyset;
 mod rdcleanpath;
 mod rdpdr;
 mod rdpeai;
+mod rdpecam;
 mod rdpei;
 mod rdpel;
 mod rdpemt;
