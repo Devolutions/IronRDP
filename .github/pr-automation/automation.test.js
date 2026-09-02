@@ -307,10 +307,13 @@ test("oversized evidence fails closed and leaves pull request guidance", () => {
   const githubDirectory = path.join(__dirname, "..");
   const workflow = readWorkflow(githubDirectory);
   const evidenceScript = fs.readFileSync(path.join(__dirname, "fetch-pr-evidence.sh"), "utf8");
+  const evidenceAttributes = fs.readFileSync(path.join(__dirname, "evidence-diff-attributes"), "utf8");
   const reason = "pull request diff exceeds the 1 MiB evidence limit";
   assert.match(evidenceScript, /pr-head\/\.git\/info\/attributes/);
-  assert.match(evidenceScript, /\* !diff/);
-  assert.match(evidenceScript, /\.github\/actions\/openai-agent\/dist\/index\.js -diff/);
+  assert.match(evidenceScript, /evidence-diff-attributes/);
+  assert.doesNotMatch(evidenceScript, /dist\/index\.js/);
+  assert.match(evidenceAttributes, /^\* !diff$/m);
+  assert.match(evidenceAttributes, /^\.github\/actions\/openai-agent\/dist\/\*\* -diff$/m);
   assert.match(evidenceScript, /failure-reason\.txt/);
   assert.match(evidenceScript, /exit 1/);
   assert.doesNotMatch(evidenceScript, /pull-request\.diff\.truncated/);
