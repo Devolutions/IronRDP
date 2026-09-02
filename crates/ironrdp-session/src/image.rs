@@ -202,22 +202,34 @@ impl DecodedImage {
 
     #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn reset_preserving_pointer(&mut self, width: u16, height: u16) -> SessionResult<()> {
-        let mut reset = Self::new(self.pixel_format, width, height);
-        reset.pointer_x = self.pointer_x;
-        reset.pointer_y = self.pointer_y;
-        reset.pointer = self.pointer.clone();
-        reset.show_pointer = self.show_pointer;
+        let len = usize::from(width)
+            .checked_mul(usize::from(height))
+            .and_then(|pixels| pixels.checked_mul(usize::from(self.pixel_format.bytes_per_pixel())))
+            .ok_or_else(|| SessionError::general("reset graphics framebuffer dimensions overflow"))?;
+        let additional = len.saturating_sub(self.data.len());
+        self.data
+            .try_reserve_exact(additional)
+            .map_err(|error| SessionError::custom("allocate reset graphics framebuffer", error))?;
+        self.data.resize(len, 0);
+        self.data.fill(0);
+        self.width = width;
+        self.height = height;
+        self.pointer_src_rect = InclusiveRectangle::empty();
+        self.pointer_draw_x = 0;
+        self.pointer_draw_y = 0;
+        self.pointer_backbuffer.clear();
+        self.pointer_visible_on_screen = true;
 
-        if reset.pointer.is_some() {
-            reset.show_pointer = true;
-            reset.recalculate_pointer_geometry();
-            reset.show_pointer = self.show_pointer;
-            if reset.show_pointer {
-                reset.apply_pointer_layer(PointerLayer::Pointer)?;
+        if self.pointer.is_some() {
+            let show_pointer = self.show_pointer;
+            self.show_pointer = true;
+            self.recalculate_pointer_geometry();
+            self.show_pointer = show_pointer;
+            if show_pointer {
+                self.apply_pointer_layer(PointerLayer::Pointer)?;
             }
         }
 
-        *self = reset;
         Ok(())
     }
 
@@ -395,8 +407,6 @@ impl DecodedImage {
 
         let left_virtual = i32::from(x) - i32::from(pointer.hotspot_x);
         let top_virtual = i32::from(y) - i32::from(pointer.hotspot_y);
-        let right_virtual = left_virtual + i32::from(pointer.width) - 1;
-        let bottom_virtual = top_virtual + i32::from(pointer.height) - 1;
 
         let (left, draw_x) = if left_virtual < 0 {
             // Cut left side if required
@@ -412,30 +422,25 @@ impl DecodedImage {
             (0, y - pointer.hotspot_y)
         };
 
-        // Cut right side if required
-        let right = if right_virtual >= i32::from(self.width - 1) {
-            if draw_x + 1 >= self.width {
-                // Pointer is completely out of bounds horizontally
-                self.pointer_visible_on_screen = false;
-                return;
-            } else {
-                self.width - (draw_x + 1)
-            }
-        } else {
-            pointer.width - 1
+        let Some(visible_width) = pointer
+            .width
+            .checked_sub(left)
+            .filter(|_| draw_x < self.width)
+            .map(|width| width.min(self.width - draw_x))
+            .filter(|width| *width != 0)
+        else {
+            self.pointer_visible_on_screen = false;
+            return;
         };
-
-        // Cut bottom side if required
-        let bottom = if bottom_virtual >= i32::from(self.height - 1) {
-            if (draw_y + 1) >= self.height {
-                // Pointer is completely out of bounds vertically
-                self.pointer_visible_on_screen = false;
-                return;
-            } else {
-                self.height - (draw_y + 1)
-            }
-        } else {
-            pointer.height - 1
+        let Some(visible_height) = pointer
+            .height
+            .checked_sub(top)
+            .filter(|_| draw_y < self.height)
+            .map(|height| height.min(self.height - draw_y))
+            .filter(|height| *height != 0)
+        else {
+            self.pointer_visible_on_screen = false;
+            return;
         };
 
         self.pointer_visible_on_screen = true;
@@ -443,8 +448,8 @@ impl DecodedImage {
         let pointer_src_rect = InclusiveRectangle {
             left,
             top,
-            right,
-            bottom,
+            right: left + visible_width - 1,
+            bottom: top + visible_height - 1,
         };
 
         self.pointer_src_rect = pointer_src_rect;

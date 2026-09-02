@@ -4595,9 +4595,9 @@ impl WorkerEvent {
 
 /// Bounded worker-to-UI event queue.
 ///
-/// RAIL lifecycle orders wait for UI capacity so an authoritative server
-/// transition cannot be discarded. Desktop updates wait for event and byte
-/// capacity, while static-channel payloads retain the existing lossy behavior.
+/// RAIL events wait for UI capacity so authoritative server transitions are not discarded.
+/// Frame updates wait for event and pixel capacity.
+/// Static-channel data waits behind frame updates and fails behind other full queues.
 #[derive(Debug)]
 struct WorkerEventQueue {
     events: Mutex<Vec<WorkerEvent>>,
@@ -4614,12 +4614,13 @@ impl WorkerEventQueue {
         }
     }
 
-    fn take(&self) -> Vec<WorkerEvent> {
+    fn take(&self, event_posted: &AtomicBool) -> Vec<WorkerEvent> {
         let events = {
             let mut queue = match self.events.lock() {
                 Ok(queue) => queue,
                 Err(poisoned) => poisoned.into_inner(),
             };
+            event_posted.store(false, Ordering::Release);
             core::mem::take(&mut *queue)
         };
         self.space_available.notify_all();
@@ -10909,8 +10910,7 @@ impl Control {
     }
 
     fn dispatch_pending_events(&self) {
-        self.event_posted.store(false, Ordering::Release);
-        let events = self.events.take();
+        let events = self.events.take(&self.event_posted);
 
         for event in events {
             if event.generation() != self.connection_generation.get() {
@@ -16871,6 +16871,19 @@ impl IEnumConnections_Impl for ConnectionEnumerator_Impl {
     }
 }
 
+fn post_worker_event_dispatch(event_posted: &AtomicBool, hwnd: HWND) -> bool {
+    if event_posted.swap(true, Ordering::AcqRel) {
+        return true;
+    }
+    if let Err(error) = unsafe { PostMessageW(Some(hwnd), WM_DISPATCH_EVENTS, WPARAM(0), LPARAM(0)) } {
+        event_posted.store(false, Ordering::Release);
+        tracing::debug!(?error, "Unable to post ActiveX event dispatch message");
+        false
+    } else {
+        true
+    }
+}
+
 fn queue_worker_event(
     events: &Arc<WorkerEventQueue>,
     event_posted: &Arc<AtomicBool>,
@@ -16905,6 +16918,15 @@ fn queue_worker_event(
                 );
                 return false;
             }
+            if let Some(WorkerEvent::Image { update: pending, .. }) = queue.iter_mut().rev().find(|pending| {
+                matches!(pending, WorkerEvent::Image { generation: pending_generation, .. } if *pending_generation == *generation)
+            }) && pending.width == update.width
+                && pending.height == update.height
+                && pending.region.union(&update.region) == pending.region
+                && pending.merge_from(update)
+            {
+                true
+            } else {
             loop {
                 let queued_pixels = queue
                     .iter()
@@ -16920,6 +16942,9 @@ fn queue_worker_event(
                         .is_some_and(|total| total <= MAX_PENDING_FRAME_PIXELS)
                 {
                     break;
+                }
+                if !post_worker_event_dispatch(event_posted, hwnd) {
+                    return false;
                 }
                 queue = match events.space_available.wait(queue) {
                     Ok(queue) => queue,
@@ -16958,25 +16983,37 @@ fn queue_worker_event(
                 queue.push(event);
                 true
             }
+            }
         }
         WorkerEvent::StaticChannelData { .. } => {
-            if queue.len() < MAX_PENDING_WORKER_EVENTS {
-                queue.push(event);
-                true
-            } else {
-                false
+            while queue.len() >= MAX_PENDING_WORKER_EVENTS {
+                if !queue.iter().any(|pending| matches!(pending, WorkerEvent::Image { .. })) {
+                    return false;
+                }
+                if !post_worker_event_dispatch(event_posted, hwnd) {
+                    return false;
+                }
+                queue = match events.space_available.wait(queue) {
+                    Ok(queue) => queue,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                if events.closed.load(Ordering::Acquire) {
+                    return false;
+                }
             }
+            queue.push(event);
+            true
         }
         WorkerEvent::AutoReconnecting { .. } => {
             while queue.len() >= MAX_PENDING_WORKER_EVENTS {
-                if let Some(index) = queue.iter().position(|pending| {
-                    matches!(
-                        pending,
-                        WorkerEvent::Image { .. } | WorkerEvent::StaticChannelData { .. }
-                    )
-                }) {
-                    queue.remove(index);
-                } else {
+                if !post_worker_event_dispatch(event_posted, hwnd) {
+                    return false;
+                }
+                queue = match events.space_available.wait(queue) {
+                    Ok(queue) => queue,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                if events.closed.load(Ordering::Acquire) {
                     return false;
                 }
             }
@@ -16995,6 +17032,9 @@ fn queue_worker_event(
                 true
             } else {
                 while queue.len() >= MAX_PENDING_WORKER_EVENTS {
+                    if !post_worker_event_dispatch(event_posted, hwnd) {
+                        return false;
+                    }
                     queue = match events.space_available.wait(queue) {
                         Ok(queue) => queue,
                         Err(poisoned) => poisoned.into_inner(),
@@ -17015,6 +17055,9 @@ fn queue_worker_event(
         | WorkerEvent::Disconnected { .. }
         | WorkerEvent::Stopped { .. } => {
             while queue.len() >= MAX_PENDING_WORKER_EVENTS {
+                if !post_worker_event_dispatch(event_posted, hwnd) {
+                    return false;
+                }
                 queue = match events.space_available.wait(queue) {
                     Ok(queue) => queue,
                     Err(poisoned) => poisoned.into_inner(),
@@ -17031,11 +17074,7 @@ fn queue_worker_event(
         return false;
     }
 
-    if !event_posted.swap(true, Ordering::AcqRel)
-        && let Err(error) = unsafe { PostMessageW(Some(hwnd), WM_DISPATCH_EVENTS, WPARAM(0), LPARAM(0)) }
-    {
-        event_posted.store(false, Ordering::Release);
-        tracing::debug!(?error, "Unable to post ActiveX event dispatch message");
+    if !post_worker_event_dispatch(event_posted, hwnd) {
         if let Some((generation, attempt)) = auto_reconnect_key {
             if let Some(index) = queue.iter().rposition(|pending| {
                 matches!(
@@ -17050,8 +17089,8 @@ fn queue_worker_event(
                 queue.remove(index);
                 events.space_available.notify_all();
             }
-            return false;
         }
+        return false;
     }
     drop(queue);
     true
@@ -18076,6 +18115,47 @@ mod tests {
     fn full_frame_update(width: u16, height: u16, pixel: u32) -> FrameUpdate {
         FrameUpdate::full(vec![pixel; usize::from(width) * usize::from(height)], width, height)
             .expect("valid full-frame update")
+    }
+
+    fn sparse_frame_update(x: u16, pixel: u32) -> FrameUpdate {
+        FrameUpdate::new(
+            vec![pixel],
+            u16::try_from(MAX_PENDING_WORKER_EVENTS * 2).expect("queue test extent fits in u16"),
+            1,
+            InclusiveRectangle {
+                left: x,
+                top: 0,
+                right: x,
+                bottom: 0,
+            },
+        )
+        .expect("valid sparse frame update")
+    }
+
+    fn fill_sparse_image_queue(events: &Arc<WorkerEventQueue>, event_posted: &Arc<AtomicBool>) {
+        for index in 0..MAX_PENDING_WORKER_EVENTS {
+            assert!(queue_worker_event(
+                events,
+                event_posted,
+                HWND(ptr::null_mut()),
+                WorkerEvent::Image {
+                    generation: 7,
+                    update: sparse_frame_update(
+                        u16::try_from(index * 2).expect("queue test coordinate fits in u16"),
+                        u32::try_from(index).expect("queue index fits in u32"),
+                    ),
+                },
+            ));
+        }
+    }
+
+    fn take_queued_events(events: &WorkerEventQueue) -> Vec<WorkerEvent> {
+        let queued = {
+            let mut queue = events.events.lock().expect("event queue is available");
+            core::mem::take(&mut *queue)
+        };
+        events.space_available.notify_all();
+        queued
     }
 
     #[test]
@@ -24602,6 +24682,23 @@ try {
     }
 
     #[test]
+    fn worker_event_take_releases_dispatch_ownership_while_locked() {
+        let events = WorkerEventQueue::new();
+        let event_posted = AtomicBool::new(true);
+        events
+            .events
+            .lock()
+            .expect("event queue is available")
+            .push(WorkerEvent::Connected { generation: 7 });
+
+        assert!(matches!(
+            events.take(&event_posted).as_slice(),
+            [WorkerEvent::Connected { generation: 7 }]
+        ));
+        assert!(!event_posted.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn worker_image_waits_for_capacity_instead_of_dropping_pixels() {
         let events = Arc::new(WorkerEventQueue::new());
         let event_posted = Arc::new(AtomicBool::new(true));
@@ -24637,12 +24734,75 @@ try {
             "image producer must wait for bounded queue space"
         );
 
-        assert_eq!(events.take().len(), MAX_PENDING_WORKER_EVENTS);
+        assert_eq!(take_queued_events(&events).len(), MAX_PENDING_WORKER_EVENTS);
         assert!(pending.join().expect("image producer"));
         assert!(matches!(
             events.events.lock().expect("event queue is available").as_slice(),
             [WorkerEvent::Image { update, .. }] if update.buffer == [9]
         ));
+    }
+
+    #[test]
+    fn static_channel_waits_for_image_capacity_instead_of_failing_session() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(true));
+        fill_sparse_image_queue(&events, &event_posted);
+
+        let producer_events = Arc::clone(&events);
+        let producer_posted = Arc::clone(&event_posted);
+        let producer = std::thread::spawn(move || {
+            let mut channel = ActiveXStaticChannel {
+                spec: ActiveXStaticChannelSpec {
+                    display_name: "alpha".to_owned(),
+                    channel_name: ChannelName::from_utf8("alpha").expect("valid channel name"),
+                    options: ChannelOptions::PRI_HIGH,
+                },
+                events: producer_events,
+                event_posted: producer_posted,
+                dispatcher: 0,
+                generation: 7,
+            };
+            channel.process(&[1, 2, 3]).is_ok()
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            !producer.is_finished(),
+            "static channel must wait for image queue space"
+        );
+
+        assert_eq!(take_queued_events(&events).len(), MAX_PENDING_WORKER_EVENTS);
+        assert!(producer.join().expect("static channel producer"));
+        assert!(matches!(
+            events.events.lock().expect("event queue is available").as_slice(),
+            [WorkerEvent::StaticChannelData { data, .. }] if data == &[1, 2, 3]
+        ));
+    }
+
+    #[test]
+    fn waiting_static_channel_stops_when_the_queue_closes() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(true));
+        fill_sparse_image_queue(&events, &event_posted);
+
+        let producer_events = Arc::clone(&events);
+        let producer_posted = Arc::clone(&event_posted);
+        let producer = std::thread::spawn(move || {
+            queue_worker_event(
+                &producer_events,
+                &producer_posted,
+                HWND(ptr::null_mut()),
+                WorkerEvent::StaticChannelData {
+                    generation: 7,
+                    channel_name: "alpha".to_owned(),
+                    data: vec![1],
+                },
+            )
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(!producer.is_finished(), "static channel must be waiting");
+
+        events.close();
+        assert!(!producer.join().expect("static channel producer"));
     }
 
     #[test]
@@ -24694,18 +24854,36 @@ try {
             ));
         }
         let (sender, mut receiver) = oneshot::channel();
-        assert!(queue_worker_event(
-            &events,
-            &event_posted,
-            dispatcher,
-            WorkerEvent::AutoReconnecting {
-                generation: 7,
-                disconnect_reason: 0,
-                attempt: 1,
-                maximum_attempts: 1,
-                response: sender,
-            },
-        ));
+        let producer_events = Arc::clone(&events);
+        let producer_posted = Arc::clone(&event_posted);
+        let dispatcher_raw = dispatcher.0 as isize;
+        let producer = std::thread::spawn(move || {
+            queue_worker_event(
+                &producer_events,
+                &producer_posted,
+                HWND(dispatcher_raw as *mut c_void),
+                WorkerEvent::AutoReconnecting {
+                    generation: 7,
+                    disconnect_reason: 0,
+                    attempt: 1,
+                    maximum_attempts: 1,
+                    response: sender,
+                },
+            )
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            !producer.is_finished(),
+            "auto reconnect must wait for static-channel data"
+        );
+        let static_channel_events = take_queued_events(&events);
+        assert_eq!(static_channel_events.len(), MAX_PENDING_WORKER_EVENTS);
+        assert!(
+            static_channel_events
+                .iter()
+                .all(|event| matches!(event, WorkerEvent::StaticChannelData { .. }))
+        );
+        assert!(producer.join().expect("auto reconnect producer"));
         assert!(receiver.try_recv().is_err());
         assert!(
             events
@@ -24715,6 +24893,112 @@ try {
                 .iter()
                 .any(|event| matches!(event, WorkerEvent::AutoReconnecting { .. }))
         );
+    }
+
+    #[test]
+    fn auto_reconnect_waits_without_discarding_exact_damage() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(true));
+        fill_sparse_image_queue(&events, &event_posted);
+
+        let producer_events = Arc::clone(&events);
+        let producer_posted = Arc::clone(&event_posted);
+        let (response, mut decision) = oneshot::channel();
+        let producer = std::thread::spawn(move || {
+            queue_worker_event(
+                &producer_events,
+                &producer_posted,
+                HWND(ptr::null_mut()),
+                WorkerEvent::AutoReconnecting {
+                    generation: 7,
+                    disconnect_reason: 0,
+                    attempt: 1,
+                    maximum_attempts: 1,
+                    response,
+                },
+            )
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(!producer.is_finished(), "auto reconnect must wait for exact damage");
+
+        let damage = take_queued_events(&events);
+        assert_eq!(damage.len(), MAX_PENDING_WORKER_EVENTS);
+        assert!(damage.iter().all(|event| matches!(event, WorkerEvent::Image { .. })));
+        assert!(producer.join().expect("auto reconnect producer"));
+        assert!(decision.try_recv().is_err());
+        assert!(matches!(
+            events.events.lock().expect("event queue is available").as_slice(),
+            [WorkerEvent::AutoReconnecting { .. }]
+        ));
+    }
+
+    #[test]
+    fn waiting_auto_reconnect_stops_when_the_queue_closes() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(true));
+        fill_sparse_image_queue(&events, &event_posted);
+
+        let producer_events = Arc::clone(&events);
+        let producer_posted = Arc::clone(&event_posted);
+        let (response, mut decision) = oneshot::channel();
+        let producer = std::thread::spawn(move || {
+            queue_worker_event(
+                &producer_events,
+                &producer_posted,
+                HWND(ptr::null_mut()),
+                WorkerEvent::AutoReconnecting {
+                    generation: 7,
+                    disconnect_reason: 0,
+                    attempt: 1,
+                    maximum_attempts: 1,
+                    response,
+                },
+            )
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(!producer.is_finished(), "auto reconnect must be waiting");
+
+        events.close();
+        assert!(!producer.join().expect("auto reconnect producer"));
+        assert!(matches!(decision.try_recv(), Err(oneshot::error::TryRecvError::Closed)));
+    }
+
+    #[test]
+    fn capacity_wait_fails_when_event_dispatch_cannot_be_posted() {
+        let events = Arc::new(WorkerEventQueue::new());
+        let event_posted = Arc::new(AtomicBool::new(false));
+        {
+            let mut queue = events.events.lock().expect("event queue is available");
+            for index in 0..MAX_PENDING_WORKER_EVENTS {
+                queue.push(WorkerEvent::Image {
+                    generation: 7,
+                    update: sparse_frame_update(
+                        u16::try_from(index * 2).expect("queue test coordinate fits in u16"),
+                        u32::try_from(index).expect("queue index fits in u32"),
+                    ),
+                });
+            }
+        }
+        let (response, mut decision) = oneshot::channel();
+
+        assert!(!queue_worker_event(
+            &events,
+            &event_posted,
+            HWND(ptr::dangling_mut()),
+            WorkerEvent::AutoReconnecting {
+                generation: 7,
+                disconnect_reason: 0,
+                attempt: 1,
+                maximum_attempts: 1,
+                response,
+            },
+        ));
+        assert!(matches!(decision.try_recv(), Err(oneshot::error::TryRecvError::Closed)));
+        assert_eq!(
+            events.events.lock().expect("event queue is available").len(),
+            MAX_PENDING_WORKER_EVENTS
+        );
+        assert!(!event_posted.load(Ordering::Acquire));
     }
 
     #[test]
@@ -24777,7 +25061,7 @@ try {
             completed_receiver.try_recv(),
             Err(std_mpsc::TryRecvError::Empty)
         ));
-        assert_eq!(events.take().len(), MAX_PENDING_WORKER_EVENTS);
+        assert_eq!(take_queued_events(&events).len(), MAX_PENDING_WORKER_EVENTS);
         assert!(
             completed_receiver
                 .recv_timeout(Duration::from_secs(1))
@@ -24785,7 +25069,7 @@ try {
         );
         producer.join().expect("RAIL event producer completes");
         assert!(matches!(
-            events.take().as_slice(),
+            take_queued_events(&events).as_slice(),
             [WorkerEvent::RailWindowingOrders {
                 generation: 7,
                 data,

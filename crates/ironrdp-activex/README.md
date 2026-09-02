@@ -389,11 +389,10 @@ traffic confirms the session is usable; a server ARC-status rejection clears the
 not raise that success event. Display-size fallback reconnects deliberately start a new session
 without reusing the session-bound ARC cookie. Calling `Disconnect` also stops a pending retry.
 
-Worker-to-apartment events are bounded to 64 pending entries. Frame updates coalesce to the latest
-frame, while lifecycle and terminal state evict only frames or static-channel data. A full queue
-with no pending frame rejects a newer frame instead of falsely reporting that it was accepted.
-Static-channel data is never silently dropped: if its event cannot be queued after evicting a frame,
-the session fails rather than reporting a successful but incomplete channel delivery.
+Worker-to-apartment events are bounded to 64 pending entries.
+Frame updates within the pixel limit coalesce only with damage from the same generation and framebuffer dimensions, and only when their bounding rectangle contains no undamaged pixels; non-coalesced updates wait when entry or pixel capacity is exhausted.
+Lifecycle, terminal, and automatic-reconnect events wait for capacity without discarding accepted payloads.
+Static-channel data waits when a full queue contains frame updates; otherwise, delivery fails the session instead of reporting incomplete data as successful.
 
 Each control runs its RDP client on one dedicated, module-pinned worker thread with a current-thread
 Tokio runtime. That prevents a control instance from creating additional scheduler threads and keeps
