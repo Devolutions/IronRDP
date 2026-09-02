@@ -1,24 +1,25 @@
 //! In-memory `CLIPRDR` backend for the headless agent daemon.
 //!
 //! Bridges `CLIPRDR` to the `clipboard-get`/`clipboard-set` IPC operations. Plain Unicode text
-//! (`CF_UNICODETEXT`) and images (`CF_DIB`/`CF_DIBV5`, stored as PNG); no file transfer, no HTML.
+//! (`CF_UNICODETEXT`), images (`CF_DIB`/`CF_DIBV5`, stored as PNG), and HTML fragments (the
+//! registered `HTML Format`); no file transfer.
 //! A headless daemon has no host clipboard of its own, so this backend holds the last content
 //! pushed by a `clipboard-set*` operation as its local clipboard content and the last content
 //! received from the remote as its remote clipboard content, both behind a lock shared with the
-//! daemon's IPC handlers. Content is a single logical item at a time (text or image, not both at
-//! once), matching how each `clipboard-set*` call replaces whatever was there before.
+//! daemon's IPC handlers. Content is a single logical item at a time (text, image, or HTML, not
+//! several at once), matching how each `clipboard-set*` call replaces whatever was there before.
 
 use std::sync::{Arc, Mutex};
 
 use ironrdp_client::rdp::RdpInputSender;
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy, CliprdrBackend, CliprdrBackendFactory};
 use ironrdp_cliprdr::pdu::{
-    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
-    FormatDataRequest, FormatDataResponse, LockDataId,
+    ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileContentsRequest,
+    FileContentsResponse, FormatDataRequest, FormatDataResponse, LockDataId,
 };
-use ironrdp_cliprdr_format::bitmap;
+use ironrdp_cliprdr_format::{bitmap, html};
 use ironrdp_pdu::ironrdp_core::{IntoOwned as _, impl_as_any};
-use ironrdp_rpc::ipc::MAX_CLIPBOARD_IMAGE_BYTES;
+use ironrdp_rpc::ipc::{MAX_CLIPBOARD_HTML_BYTES, MAX_CLIPBOARD_IMAGE_BYTES};
 use tracing::debug;
 
 /// One piece of clipboard content, in the daemon's own internal representation.
@@ -30,6 +31,17 @@ use tracing::debug;
 pub(crate) enum ClipboardContent {
     Text(String),
     Image(Vec<u8>),
+    /// Plain HTML fragment text, not yet wrapped in the `CF_HTML` clipboard-fragment envelope;
+    /// wrapping happens at the point of use via `ironrdp_cliprdr_format::html`.
+    Html(String),
+}
+
+/// The format ID this backend assigns when advertising the registered `HTML Format` to the
+/// remote. Registered (named) formats have no fixed numeric ID: the offering side picks one and
+/// the receiver learns the ID-to-name mapping from the `FormatList`. `0xC000` is the low end of
+/// the private-use range (`ClipboardFormatId::is_registered`), matching common practice.
+fn html_format_id() -> ClipboardFormatId {
+    ClipboardFormatId::new(0xC000)
 }
 
 /// Clipboard content shared between the `CLIPRDR` backend and the daemon's IPC handlers.
@@ -96,6 +108,7 @@ enum PendingPaste {
     Image {
         dibv5: bool,
     },
+    Html,
 }
 
 /// How long an outstanding paste request is given to answer before a newer remote copy is allowed
@@ -136,6 +149,7 @@ pub(crate) fn advertised_formats(content: &ClipboardContent) -> Vec<ClipboardFor
             ClipboardFormat::new(ClipboardFormatId::CF_DIB),
             ClipboardFormat::new(ClipboardFormatId::CF_DIBV5),
         ],
+        ClipboardContent::Html(_) => vec![ClipboardFormat::new(html_format_id()).with_name(ClipboardFormatName::HTML)],
     }
 }
 
@@ -181,13 +195,19 @@ impl CliprdrBackend for AgentCliprdrBackend {
         // The remote clipboard changed: whatever content was cached no longer reflects it.
         self.state.lock().expect("clipboard state poisoned").remote = None;
 
-        // Prefer the richest representation offered: image over text, DIBV5 over DIB.
+        // Prefer the richest representation offered: image over HTML over text, DIBV5 over DIB.
         let has_dibv5 = available_formats
             .iter()
             .any(|format| format.id() == ClipboardFormatId::CF_DIBV5);
         let has_dib = available_formats
             .iter()
             .any(|format| format.id() == ClipboardFormatId::CF_DIB);
+        // The remote assigns its own ID to a registered format; match by name and use whatever ID
+        // it picked, not `html_format_id()` (that's only for formats *we* advertise).
+        let remote_html_id = available_formats
+            .iter()
+            .find(|format| format.name() == Some(&ClipboardFormatName::HTML))
+            .map(ClipboardFormat::id);
         let has_text = available_formats
             .iter()
             .any(|format| format.id() == ClipboardFormatId::CF_UNICODETEXT);
@@ -196,6 +216,8 @@ impl CliprdrBackend for AgentCliprdrBackend {
             Some((PendingPaste::Image { dibv5: true }, ClipboardFormatId::CF_DIBV5))
         } else if has_dib {
             Some((PendingPaste::Image { dibv5: false }, ClipboardFormatId::CF_DIB))
+        } else if let Some(html_id) = remote_html_id {
+            Some((PendingPaste::Html, html_id))
         } else if has_text {
             Some((PendingPaste::Text, ClipboardFormatId::CF_UNICODETEXT))
         } else {
@@ -242,6 +264,9 @@ impl CliprdrBackend for AgentCliprdrBackend {
                     FormatDataResponse::new_error()
                 }
             },
+            (id, Some(ClipboardContent::Html(fragment))) if id == html_format_id() => {
+                FormatDataResponse::new_data(html::plain_html_to_cf_html(&fragment).into_bytes()).into_owned()
+            }
             _ => FormatDataResponse::new_error(),
         };
         self.proxy
@@ -277,6 +302,20 @@ impl CliprdrBackend for AgentCliprdrBackend {
                         }
                     }
                 }
+                PendingPaste::Html => match html::cf_html_to_plain_html(response.data()) {
+                    Ok(fragment) if fragment.len() > MAX_CLIPBOARD_HTML_BYTES => {
+                        debug!(
+                            html_len = fragment.len(),
+                            "Remote HTML exceeds the clipboard RPC transport limit; dropped"
+                        );
+                        None
+                    }
+                    Ok(fragment) => Some(ClipboardContent::Html(fragment.to_owned())),
+                    Err(error) => {
+                        debug!(%error, "CF_HTML to plain HTML conversion failed");
+                        None
+                    }
+                },
             };
             if let Some(content) = content {
                 self.state.lock().expect("clipboard state poisoned").remote = Some(content);

@@ -23,10 +23,10 @@ use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
 use ironrdp_rpc::ipc::{
-    AgentError, KeyFilter, MAX_CLIPBOARD_IMAGE_BYTES, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest,
-    NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload, PenContactRequest,
-    PenFrameRequest, PropValue, RailEvent, RailEventKind, RailExecuteRequest, Request, Response, TouchContactRequest,
-    TouchFrameRequest,
+    AgentError, KeyFilter, MAX_CLIPBOARD_HTML_BYTES, MAX_CLIPBOARD_IMAGE_BYTES, MAX_UNICODE_TEXT_CHARS,
+    NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo,
+    OperationState, Payload, PenContactRequest, PenFrameRequest, PropValue, RailEvent, RailEventKind,
+    RailExecuteRequest, Request, Response, TouchContactRequest, TouchFrameRequest,
 };
 use ironrdp_rpc::transport::{self, Endpoint};
 
@@ -121,6 +121,13 @@ enum Command {
     /// Set the local clipboard image from a PNG file and advertise it to the remote
     /// (`CF_DIB`/`CF_DIBV5`).
     ClipboardSetImage(ClipboardSetImageArgs),
+    /// Print the last HTML fragment received from the remote clipboard, if any.
+    ClipboardGetHtml,
+    /// Set the local clipboard HTML fragment and advertise it to the remote (`HTML Format`).
+    ClipboardSetHtml {
+        #[arg(long, value_parser = parse_clipboard_html)]
+        html: String,
+    },
     /// Send one MS-RDPEI touch contact sample (legal flag sets only).
     Touch {
         #[arg(long, default_value_t = 0)]
@@ -695,6 +702,16 @@ fn parse_unicode_text(input: &str) -> Result<String, String> {
     Ok(input.to_owned())
 }
 
+fn parse_clipboard_html(input: &str) -> Result<String, String> {
+    if input.len() > MAX_CLIPBOARD_HTML_BYTES {
+        return Err(format!(
+            "html must be at most {MAX_CLIPBOARD_HTML_BYTES} bytes, got {}",
+            input.len()
+        ));
+    }
+    Ok(input.to_owned())
+}
+
 #[cfg(windows)]
 fn parse_rdpdr_drive(input: &str) -> Result<ironrdp_daemon::daemon::RdpdrDriveConfig, String> {
     let (display_name, root_path) = input
@@ -985,6 +1002,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::TypeUnicode { text } => Request::UnicodeText { text },
         Command::ClipboardGet => Request::ClipboardGet,
         Command::ClipboardSet { text } => Request::ClipboardSet { text },
+        Command::ClipboardGetHtml => Request::ClipboardGetHtml,
+        Command::ClipboardSetHtml { html } => Request::ClipboardSetHtml { html },
         Command::Touch {
             contact_id,
             x,
@@ -2161,6 +2180,10 @@ fn print_payload(payload: Payload) {
         },
         // Handled out-of-band by the `ClipboardGetImage` command, never printed here.
         Payload::ClipboardImage(png) => println!("clipboard image ({} bytes)", png.as_ref().map_or(0, Vec::len)),
+        Payload::ClipboardHtml(html) => match html {
+            Some(html) => println!("{html}"),
+            None => println!("(empty)"),
+        },
     }
 }
 
