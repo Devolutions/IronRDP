@@ -99,7 +99,7 @@ test("workflow uses bounded classifier lanes and one parallel review pipeline", 
     /git fetch --no-tags origin "\+\$WORKFLOW_SHA:refs\/remotes\/origin\/automation"/);
   assert.equal((reviewWorkflow.match(/ref: \$\{\{ github\.workflow_sha \}\}/g) || []).length, 4);
   assert.doesNotMatch(reviewWorkflow, /ref: master/);
-  assert.equal((reviewWorkflow.match(/overwrite: true/g) || []).length, 4);
+  assert.equal((reviewWorkflow.match(/overwrite: true/g) || []).length, 6);
 
   const classifier = workflowJob(workflow, "classifier");
   assert.match(workflowJob(workflow, "resolve-pr"),
@@ -118,10 +118,14 @@ test("workflow uses bounded classifier lanes and one parallel review pipeline", 
   const specialists = workflowJob(reviewWorkflow, "specialists");
   assert.match(specialists, /max-parallel: 3/);
   assert.match(specialists, /reviewer: \$\{\{ fromJSON\(inputs\.specialist-reviewers\) \}\}/);
+  assert.match(specialists, /if: matrix\.reviewer == 'protocol'/);
+  assert.match(specialists, /name: review-corpus-\$\{\{ inputs\.head-sha \}\}/);
   assert.match(specialists, /Upload validated specialist result/);
   const aggregate = workflowJob(reviewWorkflow, "aggregate");
   assert.match(aggregate, /needs: \[evidence, specialists\]/);
   assert.match(aggregate, /pattern: review-specialist-\$\{\{ inputs\.head-sha \}\}-\*/);
+  assert.match(aggregate, /continue-on-error: true/);
+  assert.match(aggregate, /failedRun\(reviewer, "specialist result unavailable"\)/);
   const general = workflowJob(reviewWorkflow, "general");
   assert.match(general, /needs: \[evidence, aggregate\]/);
   assert.match(general, /needs\.aggregate\.outputs\.ready == 'true'/);
@@ -135,6 +139,11 @@ test("workflow does not resolve or write state after cancellation", () => {
   for (const name of ["resolve-classification-state", "resolve-review-state", "write-state"]) {
     assert.match(workflowJob(workflow, name), /^    if: always\(\) && !cancelled\(\) &&/m);
   }
+  const reviewWorkflow = readReviewWorkflow();
+  assert.match(workflowJob(reviewWorkflow, "aggregate"),
+    /^    if: always\(\) && !cancelled\(\) &&/m);
+  assert.match(workflowJob(reviewWorkflow, "validate"),
+    /^    if: always\(\) && !cancelled\(\)$/m);
 });
 
 test("workflow isolates CI completion concurrency by source commit", () => {

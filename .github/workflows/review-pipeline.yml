@@ -144,7 +144,26 @@ jobs:
             pr-automation-context.json
             pr-evidence
             pr-head
-            review-sources
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+          overwrite: true
+
+      - name: Upload validation context
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-validation-${{ inputs.head-sha }}
+          path: pr-evidence/validation-context.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+      - name: Upload protocol corpus
+        if: contains(fromJSON(inputs.specialist-reviewers), 'protocol')
+        uses: actions/upload-artifact@v7
+        with:
+          name: review-corpus-${{ inputs.head-sha }}
+          path: review-sources
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 1
@@ -175,6 +194,13 @@ jobs:
           name: review-evidence-${{ inputs.head-sha }}
           path: .
 
+      - name: Download protocol corpus
+        if: matrix.reviewer == 'protocol'
+        uses: actions/download-artifact@v8
+        with:
+          name: review-corpus-${{ inputs.head-sha }}
+          path: review-sources
+
       - id: agent
         name: Run ${{ matrix.reviewer }} specialist
         continue-on-error: true
@@ -198,13 +224,16 @@ jobs:
           script: |
             const fs = require("node:fs");
             const path = require("node:path");
-            const {
-              failedRun, validateSpecialistRun,
-            } = require("./.github/pr-automation/review-pipeline");
-            const { corpusFromDirectory } = require("./.github/pr-automation/validate-protocol-review");
             const reviewer = process.env.REVIEWER;
-            let run;
+            const failed = (reason) => ({ reviewer, status: "failed", reason });
+            let run = failed("specialist validation unavailable");
             try {
+              const {
+                validateSpecialistRun,
+              } = require("./.github/pr-automation/review-pipeline");
+              const {
+                corpusFromDirectory,
+              } = require("./.github/pr-automation/validate-protocol-review");
               const validation = JSON.parse(fs.readFileSync(
                 "pr-evidence/validation-context.json", "utf8",
               ));
@@ -213,7 +242,7 @@ jobs:
                   expectedCorpusSha: process.env.OPENSPECS_SHA,
                 })
                 : undefined;
-              run = validateSpecialistRun(process.env.RAW_OUTPUT || "", {
+              const result = validateSpecialistRun(process.env.RAW_OUTPUT || "", {
                 reviewer,
                 expectedSha: process.env.HEAD_SHA,
                 changedPaths: validation.changed_paths,
@@ -221,10 +250,10 @@ jobs:
                 corpus,
                 expectedCorpusSha: process.env.OPENSPECS_SHA,
                 failureReason: process.env.MODEL_REASON,
-              }).value;
+              });
+              run = result.value ?? failed(result.reason || "specialist validation unavailable");
             } catch (error) {
               core.warning(`Specialist validation unavailable: ${error.message}`);
-              run = failedRun(reviewer, "specialist validation unavailable").value;
             }
             fs.mkdirSync("specialist-results", { recursive: true });
             fs.writeFileSync(
@@ -250,7 +279,7 @@ jobs:
   aggregate:
     name: Aggregate specialist findings
     needs: [evidence, specialists]
-    if: always() && needs.evidence.result == 'success'
+    if: always() && !cancelled() && needs.evidence.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -264,6 +293,7 @@ jobs:
           persist-credentials: false
 
       - name: Download specialist results
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           pattern: review-specialist-${{ inputs.head-sha }}-*
@@ -281,12 +311,21 @@ jobs:
           script: |
             const fs = require("node:fs");
             const path = require("node:path");
-            const { buildSpecialistAggregate } = require("./.github/pr-automation/review-pipeline");
+            const {
+              buildSpecialistAggregate, failedRun,
+            } = require("./.github/pr-automation/review-pipeline");
             const selected = JSON.parse(process.env.SPECIALIST_REVIEWERS);
             const gate = JSON.parse(process.env.GATE);
-            const runs = selected.map((reviewer) => JSON.parse(fs.readFileSync(
-              path.join("specialist-results", `${reviewer}.json`), "utf8",
-            )));
+            const runs = selected.map((reviewer) => {
+              try {
+                return JSON.parse(fs.readFileSync(
+                  path.join("specialist-results", `${reviewer}.json`), "utf8",
+                ));
+              } catch (error) {
+                core.warning(`Specialist result unavailable for ${reviewer}: ${error.message}`);
+                return failedRun(reviewer, "specialist result unavailable").value;
+              }
+            });
             const result = buildSpecialistAggregate({
               expectedSha: process.env.HEAD_SHA,
               selectedReviewers: selected,
@@ -382,7 +421,7 @@ jobs:
   validate:
     name: Validate final review
     needs: [evidence, aggregate, general]
-    if: always()
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -395,31 +434,22 @@ jobs:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
-      - name: Download review evidence
-        if: >-
-          needs.aggregate.result == 'success' &&
-          needs.aggregate.outputs.ready == 'true' &&
-          needs.general.result == 'success'
+      - name: Download validation context
+        if: needs.general.result == 'success'
         uses: actions/download-artifact@v8
         with:
-          name: review-evidence-${{ inputs.head-sha }}
-          path: .
+          name: review-validation-${{ inputs.head-sha }}
+          path: pr-evidence
 
       - name: Download specialist aggregate
-        if: >-
-          needs.aggregate.result == 'success' &&
-          needs.aggregate.outputs.ready == 'true' &&
-          needs.general.result == 'success'
+        if: needs.general.result == 'success'
         uses: actions/download-artifact@v8
         with:
           name: review-aggregate-${{ inputs.head-sha }}
           path: .
 
       - name: Download general review result
-        if: >-
-          needs.aggregate.result == 'success' &&
-          needs.aggregate.outputs.ready == 'true' &&
-          needs.general.result == 'success'
+        if: needs.general.result == 'success'
         uses: actions/download-artifact@v8
         with:
           name: review-general-${{ inputs.head-sha }}
