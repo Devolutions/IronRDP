@@ -923,9 +923,10 @@ test("force is dispatch-only and bypasses draft and bot eligibility", async () =
   assert.equal(automaticBot.reason, "bot-authored pull request");
 });
 
-test("only the persistent oversized-review label starts automation from a label event", async () => {
+test("only oversized-review label changes start automation from label events", async () => {
   const workflow = readWorkflow();
-  assert.match(workflow, /types: \[opened, reopened, synchronize, ready_for_review, edited, labeled\]/);
+  assert.match(workflow,
+    /types: \[opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled\]/);
   assert.match(workflowJob(workflow, "classifier"),
     /EVIDENCE_MAX_BYTES: \$\{\{ needs\.resolve-pr\.outputs\.evidence-max-bytes \}\}/);
   const classificationGate = workflowJob(workflow, "classification-gate");
@@ -940,14 +941,14 @@ test("only the persistent oversized-review label starts automation from a label 
     user: { node_id: "U_1", login: "contributor", type: "User" },
     head: { sha: SHA, repo: { full_name: "Devolutions/IronRDP" } }, base: { sha: "b".repeat(40) },
   });
-  const resolve = async (label) => resolvePr({
+  const resolve = async (label, action = "labeled", labels = [OVERSIZED_REVIEW_LABEL]) => resolvePr({
     github: { rest: { pulls: {
-      get: async () => ({ data: pullRequest([OVERSIZED_REVIEW_LABEL]) }),
-      list: async () => ({ data: [pullRequest([OVERSIZED_REVIEW_LABEL])] }),
+      get: async () => ({ data: pullRequest(labels) }),
+      list: async () => ({ data: [pullRequest(labels)] }),
     } } },
     context: {
       eventName: "pull_request_target", repo: { owner: "Devolutions", repo: "IronRDP" },
-      payload: { action: "labeled", label: { name: label }, pull_request: { number: 7 } },
+      payload: { action, label: { name: label }, pull_request: { number: 7 } },
     },
   });
 
@@ -957,7 +958,13 @@ test("only the persistent oversized-review label starts automation from a label 
   assert.equal(requested.reviewRequested, true);
   assert.equal(requested.force, false);
   assert.equal(requested.evidenceMaxBytes, 4 * 1024 * 1024);
+  const revoked = await resolve(OVERSIZED_REVIEW_LABEL, "unlabeled", []);
+  assert.equal(revoked.ok, true);
+  assert.equal(revoked.classificationRequested, true);
+  assert.equal(revoked.reviewRequested, false);
+  assert.equal(revoked.evidenceMaxBytes, 1024 * 1024);
   assert.equal((await resolve("size/XXL")).reason, "unrelated pull request label");
+  assert.equal((await resolve("size/XXL", "unlabeled", [])).reason, "unrelated pull request label");
 });
 
 test("deterministic semver outranks the model and a model-only break cannot stay low", () => {

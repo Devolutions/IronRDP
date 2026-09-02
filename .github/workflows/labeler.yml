@@ -2,7 +2,7 @@ name: Pull request automation
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, edited, labeled]
+    types: [opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled]
   workflow_run:
     workflows: [CI]
     types: [completed]
