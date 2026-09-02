@@ -1,6 +1,6 @@
 {
   "id": "general-reviewer",
-  "model": "glm-5.2",
+  "model": "deepseek-v4-flash",
   "prompt_file": ".github/pr-automation/prompts/general-reviewer.md",
   "schema_file": ".github/pr-automation/schemas/final-review.json",
   "allowed_roots": [
