@@ -60,3 +60,26 @@ Currently we define three specialist reviewers:
 
 They should run in parallel using a multi-job matrix.
 We allow at most three specialist agents to run at once.
+
+## Activation policy
+
+Classify every non-draft, human-authored pull request that passes the integrity and capacity gates.
+Run automated review after CI succeeds for the exact classified head.
+Run the second review after a later push reaches green exact-head CI, and stop automatic review at `ai-reviewed/2`.
+
+`OWNER` and `MEMBER` authors are always eligible.
+Other authors need one merged pull request from the same immutable human author, excluding `trivial`, `reverted`, and revert-titled pull requests.
+
+Block review for duplicates at confidence 0.85 or greater and likely non-legitimate changes.
+Unavailable or invalid classification fails closed to maintainer review.
+Risk and protocol relevance select reviewers but do not suppress review.
+
+Fork pull requests share a quota of 50 per UTC day.
+Exclude `OWNER` and `MEMBER` pull requests from enforcement and counting, and preserve the same-repository exemption.
+
+Keep `size/XXL` informational.
+Use a 1 MiB evidence diff limit by default and a 4 MiB limit when `ai-review/allow-oversized` is present.
+Adding that label must retry classification.
+Evidence above the applicable limit fails closed without partial model input.
+
+Force mode bypasses policy gates but not evidence, validation, filesystem, citation, publication, or stale-head safeguards.

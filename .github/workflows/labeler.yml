@@ -59,6 +59,7 @@ jobs:
       classification-requested: ${{ steps.resolve.outputs.classification-requested }}
       review-route: ${{ steps.resolve.outputs.review-route }}
       classifier-lane: ${{ steps.resolve.outputs.classifier-lane }}
+      evidence-max-bytes: ${{ steps.resolve.outputs.evidence-max-bytes }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -91,6 +92,7 @@ jobs:
             core.setOutput("classification-requested", result.classificationRequested === true);
             core.setOutput("review-route", result.reviewRoute === true);
             core.setOutput("classifier-lane", result.prNumber ? (Number(result.prNumber) % 2) + 1 : "");
+            core.setOutput("evidence-max-bytes", result.evidenceMaxBytes ?? "");
             core.info(JSON.stringify({ event: "pr-automation.resolve-pr", decision: result }));
             if (!result.ok) core.warning(`PR automation did not start: ${result.reason}`);
 
@@ -121,6 +123,7 @@ jobs:
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
+          RETRY_WITH_LARGER_EVIDENCE: ${{ needs.resolve-pr.outputs.review-requested }}
         with:
           script: |
             const { SCHEMA_VERSION, parseCheckState } = require("./.github/pr-automation/validate-classifier");
@@ -132,6 +135,16 @@ jobs:
               core.info(JSON.stringify({
                 event: "pr-automation.classification-gate",
                 decision: { available: true, required: true, force: true },
+              }));
+              return;
+            }
+            if (process.env.RETRY_WITH_LARGER_EVIDENCE === "true") {
+              core.setOutput("required", true);
+              core.setOutput("available", true);
+              core.setOutput("reason", "");
+              core.info(JSON.stringify({
+                event: "pr-automation.classification-gate",
+                decision: { available: true, required: true, largerEvidence: true },
               }));
               return;
             }
@@ -406,8 +419,6 @@ jobs:
       (needs.resolve-pr.outputs.force == 'true' ||
       (needs.classification-gate.outputs.available == 'true' &&
       needs.classification-gate.outputs.required == 'true' &&
-      (needs.deterministic-analysis.outputs.size-label != 'size/XXL' ||
-      contains(fromJSON(needs.resolve-pr.outputs.labels), 'ai-review/allow-oversized')) &&
       needs.fork-rate-limit.result == 'success' &&
       needs.fork-rate-limit.outputs.allowed == 'true' &&
       !contains(fromJSON(needs.resolve-pr.outputs.labels), 'ai-reviewed/2')))
@@ -430,6 +441,7 @@ jobs:
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
+          EVIDENCE_MAX_BYTES: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
         run: |
           set -euo pipefail
           export GIT_CONFIG_NOSYSTEM=1
@@ -439,7 +451,8 @@ jobs:
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git fetch --no-tags origin +master:refs/remotes/origin/master
           git checkout --detach origin/master
-          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"; then
+          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh \
+            "$HEAD_SHA" "$BASE_SHA" "$EVIDENCE_MAX_BYTES"; then
             reason="pull request evidence unavailable"
             if test -f pr-evidence/failure-reason.txt; then
               reason="$(cat pr-evidence/failure-reason.txt)"
@@ -664,7 +677,7 @@ jobs:
                 })).data.workflow_runs;
               const ciGreen = workflowRuns.some((run) => run?.name === "CI" && run?.conclusion === "success");
               const secondReviewEligible = !labels.includes("ai-reviewed/1") || !reviewAtHead;
-              const policyEligible = reviewPolicyEligible({ labels, legitimacyStopped, protocolRelated });
+              const policyEligible = reviewPolicyEligible({ labels, legitimacyStopped });
               const contributor = await contributorEligibility({
                 github, owner: context.repo.owner, repo: context.repo.repo, author,
                 currentPrNumber: prNumber,
@@ -715,6 +728,7 @@ jobs:
       base-sha: ${{ needs.resolve-pr.outputs.base-sha }}
       gate: ${{ needs.review-gate.outputs.gate }}
       specialist-reviewers: ${{ needs.review-gate.outputs.specialist-reviewers }}
+      evidence-max-bytes: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
 
   resolve-review-state:
     name: Resolve review state

@@ -127,6 +127,6 @@
   {
     "name": "ai-review/allow-oversized",
     "color": "fbca04",
-    "description": "Allows normal automated review of an oversized pull request"
+    "description": "Raises the automated-review evidence diff limit from 1 MiB to 4 MiB"
   }
 ]

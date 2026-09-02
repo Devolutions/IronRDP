@@ -100,9 +100,13 @@ async function resolvePr({ github, context, inputs = {} }) {
   const authorIsBot = pr.user?.type === "Bot" || /\[bot\]$/i.test(authorLogin) ||
     authorLogin.toLowerCase() === "devolutionsbot";
   if (authorIsBot && !force) return noResult("bot-authored pull request", route);
+  const labels = (pr.labels || [])
+    .map((label) => typeof label === "string" ? label : label.name)
+    .filter(Boolean);
   return {
     ok: true, route, prNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha,
-    labels: (pr.labels || []).map((label) => typeof label === "string" ? label : label.name).filter(Boolean),
+    labels,
+    evidenceMaxBytes: labels.includes(OVERSIZED_REVIEW_LABEL) ? 4 * 1024 * 1024 : 1024 * 1024,
     author: {
       nodeId: pr.user?.node_id || null, login: pr.user?.login || null, type: pr.user?.type || null,
       association: pr.author_association || null,

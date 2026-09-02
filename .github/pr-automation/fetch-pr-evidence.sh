@@ -8,13 +8,22 @@
 # This is shared by every stage because the instruction-file removal below is a security boundary that duplicated scripts would eventually drift from.
 set -euo pipefail
 
-if [ "$#" -ne 2 ]; then
-  echo "usage: fetch-pr-evidence.sh <head-sha> <base-sha>" >&2
+if [ "$#" -ne 3 ]; then
+  echo "usage: fetch-pr-evidence.sh <head-sha> <base-sha> <max-diff-bytes>" >&2
   exit 1
 fi
 
 head_sha="$1"
 base_sha="$2"
+max_bytes="$3"
+case "$max_bytes" in
+  1048576) limit_mib=1 ;;
+  4194304) limit_mib=4 ;;
+  *)
+    echo "error: invalid evidence diff limit" >&2
+    exit 1
+    ;;
+esac
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL=/dev/null
@@ -48,11 +57,9 @@ git -C pr-head diff --no-color --find-renames --name-status \
 git -C pr-head diff --no-color --find-renames --unified=3 \
   origin/pull-request-base...origin/pull-request-head > pr-evidence/pull-request.diff
 
-# Partial diffs cannot support complete classification or review, including when a maintainer opts
-# an oversized pull request into automation.
-max_bytes=$((1024 * 1024))
+# Partial diffs cannot support complete classification or review.
 if [ "$(wc -c < pr-evidence/pull-request.diff)" -gt "$max_bytes" ]; then
-  reason="pull request diff exceeds the 1 MiB evidence limit"
+  reason="pull request diff exceeds the $limit_mib MiB evidence limit"
   printf '%s\n' "$reason" > pr-evidence/failure-reason.txt
   printf 'error: %s\n' "$reason" >&2
   exit 1
