@@ -25,6 +25,13 @@ git -C pr-head fetch --no-tags origin "+$head_sha:refs/remotes/origin/pull-reque
 git -C pr-head fetch --no-tags origin "+$base_sha:refs/remotes/origin/pull-request-base"
 git -C pr-head checkout --detach origin/pull-request-head
 
+# Ignore contributor-controlled diff attributes while representing the reproducibly verified
+# action bundle as a binary change instead of embedding its minified output twice.
+cat > pr-head/.git/info/attributes <<'EOF'
+* !diff
+.github/actions/openai-agent/dist/index.js -diff
+EOF
+
 # The head tree is contributor-controlled.
 # Remove symlinks before granting filesystem-reading tools access so they cannot escape the checkout and disclose runner-local files or environment secrets.
 find pr-head -type l -delete
