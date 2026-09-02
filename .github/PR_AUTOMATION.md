@@ -92,7 +92,7 @@ The protocol specialist reads the Microsoft Open Specifications as inert data un
 The workflow fetches the latest `awakecoding/openspecs` master without credentials and copies only allowlisted regular Markdown files.
 It excludes skills, instruction files, symlinks, submodules, executables, and lifecycle content.
 
-Citation validation uses the same corpus commit that the specialist read.
+Citation validation uses the same corpus commit that the specialist read, and the evidence job records its SHA in the job summary.
 Every protocol ID, section number, and heading must exist in that fetched commit.
 An unavailable corpus, protocol specialist, or protocol validation blocks publication for a mandatory protocol review.
 

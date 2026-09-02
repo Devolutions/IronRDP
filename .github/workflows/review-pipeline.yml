@@ -131,6 +131,7 @@ jobs:
           bash ./.github/pr-automation/prepare-review-sources.sh \
             "$RUNNER_TEMP/openspecs" "$openspecs_sha"
           echo "openspecs-sha=$openspecs_sha" >> "$GITHUB_OUTPUT"
+          echo "Protocol corpus: \`awakecoding/openspecs@$openspecs_sha\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove Git metadata from the untrusted head
         shell: bash
