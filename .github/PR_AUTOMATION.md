@@ -9,7 +9,7 @@ The automation posts guidance on the pull request instead of invoking a model wi
 ## Review pipeline
 
 Classification and review use [Helmcode's OpenAI-compatible endpoint](https://api.helmcode.com/v1).
-The classifier and all reviewers use `glm-5.2`.
+The classifier and all reviewers use `glm-5.3`.
 
 The pipeline performs these stages:
 
@@ -189,7 +189,8 @@ Agent configuration lives in `.github/pr-automation/agents` on the base branch.
 Configuration fixes model selection, prompts, schemas, methodologies, filesystem capabilities, and execution limits.
 Models cannot alter these values or the Helmcode endpoint.
 
-To migrate the agents to GLM-5.3, update the base-branch `model` fields after Helmcode exposes the model and the action's mocked provider and schema tests pass unchanged.
+When Helmcode exposes GLM-5.3-Flash, consider trialing it for classification first.
+If GLM-5.3 reviewer costs become too high and the trial performs well, consider migrating the reviewers too.
 Keep classification in its own job so the static classifier lanes continue to bound Helmcode concurrency.
 
 ## Label setup
