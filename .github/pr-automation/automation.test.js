@@ -91,7 +91,7 @@ test("workflow uses bounded classifier lanes and one parallel review pipeline", 
   assert.doesNotMatch(combined, /anthropic|claude|sonnet|haiku|resilient-review-output/i);
   assert.equal((combined.match(/uses: \.\/\.github\/actions\/openai-agent/g) || []).length, 3);
   assert.equal((combined.match(/environment: llm-providers/g) || []).length, 3);
-  assert.equal((combined.match(/secrets\.HELMCODE_GLM_API_KEY/g) || []).length, 3);
+  assert.equal((combined.match(/secrets\.HELMCODE_GLM_API_KEY/g) || []).length, 4);
   assert.doesNotMatch(reviewWorkflow, /OPENSPECS_COMMIT/);
   assert.match(reviewWorkflow, /openspecs" fetch .*origin \+master:refs\/remotes\/origin\/master/);
   assert.match(reviewWorkflow, /awakecoding\/openspecs@\$openspecs_sha.*GITHUB_STEP_SUMMARY/);
@@ -114,6 +114,10 @@ test("workflow uses bounded classifier lanes and one parallel review pipeline", 
   assert.match(caller, /cancel-in-progress: false/);
   assert.match(caller, /queue: max/);
   assert.match(caller, /uses: \.\/\.github\/workflows\/review-pipeline\.yml/);
+  assert.match(caller, /HELMCODE_GLM_API_KEY: \$\{\{ secrets\.HELMCODE_GLM_API_KEY \}\}/);
+  assert.match(reviewWorkflow,
+    /workflow_call:\n\s+secrets:\n\s+HELMCODE_GLM_API_KEY:\n\s+description:.*\n\s+required: true/);
+  assert.doesNotMatch(caller, /secrets: inherit/);
   assert.doesNotMatch(caller, /runs-on:/);
 
   const specialists = workflowJob(reviewWorkflow, "specialists");

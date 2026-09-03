@@ -2,6 +2,10 @@ name: Automated review pipeline
 
 on:
   workflow_call:
+    secrets:
+      HELMCODE_GLM_API_KEY:
+        description: API key for the OpenAI-compatible review provider
+        required: true
     inputs:
       pr-number:
         description: Pull request number to review

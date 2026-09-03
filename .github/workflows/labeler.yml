@@ -729,6 +729,8 @@ jobs:
       gate: ${{ needs.review-gate.outputs.gate }}
       specialist-reviewers: ${{ needs.review-gate.outputs.specialist-reviewers }}
       evidence-max-bytes: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
+    secrets:
+      HELMCODE_GLM_API_KEY: ${{ secrets.HELMCODE_GLM_API_KEY }}
 
   resolve-review-state:
     name: Resolve review state
