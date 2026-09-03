@@ -31,7 +31,7 @@ use crate::{
     },
 };
 use ironrdp_usb::{
-    Direction, InterfaceSelection, TransferType, UsbSpeed,
+    Direction, InterfaceSelection, TransferType,
     control::{GetDescriptorRequest, Recipient, RequestKind, SetupPacket, standard_request},
     descriptor::{ConfigurationDescriptorSet, InterfaceDescriptor, ValidConfigurationDescriptorSet},
     transfer::{
@@ -556,7 +556,6 @@ pub fn unconfigure() -> TransferInPacket {
 pub fn select_configuration(
     descriptor: ValidConfigurationDescriptorSet<'_>,
     active_interfaces: &[InterfaceSelection],
-    speed: UsbSpeed,
 ) -> Result<TransferInPacket, ConversionError> {
     let descriptor = descriptor.as_set();
 
@@ -573,7 +572,7 @@ pub fn select_configuration(
         let interface = descriptor
             .interface(selection.interface, selection.alternate_setting)
             .ok_or(ConversionError::InterfaceNotFound { selection })?;
-        usbd_ifaces.push(interface_information(interface, speed)?);
+        usbd_ifaces.push(interface_information(interface)?);
     }
     for interface in descriptor.interfaces() {
         if !active_interfaces
@@ -606,7 +605,6 @@ pub fn select_interface(
     config_handle: ConfigHandle,
     descriptor: ValidConfigurationDescriptorSet<'_>,
     selection: InterfaceSelection,
-    speed: UsbSpeed,
 ) -> Result<TransferInPacket, ConversionError> {
     let interface = descriptor
         .as_set()
@@ -614,7 +612,7 @@ pub fn select_interface(
         .ok_or(ConversionError::InterfaceNotFound { selection })?;
     let urb = TsUrbSelectInterface {
         config_handle,
-        usbd_iface: interface_information(interface, speed)?,
+        usbd_iface: interface_information(interface)?,
     };
     Ok(transfer_in(
         TsUrbInKind::SelectIface(urb),
@@ -1051,10 +1049,7 @@ fn configuration_descriptor(descriptor: ConfigurationDescriptorSet<'_>) -> Resul
     })
 }
 
-fn interface_information(
-    interface: InterfaceDescriptor<'_>,
-    speed: UsbSpeed,
-) -> Result<TsUsbdInterfaceInfo, ConversionError> {
+fn interface_information(interface: InterfaceDescriptor<'_>) -> Result<TsUsbdInterfaceInfo, ConversionError> {
     let selection = InterfaceSelection {
         interface: interface.number(),
         alternate_setting: interface.alternate_setting(),
@@ -1071,15 +1066,14 @@ fn interface_information(
                 raw: raw_max_packet_size,
             });
         }
-        let max_packet_size = endpoint
-            .max_packet_size()
-            .usb2_max_payload(speed, endpoint.transfer_type())
-            .ok_or(ConversionError::InvalidMaximumPacketSize {
-                selection,
-                raw: raw_max_packet_size,
-            })?;
         pipes.push(TsUsbdPipeInfo {
-            max_packet_size,
+            // The client opens the pipe and reports the packet size it actually
+            // established in TS_USBD_PIPE_INFORMATION_RESULT, so the request
+            // field only states a preference. Windows servers leave it zero,
+            // and a server-side value would have to be derived from the
+            // announced device speed, which USB_DEVICE_CAPABILITIES
+            // ([MS-RDPEUSB] 2.2.11) cannot express beyond full and high.
+            max_packet_size: 0,
             // MS-RDPEUSB 2.2.9.1.3 notes that the client ignores this
             // obsolete USBD field. Zero requests the client default.
             max_transfer_size: 0,
