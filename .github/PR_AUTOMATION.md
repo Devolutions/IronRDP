@@ -9,7 +9,7 @@ The automation posts guidance on the pull request instead of invoking a model wi
 ## Review pipeline
 
 Classification and review use [Helmcode's OpenAI-compatible endpoint](https://api.helmcode.com/v1).
-The classifier and all reviewers use `glm-5.3`.
+The classifier and all reviewers use `glm5.3`.
 
 The pipeline performs these stages:
 
