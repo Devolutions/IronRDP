@@ -2779,6 +2779,17 @@ impl RdpServer {
                                 debug!("Dropping stale wave");
                                 continue;
                             }
+                            // The event channel outlives a single connection, so a
+                            // wave queued by the previous client's sound handler can
+                            // be the first event a new connection dispatches, before
+                            // its own rdpsnd channel has negotiated a format. There is
+                            // no channel to carry it yet; failing the whole connection
+                            // over it would turn every audio-enabled disconnect into a
+                            // failed next connect.
+                            if !rdpsnd.is_ready() {
+                                debug!("Dropping wave: rdpsnd channel not negotiated yet");
+                                continue;
+                            }
                             rdpsnd.wave(data, ts)
                         }
                         RdpsndServerMessage::SetVolume { left, right } => rdpsnd.set_volume(left, right),

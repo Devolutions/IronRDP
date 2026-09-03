@@ -272,6 +272,30 @@ fn processor_declines_when_start_fails() {
 }
 
 #[test]
+fn is_ready_only_once_a_format_is_committed() {
+    let server_with = |start_ok| {
+        RdpsndServer::new(Box::new(FakeHandler {
+            formats: vec![fmt(WaveFormat::PCM, 44100)],
+            rec: Arc::new(Mutex::new(Recording::default())),
+            start_ok,
+        }))
+    };
+
+    let mut negotiated = server_with(true);
+    assert!(!negotiated.is_ready(), "not ready before the handshake");
+    drive_to_ready(&mut negotiated, vec![fmt(WaveFormat::PCM, 44100)]);
+    assert!(negotiated.is_ready());
+
+    let mut nothing_in_common = server_with(true);
+    drive_to_ready(&mut nothing_in_common, vec![fmt(WaveFormat::AAC_MS, 44100)]);
+    assert!(!nothing_in_common.is_ready());
+
+    let mut start_failed = server_with(false);
+    drive_to_ready(&mut start_failed, vec![fmt(WaveFormat::PCM, 44100)]);
+    assert!(!start_failed.is_ready());
+}
+
+#[test]
 fn wave_carries_the_capture_timestamp_the_client_echoes() {
     let rec = Arc::new(Mutex::new(Recording::default()));
     let mut server = RdpsndServer::new(Box::new(FakeHandler {
