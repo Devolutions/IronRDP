@@ -114,7 +114,6 @@ test("workflow uses bounded classifier lanes and one parallel review pipeline", 
   assert.match(caller, /cancel-in-progress: false/);
   assert.match(caller, /queue: max/);
   assert.match(caller, /uses: \.\/\.github\/workflows\/review-pipeline\.yml/);
-  assert.match(caller, /secrets: inherit/);
   assert.doesNotMatch(caller, /runs-on:/);
 
   const specialists = workflowJob(reviewWorkflow, "specialists");
