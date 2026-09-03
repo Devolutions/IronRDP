@@ -111,7 +111,7 @@ fn wts2_64x64_diff_2tiles() {
         );
         assert_eq!(first.quality, 0xFF);
         assert_eq!(first.x_idx, 3);
-        assert_eq!(first.y_idx, 2 + i as u16);
+        assert_eq!(first.y_idx, 2 + u16::try_from(i).expect("tile index fits in u16"));
     }
 }
 
@@ -145,7 +145,7 @@ fn wts2_64x128_diff_3tiles() {
         );
         assert_eq!(first.quality, 0xFF);
         assert_eq!(first.x_idx, 3);
-        assert_eq!(first.y_idx, 2 + i as u16);
+        assert_eq!(first.y_idx, 2 + u16::try_from(i).expect("tile index fits in u16"));
     }
 }
 
@@ -180,7 +180,7 @@ fn wts2_37x560_diff_column_9tiles() {
         );
         assert_eq!(first.quality, 0xFF);
         assert_eq!(first.x_idx, 19);
-        assert_eq!(first.y_idx, 3 + i as u16);
+        assert_eq!(first.y_idx, 3 + u16::try_from(i).expect("tile index fits in u16"));
     }
 }
 
