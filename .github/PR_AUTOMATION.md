@@ -182,8 +182,7 @@ Every model invocation receives its credential through:
 api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
 ```
 
-The repository must contain the Actions secret named exactly `HELMCODE_GLM_API_KEY`.
-The caller passes this secret explicitly to the reusable review workflow instead of relying on environment-secret forwarding.
+The environment must contain the secret named exactly `HELMCODE_GLM_API_KEY`.
 Do not add a second provider secret or expose this key through prompts, files, outputs, logs, summaries, fixtures, diagnostics, or unrelated child processes.
 
 Agent configuration lives in `.github/pr-automation/agents` on the base branch.
