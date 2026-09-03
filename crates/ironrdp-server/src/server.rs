@@ -72,6 +72,24 @@ use ironrdp_rdpeusb::{InterfaceAlloc, server::UrbdrcControlServer, server::Urbdr
 const LISTENER_BACKLOG: u32 = 1024;
 const AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
+/// How long a single [`ironrdp_acceptor::accept_finalize`] pass may take before
+/// the connection is dropped.
+///
+/// A client can complete the whole security handshake — X.224, TLS, and CredSSP
+/// where applicable — and then stop producing PDUs, leaving the server blocked
+/// on a socket read with no timeout. Because `RdpServer` serves one connection
+/// at a time, that connection then holds the server indefinitely: the socket
+/// stays ESTABLISHED with both TCP queues empty, and nothing tears it down.
+/// This has been observed in the field against a real client, which completed
+/// MCS Connect, Erect Domain, Attach User and every channel join and then never
+/// sent its Client Info PDU; the connection sat there for 45 minutes.
+///
+/// Generous on purpose: a healthy finalize is sub-second, and even over a slow
+/// mobile link with heavy retransmits the whole pass stays within a few
+/// seconds. A false timeout is cheap — the connection is dropped and the client
+/// reconnects (immediately, if it holds an auto-reconnect cookie).
+const FINALIZE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Monotonic milliseconds since first use, for feeding the auto-detect state machine.
 ///
 /// The clock lives here, in the I/O driver, rather than inside [`AutoDetectManager`]:
@@ -2909,9 +2927,27 @@ impl RdpServer {
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
         loop {
-            let (new_framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor)
-                .await
-                .map_err_kind("failed to accept client during finalize", ServerErrorKind::Connector)?;
+            // Bounded: see `FINALIZE_TIMEOUT`. The bound belongs on THIS call
+            // and not on `accept_finalize` itself or its callers — the loop
+            // below also runs `client_accepted`, which drives the entire live
+            // session, so a timeout hoisted any higher would cap session
+            // length. Applying it per pass also gives a
+            // deactivation-reactivation its own budget rather than sharing one
+            // with the initial handshake.
+            let finalize = ironrdp_acceptor::accept_finalize(framed, &mut acceptor);
+            let (new_framed, result) = match tokio::time::timeout(FINALIZE_TIMEOUT, finalize).await {
+                Ok(res) => res.map_err_kind("failed to accept client during finalize", ServerErrorKind::Connector)?,
+                Err(_) => {
+                    warn!(
+                        timeout = ?FINALIZE_TIMEOUT,
+                        "client stopped responding during the finalize handshake — dropping the connection"
+                    );
+                    return Err(ServerError::io(
+                        "timed out waiting for the client during finalize",
+                        std::io::Error::from(std::io::ErrorKind::TimedOut),
+                    ));
+                }
+            };
 
             let (mut reader, mut writer) = split_tokio_framed(new_framed);
 
