@@ -1,6 +1,6 @@
 {
   "id": "skeptical",
-  "model": "glm-5.2",
+  "model": "glm-5.3",
   "prompt_file": ".github/pr-automation/prompts/skeptical.md",
   "schema_file": ".github/pr-automation/schemas/candidate-review.json",
   "methodology_files": [
