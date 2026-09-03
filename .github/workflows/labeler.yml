@@ -729,6 +729,8 @@ jobs:
       gate: ${{ needs.review-gate.outputs.gate }}
       specialist-reviewers: ${{ needs.review-gate.outputs.specialist-reviewers }}
       evidence-max-bytes: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
+    # Work around actions/runner#4453: environment secrets otherwise resolve empty in reusable jobs.
+    # This exposes caller-accessible secrets, so the called workflow must remain trusted and not execute PR code.
     secrets: inherit
 
   resolve-review-state:
