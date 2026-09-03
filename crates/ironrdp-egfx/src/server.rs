@@ -784,7 +784,13 @@ fn negotiate_capabilities(client_caps: &[CapabilitySet], server_caps: &[Capabili
     None
 }
 
-/// Intersect positive flags while preserving the client AVC decoder constraint.
+/// Intersect capability flags, preserving either side's AVC decoder constraint.
+///
+/// Positive-sense flags such as `SMALL_CACHE` and `AVC420_ENABLED` are AND-ed: a
+/// feature is used only when both sides support it. `AVC_DISABLED` (V10+) reads
+/// the other way around, meaning "cannot decode AVC/H.264", so AND-ing it drops
+/// the constraint whenever the peer leaves it unset. It is OR-ed instead:
+/// disabled when either side disables it.
 fn intersect_flags(client: &CapabilitySet, server: &CapabilitySet) -> CapabilitySet {
     match (client, server) {
         (CapabilitySet::V8 { flags: cf }, CapabilitySet::V8 { flags: sf }) => CapabilitySet::V8 { flags: *cf & *sf },
@@ -792,28 +798,28 @@ fn intersect_flags(client: &CapabilitySet, server: &CapabilitySet) -> Capability
             CapabilitySet::V8_1 { flags: *cf & *sf }
         }
         (CapabilitySet::V10 { flags: cf }, CapabilitySet::V10 { flags: sf }) => CapabilitySet::V10 {
-            flags: (*cf & *sf) | (*cf & CapabilitiesV10Flags::AVC_DISABLED),
+            flags: (*cf & *sf) | ((*cf | *sf) & CapabilitiesV10Flags::AVC_DISABLED),
         },
         (CapabilitySet::V10_2 { flags: cf }, CapabilitySet::V10_2 { flags: sf }) => CapabilitySet::V10_2 {
-            flags: (*cf & *sf) | (*cf & CapabilitiesV10Flags::AVC_DISABLED),
+            flags: (*cf & *sf) | ((*cf | *sf) & CapabilitiesV10Flags::AVC_DISABLED),
         },
         (CapabilitySet::V10_3 { flags: cf }, CapabilitySet::V10_3 { flags: sf }) => CapabilitySet::V10_3 {
-            flags: (*cf & *sf) | (*cf & CapabilitiesV103Flags::AVC_DISABLED),
+            flags: (*cf & *sf) | ((*cf | *sf) & CapabilitiesV103Flags::AVC_DISABLED),
         },
         (CapabilitySet::V10_4 { flags: cf }, CapabilitySet::V10_4 { flags: sf }) => CapabilitySet::V10_4 {
-            flags: (*cf & *sf) | (*cf & CapabilitiesV104Flags::AVC_DISABLED),
+            flags: (*cf & *sf) | ((*cf | *sf) & CapabilitiesV104Flags::AVC_DISABLED),
         },
         (CapabilitySet::V10_5 { flags: cf }, CapabilitySet::V10_5 { flags: sf }) => CapabilitySet::V10_5 {
-            flags: (*cf & *sf) | (*cf & CapabilitiesV104Flags::AVC_DISABLED),
+            flags: (*cf & *sf) | ((*cf | *sf) & CapabilitiesV104Flags::AVC_DISABLED),
         },
         (CapabilitySet::V10_6 { flags: cf }, CapabilitySet::V10_6 { flags: sf }) => CapabilitySet::V10_6 {
-            flags: (*cf & *sf) | (*cf & CapabilitiesV104Flags::AVC_DISABLED),
+            flags: (*cf & *sf) | ((*cf | *sf) & CapabilitiesV104Flags::AVC_DISABLED),
         },
         (CapabilitySet::V10_6Err { flags: cf }, CapabilitySet::V10_6Err { flags: sf }) => CapabilitySet::V10_6Err {
-            flags: (*cf & *sf) | (*cf & CapabilitiesV104Flags::AVC_DISABLED),
+            flags: (*cf & *sf) | ((*cf | *sf) & CapabilitiesV104Flags::AVC_DISABLED),
         },
         (CapabilitySet::V10_7 { flags: cf }, CapabilitySet::V10_7 { flags: sf }) => CapabilitySet::V10_7 {
-            flags: (*cf & *sf) | (*cf & CapabilitiesV107Flags::AVC_DISABLED),
+            flags: (*cf & *sf) | ((*cf | *sf) & CapabilitiesV107Flags::AVC_DISABLED),
         },
         // V10_1 has no flags; mismatched variants return server as-is.
         _ => server.clone(),
