@@ -2,7 +2,7 @@
 
 const OpenAI = require("openai");
 
-const { AgentFailure, runAgent } = require("./agent");
+const { AgentFailure, providerFailureDiagnostic, runAgent } = require("./agent");
 const { loadConfiguration, validateBaseUrl } = require("./config");
 const { ActionError } = require("./errors");
 const { REQUEST_RETRIES, REQUEST_TIMEOUT_MS } = require("./limits");
@@ -60,6 +60,13 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
     if (error instanceof AgentFailure) {
       turnCount = error.turnCount;
       toolCallCount = error.toolCallCount;
+      const diagnostic = providerFailureDiagnostic(error.cause);
+      if (diagnostic) {
+        core.info(JSON.stringify({
+          event: "openai-agent.provider-failure",
+          ...diagnostic,
+        }));
+      }
     }
     setOutputs(core, { output: "", failureReason, turnCount, toolCallCount });
     core.setFailed(failureReason);
