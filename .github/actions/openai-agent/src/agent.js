@@ -69,11 +69,27 @@ class AgentFailure extends Error {
 
 function providerFailureReason(error) {
   const status = Number(error?.status);
-  if (status === 401 || status === 403) return "provider authentication failed";
+  if (status === 401) return "provider credential rejected";
+  if (status === 403) return "provider access forbidden";
   if (status === 429) return "provider rate or quota limit reached";
   if (status >= 500 && status <= 599) return "provider service unavailable";
   if (status >= 400 && status <= 499) return "provider rejected the request";
   return "provider request failed";
+}
+
+function providerFailureDiagnostic(error) {
+  const status = Number(error?.status);
+  if (!Number.isInteger(status) || status < 400 || status > 599) return null;
+  const requestId = [
+    error?.requestID,
+    error?.request_id,
+    error?.headers?.get?.("x-request-id"),
+    error?.headers?.get?.("request-id"),
+  ].find((value) => typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value));
+  return {
+    status,
+    ...(requestId === undefined ? {} : { requestId }),
+  };
 }
 
 function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
@@ -300,5 +316,6 @@ function result(output, state) {
 }
 
 module.exports = {
-  AgentFailure, TOOLS, compileOutputValidator, executeTool, providerFailureReason, runAgent,
+  AgentFailure, TOOLS, compileOutputValidator, executeTool, providerFailureDiagnostic,
+  providerFailureReason, runAgent,
 };

@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
-  AgentFailure, TOOLS, executeTool, providerFailureReason, runAgent,
+  AgentFailure, TOOLS, executeTool, providerFailureDiagnostic, providerFailureReason, runAgent,
 } = require("../src/agent");
 
 const schema = {
@@ -280,10 +280,37 @@ test("zero-tool configuration never exposes filesystem tools", async () => {
 });
 
 test("provider errors are reduced to fixed non-sensitive categories", () => {
-  assert.equal(providerFailureReason({ status: 401, message: "secret" }), "provider authentication failed");
+  assert.equal(providerFailureReason({ status: 401, message: "secret" }), "provider credential rejected");
+  assert.equal(providerFailureReason({ status: 403, message: "secret" }), "provider access forbidden");
   assert.equal(providerFailureReason({ status: 429, message: "secret" }), "provider rate or quota limit reached");
   assert.equal(providerFailureReason({ status: 503, message: "secret" }), "provider service unavailable");
   assert.equal(providerFailureReason(new Error("secret")), "provider request failed");
+});
+
+test("provider diagnostics expose only bounded status and request IDs", () => {
+  assert.deepEqual(providerFailureDiagnostic({
+    status: 403,
+    requestID: "req_direct-123",
+    headers: { get: () => "req_header-456" },
+    error: { message: "secret" },
+  }), {
+    status: 403,
+    requestId: "req_direct-123",
+  });
+  assert.deepEqual(providerFailureDiagnostic({
+    status: "429",
+    headers: { get: (name) => name === "x-request-id" ? "req_header-456" : null },
+  }), {
+    status: 429,
+    requestId: "req_header-456",
+  });
+  assert.deepEqual(providerFailureDiagnostic({
+    status: 401,
+    request_id: "unsafe request id\nsecret",
+  }), {
+    status: 401,
+  });
+  assert.equal(providerFailureDiagnostic(new Error("secret")), null);
 });
 
 test("executeTool bounds oversized argument strings", () => {

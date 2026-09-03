@@ -146,14 +146,52 @@ test("main never logs or outputs raw provider errors", async () => {
   try {
     await main(core, { GITHUB_WORKSPACE: workspace.directory }, FailingOpenAI);
     assert.equal(core.outputs.get("structured-output"), "");
-    assert.equal(core.outputs.get("failure-reason"), "provider authentication failed");
+    assert.equal(core.outputs.get("failure-reason"), "provider credential rejected");
     assert.equal(core.outputs.get("turn-count"), "1");
     assert.deepEqual(
       core.events.filter((event) => event[0] === "failed").map((event) => event[1]),
-      ["provider authentication failed"],
+      ["provider credential rejected"],
     );
     const observable = JSON.stringify(core.events);
     assert.doesNotMatch(observable, /RAW_PROVIDER_SECRET_SENTINEL/);
+    assert.deepEqual(
+      core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+        .find((event) => event.event === "openai-agent.provider-failure"),
+      { event: "openai-agent.provider-failure", status: 401 },
+    );
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main emits a bounded provider request ID without raw errors", async () => {
+  const workspace = actionFixture();
+  const core = mockCore({
+    "api-key": "API_KEY_SECRET_SENTINEL",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  });
+  class FailingOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async () => {
+        throw Object.assign(new Error("RAW_PROVIDER_SECRET_SENTINEL"), {
+          status: 403,
+          requestID: "req_safe-123",
+          headers: { get: () => "RAW_HEADER_SECRET_SENTINEL" },
+        });
+      } } };
+    }
+  }
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, FailingOpenAI);
+    assert.equal(core.outputs.get("failure-reason"), "provider access forbidden");
+    const observable = JSON.stringify(core.events);
+    assert.deepEqual(
+      core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+        .find((event) => event.event === "openai-agent.provider-failure"),
+      { event: "openai-agent.provider-failure", status: 403, requestId: "req_safe-123" },
+    );
+    assert.doesNotMatch(observable, /RAW_PROVIDER_SECRET_SENTINEL|RAW_HEADER_SECRET_SENTINEL/);
   } finally {
     workspace.cleanup();
   }
