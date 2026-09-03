@@ -17,7 +17,7 @@ const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
   resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER,
   EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL, LEGITIMACY_MARKER_PREFIX,
-  OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL,
+  OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
 } = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
 const {
@@ -156,6 +156,20 @@ test("workflow isolates CI completion concurrency by source commit", () => {
   assert.doesNotMatch(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number/);
 });
 
+test("automatic review requires exact-head CI and only reruns after a later push", () => {
+  const workflow = readWorkflow();
+  const reviewGate = workflowJob(workflow, "review-gate");
+  assert.match(reviewGate, /ref: headSha/);
+  assert.match(reviewGate, /head_sha: headSha/);
+  assert.match(reviewGate,
+    /workflowRuns\.some\(\(run\) => run\?\.name === "CI" && run\?\.conclusion === "success"\)/);
+  assert.match(reviewGate, /const secondReviewEligible = !labels\.includes\("ai-reviewed\/1"\) \|\| !reviewAtHead/);
+  assert.match(reviewGate,
+    /ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
+  assert.match(workflowJob(workflow, "classification-gate"), /'ai-reviewed\/2'/);
+  assert.match(workflowJob(workflow, "review-pipeline"), /review-gate\.outputs\.eligible == 'true'/);
+});
+
 test("workflow force mode bypasses model policy gates without changing automatic branches", () => {
   const workflow = readWorkflow();
   assert.match(workflow, /^\s{6}force:\n\s{8}description:/m);
@@ -172,10 +186,10 @@ test("workflow force mode bypasses model policy gates without changing automatic
   for (const automaticGate of [
     "classification-gate.outputs.available == 'true'",
     "classification-gate.outputs.required == 'true'",
-    "deterministic-analysis.outputs.size-label != 'size/XXL'",
     "fork-rate-limit.outputs.allowed == 'true'",
     "'ai-reviewed/2'",
   ]) assert.equal(classifierJob.includes(automaticGate), true, automaticGate);
+  assert.doesNotMatch(classifierJob, /size-label != 'size\/XXL'/);
   assert.match(classifierJob, /needs\.resolve-pr\.outputs\.force == 'true' \|\|/);
 
   const reviewGate = workflowJob(workflow, "review-gate");
@@ -340,10 +354,12 @@ test("LLM evidence is bound to the resolved pull request base", () => {
   const evidenceScript = fs.readFileSync(path.join(__dirname, "fetch-pr-evidence.sh"), "utf8");
   const classifier = workflowJob(workflow, "classifier");
   assert.match(classifier, /BASE_SHA: \$\{\{ needs\.resolve-pr\.outputs\.base-sha \}\}/);
-  assert.match(classifier, /fetch-pr-evidence\.sh "\$HEAD_SHA" "\$BASE_SHA"/);
+  assert.match(classifier,
+    /fetch-pr-evidence\.sh \\\n\s+"\$HEAD_SHA" "\$BASE_SHA" "\$EVIDENCE_MAX_BYTES"/);
   const evidence = workflowJob(reviewWorkflow, "evidence");
   assert.match(evidence, /BASE_SHA: \$\{\{ inputs\.base-sha \}\}/);
-  assert.match(evidence, /fetch-pr-evidence\.sh "\$HEAD_SHA" "\$BASE_SHA"/);
+  assert.match(evidence,
+    /fetch-pr-evidence\.sh \\\n\s+"\$HEAD_SHA" "\$BASE_SHA" "\$EVIDENCE_MAX_BYTES"/);
   assert.match(evidenceScript, /\+\$base_sha:refs\/remotes\/origin\/pull-request-base/);
   assert.match(
     evidenceScript,
@@ -352,7 +368,7 @@ test("LLM evidence is bound to the resolved pull request base", () => {
   assert.doesNotMatch(evidenceScript, /origin\/master/);
 });
 
-test("oversized evidence fails closed and leaves pull request guidance", () => {
+test("evidence caps are trusted, bounded, and fail closed with guidance", () => {
   const githubDirectory = path.join(__dirname, "..");
   const workflow = readWorkflow(githubDirectory);
   const reviewWorkflow = readReviewWorkflow(githubDirectory);
@@ -365,13 +381,20 @@ test("oversized evidence fails closed and leaves pull request guidance", () => {
   assert.match(evidenceAttributes, /^\* !diff$/m);
   assert.match(evidenceAttributes, /^\.github\/actions\/openai-agent\/dist\/\*\* -diff$/m);
   assert.match(evidenceScript, /failure-reason\.txt/);
+  assert.match(evidenceScript, /1048576\) limit_mib=1/);
+  assert.match(evidenceScript, /4194304\) limit_mib=4/);
+  assert.match(evidenceScript, /invalid evidence diff limit/);
+  assert.match(evidenceScript, /-gt "\$max_bytes"/);
   assert.match(evidenceScript, /exit 1/);
   assert.doesNotMatch(evidenceScript, /pull-request\.diff\.truncated/);
   const classifier = workflowJob(workflow, "classifier");
   assert.match(classifier, /id: evidence/);
+  assert.match(classifier,
+    /EVIDENCE_MAX_BYTES: \$\{\{ needs\.resolve-pr\.outputs\.evidence-max-bytes \}\}/);
   assert.match(classifier, /steps\.evidence\.outputs\.failure-reason \|\|/);
   const evidence = workflowJob(reviewWorkflow, "evidence");
   assert.match(evidence, /id: evidence/);
+  assert.match(evidence, /EVIDENCE_MAX_BYTES: \$\{\{ inputs\.evidence-max-bytes \}\}/);
   assert.match(evidence, /failure-reason: \$\{\{ steps\.evidence\.outputs\.failure-reason \}\}/);
   assert.match(workflowJob(reviewWorkflow, "validate"),
     /EVIDENCE_REASON: \$\{\{ needs\.evidence\.outputs\.failure-reason \}\}/);
@@ -386,18 +409,21 @@ test("oversized evidence fails closed and leaves pull request guidance", () => {
   });
   assert.equal(classification.failed, true);
   assert.deepEqual(classification.comments, [{
-    kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER,
+    kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER, limitMiB: 1,
   }]);
   assert.match(markerBody(classification.comments[0]), /No model was invoked with partial evidence/);
+  assert.match(markerBody(classification.comments[0]), /ai-review\/allow-oversized/);
 
   const reviewFailure = resolveReviewState({
     expectedSha: SHA, labels: [], gate: { force: true, head_sha: SHA },
-    reviewerReason: reason, force: true, reviewMarkerId: "1",
+    reviewerReason: "pull request diff exceeds the 4 MiB evidence limit",
+    force: true, reviewMarkerId: "1",
   });
   assert.equal(reviewFailure.failed, true);
   assert.deepEqual(reviewFailure.comments, [{
-    kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER,
+    kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER, limitMiB: 4,
   }]);
+  assert.match(markerBody(reviewFailure.comments[0]), /runtime maximum/);
 });
 
 test("every deterministic label is declared and the repository rules classify tooling changes", () => {
@@ -851,6 +877,7 @@ test("bot authors are excluded from automation", async () => {
   const human = await resolve({ node_id: "U_3", login: "contributor", type: "User" });
   assert.equal(human.ok, true);
   assert.equal(human.reviewRoute, true);
+  assert.equal(human.evidenceMaxBytes, 1024 * 1024);
 });
 
 test("force is dispatch-only and bypasses draft and bot eligibility", async () => {
@@ -896,25 +923,32 @@ test("force is dispatch-only and bypasses draft and bot eligibility", async () =
   assert.equal(automaticBot.reason, "bot-authored pull request");
 });
 
-test("only the persistent oversized-review label starts automation from a label event", async () => {
+test("only oversized-review label changes start automation from label events", async () => {
   const workflow = readWorkflow();
-  assert.match(workflow, /types: \[opened, reopened, synchronize, ready_for_review, edited, labeled\]/);
+  assert.match(workflow,
+    /types: \[opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled\]/);
   assert.match(workflowJob(workflow, "classifier"),
-    /contains\(fromJSON\(needs\.resolve-pr\.outputs\.labels\), 'ai-review\/allow-oversized'\)/);
+    /EVIDENCE_MAX_BYTES: \$\{\{ needs\.resolve-pr\.outputs\.evidence-max-bytes \}\}/);
+  const classificationGate = workflowJob(workflow, "classification-gate");
+  assert.match(classificationGate,
+    /RETRY_WITH_LARGER_EVIDENCE: \$\{\{ needs\.resolve-pr\.outputs\.review-requested \}\}/);
+  assert.match(classificationGate,
+    /process\.env\.RETRY_WITH_LARGER_EVIDENCE === "true"/);
+  assert.match(classificationGate, /decision: \{ available: true, required: true, largerEvidence: true \}/);
 
   const pullRequest = (labels = []) => ({
     number: 7, draft: false, state: "open", labels,
     user: { node_id: "U_1", login: "contributor", type: "User" },
     head: { sha: SHA, repo: { full_name: "Devolutions/IronRDP" } }, base: { sha: "b".repeat(40) },
   });
-  const resolve = async (label) => resolvePr({
+  const resolve = async (label, action = "labeled", labels = [OVERSIZED_REVIEW_LABEL]) => resolvePr({
     github: { rest: { pulls: {
-      get: async () => ({ data: pullRequest([OVERSIZED_REVIEW_LABEL]) }),
-      list: async () => ({ data: [pullRequest([OVERSIZED_REVIEW_LABEL])] }),
+      get: async () => ({ data: pullRequest(labels) }),
+      list: async () => ({ data: [pullRequest(labels)] }),
     } } },
     context: {
       eventName: "pull_request_target", repo: { owner: "Devolutions", repo: "IronRDP" },
-      payload: { action: "labeled", label: { name: label }, pull_request: { number: 7 } },
+      payload: { action, label: { name: label }, pull_request: { number: 7 } },
     },
   });
 
@@ -923,7 +957,14 @@ test("only the persistent oversized-review label starts automation from a label 
   assert.equal(requested.classificationRequested, true);
   assert.equal(requested.reviewRequested, true);
   assert.equal(requested.force, false);
+  assert.equal(requested.evidenceMaxBytes, 4 * 1024 * 1024);
+  const revoked = await resolve(OVERSIZED_REVIEW_LABEL, "unlabeled", []);
+  assert.equal(revoked.ok, true);
+  assert.equal(revoked.classificationRequested, true);
+  assert.equal(revoked.reviewRequested, false);
+  assert.equal(revoked.evidenceMaxBytes, 1024 * 1024);
   assert.equal((await resolve("size/XXL")).reason, "unrelated pull request label");
+  assert.equal((await resolve("size/XXL", "unlabeled", [])).reason, "unrelated pull request label");
 });
 
 test("deterministic semver outranks the model and a model-only break cannot stay low", () => {
@@ -1045,19 +1086,15 @@ test("successful classification preserves the first-time contributor label", () 
     ["contributor/first-time"]);
 });
 
-test("protocol relevance overrides risk suppression but no other exclusion", () => {
-  // Risk measures the human scrutiny a change needs, so it must not decide whether a protocol
-  // change is worth reviewing.
+test("all classified changes are reviewable unless a legitimacy or count gate blocks them", () => {
   assert.equal(reviewPolicyEligible({ labels: ["risk/low"], protocolRelated: true }), true);
-  assert.equal(reviewPolicyEligible({ labels: ["risk/low"], protocolRelated: false }), false);
+  assert.equal(reviewPolicyEligible({ labels: ["risk/low"], protocolRelated: false }), true);
   assert.equal(reviewPolicyEligible({ labels: ["risk/low", "breaking-change"] }), true);
   assert.equal(reviewPolicyEligible({ labels: ["risk/medium"] }), true);
-  for (const blocking of ["size/XXL", "duplicate", "ai-reviewed/2", LEGITIMACY_LABEL]) {
+  assert.equal(reviewPolicyEligible({ labels: ["risk/high", "size/XXL"] }), true);
+  for (const blocking of ["duplicate", "ai-reviewed/2", LEGITIMACY_LABEL]) {
     assert.equal(reviewPolicyEligible({ labels: ["risk/high", blocking], protocolRelated: true }), false);
   }
-  assert.equal(reviewPolicyEligible({
-    labels: ["risk/high", "size/XXL", OVERSIZED_REVIEW_LABEL], protocolRelated: true,
-  }), true);
   assert.equal(reviewPolicyEligible({
     labels: ["risk/high"], protocolRelated: true, legitimacyStopped: true,
   }), false);
@@ -1085,17 +1122,17 @@ test("review publication applies the same policy the workflow spent its call on"
   }).failed, undefined);
   assert.equal(resolveReviewState({
     ...args, labels: ["risk/low"], gate: gate({ protocolRelated: false, risk: "low" }),
-  }).failed, true);
+  }).failed, undefined);
   assert.equal(resolveReviewState({
     ...args, labels: ["risk/low", "size/XXL"], gate: gate({ protocolRelated: true, risk: "low" }),
-  }).failed, true);
+  }).failed, undefined);
   assert.equal(resolveReviewState({
     ...args, labels: ["risk/low", "size/XXL", OVERSIZED_REVIEW_LABEL],
     gate: gate({ protocolRelated: true, risk: "low" }),
   }).failed, undefined);
 });
 
-test("persistent oversized-review label runs normal classification and review", () => {
+test("persistent oversized-review label does not alter normal classification", () => {
   const deterministic = { ok: true, pathLabels: [], ownedPathLabels: [],
     sizeLabel: "size/XXL", sizeLabels: ["size/XL", "size/XXL"], firstTime: false };
   const state = resolveClassificationState({
@@ -1111,59 +1148,25 @@ test("persistent oversized-review label runs normal classification and review", 
   assert.equal(state.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
 });
 
-test("XXL guidance is posted once and withdrawn when the change shrinks", () => {
-  const deterministic = (sizeLabel) => ({ ok: true, pathLabels: [], ownedPathLabels: [],
-    sizeLabel, sizeLabels: ["size/XL", "size/XXL"], firstTime: false });
-  const state = (sizeLabel) => resolveClassificationState({
-    expectedSha: SHA, labels: [], deterministic: deterministic(sizeLabel), classifier: classifier(),
-    semver: { head_sha: SHA, status: "not-suspected" },
-  });
-  const oversized = state("size/XXL");
-  assert.deepEqual(oversized.comments.map((comment) => comment.kind), ["oversized"]);
-  assert.equal(oversized.removeCommentMarkers.includes(OVERSIZED_MARKER), false);
-  assert.equal(oversized.removeCommentMarkers.includes(LEGACY_XL_MARKER), true);
-  const body = markerBody(oversized.comments[0], "Devolutions", "IronRDP");
-  assert.match(body, /stacked-prs/);
-  assert.match(body, /size\/XXL/);
-  // A later push can drop the change below the threshold, and the guidance must not outlive it.
-  const shrunk = state("size/XL");
-  assert.deepEqual(shrunk.comments, []);
-  assert.equal(shrunk.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
-  assert.equal(shrunk.removeCommentMarkers.includes(LEGACY_XL_MARKER), true);
-});
-
-test("an oversized change retains deterministic labels without a classifier", () => {
-  // The workflow skips the classifier job for size/XXL, so no model output exists to validate here.
-  // Resolution must still succeed on deterministic evidence rather than degrading to a failure.
+test("size/XXL remains informational and does not suppress classification", () => {
   const deterministic = { ok: true, pathLabels: ["scope/core", "scope/web"],
     ownedPathLabels: ["scope/core", "scope/web", "scope/ffi"],
     sizeLabel: "size/XXL", sizeLabels: ["size/XL", "size/XXL"], firstTime: true };
   const state = resolveClassificationState({
-    expectedSha: SHA, labels: [], deterministic, classifier: undefined,
+    expectedSha: SHA, labels: [], deterministic, classifier: classifier(),
     semver: { head_sha: SHA, status: "suspected" },
   });
   assert.equal(state.failed, undefined);
-  assert.equal(state.oversized, true);
   const desired = state.labelSets.flatMap((set) => set.desired);
   assert.deepEqual(desired.sort(), ["breaking-change", "contributor/first-time", "risk/high",
     "scope/core", "scope/web", "size/XXL"]);
   assert.deepEqual(state.addLabels, ["maintainer-required"]);
-  assert.deepEqual(state.comments.map((comment) => comment.kind), ["oversized"]);
-  // The review gate only trusts a check announcing a completed classification.
-  assert.notEqual(state.check.title, "Classification complete");
-  assert.equal(state.check.machineState.automaticReviewEligible, false);
+  assert.deepEqual(state.comments, []);
+  assert.equal(state.check.title, "Classification complete");
+  assert.equal(state.check.machineState.automaticReviewEligible, true);
   assert.equal(parseCheckState(`${state.check.summary}\n\n${encodeCheckState(state.check.machineState)}`)
-    .automaticReviewEligible, false);
-  // No model ran, so a duplicate or legitimacy verdict from an earlier head is neither confirmed
-  // nor refuted and must be left in place.
-  assert.deepEqual(state.removeCommentMarkers, [EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER]);
-
-  const unavailable = resolveClassificationState({
-    expectedSha: SHA, labels: [], deterministic, classifier: undefined,
-    semver: { head_sha: SHA, status: "unavailable" },
-  });
-  assert.equal(unavailable.oversized, true);
-  assert.deepEqual(unavailable.labelSets.at(-1).desired, ["risk/unknown"]);
+    .automaticReviewEligible, true);
+  assert.equal(state.removeCommentMarkers.includes(OVERSIZED_MARKER), true);
 });
 
 test("a duplicate verdict is withdrawn once it no longer holds", () => {
@@ -1240,24 +1243,22 @@ test("legitimacy flags leave SHA-bound audit records for maintainer triage", () 
   assert.equal(cleared.labelSets.some((set) => set.owned.includes(LEGITIMACY_LABEL)), false);
 });
 
-test("quota decisions stop classification and review with a bounded human handoff", () => {
+test("global quota decisions stop classification and review with a bounded human handoff", () => {
   const deterministic = { ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S", sizeLabels: ["size/S"],
     firstTime: false };
   const classification = resolveClassificationState({
     expectedSha: SHA, labels: [], deterministic, classifier: classifier(),
     semver: { head_sha: SHA, status: "not-suspected" },
-    rateLimit: { status: "limited", scope: "author", quota: 5, count: 6 },
+    rateLimit: { status: "limited", scope: "global", quota: 50, count: 51 },
   });
   assert.equal(classification.failed, true);
-  assert.deepEqual(classification.comments, [{
-    kind: "fork-quota", marker: "<!-- ironrdp-pr-automation:fork-llm-quota -->", quota: 5,
-  }]);
+  assert.equal(classification.comments[0].kind, "global-quota");
 
   const review = resolveReviewState({
     expectedSha: SHA, labels: ["risk/high"],
     gate: { ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true },
     contributor: { status: "eligible" },
-    rateLimit: { status: "limited", scope: "global", quota: 30, count: 31 },
+    rateLimit: { status: "limited", scope: "global", quota: 50, count: 51 },
   });
   assert.equal(review.failed, true);
   assert.equal(review.comments[0].kind, "global-quota");
@@ -1274,7 +1275,7 @@ test("forced classification bypasses policy, quota, and cache but still validate
     deterministic,
     classifier: classifier(),
     classificationGate: { available: false, reason: "checks unavailable" },
-    rateLimit: { status: "limited", scope: "global", quota: 30, count: 31 },
+    rateLimit: { status: "limited", scope: "global", quota: 50, count: 51 },
     semver: { head_sha: SHA, status: "not-suspected" },
     force: true,
   };
@@ -1308,7 +1309,7 @@ test("forced review bypasses eligibility while retaining publication gates", () 
       risk: "unknown", specialistReviewers: ["skeptical"],
     },
     contributor: { status: "ineligible" },
-    rateLimit: { status: "limited", scope: "global", quota: 30, count: 31 },
+    rateLimit: { status: "limited", scope: "global", quota: 50, count: 51 },
     force: true,
     reviewMarkerId: "1234",
   };
@@ -1374,11 +1375,11 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.equal(invalidGate.reason, "review gate unavailable: checks unavailable");
 
   const ineligible = resolveReviewState({
-    ...args, contributor: { status: "ineligible", merged: 1 },
+    ...args, contributor: { status: "ineligible", merged: 0 },
   });
   assert.equal(ineligible.ok, true);
   assert.equal(ineligible.failed, true);
-  assert.equal(ineligible.reason, "contributor history ineligible (merged: 1, required: 3)");
+  assert.equal(ineligible.reason, "contributor history ineligible (merged: 0, required: 1)");
 
   const unavailable = resolveReviewState({
     ...args, contributor: { status: "unavailable", reason: "GitHub API unavailable" },
@@ -1394,8 +1395,8 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.equal(secondReview.reason, "second review is not eligible");
 
   const policy = resolveReviewState({
-    ...args, labels: ["risk/low"],
-    gate: { ...args.gate, ok: false, policyEligible: false, protocolRelated: false },
+    ...args, labels: ["risk/low", "duplicate"],
+    gate: { ...args.gate, policyEligible: false, protocolRelated: false },
   });
   assert.equal(policy.reason, "review is not eligible");
 });
@@ -1619,9 +1620,11 @@ test("writer upgrades a neutral automated review check instead of creating a dup
   assert.equal(update.output.title, "Automated review complete");
 });
 
-test("oversized opt-in dispatches review from a cached classification", async () => {
+test("oversized opt-in reclassifies instead of reviewing cached evidence", async () => {
   const workflow = readWorkflow();
+  const classificationGate = workflowJob(workflow, "classification-gate");
   const requestReview = workflowJob(workflow, "request-review");
+  assert.match(classificationGate, /RETRY_WITH_LARGER_EVIDENCE/);
   assert.match(requestReview, /needs: \[resolve-pr, classification-gate\]/);
   assert.match(requestReview, /needs\.resolve-pr\.outputs\.review-requested == 'true'/);
   assert.match(requestReview, /needs\.classification-gate\.outputs\.available == 'true'/);
@@ -1830,6 +1833,7 @@ function pull(number, changes = {}) {
     number, created_at: "2026-08-03T12:00:00Z", merged_at: null, title: "change", labels: [],
     user: { node_id: "author", login: "author", type: "User" },
     head: { repo: { full_name: "contributor/IronRDP" } },
+    base: { ref: "master" },
     ...changes,
   };
 }
@@ -1842,41 +1846,47 @@ test("fork rate limit exempts same-repository branches", async () => {
   assert.deepEqual(result, { status: "allowed", scope: "same-repository" });
 });
 
-test("fork rate limit applies normal and established author quotas", async () => {
-  const normal = await forkRateLimit({
-    github: paginated({
-      closed: [[]],
-      all: [[pull(1), ...[2, 3, 4, 5, 6].map((number) => pull(number))]],
-    }),
-    owner: "Devolutions", repo: "IronRDP", pr: pull(1),
-  });
-  assert.deepEqual(normal, { status: "limited", scope: "author", quota: 5, count: 6 });
-
-  const merged = Array.from({ length: 15 }, (_, index) => pull(index + 10, {
-    merged_at: "2026-01-01T00:00:00Z",
-  }));
-  const established = await forkRateLimit({
-    github: paginated({
-      closed: [merged],
-      all: [[pull(1), ...Array.from({ length: 10 }, (_, index) => pull(index + 2))]],
-    }),
-    owner: "Devolutions", repo: "IronRDP", pr: pull(1),
-  });
-  assert.deepEqual(established, { status: "limited", scope: "author", quota: 10, count: 11 });
+test("owner and member authors bypass fork quota enforcement", async () => {
+  let requests = 0;
+  const github = {
+    paginate: { iterator: async function* () { requests += 1; yield { data: [] }; } },
+    rest: { pulls: { list: () => {} } },
+  };
+  for (const association of ["OWNER", "MEMBER"]) {
+    const result = await forkRateLimit({
+      github, owner: "Devolutions", repo: "IronRDP",
+      pr: pull(1, { author_association: association }),
+      author: { association },
+    });
+    assert.deepEqual(result, { status: "allowed", scope: "author-association" });
+  }
+  assert.equal(requests, 0);
 });
 
-test("fork rate limit applies the global fork quota and fails closed on API errors", async () => {
+test("fork rate limit applies a 50 PR global quota and excludes owner and member PRs", async () => {
+  const exempt = Array.from({ length: 10 }, (_, index) => pull(index + 100, {
+    author_association: index % 2 === 0 ? "OWNER" : "MEMBER",
+  }));
+  const allowed = await forkRateLimit({
+    github: paginated({
+      all: [[pull(1), ...exempt, ...Array.from({ length: 49 }, (_, index) => pull(index + 2))]],
+    }),
+    owner: "Devolutions", repo: "IronRDP", pr: pull(1),
+  });
+  assert.deepEqual(allowed, { status: "allowed", scope: "global", quota: 50, count: 50 });
+
   const global = await forkRateLimit({
     github: paginated({
-      closed: [[]],
-      all: [[pull(1), ...Array.from({ length: 30 }, (_, index) => pull(index + 2, {
+      all: [[pull(1), ...Array.from({ length: 50 }, (_, index) => pull(index + 2, {
         user: { node_id: `author-${index}`, login: `author-${index}`, type: "User" },
       }))]],
     }),
     owner: "Devolutions", repo: "IronRDP", pr: pull(1),
   });
-  assert.deepEqual(global, { status: "limited", scope: "global", quota: 30, count: 31 });
+  assert.deepEqual(global, { status: "limited", scope: "global", quota: 50, count: 51 });
+});
 
+test("fork rate limit fails closed on API errors", async () => {
   const unavailable = await forkRateLimit({
     github: {
       paginate: { iterator: () => { throw new Error("offline"); } },
@@ -1887,32 +1897,22 @@ test("fork rate limit applies the global fork quota and fails closed on API erro
   assert.deepEqual(unavailable, { status: "unavailable", scope: "unknown", reason: "GitHub API unavailable" });
 });
 
-test("fork rate limit excludes same-repository PRs and remains bound to the creation day", async () => {
+test("fork rate limit excludes same-repository PRs from the global count", async () => {
   const sameRepository = pull(2, {
     head: { repo: { full_name: "Devolutions/IronRDP" } },
-    user: { node_id: "author", login: "author", type: "User" },
   });
-  const createdOnLimitedDay = pull(1, { created_at: "2026-08-02T12:00:00Z" });
   const result = await forkRateLimit({
     github: paginated({
-      closed: [[]],
-      all: [[
-        sameRepository,
-        createdOnLimitedDay,
-        ...Array.from({ length: 5 }, (_, index) => pull(index + 3, {
-          created_at: "2026-08-02T11:00:00Z",
-        })),
-      ]],
+      all: [[pull(1), sameRepository]],
     }),
-    owner: "Devolutions", repo: "IronRDP",     pr: createdOnLimitedDay,
+    owner: "Devolutions", repo: "IronRDP", pr: pull(1),
   });
-  assert.deepEqual(result, { status: "limited", scope: "author", quota: 5, count: 6 });
+  assert.deepEqual(result, { status: "allowed", scope: "global", quota: 50, count: 1 });
 });
 
 test("fork rate limit uses a half-open UTC day window", async () => {
   const result = await forkRateLimit({
     github: paginated({
-      closed: [[]],
       all: [[
         pull(1, { created_at: "2026-08-03T00:00:00Z" }),
         pull(2, { created_at: "2026-08-03T23:59:59Z" }),
@@ -1922,5 +1922,55 @@ test("fork rate limit uses a half-open UTC day window", async () => {
     owner: "Devolutions", repo: "IronRDP",
     pr: pull(1, { created_at: "2026-08-03T00:00:00Z" }),
   });
-  assert.deepEqual(result, { status: "allowed", scope: "author", quota: 5, count: 2 });
+  assert.deepEqual(result, { status: "allowed", scope: "global", quota: 50, count: 2 });
+});
+
+test("owner and member authors are eligible without contributor history", async () => {
+  const unavailable = {
+    paginate: { iterator: () => { throw new Error("must not query history"); } },
+    rest: { pulls: { list: () => {} } },
+  };
+  for (const association of ["OWNER", "MEMBER"]) {
+    assert.deepEqual(await contributorEligibility({
+      github: unavailable, owner: "Devolutions", repo: "IronRDP",
+      author: { association, login: "maintainer", type: "User" }, currentPrNumber: 1,
+    }), { status: "eligible", association });
+  }
+});
+
+test("other human authors need one same-author pull request merged into master", async () => {
+  const author = { nodeId: "author", login: "author", type: "User", association: "CONTRIBUTOR" };
+  for (const candidate of [
+    pull(2, { merged_at: "2026-01-01T00:00:00Z", labels: ["trivial"] }),
+    pull(3, { merged_at: "2026-01-01T00:00:00Z", labels: ["reverted"] }),
+    pull(4, { merged_at: "2026-01-01T00:00:00Z", title: "Revert bad change" }),
+    pull(5, {
+      merged_at: "2026-01-01T00:00:00Z",
+      user: { node_id: "author", login: "renamed-author", type: "User" },
+    }),
+  ]) {
+    assert.deepEqual(await contributorEligibility({
+      github: paginated({ closed: [[candidate]] }), owner: "Devolutions", repo: "IronRDP",
+      author, currentPrNumber: 1,
+    }), { status: "eligible", merged: 1 });
+  }
+
+  assert.deepEqual(await contributorEligibility({
+    github: paginated({ closed: [[
+      pull(6),
+      pull(7, { merged_at: "2026-01-01T00:00:00Z", base: { ref: "release" } }),
+      pull(8, {
+        merged_at: "2026-01-01T00:00:00Z",
+        user: { node_id: "different-author", login: "author", type: "User" },
+      }),
+    ]] }), owner: "Devolutions", repo: "IronRDP",
+    author, currentPrNumber: 1,
+  }), { status: "ineligible", merged: 0 });
+});
+
+test("bot authors remain ineligible regardless of association", async () => {
+  assert.deepEqual(await contributorEligibility({
+    github: paginated({}), owner: "Devolutions", repo: "IronRDP",
+    author: { association: "MEMBER", login: "service[bot]", type: "Bot" }, currentPrNumber: 1,
+  }), { status: "ineligible", reason: "bot author" });
 });

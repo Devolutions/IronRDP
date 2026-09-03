@@ -48,13 +48,11 @@ function labelsOf(labels) {
   return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));
 }
 
-function reviewPolicyEligible({ labels, legitimacyStopped, protocolRelated } = {}) {
+function reviewPolicyEligible({ labels, legitimacyStopped } = {}) {
   const present = labelsOf(labels);
-  const oversized = present.has("size/XXL") && !present.has("ai-review/allow-oversized");
-  if (present.has("ai-reviewed/2") || present.has("duplicate") || oversized ||
+  if (present.has("ai-reviewed/2") || present.has("duplicate") ||
       present.has("triage/legitimacy") || legitimacyStopped === true) return false;
-  if (protocolRelated === true) return true;
-  return !(present.has("risk/low") && !present.has("breaking-change"));
+  return true;
 }
 
 module.exports = {

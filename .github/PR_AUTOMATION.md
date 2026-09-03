@@ -2,7 +2,7 @@
 
 `.github/workflows/labeler.yml` classifies ready, open pull requests and calls `.github/workflows/review-pipeline.yml` for at most two automated reviews.
 Automatic routes stop at `ai-reviewed/2` unless a maintainer uses force mode.
-Model analysis fails closed when the reviewable pull request diff exceeds the 1 MiB evidence limit.
+Model analysis fails closed when the reviewable pull request diff exceeds the applicable evidence limit.
 The trusted `evidence-diff-attributes` policy represents reproducibly verified generated artifacts with binary-change markers.
 The automation posts guidance on the pull request instead of invoking a model with partial evidence.
 
@@ -112,10 +112,14 @@ A model-suspected breaking change promotes `risk/low` to `risk/medium`.
 Path rules can add `scope/core`, `scope/web`, `scope/ffi`, and `scope/tooling`.
 The classifier controls `scope/cross-cutting`, `kind/technical-debt`, and documentation-only classification.
 
-Automatic review requires successful CI for the exact classified head and at least three qualifying merged IronRDP pull requests from the author.
-A second review requires a later push and matching successful CI.
-Duplicates, legitimacy triage, the terminal review count, and oversized changes without explicit opt-in block automatic review.
-Non-protocol `risk/low` changes without a breaking-change signal skip review.
+Automatic review runs for every non-draft pull request that passes the remaining gates.
+`OWNER` and `MEMBER` authors are eligible without contributor history.
+Other human authors need one qualifying merged IronRDP pull request from the same immutable author.
+A qualifying pull request is any pull request from that author merged into `master`.
+Automatic review requires successful CI for the exact classified head.
+After the first review, a later push starts the second review when CI succeeds for that new head.
+Duplicates at confidence 0.85 or greater, legitimacy triage, and `ai-reviewed/2` block automatic review.
+Unavailable or invalid classification fails closed to maintainer review.
 
 Bot-authored pull requests do not run automatic routes or label reconciliation.
 Force mode can override policy gates for an open pull request at its current head.
@@ -134,12 +138,14 @@ Size uses the larger bucket from counted changed lines or touched files:
 | `size/XL` | 900-1299 | 21-49 |
 | `size/XXL` | 1300 or more | 50 or more |
 
-`size/XXL` skips model execution unless a maintainer adds `ai-review/allow-oversized`.
-The opt-in waives only the size gate.
-CI, quota, duplicate, legitimacy, contributor-history, and review-count gates still apply.
+`size/XXL` is informational and does not block classification or review.
+The evidence diff limit is 1 MiB by default.
+Adding `ai-review/allow-oversized` retries classification with the model runtime's maximum 4 MiB evidence limit.
+Evidence above the applicable limit fails closed without sending a partial diff to a model.
 
-Fork-origin pull requests have daily UTC quotas.
-The default author quota is five pull requests, established contributors can use ten, and the best-effort repository-wide quota is 30.
+Fork-origin pull requests share a repository-wide quota of 50 pull requests per UTC day.
+`OWNER` and `MEMBER` pull requests are exempt and do not count toward the quota.
+Same-repository pull requests are also exempt.
 
 ## State, publication, and failure behavior
 

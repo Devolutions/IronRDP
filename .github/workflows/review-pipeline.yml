@@ -23,6 +23,10 @@ on:
         description: Canonically ordered specialist reviewer IDs
         required: true
         type: string
+      evidence-max-bytes:
+        description: Trusted maximum evidence diff size
+        required: true
+        type: string
     outputs:
       output:
         description: Validated final review JSON
@@ -50,6 +54,7 @@ jobs:
         env:
           HEAD_SHA: ${{ inputs.head-sha }}
           BASE_SHA: ${{ inputs.base-sha }}
+          EVIDENCE_MAX_BYTES: ${{ inputs.evidence-max-bytes }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
@@ -60,7 +65,8 @@ jobs:
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git fetch --no-tags origin "+$WORKFLOW_SHA:refs/remotes/origin/automation"
           git checkout --detach origin/automation
-          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh "$HEAD_SHA" "$BASE_SHA"; then
+          if ! bash ./.github/pr-automation/fetch-pr-evidence.sh \
+            "$HEAD_SHA" "$BASE_SHA" "$EVIDENCE_MAX_BYTES"; then
             reason="pull request evidence unavailable"
             if test -f pr-evidence/failure-reason.txt; then
               reason="$(cat pr-evidence/failure-reason.txt)"

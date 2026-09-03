@@ -46,20 +46,17 @@ function markerBody(comment, owner, repo) {
   if (comment.kind === "duplicate") {
     return `${comment.marker}\n\nPotential duplicate detected: ${escapeMarkdown(comment.url)}.\n\n${escapeMarkdown(comment.rationale)}\n\nMaintainer review is required.`;
   }
-  if (comment.kind === "oversized") {
-    return `${comment.marker}\n\nThis pull request is \`size/XXL\`, so automated review is disabled for it: a change this large is hard to review well in one piece, whether by a human or a model.\n\nPlease split it into focused pull requests that can each be reviewed on their own. When the parts build on each other, [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) let you open each one on top of the last without waiting for the one below to merge. Stacks require every branch to live in this repository, so from a fork, please open separate pull requests instead.\n\nAutomated review resumes once the change is below the \`size/XXL\` threshold.`;
-  }
   if (comment.kind === "legitimacy") {
     return `${comment.marker}\n\nAutomated review stopped because commit \`${escapeMarkdown(comment.sha)}\` has strong indicators requiring maintainer triage.\n\n${escapeMarkdown(comment.reason)}\n\nThis comment remains as an audit record if later classifications differ. Maintainer review is required.`;
-  }
-  if (comment.kind === "fork-quota") {
-    return `${comment.marker}\n\nAutomated classification and review capacity is unavailable because this fork account has reached its daily UTC quota of ${comment.quota} pull requests.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Maintainer review is required.`;
   }
   if (comment.kind === "global-quota") {
     return `${comment.marker}\n\nAutomated classification and review capacity for fork pull requests has reached its daily UTC limit.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Maintainer review is required.`;
   }
   if (comment.kind === "evidence-limit") {
-    return `${comment.marker}\n\nAutomated model analysis stopped because this pull request's diff exceeds the 1 MiB evidence limit. No model was invoked with partial evidence.\n\nPlease split the change into focused pull requests or reduce generated content before requesting automated review again. Maintainer review is required.`;
+    const guidance = comment.limitMiB === 1
+      ? "A maintainer can add `ai-review/allow-oversized` to retry with the runtime maximum of 4 MiB. Otherwise, split the change into focused pull requests or reduce generated content."
+      : "The 4 MiB limit is the model runtime maximum. Please split the change into focused pull requests or reduce generated content.";
+    return `${comment.marker}\n\nAutomated model analysis stopped because this pull request's diff exceeds the ${comment.limitMiB} MiB evidence limit. No model was invoked with partial evidence.\n\n${guidance} Maintainer review is required.`;
   }
   throw new Error("unsupported issue comment");
 }
@@ -113,7 +110,7 @@ function assertReviewPolicy(labels, state) {
     : null;
   if (currentReviewCount !== state.expectedReviewCount ||
       (!state.forced && !reviewPolicyEligible({
-        labels: [...labels], protocolRelated: state.protocolRelated,
+        labels: [...labels],
       }))) {
     throw new StalePolicyError();
   }

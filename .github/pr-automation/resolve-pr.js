@@ -62,8 +62,10 @@ async function resolvePr({ github, context, inputs = {} }) {
   try {
     if (route === "classification") {
       // State writes also emit `labeled` events, so only the explicit maintainer opt-in may start
-      // automation through that event.
-      if (context.payload.action === "labeled" && context.payload.label?.name !== OVERSIZED_REVIEW_LABEL) {
+      // automation through label events. Removing the opt-in must restart classification so the
+      // shared PR concurrency group cancels any queued or running use of the larger evidence cap.
+      if (["labeled", "unlabeled"].includes(context.payload.action) &&
+          context.payload.label?.name !== OVERSIZED_REVIEW_LABEL) {
         return noResult("unrelated pull request label", route);
       }
       const number = positiveNumber(context.payload.pull_request?.number);
@@ -100,9 +102,13 @@ async function resolvePr({ github, context, inputs = {} }) {
   const authorIsBot = pr.user?.type === "Bot" || /\[bot\]$/i.test(authorLogin) ||
     authorLogin.toLowerCase() === "devolutionsbot";
   if (authorIsBot && !force) return noResult("bot-authored pull request", route);
+  const labels = (pr.labels || [])
+    .map((label) => typeof label === "string" ? label : label.name)
+    .filter(Boolean);
   return {
     ok: true, route, prNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha,
-    labels: (pr.labels || []).map((label) => typeof label === "string" ? label : label.name).filter(Boolean),
+    labels,
+    evidenceMaxBytes: labels.includes(OVERSIZED_REVIEW_LABEL) ? 4 * 1024 * 1024 : 1024 * 1024,
     author: {
       nodeId: pr.user?.node_id || null, login: pr.user?.login || null, type: pr.user?.type || null,
       association: pr.author_association || null,
