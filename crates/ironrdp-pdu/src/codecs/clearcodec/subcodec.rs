@@ -4,7 +4,7 @@
 //! raw BGR pixels, NSCodec, or RLEX. Each subcodec region specifies its
 //! position, dimensions, and the codec used to compress its bitmap data.
 
-use ironrdp_core::{DecodeResult, ReadCursor, cast_length, ensure_size, invalid_field_err};
+use ironrdp_core::{cast_length, ensure_size, invalid_field_err, DecodeResult, ReadCursor};
 
 /// Subcodec identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,7 +103,7 @@ mod tests {
         data.extend_from_slice(&2u16.to_le_bytes()); // height
         data.extend_from_slice(&12u32.to_le_bytes()); // bitmapDataByteCount = 2*2*3 = 12
         data.push(0x00); // subCodecId = Raw
-        // 4 pixels BGR
+                         // 4 pixels BGR
         data.extend_from_slice(&[0xFF, 0x00, 0x00]); // blue
         data.extend_from_slice(&[0x00, 0xFF, 0x00]); // green
         data.extend_from_slice(&[0x00, 0x00, 0xFF]); // red
@@ -155,15 +155,18 @@ mod tests {
         data.push(0x00); // Raw
         data.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
 
-        // Second region: 1x1 RLEX (minimal: palette_count=1 + run)
+        // Second region: 1x1 RLEX (minimal: palette_count=1 + one segment).
+        // Even with a single palette entry, a segment keeps its packed byte
+        // (stopIndex on one bit, suiteDepth on seven) before the run length.
         data.extend_from_slice(&5u16.to_le_bytes());
         data.extend_from_slice(&5u16.to_le_bytes());
         data.extend_from_slice(&1u16.to_le_bytes());
         data.extend_from_slice(&1u16.to_le_bytes());
-        data.extend_from_slice(&5u32.to_le_bytes());
+        data.extend_from_slice(&6u32.to_le_bytes());
         data.push(0x02); // RLEX
         data.push(1); // palette_count
         data.extend_from_slice(&[0x00, 0x00, 0x00]); // palette entry
+        data.push(0x00); // packed byte: stop_index=0, suite_depth=0
         data.push(1); // run_length
 
         let regions = decode_subcodec_layer(&data).unwrap();
