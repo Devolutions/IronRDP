@@ -306,7 +306,7 @@ impl CliprdrBackend for AgentCliprdrBackend {
                     Ok(fragment) if fragment.len() > MAX_CLIPBOARD_HTML_BYTES => {
                         debug!(
                             html_len = fragment.len(),
-                            "Remote HTML exceeds the clipboard RPC transport limit; dropped"
+                            "Remote HTML exceeds the clipboard HTML size limit; dropped"
                         );
                         None
                     }

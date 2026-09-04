@@ -171,7 +171,9 @@ richest representation first, when the remote offers more than one.
                                       advertise it to the remote. Same before-connect behavior as
                                       `clipboard-set`.
 - `clipboard-get-html`               Print the last HTML fragment received from the remote
-                                      clipboard, or `(empty)` if none has arrived yet.
+                                      clipboard, or `(empty)` if the current remote item isn't
+                                      HTML (nothing has arrived, or the last copy was text or an
+                                      image).
 - `clipboard-set-html --html HTML`   Set the local clipboard HTML fragment and advertise it to the
                                       remote. Same before-connect behavior as `clipboard-set`.
 

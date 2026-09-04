@@ -1108,9 +1108,9 @@ impl Daemon {
 
     /// Returns the last text received from the remote clipboard, if any.
     ///
-    /// `None` both when nothing has been received yet and when the last remote copy was an image,
-    /// not text; the two are indistinguishable from this call alone. Use `clipboard_get_image` for
-    /// the image case.
+    /// `None` when nothing has been received yet, or when the last remote copy was an image or
+    /// HTML, not text; the cases are indistinguishable from this call alone. Use
+    /// `clipboard_get_image` or `clipboard_get_html` for those cases.
     ///
     /// # Panics
     ///
@@ -1140,8 +1140,8 @@ impl Daemon {
 
     /// Returns the last image received from the remote clipboard as PNG bytes, if any.
     ///
-    /// `None` both when nothing has been received yet and when the last remote copy was text, not
-    /// an image. Use `clipboard_get` for the text case.
+    /// `None` when nothing has been received yet, or when the last remote copy was text or HTML,
+    /// not an image. Use `clipboard_get` or `clipboard_get_html` for those cases.
     ///
     /// # Panics
     ///

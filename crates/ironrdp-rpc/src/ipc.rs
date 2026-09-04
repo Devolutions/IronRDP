@@ -2134,7 +2134,7 @@ impl Decode<'_> for Payload {
             15 => {
                 let html = read_opt_string(src)?;
                 if html.as_ref().is_some_and(|html| html.len() > MAX_CLIPBOARD_HTML_BYTES) {
-                    return Err(ironrdp_core::invalid_field_err!("clipboard html", "too large"));
+                    return Err(ironrdp_core::invalid_field_err!("clipboard html", "too large", in: src));
                 }
                 Ok(Self::ClipboardHtml(html))
             }
@@ -2640,7 +2640,7 @@ impl Decode<'_> for Request {
             34 => {
                 let html = read_string(src)?;
                 if html.len() > MAX_CLIPBOARD_HTML_BYTES {
-                    return Err(ironrdp_core::invalid_field_err!("clipboard html", "too large"));
+                    return Err(ironrdp_core::invalid_field_err!("clipboard html", "too large", in: src));
                 }
                 Ok(Self::ClipboardSetHtml { html })
             }
