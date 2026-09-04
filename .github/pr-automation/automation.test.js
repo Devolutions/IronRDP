@@ -87,8 +87,11 @@ test("reusable review keeps inherited secrets inside the trusted workflow", () =
 
   assert.match(caller, /uses: \.\/\.github\/workflows\/review-pipeline\.yml/);
   assert.match(caller, /secrets: inherit/);
-  assert.match(reviewWorkflow, /environment: llm-providers/);
-  assert.match(reviewWorkflow, /api-key: \$\{\{ secrets\.HELMCODE_GLM_API_KEY \}\}/);
+  for (const name of ["specialists", "general"]) {
+    const job = workflowJob(reviewWorkflow, name);
+    assert.match(job, /environment: llm-providers/);
+    assert.match(job, /api-key: \$\{\{ secrets\.HELMCODE_GLM_API_KEY \}\}/);
+  }
   assert.match(reviewWorkflow, /WORKFLOW_SHA: \$\{\{ github\.workflow_sha \}\}/);
   assert.match(reviewWorkflow,
     /git fetch --no-tags origin "\+\$WORKFLOW_SHA:refs\/remotes\/origin\/automation"/);
