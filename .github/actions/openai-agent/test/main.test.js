@@ -287,6 +287,42 @@ test("main safely distinguishes provider transport failures", async () => {
   }
 });
 
+test("main reports why repaired output remains invalid", async () => {
+  const workspace = actionFixture();
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  });
+  const responses = [
+    { choices: [{ message: { content: '{"wrong":true}' } }] },
+    { choices: [{ message: { content: "not-json" } }] },
+  ];
+  class InvalidRepairOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async () => responses.shift() } };
+    }
+  }
+  const reason = "repair response was invalid: response was not valid JSON";
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, InvalidRepairOpenAI);
+    assert.equal(core.outputs.get("structured-output"), "");
+    assert.equal(core.outputs.get("failure-reason"), reason);
+    assert.equal(core.outputs.get("turn-count"), "2");
+    assert.deepEqual(
+      core.events.filter((event) => event[0] === "failed").map((event) => event[1]),
+      [reason],
+    );
+    assert.deepEqual(
+      core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+        .find((event) => event.event === "openai-agent.failure"),
+      { event: "openai-agent.failure", phase: "runtime", reason },
+    );
+  } finally {
+    workspace.cleanup();
+  }
+});
+
 test("main reports configuration failures without constructing a provider client", async () => {
   const workspace = actionFixture();
   const core = mockCore({

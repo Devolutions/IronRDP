@@ -119,7 +119,7 @@ function compileOutputValidator(schema, maximumBytes = MAX_MODEL_OUTPUT_BYTES) {
       const errors = (validate.errors || []).slice(0, 10)
         .map((error) => {
           const detail = error.keyword === "required" ? ` ${error.params.missingProperty}` : "";
-          return `${error.instancePath || "/"}: ${error.keyword}${detail}`;
+          return `${error.schemaPath || "/"}: ${error.keyword}${detail}`;
         })
         .join("; ");
       return { ok: false, reason: `response did not match the schema: ${errors}` };
@@ -229,7 +229,9 @@ async function runAgent({ client, config, methodologies, prompt, sandbox, schema
       throw new AgentFailure("repair response attempted a tool call", undefined, state);
     }
     const candidate = validateOutput(textContent(message.content));
-    if (!candidate.ok) throw new AgentFailure("repair response was invalid", undefined, state);
+    if (!candidate.ok) {
+      throw new AgentFailure(`repair response was invalid: ${candidate.reason}`, undefined, state);
+    }
     return result(candidate.output, state);
   }
 
