@@ -20,6 +20,7 @@ const {
   OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
 } = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
+const { resolveClassificationGate } = require("./classification-gate");
 const {
   StaleHeadError, StalePolicyError, applyLabels, escapeMarkdown, markerBody, writeState,
 } = require("./write-state");
@@ -119,19 +120,47 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(workflowJob(workflow, "review-pipeline"), /review-gate\.outputs\.eligible == 'true'/);
 });
 
-test("cached and reclassified retries use exclusive dispatch paths", () => {
-  const workflow = readWorkflow();
-  const requestReview = workflowJob(workflow, "request-review");
-  const resolveClassification = workflowJob(workflow, "resolve-classification-state");
-  const writer = workflowJob(workflow, "write-state");
+test("classification gate reuses completed state but forces oversized retries", async () => {
+  let reads = 0;
+  const machineState = {
+    protocolRelated: false, risk: "low", specialistReviewers: [],
+    automaticReviewEligible: true,
+  };
+  const github = { rest: { checks: { listForRef: async () => {
+    reads += 1;
+    return { data: { check_runs: [{
+      external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+      conclusion: "success",
+      app: { slug: "github-actions" },
+      output: {
+        title: "Classification complete",
+        summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
+      },
+    }] } };
+  } } } };
+  const args = { github, owner: "Devolutions", repo: "IronRDP", expectedSha: SHA };
 
-  assert.match(requestReview, /needs\.resolve-pr\.outputs\.review-requested == 'true'/);
-  assert.match(requestReview, /needs\.classification-gate\.outputs\.required == 'false'/);
-  assert.match(requestReview, /dispatchClassificationComplete/);
-  assert.match(resolveClassification, /needs\.classification-gate\.outputs\.required == 'true'/);
-  assert.match(writer,
-    /REVIEW_REQUESTED: \$\{\{ needs\.resolve-pr\.outputs\.review-requested \}\}/);
-  assert.match(writer, /reviewRequested: process\.env\.REVIEW_REQUESTED === "true"/);
+  const cached = await resolveClassificationGate(args);
+  assert.equal(cached.available, true);
+  assert.equal(cached.required, false);
+  assert.equal(reads, 1);
+
+  const retry = await resolveClassificationGate({ ...args, retryWithLargerEvidence: true });
+  assert.deepEqual(retry, {
+    available: true, required: true, reason: "", largerEvidence: true,
+  });
+  assert.equal(reads, 1);
+
+  const unavailable = await resolveClassificationGate({
+    ...args,
+    github: { rest: { checks: { listForRef: async () => { throw new Error("unavailable"); } } } },
+  });
+  assert.deepEqual(unavailable, {
+    available: false,
+    required: false,
+    reason: "GitHub checks API unavailable",
+    error: "unavailable",
+  });
 });
 
 test("review skills own methodology while stage prompts own pipeline contracts", () => {
