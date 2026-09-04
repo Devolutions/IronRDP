@@ -169,6 +169,10 @@ fn request_variants_round_trip() {
         Request::ClipboardSetImage {
             png: vec![0x89, b'P', b'N', b'G', 0, 0xFF],
         },
+        Request::ClipboardGetHtml,
+        Request::ClipboardSetHtml {
+            html: "<b>clipboard html</b>".to_owned(),
+        },
     ];
 
     for request in &requests {
@@ -317,6 +321,8 @@ fn response_variants_round_trip() {
         Response::Ok(Payload::ClipboardText(Some("clipboard text".to_owned()))),
         Response::Ok(Payload::ClipboardImage(None)),
         Response::Ok(Payload::ClipboardImage(Some(vec![0x89, b'P', b'N', b'G', 0, 0xFF]))),
+        Response::Ok(Payload::ClipboardHtml(None)),
+        Response::Ok(Payload::ClipboardHtml(Some("<b>clipboard html</b>".to_owned()))),
     ];
 
     for response in &responses {
@@ -400,6 +406,16 @@ fn clipboard_debug_redacts_content() {
     let payload = Payload::ClipboardImage(Some(b"secret-pixels".to_vec()));
     let debug = format!("{payload:?}");
     assert!(!debug.contains("secret-pixels"));
+
+    let request = Request::ClipboardSetHtml {
+        html: "<b>secret-markup</b>".to_owned(),
+    };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("secret-markup"));
+
+    let payload = Payload::ClipboardHtml(Some("<b>secret-markup</b>".to_owned()));
+    let debug = format!("{payload:?}");
+    assert!(!debug.contains("secret-markup"));
 }
 
 #[test]

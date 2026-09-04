@@ -448,7 +448,9 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
         Request::ClipboardGet
         | Request::ClipboardSet { .. }
         | Request::ClipboardGetImage
-        | Request::ClipboardSetImage { .. } => Response::typed_error(
+        | Request::ClipboardSetImage { .. }
+        | Request::ClipboardGetHtml
+        | Request::ClipboardSetHtml { .. } => Response::typed_error(
             AgentErrorCategory::Unavailable,
             "clipboard access is unavailable through ActiveX",
         ),
