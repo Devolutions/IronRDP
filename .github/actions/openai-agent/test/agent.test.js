@@ -7,7 +7,8 @@ const {
 } = require("openai");
 
 const {
-  AgentFailure, TOOLS, executeTool, providerFailureDiagnostic, providerFailureReason, runAgent,
+  AgentFailure, TOOLS, compileOutputValidator, executeTool, providerFailureDiagnostic,
+  providerFailureReason, runAgent,
 } = require("../src/agent");
 
 const schema = {
@@ -224,11 +225,23 @@ test("runtime allows exactly one tools-disabled repair for JSON or schema failur
 
   await assert.rejects(
     runAgent({
-      client: clientFrom([message("not-json"), message('{"still":"invalid"}')]),
+      client: clientFrom([message('{"wrong":true}'), message("not-json")]),
       config: baseConfig, methodologies: [], prompt: "p", sandbox, schema,
     }),
-    (error) => error.reason === "repair response was invalid" && error.turnCount === 2,
+    (error) => error.reason ===
+      "repair response was invalid: response was not valid JSON" && error.turnCount === 2,
   );
+});
+
+test("validation diagnostics do not expose model-provided property names", () => {
+  const validateOutput = compileOutputValidator({
+    type: "object",
+    patternProperties: { "^.+$": { type: "string" } },
+  });
+  const candidate = validateOutput('{"MODEL_RESPONSE_SECRET_SENTINEL":42}');
+  assert.equal(candidate.ok, false);
+  assert.match(candidate.reason, /^response did not match the schema: #\//);
+  assert.doesNotMatch(candidate.reason, /MODEL_RESPONSE_SECRET_SENTINEL/);
 });
 
 test("runtime repairs schema-valid output that exceeds the configured byte budget", async () => {
