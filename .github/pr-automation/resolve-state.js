@@ -15,6 +15,7 @@ const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
 const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -->";
 const EVIDENCE_LIMIT_MARKER = "<!-- ironrdp-pr-automation:evidence-limit -->";
+const CONTRIBUTOR_INELIGIBLE_MARKER = "<!-- ironrdp-pr-automation:contributor-ineligible -->";
 const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the (1|4) MiB evidence limit$/;
 const ELIGIBLE_MERGED_PRS = 1;
 const ELIGIBLE_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
@@ -256,10 +257,11 @@ function resolveReviewState({
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
-  const fail = (reason, report = false) => {
+  const fail = (reason, report = false, contributorComment = null) => {
     const comments = [
       forced ? null : quotaComment(rateLimit),
       evidenceLimitComment(reason),
+      contributorComment,
     ].filter(Boolean);
     return {
       ok: true, mode: "review", expectedSha, failed: true, reason,
@@ -268,6 +270,7 @@ function resolveReviewState({
         ...(comments.some((comment) => comment.kind === "evidence-limit") ? [] : [EVIDENCE_LIMIT_MARKER]),
         FORK_QUOTA_MARKER,
         ...(comments.some((comment) => comment.kind === "global-quota") ? [] : [GLOBAL_QUOTA_MARKER]),
+        ...(forced || contributor?.status === "eligible" ? [CONTRIBUTOR_INELIGIBLE_MARKER] : []),
       ],
       ...(report ? { check: {
         name: "AI automated review", externalId: expectedSha,
@@ -301,7 +304,10 @@ function resolveReviewState({
       const reason = Number.isSafeInteger(contributor.merged)
         ? `contributor history ineligible (merged: ${contributor.merged}, required: ${ELIGIBLE_MERGED_PRS})`
         : `contributor history ineligible${contributor.reason ? `: ${contributor.reason}` : ""}`;
-      return fail(reason);
+      const comment = Number.isSafeInteger(contributor.merged)
+        ? { kind: "contributor-ineligible", marker: CONTRIBUTOR_INELIGIBLE_MARKER }
+        : null;
+      return fail(reason, false, comment);
     }
     if (contributor?.status !== "eligible") {
       const reason = contributor?.reason
@@ -337,6 +343,7 @@ function resolveReviewState({
     comments: [{ kind: "review", marker: reviewMarker, review: reviewerResult.value }],
     removeCommentMarkers: [
       EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER,
+      CONTRIBUTOR_INELIGIBLE_MARKER,
     ],
     check: { name: "AI automated review", externalId: expectedSha },
     expectedReviewCount,
@@ -346,8 +353,8 @@ function resolveReviewState({
 }
 
 module.exports = {
-  AI_COUNTS, DUPLICATE_MARKER, EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER,
-  LEGACY_XL_MARKER, LEGITIMACY_LABEL,
+  AI_COUNTS, CONTRIBUTOR_INELIGIBLE_MARKER, DUPLICATE_MARKER, EVIDENCE_LIMIT_MARKER,
+  FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_REVIEW_LABEL, RISK, OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
   contributorEligibility, qualifyingMergedPrs, resolveClassificationState,
   resolveReviewState, reviewPolicyEligible,

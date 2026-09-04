@@ -15,8 +15,8 @@ const { buildSpecialistAggregate, validateSpecialistRun } = require("./review-pi
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
   resolveClassificationState, resolveReviewState, reviewPolicyEligible, DUPLICATE_MARKER,
-  EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL, LEGITIMACY_MARKER_PREFIX,
-  OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
+  CONTRIBUTOR_INELIGIBLE_MARKER, EVIDENCE_LIMIT_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
+  LEGITIMACY_MARKER_PREFIX, OVERSIZED_MARKER, OVERSIZED_REVIEW_LABEL, contributorEligibility,
 } = require("./resolve-state");
 const { resolvePr } = require("./resolve-pr");
 const { resolveClassificationGate } = require("./classification-gate");
@@ -1330,6 +1330,15 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.equal(ineligible.ok, true);
   assert.equal(ineligible.failed, true);
   assert.equal(ineligible.reason, "contributor history ineligible (merged: 0, required: 1)");
+  assert.deepEqual(ineligible.comments, [{
+    kind: "contributor-ineligible", marker: CONTRIBUTOR_INELIGIBLE_MARKER,
+  }]);
+  assert.equal(ineligible.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), false);
+  const ineligibleBody = markerBody(ineligible.comments[0], "Devolutions", "IronRDP");
+  assert.match(ineligibleBody, /Automated review will not run/);
+  assert.match(ineligibleBody, /automation policy/);
+  assert.match(ineligibleBody, /Maintainer review is required/);
+  assert.equal(ineligibleBody.match(/LLM-assisted content \(no human feedback\)\./g)?.length, 1);
 
   const unavailable = resolveReviewState({
     ...args, contributor: { status: "unavailable", reason: "GitHub API unavailable" },
@@ -1337,6 +1346,7 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.equal(unavailable.ok, true);
   assert.equal(unavailable.failed, true);
   assert.equal(unavailable.reason, "contributor history unavailable: GitHub API unavailable");
+  assert.equal(unavailable.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), false);
 
   const secondReview = resolveReviewState({
     ...args, labels: ["ai-reviewed/1", "risk/high"],
@@ -1349,6 +1359,20 @@ test("review blockers distinguish gate and contributor history failures", () => 
     gate: { ...args.gate, policyEligible: false, protocolRelated: false },
   });
   assert.equal(policy.reason, "review is not eligible");
+});
+
+test("a later eligible review removes the contributor-ineligible comment", () => {
+  const state = resolveReviewState({
+    expectedSha: SHA, labels: ["risk/low"], reviewer: review({ findings: [] }),
+    gate: {
+      ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
+      risk: "low", protocolRelated: false, specialistReviewers: ["code-compressor"],
+    },
+    contributor: { status: "eligible", merged: 1 },
+  });
+
+  assert.equal(state.failed, undefined);
+  assert.equal(state.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), true);
 });
 
 test("an unavailable mandatory protocol specialist blocks the review count", () => {
@@ -1437,6 +1461,52 @@ test("writer stops before mutations when review policy or count changes", async 
     },
   }), StalePolicyError);
   assert.equal(writes, 0);
+});
+
+test("writer keeps one contributor-ineligible comment and removes it after eligibility changes", async () => {
+  const issueComments = [];
+  let nextCommentId = 1;
+  const github = {
+    paginate: { iterator: async function* () { yield { data: issueComments }; } },
+    rest: {
+      pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
+      issues: {
+        get: async () => ({ data: { labels: ["maintainer-required", "risk/low"] } }),
+        listComments: () => {},
+        createComment: async ({ body }) => {
+          issueComments.push({ id: nextCommentId++, body, user: { login: "github-actions[bot]" } });
+        },
+        deleteComment: async ({ comment_id: commentId }) => {
+          issueComments.splice(issueComments.findIndex((comment) => comment.id === commentId), 1);
+        },
+      },
+    },
+  };
+  const gate = {
+    ok: true, head_sha: SHA, classificationCheck: true, ciGreen: true,
+    risk: "low", protocolRelated: false, specialistReviewers: ["code-compressor"],
+  };
+  const state = resolveReviewState({
+    expectedSha: SHA, labels: ["risk/low"], gate,
+    contributor: { status: "ineligible", merged: 0 },
+  });
+  const args = {
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+    botLogin: "github-actions[bot]",
+  };
+
+  await writeState({ ...args, state });
+  await writeState({ ...args, state });
+  assert.equal(issueComments.length, 1);
+  assert.match(issueComments[0].body, /Automated review will not run/);
+
+  const eligibleState = resolveReviewState({
+    expectedSha: SHA, labels: ["risk/low"],
+    gate: { ...gate, classificationCheck: false },
+    contributor: { status: "eligible", merged: 1 },
+  });
+  await writeState({ ...args, state: eligibleState });
+  assert.deepEqual(issueComments, []);
 });
 
 test("writer publishes classification audit comments", async () => {
