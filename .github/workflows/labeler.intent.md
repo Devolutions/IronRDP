@@ -9,6 +9,7 @@ To use the 5 parallel requests as efficiently as possible:
 - Run at most one reviewer pipeline with at most 3 specialist reviews in parallel.
 
 That totals at most 5 parallel requests at any time.
+All model-output schemas are internal and unversioned.
 
 For simplicity, derive static concurrency lanes from the pull request number instead of using an external semaphore service.
 
@@ -49,10 +50,13 @@ The general reviewer independently inspects the pull request, attempts to falsif
 It can merge overlapping candidates and add findings that no specialist reported.
 Only the validated general-review result can be published.
 The published comments include the name of the specialist that found the finding.
+Reviewer findings use severity and a question boolean.
+Render severity as `critical :purple_circle:`, `high :red_circle:`, `medium :orange_circle:`, or `low :yellow_circle:`.
+Append `:question:` for questions, and show `:green_circle:` in the main comment when no findings are found.
 
 ### Specialist reviewers
 
-Currently we define three specialist reviewers:
+Use three specialist reviewers:
 
 - protocol
 - skeptical

@@ -4,6 +4,13 @@ const { encodeCheckState } = require("./validate-classifier");
 const { provenancePrefix } = require("./validate-final-review");
 const { reviewPolicyEligible } = require("./routing");
 
+const SEVERITY_EMOJI = {
+  critical: ":purple_circle:",
+  high: ":red_circle:",
+  medium: ":orange_circle:",
+  low: ":yellow_circle:",
+};
+
 class StaleHeadError extends Error {
   constructor() { super("pull request head is no longer current"); this.name = "StaleHeadError"; }
 }
@@ -22,6 +29,11 @@ function escapeMarkdown(value) {
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/`/g, "&#96;")
     .replace(/@(?=[\w-])/g, "`@`").replace(/(?<!&)#(?=\d)/g, "`#`")
     .replace(/[[\]()!*_~|]/g, "\\$&");
+}
+
+function findingIndicator(finding) {
+  return `${finding.severity} ${SEVERITY_EMOJI[finding.severity]}` +
+    `${finding.question ? " :question:" : ""}`;
 }
 
 async function assertCurrentHead(github, owner, repo, prNumber, expectedSha) {
@@ -90,10 +102,11 @@ async function deleteMarkedComment(github, owner, repo, prNumber, expectedSha, b
 function reviewBody(marker, review) {
   const findings = review.findings.filter((finding) => finding.start_line === null).map((finding, index) => {
     return `${index + 1}. **${provenancePrefix(finding.sources)} ${escapeMarkdown(finding.title)}** — ` +
-      `${finding.classification} / ${finding.severity} — ${escapeMarkdown(finding.path)}\n` +
+      `${findingIndicator(finding)} — ${escapeMarkdown(finding.path)}\n` +
       `   ${escapeMarkdown(finding.rationale)}`;
   }).join("\n");
-  return `${marker}\n\n${escapeMarkdown(review.summary)}${findings ? `\n\n${findings}` : ""}`;
+  const clean = review.findings.length === 0 ? ":green_circle: " : "";
+  return `${marker}\n\n${clean}${escapeMarkdown(review.summary)}${findings ? `\n\n${findings}` : ""}`;
 }
 
 async function reviews(github, owner, repo, prNumber) {
@@ -125,7 +138,7 @@ async function publishReview(github, owner, repo, prNumber, state, botLogin, com
     const comment = {
       path: finding.path, line: finding.end_line, side: "RIGHT",
       body: `**${provenancePrefix(finding.sources)} ${escapeMarkdown(finding.title)}** — ` +
-        `${finding.classification} / ${finding.severity}: ${escapeMarkdown(finding.rationale)}`,
+        `${findingIndicator(finding)} — ${escapeMarkdown(finding.rationale)}`,
     };
     if (finding.start_line !== finding.end_line) {
       comment.start_line = finding.start_line;

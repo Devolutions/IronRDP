@@ -537,7 +537,6 @@ jobs:
         with:
           script: |
             const { SCHEMA_VERSION, parseCheckState } = require("./.github/pr-automation/validate-classifier");
-            const { SCHEMA_VERSION: REVIEWER_SCHEMA_VERSION } = require("./.github/pr-automation/validate-final-review");
             const { contributorEligibility, reviewPolicyEligible } = require("./.github/pr-automation/resolve-state");
             const { resolveReviewerRoute } = require("./.github/pr-automation/routing");
             const prNumber = Number(process.env.PULL_REQUEST_NUMBER);
@@ -601,7 +600,8 @@ jobs:
                 owner: context.repo.owner, repo: context.repo.repo, ref: headSha,
                 check_name: "AI automated review", per_page: 100,
               });
-              const reviewAtHead = completed(reviewRuns, `${REVIEWER_SCHEMA_VERSION}:${headSha}`)?.conclusion === "success";
+              const reviewAtHead = reviewRuns.data.check_runs.some((run) =>
+                run.conclusion === "success" && run.app?.slug === "github-actions");
               const workflowRuns = process.env.ROUTE === "ci" ? [context.payload.workflow_run] :
                 (await github.rest.actions.listWorkflowRunsForRepo({
                   owner: context.repo.owner, repo: context.repo.repo, head_sha: headSha, per_page: 100,

@@ -1,5 +1,4 @@
 {
-  "$id": "https://github.com/Devolutions/IronRDP/pr-automation/final-review-v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["head_sha", "summary", "candidate_dispositions", "findings"],
@@ -27,9 +26,9 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["classification", "severity", "path", "start_line", "end_line", "title", "rationale", "confidence", "sources"],
+        "required": ["question", "severity", "path", "start_line", "end_line", "title", "rationale", "confidence", "sources"],
         "properties": {
-          "classification": { "enum": ["blocking", "non_blocking", "question"] },
+          "question": { "type": "boolean" },
           "severity": { "enum": ["critical", "high", "medium", "low"] },
           "path": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$)).+$" },
           "start_line": { "type": ["integer", "null"], "minimum": 1 },

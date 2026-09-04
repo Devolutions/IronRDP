@@ -5,14 +5,12 @@ const {
 } = require("./validation");
 const { REVIEWER_ORDER: REVIEWERS } = require("./routing");
 
-const SCHEMA_VERSION = "candidate-review-v1";
-const CLASSIFICATIONS = new Set(["blocking", "non_blocking", "question"]);
 const SEVERITIES = new Set(["critical", "high", "medium", "low"]);
 const FINDING_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const PROTOCOL_ID = /^(?:MS|MC)-[A-Z0-9]+$/;
 const SECTION = /^[0-9]+(?:\.[0-9]+)*$/;
 const FINDING_KEYS = [
-  "id", "classification", "severity", "path", "start_line", "end_line", "title", "rationale",
+  "id", "question", "severity", "path", "start_line", "end_line", "title", "rationale",
   "confidence", "references",
 ];
 const REFERENCE_KEYS = ["protocol_id", "section", "heading"];
@@ -32,8 +30,8 @@ function normalizeCandidateReview(raw, {
   expectedSha, expectedReviewer, changedPaths = [], changedLines = {},
 } = {}) {
   const value = parseJson(raw, 32768);
-  if (!exactKeys(value, ["schema_version", "head_sha", "reviewer", "summary", "findings"]) ||
-      value.schema_version !== "1" || !SHA.test(value.head_sha) || value.head_sha !== expectedSha ||
+  if (!exactKeys(value, ["head_sha", "reviewer", "summary", "findings"]) ||
+      !SHA.test(value.head_sha) || value.head_sha !== expectedSha ||
       !REVIEWERS.includes(value.reviewer) || value.reviewer !== expectedReviewer ||
       !Array.isArray(value.findings) || value.findings.length > 20) {
     return invalid("invalid candidate review object");
@@ -53,7 +51,7 @@ function normalizeCandidateReview(raw, {
     const title = normalizeText(finding.title, 200);
     const rationale = normalizeText(finding.rationale, 1200);
     if (!id || !FINDING_ID.test(id) || ids.has(id) ||
-        !CLASSIFICATIONS.has(finding.classification) || !SEVERITIES.has(finding.severity) ||
+        typeof finding.question !== "boolean" || !SEVERITIES.has(finding.severity) ||
         path === null || Buffer.byteLength(path, "utf8") > 300 || path.includes("\\") ||
         !REPO_PATH.test(path) || !paths.has(path) || !title || !rationale ||
         !Number.isFinite(finding.confidence) || finding.confidence < 0 || finding.confidence > 1 ||
@@ -79,7 +77,7 @@ function normalizeCandidateReview(raw, {
     ids.add(id);
     findings.push({
       id,
-      classification: finding.classification,
+      question: finding.question,
       severity: finding.severity,
       path,
       start_line: locationIsValidated ? finding.start_line : null,
@@ -92,7 +90,6 @@ function normalizeCandidateReview(raw, {
   }
 
   const normalized = {
-    schema_version: "1",
     head_sha: value.head_sha,
     reviewer: value.reviewer,
     summary,
@@ -101,10 +98,9 @@ function normalizeCandidateReview(raw, {
   if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > 32768) {
     return invalid("candidate review output too large");
   }
-  return { ok: true, status: "valid", schemaVersion: SCHEMA_VERSION, value: normalized };
+  return { ok: true, status: "valid", value: normalized };
 }
 
 module.exports = {
-  SCHEMA_VERSION, normalizeCandidateReview,
-  validateCandidateReview: normalizeCandidateReview,
+  normalizeCandidateReview, validateCandidateReview: normalizeCandidateReview,
 };

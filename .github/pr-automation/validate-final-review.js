@@ -5,10 +5,10 @@ const {
 } = require("./validation");
 const { REVIEWER_ORDER: REVIEWERS } = require("./routing");
 
-const SCHEMA_VERSION = "final-review-v1";
 const MAXIMUM_BYTES = 65536;
 const MAXIMUM_CANDIDATES = 60;
 const MAXIMUM_FINDINGS = 20;
+const SEVERITIES = new Set(["critical", "high", "medium", "low"]);
 const FINDING_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const REVIEWER_ORDER = new Map(REVIEWERS.map((reviewer, index) => [reviewer, index]));
 
@@ -45,7 +45,7 @@ function aggregateCandidates(specialistAggregate, expectedSha) {
   const candidates = new Map();
   let previousReviewer = -1;
   const candidateKeys = [
-    "id", "classification", "severity", "path", "start_line", "end_line", "title", "rationale",
+    "id", "question", "severity", "path", "start_line", "end_line", "title", "rationale",
     "confidence", "references",
   ];
   for (const review of aggregate.reviewers) {
@@ -63,8 +63,8 @@ function aggregateCandidates(specialistAggregate, expectedSha) {
         !isBoundedArray(review.findings, MAXIMUM_FINDINGS)) return null;
     for (const candidate of review.findings) {
       if (!exactKeys(candidate, candidateKeys) ||
-          !["blocking", "non_blocking", "question"].includes(candidate.classification) ||
-          !["critical", "high", "medium", "low"].includes(candidate.severity) ||
+          typeof candidate.question !== "boolean" ||
+          !SEVERITIES.has(candidate.severity) ||
           !Array.isArray(candidate.references)) return null;
       const reference = normalizeReference({
         reviewer: review.reviewer,
@@ -100,12 +100,12 @@ function normalizeDispositions(entries, candidates) {
 
 function normalizeFinding(finding, changedPaths, changedLines, dispositions, referencedCandidates) {
   const keys = [
-    "classification", "severity", "path", "start_line", "end_line", "title", "rationale",
+    "question", "severity", "path", "start_line", "end_line", "title", "rationale",
     "confidence", "sources",
   ];
   if (!exactKeys(finding, keys) ||
-      !["blocking", "non_blocking", "question"].includes(finding.classification) ||
-      !["critical", "high", "medium", "low"].includes(finding.severity) ||
+      typeof finding.question !== "boolean" ||
+      !SEVERITIES.has(finding.severity) ||
       typeof finding.path !== "string" || Buffer.byteLength(finding.path, "utf8") > 300 ||
       finding.path.includes("\\") || !REPO_PATH.test(finding.path) || !changedPaths.has(finding.path) ||
       !Number.isFinite(finding.confidence) || finding.confidence < 0 || finding.confidence > 1 ||
@@ -140,7 +140,7 @@ function normalizeFinding(finding, changedPaths, changedLines, dispositions, ref
   const locationIsValidated = linesAreNull ||
     linesAreValidated(finding.path, finding.start_line, finding.end_line, changedLines);
   return {
-    classification: finding.classification,
+    question: finding.question,
     severity: finding.severity,
     path: finding.path,
     start_line: locationIsValidated ? finding.start_line : null,
@@ -192,37 +192,34 @@ function validateFinalReview(raw, {
     head_sha: value.head_sha,
     summary,
     findings,
-    has_findings: findings.length > 0,
   };
   if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > MAXIMUM_BYTES) {
     return invalid("final review output too large");
   }
-  return { ok: true, status: "valid", schemaVersion: SCHEMA_VERSION, value: normalized };
+  return { ok: true, status: "valid", value: normalized };
 }
 
 function validateNormalizedFinalReview(value, expectedSha) {
   if (!exactKeys(value, [
-    "head_sha", "summary", "findings", "has_findings",
+    "head_sha", "summary", "findings",
   ]) || value.head_sha !== expectedSha || !SHA.test(value.head_sha) ||
-      typeof value.has_findings !== "boolean" ||
-      value.has_findings !== (Array.isArray(value.findings) && value.findings.length > 0) ||
       !isBoundedArray(value.findings, MAXIMUM_FINDINGS)) return invalid("invalid validated final review");
   for (const finding of value.findings) {
     if (!exactKeys(finding, [
-      "classification", "severity", "path", "start_line", "end_line", "title", "rationale",
+      "question", "severity", "path", "start_line", "end_line", "title", "rationale",
       "confidence", "sources",
-    ])) return invalid("invalid validated final review finding");
+    ]) || typeof finding.question !== "boolean" ||
+        !SEVERITIES.has(finding.severity)) return invalid("invalid validated final review finding");
     try {
       provenancePrefix(finding.sources);
     } catch {
       return invalid("invalid validated final review source");
     }
   }
-  return { ok: true, status: "valid", schemaVersion: SCHEMA_VERSION, value };
+  return { ok: true, status: "valid", value };
 }
 
 module.exports = {
-  MAXIMUM_CANDIDATES, MAXIMUM_FINDINGS, REVIEWERS, SCHEMA_VERSION,
-  provenancePrefix, sourceCategories, validateFinalReview,
+  MAXIMUM_CANDIDATES, MAXIMUM_FINDINGS, REVIEWERS, provenancePrefix, sourceCategories, validateFinalReview,
   validateNormalizedFinalReview,
 };

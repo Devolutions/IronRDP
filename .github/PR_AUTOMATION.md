@@ -28,7 +28,7 @@ Medium- and high-risk changes always require the skeptical specialist.
 Model output cannot select parallelism.
 
 Specialists use one bounded candidate schema.
-Each candidate binds to the expected head SHA, a configured reviewer ID, a changed path, an optional added-line range, and a unique finding ID.
+Each candidate binds to the expected head SHA, a configured reviewer ID, a changed path, an optional added-line range, a severity, a question flag, and a unique finding ID.
 Protocol candidates also carry structured protocol references.
 One specialist never receives another specialist's output.
 
@@ -36,7 +36,19 @@ The general reviewer independently inspects the pull request, attempts to falsif
 It can merge overlapping candidates and add findings that no specialist reported.
 Only the validated general-review result can be published.
 
-## Visible finding sources
+## Visible finding format and sources
+
+Published findings use severity as the only ranking signal:
+
+| Severity | Indicator |
+| --- | --- |
+| `critical` | `:purple_circle:` |
+| `high` | `:red_circle:` |
+| `medium` | `:orange_circle:` |
+| `low` | `:yellow_circle:` |
+
+Questions append `:question:` after the severity indicator.
+A successful review with no findings shows `:green_circle:` in its main comment.
 
 Workflow code derives a visible prefix from validated source references.
 The model cannot provide or override the prefix.

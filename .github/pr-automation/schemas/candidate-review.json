@@ -1,10 +1,8 @@
 {
-  "$id": "https://github.com/Devolutions/IronRDP/pr-automation/candidate-review-v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "head_sha", "reviewer", "summary", "findings"],
+  "required": ["head_sha", "reviewer", "summary", "findings"],
   "properties": {
-    "schema_version": { "const": "1" },
     "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "reviewer": { "enum": ["protocol", "skeptical", "code-compressor"] },
     "summary": { "type": "string", "minLength": 1, "maxLength": 1000 },
@@ -16,7 +14,7 @@
         "additionalProperties": false,
         "required": [
           "id",
-          "classification",
+          "question",
           "severity",
           "path",
           "start_line",
@@ -28,7 +26,7 @@
         ],
         "properties": {
           "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
-          "classification": { "enum": ["blocking", "non_blocking", "question"] },
+          "question": { "type": "boolean" },
           "severity": { "enum": ["critical", "high", "medium", "low"] },
           "path": {
             "type": "string",

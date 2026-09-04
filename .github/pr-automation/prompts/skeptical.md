@@ -8,9 +8,9 @@ Read `pr-evidence/changed-files.txt` and `pr-evidence/pull-request.diff` first, 
 Read `pr-evidence/pull-request-context.json` before judging necessity or scope.
 Do not read or use output from any other specialist.
 
-Return only candidate-review JSON for the context head SHA with `schema_version` set to `"1"` and `reviewer` set to `"skeptical"`.
+Return only candidate-review JSON for the context head SHA with `reviewer` set to `"skeptical"`.
 Use unique stable kebab-case finding IDs and report only changed paths.
 Use line ranges only when every line is added by the diff; otherwise use null for both lines.
 Set every `references` array to empty.
 Omit formatting, naming, stylistic, speculative, and preference-only findings.
-Use `blocking` only for material defects, `non_blocking` for concrete quality improvements, and `question` only when missing context prevents a supported conclusion.
+Rate severity by concrete impact, and set `question` to true only when missing context prevents a supported conclusion.
