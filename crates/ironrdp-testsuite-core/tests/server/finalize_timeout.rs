@@ -70,7 +70,7 @@ async fn client_that_stalls_during_finalize_is_dropped() {
             let outcome = tokio::time::timeout(TEST_DEADLINE, serving).await;
 
             let joined = outcome.expect(
-                "server never gave up on a client that stalled during finalize — the connection (and, since \
+                "server never gave up on a client that stalled during finalize; the connection (and, since \
                  RdpServer serves one at a time, the server itself) is held indefinitely",
             );
             let result = joined.expect("serving task panicked");

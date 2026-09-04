@@ -2940,7 +2940,7 @@ impl RdpServer {
                 Err(_) => {
                     warn!(
                         timeout = ?FINALIZE_TIMEOUT,
-                        "Client stopped responding during the finalize handshake — dropping the connection"
+                        "Client stopped responding during the finalize handshake, dropping the connection"
                     );
                     return Err(ServerError::io(
                         "timed out waiting for the client during finalize",
