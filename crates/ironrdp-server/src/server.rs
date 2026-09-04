@@ -777,6 +777,155 @@ enum RunState {
     DeactivationReactivation { desktop_size: DesktopSize },
 }
 
+/// The framed transport produced by [`PendingConnection::negotiate_and_authenticate`].
+///
+/// Each variant preserves the corresponding finalization behavior.
+enum NegotiatedTransport<S> {
+    /// Never upgraded ([`RdpServerSecurity::None`]): finalize without a
+    /// stream shutdown, matching the old `BeginResult::Continue` arm.
+    Continued(TokioFramed<S>),
+    /// Upgraded in-band by us ([`TransportTls::Managed`]).
+    Tls(Box<TokioFramed<tokio_rustls::server::TlsStream<S>>>),
+    /// Already past TLS at a lower layer ([`TransportTls::AlreadyDone`]).
+    Offloaded(TokioFramed<S>),
+}
+
+/// An [`Acceptor`] paired with the [`RdpServerSecurity`] used to initialize it.
+///
+/// [`Acceptor::new`] receives only the advertised security flags, while the later TLS and CredSSP steps need the full security configuration.
+/// Keeping both values together prevents negotiation callers from supplying them independently.
+/// The owned security clone also lets negotiation proceed without borrowing the [`RdpServer`].
+struct PendingConnection {
+    security: RdpServerSecurity,
+    acceptor: Acceptor,
+}
+
+impl PendingConnection {
+    fn new(
+        security: RdpServerSecurity,
+        desktop_size: DesktopSize,
+        capabilities: Vec<CapabilitySet>,
+        creds: Option<Credentials>,
+        honor_client_desktop_size: Option<DesktopSize>,
+    ) -> Self {
+        let mut acceptor = Acceptor::new(security.flag(), desktop_size, capabilities, creds);
+        acceptor.set_honor_client_desktop_size(honor_client_desktop_size);
+        Self { security, acceptor }
+    }
+
+    /// Returns the acceptor so channels can be attached before negotiation.
+    fn acceptor_mut(&mut self) -> &mut Acceptor {
+        &mut self.acceptor
+    }
+
+    /// Negotiates `stream` and authenticates it when required, stopping before `accept_finalize`.
+    ///
+    /// Consuming `self` lets the operation run without holding a mutable borrow of the server.
+    ///
+    /// `Ok(None)` means the TLS handshake failed and was already logged.
+    async fn negotiate_and_authenticate<S>(
+        self,
+        stream: S,
+        tls: TransportTls,
+    ) -> ServerResult<Option<NegotiatedConnection<S>>>
+    where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    {
+        let PendingConnection { security, mut acceptor } = self;
+        let security = &security;
+        let framed = TokioFramed::new(stream);
+
+        let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
+            .await
+            .map_err_kind("accept_begin failed", ServerErrorKind::Connector)?;
+
+        match res {
+            // The only thing that varies between the two modes is who performs
+            // the TLS handshake; everything past it is `complete_security_upgrade`.
+            BeginResult::ShouldUpgrade(stream) => match tls {
+                TransportTls::Managed => {
+                    // `Self::new` builds the acceptor from these security flags.
+                    // `None` uses empty flags, for which `accept_begin` returns `Continue`.
+                    let tls_acceptor = match security {
+                        RdpServerSecurity::Tls(acceptor) => acceptor,
+                        RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
+                        RdpServerSecurity::None => unreachable!(),
+                    };
+                    let accept = match tls_acceptor.accept(stream).await {
+                        Ok(accept) => accept,
+                        Err(e) => {
+                            warn!("Failed to TLS accept: {}", e);
+                            return Ok(None);
+                        }
+                    };
+                    let mut framed = TokioFramed::new(accept);
+                    complete_security_upgrade(security, &mut framed, &mut acceptor).await?;
+                    Ok(Some(NegotiatedConnection {
+                        transport: NegotiatedTransport::Tls(Box::new(framed)),
+                        acceptor,
+                    }))
+                }
+                // The stream is already past TLS (terminated at a lower
+                // layer, e.g. a WSS terminator); do NOT call
+                // tls_acceptor.accept on it.
+                TransportTls::AlreadyDone => {
+                    let mut framed = TokioFramed::new(stream);
+                    complete_security_upgrade(security, &mut framed, &mut acceptor).await?;
+                    Ok(Some(NegotiatedConnection {
+                        transport: NegotiatedTransport::Offloaded(framed),
+                        acceptor,
+                    }))
+                }
+            },
+
+            BeginResult::Continue(framed) => Ok(Some(NegotiatedConnection {
+                transport: NegotiatedTransport::Continued(framed),
+                acceptor,
+            })),
+        }
+    }
+}
+
+/// A negotiated transport bundled with the [`Acceptor`] that negotiated it.
+struct NegotiatedConnection<S> {
+    transport: NegotiatedTransport<S>,
+    acceptor: Acceptor,
+}
+
+/// Marks the security upgrade complete and performs CredSSP for [`RdpServerSecurity::Hybrid`].
+///
+/// This remains generic so managed and offloaded TLS share one CredSSP implementation.
+async fn complete_security_upgrade<S>(
+    security: &RdpServerSecurity,
+    framed: &mut TokioFramed<S>,
+    acceptor: &mut Acceptor,
+) -> ServerResult<()>
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    acceptor.mark_security_upgrade_as_done();
+
+    if let RdpServerSecurity::Hybrid((_, pub_key)) = security {
+        // Generic streams don't expose peer address. Use a neutral
+        // placeholder; it's unclear whether CredSSP/NTLM actually
+        // uses this value in practice.
+        let client_name = "rdp-client".to_owned();
+
+        ironrdp_acceptor::accept_credssp(
+            framed,
+            acceptor,
+            &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+            client_name.into(),
+            pub_key.clone(),
+            None,
+        )
+        .await
+        .map_err_kind("accept_credssp", ServerErrorKind::Connector)?;
+    }
+
+    Ok(())
+}
+
 impl RdpServer {
     #[expect(
         clippy::too_many_arguments,
@@ -1403,90 +1552,66 @@ impl RdpServer {
         // `set_display_suppressed_handle()`.
         self.display_suppressed.store(false, Ordering::Relaxed);
 
-        let framed = TokioFramed::new(stream);
-
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
-        let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities, self.creds.clone());
-        acceptor.set_honor_client_desktop_size(self.opts.honor_client_desktop_size);
+        let mut pending = PendingConnection::new(
+            self.opts.security.clone(),
+            size,
+            capabilities,
+            self.creds.clone(),
+            self.opts.honor_client_desktop_size,
+        );
 
-        self.attach_channels(&mut acceptor);
+        self.attach_channels(pending.acceptor_mut());
 
-        let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
-            .await
-            .map_err_kind("accept_begin failed", ServerErrorKind::Connector)?;
+        let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
+            return Ok(());
+        };
 
-        match res {
-            // The only thing that varies between the two modes is who performs
-            // the TLS handshake; everything past it is `finalize_after_upgrade`.
-            BeginResult::ShouldUpgrade(stream) => match tls {
-                TransportTls::Managed => {
-                    let tls_acceptor = match &self.opts.security {
-                        RdpServerSecurity::Tls(acceptor) => acceptor,
-                        RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
-                        RdpServerSecurity::None => unreachable!(),
-                    };
-                    let accept = match tls_acceptor.accept(stream).await {
-                        Ok(accept) => accept,
-                        Err(e) => {
-                            warn!("Failed to TLS accept: {}", e);
-                            return Ok(());
-                        }
-                    };
-                    self.finalize_after_upgrade(TokioFramed::new(accept), acceptor, "TLS connection")
-                        .await?;
-                }
-                TransportTls::AlreadyDone => {
-                    // The stream is already past TLS (terminated at a lower
-                    // layer, e.g. a WSS terminator); do NOT call
-                    // tls_acceptor.accept on it.
-                    self.finalize_after_upgrade(TokioFramed::new(stream), acceptor, "TLS-offloaded stream")
-                        .await?;
-                }
-            },
+        self.finalize_negotiated(negotiated).await
+    }
 
-            BeginResult::Continue(framed) => {
+    /// Finalizes a connection produced by [`PendingConnection::negotiate_and_authenticate`].
+    ///
+    /// Plain RDP has no upgraded stream to shut down, while managed and offloaded TLS do.
+    async fn finalize_negotiated<S>(&mut self, negotiated: NegotiatedConnection<S>) -> ServerResult<()>
+    where
+        S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
+    {
+        let NegotiatedConnection { transport, acceptor } = negotiated;
+        match transport {
+            // No security upgrade happened, so there is no TLS session to shut
+            // down — matches the pre-existing `BeginResult::Continue` arm.
+            NegotiatedTransport::Continued(framed) => {
                 self.accept_finalize(framed, acceptor).await?;
             }
-        };
+            NegotiatedTransport::Tls(framed) => {
+                self.finalize_and_shutdown(*framed, acceptor, "TLS connection").await?;
+            }
+            NegotiatedTransport::Offloaded(framed) => {
+                self.finalize_and_shutdown(framed, acceptor, "TLS-offloaded stream")
+                    .await?;
+            }
+        }
 
         Ok(())
     }
 
-    /// Shared post-handshake tail for both [`TransportTls`] modes: mark the
-    /// security upgrade complete, run the optional Hybrid CredSSP exchange,
-    /// finalize, and shut the stream down. Single-sourcing this is what keeps
-    /// the managed and TLS-offloaded paths structurally identical past the
-    /// handshake, so per-connection state handling cannot drift between them.
-    async fn finalize_after_upgrade<S>(
+    /// Finalizes an upgraded stream and shuts it down afterwards.
+    async fn finalize_and_shutdown<S>(
         &mut self,
-        mut framed: TokioFramed<S>,
-        mut acceptor: Acceptor,
+        framed: TokioFramed<S>,
+        acceptor: Acceptor,
         shutdown_label: &str,
     ) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
-        acceptor.mark_security_upgrade_as_done();
-
-        if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
-            // Generic streams don't expose peer address. Use a neutral
-            // placeholder; it's unclear whether CredSSP/NTLM actually
-            // uses this value in practice.
-            let client_name = "rdp-client".to_owned();
-
-            ironrdp_acceptor::accept_credssp(
-                &mut framed,
-                &mut acceptor,
-                &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
-                client_name.into(),
-                pub_key.clone(),
-                None,
-            )
-            .await
-            .map_err_kind("accept_credssp", ServerErrorKind::Connector)?;
-        }
-
+        // No mark_security_upgrade_as_done / CredSSP here: this refactor moved
+        // both into `complete_security_upgrade`, called from
+        // `PendingConnection::negotiate_and_authenticate` before this function
+        // ever runs -- upstream's un-refactored equivalent still does that
+        // work at this point, since it has no separate negotiation step.
         let framed = self.accept_finalize(framed, acceptor).await?;
         debug!("Shutting down {}", shutdown_label);
         let (mut inner, _) = framed.into_inner();
