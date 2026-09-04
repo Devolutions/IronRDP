@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { APIConnectionError, APIConnectionTimeoutError } = require("openai");
 
 const { main } = require("../src/main");
 const { scratchWorkspace, write } = require("./helpers");
@@ -157,7 +158,11 @@ test("main never logs or outputs raw provider errors", async () => {
     assert.deepEqual(
       core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
         .find((event) => event.event === "openai-agent.provider-failure"),
-      { event: "openai-agent.provider-failure", status: 401 },
+      {
+        event: "openai-agent.provider-failure",
+        reason: "provider credential rejected",
+        status: 401,
+      },
     );
   } finally {
     workspace.cleanup();
@@ -189,9 +194,94 @@ test("main emits a bounded provider request ID without raw errors", async () => 
     assert.deepEqual(
       core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
         .find((event) => event.event === "openai-agent.provider-failure"),
-      { event: "openai-agent.provider-failure", status: 403, requestId: "req_safe-123" },
+      {
+        event: "openai-agent.provider-failure",
+        reason: "provider access forbidden",
+        status: 403,
+        requestId: "req_safe-123",
+      },
     );
     assert.doesNotMatch(observable, /RAW_PROVIDER_SECRET_SENTINEL|RAW_HEADER_SECRET_SENTINEL/);
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main distinguishes provider quota and service failures", async () => {
+  const workspace = actionFixture();
+  const inputs = {
+    "api-key": "API_KEY_SECRET_SENTINEL",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  };
+  try {
+    for (const [status, reason] of [
+      [429, "provider rate or quota limit reached"],
+      [503, "provider service unavailable"],
+    ]) {
+      const core = mockCore(inputs);
+      class FailingOpenAI {
+        constructor() {
+          this.chat = { completions: { create: async () => {
+            throw Object.assign(new Error("RAW_PROVIDER_SECRET_SENTINEL"), { status });
+          } } };
+        }
+      }
+      await main(core, { GITHUB_WORKSPACE: workspace.directory }, FailingOpenAI);
+      assert.equal(core.outputs.get("failure-reason"), reason);
+      assert.deepEqual(
+        core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+          .find((event) => event.event === "openai-agent.provider-failure"),
+        { event: "openai-agent.provider-failure", reason, status },
+      );
+      assert.doesNotMatch(JSON.stringify(
+        core.events.filter((event) => event[0] !== "secret"),
+      ), /RAW_PROVIDER_SECRET_SENTINEL|API_KEY_SECRET_SENTINEL/);
+    }
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main safely distinguishes provider transport failures", async () => {
+  const workspace = actionFixture();
+  const inputs = {
+    "api-key": "API_KEY_SECRET_SENTINEL",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  };
+  try {
+    for (const [error, reason] of [
+      [
+        new APIConnectionTimeoutError({ message: "RAW_TIMEOUT_SECRET_SENTINEL" }),
+        "provider request timed out",
+      ],
+      [
+        new APIConnectionError({
+          message: "RAW_CONNECTION_SECRET_SENTINEL",
+          cause: new Error("RAW_CAUSE_SECRET_SENTINEL"),
+        }),
+        "provider connection failed",
+      ],
+    ]) {
+      const core = mockCore(inputs);
+      class FailingOpenAI {
+        constructor() {
+          this.chat = { completions: { create: async () => { throw error; } } };
+        }
+      }
+      await main(core, { GITHUB_WORKSPACE: workspace.directory }, FailingOpenAI);
+      assert.equal(core.outputs.get("failure-reason"), reason);
+      assert.deepEqual(
+        core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+          .find((event) => event.event === "openai-agent.provider-failure"),
+        { event: "openai-agent.provider-failure", reason },
+      );
+      assert.doesNotMatch(
+        JSON.stringify(core.events.filter((event) => event[0] !== "secret")),
+        /RAW_TIMEOUT_SECRET_SENTINEL|RAW_CONNECTION_SECRET_SENTINEL|RAW_CAUSE_SECRET_SENTINEL|API_KEY_SECRET_SENTINEL/,
+      );
+    }
   } finally {
     workspace.cleanup();
   }
@@ -215,6 +305,96 @@ test("main reports configuration failures without constructing a provider client
     assert.equal(constructed, false);
     assert.equal(core.outputs.get("failure-reason"), "invalid path");
     assert.equal(core.events.some((event) => event[0] === "failed"), true);
+    assert.deepEqual(
+      core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+        .find((event) => event.event === "openai-agent.failure"),
+      { event: "openai-agent.failure", phase: "configuration", reason: "invalid path" },
+    );
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main reports each missing input without constructing a provider client", async () => {
+  const workspace = actionFixture();
+  const cases = [
+    [{}, "api key input is missing"],
+    [{ "api-key": "key" }, "base URL input is missing"],
+    [{
+      "api-key": "key",
+      "base-url": "https://provider.example/v1",
+    }, "config file input is missing"],
+  ];
+  try {
+    for (const [inputs, reason] of cases) {
+      const core = mockCore(inputs);
+      let constructed = false;
+      class UnexpectedOpenAI {
+        constructor() {
+          constructed = true;
+        }
+      }
+      await main(core, { GITHUB_WORKSPACE: workspace.directory }, UnexpectedOpenAI);
+      assert.equal(constructed, false);
+      assert.equal(core.outputs.get("failure-reason"), reason);
+      assert.deepEqual(
+        core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+          .find((event) => event.event === "openai-agent.failure"),
+        { event: "openai-agent.failure", phase: "input", reason },
+      );
+    }
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main reports workspace and provider client initialization failures safely", async () => {
+  const workspace = actionFixture();
+  const inputs = {
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  };
+  try {
+    const missingWorkspaceCore = mockCore(inputs);
+    await main(missingWorkspaceCore, {}, class UnexpectedOpenAI {});
+    assert.equal(missingWorkspaceCore.outputs.get("failure-reason"), "workspace is unavailable");
+    assert.deepEqual(
+      missingWorkspaceCore.events.filter((event) => event[0] === "info")
+        .map((event) => JSON.parse(event[1]))
+        .find((event) => event.event === "openai-agent.failure"),
+      {
+        event: "openai-agent.failure",
+        phase: "configuration",
+        reason: "workspace is unavailable",
+      },
+    );
+
+    const initializationCore = mockCore(inputs);
+    class FailingOpenAI {
+      constructor() {
+        throw new Error("CLIENT_INITIALIZATION_SECRET_SENTINEL");
+      }
+    }
+    await main(initializationCore, { GITHUB_WORKSPACE: workspace.directory }, FailingOpenAI);
+    assert.equal(
+      initializationCore.outputs.get("failure-reason"),
+      "provider client initialization failed",
+    );
+    assert.deepEqual(
+      initializationCore.events.filter((event) => event[0] === "info")
+        .map((event) => JSON.parse(event[1]))
+        .find((event) => event.event === "openai-agent.failure"),
+      {
+        event: "openai-agent.failure",
+        phase: "initialization",
+        reason: "provider client initialization failed",
+      },
+    );
+    assert.doesNotMatch(
+      JSON.stringify(initializationCore.events),
+      /CLIENT_INITIALIZATION_SECRET_SENTINEL/,
+    );
   } finally {
     workspace.cleanup();
   }

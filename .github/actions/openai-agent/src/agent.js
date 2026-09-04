@@ -1,6 +1,7 @@
 "use strict";
 
 const Ajv = require("ajv");
+const { APIConnectionError, APIConnectionTimeoutError } = require("openai");
 
 const { ActionError, fail } = require("./errors");
 const { MAX_MODEL_OUTPUT_BYTES, MAX_TOOL_ARGUMENT_BYTES } = require("./limits");
@@ -74,6 +75,8 @@ function providerFailureReason(error) {
   if (status === 429) return "provider rate or quota limit reached";
   if (status >= 500 && status <= 599) return "provider service unavailable";
   if (status >= 400 && status <= 499) return "provider rejected the request";
+  if (error?.constructor === APIConnectionTimeoutError) return "provider request timed out";
+  if (error?.constructor === APIConnectionError) return "provider connection failed";
   return "provider request failed";
 }
 

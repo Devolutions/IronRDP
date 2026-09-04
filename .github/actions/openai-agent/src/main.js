@@ -11,15 +11,21 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
   let apiKey = "";
   let turnCount = 0;
   let toolCallCount = 0;
+  let phase = "input";
   setOutputs(core, { output: "", failureReason: "", turnCount, toolCallCount });
 
   try {
-    apiKey = core.getInput("api-key", { required: true, trimWhitespace: false });
+    apiKey = requiredInput(core, "api-key", "api key input is missing", false);
     core.setSecret(apiKey);
 
-    const baseURL = validateBaseUrl(core.getInput("base-url", { required: true }));
-    const configFile = core.getInput("config-file", { required: true });
+    const baseUrlInput = requiredInput(core, "base-url", "base URL input is missing");
+    const configFile = requiredInput(core, "config-file", "config file input is missing");
+    phase = "configuration";
+    const baseURL = validateBaseUrl(baseUrlInput);
     const workspace = environment.GITHUB_WORKSPACE;
+    if (typeof workspace !== "string" || workspace.length === 0) {
+      throw new ActionError("workspace is unavailable");
+    }
     const loaded = loadConfiguration(workspace, configFile);
     core.info(JSON.stringify({
       event: "openai-agent.start",
@@ -29,13 +35,20 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       maxToolCalls: loaded.config.max_tool_calls,
     }));
 
-    const client = new OpenAIClient({
-      apiKey,
-      baseURL,
-      maxRetries: REQUEST_RETRIES,
-      timeout: REQUEST_TIMEOUT_MS,
-      fetchOptions: { redirect: "error" },
-    });
+    phase = "initialization";
+    let client;
+    try {
+      client = new OpenAIClient({
+        apiKey,
+        baseURL,
+        maxRetries: REQUEST_RETRIES,
+        timeout: REQUEST_TIMEOUT_MS,
+        fetchOptions: { redirect: "error" },
+      });
+    } catch {
+      throw new ActionError("provider client initialization failed", "initialization");
+    }
+    phase = "runtime";
     const result = await runAgent({ client, ...loaded });
     turnCount = result.turnCount;
     toolCallCount = result.toolCallCount;
@@ -54,25 +67,53 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       outputBytes: Buffer.byteLength(result.output, "utf8"),
     }));
   } catch (error) {
-    const failureReason = error instanceof AgentFailure
-      ? error.reason
-      : error instanceof ActionError ? error.code : "action failed";
+    const failureReason = failure(error, phase);
     if (error instanceof AgentFailure) {
       turnCount = error.turnCount;
       toolCallCount = error.toolCallCount;
       const diagnostic = providerFailureDiagnostic(error.cause);
-      if (diagnostic) {
+      if (error.cause) {
         core.info(JSON.stringify({
           event: "openai-agent.provider-failure",
-          ...diagnostic,
+          reason: failureReason,
+          ...(diagnostic || {}),
         }));
+      } else {
+        logActionFailure(core, "runtime", failureReason);
       }
+    } else {
+      logActionFailure(core, error instanceof ActionError ? error.phase : phase, failureReason);
     }
     setOutputs(core, { output: "", failureReason, turnCount, toolCallCount });
     core.setFailed(failureReason);
   } finally {
     apiKey = "";
   }
+}
+
+function requiredInput(core, name, failureReason, trimWhitespace = true) {
+  const value = core.getInput(name, { trimWhitespace });
+  if (value.length === 0) throw new ActionError(failureReason, "input");
+  return value;
+}
+
+function failure(error, phase) {
+  if (error instanceof AgentFailure) return error.reason;
+  if (error instanceof ActionError) return error.code;
+  switch (phase) {
+    case "input": return "action input failed";
+    case "configuration": return "action configuration failed";
+    case "initialization": return "provider client initialization failed";
+    default: return "action runtime failed";
+  }
+}
+
+function logActionFailure(core, phase, reason) {
+  core.info(JSON.stringify({
+    event: "openai-agent.failure",
+    phase,
+    reason,
+  }));
 }
 
 function setOutputs(core, { output, failureReason, turnCount, toolCallCount }) {

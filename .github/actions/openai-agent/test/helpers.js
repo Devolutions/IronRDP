@@ -1,22 +1,22 @@
 "use strict";
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const { after } = require("node:test");
 
-const scratchRoot = path.join(__dirname, ".scratch");
+const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ironrdp-openai-agent-test-"));
+
+after(() => {
+  fs.rmSync(scratchRoot, { recursive: true, force: true });
+});
 
 function scratchWorkspace() {
-  fs.mkdirSync(scratchRoot, { recursive: true });
   const directory = fs.mkdtempSync(path.join(scratchRoot, "workspace-"));
   return {
     directory,
     cleanup() {
       fs.rmSync(directory, { recursive: true, force: true });
-      try {
-        fs.rmdirSync(scratchRoot);
-      } catch {
-        // Another test may still be using the shared scratch parent.
-      }
     },
   };
 }

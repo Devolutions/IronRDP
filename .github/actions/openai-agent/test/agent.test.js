@@ -2,6 +2,9 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const {
+  APIConnectionError, APIConnectionTimeoutError, APIUserAbortError,
+} = require("openai");
 
 const {
   AgentFailure, TOOLS, executeTool, providerFailureDiagnostic, providerFailureReason, runAgent,
@@ -284,6 +287,26 @@ test("provider errors are reduced to fixed non-sensitive categories", () => {
   assert.equal(providerFailureReason({ status: 403, message: "secret" }), "provider access forbidden");
   assert.equal(providerFailureReason({ status: 429, message: "secret" }), "provider rate or quota limit reached");
   assert.equal(providerFailureReason({ status: 503, message: "secret" }), "provider service unavailable");
+  assert.equal(
+    providerFailureReason(new APIConnectionTimeoutError({ message: "secret" })),
+    "provider request timed out",
+  );
+  assert.equal(
+    providerFailureReason(new APIConnectionError({
+      message: "secret",
+      cause: new Error("nested secret"),
+    })),
+    "provider connection failed",
+  );
+  assert.equal(
+    providerFailureReason(new APIUserAbortError({ message: "secret" })),
+    "provider request failed",
+  );
+  class UnknownConnectionError extends APIConnectionError {}
+  assert.equal(
+    providerFailureReason(new UnknownConnectionError({ message: "secret" })),
+    "provider request failed",
+  );
   assert.equal(providerFailureReason(new Error("secret")), "provider request failed");
 });
 
