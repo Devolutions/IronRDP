@@ -24,6 +24,7 @@ const {
   StaleHeadError, StalePolicyError, applyLabels, escapeMarkdown, markerBody, writeState,
 } = require("./write-state");
 const { forkRateLimit } = require("./fork-rate-limit");
+const { reviewSkipReasons } = require("./review-skip-summary");
 const {
   MAX_BODY_LENGTH, MAX_COMMENT_LENGTH, MAX_COMMENTS, fetchReviewContext,
 } = require("./fetch-review-context");
@@ -119,6 +120,64 @@ test("automatic review requires exact-head CI and only reruns after a later push
     /ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
   assert.match(workflowJob(workflow, "classification-gate"), /'ai-reviewed\/2'/);
   assert.match(workflowJob(workflow, "review-pipeline"), /review-gate\.outputs\.eligible == 'true'/);
+  const reviewState = workflowJob(workflow, "resolve-review-state");
+  assert.match(reviewState, /REVIEW_GATE_RESULT: \$\{\{ needs\.review-gate\.result \}\}/);
+  assert.match(reviewState, /FORK_RATE_LIMIT_RESULT: \$\{\{ needs\.fork-rate-limit\.result \}\}/);
+  assert.match(reviewState, /REVIEW_PIPELINE_RESULT: \$\{\{ needs\.review-pipeline\.result \}\}/);
+  assert.match(reviewState, /addHeading\("Automated review skipped"\)/);
+});
+
+test("review skip summary lists every failed gate condition", () => {
+  assert.deepEqual(reviewSkipReasons({
+    gateResult: "success",
+    gate: {
+      ok: false,
+      classificationCheck: false,
+      ciGreen: false,
+      secondReviewEligible: false,
+      policyEligible: false,
+      legitimacyStopped: true,
+      labels: ["ai-reviewed/2", "duplicate"],
+      contributor: { status: "ineligible", merged: 0 },
+    },
+    rateLimitResult: "success",
+    rateLimit: { status: "allowed" },
+  }), [
+    "A successful, review-eligible AI classification is not available for this head.",
+    "CI has not succeeded for this head.",
+    "An automated review has already run for this head; push a new commit before the next review.",
+    "The pull request has reached the two-review limit.",
+    "The pull request is marked as a duplicate.",
+    "The pull request requires a maintainer legitimacy decision.",
+    "The contributor has 0 qualifying merged pull requests; at least one is required.",
+  ]);
+});
+
+test("review skip summary explains gate and quota failures", () => {
+  assert.deepEqual(reviewSkipReasons({
+    gateResult: "success",
+    gate: { ok: false, reason: "GitHub API unavailable" },
+    rateLimitResult: "success",
+    rateLimit: { status: "limited", count: 51, quota: 50 },
+  }), [
+    "The review gate is unavailable: GitHub API unavailable.",
+    "The daily fork automation quota is exhausted (51 counted, limit 50).",
+  ]);
+
+  assert.deepEqual(reviewSkipReasons({
+    gateResult: "failure",
+    rateLimitResult: "failure",
+  }), [
+    "The review gate job did not complete successfully (failure).",
+    "The fork automation quota job did not complete successfully (failure).",
+  ]);
+
+  assert.deepEqual(reviewSkipReasons({
+    gateResult: "success",
+    gate: { ok: true },
+    rateLimitResult: "success",
+    rateLimit: { status: "allowed" },
+  }), ["The workflow's automated review conditions were not satisfied."]);
 });
 
 test("classification gate reuses completed state but forces oversized retries", async () => {
