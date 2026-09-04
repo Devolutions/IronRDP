@@ -154,9 +154,11 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Clipboard
 
-Text (`CF_UNICODETEXT`) and images (`CF_DIB`/`CF_DIBV5`, as PNG files); no files, no HTML. Local
-content is a single logical item: setting an image replaces a previously set text, and vice versa.
-A remote copy is requested as image over text when the remote offers both.
+Text (`CF_UNICODETEXT`), images (`CF_DIB`/`CF_DIBV5`, as PNG files), and files (the
+`FileGroupDescriptorW` file-list mechanism); no HTML, no folders. Local content is a single
+logical item: setting one replaces whatever was set before, regardless of kind. A remote copy is
+requested files over image over text, richest representation first, when the remote offers more
+than one. File listing is metadata only; a file's contents are fetched only on explicit request.
 
 - `clipboard-get`                    Print the last text received from the remote clipboard, or
                                       `(empty)` if none has arrived yet. Requires an active session.
@@ -169,6 +171,20 @@ A remote copy is requested as image over text when the remote offers both.
 - `clipboard-set-image PATH`         Set the local clipboard image from the PNG at `PATH` and
                                       advertise it to the remote. Same before-connect behavior as
                                       `clipboard-set`.
+- `clipboard-set-files PATH...`      Offer one or more local files to the remote via the clipboard
+                                      file-list mechanism. Each path must be a regular file; a
+                                      directory is rejected outright, not skipped. Requires an
+                                      active session that has negotiated file transfer support.
+- `clipboard-list-files`             List the remote's currently offered files (name, path within
+                                      the copied collection, size, and whether it is a directory
+                                      entry), or a no-files message if none are offered. Nothing is
+                                      downloaded; this only inspects metadata already received.
+- `clipboard-get-file INDEX --out PATH`
+                                      Fetch one file's full contents by its position in the last
+                                      `clipboard-list-files` listing and write it to `PATH`. Fails
+                                      cleanly on a directory entry, an out-of-range index, or a
+                                      file too large for the RPC transport, rather than attempt a
+                                      partial or corrupted download.
 
 ## NOW remote execution (requires an active, connected RDP session)
 
