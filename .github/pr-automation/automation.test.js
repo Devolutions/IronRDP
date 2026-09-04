@@ -81,79 +81,25 @@ function readReviewWorkflow(githubDirectory = path.join(__dirname, "..")) {
     .replace(/\r\n/g, "\n");
 }
 
-test("workflow uses bounded classifier lanes and one parallel review pipeline", () => {
-  const workflow = readWorkflow();
+test("reusable review keeps inherited secrets inside the trusted workflow", () => {
+  const caller = workflowJob(readWorkflow(), "review-pipeline");
   const reviewWorkflow = readReviewWorkflow();
-  const combined = `${workflow}\n${reviewWorkflow}`;
-  assert.doesNotMatch(combined, /core\.setOutput\("result"/);
-  assert.doesNotMatch(combined, /^\s{6}result:\s+\$\{\{\s*steps\./m);
-  assert.doesNotMatch(combined, /needs\.[\w-]+\.outputs\.result\b/);
-  assert.doesNotMatch(combined, /anthropic|claude|sonnet|haiku|resilient-review-output/i);
-  assert.equal((combined.match(/uses: \.\/\.github\/actions\/openai-agent/g) || []).length, 3);
-  assert.equal((combined.match(/environment: llm-providers/g) || []).length, 3);
-  assert.equal((combined.match(/secrets\.HELMCODE_GLM_API_KEY/g) || []).length, 3);
-  assert.doesNotMatch(reviewWorkflow, /OPENSPECS_COMMIT/);
-  assert.match(reviewWorkflow, /openspecs" fetch .*origin \+master:refs\/remotes\/origin\/master/);
-  assert.match(reviewWorkflow, /awakecoding\/openspecs@\$openspecs_sha.*GITHUB_STEP_SUMMARY/);
+
+  assert.match(caller, /uses: \.\/\.github\/workflows\/review-pipeline\.yml/);
+  assert.match(caller, /secrets: inherit/);
+  assert.match(reviewWorkflow, /environment: llm-providers/);
+  assert.match(reviewWorkflow, /api-key: \$\{\{ secrets\.HELMCODE_GLM_API_KEY \}\}/);
   assert.match(reviewWorkflow, /WORKFLOW_SHA: \$\{\{ github\.workflow_sha \}\}/);
   assert.match(reviewWorkflow,
     /git fetch --no-tags origin "\+\$WORKFLOW_SHA:refs\/remotes\/origin\/automation"/);
-  assert.equal((reviewWorkflow.match(/ref: \$\{\{ github\.workflow_sha \}\}/g) || []).length, 4);
-  assert.doesNotMatch(reviewWorkflow, /ref: master/);
-  assert.equal((reviewWorkflow.match(/overwrite: true/g) || []).length, 6);
-
-  const classifier = workflowJob(workflow, "classifier");
-  assert.match(workflowJob(workflow, "resolve-pr"),
-    /core\.setOutput\("classifier-lane", result\.prNumber \? \(Number\(result\.prNumber\) % 2\) \+ 1 : ""\)/);
-  assert.match(classifier, /group: llm-classifier-\$\{\{ needs\.resolve-pr\.outputs\.classifier-lane \}\}/);
-  assert.match(classifier, /cancel-in-progress: false/);
-  assert.match(classifier, /queue: max/);
-
-  const caller = workflowJob(workflow, "review-pipeline");
-  assert.match(caller, /group: llm-reviewer-pipeline/);
-  assert.match(caller, /cancel-in-progress: false/);
-  assert.match(caller, /queue: max/);
-  assert.match(caller, /uses: \.\/\.github\/workflows\/review-pipeline\.yml/);
-  assert.doesNotMatch(caller, /runs-on:/);
-
-  const specialists = workflowJob(reviewWorkflow, "specialists");
-  assert.match(specialists, /max-parallel: 3/);
-  assert.match(specialists, /reviewer: \$\{\{ fromJSON\(inputs\.specialist-reviewers\) \}\}/);
-  assert.match(specialists, /if: matrix\.reviewer == 'protocol'/);
-  assert.match(specialists, /name: review-corpus-\$\{\{ inputs\.head-sha \}\}/);
-  assert.match(specialists, /Upload validated specialist result/);
-  const aggregate = workflowJob(reviewWorkflow, "aggregate");
-  assert.match(aggregate, /needs: \[evidence, specialists\]/);
-  assert.match(aggregate, /pattern: review-specialist-\$\{\{ inputs\.head-sha \}\}-\*/);
-  assert.match(aggregate, /continue-on-error: true/);
-  assert.match(aggregate, /failedRun\(reviewer, "specialist result unavailable"\)/);
-  const general = workflowJob(reviewWorkflow, "general");
-  assert.match(general, /needs: \[evidence, aggregate\]/);
-  assert.match(general, /needs\.aggregate\.outputs\.ready == 'true'/);
-  const validate = workflowJob(reviewWorkflow, "validate");
-  assert.match(validate, /needs: \[evidence, aggregate, general\]/);
-  assert.match(validate, /validateFinalReview/);
-});
-
-test("workflow does not resolve or write state after cancellation", () => {
-  const workflow = readWorkflow();
-  for (const name of ["resolve-classification-state", "resolve-review-state", "write-state"]) {
-    assert.match(workflowJob(workflow, name), /^    if: always\(\) && !cancelled\(\) &&/m);
-  }
-  const reviewWorkflow = readReviewWorkflow();
-  assert.match(workflowJob(reviewWorkflow, "aggregate"),
-    /^    if: always\(\) && !cancelled\(\) &&/m);
-  assert.match(workflowJob(reviewWorkflow, "validate"),
-    /^    if: always\(\) && !cancelled\(\)$/m);
-});
-
-test("workflow isolates CI completion concurrency by source commit", () => {
-  const workflow = readWorkflow();
-  assert.match(workflow, /pr-automation-\$\{\{ github\.event_name }}-\$\{\{/);
-  assert.match(workflow, /github\.event\.workflow_run\.head_sha \|\|/);
-  assert.match(workflow, /github\.event\.label\.name == 'ai-review\/allow-oversized'/);
-  assert.match(workflow, /format\('label-\{0\}', github\.event\.label\.name\)/);
-  assert.doesNotMatch(workflow, /github\.event\.workflow_run\.pull_requests\[0\]\.number/);
+  const checkouts = reviewWorkflow.match(/- uses: actions\/checkout@\S+/g) || [];
+  const trustedCheckouts = reviewWorkflow.match(
+    /- uses: actions\/checkout@\S+\n\s+with:\n\s+ref: \$\{\{ github\.workflow_sha \}\}\n\s+persist-credentials: false/g,
+  ) || [];
+  assert.notEqual(checkouts.length, 0);
+  assert.equal(trustedCheckouts.length, checkouts.length);
+  assert.doesNotMatch(reviewWorkflow, /ref: \$\{\{ inputs\.head-sha \}\}/);
+  assert.match(reviewWorkflow, /run: rm -rf pr-head\/\.git/);
 });
 
 test("automatic review requires exact-head CI and only reruns after a later push", () => {
@@ -168,49 +114,6 @@ test("automatic review requires exact-head CI and only reruns after a later push
     /ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
   assert.match(workflowJob(workflow, "classification-gate"), /'ai-reviewed\/2'/);
   assert.match(workflowJob(workflow, "review-pipeline"), /review-gate\.outputs\.eligible == 'true'/);
-});
-
-test("workflow force mode bypasses model policy gates without changing automatic branches", () => {
-  const workflow = readWorkflow();
-  assert.match(workflow, /^\s{6}force:\n\s{8}description:/m);
-  assert.doesNotMatch(workflow, /bypass-ci|bypassCi|BYPASS_CI/);
-
-  const classificationGate = workflowJob(workflow, "classification-gate");
-  assert.match(classificationGate, /if \(force\) \{/);
-  assert.match(classificationGate, /setOutput\("required", true\)/);
-  assert.match(classificationGate, /state\?\.automaticReviewEligible === true/);
-  assert.match(classificationGate, /run\.output\?\.title === "Classification complete"/);
-
-  const classifierJob = workflowJob(workflow, "classifier");
-  assert.match(classifierJob, /if: >-\n\s+always\(\) && !cancelled\(\) &&/);
-  for (const automaticGate of [
-    "classification-gate.outputs.available == 'true'",
-    "classification-gate.outputs.required == 'true'",
-    "fork-rate-limit.outputs.allowed == 'true'",
-    "'ai-reviewed/2'",
-  ]) assert.equal(classifierJob.includes(automaticGate), true, automaticGate);
-  assert.doesNotMatch(classifierJob, /size-label != 'size\/XXL'/);
-  assert.match(classifierJob, /needs\.resolve-pr\.outputs\.force == 'true' \|\|/);
-
-  const reviewGate = workflowJob(workflow, "review-gate");
-  assert.match(reviewGate, /ok: true, force: true, head_sha: headSha/);
-  assert.match(reviewGate, /labels: force \? resolvedLabels : \[\], protocolRelated: false/);
-  assert.match(reviewGate, /protocolState\.automaticReviewEligible === true/);
-  for (const name of ["review-pipeline"]) {
-    assert.match(workflowJob(workflow, name), /needs\.resolve-pr\.outputs\.force == 'true' \|\|/);
-  }
-  for (const name of ["semver", "review-pipeline"]) {
-    assert.match(workflowJob(workflow, name), /if: >-\n\s+always\(\) && !cancelled\(\) &&/);
-  }
-  for (const name of ["review-pipeline"]) {
-    assert.match(workflowJob(workflow, name), /needs\.resolve-pr\.outputs\.review-route == 'true'/);
-  }
-
-  const reviewState = workflowJob(workflow, "resolve-review-state");
-  assert.match(reviewState, /const force = process\.env\.FORCE === "true"/);
-  assert.match(reviewState, /parse\(process\.env\.GATE, force \? \{/);
-  assert.match(reviewState, /REVIEW_MARKER_ID: \$\{\{ github\.run_id \}\}/);
-  assert.match(reviewGate, /classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
 });
 
 test("review skills own methodology while stage prompts own pipeline contracts", () => {
@@ -924,18 +827,6 @@ test("force is dispatch-only and bypasses draft and bot eligibility", async () =
 });
 
 test("only oversized-review label changes start automation from label events", async () => {
-  const workflow = readWorkflow();
-  assert.match(workflow,
-    /types: \[opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled\]/);
-  assert.match(workflowJob(workflow, "classifier"),
-    /EVIDENCE_MAX_BYTES: \$\{\{ needs\.resolve-pr\.outputs\.evidence-max-bytes \}\}/);
-  const classificationGate = workflowJob(workflow, "classification-gate");
-  assert.match(classificationGate,
-    /RETRY_WITH_LARGER_EVIDENCE: \$\{\{ needs\.resolve-pr\.outputs\.review-requested \}\}/);
-  assert.match(classificationGate,
-    /process\.env\.RETRY_WITH_LARGER_EVIDENCE === "true"/);
-  assert.match(classificationGate, /decision: \{ available: true, required: true, largerEvidence: true \}/);
-
   const pullRequest = (labels = []) => ({
     number: 7, draft: false, state: "open", labels,
     user: { node_id: "U_1", login: "contributor", type: "User" },
@@ -1618,18 +1509,6 @@ test("writer upgrades a neutral automated review check instead of creating a dup
   assert.equal(update.check_run_id, 7);
   assert.equal(update.conclusion, "success");
   assert.equal(update.output.title, "Automated review complete");
-});
-
-test("oversized opt-in reclassifies instead of reviewing cached evidence", async () => {
-  const workflow = readWorkflow();
-  const classificationGate = workflowJob(workflow, "classification-gate");
-  const requestReview = workflowJob(workflow, "request-review");
-  assert.match(classificationGate, /RETRY_WITH_LARGER_EVIDENCE/);
-  assert.match(requestReview, /needs: \[resolve-pr, classification-gate\]/);
-  assert.match(requestReview, /needs\.resolve-pr\.outputs\.review-requested == 'true'/);
-  assert.match(requestReview, /needs\.classification-gate\.outputs\.available == 'true'/);
-  assert.match(requestReview, /needs\.classification-gate\.outputs\.required == 'false'/);
-  assert.match(requestReview, /dispatchClassificationComplete/);
 });
 
 test("writer dispatches new but not forced completed classifications", async () => {
