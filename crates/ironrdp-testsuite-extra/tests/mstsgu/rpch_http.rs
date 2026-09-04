@@ -1,21 +1,22 @@
-#![allow(unused_crate_dependencies)]
-
 use core::fmt;
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-type Error = ironrdp_error::Error<GwErrorKind>;
+pub(crate) type Error = ironrdp_error::Error<GwErrorKind>;
 
 #[derive(Debug)]
-enum GwErrorKind {
+pub(crate) enum GwErrorKind {
     Connect,
+    GatewayCode(u32),
+    HttpStatus(u16),
     PacketEof,
+    UnsupportedFeature,
     Custom,
     Encode,
     Decode,
 }
 
-trait GwErrorExt {
+pub(crate) trait GwErrorExt {
     fn custom<E>(context: &'static str, error: E) -> Self
     where
         E: core::error::Error + Sync + Send + 'static;
@@ -34,7 +35,10 @@ impl fmt::Display for GwErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Connect => "connection error",
+            Self::GatewayCode(code) => return write!(f, "gateway error 0x{code:08x}"),
+            Self::HttpStatus(status) => return write!(f, "unexpected http status {status}"),
             Self::PacketEof => "packet EOF",
+            Self::UnsupportedFeature => "unsupported feature",
             Self::Custom => "custom",
             Self::Encode => "encode",
             Self::Decode => "decode",
@@ -44,14 +48,7 @@ impl fmt::Display for GwErrorKind {
 
 impl core::error::Error for GwErrorKind {}
 
-macro_rules! custom_err {
-    ( $context:expr, $source:expr $(,)? ) => {{ <$crate::Error as $crate::GwErrorExt>::custom($context, $source) }};
-}
-
-#[path = "../src/rpc_transport.rs"]
-mod rpc_transport;
-
-use rpc_transport::{RpchRequestHead, drain_body, read_rpch_response_head, write_rpch_request_head};
+use crate::rpc_transport::{RpchRequestHead, drain_body, read_rpch_response_head, write_rpch_request_head};
 
 #[tokio::test]
 async fn request_head_contains_rpch_routing_and_authentication_fields() {
@@ -265,7 +262,7 @@ async fn in_authentication_waits_for_continue_before_the_body() {
     });
 
     let mut request =
-        rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
+        crate::rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
             .await
             .expect("open authentication probe");
     assert!(request.write_body(b"B1!!").await.is_err());
@@ -293,10 +290,15 @@ async fn in_authentication_response_requires_a_bounded_body() {
             server.write_all(response).await.expect("write authentication response");
         });
 
-        let mut request =
-            rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
-                .await
-                .expect("open authentication probe");
+        let mut request = crate::rpc_transport::RpchInRequest::open(
+            client,
+            "gateway.example",
+            "target.example:3389",
+            128 * 1024,
+            None,
+        )
+        .await
+        .expect("open authentication probe");
         let error = request
             .receive_response()
             .await
@@ -325,7 +327,7 @@ async fn in_authentication_response_drains_body_at_limit() {
     });
 
     let mut request =
-        rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
+        crate::rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
             .await
             .expect("open authentication probe");
     assert_eq!(request.receive_response().await.expect("read challenge").status, 401);
