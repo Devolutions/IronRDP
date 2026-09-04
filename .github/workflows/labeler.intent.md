@@ -50,7 +50,7 @@ The general reviewer independently inspects the pull request, attempts to falsif
 It can merge overlapping candidates and add findings that no specialist reported.
 Only the validated general-review result can be published.
 The published comments include the name of the specialist that found the finding.
-Reviewer findings use severity and a question boolean without classification.
+Reviewer findings use severity and a question boolean.
 Render severity as `critical :purple_circle:`, `high :red_circle:`, `medium :orange_circle:`, or `low :yellow_circle:`.
 Append `:question:` for questions, and show `:green_circle:` in the main comment when no findings are found.
 
