@@ -233,6 +233,42 @@ test("runtime allows exactly one tools-disabled repair for JSON or schema failur
   );
 });
 
+test("runtime repairs a final response with no text", async () => {
+  const requests = [];
+  const result = await runAgent({
+    client: clientFrom([
+      message(null),
+      message('{"answer":"repaired"}'),
+    ], requests),
+    config: baseConfig,
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+  });
+
+  assert.equal(result.output, '{"answer":"repaired"}');
+  assert.equal(result.turnCount, 2);
+  assert.equal(requests[1].tools, undefined);
+  assert.match(requests[1].messages.at(-1).content, /response was empty/);
+});
+
+test("runtime rejects malformed content without attempting repair", async () => {
+  const requests = [];
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([message({ text: '{"answer":"invalid"}' })], requests),
+      config: baseConfig,
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+    }),
+    (error) => error.reason === "provider response did not contain text",
+  );
+  assert.equal(requests.length, 1);
+});
+
 test("validation diagnostics do not expose model-provided property names", () => {
   const validateOutput = compileOutputValidator({
     type: "object",

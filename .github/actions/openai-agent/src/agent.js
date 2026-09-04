@@ -274,6 +274,7 @@ function withState(error, state) {
 
 function textContent(content) {
   if (typeof content === "string") return content.trim();
+  if (content === null) return "";
   throw new AgentFailure("provider response did not contain text");
 }
 

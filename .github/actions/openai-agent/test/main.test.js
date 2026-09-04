@@ -127,6 +127,39 @@ test("main masks the key immediately, rejects redirects, and emits only bounded 
   }
 });
 
+test("main repairs a final response with no text", async () => {
+  const workspace = actionFixture();
+  const core = mockCore({
+    "api-key": "key",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  });
+  const responses = [
+    { choices: [{ message: { content: null } }] },
+    { choices: [{ message: { content: '{"answer":"repaired"}' } }] },
+  ];
+  const requests = [];
+  class EmptyResponseOpenAI {
+    constructor() {
+      this.chat = { completions: { create: async (request) => {
+        requests.push(request);
+        return responses.shift();
+      } } };
+    }
+  }
+  try {
+    await main(core, { GITHUB_WORKSPACE: workspace.directory }, EmptyResponseOpenAI);
+    assert.equal(core.outputs.get("structured-output"), '{"answer":"repaired"}');
+    assert.equal(core.outputs.get("failure-reason"), "");
+    assert.equal(core.outputs.get("turn-count"), "2");
+    assert.equal(requests[1].tools, undefined);
+    assert.match(requests[1].messages.at(-1).content, /response was empty/);
+    assert.equal(core.events.some((event) => event[0] === "failed"), false);
+  } finally {
+    workspace.cleanup();
+  }
+});
+
 test("main never logs or outputs raw provider errors", async () => {
   const workspace = actionFixture();
   const core = mockCore({
