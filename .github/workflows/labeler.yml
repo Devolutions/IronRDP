@@ -126,92 +126,23 @@ jobs:
           RETRY_WITH_LARGER_EVIDENCE: ${{ needs.resolve-pr.outputs.review-requested }}
         with:
           script: |
-            const { SCHEMA_VERSION, parseCheckState } = require("./.github/pr-automation/validate-classifier");
-            const force = process.env.FORCE === "true";
-            if (force) {
-              core.setOutput("required", true);
-              core.setOutput("available", true);
-              core.setOutput("reason", "");
-              core.info(JSON.stringify({
-                event: "pr-automation.classification-gate",
-                decision: { available: true, required: true, force: true },
-              }));
-              return;
-            }
-            if (process.env.RETRY_WITH_LARGER_EVIDENCE === "true") {
-              core.setOutput("required", true);
-              core.setOutput("available", true);
-              core.setOutput("reason", "");
-              core.info(JSON.stringify({
-                event: "pr-automation.classification-gate",
-                decision: { available: true, required: true, largerEvidence: true },
-              }));
-              return;
-            }
-            try {
-              const { data } = await github.rest.checks.listForRef({
-                owner: context.repo.owner, repo: context.repo.repo, ref: process.env.HEAD_SHA,
-                check_name: "AI classification", per_page: 100,
-              });
-              const externalId = `${SCHEMA_VERSION}:${process.env.HEAD_SHA}`;
-              // A check without the current machine-readable state cannot satisfy the review gate,
-              // so it must not suppress reclassification either.
-              const completed = data.check_runs.some((run) => {
-                const state = parseCheckState(run.output?.summary);
-                return run.external_id === externalId && run.conclusion === "success" &&
-                  run.app?.slug === "github-actions" && state?.automaticReviewEligible === true &&
-                  run.output?.title === "Classification complete";
-              });
-              core.setOutput("required", !completed);
-              core.setOutput("available", true);
-              core.setOutput("reason", "");
-              core.info(JSON.stringify({
-                event: "pr-automation.classification-gate",
-                decision: { available: true, required: !completed, externalId, completed },
-              }));
-            } catch (error) {
-              core.warning(`Classification gate unavailable: ${error.message}`);
-              core.setOutput("required", false);
-              core.setOutput("available", false);
-              core.setOutput("reason", "GitHub checks API unavailable");
-              core.info(JSON.stringify({
-                event: "pr-automation.classification-gate",
-                decision: { available: false, required: false, reason: error.message },
-              }));
-            }
-
-  request-review:
-    name: Request automated review
-    needs: [resolve-pr, classification-gate]
-    if: >-
-      needs.resolve-pr.outputs.ok == 'true' &&
-      needs.resolve-pr.outputs.review-requested == 'true' &&
-      needs.classification-gate.outputs.available == 'true' &&
-      needs.classification-gate.outputs.required == 'false'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: master
-          persist-credentials: false
-
-      - uses: actions/github-script@v8
-        env:
-          PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
-          HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
-        with:
-          script: |
-            const { dispatchClassificationComplete } = require("./.github/pr-automation/write-state");
-            await dispatchClassificationComplete(
+            const { resolveClassificationGate } = require("./.github/pr-automation/classification-gate");
+            const decision = await resolveClassificationGate({
               github,
-              context.repo.owner,
-              context.repo.repo,
-              Number(process.env.PULL_REQUEST_NUMBER),
-              process.env.HEAD_SHA,
-            );
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              expectedSha: process.env.HEAD_SHA,
+              force: process.env.FORCE === "true",
+              retryWithLargerEvidence: process.env.RETRY_WITH_LARGER_EVIDENCE === "true",
+            });
+            core.setOutput("required", decision.required);
+            core.setOutput("available", decision.available);
+            core.setOutput("reason", decision.reason);
+            if (decision.error) core.warning(`Classification gate unavailable: ${decision.error}`);
+            core.info(JSON.stringify({
+              event: "pr-automation.classification-gate",
+              decision,
+            }));
 
   deterministic-analysis:
     name: Calculate deterministic labels
@@ -814,6 +745,7 @@ jobs:
       - uses: actions/github-script@v8
         env:
           PULL_REQUEST_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
+          REVIEW_REQUESTED: ${{ needs.resolve-pr.outputs.review-requested }}
           CLASSIFICATION_STATE: ${{ needs.resolve-classification-state.outputs.state }}
           REVIEW_STATE: ${{ needs.resolve-review-state.outputs.state }}
           UPSTREAM_RESULTS: >-
@@ -840,6 +772,7 @@ jobs:
               github, owner: context.repo.owner, repo: context.repo.repo,
               prNumber: Number(process.env.PULL_REQUEST_NUMBER), state,
               botLogin: "github-actions[bot]",
+              reviewRequested: process.env.REVIEW_REQUESTED === "true",
             });
             core.info(JSON.stringify({
               event: "pr-automation.write-state-complete",

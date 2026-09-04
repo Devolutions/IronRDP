@@ -234,7 +234,7 @@ async function applyLabels(github, owner, repo, prNumber, state, currentLabels) 
   return true;
 }
 
-async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
+async function writeState({ github, owner, repo, prNumber, state, botLogin, reviewRequested = false }) {
   if (!state?.ok || !["classification", "review"].includes(state.mode) ||
       typeof state.expectedSha !== "string" || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
     throw new Error("invalid normalized state");
@@ -269,8 +269,10 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
       await deleteMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, marker);
     }
     if (state.check) {
-      const created = await ensureClassificationCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
-      if (created && state.check.title === "Classification complete" && state.dispatchReview !== false) {
+      const changed = await ensureClassificationCheck(
+        github, owner, repo, prNumber, state.expectedSha, state.check);
+      if ((changed || reviewRequested) && state.check.title === "Classification complete" &&
+          state.dispatchReview !== false) {
         await dispatchClassificationComplete(github, owner, repo, prNumber, state.expectedSha);
       }
     }
