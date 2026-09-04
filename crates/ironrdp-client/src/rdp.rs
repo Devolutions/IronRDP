@@ -1,5 +1,5 @@
 use core::net::SocketAddr;
-use core::num::NonZeroU16;
+use core::num::{NonZeroU16, NonZeroUsize};
 #[cfg(feature = "rdpdr")]
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "location")]
@@ -28,6 +28,7 @@ use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
+use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::MousePdu;
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
 use ironrdp_pdu::input::mouse::PointerFlags;
@@ -193,6 +194,62 @@ pub enum RdpOutputEvent {
     /// A cookie-based reconnect has completed successfully.
     AutoReconnected,
     Terminated(SessionResult<GracefulDisconnectReason>),
+}
+
+/// A tightly packed changed region from the composited desktop framebuffer.
+///
+/// Pixels use the same `0x00RRGGBB` representation as [`RdpOutputEvent::Image`].
+/// `region` uses inclusive coordinates in the full framebuffer described by `width` and `height`.
+#[derive(Debug)]
+pub struct DesktopUpdate {
+    buffer: Vec<u32>,
+    width: NonZeroU16,
+    height: NonZeroU16,
+    region: InclusiveRectangle,
+}
+
+impl DesktopUpdate {
+    /// Builds a validated desktop update.
+    #[must_use]
+    pub fn new(buffer: Vec<u32>, width: NonZeroU16, height: NonZeroU16, region: InclusiveRectangle) -> Option<Self> {
+        let region_width = region.right.checked_sub(region.left)?.checked_add(1)?;
+        let region_height = region.bottom.checked_sub(region.top)?.checked_add(1)?;
+        if region.right >= width.get() || region.bottom >= height.get() {
+            return None;
+        }
+        let pixel_count = usize::from(region_width).checked_mul(usize::from(region_height))?;
+        (buffer.len() == pixel_count).then_some(Self {
+            buffer,
+            width,
+            height,
+            region,
+        })
+    }
+
+    /// Returns the packed `0x00RRGGBB` pixels.
+    pub fn buffer(&self) -> &[u32] {
+        &self.buffer
+    }
+
+    /// Returns the full framebuffer width.
+    pub fn width(&self) -> NonZeroU16 {
+        self.width
+    }
+
+    /// Returns the full framebuffer height.
+    pub fn height(&self) -> NonZeroU16 {
+        self.height
+    }
+
+    /// Returns the changed inclusive framebuffer region.
+    pub fn region(&self) -> InclusiveRectangle {
+        self.region.clone()
+    }
+
+    /// Decomposes the update into its packed pixels, framebuffer extent, and region.
+    pub fn into_parts(self) -> (Vec<u32>, NonZeroU16, NonZeroU16, InclusiveRectangle) {
+        (self.buffer, self.width, self.height, self.region)
+    }
 }
 
 impl RdpOutputEvent {
@@ -633,6 +690,7 @@ pub struct RdpClient {
     close_receiver: watch::Receiver<bool>,
     graceful_close_receiver: watch::Receiver<bool>,
     auto_reconnect_maximum_attempts: Option<u32>,
+    desktop_update_handler: Option<Box<dyn Fn(DesktopUpdate) + Send + Sync>>,
     #[cfg(feature = "clipboard")]
     cliprdr_backend_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
     #[cfg(feature = "rdpdr")]
@@ -657,6 +715,7 @@ impl RdpClient {
             close_receiver,
             graceful_close_receiver,
             auto_reconnect_maximum_attempts: None,
+            desktop_update_handler: None,
             #[cfg(feature = "clipboard")]
             cliprdr_backend_factory: None,
             #[cfg(feature = "rdpdr")]
@@ -696,6 +755,19 @@ impl RdpClient {
     #[must_use]
     pub fn with_auto_reconnect(mut self, maximum_attempts: u32) -> Self {
         self.auto_reconnect_maximum_attempts = Some(maximum_attempts);
+        self
+    }
+
+    /// Delivers tightly packed dirty regions instead of full [`RdpOutputEvent::Image`] snapshots.
+    ///
+    /// The first update for each framebuffer extent covers the full framebuffer.
+    /// Other output events continue through the configured output channel.
+    #[must_use]
+    pub fn with_desktop_update_handler<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(DesktopUpdate) + Send + Sync + 'static,
+    {
+        self.desktop_update_handler = Some(Box::new(handler));
         self
     }
 
@@ -1022,6 +1094,7 @@ impl RdpClient {
                 udp_tunnel,
                 self.config.rail_initial_execute.clone(),
                 &self.output_event_sender,
+                self.desktop_update_handler.as_deref(),
                 &mut self.input_event_receiver,
                 &mut self.clipboard_event_receiver,
                 &mut self.close_receiver,
@@ -2860,6 +2933,69 @@ fn process_rdpdr_drive_change(
     }
 }
 
+fn pack_desktop_update(
+    image: &DecodedImage,
+    width: NonZeroU16,
+    height: NonZeroU16,
+    region: InclusiveRectangle,
+) -> SessionResult<DesktopUpdate> {
+    let region_width = region
+        .right
+        .checked_sub(region.left)
+        .and_then(|width| width.checked_add(1))
+        .ok_or_else(|| ironrdp_session::general_err!("invalid desktop update horizontal bounds"))?;
+    let region_height = region
+        .bottom
+        .checked_sub(region.top)
+        .and_then(|height| height.checked_add(1))
+        .ok_or_else(|| ironrdp_session::general_err!("invalid desktop update vertical bounds"))?;
+    if region.right >= width.get() || region.bottom >= height.get() {
+        return Err(ironrdp_session::general_err!(
+            "desktop update exceeds framebuffer bounds"
+        ));
+    }
+
+    let pixel_count = usize::from(region_width)
+        .checked_mul(usize::from(region_height))
+        .ok_or_else(|| ironrdp_session::general_err!("desktop update pixel count overflow"))?;
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(pixel_count)
+        .map_err(|_| ironrdp_session::general_err!("allocate desktop update buffer"))?;
+
+    let source_width = NonZeroUsize::from(width).get();
+    let left = usize::from(region.left);
+    let row_pixel_count = usize::from(region_width);
+    for y in region.top..=region.bottom {
+        let pixel_offset = usize::from(y)
+            .checked_mul(source_width)
+            .and_then(|offset| offset.checked_add(left))
+            .ok_or_else(|| ironrdp_session::general_err!("desktop update source offset overflow"))?;
+        let byte_offset = pixel_offset
+            .checked_mul(4)
+            .ok_or_else(|| ironrdp_session::general_err!("desktop update byte offset overflow"))?;
+        let byte_len = row_pixel_count
+            .checked_mul(4)
+            .ok_or_else(|| ironrdp_session::general_err!("desktop update row length overflow"))?;
+        let byte_end = byte_offset
+            .checked_add(byte_len)
+            .ok_or_else(|| ironrdp_session::general_err!("desktop update row end overflow"))?;
+        let row = image
+            .data()
+            .get(byte_offset..byte_end)
+            .ok_or_else(|| ironrdp_session::general_err!("desktop update source row is out of bounds"))?;
+        buffer.extend(row.chunks_exact(4).map(|pixel| {
+            let r = pixel[0];
+            let g = pixel[1];
+            let b = pixel[2];
+            u32::from_be_bytes([0, r, g, b])
+        }));
+    }
+
+    DesktopUpdate::new(buffer, width, height, region)
+        .ok_or_else(|| ironrdp_session::general_err!("packed desktop update is inconsistent"))
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "the active loop owns independent transport, input, clipboard, and cancellation sources"
@@ -2871,6 +3007,7 @@ async fn active_session(
     #[cfg(not(feature = "udp"))] _udp_tunnel: UdpTunnel,
     initial_rail_execute: Option<ExecutePdu>,
     output_event_sender: &crate::output_channel::OutputEventSender,
+    desktop_update_handler: Option<&(dyn Fn(DesktopUpdate) + Send + Sync)>,
     input_event_receiver: &mut mpsc::Receiver<RdpInputEvent>,
     clipboard_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
     close_receiver: &mut watch::Receiver<bool>,
@@ -2887,6 +3024,7 @@ async fn active_session(
     let mut suppress_output_support = connection_result.suppress_output_support;
     let window_support_level = connection_result.window_support_level;
     let mut image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
+    let mut desktop_update_extent = None;
 
     // We retain the factory to drive the Deactivation-Reactivation Sequence locally.
     let activation_factory = connection_result.activation_factory;
@@ -3577,6 +3715,8 @@ async fn active_session(
             }
         }
 
+        let mut desktop_damage_regions = active_stage.take_damage_regions();
+        let mut desktop_damage_delivered = false;
         for out in iteration.outputs {
             match out {
                 ActiveStageOutput::AutoReconnectCookie(cookie) => {
@@ -3599,26 +3739,57 @@ async fn active_session(
                         )));
                     }
                 }
-                ActiveStageOutput::GraphicsUpdate(_region) => {
-                    let buffer: Vec<u32> = image
-                        .data()
-                        .chunks_exact(4)
-                        .map(|pixel| {
-                            let r = pixel[0];
-                            let g = pixel[1];
-                            let b = pixel[2];
-                            u32::from_be_bytes([0, r, g, b])
-                        })
-                        .collect();
+                ActiveStageOutput::GraphicsUpdate(region) => {
+                    let width =
+                        NonZeroU16::new(image.width()).ok_or_else(|| ironrdp_session::general_err!("width is zero"))?;
+                    let height = NonZeroU16::new(image.height())
+                        .ok_or_else(|| ironrdp_session::general_err!("height is zero"))?;
+                    if let Some(handler) = desktop_update_handler {
+                        if desktop_damage_delivered {
+                            continue;
+                        }
+                        desktop_damage_delivered = true;
+                        let extent = (width, height);
+                        if desktop_update_extent != Some(extent) {
+                            desktop_update_extent = Some(extent);
+                            handler(pack_desktop_update(
+                                &image,
+                                width,
+                                height,
+                                InclusiveRectangle {
+                                    left: 0,
+                                    top: 0,
+                                    right: width.get() - 1,
+                                    bottom: height.get() - 1,
+                                },
+                            )?);
+                            desktop_damage_regions.clear();
+                        } else {
+                            if desktop_damage_regions.is_empty() {
+                                desktop_damage_regions.push(region);
+                            }
+                            for region in desktop_damage_regions.drain(..) {
+                                handler(pack_desktop_update(&image, width, height, region)?);
+                            }
+                        }
+                        continue;
+                    }
+
+                    let buffer = pack_desktop_update(
+                        &image,
+                        width,
+                        height,
+                        InclusiveRectangle {
+                            left: 0,
+                            top: 0,
+                            right: width.get() - 1,
+                            bottom: height.get() - 1,
+                        },
+                    )?
+                    .buffer;
                     if !send_active_output_event(
                         output_event_sender,
-                        RdpOutputEvent::Image {
-                            buffer,
-                            width: NonZeroU16::new(image.width())
-                                .ok_or_else(|| ironrdp_session::general_err!("width is zero"))?,
-                            height: NonZeroU16::new(image.height())
-                                .ok_or_else(|| ironrdp_session::general_err!("height is zero"))?,
-                        },
+                        RdpOutputEvent::Image { buffer, width, height },
                         close_receiver,
                     )
                     .await?
@@ -3832,6 +4003,7 @@ async fn active_session(
                         {
                             debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
                             image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
+                            desktop_update_extent = None;
                             resize_queue.completed();
                             if !active_stage.reactivate(
                                 connection_activation.io_channel_id(),
