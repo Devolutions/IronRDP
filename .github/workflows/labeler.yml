@@ -855,9 +855,9 @@ jobs:
     needs: [resolve-pr, review-gate, review-evidence]
     if: needs.review-evidence.result == 'success'
     runs-on: ubuntu-latest
-    # One global lane allows a single reviewer request at a time across all workflow runs.
+    # Three fixed lanes preserve specialist parallelism without exceeding the provider limit.
     concurrency:
-      group: llm-reviewer-provider
+      group: llm-reviewer-${{ matrix.reviewer == 'protocol' && 'protocol' || matrix.reviewer == 'skeptical' && 'skeptical' || 'general' }}
       cancel-in-progress: false
       queue: max
     permissions:
@@ -865,7 +865,7 @@ jobs:
     environment: llm-providers
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 3
       matrix:
         reviewer: ${{ fromJSON(needs.review-gate.outputs.specialist-reviewers) }}
     steps:
@@ -1046,9 +1046,9 @@ jobs:
     needs: [resolve-pr, review-evidence, review-aggregate]
     if: needs.review-aggregate.result == 'success' && needs.review-aggregate.outputs.ready == 'true'
     runs-on: ubuntu-latest
-    # Shares the specialist lane, so the general reviewer never overlaps another reviewer call.
+    # Share the code-compressor lane so only three reviewer calls can run globally.
     concurrency:
-      group: llm-reviewer-provider
+      group: llm-reviewer-general
       cancel-in-progress: false
       queue: max
     permissions:

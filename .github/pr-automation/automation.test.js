@@ -98,15 +98,17 @@ test("inlined review jobs bind the provider environment in the caller workflow",
   }
 });
 
-test("reviewer provider calls are serialized while classifier lanes stay untouched", () => {
+test("reviewer provider calls use three fixed lanes while classifiers retain two", () => {
   const workflow = readWorkflow();
-  const providerLane =
-    /concurrency:\n\s+group: llm-reviewer-provider\n\s+cancel-in-progress: false\n\s+queue: max\n/;
+  const specialists = workflowJob(workflow, "review-specialists");
+  const general = workflowJob(workflow, "review-general");
 
-  for (const name of ["review-specialists", "review-general"]) {
-    assert.match(workflowJob(workflow, name), providerLane);
-  }
-  assert.match(workflowJob(workflow, "review-specialists"), /max-parallel: 1\n/);
+  assert.match(specialists, /matrix\.reviewer == 'protocol' && 'protocol'/);
+  assert.match(specialists, /matrix\.reviewer == 'skeptical' && 'skeptical'/);
+  assert.match(specialists, /'general' \}\}/);
+  assert.match(specialists, /max-parallel: 3\n/);
+  assert.match(general,
+    /concurrency:\n\s+group: llm-reviewer-general\n\s+cancel-in-progress: false\n\s+queue: max\n/);
   assert.match(
     workflowJob(workflow, "classifier"),
     /group: llm-classifier-\$\{\{ needs\.resolve-pr\.outputs\.classifier-lane \}\}\n\s+cancel-in-progress: false\n\s+queue: max\n/,

@@ -3,12 +3,12 @@
 We’re using Helmcode for the automated classifier and reviewer pipeline.
 We get at most 5 parallel requests.
 
-To stay safely inside that limit:
+To use those requests efficiently:
 
 - Run at most two classifier agents in parallel.
-- Run at most one reviewer agent at a time, whether specialist or general.
+- Run at most three reviewer agents in parallel.
 
-That totals at most 3 parallel requests at any time, comfortably inside the limit.
+That totals at most 5 parallel requests at any time.
 
 For simplicity, derive static concurrency lanes from the pull request number instead of using an external semaphore service.
 
@@ -25,24 +25,25 @@ concurrency:
   queue: max
 ```
 
-And on every specialist and general reviewer job:
+Map specialists onto three fixed global lanes:
 
 ```yaml
 concurrency:
-  group: llm-reviewer-provider
+  group: llm-reviewer-${{ reviewer-lane }}
   cancel-in-progress: false
   queue: max
 ```
 
 To avoid relying on environment-secret propagation across reusable workflows, every job that reads `HELMCODE_GLM_API_KEY` is a normal job of `.github/workflows/labeler.yml` that binds `environment: llm-providers` itself.
-The reviewer lock therefore sits on the individual provider jobs rather than on one caller job.
+The protocol and skeptical specialists each have a lane.
+The code-compressor and general reviewers share the third lane because the general reviewer starts only after its own specialists finish.
 
 ## Reviewer pipeline
 
 The reviewer pipeline is roughly defined as:
 
 ```text
-evidence -> specialist reviewers running one at a time -> general reviewer aggregating everything
+evidence -> specialist reviewers running in parallel -> general reviewer aggregating everything
 ```
 
 The general reviewer independently inspects the pull request, attempts to falsify every candidate, and records exactly one `accepted`, `refined`, or `rejected` disposition per candidate.
@@ -58,7 +59,7 @@ Currently we define three specialist reviewers:
 - skeptical
 - code compressor
 
-They run as a multi-job matrix, one specialist at a time.
+They run in parallel as a multi-job matrix with at most three active entries.
 
 ## Activation policy
 

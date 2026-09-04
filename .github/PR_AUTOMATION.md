@@ -156,8 +156,9 @@ Model-execution jobs have read-only or empty permissions.
 
 Every job that invokes Helmcode is a normal job of `.github/workflows/labeler.yml`, so each one binds the `llm-providers` environment directly and reads its secret without crossing a reusable-workflow boundary.
 Two static classifier concurrency lanes allow at most two classifier jobs to invoke Helmcode at once.
-Every specialist and general reviewer job shares one global `llm-reviewer-provider` lane, so at most one reviewer request runs at a time across all workflow runs.
-Helmcode therefore serves at most three concurrent requests, well within the five-request API-key limit.
+Three fixed reviewer lanes allow the protocol, skeptical, and code-compressor specialists to run in parallel across all workflow runs.
+The general reviewer shares the code-compressor lane and starts after its own specialists finish.
+Helmcode therefore serves at most five concurrent requests: two classifiers and three reviewers.
 
 Inline comments target only validated added lines.
 Other findings appear in the review body.
