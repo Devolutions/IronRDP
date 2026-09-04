@@ -445,7 +445,10 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
                 "RAIL audit endpoints are unavailable through ActiveX",
             )
         }
-        Request::ClipboardGet | Request::ClipboardSet { .. } => Response::typed_error(
+        Request::ClipboardGet
+        | Request::ClipboardSet { .. }
+        | Request::ClipboardGetImage
+        | Request::ClipboardSetImage { .. } => Response::typed_error(
             AgentErrorCategory::Unavailable,
             "clipboard access is unavailable through ActiveX",
         ),

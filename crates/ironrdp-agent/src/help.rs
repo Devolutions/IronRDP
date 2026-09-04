@@ -154,13 +154,21 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Clipboard
 
-Plain Unicode text only (`CF_UNICODETEXT`); no files, no HTML, no images.
+Text (`CF_UNICODETEXT`) and images (`CF_DIB`/`CF_DIBV5`, as PNG files); no files, no HTML. Local
+content is a single logical item: setting an image replaces a previously set text, and vice versa.
+A remote copy is requested as image over text when the remote offers both.
 
-- `clipboard-get`               Print the last text received from the remote clipboard, or
-                                 `(empty)` if none has arrived yet. Requires an active session.
-- `clipboard-set --text TEXT`   Set the local clipboard text and advertise it to the remote.
-                                 Works before a session connects too: the text is remembered and
-                                 advertised as soon as the clipboard channel initializes.
+- `clipboard-get`                    Print the last text received from the remote clipboard, or
+                                      `(empty)` if none has arrived yet. Requires an active session.
+- `clipboard-set --text TEXT`        Set the local clipboard text and advertise it to the remote.
+                                      Works before a session connects too: the text is remembered
+                                      and advertised as soon as the clipboard channel initializes.
+- `clipboard-get-image [PATH]`       Write the last image received from the remote clipboard to
+                                      `PATH` (default `clipboard.png`) as a PNG, or print a
+                                      no-image message if none has arrived yet.
+- `clipboard-set-image PATH`         Set the local clipboard image from the PNG at `PATH` and
+                                      advertise it to the remote. Same before-connect behavior as
+                                      `clipboard-set`.
 
 ## NOW remote execution (requires an active, connected RDP session)
 

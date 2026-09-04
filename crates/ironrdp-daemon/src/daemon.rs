@@ -21,7 +21,6 @@ use ironrdp_client::rdp::{
     RdpOutputEvent,
 };
 use ironrdp_cliprdr::backend::ClipboardMessage;
-use ironrdp_cliprdr::pdu::{ClipboardFormat, ClipboardFormatId};
 use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
@@ -579,6 +578,8 @@ impl Daemon {
             Request::Screenshot => DaemonResponse::Single(self.screenshot()),
             Request::ClipboardGet => DaemonResponse::Single(self.clipboard_get()),
             Request::ClipboardSet { text } => DaemonResponse::Single(self.clipboard_set(text)),
+            Request::ClipboardGetImage => DaemonResponse::Single(self.clipboard_get_image()),
+            Request::ClipboardSetImage { png } => DaemonResponse::Single(self.clipboard_set_image(png)),
             Request::MouseMove { x, y } => {
                 DaemonResponse::Single(self.input(Operation::MouseMove(MousePosition { x, y })))
             }
@@ -1105,32 +1106,94 @@ impl Daemon {
 
     /// Returns the last text received from the remote clipboard, if any.
     ///
+    /// `None` both when nothing has been received yet and when the last remote copy was an image,
+    /// not text; the two are indistinguishable from this call alone. Use `clipboard_get_image` for
+    /// the image case.
+    ///
     /// # Panics
     ///
     /// Panics if the clipboard state mutex is poisoned.
     fn clipboard_get(&self) -> Response {
-        let text = self.clipboard.lock().expect("clipboard state poisoned").remote.clone();
+        let text = match self.clipboard.lock().expect("clipboard state poisoned").remote.clone() {
+            Some(crate::clipboard::ClipboardContent::Text(text)) => Some(text),
+            Some(crate::clipboard::ClipboardContent::Image(_)) | None => None,
+        };
         Response::Ok(Payload::ClipboardText(text))
     }
 
     /// Sets the local clipboard text and, if a session is connected, advertises it to the remote.
     ///
+    /// Replaces any image previously set with `clipboard_set_image`: local content is a single
+    /// logical item, not a per-format set.
+    ///
     /// # Panics
     ///
     /// Panics if the clipboard state mutex is poisoned.
     fn clipboard_set(&self, text: String) -> Response {
-        self.clipboard.lock().expect("clipboard state poisoned").local = Some(text);
-        // Only a connected session can advertise the change immediately; an unconnected daemon
-        // still remembers it and advertises it once `CLIPRDR` initializes on the next connect (see
-        // `AgentCliprdrBackend::on_request_format_list`).
-        if let Some(session) = self.state.lock().expect("daemon state poisoned").as_ref() {
-            let _ = session
-                .input_tx
-                .send_clipboard(ClipboardMessage::SendInitiateCopy(vec![ClipboardFormat::new(
-                    ClipboardFormatId::CF_UNICODETEXT,
-                )]));
-        }
+        self.set_local_and_advertise(crate::clipboard::ClipboardContent::Text(text));
         Response::ok()
+    }
+
+    /// Returns the last image received from the remote clipboard as PNG bytes, if any.
+    ///
+    /// `None` both when nothing has been received yet and when the last remote copy was text, not
+    /// an image. Use `clipboard_get` for the text case.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_get_image(&self) -> Response {
+        let png = match self.clipboard.lock().expect("clipboard state poisoned").remote.clone() {
+            Some(crate::clipboard::ClipboardContent::Image(png)) => Some(png),
+            Some(crate::clipboard::ClipboardContent::Text(_)) | None => None,
+        };
+        Response::Ok(Payload::ClipboardImage(png))
+    }
+
+    /// Sets the local clipboard image (PNG bytes) and, if a session is connected, advertises it
+    /// to the remote as `CF_DIB`/`CF_DIBV5`.
+    ///
+    /// Rejects `png` up front if it is not decodable, so a bad set fails immediately rather than
+    /// only once the remote actually asks for it. Replaces any text previously set with
+    /// `clipboard_set`: local content is a single logical item, not a per-format set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_set_image(&self, png: Vec<u8>) -> Response {
+        if let Err(error) = ironrdp_cliprdr_format::bitmap::png_to_cf_dib(&png) {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                format!("not a decodable PNG: {error}"),
+            );
+        }
+        self.set_local_and_advertise(crate::clipboard::ClipboardContent::Image(png));
+        Response::ok()
+    }
+
+    /// Sets `local` to `content` and, if a session is connected, advertises it to the remote, as
+    /// one atomic step under the clipboard mutex.
+    ///
+    /// Held across both the write and the advertise call so concurrent `clipboard_set*` calls from
+    /// different IPC connections cannot interleave their state write and their advertisement: Each
+    /// caller's write and send happen together, so the last one to acquire the lock is consistently
+    /// both the final `local` value and the last thing advertised.
+    ///
+    /// Only a connected session can advertise the change immediately; an unconnected daemon still
+    /// remembers it and advertises it once `CLIPRDR` initializes on the next connect (see
+    /// `AgentCliprdrBackend::on_request_format_list`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn set_local_and_advertise(&self, content: crate::clipboard::ClipboardContent) {
+        let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
+        clipboard.local = Some(content.clone());
+        if let Some(session) = self.state.lock().expect("daemon state poisoned").as_ref() {
+            let _ = session.input_tx.send_clipboard(ClipboardMessage::SendInitiateCopy(
+                crate::clipboard::advertised_formats(&content),
+            ));
+        }
     }
 
     /// Requests that the active RDP session resize.
