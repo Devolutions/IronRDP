@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { APIConnectionError, APIConnectionTimeoutError } = require("openai");
 
 const { main } = require("../src/main");
 const { scratchWorkspace, write } = require("./helpers");
@@ -236,6 +237,50 @@ test("main distinguishes provider quota and service failures", async () => {
       assert.doesNotMatch(JSON.stringify(
         core.events.filter((event) => event[0] !== "secret"),
       ), /RAW_PROVIDER_SECRET_SENTINEL|API_KEY_SECRET_SENTINEL/);
+    }
+  } finally {
+    workspace.cleanup();
+  }
+});
+
+test("main safely distinguishes provider transport failures", async () => {
+  const workspace = actionFixture();
+  const inputs = {
+    "api-key": "API_KEY_SECRET_SENTINEL",
+    "base-url": "https://provider.example/v1",
+    "config-file": "config.json",
+  };
+  try {
+    for (const [error, reason] of [
+      [
+        new APIConnectionTimeoutError({ message: "RAW_TIMEOUT_SECRET_SENTINEL" }),
+        "provider request timed out",
+      ],
+      [
+        new APIConnectionError({
+          message: "RAW_CONNECTION_SECRET_SENTINEL",
+          cause: new Error("RAW_CAUSE_SECRET_SENTINEL"),
+        }),
+        "provider connection failed",
+      ],
+    ]) {
+      const core = mockCore(inputs);
+      class FailingOpenAI {
+        constructor() {
+          this.chat = { completions: { create: async () => { throw error; } } };
+        }
+      }
+      await main(core, { GITHUB_WORKSPACE: workspace.directory }, FailingOpenAI);
+      assert.equal(core.outputs.get("failure-reason"), reason);
+      assert.deepEqual(
+        core.events.filter((event) => event[0] === "info").map((event) => JSON.parse(event[1]))
+          .find((event) => event.event === "openai-agent.provider-failure"),
+        { event: "openai-agent.provider-failure", reason },
+      );
+      assert.doesNotMatch(
+        JSON.stringify(core.events.filter((event) => event[0] !== "secret")),
+        /RAW_TIMEOUT_SECRET_SENTINEL|RAW_CONNECTION_SECRET_SENTINEL|RAW_CAUSE_SECRET_SENTINEL|API_KEY_SECRET_SENTINEL/,
+      );
     }
   } finally {
     workspace.cleanup();
