@@ -857,6 +857,7 @@ test("only oversized-review label changes start automation from label events", a
   assert.equal(revoked.classificationRequested, true);
   assert.equal(revoked.reviewRequested, false);
   assert.equal(revoked.evidenceMaxBytes, 1024 * 1024);
+  assert.equal((await resolve("breaking-change")).reason, "unrelated pull request label");
   assert.equal((await resolve("size/XXL")).reason, "unrelated pull request label");
   assert.equal((await resolve("size/XXL", "unlabeled", [])).reason, "unrelated pull request label");
 });
@@ -1514,13 +1515,28 @@ test("writer upgrades a neutral automated review check instead of creating a dup
   assert.equal(update.output.title, "Automated review complete");
 });
 
-test("writer dispatches new but not forced completed classifications", async () => {
-  const writeClassification = async (dispatchReview) => {
+test("writer dispatches every requested completed classification attempt", async () => {
+  const writeClassification = async ({ dispatchReview, existing = false }) => {
+    let creates = 0;
     let dispatches = 0;
+    const machineState = {
+      protocolRelated: false, risk: "low", specialistReviewers: [],
+      automaticReviewEligible: true,
+    };
     const github = {
-      paginate: { iterator: async function* () { yield { data: [] }; } },
+      paginate: { iterator: async function* () {
+        yield { data: existing ? [{
+          id: 7,
+          external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+          conclusion: "success",
+          output: {
+            title: "Classification complete",
+            summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
+          },
+        }] : [] };
+      } },
       rest: {
-        checks: { listForRef: () => {}, create: async () => {} },
+        checks: { listForRef: () => {}, create: async () => { creates += 1; } },
         pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
         issues: { get: async () => ({ data: { labels: [] } }) },
         repos: { createDispatchEvent: async () => { dispatches += 1; } },
@@ -1534,18 +1550,65 @@ test("writer dispatches new but not forced completed classifications", async () 
         check: {
           name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
           title: "Classification complete", summary: "Validated classification.",
-          machineState: {
-            protocolRelated: false, risk: "low", specialistReviewers: [],
-            automaticReviewEligible: true,
-          },
+          machineState,
         },
       },
     });
-    return dispatches;
+    return { creates, dispatches };
   };
 
-  assert.equal(await writeClassification(true), 1);
-  assert.equal(await writeClassification(false), 0);
+  assert.deepEqual(await writeClassification({ dispatchReview: true }), { creates: 1, dispatches: 1 });
+  assert.deepEqual(await writeClassification({ dispatchReview: true, existing: true }), {
+    creates: 0, dispatches: 1,
+  });
+  assert.deepEqual(await writeClassification({ dispatchReview: false, existing: true }), {
+    creates: 0, dispatches: 0,
+  });
+  assert.deepEqual(await writeClassification({ existing: true }), { creates: 0, dispatches: 0 });
+});
+
+test("writer does not dispatch a completed classification after the head changes", async () => {
+  let headReads = 0;
+  let dispatches = 0;
+  const machineState = {
+    protocolRelated: false, risk: "low", specialistReviewers: [],
+    automaticReviewEligible: true,
+  };
+  const github = {
+    paginate: { iterator: async function* () {
+      yield { data: [{
+        id: 7,
+        external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+        conclusion: "success",
+        output: {
+          title: "Classification complete",
+          summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
+        },
+      }] };
+    } },
+    rest: {
+      checks: { listForRef: () => {} },
+      pulls: { get: async () => {
+        headReads += 1;
+        return { data: { state: "open", head: { sha: headReads === 1 ? SHA : OTHER_SHA } } };
+      } },
+      issues: { get: async () => ({ data: { labels: [] } }) },
+      repos: { createDispatchEvent: async () => { dispatches += 1; } },
+    },
+  };
+
+  await assert.rejects(writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+    state: {
+      ok: true, mode: "classification", expectedSha: SHA, labelSets: [], addLabels: [],
+      comments: [], removeCommentMarkers: [], dispatchReview: true,
+      check: {
+        name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+        title: "Classification complete", summary: "Validated classification.", machineState,
+      },
+    },
+  }), StaleHeadError);
+  assert.equal(dispatches, 0);
 });
 
 test("writer deduplicates one forced review invocation but publishes a later one", async () => {

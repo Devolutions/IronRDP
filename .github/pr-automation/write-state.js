@@ -269,8 +269,10 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
       await deleteMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, marker);
     }
     if (state.check) {
-      const created = await ensureClassificationCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
-      if (created && state.check.title === "Classification complete" && state.dispatchReview !== false) {
+      await ensureClassificationCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
+      // Check persistence remains idempotent.
+      // Each explicit classification attempt must wake review even when the same head produces unchanged state.
+      if (state.check.title === "Classification complete" && state.dispatchReview === true) {
         await dispatchClassificationComplete(github, owner, repo, prNumber, state.expectedSha);
       }
     }
