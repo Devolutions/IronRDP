@@ -27,15 +27,13 @@ function validateClassifier(raw, {
   }
   const value = parseJson(raw, 4096);
   const required = [
-    "schema_version", "head_sha", "risk", "technical_debt", "documentation_only", "cross_cutting", "duplicate",
+    "head_sha", "risk", "technical_debt", "documentation_only", "cross_cutting", "duplicate",
     "likely_non_legitimate", "non_legitimate_confidence", "non_legitimate_reason",
     "breaking_change_suspected", "breaking_change_rationale", "breaking_change_surface",
     "protocol_related", "summary",
   ];
   if (!exactKeys(value, required)) return invalid("invalid classifier object");
-  if (value.schema_version !== "1" || !SHA.test(value.head_sha) || value.head_sha !== expectedSha) {
-    return invalid("classifier schema version or SHA mismatch");
-  }
+  if (!SHA.test(value.head_sha) || value.head_sha !== expectedSha) return invalid("classifier SHA mismatch");
   if (!["low", "medium", "high"].includes(value.risk) ||
       typeof value.technical_debt !== "boolean" || typeof value.documentation_only !== "boolean" ||
       typeof value.cross_cutting !== "boolean" ||
@@ -97,7 +95,7 @@ function validateClassifier(raw, {
     return invalid("documentation-only conflicts with technical debt");
   }
   const normalized = {
-    schema_version: value.schema_version, head_sha: value.head_sha, risk: value.risk, technical_debt: value.technical_debt,
+    head_sha: value.head_sha, risk: value.risk, technical_debt: value.technical_debt,
     documentation_only: value.documentation_only, cross_cutting: value.cross_cutting, duplicate: {
       detected: duplicate.detected, similar_pr_number: duplicate.similar_pr_number,
       similar_pr_url: duplicate.similar_pr_url, confidence: duplicate.confidence, rationale,
@@ -110,7 +108,7 @@ function validateClassifier(raw, {
     protocol_related: value.protocol_related, summary,
   };
   if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > 4096) return invalid("classifier output too large");
-  return { ok: true, status: "valid", schemaVersion: SCHEMA_VERSION, value: normalized };
+  return { ok: true, status: "valid", value: normalized };
 }
 
 function encodeCheckState({

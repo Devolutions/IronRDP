@@ -17,5 +17,5 @@ Use an empty `sources` array only for findings discovered by this independent re
 Report only paths listed in `pr-evidence/changed-files.txt`.
 Include a line range only when every line was added by the pull request; otherwise use null for both line fields.
 Use concise titles and rationales.
-Map correctness, safety, architectural, API, protocol, and material maintainability defects to `blocking`.
-Use `non_blocking` for concrete improvements that do not justify rejection and `question` only when missing context prevents a conclusion.
+Rate severity by the concrete correctness, safety, architectural, API, protocol, or maintainability impact.
+Set `question` to true only when missing context prevents a conclusion.

@@ -13,7 +13,7 @@ Return only JSON matching the supplied candidate-review schema for the context h
 Report only concrete protocol defects.
 Always provide a concise, nonempty review summary.
 Use unique stable IDs in the form `protocol-N`.
-Use `blocking`, `non_blocking`, or `question` for classification and `critical`, `high`, `medium`, or `low` for severity.
+Use `critical`, `high`, `medium`, or `low` for severity, and set `question` to true only when missing context prevents a conclusion.
 Restrict paths to files in `pr-evidence/changed-files.txt`.
 Set both line fields to changed lines on the new side, or set both to `null` when no safe inline location exists.
 Every finding requires at least one exact corpus reference with protocol ID, section number, and heading.

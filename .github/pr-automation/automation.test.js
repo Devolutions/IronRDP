@@ -9,8 +9,7 @@ const { SIZE_LABELS, addedLinesByPath, analyzeFiles, parseLabelerRules } = requi
 const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
 const { validateCandidateReview } = require("./validate-candidate-review");
 const {
-  SCHEMA_VERSION: FINAL_REVIEW_SCHEMA_VERSION, provenancePrefix,
-  validateFinalReview, validateNormalizedFinalReview,
+  provenancePrefix, validateFinalReview, validateNormalizedFinalReview,
 } = require("./validate-final-review");
 const { buildSpecialistAggregate, validateSpecialistRun } = require("./review-pipeline");
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
@@ -36,7 +35,7 @@ const {
 const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
 const classifier = (changes = {}) => ({
-  schema_version: "1", head_sha: SHA, risk: "low", technical_debt: false, documentation_only: false,
+  head_sha: SHA, risk: "low", technical_debt: false, documentation_only: false,
   cross_cutting: false,
   duplicate: { detected: false, similar_pr_number: null, similar_pr_url: null, confidence: 0, rationale: "" },
   likely_non_legitimate: false, non_legitimate_confidence: 0, non_legitimate_reason: "",
@@ -46,22 +45,22 @@ const classifier = (changes = {}) => ({
 });
 
 const finding = (changes = {}) => ({
-  classification: "blocking", severity: "high", path: "src/lib.rs", start_line: 4, end_line: 4,
+  question: false, severity: "high", path: "src/lib.rs", start_line: 4, end_line: 4,
   title: "Incorrect boundary", rationale: "incorrect boundary", confidence: 0.9,
   sources: [],
   ...changes,
 });
 const review = (changes = {}) => ({
-  head_sha: SHA, summary: "finding", findings: [finding()], has_findings: true,
+  head_sha: SHA, summary: "finding", findings: [finding()],
   ...changes,
 });
 const candidateFinding = (changes = {}) => ({
-  id: "finding-1", classification: "blocking", severity: "high", path: "src/lib.rs",
+  id: "finding-1", question: false, severity: "high", path: "src/lib.rs",
   start_line: 4, end_line: 4, title: "Incorrect boundary", rationale: "incorrect boundary",
   confidence: 0.9, references: [], ...changes,
 });
 const candidateReview = (reviewer = "skeptical", changes = {}) => ({
-  schema_version: "1", head_sha: SHA, reviewer, summary: "candidate review",
+  head_sha: SHA, reviewer, summary: "candidate review",
   findings: [candidateFinding()], ...changes,
 });
 
@@ -515,6 +514,9 @@ test("candidate reviews require configured identity, changed paths, and paired l
   assert.equal(validateCandidateReview(candidateReview(), context).ok, true);
   assert.equal(validateCandidateReview(candidateReview("protocol"), context).ok, false);
   assert.equal(validateCandidateReview(candidateReview("skeptical", {
+    findings: [candidateFinding({ question: "yes" })],
+  }), context).ok, false);
+  assert.equal(validateCandidateReview(candidateReview("skeptical", {
     findings: [candidateFinding({ path: "unchanged.rs" })],
   }), context).ok, false);
   assert.equal(validateCandidateReview(candidateReview("skeptical", {
@@ -707,7 +709,7 @@ test("general reviewer accounts for every candidate and derives validated proven
       disposition: "refined", rationale: "the narrower claim is supported",
     }],
     findings: [{
-      classification: "blocking", severity: "high", path: "src/lib.rs",
+      question: false, severity: "high", path: "src/lib.rs",
       start_line: 4, end_line: 4, title: "[protocol] hostile title",
       rationale: "verified defect", confidence: 0.95,
       sources: [{ reviewer: "skeptical", finding_id: "finding-1" }],
@@ -723,7 +725,12 @@ test("general reviewer accounts for every candidate and derives validated proven
   assert.equal(result.ok, true);
   assert.equal(provenancePrefix(result.value.findings[0].sources), "[skeptical]");
   assert.equal(validateNormalizedFinalReview(result.value, SHA).ok, true);
+  assert.equal(validateNormalizedFinalReview({ ...result.value, has_findings: true }, SHA).ok, false);
   assert.equal(validateFinalReview({ ...raw, candidate_dispositions: [] }, context).ok, false);
+  assert.equal(validateFinalReview({
+    ...raw,
+    findings: [{ ...raw.findings[0], question: "yes" }],
+  }, context).ok, false);
   assert.equal(validateFinalReview({
     ...raw,
     candidate_dispositions: [{
@@ -1040,7 +1047,7 @@ test("all classified changes are reviewable unless a legitimacy or count gate bl
 });
 
 test("review publication applies the same policy the workflow spent its call on", () => {
-  const reviewer = review({ has_findings: false, summary: "none", findings: [] });
+  const reviewer = review({ summary: "none", findings: [] });
   const args = {
     expectedSha: SHA, reviewer, contributor: { status: "eligible" },
   };
@@ -1238,7 +1245,7 @@ test("forced classification bypasses policy, quota, and cache but still validate
 });
 
 test("forced review bypasses eligibility while retaining publication gates", () => {
-  const reviewer = review({ has_findings: false, summary: "none", findings: [] });
+  const reviewer = review({ summary: "none", findings: [] });
   const args = {
     expectedSha: SHA,
     labels: ["ai-reviewed/2", "duplicate", "size/XXL", "risk/low"],
@@ -1278,7 +1285,7 @@ test("forced review bypasses eligibility while retaining publication gates", () 
 });
 
 test("review transition is terminal-safe and preserves human triage on no findings", () => {
-  const reviewer = review({ has_findings: false, summary: "none", findings: [] });
+  const reviewer = review({ summary: "none", findings: [] });
   const state = resolveReviewState({
     expectedSha: SHA, labels: ["risk/high"], reviewer,
     gate: {
@@ -1288,6 +1295,8 @@ test("review transition is terminal-safe and preserves human triage on no findin
   });
   assert.deepEqual(state.labelSets[0].desired, ["ai-reviewed/1"]);
   assert.deepEqual(state.addLabels, ["maintainer-required"]);
+  assert.equal(state.comments.length, 1);
+  assert.deepEqual(state.comments[0].review, reviewer);
   assert.equal(resolveReviewState({
     expectedSha: SHA, labels: ["ai-reviewed/2"], reviewer,
     gate: {
@@ -1341,7 +1350,7 @@ test("review blockers distinguish gate and contributor history failures", () => 
 });
 
 test("an unavailable mandatory protocol specialist blocks the review count", () => {
-  const reviewer = review({ has_findings: false, summary: "none", findings: [] });
+  const reviewer = review({ summary: "none", findings: [] });
   const args = {
     expectedSha: SHA, labels: ["risk/high"], reviewer,
     gate: {
@@ -1531,7 +1540,7 @@ test("writer upgrades a neutral automated review check instead of creating a dup
   const github = {
     paginate: { iterator: async function* () {
       yield { data: [{
-        id: 7, external_id: `${FINAL_REVIEW_SCHEMA_VERSION}:${SHA}`, conclusion: "neutral",
+        id: 7, external_id: SHA, conclusion: "neutral",
         output: { title: "Automated review unavailable", summary: "Model timed out." },
       }] };
     } },
@@ -1550,7 +1559,7 @@ test("writer upgrades a neutral automated review check instead of creating a dup
     state: {
       ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [], comments: [],
       expectedReviewCount: null, forced: false, protocolRelated: true,
-      check: { name: "AI automated review", externalId: `${FINAL_REVIEW_SCHEMA_VERSION}:${SHA}` },
+      check: { name: "AI automated review", externalId: SHA },
     },
   });
   assert.equal(created, 0);
@@ -1765,7 +1774,7 @@ test("failed review check persistence does not consume review count", async () =
       expectedReviewCount: null, forced: false, protocolRelated: false,
       labelSets: [{ owned: ["ai-reviewed/1", "ai-reviewed/2"], desired: ["ai-reviewed/1"] }],
       addLabels: [], comments: [],
-      check: { name: "AI automated review", externalId: `${FINAL_REVIEW_SCHEMA_VERSION}:${SHA}` },
+      check: { name: "AI automated review", externalId: SHA },
     },
   }), /check failed/);
   assert.equal(labelWrites, 0);
@@ -1797,13 +1806,24 @@ test("writer publishes each finding either inline or in the review body", async 
           findings: [
             finding({
               start_line: 3,
+              severity: "critical",
+              question: true,
               title: "[protocol] untrusted title",
               rationale: "inline-only rationale",
               sources: [{ reviewer: "protocol", finding_id: "protocol-1" }],
             }),
             finding({
               path: "src/other.rs", start_line: null, end_line: null,
+              severity: "high",
               rationale: "body-only rationale",
+            }),
+            finding({
+              path: "src/medium.rs", start_line: null, end_line: null,
+              severity: "medium", rationale: "medium rationale",
+            }),
+            finding({
+              path: "src/low.rs", start_line: null, end_line: null,
+              severity: "low", rationale: "low rationale",
             }),
           ],
         }),
@@ -1818,10 +1838,46 @@ test("writer publishes each finding either inline or in the review body", async 
   assert.doesNotMatch(published.comments[0].body, /body-only rationale/);
   assert.match(published.comments[0].body, /^\*\*\[protocol\]/);
   assert.match(published.comments[0].body, /\\\[protocol\\\] untrusted title/);
+  assert.match(published.comments[0].body, /critical :purple_circle: :question:/);
+  assert.doesNotMatch(published.comments[0].body, /red_circle|orange_circle|yellow_circle/);
   assert.match(published.body, /review summary/);
   assert.match(published.body, /\[general\]/);
   assert.match(published.body, /body-only rationale/);
+  assert.match(published.body, /high :red_circle:/);
+  assert.match(published.body, /medium :orange_circle:/);
+  assert.match(published.body, /low :yellow_circle:/);
+  assert.doesNotMatch(published.body, /purple_circle|:question:|blocking|non_blocking/);
   assert.doesNotMatch(published.body, /inline-only rationale/);
+});
+
+test("writer publishes a green main comment when no findings remain", async () => {
+  let published;
+  const github = {
+    paginate: { iterator: async function* () { yield { data: [] }; } },
+    rest: {
+      pulls: {
+        listReviews: () => {},
+        get: async () => ({ data: { state: "open", head: { sha: SHA } } }),
+        createReview: async (payload) => { published = payload; },
+      },
+      issues: { get: async () => ({ data: { labels: [] } }) },
+    },
+  };
+  await writeState({
+    github, owner: "Devolutions", repo: "IronRDP", prNumber: 1, botLogin: "github-actions[bot]",
+    state: {
+      ok: true, mode: "review", expectedSha: SHA, labelSets: [], addLabels: [],
+      expectedReviewCount: null, forced: false, protocolRelated: false,
+      comments: [{
+        kind: "review",
+        marker: `<!-- ironrdp-pr-automation:review:${SHA} -->`,
+        review: review({ summary: "No findings identified.", findings: [] }),
+      }],
+    },
+  });
+
+  assert.deepEqual(published.comments, []);
+  assert.match(published.body, /:green_circle: No findings identified\./);
 });
 
 function paginated(pages) {

@@ -1,10 +1,7 @@
 "use strict";
 
-const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION } = require("./validate-classifier");
-const {
-  SCHEMA_VERSION: REVIEWER_SCHEMA_VERSION, validateNormalizedFinalReview,
-} = require("./validate-final-review");
-const { validateClassifier } = require("./validate-classifier");
+const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
+const { validateNormalizedFinalReview } = require("./validate-final-review");
 const { resolveReviewerRoute, reviewPolicyEligible, validateReviewerRoute } = require("./routing");
 
 const RISK = ["risk/low", "risk/medium", "risk/high", "risk/unknown"];
@@ -273,7 +270,7 @@ function resolveReviewState({
         ...(comments.some((comment) => comment.kind === "global-quota") ? [] : [GLOBAL_QUOTA_MARKER]),
       ],
       ...(report ? { check: {
-        name: "AI automated review", externalId: `${REVIEWER_SCHEMA_VERSION}:${expectedSha}`,
+        name: "AI automated review", externalId: expectedSha,
         title: "Automated review unavailable",
         summary: `Automated review was unavailable: ${reason}. Maintainer review is required.`,
         conclusion: "neutral",
@@ -330,19 +327,18 @@ function resolveReviewState({
   const expectedReviewCount = existing.has("ai-reviewed/2") ? "ai-reviewed/2"
     : existing.has("ai-reviewed/1") ? "ai-reviewed/1"
     : null;
-  const hasFindings = reviewerResult.value.has_findings;
+  const hasFindings = reviewerResult.value.findings.length > 0;
   const reviewMarker = `<!-- ironrdp-pr-automation:review:${expectedSha}` +
     `${forced ? `:force:${reviewMarkerId}` : ""} -->`;
   return {
     ok: true, mode: "review", expectedSha, labelSets: [{ owned: AI_COUNTS, desired: [nextCount] }],
     addLabels: nextCount === "ai-reviewed/2" || !hasFindings ? ["maintainer-required"] : [],
     removeLabels: nextCount === "ai-reviewed/1" && hasFindings ? ["maintainer-required"] : [],
-    comments: hasFindings ? [{ kind: "review", marker: reviewMarker,
-      review: reviewerResult.value }] : [],
+    comments: [{ kind: "review", marker: reviewMarker, review: reviewerResult.value }],
     removeCommentMarkers: [
       EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER,
     ],
-    check: { name: "AI automated review", externalId: `${REVIEWER_SCHEMA_VERSION}:${expectedSha}` },
+    check: { name: "AI automated review", externalId: expectedSha },
     expectedReviewCount,
     forced,
     protocolRelated: gate.protocolRelated === true,
