@@ -600,7 +600,8 @@ jobs:
                 owner: context.repo.owner, repo: context.repo.repo, ref: headSha,
                 check_name: "AI automated review", per_page: 100,
               });
-              const reviewAtHead = completed(reviewRuns, headSha)?.conclusion === "success";
+              const reviewAtHead = reviewRuns.data.check_runs.some((run) =>
+                run.conclusion === "success" && run.app?.slug === "github-actions");
               const workflowRuns = process.env.ROUTE === "ci" ? [context.payload.workflow_run] :
                 (await github.rest.actions.listWorkflowRunsForRepo({
                   owner: context.repo.owner, repo: context.repo.repo, head_sha: headSha, per_page: 100,

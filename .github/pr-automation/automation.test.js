@@ -112,6 +112,8 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewGate, /head_sha: headSha/);
   assert.match(reviewGate,
     /workflowRuns\.some\(\(run\) => run\?\.name === "CI" && run\?\.conclusion === "success"\)/);
+  assert.match(reviewGate,
+    /run\.conclusion === "success" && run\.app\?\.slug === "github-actions"/);
   assert.match(reviewGate, /const secondReviewEligible = !labels\.includes\("ai-reviewed\/1"\) \|\| !reviewAtHead/);
   assert.match(reviewGate,
     /ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
