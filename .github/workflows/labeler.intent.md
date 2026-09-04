@@ -3,10 +3,10 @@
 We’re using Helmcode for the automated classifier and reviewer pipeline.
 We get at most 5 parallel requests.
 
-To use those requests efficiently:
+To use the 5 parallel requests as efficiently as possible:
 
 - Run at most two classifier agents in parallel.
-- Run at most three reviewer agents in parallel.
+- Run at most one reviewer pipeline with at most 3 specialist reviews in parallel.
 
 That totals at most 5 parallel requests at any time.
 
@@ -25,18 +25,17 @@ concurrency:
   queue: max
 ```
 
-Map specialists onto three fixed global lanes:
+And for the reviewer pipeline job:
 
 ```yaml
 concurrency:
-  group: llm-reviewer-${{ reviewer-lane }}
+  group: llm-reviewer-pipeline
   cancel-in-progress: false
   queue: max
 ```
 
-To avoid relying on environment-secret propagation across reusable workflows, every job that reads `HELMCODE_GLM_API_KEY` is a normal job of `.github/workflows/labeler.yml` that binds `environment: llm-providers` itself.
-The protocol and skeptical specialists each have a lane.
-The code-compressor and general reviewers share the third lane because the general reviewer starts only after its own specialists finish.
+`llm-reviewer-pipeline` group must lock the entire review pipeline, not each reviewer job.
+The review pipeline must therefore live in a reusable workflow, with `llm-reviewer-pipeline` concurrency on its caller job.
 
 ## Reviewer pipeline
 
@@ -59,7 +58,8 @@ Currently we define three specialist reviewers:
 - skeptical
 - code compressor
 
-They run in parallel as a multi-job matrix with at most three active entries.
+They should run in parallel using a multi-job matrix.
+We allow at most three specialist agents to run at once.
 
 ## Activation policy
 
