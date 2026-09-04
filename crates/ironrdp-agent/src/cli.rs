@@ -121,6 +121,14 @@ enum Command {
     /// Set the local clipboard image from a PNG file and advertise it to the remote
     /// (`CF_DIB`/`CF_DIBV5`).
     ClipboardSetImage(ClipboardSetImageArgs),
+    /// Offer local files to the remote via the clipboard file-list mechanism. Each path names a
+    /// single regular file; a directory is rejected.
+    ClipboardSetFiles(ClipboardSetFilesArgs),
+    /// List the remote's currently offered files, if any (metadata only; nothing is fetched).
+    ClipboardListFiles,
+    /// Fetch one file's full contents from the remote by its position in the last
+    /// `clipboard-list-files` listing.
+    ClipboardGetFile(ClipboardGetFileArgs),
     /// Send one MS-RDPEI touch contact sample (legal flag sets only).
     Touch {
         #[arg(long, default_value_t = 0)]
@@ -606,6 +614,24 @@ struct ClipboardSetImageArgs {
     path: PathBuf,
 }
 
+#[derive(Args, Debug)]
+struct ClipboardSetFilesArgs {
+    /// One or more local file paths to offer. A directory is rejected; folders are not supported.
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct ClipboardGetFileArgs {
+    /// Position in the last `clipboard-list-files` listing.
+    index: i32,
+    /// Destination path. Required rather than defaulted from the remote's own file name, which
+    /// is untrusted input (the same reasoning `ironrdp_cliprdr`'s own docs give for not writing
+    /// a remote-supplied name straight to disk).
+    #[arg(long = "out")]
+    out: PathBuf,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CliMouseButton {
     Left,
@@ -973,6 +999,28 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 );
             }
             Request::ClipboardSetImage { png }
+        }
+        Command::ClipboardSetFiles(args) => {
+            let paths = args
+                .paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            Request::ClipboardSetFiles { paths }
+        }
+        Command::ClipboardListFiles => Request::ClipboardListFiles,
+        Command::ClipboardGetFile(args) => {
+            let response = transport::send_request(&endpoint, &Request::ClipboardGetFile { index: args.index }).await?;
+            let payload = match response {
+                Response::Ok(payload) => payload,
+                Response::Err(message) => anyhow::bail!("{message}"),
+            };
+            let Payload::ClipboardFile(data) = payload else {
+                anyhow::bail!("unexpected response to clipboard-get-file request");
+            };
+            std::fs::write(&args.out, &data).with_context(|| format!("write {}", args.out.display()))?;
+            println!("wrote {} ({} bytes)", args.out.display(), data.len());
+            return Ok(());
         }
         Command::MouseMove { x, y } => Request::MouseMove { x, y },
         Command::MouseButton { button, pressed } => Request::MouseButton {
@@ -2161,6 +2209,23 @@ fn print_payload(payload: Payload) {
         },
         // Handled out-of-band by the `ClipboardGetImage` command, never printed here.
         Payload::ClipboardImage(png) => println!("clipboard image ({} bytes)", png.as_ref().map_or(0, Vec::len)),
+        Payload::ClipboardFileList(files) => match files {
+            Some(files) if files.is_empty() => println!("(no files)"),
+            Some(files) => {
+                for (index, file) in files.iter().enumerate() {
+                    let path = match &file.relative_path {
+                        Some(relative_path) => format!("{relative_path}\\{}", file.name),
+                        None => file.name.clone(),
+                    };
+                    let kind = if file.is_directory { "dir" } else { "file" };
+                    let size = file.size.map_or_else(|| "?".to_owned(), |size| size.to_string());
+                    println!("{index}: {kind} {size:>12} {path}");
+                }
+            }
+            None => println!("(no files on the remote clipboard)"),
+        },
+        // Handled out-of-band by the `ClipboardGetFile` command, never printed here.
+        Payload::ClipboardFile(data) => println!("clipboard file ({} bytes)", data.len()),
     }
 }
 

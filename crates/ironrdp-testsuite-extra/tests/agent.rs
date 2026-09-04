@@ -11,10 +11,10 @@ use ironrdp_daemon::now::{DVC_CHANNEL_NAME, INITIAL_ENDPOINT_TIMEOUT, NowEndpoin
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rpc::ipc::{
-    AgentError, AgentErrorCategory, ConnState, KeyFilter, NowCapabilities, NowDiagnostics, NowExecutionKind,
-    NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload,
-    PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason,
-    RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo,
+    AgentError, AgentErrorCategory, ClipboardFileEntry, ConnState, KeyFilter, NowCapabilities, NowDiagnostics,
+    NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo,
+    OperationState, Payload, PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind,
+    RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo,
 };
 use ironrdp_rpc::wire;
 
@@ -169,6 +169,13 @@ fn request_variants_round_trip() {
         Request::ClipboardSetImage {
             png: vec![0x89, b'P', b'N', b'G', 0, 0xFF],
         },
+        Request::ClipboardSetFiles {
+            paths: vec!["/home/user/report.pdf".to_owned(), "/home/user/photo.jpg".to_owned()],
+        },
+        Request::ClipboardSetFiles { paths: vec![] },
+        Request::ClipboardListFiles,
+        Request::ClipboardGetFile { index: 0 },
+        Request::ClipboardGetFile { index: -1 },
     ];
 
     for request in &requests {
@@ -317,6 +324,26 @@ fn response_variants_round_trip() {
         Response::Ok(Payload::ClipboardText(Some("clipboard text".to_owned()))),
         Response::Ok(Payload::ClipboardImage(None)),
         Response::Ok(Payload::ClipboardImage(Some(vec![0x89, b'P', b'N', b'G', 0, 0xFF]))),
+        Response::Ok(Payload::ClipboardFileList(None)),
+        Response::Ok(Payload::ClipboardFileList(Some(vec![]))),
+        Response::Ok(Payload::ClipboardFileList(Some(vec![
+            ClipboardFileEntry {
+                name: "report.pdf".to_owned(),
+                relative_path: None,
+                is_directory: false,
+                size: Some(4096),
+                last_write_time: Some(133_500_000_000_000_000),
+            },
+            ClipboardFileEntry {
+                name: "subdir".to_owned(),
+                relative_path: Some("folder".to_owned()),
+                is_directory: true,
+                size: None,
+                last_write_time: None,
+            },
+        ]))),
+        Response::Ok(Payload::ClipboardFile(vec![])),
+        Response::Ok(Payload::ClipboardFile(vec![1, 2, 3, 4, 5])),
     ];
 
     for response in &responses {
@@ -400,6 +427,26 @@ fn clipboard_debug_redacts_content() {
     let payload = Payload::ClipboardImage(Some(b"secret-pixels".to_vec()));
     let debug = format!("{payload:?}");
     assert!(!debug.contains("secret-pixels"));
+
+    let request = Request::ClipboardSetFiles {
+        paths: vec!["/home/user/secret-plans.pdf".to_owned()],
+    };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("secret-plans"));
+
+    let payload = Payload::ClipboardFileList(Some(vec![ClipboardFileEntry {
+        name: "secret-plans.pdf".to_owned(),
+        relative_path: None,
+        is_directory: false,
+        size: Some(1),
+        last_write_time: None,
+    }]));
+    let debug = format!("{payload:?}");
+    assert!(!debug.contains("secret-plans"));
+
+    let payload = Payload::ClipboardFile(b"secret-file-bytes".to_vec());
+    let debug = format!("{payload:?}");
+    assert!(!debug.contains("secret-file-bytes"));
 }
 
 #[test]
