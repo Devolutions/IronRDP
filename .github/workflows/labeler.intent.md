@@ -82,4 +82,9 @@ Use a 1 MiB evidence diff limit by default and a 4 MiB limit when `ai-review/all
 Adding that label must retry classification.
 Evidence above the applicable limit fails closed without partial model input.
 
+Normal classification-to-review dispatch is edge-triggered and occurs only when the persisted SHA-bound classification check changes.
+Adding `ai-review/allow-oversized` is an explicit maintainer retry and may dispatch on the same SHA when classification state is unchanged.
+Cached classifications use the dedicated `request-review` job, while actual reclassification uses the writer’s explicit-retry exception.
+Unrelated label events and repeated non-explicit unchanged classifications must not dispatch.
+
 Force mode bypasses policy gates but not evidence, validation, filesystem, citation, publication, or stale-head safeguards.

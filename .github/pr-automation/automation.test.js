@@ -119,6 +119,21 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(workflowJob(workflow, "review-pipeline"), /review-gate\.outputs\.eligible == 'true'/);
 });
 
+test("cached and reclassified retries use exclusive dispatch paths", () => {
+  const workflow = readWorkflow();
+  const requestReview = workflowJob(workflow, "request-review");
+  const resolveClassification = workflowJob(workflow, "resolve-classification-state");
+  const writer = workflowJob(workflow, "write-state");
+
+  assert.match(requestReview, /needs\.resolve-pr\.outputs\.review-requested == 'true'/);
+  assert.match(requestReview, /needs\.classification-gate\.outputs\.required == 'false'/);
+  assert.match(requestReview, /dispatchClassificationComplete/);
+  assert.match(resolveClassification, /needs\.classification-gate\.outputs\.required == 'true'/);
+  assert.match(writer,
+    /REVIEW_REQUESTED: \$\{\{ needs\.resolve-pr\.outputs\.review-requested \}\}/);
+  assert.match(writer, /reviewRequested: process\.env\.REVIEW_REQUESTED === "true"/);
+});
+
 test("review skills own methodology while stage prompts own pipeline contracts", () => {
   const githubDirectory = path.join(__dirname, "..");
   const repositoryRoot = path.join(githubDirectory, "..");
@@ -1515,9 +1530,12 @@ test("writer upgrades a neutral automated review check instead of creating a dup
   assert.equal(update.output.title, "Automated review complete");
 });
 
-test("writer dispatches every requested completed classification attempt", async () => {
-  const writeClassification = async ({ dispatchReview, existing = false }) => {
+test("classification dispatch remains edge-triggered except for explicit retries", async () => {
+  const writeClassification = async ({
+    dispatchReview = true, existing = "none", reviewRequested = false,
+  }) => {
     let creates = 0;
+    let updates = 0;
     let dispatches = 0;
     const machineState = {
       protocolRelated: false, risk: "low", specialistReviewers: [],
@@ -1525,18 +1543,24 @@ test("writer dispatches every requested completed classification attempt", async
     };
     const github = {
       paginate: { iterator: async function* () {
-        yield { data: existing ? [{
+        yield { data: existing === "none" ? [] : [{
           id: 7,
           external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
           conclusion: "success",
           output: {
             title: "Classification complete",
-            summary: `Validated classification.\n\n${encodeCheckState(machineState)}`,
+            summary: existing === "same"
+              ? `Validated classification.\n\n${encodeCheckState(machineState)}`
+              : "Previous classification state.",
           },
-        }] : [] };
+        }] };
       } },
       rest: {
-        checks: { listForRef: () => {}, create: async () => { creates += 1; } },
+        checks: {
+          listForRef: () => {},
+          create: async () => { creates += 1; },
+          update: async () => { updates += 1; },
+        },
         pulls: { get: async () => ({ data: { state: "open", head: { sha: SHA } } }) },
         issues: { get: async () => ({ data: { labels: [] } }) },
         repos: { createDispatchEvent: async () => { dispatches += 1; } },
@@ -1553,18 +1577,24 @@ test("writer dispatches every requested completed classification attempt", async
           machineState,
         },
       },
+      reviewRequested,
     });
-    return { creates, dispatches };
+    return { creates, updates, dispatches };
   };
 
-  assert.deepEqual(await writeClassification({ dispatchReview: true }), { creates: 1, dispatches: 1 });
-  assert.deepEqual(await writeClassification({ dispatchReview: true, existing: true }), {
-    creates: 0, dispatches: 1,
+  assert.deepEqual(await writeClassification({}), { creates: 1, updates: 0, dispatches: 1 });
+  assert.deepEqual(await writeClassification({ existing: "changed" }), {
+    creates: 0, updates: 1, dispatches: 1,
   });
-  assert.deepEqual(await writeClassification({ dispatchReview: false, existing: true }), {
-    creates: 0, dispatches: 0,
+  assert.deepEqual(await writeClassification({ existing: "same", reviewRequested: true }), {
+    creates: 0, updates: 0, dispatches: 1,
   });
-  assert.deepEqual(await writeClassification({ existing: true }), { creates: 0, dispatches: 0 });
+  assert.deepEqual(await writeClassification({ existing: "same" }), {
+    creates: 0, updates: 0, dispatches: 0,
+  });
+  assert.deepEqual(await writeClassification({ dispatchReview: false, reviewRequested: true }), {
+    creates: 1, updates: 0, dispatches: 0,
+  });
 });
 
 test("writer does not dispatch a completed classification after the head changes", async () => {
@@ -1607,6 +1637,7 @@ test("writer does not dispatch a completed classification after the head changes
         title: "Classification complete", summary: "Validated classification.", machineState,
       },
     },
+    reviewRequested: true,
   }), StaleHeadError);
   assert.equal(dispatches, 0);
 });
