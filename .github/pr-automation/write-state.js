@@ -71,7 +71,7 @@ function markerBody(comment, owner, repo) {
     return `${comment.marker}\n\nAutomated model analysis stopped because this pull request's diff exceeds the ${comment.limitMiB} MiB evidence limit. No model was invoked with partial evidence.\n\n${guidance} Maintainer review is required.`;
   }
   if (comment.kind === "contributor-ineligible") {
-    return `${comment.marker}\n\nAutomated review will not run because this contributor is not yet eligible under the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md).\n\nContributors become eligible after one qualifying IronRDP pull request is merged into \`master\`. Maintainer review is required.`;
+    return `${comment.marker}\n\nAutomated review will not run because this contributor is not yet eligible under the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md).\n\nContributors become eligible after one qualifying IronRDP pull request is merged into \`master\`. Maintainer review is required.\n\n> [!NOTE]\n> LLM-assisted content (no human feedback).`;
   }
   throw new Error("unsupported issue comment");
 }

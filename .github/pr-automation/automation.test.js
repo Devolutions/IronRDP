@@ -1338,6 +1338,7 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.match(ineligibleBody, /Automated review will not run/);
   assert.match(ineligibleBody, /automation policy/);
   assert.match(ineligibleBody, /Maintainer review is required/);
+  assert.equal(ineligibleBody.match(/LLM-assisted content \(no human feedback\)\./g)?.length, 1);
 
   const unavailable = resolveReviewState({
     ...args, contributor: { status: "unavailable", reason: "GitHub API unavailable" },
