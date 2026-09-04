@@ -3,12 +3,12 @@
 We’re using Helmcode for the automated classifier and reviewer pipeline.
 We get at most 5 parallel requests.
 
-To use the 5 parallel requests as efficiently as possible:
+To stay safely inside that limit:
 
 - Run at most two classifier agents in parallel.
-- Run at most one reviewer pipeline with at most 3 specialist reviews in parallel.
+- Run at most one reviewer agent at a time, whether specialist or general.
 
-That totals at most 5 parallel requests at any time.
+That totals at most 3 parallel requests at any time, comfortably inside the limit.
 
 For simplicity, derive static concurrency lanes from the pull request number instead of using an external semaphore service.
 
@@ -25,24 +25,24 @@ concurrency:
   queue: max
 ```
 
-And for the reviewer pipeline job:
+And on every specialist and general reviewer job:
 
 ```yaml
 concurrency:
-  group: llm-reviewer-pipeline
+  group: llm-reviewer-provider
   cancel-in-progress: false
   queue: max
 ```
 
-`llm-reviewer-pipeline` group must lock the entire review pipeline, not each reviewer job.
-The review pipeline must therefore live in a reusable workflow, with `llm-reviewer-pipeline` concurrency on its caller job.
+To avoid relying on environment-secret propagation across reusable workflows, every job that reads `HELMCODE_GLM_API_KEY` is a normal job of `.github/workflows/labeler.yml` that binds `environment: llm-providers` itself.
+The reviewer lock therefore sits on the individual provider jobs rather than on one caller job.
 
 ## Reviewer pipeline
 
 The reviewer pipeline is roughly defined as:
 
 ```text
-evidence -> specialist reviewers running in parallel -> general reviewer aggregating everything
+evidence -> specialist reviewers running one at a time -> general reviewer aggregating everything
 ```
 
 The general reviewer independently inspects the pull request, attempts to falsify every candidate, and records exactly one `accepted`, `refined`, or `rejected` disposition per candidate.
@@ -58,8 +58,7 @@ Currently we define three specialist reviewers:
 - skeptical
 - code compressor
 
-They should run in parallel using a multi-job matrix.
-We allow at most three specialist agents to run at once.
+They run as a multi-job matrix, one specialist at a time.
 
 ## Activation policy
 

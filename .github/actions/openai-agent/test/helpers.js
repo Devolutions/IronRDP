@@ -12,11 +12,6 @@ function scratchWorkspace() {
     directory,
     cleanup() {
       fs.rmSync(directory, { recursive: true, force: true });
-      try {
-        fs.rmdirSync(scratchRoot);
-      } catch {
-        // Another test may still be using the shared scratch parent.
-      }
     },
   };
 }

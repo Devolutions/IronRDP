@@ -76,33 +76,76 @@ function readWorkflow(githubDirectory = path.join(__dirname, "..")) {
     .replace(/\r\n/g, "\n");
 }
 
-function readReviewWorkflow(githubDirectory = path.join(__dirname, "..")) {
-  return fs.readFileSync(path.join(githubDirectory, "workflows", "review-pipeline.yml"), "utf8")
-    .replace(/\r\n/g, "\n");
-}
+const REVIEW_JOBS = [
+  "review-evidence", "review-specialists", "review-aggregate", "review-general", "review-pipeline",
+];
 
-test("reusable review keeps inherited secrets inside the trusted workflow", () => {
-  const caller = workflowJob(readWorkflow(), "review-pipeline");
-  const reviewWorkflow = readReviewWorkflow();
+test("inlined review jobs bind the provider environment in the caller workflow", () => {
+  const githubDirectory = path.join(__dirname, "..");
+  const workflow = readWorkflow(githubDirectory);
 
-  assert.match(caller, /uses: \.\/\.github\/workflows\/review-pipeline\.yml/);
-  assert.match(caller, /secrets: inherit/);
-  for (const name of ["specialists", "general"]) {
-    const job = workflowJob(reviewWorkflow, name);
+  assert.equal(
+    fs.existsSync(path.join(githubDirectory, "workflows", "review-pipeline.yml")),
+    false,
+    "the review pipeline must stay inline so environment secrets resolve",
+  );
+  assert.doesNotMatch(workflow, /uses: \.\/\.github\/workflows\//);
+  assert.doesNotMatch(workflow, /secrets: inherit/);
+  for (const name of ["classifier", "review-specialists", "review-general"]) {
+    const job = workflowJob(workflow, name);
     assert.match(job, /environment: llm-providers/);
     assert.match(job, /api-key: \$\{\{ secrets\.HELMCODE_GLM_API_KEY \}\}/);
   }
-  assert.match(reviewWorkflow, /WORKFLOW_SHA: \$\{\{ github\.workflow_sha \}\}/);
-  assert.match(reviewWorkflow,
+});
+
+test("reviewer provider calls are serialized while classifier lanes stay untouched", () => {
+  const workflow = readWorkflow();
+  const providerLane =
+    /concurrency:\n\s+group: llm-reviewer-provider\n\s+cancel-in-progress: false\n\s+queue: max\n/;
+
+  for (const name of ["review-specialists", "review-general"]) {
+    assert.match(workflowJob(workflow, name), providerLane);
+  }
+  assert.match(workflowJob(workflow, "review-specialists"), /max-parallel: 1\n/);
+  assert.match(
+    workflowJob(workflow, "classifier"),
+    /group: llm-classifier-\$\{\{ needs\.resolve-pr\.outputs\.classifier-lane \}\}\n\s+cancel-in-progress: false\n\s+queue: max\n/,
+  );
+  assert.match(
+    workflowJob(workflow, "resolve-pr"),
+    /result\.prNumber \? \(Number\(result\.prNumber\) % 2\) \+ 1 : ""/,
+  );
+});
+
+test("inlined review jobs only read trusted workflow sources", () => {
+  const workflow = readWorkflow();
+  const reviewJobs = REVIEW_JOBS.map((name) => workflowJob(workflow, name)).join("\n");
+
+  assert.match(workflowJob(workflow, "review-evidence"),
+    /WORKFLOW_SHA: \$\{\{ github\.workflow_sha \}\}/);
+  assert.match(workflowJob(workflow, "review-evidence"),
     /git fetch --no-tags origin "\+\$WORKFLOW_SHA:refs\/remotes\/origin\/automation"/);
-  const checkouts = reviewWorkflow.match(/- uses: actions\/checkout@\S+/g) || [];
-  const trustedCheckouts = reviewWorkflow.match(
+  const checkouts = reviewJobs.match(/- uses: actions\/checkout@\S+/g) || [];
+  const trustedCheckouts = reviewJobs.match(
     /- uses: actions\/checkout@\S+\n\s+with:\n\s+ref: \$\{\{ github\.workflow_sha \}\}\n\s+persist-credentials: false/g,
   ) || [];
   assert.notEqual(checkouts.length, 0);
   assert.equal(trustedCheckouts.length, checkouts.length);
-  assert.doesNotMatch(reviewWorkflow, /ref: \$\{\{ inputs\.head-sha \}\}/);
-  assert.match(reviewWorkflow, /run: rm -rf pr-head\/\.git/);
+  assert.doesNotMatch(reviewJobs, /ref: \$\{\{ needs\.resolve-pr\.outputs\.head-sha \}\}/);
+  assert.match(reviewJobs, /run: rm -rf pr-head\/\.git/);
+});
+
+test("final review validation stays wired to the review state resolver", () => {
+  const workflow = readWorkflow();
+  const final = workflowJob(workflow, "review-pipeline");
+
+  assert.match(final, /output: \$\{\{ steps\.final\.outputs\.output \}\}/);
+  assert.match(final, /failure-reason: \$\{\{ steps\.final\.outputs\.reason \}\}/);
+  // Evidence failures must still reach the resolver, but an ineligible review must stay skipped.
+  assert.match(final, /if: always\(\) && !cancelled\(\) && needs\.review-evidence\.result != 'skipped'/);
+  const resolve = workflowJob(workflow, "resolve-review-state");
+  assert.match(resolve, /RAW_OUTPUT: \$\{\{ needs\.review-pipeline\.outputs\.output \}\}/);
+  assert.match(resolve, /REVIEWER_REASON: \$\{\{ needs\.review-pipeline\.outputs\.failure-reason \}\}/);
 });
 
 test("automatic review requires exact-head CI and only reruns after a later push", () => {
@@ -116,7 +159,7 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewGate,
     /ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
   assert.match(workflowJob(workflow, "classification-gate"), /'ai-reviewed\/2'/);
-  assert.match(workflowJob(workflow, "review-pipeline"), /review-gate\.outputs\.eligible == 'true'/);
+  assert.match(workflowJob(workflow, "review-evidence"), /review-gate\.outputs\.eligible == 'true'/);
 });
 
 test("review skills own methodology while stage prompts own pipeline contracts", () => {
@@ -142,7 +185,7 @@ test("review skills own methodology while stage prompts own pipeline contracts",
   const protocolSkill = skill("protocol-reviewer");
   const skepticalSkill = skill("skeptical-reviewer");
   const compressorSkill = skill("code-compressor");
-  const reviewWorkflow = readReviewWorkflow(githubDirectory);
+  const workflow = readWorkflow(githubDirectory);
 
   assert.match(protocolSkill, /windows-protocols/);
   assert.match(protocolPrompt, /review-sources\/windows-protocols/);
@@ -158,7 +201,7 @@ test("review skills own methodology while stage prompts own pipeline contracts",
     assert.match(stagePrompt, /Return only .*JSON/);
   }
   assert.match(skepticalPrompt, /pr-evidence\/pull-request-context\.json/);
-  const evidence = workflowJob(reviewWorkflow, "evidence");
+  const evidence = workflowJob(workflow, "review-evidence");
   assert.match(evidence, /issues: read/);
   assert.match(evidence, /pull-requests: read/);
   assert.match(evidence, /fetchReviewContext/);
@@ -256,14 +299,13 @@ test("review context is bounded and tied to the reviewed head", async () => {
 test("LLM evidence is bound to the resolved pull request base", () => {
   const githubDirectory = path.join(__dirname, "..");
   const workflow = readWorkflow(githubDirectory);
-  const reviewWorkflow = readReviewWorkflow(githubDirectory);
   const evidenceScript = fs.readFileSync(path.join(__dirname, "fetch-pr-evidence.sh"), "utf8");
   const classifier = workflowJob(workflow, "classifier");
   assert.match(classifier, /BASE_SHA: \$\{\{ needs\.resolve-pr\.outputs\.base-sha \}\}/);
   assert.match(classifier,
     /fetch-pr-evidence\.sh \\\n\s+"\$HEAD_SHA" "\$BASE_SHA" "\$EVIDENCE_MAX_BYTES"/);
-  const evidence = workflowJob(reviewWorkflow, "evidence");
-  assert.match(evidence, /BASE_SHA: \$\{\{ inputs\.base-sha \}\}/);
+  const evidence = workflowJob(workflow, "review-evidence");
+  assert.match(evidence, /BASE_SHA: \$\{\{ needs\.resolve-pr\.outputs\.base-sha \}\}/);
   assert.match(evidence,
     /fetch-pr-evidence\.sh \\\n\s+"\$HEAD_SHA" "\$BASE_SHA" "\$EVIDENCE_MAX_BYTES"/);
   assert.match(evidenceScript, /\+\$base_sha:refs\/remotes\/origin\/pull-request-base/);
@@ -277,7 +319,6 @@ test("LLM evidence is bound to the resolved pull request base", () => {
 test("evidence caps are trusted, bounded, and fail closed with guidance", () => {
   const githubDirectory = path.join(__dirname, "..");
   const workflow = readWorkflow(githubDirectory);
-  const reviewWorkflow = readReviewWorkflow(githubDirectory);
   const evidenceScript = fs.readFileSync(path.join(__dirname, "fetch-pr-evidence.sh"), "utf8");
   const evidenceAttributes = fs.readFileSync(path.join(__dirname, "evidence-diff-attributes"), "utf8");
   const reason = "pull request diff exceeds the 1 MiB evidence limit";
@@ -298,12 +339,13 @@ test("evidence caps are trusted, bounded, and fail closed with guidance", () => 
   assert.match(classifier,
     /EVIDENCE_MAX_BYTES: \$\{\{ needs\.resolve-pr\.outputs\.evidence-max-bytes \}\}/);
   assert.match(classifier, /steps\.evidence\.outputs\.failure-reason \|\|/);
-  const evidence = workflowJob(reviewWorkflow, "evidence");
+  const evidence = workflowJob(workflow, "review-evidence");
   assert.match(evidence, /id: evidence/);
-  assert.match(evidence, /EVIDENCE_MAX_BYTES: \$\{\{ inputs\.evidence-max-bytes \}\}/);
+  assert.match(evidence,
+    /EVIDENCE_MAX_BYTES: \$\{\{ needs\.resolve-pr\.outputs\.evidence-max-bytes \}\}/);
   assert.match(evidence, /failure-reason: \$\{\{ steps\.evidence\.outputs\.failure-reason \}\}/);
-  assert.match(workflowJob(reviewWorkflow, "validate"),
-    /EVIDENCE_REASON: \$\{\{ needs\.evidence\.outputs\.failure-reason \}\}/);
+  assert.match(workflowJob(workflow, "review-pipeline"),
+    /EVIDENCE_REASON: \$\{\{ needs\.review-evidence\.outputs\.failure-reason \}\}/);
 
   const deterministic = {
     ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/XXL",
