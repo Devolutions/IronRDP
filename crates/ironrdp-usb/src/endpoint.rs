@@ -315,18 +315,19 @@ impl MaxPacketSize {
     }
 
     /// Whether this value satisfies the speed- and transfer-type-dependent
-    /// endpoint limits defined by [USB 2.0].
+    /// endpoint limits for `speed`.
     ///
-    /// This includes the packet-size limits from USB 2.0 Table 5-1 and the
-    /// high-bandwidth encoding from Section 9.6.6. SuperSpeed values return
-    /// `false`: their endpoint semantics are defined by USB 3.x instead.
-    /// Interface-level rules are intentionally outside this predicate; in
-    /// particular, callers must separately enforce the zero-bandwidth
-    /// requirement for isochronous endpoints in alternate setting zero.
+    /// At USB 2.0 speeds these are the packet-size limits from [USB 2.0]
+    /// Table 5-1 together with the high-bandwidth encoding from Section 9.6.6.
+    /// A SuperSpeed endpoint takes its limits from USB 3.2 Section 9.6.6.
+    ///
+    /// Interface-level rules are outside this predicate; callers must separately
+    /// enforce the zero-bandwidth requirement for isochronous endpoints in
+    /// alternate setting zero.
     ///
     /// [USB 2.0]: https://www.usb.org/document-library/usb-20-specification
     #[must_use]
-    pub const fn is_valid_for_usb2(self, speed: UsbSpeed, transfer_type: TransferType) -> bool {
+    pub const fn is_valid_for(self, speed: UsbSpeed, transfer_type: TransferType) -> bool {
         let raw = self.raw();
         let packet_size = self.packet_size();
         let additional_transactions = self.additional_transactions_raw();
@@ -352,26 +353,32 @@ impl MaxPacketSize {
             (UsbSpeed::High, TransferType::Interrupt) => {
                 additional_transactions <= 2 && matches!(packet_size, 1..=1024)
             }
-            (UsbSpeed::Super | UsbSpeed::SuperPlus, _) => false,
+            (UsbSpeed::Super | UsbSpeed::SuperPlus, TransferType::Control) => raw == 512,
+            (UsbSpeed::Super | UsbSpeed::SuperPlus, TransferType::Bulk) => raw == 1024,
+            (UsbSpeed::Super | UsbSpeed::SuperPlus, TransferType::Isochronous) => {
+                raw == 0 || (additional_transactions == 0 && matches!(packet_size, 1..=1024))
+            }
+            (UsbSpeed::Super | UsbSpeed::SuperPlus, TransferType::Interrupt) => {
+                additional_transactions == 0 && matches!(packet_size, 1..=1024)
+            }
         }
     }
 
     /// Maximum payload bytes moved by one scheduled service of this endpoint.
     ///
-    /// A high-speed high-bandwidth isochronous or interrupt endpoint is served
-    /// by up to three back-to-back transactions within one microframe
-    /// ([USB 2.0] 5.9), so its payload is the packet size multiplied by the
-    /// total transaction count encoded in `wMaxPacketSize` bits 12..11
-    /// ([USB 2.0] 9.6.6). Every other speed and transfer type moves one packet
-    /// per transaction.
+    /// A high-speed high-bandwidth isochronous or interrupt endpoint is served by up to three
+    /// back-to-back transactions within one microframe ([USB 2.0] 5.9), and that count is encoded
+    /// in `wMaxPacketSize` bits 12..11 ([USB 2.0] 9.6.6), so it is included here. Every other speed
+    /// and transfer type contributes a single packet.
     ///
-    /// `None` when the encoding is not valid for `speed` and `transfer_type`;
-    /// [`Self::is_valid_for_usb2`] defines exactly the same precondition.
+    /// `This is the whole service payload at USB 2.0 speeds only. None` when the encoding is not
+    /// valid for `speed` and `transfer_type`; [`Self::is_valid_for`] defines exactly the same
+    /// precondition.
     ///
     /// [USB 2.0]: https://www.usb.org/document-library/usb-20-specification
     #[must_use]
-    pub const fn usb2_max_payload(self, speed: UsbSpeed, transfer_type: TransferType) -> Option<u16> {
-        if !self.is_valid_for_usb2(speed, transfer_type) {
+    pub const fn max_payload(self, speed: UsbSpeed, transfer_type: TransferType) -> Option<u16> {
+        if !self.is_valid_for(speed, transfer_type) {
             return None;
         }
 
@@ -382,7 +389,7 @@ impl MaxPacketSize {
             _ => 1,
         };
 
-        // `is_valid_for_usb2` bounds the packet size by 1024 and the additional
+        // `is_valid_for` bounds the packet size by 1024 and the additional
         // transactions by two, so the product is at most 3072.
         Some(self.packet_size() * transactions)
     }

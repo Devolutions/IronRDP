@@ -34,10 +34,28 @@ pub use raw::{DescriptorIter, RawDescriptor, descriptor_type};
 
 use crate::ClassCode;
 
-const DEVICE_DESCRIPTOR_MIN_LENGTH: usize = 18;
-const CONFIGURATION_DESCRIPTOR_MIN_LENGTH: usize = 9;
-const INTERFACE_DESCRIPTOR_MIN_LENGTH: usize = 9;
-const ENDPOINT_DESCRIPTOR_MIN_LENGTH: usize = 7;
+/// `bLength` of a standard device descriptor ([USB 2.0] 9.6.1).
+///
+/// The descriptor is fixed size, so this is also how many bytes a
+/// `GET_DESCRIPTOR` must ask for to read one whole.
+///
+/// [USB 2.0]: https://www.usb.org/document-library/usb-20-specification
+pub const DEVICE_DESCRIPTOR_MIN_LENGTH: usize = 18;
+/// `bLength` of a configuration descriptor header ([USB 2.0] 9.6.3).
+///
+/// Only the header is fixed size: it declares `wTotalLength`, the size of the
+/// whole descriptor set that follows it.
+///
+/// [USB 2.0]: https://www.usb.org/document-library/usb-20-specification
+pub const CONFIGURATION_DESCRIPTOR_MIN_LENGTH: usize = 9;
+/// `bLength` of an interface descriptor ([USB 2.0] 9.6.5).
+///
+/// [USB 2.0]: https://www.usb.org/document-library/usb-20-specification
+pub const INTERFACE_DESCRIPTOR_MIN_LENGTH: usize = 9;
+/// `bLength` of an endpoint descriptor ([USB 2.0] 9.6.6).
+///
+/// [USB 2.0]: https://www.usb.org/document-library/usb-20-specification
+pub const ENDPOINT_DESCRIPTOR_MIN_LENGTH: usize = 7;
 
 fn require_minimum_length(
     offset: usize,
