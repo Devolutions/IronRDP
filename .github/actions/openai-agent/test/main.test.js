@@ -153,6 +153,7 @@ test("main repairs a final response with no text", async () => {
     assert.equal(core.outputs.get("failure-reason"), "");
     assert.equal(core.outputs.get("turn-count"), "2");
     assert.equal(requests[1].tools, undefined);
+    assert.deepEqual(requests[1].response_format, { type: "json_object" });
     assert.match(requests[1].messages.at(-1).content, /response was empty/);
     assert.equal(core.events.some((event) => event[0] === "failed"), false);
   } finally {

@@ -197,7 +197,8 @@ async function runAgent({ client, config, methodologies, prompt, sandbox, schema
       role: "user",
       content: [
         "Investigation is complete.",
-        "Do not call tools or investigate further. Return only the final JSON.",
+        "Do not call tools or investigate further.",
+        "Return exactly one final JSON value with no Markdown fences, labels, commentary, or surrounding text.",
       ].join("\n"),
     });
     const response = await completion(messages, false);
@@ -220,7 +221,8 @@ async function runAgent({ client, config, methodologies, prompt, sandbox, schema
       content: [
         "Your previous final response was invalid.",
         validationReason,
-        "Do not call tools or investigate further. Return only corrected JSON.",
+        "Do not call tools or investigate further.",
+        "Return exactly one corrected JSON value with no Markdown fences, labels, commentary, or surrounding text.",
       ].join("\n"),
     });
     const response = await completion(messages, false);
@@ -242,6 +244,8 @@ async function runAgent({ client, config, methodologies, prompt, sandbox, schema
       request.tools = TOOLS;
       request.tool_choice = "auto";
       request.parallel_tool_calls = false;
+    } else if (schema.type === "object") {
+      request.response_format = { type: "json_object" };
     }
     return client.chat.completions.create(request);
   }

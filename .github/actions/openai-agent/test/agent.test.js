@@ -186,6 +186,8 @@ test("runtime reserves tool-free finalization and repair turns", async () => {
   assert.equal(result.turnCount, 4);
   assert.equal(result.toolCallCount, 2);
   assert.deepEqual(requests.map((request) => request.tools !== undefined), [true, true, false, false]);
+  assert.deepEqual(requests[2].response_format, { type: "json_object" });
+  assert.deepEqual(requests[3].response_format, { type: "json_object" });
   assert.match(requests[2].messages.at(-1).content, /Investigation is complete/);
 });
 
@@ -221,7 +223,9 @@ test("runtime allows exactly one tools-disabled repair for JSON or schema failur
   assert.equal(requests[1].tools, undefined);
   assert.equal(requests[1].tool_choice, undefined);
   assert.equal(requests[1].parallel_tool_calls, undefined);
+  assert.deepEqual(requests[1].response_format, { type: "json_object" });
   assert.match(requests[1].messages.at(-1).content, /Do not call tools/);
+  assert.match(requests[1].messages.at(-1).content, /no Markdown fences/);
 
   await assert.rejects(
     runAgent({
@@ -231,6 +235,26 @@ test("runtime allows exactly one tools-disabled repair for JSON or schema failur
     (error) => error.reason ===
       "repair response was invalid: response was not valid JSON" && error.turnCount === 2,
   );
+});
+
+test("runtime rejects fenced repair output despite requesting JSON mode", async () => {
+  const requests = [];
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([
+        message('{"wrong":true}'),
+        message('```json\n{"answer":"wrapped"}\n```'),
+      ], requests),
+      config: baseConfig,
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+    }),
+    (error) => error.reason ===
+      "repair response was invalid: response was not valid JSON" && error.turnCount === 2,
+  );
+  assert.deepEqual(requests[1].response_format, { type: "json_object" });
 });
 
 test("runtime repairs a final response with no text", async () => {
@@ -329,6 +353,21 @@ test("zero-tool configuration never exposes filesystem tools", async () => {
   assert.equal(result.output, '{"answer":"done"}');
   assert.equal(requests[0].tools, undefined);
   assert.equal(requests[0].tool_choice, undefined);
+  assert.deepEqual(requests[0].response_format, { type: "json_object" });
+});
+
+test("runtime does not request object-only JSON mode for non-object schemas", async () => {
+  const requests = [];
+  const result = await runAgent({
+    client: clientFrom([message('["done"]')], requests),
+    config: { ...baseConfig, max_tool_calls: 0 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema: { type: "array", items: { type: "string" } },
+  });
+  assert.equal(result.output, '["done"]');
+  assert.equal(requests[0].response_format, undefined);
 });
 
 test("provider errors are reduced to fixed non-sensitive categories", () => {
