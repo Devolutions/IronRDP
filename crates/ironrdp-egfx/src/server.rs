@@ -591,15 +591,20 @@ impl FrameTracker {
         let frame_id = self.next_frame_id;
         self.next_frame_id = self.next_frame_id.wrapping_add(1);
 
-        self.unacknowledged.insert(
-            frame_id,
-            FrameInfo {
+        // A suspended client sends no acknowledgement until it opts back in
+        // ([MS-RDPEGFX] 2.2.2.13), so nothing would take this frame back out.
+        // Backpressure is off while suspended, so the entry has no work to do.
+        if !self.ack_suspended {
+            self.unacknowledged.insert(
                 frame_id,
-                timestamp,
-                sent_at: Instant::now(),
-                size_bytes: 0,
-            },
-        );
+                FrameInfo {
+                    frame_id,
+                    timestamp,
+                    sent_at: Instant::now(),
+                    size_bytes: 0,
+                },
+            );
+        }
 
         self.total_sent += 1;
         // Edge-trigger after insert so a frame that pushes us to max_in_flight
@@ -617,7 +622,8 @@ impl FrameTracker {
 
     /// Handle frame acknowledgment from client
     pub fn acknowledge(&mut self, frame_id: u32, queue_depth: u32) -> Option<FrameInfo> {
-        if queue_depth == SUSPEND_FRAME_ACK_QUEUE_DEPTH {
+        let suspending = queue_depth == SUSPEND_FRAME_ACK_QUEUE_DEPTH;
+        if suspending {
             self.ack_suspended = true;
             self.client_queue_depth = 0;
         } else {
@@ -625,13 +631,37 @@ impl FrameTracker {
             self.client_queue_depth = queue_depth;
         }
 
+        // A suspending Frame Acknowledge still acknowledges: take the frame
+        // out before the clear below, since it carries the round-trip sample
+        // and byte count the QoE report is built from.
         let info = self.unacknowledged.remove(&frame_id);
         if info.is_some() {
             self.total_acked += 1;
         }
-        // Edge-trigger after remove so an ack that releases backpressure logs.
+        if suspending {
+            // [MS-RDPEGFX] 3.2.5.13: "the server MUST clear the Unacknowledged
+            // Frames ADM element and MUST NOT expect any further
+            // RDPGFX_FRAME_ACKNOWLEDGE_PDU messages from the client". The one
+            // frame this PDU acknowledges was already removed above, so its QoE
+            // sample survives.
+            self.unacknowledged.clear();
+        }
+
+        // Edge-trigger after the remove/clear so an ack that releases
+        // backpressure logs.
         self.emit_state_transitions();
         info
+    }
+
+    /// Whether `frame_id` was ever handed out by [`begin_frame`].
+    ///
+    /// Frame IDs are assigned sequentially, so any ID below the next one to
+    /// assign has been issued at some point. A `u32` frame counter does not
+    /// wrap within a session. Used to tell a benign acknowledgement for a
+    /// frame we no longer track (a resume after suspension cleared the map, or
+    /// a stale duplicate) from an acknowledgement for an ID never sent.
+    pub(crate) fn was_issued(&self, frame_id: u32) -> bool {
+        frame_id < self.next_frame_id
     }
 
     /// Number of frames in flight
@@ -2098,14 +2128,25 @@ impl GraphicsPipelineServer {
                 in_flight_after = self.frames.in_flight(),
                 "EGFX FrameAcknowledge received"
             );
+        } else if self.frames.was_issued(pdu.frame_id) {
+            // Issued but no longer tracked. This is the normal resume path:
+            // while acknowledgements are suspended the server stops tracking
+            // frames ([MS-RDPEGFX] 2.2.2.13), and the client opts back in by
+            // acknowledging the END_FRAME it last decoded -- which may be one
+            // of those untracked frames -- or this is a stale/duplicate ack.
+            // Either way the frame is genuinely done, not a protocol violation.
+            debug!(
+                frame_id = pdu.frame_id,
+                queue_depth, suspended, "EGFX FrameAcknowledge for an untracked issued frame (resume or stale ack)"
+            );
         } else {
             // PROTOCOL COMPLIANCE: per MS-RDPEGFX 2.2.4.3 the client MUST only
-            // acknowledge frame_ids the server has sent. An ack for an unknown
-            // frame_id indicates either client misbehavior, a server bug
-            // (frame_id reuse), or a session reset out of sync.
+            // acknowledge frame_ids the server has sent. An ack for a frame_id
+            // the server never issued indicates client misbehavior or a session
+            // out of sync.
             warn!(
                 frame_id = pdu.frame_id,
-                queue_depth, "EGFX FrameAcknowledge for UNKNOWN frame_id, protocol violation or stale ack"
+                queue_depth, "EGFX FrameAcknowledge for UNKNOWN frame_id, protocol violation"
             );
         }
 
@@ -2387,6 +2428,29 @@ mod capability_negotiation_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn was_issued_separates_stale_resume_acks_from_never_sent_ids() {
+        let ts = Timestamp {
+            milliseconds: 0,
+            seconds: 0,
+            minutes: 0,
+            hours: 0,
+        };
+        let mut frames = FrameTracker::new();
+        let a = frames.begin_frame(ts);
+        let b = frames.begin_frame(ts);
+
+        // Both were handed out, so both are "issued" even after the map is
+        // cleared -- a resume ack for either is benign, not a violation.
+        frames.clear();
+        assert!(frames.was_issued(a));
+        assert!(frames.was_issued(b));
+
+        // An id the server never assigned is a real unknown frame.
+        assert!(!frames.was_issued(b.wrapping_add(1)));
+        assert!(!frames.was_issued(u32::MAX));
+    }
 
     struct DefaultsHandler;
 
