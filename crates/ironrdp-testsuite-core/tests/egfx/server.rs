@@ -2,7 +2,7 @@ use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::pdu::{
     Avc420Region, Avc444BitmapStream, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags,
-    CapabilitiesV81Flags, CapabilitySet, Codec1Type, Encoding, GfxPdu, PixelFormat,
+    CapabilitiesV81Flags, CapabilitySet, Codec1Type, Encoding, FrameAcknowledgePdu, GfxPdu, PixelFormat, QueueDepth,
 };
 use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer, QoeMetrics, Surface};
 use ironrdp_graphics::zgfx::Decompressor;
@@ -699,4 +699,151 @@ fn test_send_uncompressed_frame_backpressure() {
     // Second frame blocked by backpressure
     let frame2 = server.send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 16);
     assert!(frame2.is_none());
+}
+
+#[test]
+fn test_frames_sent_while_acknowledgement_is_suspended_do_not_hold_backpressure() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    server.set_max_frames_in_flight(1);
+
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    let surface_id = server.create_surface(64, 64).unwrap();
+    server.drain_output();
+
+    let pixel_data = vec![0xFFu8; 64 * 64 * 4];
+
+    let frame1 = server
+        .send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 0)
+        .expect("first frame");
+
+    // [MS-RDPEGFX] 2.2.2.13: a queue depth of SUSPEND_FRAME_ACKNOWLEDGEMENT
+    // means the client stops sending Frame Acknowledge until it says otherwise.
+    let suspend = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        queue_depth: QueueDepth::Suspend,
+        frame_id: frame1,
+        total_frames_decoded: 1,
+    });
+    let _output = server.process(0, &encode_pdu(&suspend)).expect("suspend ack");
+
+    // The pause outlasts the in-flight window by a wide margin, and none of
+    // these frames will be acknowledged.
+    let mut last_frame = frame1;
+    for index in 1..=5 {
+        last_frame = server
+            .send_uncompressed_frame(surface_id, &pixel_data, 64, 64, index * 16)
+            .expect("a suspended client must not throttle the encoder");
+    }
+    server.drain_output();
+
+    // The client comes back and acknowledges normally.
+    let resume = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        queue_depth: QueueDepth::AvailableBytes(8),
+        frame_id: last_frame,
+        total_frames_decoded: 6,
+    });
+    let _output = server.process(0, &encode_pdu(&resume)).expect("resume ack");
+
+    assert!(
+        server
+            .send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 96)
+            .is_some(),
+        "frames counted during the pause hold backpressure on for good: with no \
+         frame going out there is no End Frame left for the client to acknowledge"
+    );
+}
+
+#[test]
+fn test_suspension_does_not_shrink_the_window_for_the_rest_of_the_connection() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+    server.set_max_frames_in_flight(3);
+
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    let surface_id = server.create_surface(64, 64).unwrap();
+    server.drain_output();
+    let pixel_data = vec![0xFFu8; 64 * 64 * 4];
+
+    // Fill the window, then suspend. The frames already in flight will not be
+    // acknowledged either -- the suspension covers them as much as the ones
+    // that follow.
+    let mut first = None;
+    for index in 0..3 {
+        let id = server
+            .send_uncompressed_frame(surface_id, &pixel_data, 64, 64, index * 16)
+            .expect("window not yet full");
+        first.get_or_insert(id);
+    }
+
+    let suspend = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        queue_depth: QueueDepth::Suspend,
+        frame_id: first.expect("a frame went out"),
+        total_frames_decoded: 1,
+    });
+    let _output = server.process(0, &encode_pdu(&suspend)).expect("suspend ack");
+
+    let resume = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        queue_depth: QueueDepth::AvailableBytes(8),
+        frame_id: u32::MAX,
+        total_frames_decoded: 2,
+    });
+    let _output = server.process(0, &encode_pdu(&resume)).expect("resume ack");
+    server.drain_output();
+
+    // The whole window has to be available again. Frames stranded by the
+    // suspension are never acknowledged, so leaving them tracked shrinks the
+    // window permanently -- here to one frame instead of three.
+    for index in 0..3 {
+        assert!(
+            server
+                .send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 100 + index * 16)
+                .is_some(),
+            "frame {index} after resume was held back by a frame stranded in the pause"
+        );
+    }
+}
+
+#[test]
+fn test_a_suspending_acknowledgement_still_acknowledges_its_frame() {
+    let handler = Box::new(TestHandler::new());
+    let mut server = GraphicsPipelineServer::new(handler);
+
+    let client_caps_pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::SMALL_CACHE,
+    }]));
+    let payload = encode_pdu(&client_caps_pdu);
+    let _output = server.process(0, &payload).expect("process failed");
+
+    let surface_id = server.create_surface(64, 64).unwrap();
+    server.drain_output();
+    let pixel_data = vec![0xFFu8; 64 * 64 * 4];
+
+    let frame_id = server
+        .send_uncompressed_frame(surface_id, &pixel_data, 64, 64, 0)
+        .expect("first frame");
+
+    // The PDU that suspends also acknowledges a frame, and that frame carries
+    // the round-trip sample the QoE report is built from. Dropping it because
+    // the same PDU happens to suspend loses the measurement.
+    let suspend = GfxPdu::FrameAcknowledge(FrameAcknowledgePdu {
+        queue_depth: QueueDepth::Suspend,
+        frame_id,
+        total_frames_decoded: 1,
+    });
+    let _output = server.process(0, &encode_pdu(&suspend)).expect("suspend ack");
+
+    assert!(
+        server.qoe_snapshot().is_some(),
+        "the suspending acknowledgement was not counted, so no round-trip sample exists"
+    );
 }
