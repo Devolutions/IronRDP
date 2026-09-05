@@ -8,7 +8,7 @@ use super::{
     DEVICE_DESCRIPTOR_MIN_LENGTH, DescriptorError, DescriptorErrorKind, DescriptorField, DeviceDescriptorError,
     RawDescriptor, descriptor_type, invalid_field, le_u16, require_minimum_length, validate_class_code,
 };
-use crate::{BcdVersion, ClassCode};
+use crate::{BcdVersion, ClassCode, UsbSpeed};
 
 /// Standard USB device descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +141,21 @@ impl<'a> DeviceDescriptor<'a> {
             encoded @ (8 | 16 | 32 | 64) => Ok(u16::from(encoded)),
             encoded => Err(DeviceDescriptorError::new(encoded)),
         }
+    }
+
+    /// Whether `bMaxPacketSize0` is one the negotiated `speed` admits.
+    #[must_use]
+    pub fn is_endpoint_zero_valid_for(self, speed: UsbSpeed) -> bool {
+        matches!(
+            (speed, self.max_packet_size_0_raw()),
+            (UsbSpeed::Low, 8)
+                | (UsbSpeed::Full, 8 | 16 | 32 | 64)
+                | (UsbSpeed::High, 64)
+                | (
+                    UsbSpeed::Super | UsbSpeed::SuperPlus,
+                    Self::SUPERSPEED_MAX_PACKET_SIZE_0
+                )
+        )
     }
 }
 
