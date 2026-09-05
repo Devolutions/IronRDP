@@ -316,11 +316,32 @@ impl CredentialValidator for ExactMatchCredentialValidator {
     }
 }
 
+/// What to do with a new connection that arrives while a session is already
+/// running. `run` serves one session at a time; this chooses how the extra
+/// connection is treated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConnectionPolicy {
+    /// Leave the extra connection in the listen backlog until the running
+    /// session ends, then accept it. This is the historical behaviour: the
+    /// second client is not answered and appears to hang until the first
+    /// leaves.
+    #[default]
+    Queue,
+    /// Close the extra connection immediately instead of leaving it to hang.
+    /// The running session is never interrupted; the new client sees the
+    /// connection fail fast and can retry.
+    Reject,
+}
+
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct RdpServerOptions {
     pub addr: SocketAddr,
     pub security: RdpServerSecurity,
+    /// How a second connection is treated while a session runs. Defaults to
+    /// [`ConnectionPolicy::Queue`]. Set via
+    /// [`RdpServerBuilder::with_connection_policy`](crate::RdpServerBuilder::with_connection_policy).
+    pub connection_policy: ConnectionPolicy,
     pub codecs: BitmapCodecs,
     pub max_request_size: u32,
     /// When `Some(max)`, each connection's acceptor adopts the desktop size the
@@ -1599,7 +1620,30 @@ impl RdpServer {
                             warn!(?peer, %error, "Failed to set TCP_NODELAY; interactive latency may suffer");
                         }
                         let started = tokio::time::Instant::now();
-                        let result = self.run_connection(stream).await;
+                        let result = match self.opts.connection_policy {
+                            ConnectionPolicy::Queue => self.run_connection(stream).await,
+                            ConnectionPolicy::Reject => {
+                                // Poll the session and the listener together, so
+                                // a connection arriving mid-session is closed at
+                                // once instead of waiting in the backlog. The
+                                // session arm is biased first, so a client
+                                // reconnecting the instant a session ends is
+                                // taken by the outer loop, not rejected here.
+                                let mut session = core::pin::pin!(self.run_connection(stream));
+                                loop {
+                                    tokio::select! {
+                                        biased;
+                                        result = &mut session => break result,
+                                        extra = listener.accept() => {
+                                            if let Ok((extra_stream, extra_peer)) = extra {
+                                                debug!(peer = ?extra_peer, "Session active; rejecting connection");
+                                                drop(extra_stream);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        };
                         let duration = started.elapsed();
 
                         if let Err(ref error) = result {

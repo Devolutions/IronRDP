@@ -13,7 +13,8 @@ use super::display::{DesktopSize, RdpServerDisplay};
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{
-    ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity, StaticChannelFactory,
+    ConnectionHandler, ConnectionPolicy, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity,
+    StaticChannelFactory,
 };
 use crate::error::ServerResult;
 #[cfg(feature = "usb")]
@@ -59,6 +60,7 @@ pub struct BuilderDone {
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
     remotefx_quant: Quant,
     remotefx_entropy_coder: Option<EntropyBits>,
+    connection_policy: ConnectionPolicy,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -170,6 +172,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
+                connection_policy: ConnectionPolicy::default(),
             },
         }
     }
@@ -202,6 +205,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
+                connection_policy: ConnectionPolicy::default(),
             },
         }
     }
@@ -410,6 +414,17 @@ impl RdpServerBuilder<BuilderDone> {
     ///
     /// Has no effect unless the client and server negotiate RemoteFX; this
     /// only changes the quantization RemoteFX uses when it is picked.
+    /// Choose how a second connection is treated while a session runs.
+    /// Defaults to [`ConnectionPolicy::Queue`] (the historical behaviour, where
+    /// the extra connection waits in the backlog). [`ConnectionPolicy::Reject`]
+    /// closes it immediately instead, so a second client fails fast rather than
+    /// appearing to hang.
+    #[must_use]
+    pub fn with_connection_policy(mut self, policy: ConnectionPolicy) -> Self {
+        self.state.connection_policy = policy;
+        self
+    }
+
     pub fn with_remotefx_quant(mut self, quant: Quant) -> Self {
         self.state.remotefx_quant = quant;
         self
@@ -442,6 +457,7 @@ impl RdpServerBuilder<BuilderDone> {
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
                 remotefx_quant: self.state.remotefx_quant,
                 remotefx_entropy_coder: self.state.remotefx_entropy_coder,
+                connection_policy: self.state.connection_policy,
             },
             self.state.handler,
             self.state.display,
