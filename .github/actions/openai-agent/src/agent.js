@@ -222,6 +222,7 @@ async function runAgent({ client, config, methodologies, prompt, sandbox, schema
         "Your previous final response was invalid.",
         validationReason,
         "Do not call tools or investigate further.",
+        "Correct every reported validation error and obey the required schema exactly.",
         "Return exactly one corrected JSON value with no Markdown fences, labels, commentary, or surrounding text.",
       ].join("\n"),
     });

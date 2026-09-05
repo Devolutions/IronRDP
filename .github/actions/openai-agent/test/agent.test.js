@@ -225,6 +225,7 @@ test("runtime allows exactly one tools-disabled repair for JSON or schema failur
   assert.equal(requests[1].parallel_tool_calls, undefined);
   assert.deepEqual(requests[1].response_format, { type: "json_object" });
   assert.match(requests[1].messages.at(-1).content, /Do not call tools/);
+  assert.match(requests[1].messages.at(-1).content, /Correct every reported validation error/);
   assert.match(requests[1].messages.at(-1).content, /no Markdown fences/);
 
   await assert.rejects(
