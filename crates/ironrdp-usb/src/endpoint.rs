@@ -321,6 +321,10 @@ impl MaxPacketSize {
     /// Table 5-1 together with the high-bandwidth encoding from Section 9.6.6.
     /// A SuperSpeed endpoint takes its limits from USB 3.2 Section 9.6.6.
     ///
+    /// Interface-level rules are outside this predicate; callers must separately
+    /// enforce the zero-bandwidth requirement for isochronous endpoints in
+    /// alternate setting zero.
+    ///
     /// [USB 2.0]: https://www.usb.org/document-library/usb-20-specification
     #[must_use]
     pub const fn is_valid_for(self, speed: UsbSpeed, transfer_type: TransferType) -> bool {
@@ -362,16 +366,14 @@ impl MaxPacketSize {
 
     /// Maximum payload bytes moved by one scheduled service of this endpoint.
     ///
-    /// A high-speed high-bandwidth isochronous or interrupt endpoint is served
-    /// by up to three back-to-back transactions within one microframe
-    /// ([USB 2.0] 5.9), so its payload is the packet size multiplied by the
-    /// total transaction count encoded in `wMaxPacketSize` bits 12..11
-    /// ([USB 2.0] 9.6.6). Every other speed and transfer type moves one packet
-    /// per transaction, SuperSpeed included: USB 3.2 carries an endpoint's
-    /// burst in its companion descriptor rather than in `wMaxPacketSize`.
+    /// A high-speed high-bandwidth isochronous or interrupt endpoint is served by up to three
+    /// back-to-back transactions within one microframe ([USB 2.0] 5.9), and that count is encoded
+    /// in `wMaxPacketSize` bits 12..11 ([USB 2.0] 9.6.6), so it is included here. Every other speed
+    /// and transfer type contributes a single packet.
     ///
-    /// `None` when the encoding is not valid for `speed` and `transfer_type`;
-    /// [`Self::is_valid_for`] defines exactly the same precondition.
+    /// `This is the whole service payload at USB 2.0 speeds only. None` when the encoding is not
+    /// valid for `speed` and `transfer_type`; [`Self::is_valid_for`] defines exactly the same
+    /// precondition.
     ///
     /// [USB 2.0]: https://www.usb.org/document-library/usb-20-specification
     #[must_use]
