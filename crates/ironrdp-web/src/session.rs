@@ -1503,7 +1503,7 @@ fn build_config(
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         compression_type: None,
-        enable_server_pointer: false,
+        enable_server_pointer: true,
         autologon: false,
         enable_audio_playback: false,
         enable_audio_capture: false,
