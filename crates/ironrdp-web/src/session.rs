@@ -91,6 +91,7 @@ struct SessionBuilderInner {
 
     use_display_control: bool,
     enable_credssp: bool,
+    enable_server_pointer: bool,
     legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
 }
@@ -134,6 +135,7 @@ impl Default for SessionBuilderInner {
 
             use_display_control: false,
             enable_credssp: true,
+            enable_server_pointer: true,
             legacy_graphics: false,
             outbound_message_size_limit: None,
         }
@@ -253,6 +255,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
             |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
+            |enable_server_pointer: bool| { self.0.borrow_mut().enable_server_pointer = enable_server_pointer };
             |legacy_graphics: bool| { self.0.borrow_mut().legacy_graphics = legacy_graphics };
             |outbound_message_size_limit: f64| {
                 let limit = if outbound_message_size_limit >= 0.0 && outbound_message_size_limit <= f64::from(u32::MAX) {
@@ -423,6 +426,9 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         let enable_credssp = self.0.borrow().enable_credssp;
         config.enable_credssp = enable_credssp;
+
+        let enable_server_pointer = self.0.borrow().enable_server_pointer;
+        config.enable_server_pointer = enable_server_pointer;
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
