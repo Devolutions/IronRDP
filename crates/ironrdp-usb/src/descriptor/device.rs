@@ -73,6 +73,14 @@ impl<'a> DeviceDescriptor<'a> {
         self.raw.as_bytes()
     }
 
+    /// The only `bMaxPacketSize0` a SuperSpeed device may report.
+    ///
+    /// USB 3.2 9.6.1 states the field as the base-2 exponent of the packet
+    /// size and admits this single value, so its presence proves the device
+    /// enumerated at SuperSpeed: no slower speed may use it, because USB 2.0
+    /// states the size literally and admits only 8, 16, 32 and 64.
+    pub const SUPERSPEED_MAX_PACKET_SIZE_0: u8 = 9;
+
     #[must_use]
     pub fn usb_version(self) -> BcdVersion {
         BcdVersion::from_raw(le_u16(self.as_bytes(), 2))
@@ -126,27 +134,28 @@ impl<'a> DeviceDescriptor<'a> {
         self.as_bytes()[17]
     }
 
-    /// Interpret `bMaxPacketSize0` using negotiated bus speed.
-    ///
-    /// `bcdUSB` is deliberately not used as a substitute for speed: a USB 3.x
-    /// capable device can enumerate using USB 2.0 endpoint-zero semantics.
-    pub fn endpoint_zero_max_packet_size(self, speed: UsbSpeed) -> Result<u16, DeviceDescriptorError> {
-        let encoded = self.max_packet_size_0_raw();
-        let valid = match speed {
-            UsbSpeed::Low => encoded == 8,
-            UsbSpeed::Full => matches!(encoded, 8 | 16 | 32 | 64),
-            UsbSpeed::High => encoded == 64,
-            UsbSpeed::Super | UsbSpeed::SuperPlus => encoded == 9,
-        };
-        if !valid {
-            return Err(DeviceDescriptorError::new(speed, encoded));
+    /// Interpret `bMaxPacketSize0`.
+    pub fn endpoint_zero_max_packet_size(self) -> Result<u16, DeviceDescriptorError> {
+        match self.max_packet_size_0_raw() {
+            Self::SUPERSPEED_MAX_PACKET_SIZE_0 => Ok(1 << Self::SUPERSPEED_MAX_PACKET_SIZE_0),
+            encoded @ (8 | 16 | 32 | 64) => Ok(u16::from(encoded)),
+            encoded => Err(DeviceDescriptorError::new(encoded)),
         }
+    }
 
-        Ok(if speed.is_superspeed() {
-            1u16 << encoded
-        } else {
-            u16::from(encoded)
-        })
+    /// Whether `bMaxPacketSize0` is one the negotiated `speed` admits.
+    #[must_use]
+    pub fn is_endpoint_zero_valid_for(self, speed: UsbSpeed) -> bool {
+        matches!(
+            (speed, self.max_packet_size_0_raw()),
+            (UsbSpeed::Low, 8)
+                | (UsbSpeed::Full, 8 | 16 | 32 | 64)
+                | (UsbSpeed::High, 64)
+                | (
+                    UsbSpeed::Super | UsbSpeed::SuperPlus,
+                    Self::SUPERSPEED_MAX_PACKET_SIZE_0
+                )
+        )
     }
 }
 
