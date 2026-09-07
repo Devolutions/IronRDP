@@ -685,15 +685,19 @@ jobs:
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
           GATE: ${{ needs.review-gate.outputs.gate }}
+          REVIEW_GATE_RESULT: ${{ needs.review-gate.result }}
           FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
+          FORK_RATE_LIMIT_RESULT: ${{ needs.fork-rate-limit.result }}
           RAW_OUTPUT: ${{ needs.review-pipeline.outputs.output }}
           REVIEWER_REASON: ${{ needs.review-pipeline.outputs.failure-reason }}
+          REVIEW_PIPELINE_RESULT: ${{ needs.review-pipeline.result }}
           FORCE: ${{ needs.resolve-pr.outputs.force }}
           LABELS: ${{ needs.resolve-pr.outputs.labels }}
           REVIEW_MARKER_ID: ${{ github.run_id }}
         with:
           script: |
              const { resolveReviewState } = require("./.github/pr-automation/resolve-state");
+             const { reviewSkipReasons } = require("./.github/pr-automation/review-skip-summary");
              const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
              const force = process.env.FORCE === "true";
              const gate = parse(process.env.GATE, force ? {
@@ -721,6 +725,19 @@ jobs:
                    .some((comment) => comment.kind === "review"),
                },
              }));
+             if (process.env.REVIEW_PIPELINE_RESULT === "skipped") {
+               const reasons = reviewSkipReasons({
+                 gate,
+                 gateResult: process.env.REVIEW_GATE_RESULT,
+                 rateLimit: parse(process.env.FORK_RATE_LIMIT, null),
+                 rateLimitResult: process.env.FORK_RATE_LIMIT_RESULT,
+               });
+               await core.summary
+                 .addHeading("Automated review skipped")
+                 .addRaw("The automated review did not run because:", true)
+                 .addList(reasons)
+                 .write();
+             }
 
   write-state:
     name: Write pull request state
