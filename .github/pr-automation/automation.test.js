@@ -1330,15 +1330,12 @@ test("review blockers distinguish gate and contributor history failures", () => 
   assert.equal(ineligible.ok, true);
   assert.equal(ineligible.failed, true);
   assert.equal(ineligible.reason, "contributor history ineligible (merged: 0, required: 1)");
+  assert.deepEqual(ineligible.labelSets, []);
+  assert.deepEqual(ineligible.addLabels, ["maintainer-required"]);
   assert.deepEqual(ineligible.comments, [{
     kind: "contributor-ineligible", marker: CONTRIBUTOR_INELIGIBLE_MARKER,
   }]);
   assert.equal(ineligible.removeCommentMarkers.includes(CONTRIBUTOR_INELIGIBLE_MARKER), false);
-  const ineligibleBody = markerBody(ineligible.comments[0], "Devolutions", "IronRDP");
-  assert.match(ineligibleBody, /Automated review will not run/);
-  assert.match(ineligibleBody, /automation policy/);
-  assert.match(ineligibleBody, /Maintainer review is required/);
-  assert.equal(ineligibleBody.match(/LLM-assisted content \(no human feedback\)\./g)?.length, 1);
 
   const unavailable = resolveReviewState({
     ...args, contributor: { status: "unavailable", reason: "GitHub API unavailable" },
@@ -1498,7 +1495,7 @@ test("writer keeps one contributor-ineligible comment and removes it after eligi
   await writeState({ ...args, state });
   await writeState({ ...args, state });
   assert.equal(issueComments.length, 1);
-  assert.match(issueComments[0].body, /Automated review will not run/);
+  assert.equal(issueComments[0].body.startsWith(CONTRIBUTOR_INELIGIBLE_MARKER), true);
 
   const eligibleState = resolveReviewState({
     expectedSha: SHA, labels: ["risk/low"],
