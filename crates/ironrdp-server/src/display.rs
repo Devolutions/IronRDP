@@ -335,6 +335,15 @@ pub trait RdpServerDisplay: Send {
     fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
         debug!(?layout, "Requesting layout")
     }
+
+    /// Report how many independent monitors this display can present to the client.
+    ///
+    /// Called once, before the Display Control Virtual Channel opens, to build the
+    /// capabilities the server advertises. Defaults to `1`, matching every existing
+    /// implementation's current behavior.
+    async fn monitor_count(&mut self) -> u32 {
+        1
+    }
 }
 
 #[cfg(test)]
