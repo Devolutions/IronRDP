@@ -15,7 +15,7 @@ const { buildSpecialistAggregate, validateSpecialistRun } = require("./review-pi
 const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
 const {
   CLAIM_SCHEMA_VERSION, CLAIM_STATE_MARKER, MAX_AUTOMATIC_ATTEMPTS, RECOVERY_DELAY_SECONDS,
-  canonicalRecoveryIdentity, claimAttempt, encodeClaim, parseClaim, recoveryFingerprint, updateClaim,
+  canonicalRecoveryIdentity, claimAttempt, encodeClaim, hasClaimMarker, parseClaim, recoveryFingerprint, updateClaim,
 } = require("./review-attempt-claim");
 const { aggregateStageMetrics, parsePipelineRecovery, recoveryDecision } = require("./review-recovery");
 const {
@@ -131,7 +131,7 @@ test("automatic review requires exact-head CI and only reruns after a later push
     /ok: classificationCheck && ciGreen && secondReviewEligible && policyEligible/);
   assert.match(workflowJob(workflow, "classification-gate"), /'ai-reviewed\/2'/);
   assert.match(initialPipeline, /review-gate\.outputs\.eligible == 'true'/);
-  assert.match(initialClaim, /pr-automation-review-claim-/);
+  assert.match(initialClaim, /pr-automation-write-/);
   assert.match(initialClaim, /ensureReviewClaim/);
   assert.match(initialPipeline, /group: llm-reviewer-pipeline/);
   assert.match(initialPipeline, /recovery-attempt: "0"/);
@@ -944,6 +944,9 @@ test("review attempt claims bind a finite budget to trusted recovery identity", 
   assert.match(encoded, new RegExp(CLAIM_SCHEMA_VERSION));
   assert.deepEqual(parseClaim(encoded), initial.claim);
   assert.equal(parseClaim(`${CLAIM_STATE_MARKER} null`), null);
+  const longSummary = `${"failed stage\n".repeat(400)}${encoded}`;
+  assert.equal(hasClaimMarker(longSummary), true);
+  assert.deepEqual(parseClaim(longSummary), initial.claim);
 
   const duplicate = claimAttempt({ previous: initial.claim, fingerprint, owner });
   assert.equal(duplicate.ok, true);
@@ -1057,8 +1060,9 @@ test("review publication requires the still-owned attempt claim", async () => {
 
 test("stage recovery retries only transient required stages and retains every failure reason", () => {
   const stage = (changes = {}) => ({
-    id: "skeptical", status: "failed", required: true, reason: "provider timeout",
-    failure_category: "transient-provider", retryable: true, reused: false, reused_from_run_id: null,
+    id: "specialist:skeptical", status: "failed", required: true, provider: true, reason: "provider timeout",
+    failure_category: "provider-timeout", retryable: true, reused: false, reused_from_run_id: null,
+    reuse_reason: "",
     metrics: {
       tokens: null, elapsed_ms: 10, request_retries: 4, output_repairs: 0, stage_recoveries: 0,
     },
@@ -1068,7 +1072,7 @@ test("stage recovery retries only transient required stages and retains every fa
     stages: JSON.stringify([
       stage(),
       stage({
-        id: "code-compressor", required: false, reason: "optional stage configuration invalid",
+        id: "specialist:code-compressor", provider: true, required: false, reason: "optional stage configuration invalid",
         failure_category: "invalid-configuration", retryable: false,
       }),
     ]),
@@ -1081,7 +1085,10 @@ test("stage recovery retries only transient required stages and retains every fa
         aggregate: "review-aggregate", general: null, specialists: {},
       },
     }),
-    metrics: "{}",
+    metrics: JSON.stringify({
+      tokens: { input: 0, output: 0, total: 0 }, tokens_complete: false, elapsed_ms: 20,
+      request_retries: 4, output_repairs: 0, stage_recoveries: 0, reused_stages: 0, failed_stages: 2,
+    }),
     recoverable: "true",
     expectedHeadSha: SHA,
     expectedBaseSha: OTHER_SHA,
@@ -1092,13 +1099,50 @@ test("stage recovery retries only transient required stages and retains every fa
     status: "pending",
     reason: "provider timeout",
   });
+  const recoveredSuccess = parsePipelineRecovery({
+    stages: JSON.stringify([stage({
+      id: "specialist:code-compressor",
+      status: "success",
+      required: false,
+      provider: true,
+      reason: "",
+      failure_category: "",
+      retryable: false,
+      reused: true,
+      reused_from_run_id: "42",
+      reuse_reason: "validated result from the initial attempt",
+      metrics: {
+        tokens: null, elapsed_ms: 0, request_retries: 0, output_repairs: 0, stage_recoveries: 1,
+      },
+    })]),
+    provenance: JSON.stringify({
+      run_id: "43", base_sha: OTHER_SHA, head_sha: SHA, evidence_digest: "c".repeat(64),
+      policy_digest: "d".repeat(64), corpus_sha: null, v: 1, run_attempt: "2",
+      attempt_id: `${SHA}-r1-a2-43`,
+      artifacts: {
+        evidence: "review.evidence.43", validation: "review.validation.43", corpus: null,
+        aggregate: null, general: null, specialists: { "code-compressor": "review.specialist.43" },
+      },
+    }),
+    metrics: JSON.stringify({
+      tokens: { input: 0, output: 0, total: 0 }, tokens_complete: true, elapsed_ms: 0,
+      request_retries: 0, output_repairs: 0, stage_recoveries: 1, reused_stages: 1, failed_stages: 0,
+    }),
+    recoverable: "false",
+    expectedHeadSha: SHA,
+    expectedBaseSha: OTHER_SHA,
+    expectedRecoveryAttempt: 1,
+  });
+  assert.equal(recoveredSuccess.ok, true);
+  assert.equal(recoveredSuccess.value.stages[0].reusedFromRunId, "42");
+  assert.equal(recoveredSuccess.value.metrics.tokens_complete, true);
 
   const mandatoryTerminal = {
     ...parsed,
     value: {
       ...parsed.value,
       stages: [...parsed.value.stages, {
-        ...stage({ id: "protocol", reason: "credentials rejected", failure_category: "invalid-credentials",
+        ...stage({ id: "specialist:protocol", reason: "credentials rejected", failure_category: "invalid-credentials",
           retryable: false }),
         metrics: { tokens: null, elapsed_ms: null, request_retries: null, output_repairs: null, stage_recoveries: null },
       }],
@@ -1124,7 +1168,10 @@ test("stage recovery retries only transient required stages and retains every fa
         aggregate: "review-aggregate", general: null, specialists: {},
       },
     }),
-    metrics: "{}",
+    metrics: JSON.stringify({
+      tokens: { input: 0, output: 0, total: 0 }, tokens_complete: false, elapsed_ms: 20,
+      request_retries: 4, output_repairs: 0, stage_recoveries: 0, reused_stages: 0, failed_stages: 2,
+    }),
     recoverable: "true",
     expectedHeadSha: SHA,
     expectedBaseSha: OTHER_SHA,
@@ -1137,37 +1184,39 @@ test("stage recovery metrics count failed attempts and preserve unavailable usag
     value: { stages, provenance: {}, recoverable: true },
   });
   const metrics = {
-    tokens: 100, elapsed_ms: 20, request_retries: 1, output_repairs: 0, stage_recoveries: 0,
+    tokens: { input: 60, output: 40, total: 100 },
+    elapsed_ms: 20, request_retries: 1, output_repairs: 0, stage_recoveries: 0,
   };
   const total = aggregateStageMetrics([
     pipeline([
       {
-        id: "skeptical", status: "failed", required: true, reason: "timeout",
-        failureCategory: "transient-provider", retryable: true, reused: false, reusedFromRunId: null,
+        id: "specialist:skeptical", status: "failed", required: true, provider: true, reason: "timeout",
+        failureCategory: "provider-timeout", retryable: true, reused: false, reusedFromRunId: null, reuseReason: "",
         metrics: { ...metrics, tokens: null },
       },
       {
-        id: "code-compressor", status: "valid", required: false, reason: "",
-        failureCategory: "none", retryable: false, reused: false, reusedFromRunId: null, metrics,
+        id: "specialist:code-compressor", status: "success", required: false, provider: true, reason: "",
+        failureCategory: "", retryable: false, reused: false, reusedFromRunId: null, reuseReason: "", metrics,
       },
     ]),
     pipeline([
       {
-        id: "skeptical", status: "valid", required: true, reason: "",
-        failureCategory: "none", retryable: false, reused: false, reusedFromRunId: null, metrics,
+        id: "specialist:skeptical", status: "success", required: true, provider: true, reason: "",
+        failureCategory: "", retryable: false, reused: false, reusedFromRunId: null, reuseReason: "", metrics,
       },
       {
-        id: "code-compressor", status: "valid", required: false, reason: "",
-        failureCategory: "none", retryable: false, reused: true, reusedFromRunId: 42, metrics,
+        id: "specialist:code-compressor", status: "success", required: false, provider: true, reason: "",
+        failureCategory: "", retryable: false, reused: true, reusedFromRunId: "42", reuseReason: "", metrics,
       },
     ]),
   ]);
   assert.equal(total.attempts, 4);
   assert.equal(total.reused, 1);
-  assert.equal(total.totals.tokens, null);
+  assert.deepEqual(total.totals.tokens, { input: 120, output: 80, total: 200 });
+  assert.equal(total.totals.tokens_complete, false);
   assert.equal(total.totals.elapsed_ms, 60);
-  assert.equal(total.stages.skeptical.failures[0], "timeout");
-  assert.equal(total.stages["code-compressor"].reused, 1);
+  assert.equal(total.stages["specialist:skeptical"].failures[0], "timeout");
+  assert.equal(total.stages["specialist:code-compressor"].reused, 1);
 });
 
 test("bot authors are excluded from automation", async () => {

@@ -52,10 +52,10 @@ function recoveryFingerprint(identity) {
 }
 
 function parseClaim(value) {
-  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 2048) return null;
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 64 * 1024) return null;
   const line = value.split(/\r?\n/).map((entry) => entry.trim())
     .find((entry) => entry.startsWith(CLAIM_STATE_MARKER));
-  if (!line) return null;
+  if (!line || Buffer.byteLength(line, "utf8") > 1024) return null;
   let parsed;
   try { parsed = JSON.parse(line.slice(CLAIM_STATE_MARKER.length)); } catch { return null; }
   if (!exactKeys(parsed, ["schema_version", "fingerprint", "attempt", "owner", "status", "reason"]) ||
@@ -70,6 +70,10 @@ function parseClaim(value) {
     status: parsed.status,
     reason: normalizeText(parsed.reason, 300),
   };
+}
+
+function hasClaimMarker(value) {
+  return typeof value === "string" && value.includes(CLAIM_STATE_MARKER);
 }
 
 function encodeClaim(claim) {
@@ -173,5 +177,5 @@ function updateClaim({ claim, owner, status, reason = "" } = {}) {
 
 module.exports = {
   CLAIM_SCHEMA_VERSION, CLAIM_STATE_MARKER, MAX_AUTOMATIC_ATTEMPTS, RECOVERY_DELAY_SECONDS,
-  canonicalRecoveryIdentity, claimAttempt, encodeClaim, parseClaim, recoveryFingerprint, updateClaim,
+  canonicalRecoveryIdentity, claimAttempt, encodeClaim, hasClaimMarker, parseClaim, recoveryFingerprint, updateClaim,
 };

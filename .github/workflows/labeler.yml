@@ -655,7 +655,7 @@ jobs:
       needs.review-gate.outputs.eligible == 'true')
     runs-on: ubuntu-latest
     concurrency:
-      group: pr-automation-review-claim-${{ needs.resolve-pr.outputs.pr-number }}
+      group: pr-automation-write-${{ needs.resolve-pr.outputs.pr-number }}
       cancel-in-progress: false
     permissions:
       actions: read
@@ -690,7 +690,7 @@ jobs:
         with:
           script: |
             const {
-              canonicalRecoveryIdentity, claimAttempt, parseClaim, recoveryFingerprint,
+              canonicalRecoveryIdentity, claimAttempt, hasClaimMarker, parseClaim, recoveryFingerprint,
             } = require("./.github/pr-automation/review-attempt-claim");
             const { ensureReviewClaim, findCheck } = require("./.github/pr-automation/write-state");
             const parse = (value, fallback) => { try { return JSON.parse(value || ""); } catch { return fallback; } };
@@ -714,6 +714,11 @@ jobs:
               { name: "AI automated review", externalId: process.env.HEAD_SHA },
             );
             const previous = parseClaim(check?.output?.summary);
+            if (!previous && hasClaimMarker(check?.output?.summary)) {
+              core.setOutput("claimed", false);
+              core.warning("Automated review was not claimed: persisted review claim is invalid");
+              return;
+            }
             let ownerRun;
             if (previous && (previous.owner.runId !== owner.runId ||
                 previous.owner.runAttempt !== owner.runAttempt)) {
@@ -756,6 +761,7 @@ jobs:
       cancel-in-progress: false
       queue: max
     permissions:
+      actions: read
       contents: read
       issues: read
       pull-requests: read
@@ -915,6 +921,7 @@ jobs:
           AUTHOR: ${{ needs.resolve-pr.outputs.author }}
           SELECTED_REVIEWERS: ${{ needs.review-gate.outputs.specialist-reviewers }}
           REQUIRED_REVIEWERS: ${{ needs.review-gate.outputs.required-reviewers }}
+          EVIDENCE_MAX_BYTES: ${{ needs.resolve-pr.outputs.evidence-max-bytes }}
         with:
           script: |
             const { contributorEligibility, reviewPolicyEligible } = require("./.github/pr-automation/resolve-state");
@@ -926,13 +933,19 @@ jobs:
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner, repo: context.repo.repo, pull_number: pullNumber,
             });
-            if (pr.state !== "open" || pr.head?.sha !== process.env.HEAD_SHA ||
+            if (pr.state !== "open" || pr.draft || pr.head?.sha !== process.env.HEAD_SHA ||
                 pr.base?.sha !== process.env.BASE_SHA) return core.setOutput("eligible", false);
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner, repo: context.repo.repo, issue_number: pullNumber,
             });
             const labels = issue.labels.map((label) => typeof label === "string" ? label : label.name);
             if (!reviewPolicyEligible({ labels })) return core.setOutput("eligible", false);
+            const evidenceMaxBytes = labels.includes("ai-review/allow-oversized")
+              ? 4 * 1024 * 1024
+              : 1024 * 1024;
+            if (evidenceMaxBytes !== Number(process.env.EVIDENCE_MAX_BYTES)) {
+              return core.setOutput("eligible", false);
+            }
             const runs = await github.rest.actions.listWorkflowRunsForRepo({
               owner: context.repo.owner, repo: context.repo.repo, head_sha: process.env.HEAD_SHA, per_page: 100,
             });
@@ -949,7 +962,8 @@ jobs:
                   .includes(run.external_id))
               .sort((left, right) => right.id - left.id)[0];
             const state = parseCheckState(classification?.output?.summary);
-            if (!state || !state.automaticReviewEligible ||
+            if (!classification || classification.output?.title !== "Classification complete" ||
+                !state || !state.automaticReviewEligible ||
                 JSON.stringify(state.selectedReviewers) !== JSON.stringify(parse(process.env.SELECTED_REVIEWERS, [])) ||
                 JSON.stringify(state.requiredReviewers) !== JSON.stringify(parse(process.env.REQUIRED_REVIEWERS, []))) {
               return core.setOutput("eligible", false);
@@ -973,7 +987,7 @@ jobs:
       needs.review-recovery-preflight.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     concurrency:
-      group: pr-automation-review-claim-${{ needs.resolve-pr.outputs.pr-number }}
+      group: pr-automation-write-${{ needs.resolve-pr.outputs.pr-number }}
       cancel-in-progress: false
     permissions:
       checks: write
@@ -999,13 +1013,18 @@ jobs:
           SUMMARY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
-            const { claimAttempt, parseClaim } = require("./.github/pr-automation/review-attempt-claim");
+            const { claimAttempt, hasClaimMarker, parseClaim } = require("./.github/pr-automation/review-attempt-claim");
             const { ensureReviewClaim, findCheck } = require("./.github/pr-automation/write-state");
             const owner = { runId: Number(process.env.RUN_ID), runAttempt: Number(process.env.RUN_ATTEMPT) };
             const check = await findCheck(
               github, context.repo.owner, context.repo.repo, process.env.HEAD_SHA,
               { name: "AI automated review", externalId: process.env.HEAD_SHA },
             );
+            if (!parseClaim(check?.output?.summary) && hasClaimMarker(check?.output?.summary)) {
+              core.setOutput("claimed", false);
+              core.warning("Stage recovery was not claimed: persisted review claim is invalid");
+              return;
+            }
             const result = claimAttempt({
               previous: parseClaim(check?.output?.summary),
               fingerprint: process.env.FINGERPRINT,
@@ -1033,6 +1052,7 @@ jobs:
       cancel-in-progress: false
       queue: max
     permissions:
+      actions: read
       contents: read
       issues: read
       pull-requests: read
@@ -1070,6 +1090,7 @@ jobs:
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          BASE_SHA: ${{ needs.resolve-pr.outputs.base-sha }}
           GATE: ${{ needs.review-gate.outputs.gate }}
           REVIEW_GATE_RESULT: ${{ needs.review-gate.result }}
           FORK_RATE_LIMIT: ${{ needs.fork-rate-limit.outputs.quota }}
@@ -1173,7 +1194,9 @@ jobs:
                      : "stage recovery did not run",
                };
              }
-             const rawOutput = recovered ? process.env.RECOVERY_OUTPUT : process.env.INITIAL_OUTPUT;
+             const rawOutput = selectedPipeline.ok && recovery.status !== "exhausted"
+               ? recovered ? process.env.RECOVERY_OUTPUT : process.env.INITIAL_OUTPUT
+               : "";
              const reviewerReason = recovery.status === "exhausted"
                ? recovery.reason
                : recovered ? process.env.RECOVERY_REASON : process.env.INITIAL_REASON;
@@ -1258,19 +1281,28 @@ jobs:
                  .addTable([
                    [{ data: "Metric", header: true }, { data: "Total", header: true }],
                    ...Object.entries(metrics.totals).map(([name, value]) => [{ data: name }, {
-                     data: value === null ? "unavailable" : String(value),
+                     data: name === "tokens"
+                       ? `${value.input} input, ${value.output} output, ${value.total} total`
+                       : name === "tokens_complete"
+                         ? value ? "complete" : "incomplete"
+                         : String(value),
                    }]),
                  ])
                  .addHeading("Per-stage metrics")
                  .addTable([
                    [{ data: "Stage", header: true }, { data: "Attempts", header: true },
-                     { data: "Reused", header: true }, ...Object.keys(metrics.totals).map((name) => ({
+                     { data: "Reused", header: true }, ...["tokens", "elapsed_ms", "request_retries",
+                       "output_repairs", "stage_recoveries"].map((name) => ({
                        data: name, header: true,
                      }))],
                    ...Object.entries(metrics.stages).map(([name, stage]) => [
                      { data: name }, { data: String(stage.attempts) }, { data: String(stage.reused) },
                      ...Object.entries(stage.metrics).map(([metric, value]) => ({
-                       data: stage.unavailable.includes(metric) ? "unavailable" : String(value),
+                       data: stage.unavailable.includes(metric)
+                         ? "unavailable"
+                         : metric === "tokens"
+                           ? `${value.input}/${value.output}/${value.total}`
+                           : String(value),
                      })),
                    ]),
                  ])
