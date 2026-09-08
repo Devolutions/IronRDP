@@ -27,7 +27,7 @@ Run selected specialists in a multi-job matrix, with at most three running at on
 
 - Keep validated results throughout retries so only failed or missing work is repeated.
 - Reuse only trusted workflow results for unchanged review inputs and rules, and validate them again.
-- Supply a trusted review-specific validator and let the action handle bounded output repair.
+- Supply a review-specific validator and let the action handle bounded output repair.
 - Never discard findings during output repair; fail the stage if repair cannot produce valid output.
 
 ### Outputs
