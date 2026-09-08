@@ -10,7 +10,7 @@ function validCount(value) {
   return value === null || (typeof value === "number" && Number.isFinite(value) && value >= 0);
 }
 
-function normalizeTokens(value) {
+function normalizeAggregateTokens(value) {
   if (value === null) return null;
   if (!exactKeys(value, ["input", "output", "total"]) ||
       ![value.input, value.output, value.total].every(Number.isSafeInteger) ||
@@ -18,9 +18,23 @@ function normalizeTokens(value) {
   return { input: value.input, output: value.output, total: value.total };
 }
 
+function normalizeStageTokens(value) {
+  if (value === null) return null;
+  if (!exactKeys(value, ["input", "output", "total", "complete"]) ||
+      typeof value.complete !== "boolean" ||
+      ![value.input, value.output, value.total].every((count) =>
+        count === null || (Number.isSafeInteger(count) && count >= 0))) return null;
+  if (value.complete &&
+      (value.input === null || value.output === null || value.total === null ||
+      value.total < value.input + value.output)) return null;
+  return { input: value.input, output: value.output, total: value.total, complete: value.complete };
+}
+
 function normalizeMetrics(value) {
-  if (!exactKeys(value, METRIC_KEYS) || !METRIC_KEYS.slice(1).every((key) => validCount(value[key]))) return null;
-  const tokens = normalizeTokens(value.tokens);
+  if (!exactKeys(value, METRIC_KEYS) ||
+      !METRIC_KEYS.slice(1, -1).every((key) => validCount(value[key])) ||
+      !Number.isSafeInteger(value.stage_recoveries) || value.stage_recoveries < 0) return null;
+  const tokens = normalizeStageTokens(value.tokens);
   if (value.tokens !== null && tokens === null) return null;
   return { tokens, ...Object.fromEntries(METRIC_KEYS.slice(1).map((key) => [key, value[key]])) };
 }
@@ -31,7 +45,7 @@ function normalizeAggregateMetrics(value) {
     "stage_recoveries", "reused_stages", "failed_stages",
   ];
   if (!exactKeys(value, keys) || typeof value.tokens_complete !== "boolean") return null;
-  const tokens = normalizeTokens(value.tokens);
+  const tokens = normalizeAggregateTokens(value.tokens);
   if (!tokens ||
       !["elapsed_ms", "request_retries", "output_repairs", "stage_recoveries", "reused_stages", "failed_stages"]
         .every((key) => Number.isSafeInteger(value[key]) && value[key] >= 0)) return null;
@@ -42,6 +56,16 @@ function stageId(value) {
   return ["evidence", "aggregate", "general", "validate"].includes(value) ||
     (typeof value === "string" && value.startsWith("specialist:") &&
     REVIEWER_ORDER.includes(value.slice("specialist:".length)));
+}
+
+function stageOrder(value) {
+  if (value === "evidence") return 0;
+  if (value.startsWith("specialist:")) return REVIEWER_ORDER.indexOf(value.slice("specialist:".length)) + 1;
+  return {
+    aggregate: REVIEWER_ORDER.length + 1,
+    general: REVIEWER_ORDER.length + 2,
+    validate: REVIEWER_ORDER.length + 3,
+  }[value];
 }
 
 function normalizeStage(value) {
@@ -83,18 +107,21 @@ function normalizeProvenance(value, {
 } = {}) {
   const keys = [
     "v", "run_id", "run_attempt", "attempt_id", "base_sha", "head_sha", "evidence_digest",
-    "policy_digest", "corpus_sha", "artifacts",
+    "policy_digest", "corpus_sha", "recovery_attempt", "artifacts",
   ];
   const artifacts = value?.artifacts;
   if (!exactKeys(value, keys) || value.v !== 1 || !/^[1-9]\d*$/.test(value.run_id) ||
       !/^[1-9]\d*$/.test(value.run_attempt) ||
       !SHA.test(value.head_sha) ||
       value.attempt_id !== `${value.head_sha}-r${expectedRecoveryAttempt}-a${value.run_attempt}-${value.run_id}` ||
+      value.recovery_attempt !== String(expectedRecoveryAttempt) ||
       !SHA.test(value.base_sha) || !SHA.test(value.head_sha) ||
       !/^[0-9a-f]{64}$/.test(value.evidence_digest) || !/^[0-9a-f]{64}$/.test(value.policy_digest) ||
       !(value.corpus_sha === null || SHA.test(value.corpus_sha)) ||
       !exactKeys(artifacts, ["evidence", "validation", "corpus", "aggregate", "general", "specialists"]) ||
-      !["evidence", "validation", "corpus", "aggregate", "general"].every((key) =>
+      !["evidence", "validation", "aggregate"].every((key) =>
+        typeof artifacts[key] === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,190}$/.test(artifacts[key])) ||
+      !["corpus", "general"].every((key) =>
         artifacts[key] === null || (typeof artifacts[key] === "string" &&
         /^[A-Za-z0-9][A-Za-z0-9._-]{0,190}$/.test(artifacts[key]))) ||
       !isPlainObject(artifacts.specialists) ||
@@ -109,6 +136,7 @@ function normalizeProvenance(value, {
     value,
     runId: value.run_id,
     runAttempt: value.run_attempt,
+    recoveryAttempt: value.recovery_attempt,
     baseSha: value.base_sha,
     headSha: value.head_sha,
     evidenceDigest: value.evidence_digest,
@@ -130,7 +158,9 @@ function parsePipelineRecovery({
   }
   const normalizedStages = parsedStages.map(normalizeStage);
   if (normalizedStages.some((stage) => stage === null) ||
-      new Set(normalizedStages.map((stage) => stage.id)).size !== normalizedStages.length) {
+      new Set(normalizedStages.map((stage) => stage.id)).size !== normalizedStages.length ||
+      normalizedStages.some((stage, index) => index > 0 &&
+        stageOrder(normalizedStages[index - 1].id) >= stageOrder(stage.id))) {
     return { ok: false, reason: "review pipeline stage data is invalid" };
   }
   const normalizedProvenance = normalizeProvenance(parsedProvenance, {
@@ -209,22 +239,22 @@ function aggregateStageMetrics(pipelines) {
       current.reused += Number(stage.reused);
       if (stage.status === "failed") current.failures.push(stage.reason || stage.failureCategory);
       if (!stage.reused) {
-        if (stage.metrics.tokens === null) {
+        if (stage.metrics.tokens === null || !stage.metrics.tokens.complete) {
           if (stage.provider && stage.status !== "skipped") totals.tokens_complete = false;
-          current.unavailable.push("tokens");
+          if (!current.unavailable.includes("tokens")) current.unavailable.push("tokens");
         } else {
           for (const key of ["input", "output", "total"]) {
             totals.tokens[key] += stage.metrics.tokens[key];
             current.metrics.tokens[key] += stage.metrics.tokens[key];
           }
         }
-        for (const key of METRIC_KEYS.slice(1)) {
-          if (stage.metrics[key] === null) {
-            if (!current.unavailable.includes(key)) current.unavailable.push(key);
-          } else {
-            totals[key] += stage.metrics[key];
-            current.metrics[key] += stage.metrics[key];
-          }
+      }
+      for (const key of METRIC_KEYS.slice(1)) {
+        if (stage.metrics[key] === null) {
+          if (!current.unavailable.includes(key)) current.unavailable.push(key);
+        } else {
+          totals[key] += stage.metrics[key];
+          current.metrics[key] += stage.metrics[key];
         }
       }
       stages.set(stage.id, current);

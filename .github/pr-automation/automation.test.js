@@ -1070,6 +1070,19 @@ test("stage recovery retries only transient required stages and retains every fa
   });
   const parsed = parsePipelineRecovery({
     stages: JSON.stringify([
+      stage({
+        id: "specialist:protocol",
+        status: "success",
+        required: true,
+        provider: true,
+        reason: "",
+        failure_category: "",
+        retryable: false,
+        metrics: {
+          tokens: { input: 100, output: 20, total: 120, complete: true },
+          elapsed_ms: 41_230, request_retries: 1, output_repairs: 1, stage_recoveries: 1,
+        },
+      }),
       stage(),
       stage({
         id: "specialist:code-compressor", provider: true, required: false, reason: "optional stage configuration invalid",
@@ -1078,7 +1091,7 @@ test("stage recovery retries only transient required stages and retains every fa
     ]),
     provenance: JSON.stringify({
       run_id: "42", base_sha: OTHER_SHA, head_sha: SHA, evidence_digest: "c".repeat(64),
-      policy_digest: "d".repeat(64), corpus_sha: null, v: 1, run_attempt: "1",
+      policy_digest: "d".repeat(64), corpus_sha: null, v: 1, run_attempt: "1", recovery_attempt: "0",
       attempt_id: `${SHA}-r0-a1-42`,
       artifacts: {
         evidence: "review-evidence", validation: "review-validation", corpus: null,
@@ -1117,11 +1130,11 @@ test("stage recovery retries only transient required stages and retains every fa
     })]),
     provenance: JSON.stringify({
       run_id: "43", base_sha: OTHER_SHA, head_sha: SHA, evidence_digest: "c".repeat(64),
-      policy_digest: "d".repeat(64), corpus_sha: null, v: 1, run_attempt: "2",
+      policy_digest: "d".repeat(64), corpus_sha: null, v: 1, run_attempt: "2", recovery_attempt: "1",
       attempt_id: `${SHA}-r1-a2-43`,
       artifacts: {
         evidence: "review.evidence.43", validation: "review.validation.43", corpus: null,
-        aggregate: null, general: null, specialists: { "code-compressor": "review.specialist.43" },
+        aggregate: "review.aggregate.43", general: null, specialists: { "code-compressor": "review.specialist.43" },
       },
     }),
     metrics: JSON.stringify({
@@ -1161,7 +1174,7 @@ test("stage recovery retries only transient required stages and retains every fa
     stages: JSON.stringify([stage({ reused: true, reused_from_run_id: null })]),
     provenance: JSON.stringify({
       run_id: "42", base_sha: OTHER_SHA, head_sha: SHA, evidence_digest: "c".repeat(64),
-      policy_digest: "d".repeat(64), corpus_sha: null, v: 1, run_attempt: "1",
+      policy_digest: "d".repeat(64), corpus_sha: null, v: 1, run_attempt: "1", recovery_attempt: "0",
       attempt_id: `${SHA}-r0-a1-42`,
       artifacts: {
         evidence: "review-evidence", validation: "review-validation", corpus: null,
@@ -1184,7 +1197,7 @@ test("stage recovery metrics count failed attempts and preserve unavailable usag
     value: { stages, provenance: {}, recoverable: true },
   });
   const metrics = {
-    tokens: { input: 60, output: 40, total: 100 },
+    tokens: { input: 60, output: 40, total: 100, complete: true },
     elapsed_ms: 20, request_retries: 1, output_repairs: 0, stage_recoveries: 0,
   };
   const total = aggregateStageMetrics([
@@ -1214,7 +1227,7 @@ test("stage recovery metrics count failed attempts and preserve unavailable usag
   assert.equal(total.reused, 1);
   assert.deepEqual(total.totals.tokens, { input: 120, output: 80, total: 200 });
   assert.equal(total.totals.tokens_complete, false);
-  assert.equal(total.totals.elapsed_ms, 60);
+  assert.equal(total.totals.elapsed_ms, 80);
   assert.equal(total.stages["specialist:skeptical"].failures[0], "timeout");
   assert.equal(total.stages["specialist:code-compressor"].reused, 1);
 });
