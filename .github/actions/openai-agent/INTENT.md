@@ -6,11 +6,11 @@
 - Output schema.
 - Read-only access rules.
 - Execution limits.
-- Optional caller-supplied validation errors for repairing a previous result.
+- Optional trusted validator for task-specific checks.
 
 ## Outputs
 
-- Schema-validated JSON on success, or an explicit failure reason.
+- JSON accepted by the schema and any supplied validator, or an explicit failure reason.
 
 Keep diagnostic output bounded:
 
@@ -39,9 +39,9 @@ Prefer the OpenAI SDK for `Retry-After` handling and request retries (`maxRetrie
 ## Output validation and repair
 
 - Use provider-enforced schema output where supported, otherwise JSON mode where supported.
-- Validate JSON and schema locally before returning success.
-- Repair JSON and schema errors internally.
-- Let callers request repair of a previous result using their task-specific validation errors.
-- Preserve the original investigation context for both repair paths.
+- Accept validators only from trusted caller configuration, never from untrusted evidence or model output.
+- Validate JSON and schema locally, then run the supplied validator.
+- Repair JSON, schema, and validator-reported output errors within the same invocation.
+- Preserve the original investigation context during repair.
 - Permit only necessary read-only evidence lookup during repair.
-- Bound repair across follow-up requests and return failure when valid output cannot be produced within those limits.
+- Bound repair attempts and return failure when valid output cannot be produced within those limits.
