@@ -79,6 +79,38 @@ registrations or register a synthetic type library. The public MSTSCLib library 
 `{8C11EFA1-92C3-11D1-BC1E-00C04FA31489}`, version `1.0`; this crate preserves its published DISPIDs
 for the Automation members it implements without claiming to provide that typelib.
 
+### Modern Remote Desktop Client facade
+
+The IronRDP class also exposes the public `IRemoteDesktopClient` facade through `QueryInterface`.
+It does not register Microsoft's `CLSID_RemoteDesktopClient` (`{EAB16C5D-EED1-4E95-868B-0FBA1B42C092}`), so hosts must activate `IronRDP.ActiveX` and request the modern interface.
+
+The facade maps `Connect`, `Disconnect`, `Reconnect`, and `UpdateSessionDisplaySettings` to the same lifecycle and Display Control paths as the classic interfaces.
+`DeleteSavedCredentials` validates its server argument and succeeds without accessing Windows Credential Manager because IronRDP never persists credentials.
+
+`Settings` returns an `IRemoteDesktopClientSettings` object that keeps its control alive.
+`ApplySettings`, `RetrieveSettings`, `GetRdpProperty`, and `SetRdpProperty` map full address, account, dimensions, color depth, clipboard, CredSSP, compression, administrative session, load-balance, audio quality, scale, and RemoteApp settings into the existing connection configuration.
+Unmapped properties return `E_NOTIMPL` instead of reporting a setting that cannot affect the connection.
+Settings remain mutable only while disconnected.
+Clear-text passwords, encrypted passwords, gateway credentials, access tokens, and RDCleanPath tokens return `E_ACCESSDENIED` and are never retained or returned.
+
+`Actions` returns an `IRemoteDesktopClientActions` object that keeps its control alive.
+It maps screen-update suppression, the five documented modern remote actions, and PNG data-URI snapshots to the existing renderer and input paths.
+Microsoft's deprecated `RemoteActionSnap` value remains a successful no-op, matching the current Windows control.
+JPEG and BMP snapshots return `E_INVALIDARG`.
+Snapshot RGB data is capped at 16 MiB before encoding.
+
+`attachEvent` and `detachEvent` retain and release `IDispatch` callbacks for `OnConnecting`, `OnConnected`, `OnLoginCompleted`, `OnDisconnected`, `OnAutoReconnecting`, `OnAutoReconnected`, `OnDialogDisplaying`, `OnDialogDismissed`, and `OnRemoteDesktopSizeChanged`.
+Other event names return `E_INVALIDARG` until IronRDP has an equivalent event source.
+Callbacks run on the creating apartment with the documented modern argument order, and detaching one registration does not affect duplicate registrations.
+
+`TouchPointer` returns `E_NOTIMPL` and a null interface because Microsoft's touch-pointer feature translates local touch into remote mouse input, while IronRDP's existing touch path sends native [MS-RDPEI] contacts.
+`IMsRdpClientNonScriptable8::StartWorkspaceExtension` remains unavailable because [MS-RDWR] requires a separate HTTPS workspace service, returned `.rdp` resource validation, and reconnect orchestration.
+Claims tokens, `CTSPropertySet`, debugger access, and `IMsRdpClientShell` remain outside the public compatibility surface.
+The separate `IMsRdpClient9::attachEvent` and `detachEvent` members also remain explicit `E_NOTIMPL` failures because their callback contract is not the modern facade contract.
+
+[MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/
+[MS-RDWR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdwr/
+
 For direct DLL probing, such as a configured MsRdpEx `mstscax` DLL path, `DllGetClassObject` recognizes
 the IronRDP CLSID and the published MSTSCLib client coclass aliases through v12. The v12 probe's
 `IMsRdpClientNonScriptable7` contract is ABI-complete; only its cursor-scaling policy is currently mapped.
@@ -258,12 +290,32 @@ Held modifiers and shortcut keys are released before the action, then restored w
 | `RemoteSessionActionTaskManager` | 6 | `Ctrl+Shift+Esc` |
 
 `RemoteSessionActionSnap` (2) is deprecated by Microsoft and returns `E_NOTIMPL`.
+
 Unknown action values return `E_INVALIDARG`.
 An inactive session returns `E_UNEXPECTED`.
 `RemoteSessionActionType` contains remote shell UI actions only; it does not include session shutdown, reconnect, or other lifecycle requests.
 
 [RemoteSessionActionType]: https://learn.microsoft.com/windows/win32/termserv/remotesessionactiontype
 [MS-RDPBCGR 2.2.8.1.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+
+### `IMsRdpClientNonScriptable6` location redirection
+
+`SendLocation2D` and `SendLocation3D` forward coordinates supplied explicitly by the COM caller through the [MS-RDPEL] `Microsoft::Windows::RDS::Location` dynamic channel.
+The control never queries host geolocation services, logs coordinates, or persists location data.
+
+Both methods require an active session and accept finite latitude from -90 through 90 degrees and longitude from -180 through 180 degrees.
+`SendLocation3D` accepts altitude from -268435455 through 268435455 metres and caches it, including on a validation or delivery failure, while `SendLocation2D` reuses the most recently supplied altitude or zero before the first 3D call.
+
+The server must create the channel and complete the server-ready/client-ready exchange before either method can succeed.
+IronRDP advertises MS-RDPEL version 1 and supports latitude, longitude, and altitude; version 2 speed, heading, horizontal accuracy, and source fields are not exposed by this COM interface.
+Coordinates are encoded to five decimal places to match the Windows client behavior.
+The first accepted update uses an absolute 3D PDU, then unchanged-altitude updates use 2D deltas and changed-altitude updates use 3D deltas.
+
+Delivery uses the client's bounded input queue and waits up to two seconds for the session loop to encode and commit the update.
+Expired requests are cancelled before they can change the location delta state or produce a frame.
+No active session returns `E_UNEXPECTED`, invalid coordinates return `E_INVALIDARG`, an absent or uninitialized location channel returns `E_POINTER`, and queue, timeout, or encoding failures return `E_FAIL`.
+
+[MS-RDPEL]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpel/
 
 For the native `mstsc.exe` host, `FullScreen` and `Ctrl`+`Alt`+`Break` (or `Pause`) return
 `E_NOTIMPL` without changing the outer `TscShellContainerClass` window. Directly manipulating that
@@ -280,13 +332,33 @@ A source-level audit of RDM's Windows RDP host covers these ActiveX contracts:
 | --- | --- |
 | Legacy RDP 6.1 through 11 host selection | The six published `MsRdpClient*NotSafeForScripting` class identifiers are accepted by `DllGetClassObject` and preserve their requested `IPersist` class identity. They are explicit backend aliases, not global COM registrations. |
 | WinForms `AxHost` lifecycle | Windowed OLE activation, focus, sizing, the inherited `IMsRdpClient` through `IMsRdpClient10` raw interfaces, and the RDM virtual channels `RDMJump`, `RDMLog`, and `RDMCmd` are supported. |
-| Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio, clipboard, CredSSP, client-device name, RemoteApp, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
+| Connection configuration | Server, account, desktop, color, smart-sizing, keyboard, display update, gateway, audio and quality policy, clipboard, default-printer redirection, CredSSP, administrative session, load-balance routing token, client-device name, RemoteApp, and backing `ConfigBuilder` settings are mapped where IronRDP provides the same behavior. |
 | Events | Connecting, connected, login-complete, disconnect, fatal-error, fullscreen-leave, virtual-channel, resize, writable confirm-close, and worker-backed warning and auto-reconnect events are delivered on the creating apartment. |
-| Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. Non-filesystem device, camera, monitor, and preferred-redirection capabilities remain unavailable. |
+| Optional RDM interfaces | `IMsRdpDriveCollection` exposes Windows logical volumes for static filesystem redirection. `IMsRdpCameraRedirConfigCollection` exposes connected Windows camera metadata and offline configurations, but camera stream redirection remains unavailable. Non-filesystem device, monitor, and preferred-redirection capabilities remain unavailable. |
 | Smartcard redirection | `IMsRdpClientAdvancedSettings::RedirectSmartCards` enables WinSCard RDPDR smartcard redirection (smartcard-only sessions are valid without redirected drives). |
+| Printer redirection | `IMsRdpClientAdvancedSettings::RedirectPrinters` redirects the current user's default Windows printer through RDPDR when the remote server has the same printer driver. |
 
-The audit also identified RDM settings that have no IronRDP ActiveX backend: input throttling, authentication policy, device/printer/port redirection, audio capture, video policy, PCB, load balancing, and Microsoft workspace extensions.
-Their audited AdvancedSettings vtable slots use their exact published ABI signatures, initialize out parameters, and return `E_NOTIMPL`; the control does not report success for settings that cannot affect the connection.
+The audit also identified unsupported `AdvancedSettings` members: plug-in DLL loading, idle policy, port and generic-device redirection, persistent bitmap caching, video policy, PCB, super-pan, and security-layer negotiation.
+Their audited vtable slots use published ABI signatures, initialize getter outputs, and return `E_NOTIMPL`; the control does not report success for settings that cannot affect the connection.
+`IMsRdpClientNonScriptable8::StartWorkspaceExtension` independently returns `E_NOTIMPL` because IronRDP does not implement Microsoft workspace extensions.
+
+### Default-printer redirection
+
+Set `RedirectPrinters` to `VARIANT_TRUE` before connecting to redirect one printer.
+The control snapshots the current user's default Windows queue, announces its local driver name, and streams each remote print job to that same queue with the Windows `RAW` spooler data type.
+If no default printer exists, the connection proceeds without a printer or an otherwise-empty RDPDR channel.
+`DisableRdpdr` overrides this setting, and changing it after connection settings are sealed returns `E_FAIL`.
+
+The remote server must permit printer redirection and have a compatible driver registered under the announced name.
+IronRDP does not implement Easy Print/XPS negotiation, printer cache PDUs, multiple-printer enumeration, printer hotplug, or printer entries in `IMsRdpDeviceCollection`.
+Print operations run on a bounded worker, allow at most 16 concurrent jobs, 16 MiB per write, and 128 MiB per job, reject nonempty create paths, and abort incomplete jobs on write failure, reset, reconnect, or teardown.
+
+To opt in to the ignored smoke test, confirm that creating a real empty job on the current user's default queue is acceptable, then run:
+
+```powershell
+$env:IRONRDP_RDPDR_PRINTER_SMOKE = "1"
+cargo test -p ironrdp-rdpdr-native authorized_default_printer_smoke -- --ignored
+```
 
 The control exposes a standard `IConnectionPointContainer` and an event connection point for the
 published `IMsTscAxEvents` IID `{336D5562-EFA8-482E-8CB3-C5C0FC7A7DB6}`. Lifecycle events are delivered
@@ -455,16 +527,16 @@ The `AdvancedSettings` through `AdvancedSettings9`, `SecuredSettings` through `S
 and `TransportSettings` through `TransportSettings4` getters return reference-counted, non-null
 settings objects with the published vtable lengths required by mstsc.exe and MsRdpEx. Returned
 settings objects keep the server loaded until their final `Release`, even if their parent control
-has already been released. The currently mapped members are `SmartSizing`, `EnableCredSspSupport`,
-`KeyboardHookMode`, keyboard type,
-subtype, and functional-key count, secured `StartProgram`/`WorkDir`, both public
-`AudioRedirectionMode` slots, both public `AudioCaptureRedirectionMode` slots,
-`GrabFocusOnConnect`, `Compress`, `RDPPort`,
-`AuthenticationLevel`, and `PublicMode`,
-`RedirectClipboard`, `PerformanceFlags`, and RD Gateway transport selection.
+has already been released. The currently mapped members are `SmartSizing`, `EnableCredSspSupport`, `MinInputSendInterval`, `KeepAliveInterval`, `KeyboardHookMode`, keyboard type, subtype, and functional-key count, secured `StartProgram`/`WorkDir`, both public `AudioRedirectionMode` slots, both public `AudioCaptureRedirectionMode` slots, `AudioQualityMode`, `LoadBalanceInfo`, `ConnectToServerConsole`/`ConnectToAdministerServer`, `GrabFocusOnConnect`, `Compress`, `RDPPort`, `AuthenticationLevel`, `PublicMode`, `RedirectClipboard`, `PerformanceFlags`, and RD Gateway transport selection.
 `StartProgram` and `WorkDir` retain their caller-owned BSTR values and configure IronRDP's next
 Client Info PDU alternate shell and working directory. The keyboard fields configure the next GCC
-Client Core Data block. Audio mode `0` enables the Windows-native RDPSND playback backend (CPAL) and
+Client Core Data block.
+`LoadBalanceInfo` carries a nonempty routing token in the next X.224 Connection Request.
+The token must contain 1–238 printable ASCII bytes, excluding an optional trailing CRLF; an empty value clears it.
+`ConnectToServerConsole` and `ConnectToAdministerServer` are aliases that request session ID zero through GCC Client Cluster Data.
+`AudioQualityMode` values `0`, `1`, and `2` select dynamic, medium, and high RDPSND quality; `0` is the default.
+The control sends this policy only when the server advertises RDPSND version 6 or newer.
+Audio mode `0` enables the Windows-native RDPSND playback backend (CPAL) and
 advertises the `rdpsnd` static channel for server-to-client wave data; modes
 `1` (play on server) and `2` (disabled) both clear local playback and set
 `INFO_NOAUDIOPLAYBACK` (a no-op RDPSND channel may still attach when RDPDR is
@@ -477,6 +549,11 @@ with the Windows CPAL capture backend and sets `INFO_AUDIOCAPTURE` on Client Inf
 When requested,
 `GrabFocusOnConnect` focuses the ActiveX renderer only after its first remote frame arrives.
 Invalid audio modes and keyboard types return `E_INVALIDARG`.
+`MinInputSendInterval` defaults to 100 milliseconds and accepts values from 0 through 2000.
+It batches mouse-movement events until the interval expires or ten events accumulate, while keyboard, button, wheel, synchronization, and QoE events remain immediate.
+`KeepAliveInterval` defaults to zero and sends no synthetic input when disabled.
+Nonzero values are read back unchanged and reinterpreted as unsigned seconds, scheduling a no-op mouse movement after that much idle time.
+Both timing settings can be changed while a connection is active and apply to the next connection.
 `Compress`, `RDPPort`, and `RedirectClipboard` configure the next IronRDP connection. Clipboard
 redirection creates its Windows CLIPRDR listener on the ActiveX creating apartment, where its hidden
 window is serviced by the host message loop; the RDP worker receives only the thread-safe backend
@@ -511,9 +588,14 @@ keyboard forwarding.
 `RescanDrives` preserves known selections and applies its Boolean argument only to newly discovered volumes.
 `RedirectDrives` selects or clears the current catalog before connecting.
 `DisableRdpdr` is a hard preconnect override, so it suppresses RDPDR even when drives are selected.
-The worker receives only a snapshot of selected drive names and roots through a `WindowsRdpdrBackendFactory`.
-Drive selection, catalog refresh, and `DisableRdpdr` are sealed after connection setup.
-`RedirectDynamicDrives` remains unsupported, so the collection does not modify an active session.
+The worker receives the selected drive IDs plus a bounded A-through-Z logical-volume catalog through a `WindowsRdpdrBackendFactory`.
+`RedirectDynamicDrives` keeps drive capability negotiation active even when no volume is initially selected.
+`NotifyRedirectDeviceChange` rescans the catalog, preserves stable device IDs and selections, announces newly selected volumes, and removes disappeared volumes from an active session.
+Connected `IMsRdpDrive::RedirectionState` changes use the same RDPDR announce/remove path, while connecting and stopping states reject mutation.
+These updates follow [MS-RDPEFS sections 3.2.5.1.9 and 3.2.5.2.2], including the requirement to announce only new devices and remove disconnected devices before reusing their IDs.
+`RedirectDynamicDevices` reports disabled and rejects enablement because generic Plug and Play devices have no IronRDP backend.
+`IMsRdpDeviceCollection` is therefore retained as an empty collection whose rescan operation returns `E_NOTIMPL`.
+Printer, serial, and parallel-port redirection remain unsupported; smartcard redirection remains independent of drive selection.
 `IMsRdpPreferredRedirectionInfo::UseRedirectionServerName` likewise reports disabled and rejects
 enabling it because IronRDP does not currently consume load-balancing redirection names. Remote
 actions also return `E_NOTIMPL` until an IronRDP session-operation mapping exists.
@@ -546,6 +628,18 @@ success. The ActiveX renderer centers and scales the framebuffer by the retained
 preserves aspect ratio during smart sizing, and translates pointer coordinates through the same
 viewport.
 
+### Camera configuration
+
+`IMsRdpClientNonScriptable7::CameraRedirConfigCollection` returns a retained collection that can enumerate connected `KSCATEGORY_VIDEO_CAMERA` device interfaces.
+Each configuration exposes the friendly name, symbolic link, instance ID, parent instance ID, connection state, and requested redirection state.
+Rescans preserve configuration identity and retain disconnected or explicitly added symbolic links with `DeviceExists` set to false.
+
+The collection is currently an enabling compatibility layer, not a camera redirection backend.
+The `ironrdp-rdpecam` crate provides bounded version 1 codecs and DVC state machines, but the ActiveX worker neither registers the RDPECAM channels nor provides a native camera capture backend.
+Attempts to enable `Redirected`, `RedirectByDefault`, or an enabled `AddConfig` entry therefore return `E_NOTIMPL`, and no camera is advertised or activated.
+Encoding policy can be read or changed before connecting, but has no effect until the native backend is available.
+All collection mutations are rejected after connection settings are sealed.
+
 ### DVC COM plugins
 
 The IronRDP-specific `IMsRdpExtendedSettings::Property` named `IronRdpDvcPluginPaths` configures
@@ -576,6 +670,12 @@ exceptions.
 
 Set `IronRdpRemoteProgramMode=true` and a nonempty `IronRdpRemoteApplicationProgram` while disconnected to launch one RemoteApp program.
 `IronRdpRemoteApplicationArgs` supplies optional arguments.
+The inherited `IMsRdpClient5::RemoteProgram`, `IMsRdpClient7::RemoteProgram2`, and `IMsRdpClient10::RemoteProgram3` getters expose the same RemoteApp state.
+Hosts can configure the initial executable through these interfaces or call `ServerStartProgram` once before `Connect`.
+After the session starts, `ServerStartProgram` queues executable or file launches and `ServerStartApp` queues application user model ID launches over the active RAIL channel.
+Launch strings use MSTSCLib-compatible input limits: 259 UTF-16 code units for an executable, file, working directory, or application user model ID, and 8,000 for arguments.
+Expansion parameters accept only canonical `VARIANT_FALSE` or `VARIANT_TRUE`.
+`OnRemoteProgramResult` reports the server Execute Result after a queued launch; a local post-queue failure reports the generic RAIL failure result.
 RemoteApp mode projects server-authoritative RAIL windows as top-level HWNDs and removes them when the server deletes them or the session ends.
 
 ## Windowed ActiveX hosting
@@ -646,11 +746,31 @@ connection while the RDP worker owns the protocol backend; shutdown removes the 
 activation; its explicit sync methods succeed at that point because the backend performs
 synchronization automatically. They return `E_UNEXPECTED` before connection or when clipboard
 redirection was disabled for the session.
-For the same active state, `IOleObject::GetClipboardData(0)` returns an immutable OLE `IDataObject` snapshot of the current Windows clipboard's valid `CF_UNICODETEXT` payload.
+For the same active state, `IOleObject::GetClipboardData(0)` returns an immutable OLE `IDataObject` snapshot of each currently available, valid payload in this allowlist:
+
+| Format | Snapshot validation |
+| --- | --- |
+| `CF_UNICODETEXT` | Even-sized, null-terminated valid UTF-16, trimmed at the first terminator |
+| `CF_TEXT`, `CF_OEMTEXT` | Null-terminated bytes, trimmed at the first terminator |
+| `CF_LOCALE` | Exactly the first four-byte locale identifier |
+| `CF_DIB`, `CF_DIBV5` | Bounded 24/32-bpp DIB accepted by `ironrdp-cliprdr-format`; embedded V5 profiles are rejected |
+| Registered `HTML Format` | Bounded CF_HTML with valid offsets and UTF-8 fragment, trimmed at `EndHTML` |
+
+Text and HTML clipboard allocations are limited to 16 MiB each.
+DIB allocations and the complete retained snapshot are limited to 64 MiB.
+Invalid, oversized, truncated, or unsupported payloads are omitted rather than advertised.
+
 The object supports source retrieval only (`DATADIR_GET`) with `DVASPECT_CONTENT`, `lindex = -1`, no target device, and `TYMED_HGLOBAL`.
-It validates those `FORMATETC` fields and returns a newly allocated `STGMEDIUM` for each `GetData` call, so the caller owns and must release that medium.
-Delayed rendering remains in the STA-bound native CLIPRDR backend while the snapshot is created; after creation the object has no live clipboard or RDP-worker dependency.
-No other clipboard format, conversion, inbound `SetData`, destination enumeration, `GetDataHere`, or data-advisory contract is claimed.
+`EnumFormatEtc` lists exactly the retained formats, and `QueryGetData` accepts exactly those formats and constraints.
+Each `GetData` call returns a separate `GMEM_MOVEABLE` allocation with `pUnkForRelease = NULL`.
+The caller owns that `STGMEDIUM` and must pass it to `ReleaseStgMedium`.
+
+Snapshot creation resolves native CLIPRDR delayed rendering on the ActiveX STA.
+It opens the Windows clipboard only around one format retrieval, closes it on every result path before trying another format, and aborts if the clipboard sequence changes between retrievals.
+Each remote delayed format can require a synchronous CLIPRDR round trip, so `GetClipboardData` can take one native-backend timeout per candidate format even though the clipboard lock is released between attempts.
+After creation, the object has no live clipboard or RDP-worker dependency.
+The snapshot does not expose `CF_HDROP`, `FileGroupDescriptorW`, file contents, RTF, arbitrary registered formats, GDI-handle formats, inbound `SetData`, destination enumeration, `GetDataHere`, or data advisories.
+File formats stay excluded because a correct OLE surface would also require path-safe descriptors, stream-index lifetime, CLIPRDR lock/unlock sequencing, bounded range reads, and explicit user-authorized file disclosure.
 `GetClipboardData` rejects a nonzero reserved value and reports `OLE_E_NOTRUNNING` before clipboard redirection is active.
 
 `IMsRdpClientNonScriptable5::UseMultimon` is disabled by default and can be changed only while the connection settings are mutable.
@@ -766,6 +886,8 @@ The worker translates supported Automation settings into `ironrdp-client::Config
 Connection points retain sinks through `Advise`/`Unadvise`, enumerate correctly, and query the supplied
 sink for the event interface IID before retaining its `IDispatch`.
 
-This is an Automation, lifecycle, hosting, framebuffer, basic input, RemoteApp projection, persistence, static virtual-channel, and Unicode-text OLE clipboard-snapshot foundation.
-It does not implement non-text or writable OLE clipboard exchange, monikers, non-filesystem RDPDR device redirection, or arbitrary persisted designer state.
+This is an Automation, lifecycle, hosting, framebuffer, basic input, RemoteApp projection, persistence, static virtual-channel, default-printer redirection, and bounded read-only OLE clipboard-snapshot foundation.
+It does not implement writable or file-backed OLE clipboard exchange, monikers, serial/parallel or generic PnP/USB redirection, or arbitrary persisted designer state.
 Those contracts must be added as exact ABI implementations before advertising their individual methods as supported.
+
+[MS-RDPEFS sections 3.2.5.1.9 and 3.2.5.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5

@@ -3,16 +3,18 @@ use std::sync::Arc;
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
 use ironrdp_core::{ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
-use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelRef};
+use ironrdp_dvc::pdu::SoftSyncTunnelType;
+use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessageBatch, DynamicChannelMut, DynamicChannelRef};
+use ironrdp_egfx::client::GraphicsPipelineClient;
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
-use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
-use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
+use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
 use ironrdp_pdu::rdp::refresh_rectangle::RefreshRectanglePdu;
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use ironrdp_pdu::rdp::suppress_output::SuppressOutputPdu;
@@ -23,7 +25,7 @@ use ironrdp_pdu::window::{
 use ironrdp_pdu::{Action, mcs};
 use ironrdp_rdpei::RdpeiClient;
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
@@ -150,7 +152,7 @@ impl ActiveStage {
 
         // If mouse was moved by client - we should update framebuffer to reflect new
         // pointer position
-        let mouse_pos = events.iter().find_map(|event| match event {
+        let mouse_pos = events.iter().rev().find_map(|event| match event {
             FastPathInputEvent::MouseEvent(event) => Some((event.x_position, event.y_position)),
             FastPathInputEvent::MouseEventEx(event) => Some((event.x_position, event.y_position)),
             _ => None,
@@ -214,6 +216,21 @@ impl ActiveStage {
                             stage_outputs.push(ActiveStageOutput::try_from(other)?);
                         }
                     }
+                }
+
+                // Drain the client-side EGFX compositor: composite each completed-frame
+                // output region into the image and surface it as a graphics update. EGFX
+                // data only ever arrives over a DVC, which is X224-carried, so this stays
+                // out of the Action::FastPath arm rather than running on every fast-path
+                // frame (the highest-frequency path in a session).
+                let graphics_updates = self
+                    .get_dvc_mut::<GraphicsPipelineClient>()
+                    .map(|mut gfx| gfx.processor_mut().drain_output())
+                    .unwrap_or_default();
+                if let Some(region) =
+                    composite_graphics_updates(image, graphics_updates.into_iter().map(|u| (u.region, u.data)))?
+                {
+                    stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
                 }
 
                 (stage_outputs, processor_updates)
@@ -409,6 +426,11 @@ impl ActiveStage {
         self.x224_processor.encode_static(output, pdu)
     }
 
+    /// Encodes an Initiate Multitransport Response on the negotiated MCS message channel.
+    pub fn encode_multitransport_response(&self, response: &MultitransportResponsePdu) -> SessionResult<Vec<u8>> {
+        self.x224_processor.encode_multitransport_response(response)
+    }
+
     pub fn get_svc_processor<T: SvcProcessor + 'static>(&mut self) -> Option<&T> {
         self.x224_processor.get_svc_processor()
     }
@@ -419,6 +441,10 @@ impl ActiveStage {
 
     pub fn get_dvc<T: DvcClientProcessor + 'static>(&self) -> Option<DynamicChannelRef<'_, T>> {
         self.x224_processor.get_dvc::<T>()
+    }
+
+    pub fn get_dvc_mut<T: DvcClientProcessor + 'static>(&mut self) -> Option<DynamicChannelMut<'_, T>> {
+        self.x224_processor.get_dvc_mut::<T>()
     }
 
     pub fn get_dvc_by_channel_id<T: DvcClientProcessor + 'static>(
@@ -459,10 +485,96 @@ impl ActiveStage {
         self.x224_processor.process_svc_messages_by_name(channel_name, messages)
     }
 
+    /// Marks the reliable UDP tunnel as available for DRDYNVC Soft-Sync.
+    ///
+    /// Call this after successfully sending the tunnel's Initiate Multitransport Response PDU.
+    pub fn enable_reliable_udp_dvc_tunnel(&mut self) -> SessionResult<()> {
+        self.get_svc_processor_mut::<DrdynvcClient>()
+            .ok_or_else(|| SessionError::general("DRDYNVC static channel is not available"))?
+            .enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+        Ok(())
+    }
+
+    /// Marks the reliable UDP tunnel as unavailable for future Soft-Sync requests.
+    ///
+    /// DVCs already routed through the tunnel are unaffected.
+    pub fn disable_reliable_udp_dvc_tunnel(&mut self) -> SessionResult<()> {
+        self.get_svc_processor_mut::<DrdynvcClient>()
+            .ok_or_else(|| SessionError::general("DRDYNVC static channel is not available"))?
+            .disable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+        Ok(())
+    }
+
+    /// Returns whether Soft-Sync moved any DVC to the reliable UDP tunnel.
+    pub fn reliable_udp_dvc_tunnel_in_use(&self) -> bool {
+        self.x224_processor
+            .get_svc_processor::<DrdynvcClient>()
+            .is_some_and(|drdynvc| drdynvc.has_channels_on_tunnel(SoftSyncTunnelType::RELIABLE_UDP))
+    }
+
+    /// Returns the Soft-Sync tunnel selected for client messages on `channel_id`.
+    pub fn dvc_tunnel_for_channel(&self, channel_id: u32) -> Option<SoftSyncTunnelType> {
+        self.x224_processor
+            .get_svc_processor::<DrdynvcClient>()?
+            .tunnel_for_channel(channel_id)
+    }
+
+    /// Processes an unframed DRDYNVC PDU received through a multitransport tunnel.
+    ///
+    /// Response messages remain unframed so the caller can encode them with
+    /// [`SvcMessage::encode_unframed_pdu`] and send them through the selected tunnel.
+    pub fn process_dvc_tunnel(
+        &mut self,
+        tunnel_type: SoftSyncTunnelType,
+        payload: &[u8],
+    ) -> SessionResult<DvcMessageBatch> {
+        self.get_svc_processor_mut::<DrdynvcClient>()
+            .ok_or_else(|| SessionError::general("DRDYNVC static channel is not available"))?
+            .process_tunnel(tunnel_type, payload)
+            .map_err(SessionError::pdu)
+    }
+
+    /// Prepares a resize request for routing over TCP or a Soft-Sync tunnel.
+    ///
+    /// If the Display Control Virtual Channel is not available, not yet connected, or has not
+    /// received its required server capabilities PDU, this method returns `None`.
+    pub fn prepare_resize(
+        &mut self,
+        width: u32,
+        height: u32,
+        scale_factor: Option<u32>,
+        physical_dims: Option<(u32, u32)>,
+    ) -> Option<SessionResult<DvcMessageBatch>> {
+        if let Some(dvc) = self.get_dvc::<DisplayControlClient>() {
+            let channel_id = dvc.channel_id();
+            let display_control = dvc.processor();
+            if !display_control.ready() {
+                debug!("Could not encode a resize: Display Control capabilities have not been received");
+                return None;
+            }
+            let messages = match display_control.encode_single_primary_monitor(
+                channel_id,
+                width,
+                height,
+                scale_factor,
+                physical_dims,
+            ) {
+                Ok(messages) => messages,
+                Err(error) => return Some(Err(SessionError::encode(error))),
+            };
+
+            return Some(DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu));
+        }
+
+        debug!("Could not encode a resize: Display Control Virtual Channel is not available");
+        None
+    }
+
     /// Fully encodes a resize request for sending over the Display Control Virtual Channel.
     ///
     /// If the Display Control Virtual Channel is not available, not yet connected, or has not
     /// received its required server capabilities PDU, this method returns `None`.
+    /// Returns an error when Soft-Sync routes the channel through a multitransport tunnel.
     ///
     /// Per [2.2.2.2.1]:
     /// - The `width` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels, and MUST NOT be an odd value.
@@ -473,7 +585,7 @@ impl ActiveStage {
     /// Use [`ironrdp_displaycontrol::pdu::MonitorLayoutEntry::adjust_display_size`] to adjust `width` and `height` before calling this function
     /// to ensure the display size is within the valid range.
     ///
-    /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
+    /// [2.2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
     pub fn encode_resize(
         &mut self,
         width: u32,
@@ -481,30 +593,8 @@ impl ActiveStage {
         scale_factor: Option<u32>,
         physical_dims: Option<(u32, u32)>,
     ) -> Option<SessionResult<Vec<u8>>> {
-        if let Some(dvc) = self.get_dvc::<DisplayControlClient>() {
-            let channel_id = dvc.channel_id();
-            let display_control = dvc.processor();
-            if !display_control.ready() {
-                debug!("Could not encode a resize: Display Control capabilities have not been received");
-                return None;
-            }
-            let svc_messages = match display_control.encode_single_primary_monitor(
-                channel_id,
-                width,
-                height,
-                scale_factor,
-                physical_dims,
-            ) {
-                Ok(messages) => messages,
-                Err(e) => return Some(Err(SessionError::encode(e))),
-            };
-
-            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
-        } else {
-            debug!("Could not encode a resize: Display Control Virtual Channel is not available");
-        }
-
-        None
+        let prepared = self.prepare_resize(width, height, scale_factor, physical_dims)?;
+        Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
     }
 
     /// Returns whether the RDPEI channel is available and ready (SC_READY / CS_READY exchanged).
@@ -527,10 +617,14 @@ impl ActiveStage {
             .is_some_and(|dvc| dvc.processor().ready() && !dvc.processor().is_suspended())
     }
 
-    /// Encodes a touch event for the RDPEI dynamic channel.
+    /// Prepares a touch event for routing over TCP or a Soft-Sync tunnel.
     ///
-    /// Returns `None` when the channel is unavailable, not ready, or suspended.
-    pub fn encode_rdpei_touch(&mut self, event: ironrdp_rdpei::pdu::TouchEventPdu) -> Option<SessionResult<Vec<u8>>> {
+    /// Returns `None` when the channel is unavailable.
+    /// Returns an error when the channel is not ready or suspended, or when the request cannot be encoded or batched.
+    pub fn prepare_rdpei_touch(
+        &mut self,
+        event: ironrdp_rdpei::pdu::TouchEventPdu,
+    ) -> Option<SessionResult<DvcMessageBatch>> {
         if let Some(dvc) = self.get_dvc::<RdpeiClient>() {
             let channel_id = dvc.channel_id();
             let rdpei = dvc.processor();
@@ -540,19 +634,28 @@ impl ActiveStage {
             if rdpei.is_suspended() {
                 return Some(Err(SessionError::general("RDPEI input is suspended")));
             }
-            let svc_messages = match rdpei.encode_touch_event(channel_id, event) {
+            let messages = match rdpei.encode_touch_event(channel_id, event) {
                 Ok(messages) => messages,
-                Err(e) => return Some(Err(SessionError::encode(e))),
+                Err(error) => return Some(Err(SessionError::encode(error))),
             };
-            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
+            return Some(DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu));
         } else {
             debug!("Could not encode RDPEI touch: Input Virtual Channel is not available");
         }
         None
     }
 
-    /// Encodes a dismiss-hovering-touch-contact PDU on the RDPEI channel.
-    pub fn encode_rdpei_dismiss_hovering(&mut self, contact_id: u8) -> Option<SessionResult<Vec<u8>>> {
+    /// Fully encodes a touch event for the RDPEI dynamic channel.
+    ///
+    /// Returns `None` when the channel is unavailable.
+    /// Returns an error when preparation fails or Soft-Sync routes the channel through a multitransport tunnel.
+    pub fn encode_rdpei_touch(&mut self, event: ironrdp_rdpei::pdu::TouchEventPdu) -> Option<SessionResult<Vec<u8>>> {
+        let prepared = self.prepare_rdpei_touch(event)?;
+        Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
+    }
+
+    /// Prepares a dismiss-hovering-touch-contact PDU for routing over TCP or a Soft-Sync tunnel.
+    pub fn prepare_rdpei_dismiss_hovering(&mut self, contact_id: u8) -> Option<SessionResult<DvcMessageBatch>> {
         if let Some(dvc) = self.get_dvc::<RdpeiClient>() {
             let channel_id = dvc.channel_id();
             let rdpei = dvc.processor();
@@ -560,19 +663,30 @@ impl ActiveStage {
                 debug!("Could not encode RDPEI dismiss hovering: channel is not ready");
                 return None;
             }
-            let svc_messages = match rdpei.encode_dismiss_hovering(channel_id, contact_id) {
+            let messages = match rdpei.encode_dismiss_hovering(channel_id, contact_id) {
                 Ok(messages) => messages,
-                Err(e) => return Some(Err(SessionError::encode(e))),
+                Err(error) => return Some(Err(SessionError::encode(error))),
             };
-            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
+            return Some(DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu));
         }
         None
     }
 
-    /// Encodes a pen event for the RDPEI dynamic channel.
+    /// Fully encodes a dismiss-hovering-touch-contact PDU on the RDPEI channel.
+    ///
+    /// Returns an error when Soft-Sync routes the channel through a multitransport tunnel.
+    pub fn encode_rdpei_dismiss_hovering(&mut self, contact_id: u8) -> Option<SessionResult<Vec<u8>>> {
+        let prepared = self.prepare_rdpei_dismiss_hovering(contact_id)?;
+        Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
+    }
+
+    /// Prepares a pen event for routing over TCP or a Soft-Sync tunnel.
     ///
     /// Returns `None` when the channel is unavailable, not ready, suspended, or pen is not allowed.
-    pub fn encode_rdpei_pen(&mut self, event: ironrdp_rdpei::pdu::PenEventPdu) -> Option<SessionResult<Vec<u8>>> {
+    pub fn prepare_rdpei_pen(
+        &mut self,
+        event: ironrdp_rdpei::pdu::PenEventPdu,
+    ) -> Option<SessionResult<DvcMessageBatch>> {
         if let Some(dvc) = self.get_dvc::<RdpeiClient>() {
             let channel_id = dvc.channel_id();
             let rdpei = dvc.processor();
@@ -588,19 +702,38 @@ impl ActiveStage {
                 debug!("Could not encode RDPEI pen: pen not allowed for negotiated version");
                 return None;
             }
-            let svc_messages = match rdpei.encode_pen_event(channel_id, event) {
+            let messages = match rdpei.encode_pen_event(channel_id, event) {
                 Ok(messages) => messages,
-                Err(e) => return Some(Err(SessionError::encode(e))),
+                Err(error) => return Some(Err(SessionError::encode(error))),
             };
-            return Some(self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)));
+            return Some(DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu));
         } else {
             debug!("Could not encode RDPEI pen: Input Virtual Channel is not available");
         }
         None
     }
 
+    /// Fully encodes a pen event for the RDPEI dynamic channel.
+    ///
+    /// Returns `None` when the channel is unavailable, not ready, suspended, or pen is not allowed.
+    /// Returns an error when Soft-Sync routes the channel through a multitransport tunnel.
+    pub fn encode_rdpei_pen(&mut self, event: ironrdp_rdpei::pdu::PenEventPdu) -> Option<SessionResult<Vec<u8>>> {
+        let prepared = self.prepare_rdpei_pen(event)?;
+        Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
+    }
+
     pub fn encode_dvc_messages(&mut self, messages: Vec<SvcMessage>) -> SessionResult<Vec<u8>> {
         self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(messages))
+    }
+
+    fn encode_dvc_batch_over_tcp(&mut self, batch: DvcMessageBatch) -> SessionResult<Vec<u8>> {
+        if self.dvc_tunnel_for_channel(batch.channel_id()).is_some() {
+            return Err(SessionError::general(
+                "dynamic channel is routed through a multitransport tunnel",
+            ));
+        }
+
+        self.encode_dvc_messages(batch.into_messages())
     }
 }
 
@@ -811,15 +944,80 @@ fn process_slow_path_pointer(
     fast_path_processor.process_pointer_update(image, pointer)
 }
 
+/// Apply every compositor delta to `image` and return the single region covering them.
+///
+/// Emitting one update per delta would be correct but ruinous: a consumer is entitled to
+/// redraw whatever a `GraphicsUpdate` names, and `ironrdp-client` rebuilds the entire
+/// framebuffer for each one, so an N-rectangle frame would copy the whole desktop N
+/// times. A single SolidFill or CacheToSurface can name up to `u16::MAX` rectangles, so
+/// N is the server's choice, not ours. The union's worst case is the full desktop, which
+/// is still one copy rather than N.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+fn composite_graphics_updates(
+    image: &mut DecodedImage,
+    updates: impl IntoIterator<Item = (ExclusiveRectangle, Vec<u8>)>,
+) -> SessionResult<Option<InclusiveRectangle>> {
+    let mut dirty: Option<InclusiveRectangle> = None;
+    for (region, data) in updates {
+        // egfx maps regions with exclusive right/bottom; the session's InclusiveRectangle
+        // is one-past-inclusive. Compositor updates are always non-empty, so the
+        // saturating decrements never underflow a real region.
+        let region = InclusiveRectangle {
+            left: region.left,
+            top: region.top,
+            right: region.right.saturating_sub(1),
+            bottom: region.bottom.saturating_sub(1),
+        };
+
+        // `apply_rgba32` reports rejection by returning `InclusiveRectangle::empty()`,
+        // which is `(0, 0, 0, 0)` and not distinguishable from a real 1x1 update at the
+        // origin. Checking fit here first, rather than branching on that return value,
+        // means the delta is skipped outright rather than folded into the accumulator
+        // as a phantom region. This can happen for real: the compositor clips to the
+        // dimensions ResetGraphics declared, while `image` is sized from the desktop
+        // size negotiated at connection time and is never resized on ResetGraphics, so
+        // a server that reports a larger graphics output than the desktop hits this on
+        // every delta outside the desktop bounds.
+        let fits = region.left <= region.right
+            && region.top <= region.bottom
+            && region.right < image.width()
+            && region.bottom < image.height();
+        if !fits {
+            warn!(
+                ?region,
+                image_width = image.width(),
+                image_height = image.height(),
+                "Dropping a compositor delta outside the image bounds"
+            );
+            continue;
+        }
+
+        let applied = image.apply_rgba32(&data, &region, false)?;
+        dirty = Some(match dirty {
+            Some(acc) => acc.union(&applied),
+            None => applied,
+        });
+    }
+    Ok(dirty)
+}
+
 #[cfg(test)]
 mod tests {
-    use ironrdp_core::Decode as _;
-    use ironrdp_graphics::image_processing::PixelFormat;
-    use ironrdp_pdu::gcc::MonitorFlags;
-    use ironrdp_pdu::input::fast_path::KeyboardFlags;
-    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
+    use core::any::TypeId;
 
     use super::*;
+    use ironrdp_core::{Decode as _, encode_vec};
+    use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlPdu};
+    use ironrdp_dvc::pdu::{
+        CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
+    };
+    use ironrdp_graphics::image_processing::PixelFormat;
+    use ironrdp_pdu::gcc::MonitorFlags;
+    use ironrdp_pdu::input::MousePdu;
+    use ironrdp_pdu::input::fast_path::KeyboardFlags;
+    use ironrdp_pdu::input::mouse::PointerFlags;
+    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
+    use ironrdp_rdpei::pdu::{PenEventPdu, RdpInputProtocolVersion, RdpeiPdu, ScReadyPdu, TouchEventPdu};
 
     #[test]
     fn full_redraw_prefers_suppress_output_toggle_when_supported() {
@@ -841,6 +1039,32 @@ mod tests {
 
         assert_eq!(stage.request_full_redraw(1024, 768, true, false).unwrap().len(), 1);
         assert!(stage.request_full_redraw(1024, 768, false, false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn multitransport_response_encoder_is_exposed_through_active_stage() {
+        let stage = ActiveStageBuilder {
+            static_channels: StaticChannelSet::new(),
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: Some(1004),
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let response = MultitransportResponsePdu::success(42);
+
+        assert_eq!(
+            stage
+                .encode_multitransport_response(&response)
+                .expect("encode through ActiveStage"),
+            stage
+                .x224_processor
+                .encode_multitransport_response(&response)
+                .expect("encode through X.224 processor")
+        );
     }
 
     #[test]
@@ -885,6 +1109,59 @@ mod tests {
                 .flat_map(FastPathInput::input_events)
                 .collect::<Vec<_>>(),
             events.iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn fastpath_input_renders_the_last_mouse_position_in_a_batch() {
+        let mut stage = ActiveStageBuilder {
+            static_channels: StaticChannelSet::new(),
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: true,
+            pointer_software_rendering: true,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 8, 8);
+        image
+            .update_pointer(Arc::new(DecodedPointer {
+                width: 1,
+                height: 1,
+                hotspot_x: 0,
+                hotspot_y: 0,
+                bitmap_data: vec![0xff; 4],
+            }))
+            .expect("set software pointer");
+        let mouse_move = |x, y| {
+            FastPathInputEvent::MouseEvent(MousePdu {
+                flags: PointerFlags::MOVE,
+                number_of_wheel_rotation_units: 0,
+                x_position: x,
+                y_position: y,
+            })
+        };
+
+        let output = stage
+            .process_fastpath_input(&mut image, &[mouse_move(1, 1), mouse_move(5, 5)])
+            .expect("process batched mouse input");
+        let region = output
+            .iter()
+            .find_map(|output| match output {
+                ActiveStageOutput::GraphicsUpdate(region) => Some(region),
+                _ => None,
+            })
+            .expect("software pointer movement redraw");
+        assert_eq!(
+            *region,
+            InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 5,
+                bottom: 5,
+            }
         );
     }
 
@@ -1044,6 +1321,203 @@ mod tests {
                 &update
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn prepared_dvc_batches_preserve_channel_and_unframed_messages() {
+        let mut stage = active_stage_with_ready_dvcs();
+
+        let resize = stage.prepare_resize(1024, 768, None, None).unwrap().unwrap();
+        assert_prepared_batch(&resize, 1);
+
+        let touch = stage
+            .prepare_rdpei_touch(TouchEventPdu::new(0, Vec::new()))
+            .unwrap()
+            .unwrap();
+        assert_prepared_batch(&touch, 2);
+
+        let dismiss = stage.prepare_rdpei_dismiss_hovering(3).unwrap().unwrap();
+        assert_prepared_batch(&dismiss, 2);
+
+        let pen = stage
+            .prepare_rdpei_pen(PenEventPdu::new(0, Vec::new()))
+            .unwrap()
+            .unwrap();
+        assert_prepared_batch(&pen, 2);
+    }
+
+    #[test]
+    fn tcp_wrappers_encode_prepared_dvc_batches() {
+        let mut stage = active_stage_with_ready_dvcs();
+
+        let resize = stage.prepare_resize(1024, 768, None, None).unwrap().unwrap();
+        let expected_resize = stage.encode_dvc_messages(resize.into_messages()).unwrap();
+        assert_eq!(
+            stage.encode_resize(1024, 768, None, None).unwrap().unwrap(),
+            expected_resize
+        );
+
+        let touch = stage
+            .prepare_rdpei_touch(TouchEventPdu::new(0, Vec::new()))
+            .unwrap()
+            .unwrap();
+        let expected_touch = stage.encode_dvc_messages(touch.into_messages()).unwrap();
+        assert_eq!(
+            stage
+                .encode_rdpei_touch(TouchEventPdu::new(0, Vec::new()))
+                .unwrap()
+                .unwrap(),
+            expected_touch
+        );
+
+        let dismiss = stage.prepare_rdpei_dismiss_hovering(3).unwrap().unwrap();
+        let expected_dismiss = stage.encode_dvc_messages(dismiss.into_messages()).unwrap();
+        assert_eq!(
+            stage.encode_rdpei_dismiss_hovering(3).unwrap().unwrap(),
+            expected_dismiss
+        );
+
+        let pen = stage
+            .prepare_rdpei_pen(PenEventPdu::new(0, Vec::new()))
+            .unwrap()
+            .unwrap();
+        let expected_pen = stage.encode_dvc_messages(pen.into_messages()).unwrap();
+        assert_eq!(
+            stage
+                .encode_rdpei_pen(PenEventPdu::new(0, Vec::new()))
+                .unwrap()
+                .unwrap(),
+            expected_pen
+        );
+    }
+
+    #[test]
+    fn active_stage_exposes_and_validates_soft_sync_routing() {
+        let mut stage = active_stage_with_ready_dvcs();
+        stage.enable_reliable_udp_dvc_tunnel().unwrap();
+        stage.disable_reliable_udp_dvc_tunnel().unwrap();
+
+        let soft_sync = DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![SoftSyncChannelList::new(
+            SoftSyncTunnelType::RELIABLE_UDP,
+            vec![1, 2],
+        )]));
+        let payload = encode_vec(&soft_sync).unwrap();
+        assert!(
+            stage
+                .get_svc_processor_mut::<DrdynvcClient>()
+                .unwrap()
+                .process(&payload)
+                .is_err()
+        );
+        assert!(!stage.reliable_udp_dvc_tunnel_in_use());
+        assert_eq!(stage.dvc_tunnel_for_channel(2), None);
+
+        stage.enable_reliable_udp_dvc_tunnel().unwrap();
+        process_drdynvc_pdu(stage.get_svc_processor_mut::<DrdynvcClient>().unwrap(), soft_sync);
+
+        assert_eq!(stage.dvc_tunnel_for_channel(2), Some(SoftSyncTunnelType::RELIABLE_UDP));
+        assert!(stage.reliable_udp_dvc_tunnel_in_use());
+        assert!(stage.encode_resize(1024, 768, None, None).unwrap().is_err());
+        assert!(
+            stage
+                .encode_rdpei_touch(TouchEventPdu::new(0, Vec::new()))
+                .unwrap()
+                .is_err()
+        );
+        assert!(stage.encode_rdpei_dismiss_hovering(3).unwrap().is_err());
+        assert!(
+            stage
+                .encode_rdpei_pen(PenEventPdu::new(0, Vec::new()))
+                .unwrap()
+                .is_err()
+        );
+
+        let rdpei_ready = encode_vec(&RdpeiPdu::ScReady(ScReadyPdu::new(RdpInputProtocolVersion::V200))).unwrap();
+        let tunnel_data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+            2,
+            rdpei_ready,
+        ))))
+        .unwrap();
+        assert!(
+            stage
+                .process_dvc_tunnel(SoftSyncTunnelType::LOSSY_UDP, &tunnel_data)
+                .is_err()
+        );
+
+        let response = stage
+            .process_dvc_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &tunnel_data)
+            .unwrap();
+        assert_prepared_batch(&response, 2);
+    }
+
+    fn active_stage_with_ready_dvcs() -> ActiveStage {
+        let mut drdynvc = DrdynvcClient::new()
+            .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
+            .with_dynamic_channel(RdpeiClient::default());
+
+        process_drdynvc_pdu(
+            &mut drdynvc,
+            DrdynvcServerPdu::Create(CreateRequestPdu::new(
+                1,
+                ironrdp_displaycontrol::CHANNEL_NAME.to_owned(),
+            )),
+        );
+        process_drdynvc_pdu(
+            &mut drdynvc,
+            DrdynvcServerPdu::Create(CreateRequestPdu::new(2, ironrdp_rdpei::CHANNEL_NAME.to_owned())),
+        );
+
+        let display_caps = DisplayControlPdu::Caps(DisplayControlCapabilities::new(1, 3840, 2400).unwrap());
+        process_drdynvc_pdu(
+            &mut drdynvc,
+            DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+                1,
+                encode_vec(&display_caps).unwrap(),
+            ))),
+        );
+        process_drdynvc_pdu(
+            &mut drdynvc,
+            DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+                2,
+                encode_vec(&RdpeiPdu::ScReady(ScReadyPdu::new(RdpInputProtocolVersion::V200))).unwrap(),
+            ))),
+        );
+
+        let mut static_channels = StaticChannelSet::new();
+        assert!(static_channels.insert(drdynvc).is_none());
+        assert!(
+            static_channels
+                .attach_channel_id(TypeId::of::<DrdynvcClient>(), 1004)
+                .is_none()
+        );
+
+        ActiveStageBuilder {
+            static_channels,
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build()
+    }
+
+    fn process_drdynvc_pdu(client: &mut DrdynvcClient, pdu: DrdynvcServerPdu) {
+        let payload = encode_vec(&pdu).unwrap();
+        client.process(&payload).unwrap();
+    }
+
+    fn assert_prepared_batch(batch: &DvcMessageBatch, expected_channel_id: u32) {
+        assert_eq!(batch.channel_id(), expected_channel_id);
+        assert!(!batch.messages().is_empty());
+        assert!(
+            batch
+                .messages()
+                .iter()
+                .all(|message| !message.encode_unframed_pdu().unwrap().is_empty())
         );
     }
 }

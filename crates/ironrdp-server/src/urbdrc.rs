@@ -2,14 +2,14 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU8, Ordering};
 use core::task::{Context, Poll};
 use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, MutexGuard},
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use crate::ServerEvent;
-use anyhow::Context as _;
+use crate::error::{ServerError, ServerErrorExt as _, ServerResult};
 use ironrdp_dvc::DynamicChannelId;
-use ironrdp_pdu::{PduResult, pdu_other_err};
+use ironrdp_pdu::PduResult;
 use ironrdp_rdpeusb::{
     io::{
         CompletionData, DeviceAnnounce, DeviceText, InternalIoControlPacket, IoControlCompletionResult,
@@ -18,13 +18,12 @@ use ironrdp_rdpeusb::{
     },
     pdu::{
         completion::ts_urb_result::{TsUrbSelectConfigResult, TsUrbSelectInterfaceResult, TsUsbdInterfaceInfoResult},
-        sink::DeviceSpeed,
         utils::{ConfigHandle, PipeHandle},
     },
     server::{UrbdrcControlServerBackend, UrbdrcDeviceServerBackend},
 };
 use ironrdp_usb::{
-    InterfaceSelection, TransferType, UsbSpeed,
+    InterfaceSelection, TransferType,
     control::GetDescriptorRequest,
     descriptor::{ConfigurationDescriptorSet, InterfaceDescriptor, ValidConfigurationDescriptorSet},
     endpoint::EndpointAddress,
@@ -56,13 +55,10 @@ pub enum UrbdrcDeviceServerMessage {
     },
     IoReq {
         data: ServerDeviceIoReq,
-        /// Sender used to return the pending request after the request is
-        /// written. `None` when the request expects no completion.
-        tx: oneshot::Sender<Option<RawPending>>,
-    },
-    IoComp {
-        request_id: RequestId,
-        completion: CompletionData,
+        /// Sender used to return the pending request once it is registered,
+        /// before the request is written. `None` when the request expects no
+        /// completion.
+        tx: oneshot::Sender<Option<PendingIo>>,
     },
     CancelRequest(RequestId),
     Retract(UsbRetractReason),
@@ -105,35 +101,32 @@ impl UrbdrcControlServerBackend for UsbControlHandle {
 #[derive(Debug, Clone)]
 pub struct UsbDeviceHandle {
     sender: UnboundedSender<ServerEvent>,
-    channel_id: DynamicChannelId,
-    lifecycle: Arc<UsbDeviceLifecycle>,
-    usb_state: Arc<Mutex<UsbSharedState>>,
+    device: Arc<ServerUsbDevice>,
 }
 
 impl UsbDeviceHandle {
-    pub(crate) fn new(
-        sender: UnboundedSender<ServerEvent>,
-        channel_id: DynamicChannelId,
-        lifecycle: Arc<UsbDeviceLifecycle>,
-    ) -> Self {
+    pub(crate) fn new(sender: UnboundedSender<ServerEvent>, channel_id: DynamicChannelId) -> Self {
         Self {
             sender,
-            channel_id,
-            lifecycle,
-            usb_state: Arc::new(Mutex::new(UsbSharedState::default())),
+            device: Arc::new(ServerUsbDevice::new(channel_id)),
         }
     }
 
-    fn send_device_message(&self, dev_msg: UrbdrcDeviceServerMessage) -> anyhow::Result<()> {
-        self.sender
-            .send(ServerEvent::Usb(UrbdrcServerMessage::Device {
-                dvc_id: self.channel_id,
-                dev_msg,
-            }))
-            .map_err(|_error| anyhow::anyhow!("usb device channel is closing or closed"))
+    /// Per-device state, shared with the server event loop's request router.
+    pub(crate) fn device(&self) -> Arc<ServerUsbDevice> {
+        Arc::clone(&self.device)
     }
 
-    fn enqueue_io_message(&self, data: ServerDeviceIoReq) -> anyhow::Result<oneshot::Receiver<Option<RawPending>>> {
+    fn send_device_message(&self, dev_msg: UrbdrcDeviceServerMessage) -> ServerResult<()> {
+        self.sender
+            .send(ServerEvent::Usb(UrbdrcServerMessage::Device {
+                dvc_id: self.device.channel_id,
+                dev_msg,
+            }))
+            .map_err(|_error| ServerError::reason("usb device message", "usb device channel is closing or closed"))
+    }
+
+    fn enqueue_io_message(&self, data: ServerDeviceIoReq) -> ServerResult<oneshot::Receiver<Option<PendingIo>>> {
         self.ensure_open()?;
 
         let (tx, rx) = oneshot::channel();
@@ -142,24 +135,41 @@ impl UsbDeviceHandle {
         Ok(rx)
     }
 
-    async fn send_io_message(&self, data: ServerDeviceIoReq) -> anyhow::Result<RawPending> {
-        let rx = self.enqueue_io_message(data)?;
-        resolve_pending(rx).await
+    /// Resolves the server's submission reply into pending-request metadata.
+    async fn resolve_pending(&self, rx: oneshot::Receiver<Option<PendingIo>>) -> ServerResult<RawPending> {
+        match rx.await {
+            Ok(Some(pending)) => Ok(RawPending::new(self.clone(), pending)),
+            // The public facade only submits acknowledged requests, so a
+            // completion-less (NoAck) reply is an internal contract violation.
+            Ok(None) => Err(ServerError::reason(
+                "usb pending request",
+                "usb request unexpectedly has no pending completion",
+            )),
+            Err(_) => Err(ServerError::reason(
+                "usb pending request",
+                "usb device channel is closing or closed",
+            )),
+        }
     }
 
-    /// Sends a transfer-in request and returns its request metadata once written.
-    async fn transfer_in_request(&self, packet: TransferInPacket) -> anyhow::Result<RawPending> {
+    async fn send_io_message(&self, data: ServerDeviceIoReq) -> ServerResult<RawPending> {
+        let rx = self.enqueue_io_message(data)?;
+        self.resolve_pending(rx).await
+    }
+
+    /// Sends a transfer-in request and returns its request metadata once registered.
+    async fn transfer_in_request(&self, packet: TransferInPacket) -> ServerResult<RawPending> {
         self.send_io_message(ServerDeviceIoReq::TransferIn(packet)).await
     }
 
-    /// Sends a transfer-out request and returns its request metadata once written.
-    async fn transfer_out_request(&self, packet: TransferOutPacket) -> anyhow::Result<RawPending> {
+    /// Sends a transfer-out request and returns its request metadata once registered.
+    async fn transfer_out_request(&self, packet: TransferOutPacket) -> ServerResult<RawPending> {
         self.send_io_message(ServerDeviceIoReq::TransferOut(packet)).await
     }
 
     /// Sends a cancel request for a pending I/O request.
-    pub(crate) fn cancel_request(&self, request_id: RequestId) -> anyhow::Result<()> {
-        if !self.lifecycle.is_open() {
+    pub(crate) fn cancel_request(&self, request_id: RequestId) -> ServerResult<()> {
+        if !self.device.is_open() {
             return Ok(());
         }
 
@@ -167,31 +177,34 @@ impl UsbDeviceHandle {
     }
 
     /// Sends a query-device-text request.
-    pub fn query_device_text_request(&self, text_type: u32, locale_id: u32) -> anyhow::Result<()> {
+    pub fn query_device_text_request(&self, text_type: u32, locale_id: u32) -> ServerResult<()> {
         self.ensure_open()?;
         self.send_device_message(UrbdrcDeviceServerMessage::QueryDeviceText { text_type, locale_id })
     }
 
     /// Sends a device-retract request.
-    pub fn retract_request(&self, reason: UsbRetractReason) -> anyhow::Result<()> {
+    pub fn retract_request(&self, reason: UsbRetractReason) -> ServerResult<()> {
         self.ensure_open()?;
         self.send_device_message(UrbdrcDeviceServerMessage::Retract(reason))
     }
 
-    fn ensure_open(&self) -> anyhow::Result<()> {
-        if self.lifecycle.is_open() {
+    fn ensure_open(&self) -> ServerResult<()> {
+        if self.device.is_open() {
             Ok(())
         } else {
-            anyhow::bail!("usb device channel is closing or closed")
+            Err(ServerError::reason(
+                "usb device message",
+                "usb device channel is closing or closed",
+            ))
         }
     }
 
     /// Submits a transfer on the default control pipe.
     ///
     /// The completion is [`UsbRequestCompletion::Transfer`].
-    pub async fn control_transfer(&self, request: ControlTransferRequest<Vec<u8>>) -> anyhow::Result<PendingRequest> {
+    pub async fn control_transfer(&self, request: ControlTransferRequest<Vec<u8>>) -> ServerResult<PendingRequest> {
         let transfer = ironrdp_rdpeusb::usb::control_transfer(request.setup, request.data)
-            .context("failed to translate usb control transfer")?;
+            .map_err(|e| ServerError::custom("failed to translate usb control transfer", e))?;
         let inner = match transfer {
             ironrdp_rdpeusb::usb::TransferRequest::In(packet) => self.transfer_in_request(packet).await?,
             ironrdp_rdpeusb::usb::TransferRequest::Out(packet) => self.transfer_out_request(packet).await?,
@@ -203,17 +216,14 @@ impl UsbDeviceHandle {
     /// Submits a bulk transfer on an endpoint in the active configuration.
     ///
     /// The completion is [`UsbRequestCompletion::Transfer`].
-    pub async fn bulk_transfer(&self, request: BulkTransferRequest<Vec<u8>>) -> anyhow::Result<PendingRequest> {
+    pub async fn bulk_transfer(&self, request: BulkTransferRequest<Vec<u8>>) -> ServerResult<PendingRequest> {
         self.submit_data_transfer(request, TransferType::Bulk).await
     }
 
     /// Submits an interrupt transfer on an endpoint in the active configuration.
     ///
     /// The completion is [`UsbRequestCompletion::Transfer`].
-    pub async fn interrupt_transfer(
-        &self,
-        request: InterruptTransferRequest<Vec<u8>>,
-    ) -> anyhow::Result<PendingRequest> {
+    pub async fn interrupt_transfer(&self, request: InterruptTransferRequest<Vec<u8>>) -> ServerResult<PendingRequest> {
         self.submit_data_transfer(request, TransferType::Interrupt).await
     }
 
@@ -223,24 +233,26 @@ impl UsbDeviceHandle {
     pub async fn isochronous_transfer(
         &self,
         request: IsochronousTransferRequest<Vec<u8>, Vec<u32>>,
-    ) -> anyhow::Result<PendingRequest> {
+    ) -> ServerResult<PendingRequest> {
         let packet_lengths = request.packets.clone();
         let rx = {
             let state = self.lock_usb_state();
             let pipe = state.resolve_pipe(request.endpoint)?;
-            anyhow::ensure!(
-                pipe.transfer_type == TransferType::Isochronous,
-                "usb endpoint is not isochronous"
-            );
+            if pipe.transfer_type != TransferType::Isochronous {
+                return Err(ServerError::reason(
+                    "usb isochronous transfer",
+                    "usb endpoint is not isochronous",
+                ));
+            }
             let transfer = ironrdp_rdpeusb::usb::isochronous(pipe.handle, request, false)
-                .context("failed to translate usb isochronous transfer")?;
+                .map_err(|e| ServerError::custom("failed to translate usb isochronous transfer", e))?;
             let data = match transfer {
                 ironrdp_rdpeusb::usb::TransferRequest::In(packet) => ServerDeviceIoReq::TransferIn(packet),
                 ironrdp_rdpeusb::usb::TransferRequest::Out(packet) => ServerDeviceIoReq::TransferOut(packet),
             };
             self.enqueue_io_message(data)?
         };
-        let inner = resolve_pending(rx).await?;
+        let inner = self.resolve_pending(rx).await?;
 
         Ok(PendingRequest::new(
             inner,
@@ -251,8 +263,9 @@ impl UsbDeviceHandle {
     /// Submits a standard USB `GET_DESCRIPTOR` request.
     ///
     /// The completion is [`UsbRequestCompletion::Descriptor`].
-    pub async fn get_descriptor(&self, request: GetDescriptorRequest) -> anyhow::Result<PendingRequest> {
-        let packet = ironrdp_rdpeusb::usb::get_descriptor(request).context("failed to translate usb get descriptor")?;
+    pub async fn get_descriptor(&self, request: GetDescriptorRequest) -> ServerResult<PendingRequest> {
+        let packet = ironrdp_rdpeusb::usb::get_descriptor(request)
+            .map_err(|e| ServerError::custom("failed to translate usb get descriptor", e))?;
         let inner = self.transfer_in_request(packet).await?;
 
         Ok(PendingRequest::new(inner, PendingOperation::GetDescriptor))
@@ -261,7 +274,7 @@ impl UsbDeviceHandle {
     /// Queries the active USB configuration value.
     ///
     /// The completion is [`UsbRequestCompletion::Value`].
-    pub async fn get_configuration(&self) -> anyhow::Result<PendingRequest> {
+    pub async fn get_configuration(&self) -> ServerResult<PendingRequest> {
         let packet = ironrdp_rdpeusb::usb::get_configuration();
         let inner = self.transfer_in_request(packet).await?;
         Ok(PendingRequest::new(inner, PendingOperation::GetConfiguration))
@@ -278,7 +291,7 @@ impl UsbDeviceHandle {
     pub async fn select_configuration(
         &self,
         descriptor: Option<ConfigurationDescriptorSet<'_>>,
-    ) -> anyhow::Result<PendingRequest> {
+    ) -> ServerResult<PendingRequest> {
         // Validation, translation, and plan construction depend only on the
         // caller's descriptor and the immutable announced speed, so they are
         // deliberately kept outside the state critical section.
@@ -291,7 +304,7 @@ impl UsbDeviceHandle {
             Some(descriptor) => {
                 let descriptor = descriptor
                     .validate()
-                    .context("invalid usb configuration selection descriptor")?;
+                    .map_err(|e| ServerError::custom("invalid usb configuration selection descriptor", e))?;
                 let active_interfaces: Vec<InterfaceSelection> = descriptor
                     .as_set()
                     .default_interfaces()
@@ -300,9 +313,8 @@ impl UsbDeviceHandle {
                         alternate_setting: interface.alternate_setting(),
                     })
                     .collect();
-                let speed = self.lock_usb_state().speed()?;
-                let packet = ironrdp_rdpeusb::usb::select_configuration(descriptor, &active_interfaces, speed)
-                    .context("failed to translate usb configuration selection")?;
+                let packet = ironrdp_rdpeusb::usb::select_configuration(descriptor, &active_interfaces)
+                    .map_err(|e| ServerError::custom("failed to translate usb configuration selection", e))?;
                 let plan = ConfigurationSelectionPlan::Configure {
                     descriptor: descriptor.as_set().as_bytes().to_vec(),
                     active_interfaces,
@@ -319,8 +331,8 @@ impl UsbDeviceHandle {
             (rx, transition)
         };
 
-        let mut submission = TransitionGuard::poison_on_drop(self, transition);
-        let inner = resolve_pending(rx).await?;
+        let submission = TransitionGuard::poison_on_drop(self, transition);
+        let inner = self.resolve_pending(rx).await?;
         submission.disarm();
         Ok(PendingRequest::new(
             inner,
@@ -331,7 +343,7 @@ impl UsbDeviceHandle {
     /// Queries the active alternate setting for an interface.
     ///
     /// The completion is [`UsbRequestCompletion::Value`].
-    pub async fn get_interface(&self, interface: u8) -> anyhow::Result<PendingRequest> {
+    pub async fn get_interface(&self, interface: u8) -> ServerResult<PendingRequest> {
         let packet = ironrdp_rdpeusb::usb::get_interface(interface);
         let inner = self.transfer_in_request(packet).await?;
         Ok(PendingRequest::new(inner, PendingOperation::GetInterface))
@@ -348,22 +360,21 @@ impl UsbDeviceHandle {
         &self,
         descriptor: ConfigurationDescriptorSet<'_>,
         selection: InterfaceSelection,
-    ) -> anyhow::Result<PendingRequest> {
+    ) -> ServerResult<PendingRequest> {
         // Descriptor validation is state-independent and deliberately kept
         // outside the state critical section.
         let descriptor = descriptor
             .validate()
-            .context("invalid usb interface selection descriptor")?;
+            .map_err(|e| ServerError::custom("invalid usb interface selection descriptor", e))?;
 
         let (rx, transition) = {
             let mut state = self.lock_usb_state();
-            let speed = state.speed()?;
             let config_handle = state.interface_plan(descriptor, selection)?;
             let transition = state.reserve_transition(StatefulTransitionKind::SelectInterface {
                 interface: selection.interface,
             })?;
-            let packet = ironrdp_rdpeusb::usb::select_interface(config_handle, descriptor, selection, speed)
-                .context("failed to translate usb interface selection")?;
+            let packet = ironrdp_rdpeusb::usb::select_interface(config_handle, descriptor, selection)
+                .map_err(|e| ServerError::custom("failed to translate usb interface selection", e))?;
             let rx = self.enqueue_io_message(ServerDeviceIoReq::TransferIn(packet))?;
             if let Err(error) = state.activate_interface_transition(transition, selection.interface) {
                 state.binding = BindingState::Unknown;
@@ -379,8 +390,8 @@ impl UsbDeviceHandle {
             descriptor: descriptor.as_set().as_bytes().to_vec(),
         };
 
-        let mut submission = TransitionGuard::poison_on_drop(self, transition);
-        let inner = resolve_pending(rx).await?;
+        let submission = TransitionGuard::poison_on_drop(self, transition);
+        let inner = self.resolve_pending(rx).await?;
         submission.disarm();
         Ok(PendingRequest::new(
             inner,
@@ -394,27 +405,29 @@ impl UsbDeviceHandle {
     /// `SYNC_RESET_PIPE_AND_CLEAR_STALL` applies to every non-default pipe.
     ///
     /// The completion is [`UsbRequestCompletion::Unit`].
-    pub async fn clear_halt(&self, endpoint: EndpointAddress) -> anyhow::Result<PendingRequest> {
+    pub async fn clear_halt(&self, endpoint: EndpointAddress) -> ServerResult<PendingRequest> {
         let rx = {
             let state = self.lock_usb_state();
             let pipe = state.resolve_pipe(endpoint)?;
             let packet = ironrdp_rdpeusb::usb::reset_pipe_and_clear_stall(pipe.handle);
             self.enqueue_io_message(ServerDeviceIoReq::TransferIn(packet))?
         };
-        let inner = resolve_pending(rx).await?;
+        let inner = self.resolve_pending(rx).await?;
         Ok(PendingRequest::new(inner, PendingOperation::ClearHalt))
     }
 
     /// Resets the redirected USB device.
     ///
     /// The completion is [`UsbRequestCompletion::Unit`].
-    pub async fn reset_device(&self) -> anyhow::Result<PendingRequest> {
+    pub async fn reset_device(&self) -> ServerResult<PendingRequest> {
         let (rx, transition, previous_binding) = {
             let mut state = self.lock_usb_state();
             let transition = state.reserve_transition(StatefulTransitionKind::ResetDevice)?;
             let previous_binding = match &state.binding {
                 BindingState::Unconfigured | BindingState::Configured(_) => state.binding.clone(),
-                BindingState::Unknown => anyhow::bail!("usb binding state is unknown"),
+                BindingState::Unknown => {
+                    return Err(ServerError::reason("usb reset device", "usb binding state is unknown"));
+                }
             };
             let packet = ironrdp_rdpeusb::usb::reset_device();
             let rx = self.enqueue_io_message(ServerDeviceIoReq::IoControl(packet))?;
@@ -423,8 +436,8 @@ impl UsbDeviceHandle {
             (rx, transition, previous_binding)
         };
 
-        let mut submission = TransitionGuard::poison_on_drop(self, transition);
-        let inner = resolve_pending(rx).await?;
+        let submission = TransitionGuard::poison_on_drop(self, transition);
+        let inner = self.resolve_pending(rx).await?;
         submission.disarm();
         Ok(PendingRequest::new(
             inner,
@@ -438,7 +451,7 @@ impl UsbDeviceHandle {
     /// Queries the host controller's current USB frame number.
     ///
     /// The completion is [`UsbRequestCompletion::FrameNumber`].
-    pub async fn current_frame_number(&self) -> anyhow::Result<PendingRequest> {
+    pub async fn current_frame_number(&self) -> ServerResult<PendingRequest> {
         let packet = ironrdp_rdpeusb::usb::current_frame_number();
         let inner = self.transfer_in_request(packet).await?;
         Ok(PendingRequest::new(inner, PendingOperation::CurrentFrameNumber))
@@ -448,52 +461,165 @@ impl UsbDeviceHandle {
         &self,
         request: BulkTransferRequest<Vec<u8>>,
         expected_type: TransferType,
-    ) -> anyhow::Result<PendingRequest> {
+    ) -> ServerResult<PendingRequest> {
         let rx = {
             let state = self.lock_usb_state();
             let pipe = state.resolve_pipe(request.endpoint)?;
-            anyhow::ensure!(
-                pipe.transfer_type == expected_type,
-                "usb endpoint {:#04x} is {:?}, not {:?}",
-                request.endpoint.raw(),
-                pipe.transfer_type,
-                expected_type
-            );
+            if pipe.transfer_type != expected_type {
+                return Err(ServerError::reason(
+                    "usb data transfer",
+                    format!(
+                        "usb endpoint {:#04x} is {:?}, not {:?}",
+                        request.endpoint.raw(),
+                        pipe.transfer_type,
+                        expected_type
+                    ),
+                ));
+            }
             let transfer = ironrdp_rdpeusb::usb::bulk_or_interrupt(pipe.handle, request)
-                .context("failed to translate usb data transfer")?;
+                .map_err(|e| ServerError::custom("failed to translate usb data transfer", e))?;
             let data = match transfer {
                 ironrdp_rdpeusb::usb::TransferRequest::In(packet) => ServerDeviceIoReq::TransferIn(packet),
                 ironrdp_rdpeusb::usb::TransferRequest::Out(packet) => ServerDeviceIoReq::TransferOut(packet),
             };
             self.enqueue_io_message(data)?
         };
-        let inner = resolve_pending(rx).await?;
+        let inner = self.resolve_pending(rx).await?;
         Ok(PendingRequest::new(inner, PendingOperation::Transfer))
     }
 
-    fn initialize_usb_capabilities(&self, device_speed: DeviceSpeed) {
-        let speed = match device_speed.to_u32() {
-            value if value == DeviceSpeed::FULL_SPEED.to_u32() => Some(UsbSpeed::Full),
-            value if value == DeviceSpeed::HIGH_SPEED.to_u32() => Some(UsbSpeed::High),
-            value => {
-                tracing::warn!(value, "RDPEUSB device reported an unsupported USB speed");
-                None
-            }
-        };
-        self.lock_usb_state().capabilities = Some(UsbCapabilities { speed });
+    fn lock_usb_state(&self) -> MutexGuard<'_, UsbSharedState> {
+        self.device.usb_state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// INVARIANT: `pending` and `usb_state` are never locked at the same time.
+/// Completion delivery releases the `pending` guard before the woken caller
+/// commits binding state under `usb_state`.
+#[derive(Debug)]
+pub(crate) struct ServerUsbDevice {
+    channel_id: DynamicChannelId,
+    /// Kept outside a lock: submission paths check it constantly and
+    /// [`RawPending::drop`] reads it, so it must never require one.
+    lifecycle: UsbDeviceLifecycle,
+    pending: Mutex<HashMap<RequestId, oneshot::Sender<CompletionData>>>,
+    usb_state: Mutex<UsbSharedState>,
+}
+
+impl ServerUsbDevice {
+    fn new(channel_id: DynamicChannelId) -> Self {
+        Self {
+            channel_id,
+            lifecycle: UsbDeviceLifecycle::new(),
+            pending: Mutex::new(HashMap::new()),
+            usb_state: Mutex::new(UsbSharedState::default()),
+        }
     }
 
-    fn lock_usb_state(&self) -> MutexGuard<'_, UsbSharedState> {
-        match self.usb_state.lock() {
-            Ok(state) => state,
-            Err(poisoned) => poisoned.into_inner(),
+    pub(crate) fn is_open(&self) -> bool {
+        self.lifecycle.is_open()
+    }
+
+    pub(crate) fn mark_retracting(&self) {
+        self.lifecycle.mark_retracting();
+    }
+
+    pub(crate) fn mark_closed(&self) {
+        self.lifecycle.mark_closed();
+    }
+
+    pub(crate) fn register_pending(&self, request_id: RequestId) -> PendingIo {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .pending
+            .lock()
+            .expect("USB pending requests mutex poisoned")
+            .insert(request_id, tx)
+            .is_some()
+        {
+            tracing::warn!(
+                dvc_id = self.channel_id,
+                request_id,
+                "Replacing pending USB I/O request"
+            );
         }
+
+        PendingIo { rx, id: request_id }
+    }
+
+    /// Delivers a completion to the caller waiting on `request_id`.
+    ///
+    /// Completions are refused once the device is retracting or closed, matching
+    /// the check the event loop applies to every other device message. The
+    /// RDPEUSB processor already stops reporting completions after
+    /// RETRACT_DEVICE, so this only keeps the guarantee local rather than
+    /// resting on that behavior.
+    pub(crate) fn complete_pending(&self, request_id: RequestId, completion: CompletionData) {
+        if !self.is_open() {
+            tracing::trace!(
+                dvc_id = self.channel_id,
+                request_id,
+                "Dropping completion for closing or closed USB device"
+            );
+            return;
+        }
+
+        // Bind the removal so the guard is released before the caller is woken:
+        // it commits binding state under `usb_state`, and the two locks are
+        // never held together.
+        let sender = self
+            .pending
+            .lock()
+            .expect("USB pending requests mutex poisoned")
+            .remove(&request_id);
+
+        let Some(sender) = sender else {
+            tracing::warn!(dvc_id = self.channel_id, request_id, "Missing pending USB I/O request");
+            return;
+        };
+
+        if sender.send(completion).is_err() {
+            tracing::trace!(
+                dvc_id = self.channel_id,
+                request_id,
+                "USB I/O completion receiver dropped"
+            );
+        }
+    }
+
+    /// Drops the tracking for a request that was never written to the channel.
+    ///
+    /// Pairs with `UrbdrcDeviceServer::abandon_unsent`: no completion will
+    /// arrive for such a request, so nothing else would ever remove it.
+    pub(crate) fn forget_pending(&self, request_id: RequestId) {
+        self.pending
+            .lock()
+            .expect("USB pending requests mutex poisoned")
+            .remove(&request_id);
+    }
+
+    pub(crate) fn is_pending(&self, request_id: RequestId) -> bool {
+        self.pending
+            .lock()
+            .expect("USB pending requests mutex poisoned")
+            .contains_key(&request_id)
+    }
+
+    /// Fails every request still awaiting a completion, returning how many there
+    /// were. Dropping the senders wakes each caller with a channel error.
+    ///
+    /// The pending map outlives the router entry that used to own it, so every
+    /// teardown path MUST call this or its callers wait forever.
+    pub(crate) fn drain_pending(&self) -> usize {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = pending.len();
+        pending.clear();
+        count
     }
 }
 
 #[derive(Debug)]
 struct UsbSharedState {
-    capabilities: Option<UsbCapabilities>,
     binding: BindingState,
     transition: TransitionState,
     next_generation: u64,
@@ -502,17 +628,11 @@ struct UsbSharedState {
 impl Default for UsbSharedState {
     fn default() -> Self {
         Self {
-            capabilities: None,
             binding: BindingState::Unconfigured,
             transition: TransitionState::Idle,
             next_generation: 0,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct UsbCapabilities {
-    speed: Option<UsbSpeed>,
 }
 
 #[derive(Debug, Clone)]
@@ -589,26 +709,27 @@ struct InterfaceSelectionPlan {
 }
 
 impl UsbSharedState {
-    fn speed(&self) -> anyhow::Result<UsbSpeed> {
-        self.capabilities
-            .context("usb device capabilities have not been announced")?
-            .speed
-            .context("usb device speed is not supported by the facade")
-    }
-
-    fn reserve_transition(&mut self, kind: StatefulTransitionKind) -> anyhow::Result<StatefulTransition> {
+    fn reserve_transition(&mut self, kind: StatefulTransitionKind) -> ServerResult<StatefulTransition> {
         match self.transition {
             TransitionState::Idle => {}
-            TransitionState::InFlight(_) => anyhow::bail!("another usb state transition is in progress"),
+            TransitionState::InFlight(_) => {
+                return Err(ServerError::reason(
+                    "usb state transition",
+                    "another usb state transition is in progress",
+                ));
+            }
             TransitionState::Poisoned => {
-                anyhow::bail!("usb binding state is indeterminate after an abandoned transition")
+                return Err(ServerError::reason(
+                    "usb state transition",
+                    "usb binding state is indeterminate after an abandoned transition",
+                ));
             }
         }
 
         self.next_generation = self
             .next_generation
             .checked_add(1)
-            .context("usb state transition generation exhausted")?;
+            .ok_or_else(|| ServerError::reason("usb state transition", "usb state transition generation exhausted"))?;
         Ok(StatefulTransition {
             generation: self.next_generation,
             kind,
@@ -620,14 +741,19 @@ impl UsbSharedState {
         self.transition = TransitionState::InFlight(transition);
     }
 
-    fn activate_interface_transition(&mut self, transition: StatefulTransition, interface: u8) -> anyhow::Result<()> {
+    fn activate_interface_transition(&mut self, transition: StatefulTransition, interface: u8) -> ServerResult<()> {
         let BindingState::Configured(binding) = &mut self.binding else {
-            anyhow::bail!("usb device is not configured")
+            return Err(ServerError::reason(
+                "usb interface transition",
+                "usb device is not configured",
+            ));
         };
-        let interface_binding = binding
-            .interfaces
-            .get_mut(&interface)
-            .with_context(|| format!("usb interface {interface} is not active"))?;
+        let interface_binding = binding.interfaces.get_mut(&interface).ok_or_else(|| {
+            ServerError::reason(
+                "usb interface transition",
+                format!("usb interface {interface} is not active"),
+            )
+        })?;
         *interface_binding = InterfaceBindingState::Unknown;
         self.transition = TransitionState::InFlight(transition);
         Ok(())
@@ -650,12 +776,15 @@ impl UsbSharedState {
     }
 
     /// Looks up the active pipe binding for `endpoint`.
-    fn resolve_pipe(&self, endpoint: EndpointAddress) -> anyhow::Result<PipeBinding> {
+    fn resolve_pipe(&self, endpoint: EndpointAddress) -> ServerResult<PipeBinding> {
         if endpoint.is_default_control() {
-            anyhow::bail!("usb endpoint zero is not a data pipe")
+            return Err(ServerError::reason("usb pipe", "usb endpoint zero is not a data pipe"));
         }
         let BindingState::Configured(binding) = &self.binding else {
-            anyhow::bail!("usb device has no usable configuration binding")
+            return Err(ServerError::reason(
+                "usb pipe",
+                "usb device has no usable configuration binding",
+            ));
         };
 
         let mut found = None;
@@ -667,11 +796,19 @@ impl UsbSharedState {
                 continue;
             };
             if found.replace(*pipe).is_some() {
-                anyhow::bail!("usb endpoint {:#04x} has multiple active pipe bindings", endpoint.raw())
+                return Err(ServerError::reason(
+                    "usb pipe",
+                    format!("usb endpoint {:#04x} has multiple active pipe bindings", endpoint.raw()),
+                ));
             }
         }
 
-        found.with_context(|| format!("usb endpoint {:#04x} has no active pipe binding", endpoint.raw()))
+        found.ok_or_else(|| {
+            ServerError::reason(
+                "usb pipe",
+                format!("usb endpoint {:#04x} has no active pipe binding", endpoint.raw()),
+            )
+        })
     }
 
     /// Validates `selection` against the active binding and returns the
@@ -680,49 +817,63 @@ impl UsbSharedState {
         &self,
         descriptor: ValidConfigurationDescriptorSet<'_>,
         selection: InterfaceSelection,
-    ) -> anyhow::Result<ConfigHandle> {
+    ) -> ServerResult<ConfigHandle> {
         let BindingState::Configured(binding) = &self.binding else {
-            anyhow::bail!("usb device is not configured")
+            return Err(ServerError::reason(
+                "usb interface plan",
+                "usb device is not configured",
+            ));
         };
-        anyhow::ensure!(
-            binding.interfaces.contains_key(&selection.interface),
-            "usb interface {} is not active",
-            selection.interface
-        );
-        anyhow::ensure!(
-            descriptor.as_set().configuration().configuration_value() == binding.configuration_value,
-            "descriptor is not the active usb configuration"
-        );
+        if !binding.interfaces.contains_key(&selection.interface) {
+            return Err(ServerError::reason(
+                "usb interface plan",
+                format!("usb interface {} is not active", selection.interface),
+            ));
+        }
+        if descriptor.as_set().configuration().configuration_value() != binding.configuration_value {
+            return Err(ServerError::reason(
+                "usb interface plan",
+                "descriptor is not the active usb configuration",
+            ));
+        }
         for (&interface_number, interface_binding) in &binding.interfaces {
             let InterfaceBindingState::Bound(interface_binding) = interface_binding else {
                 continue;
             };
-            anyhow::ensure!(
-                descriptor
-                    .as_set()
-                    .interface(interface_number, interface_binding.alternate_setting)
-                    .is_some(),
-                "active usb interface binding does not match its descriptor"
-            );
+            if descriptor
+                .as_set()
+                .interface(interface_number, interface_binding.alternate_setting)
+                .is_none()
+            {
+                return Err(ServerError::reason(
+                    "usb interface plan",
+                    "active usb interface binding does not match its descriptor",
+                ));
+            }
         }
         descriptor
             .as_set()
             .interface(selection.interface, selection.alternate_setting)
-            .with_context(|| {
-                format!(
-                    "usb interface {} has no alternate setting {}",
-                    selection.interface, selection.alternate_setting
+            .ok_or_else(|| {
+                ServerError::reason(
+                    "usb interface plan",
+                    format!(
+                        "usb interface {} has no alternate setting {}",
+                        selection.interface, selection.alternate_setting
+                    ),
                 )
             })?;
 
         Ok(binding.config_handle)
     }
 
-    fn ensure_current(&self, transition: StatefulTransition) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.transition == TransitionState::InFlight(transition),
-            "usb transition is no longer current"
-        );
+    fn ensure_current(&self, transition: StatefulTransition) -> ServerResult<()> {
+        if self.transition != TransitionState::InFlight(transition) {
+            return Err(ServerError::reason(
+                "usb transition",
+                "usb transition is no longer current",
+            ));
+        }
         Ok(())
     }
 
@@ -733,11 +884,14 @@ impl UsbSharedState {
 
     /// Commits a whole-device binding change (configuration selection or
     /// device reset).
-    fn commit_binding(&mut self, transition: StatefulTransition, binding: BindingState) -> anyhow::Result<()> {
+    fn commit_binding(&mut self, transition: StatefulTransition, binding: BindingState) -> ServerResult<()> {
         self.ensure_current(transition)?;
         if !matches!(self.binding, BindingState::Unknown) {
             self.transition = TransitionState::Poisoned;
-            anyhow::bail!("usb binding changed during the transition")
+            return Err(ServerError::reason(
+                "usb binding commit",
+                "usb binding changed during the transition",
+            ));
         }
         self.binding = binding;
         self.transition = TransitionState::Idle;
@@ -749,18 +903,24 @@ impl UsbSharedState {
         transition: StatefulTransition,
         interface_number: u8,
         interface: InterfaceBinding,
-    ) -> anyhow::Result<()> {
+    ) -> ServerResult<()> {
         self.ensure_current(transition)?;
         let BindingState::Configured(binding) = &mut self.binding else {
             self.transition = TransitionState::Poisoned;
-            anyhow::bail!("usb configuration binding disappeared during interface selection")
+            return Err(ServerError::reason(
+                "usb interface commit",
+                "usb configuration binding disappeared during interface selection",
+            ));
         };
         if !matches!(
             binding.interfaces.get(&interface_number),
             Some(InterfaceBindingState::Unknown)
         ) {
             self.transition = TransitionState::Poisoned;
-            anyhow::bail!("usb interface binding is no longer current")
+            return Err(ServerError::reason(
+                "usb interface commit",
+                "usb interface binding is no longer current",
+            ));
         }
         binding
             .interfaces
@@ -781,7 +941,6 @@ struct TransitionGuard<'a> {
     handle: &'a UsbDeviceHandle,
     transition: StatefulTransition,
     poison: bool,
-    armed: bool,
 }
 
 impl<'a> TransitionGuard<'a> {
@@ -790,7 +949,6 @@ impl<'a> TransitionGuard<'a> {
             handle,
             transition,
             poison: true,
-            armed: true,
         }
     }
 
@@ -799,21 +957,21 @@ impl<'a> TransitionGuard<'a> {
             handle,
             transition,
             poison: false,
-            armed: true,
         }
     }
 
     /// Hands transition bookkeeping over to the caller.
-    fn disarm(&mut self) {
-        self.armed = false;
+    #[expect(
+        clippy::mem_forget,
+        reason = "the guard owns nothing to leak; skipping its drop glue is the hand-off"
+    )]
+    fn disarm(self) {
+        core::mem::forget(self);
     }
 }
 
 impl Drop for TransitionGuard<'_> {
     fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
         let mut state = self.handle.lock_usb_state();
         if self.poison {
             state.poison_transition(self.transition);
@@ -823,43 +981,37 @@ impl Drop for TransitionGuard<'_> {
     }
 }
 
-/// Resolves the server's submission reply into pending-request metadata.
-async fn resolve_pending(rx: oneshot::Receiver<Option<RawPending>>) -> anyhow::Result<RawPending> {
-    match rx.await {
-        Ok(Some(pending)) => Ok(pending),
-        // The public facade only submits acknowledged requests, so a
-        // completion-less (NoAck) reply is an internal contract violation.
-        Ok(None) => Err(anyhow::anyhow!("usb request unexpectedly has no pending completion")),
-        Err(_) => Err(anyhow::anyhow!("usb device channel is closing or closed")),
-    }
-}
-
 fn configuration_binding_from_result(
     plan: &ConfigurationSelectionPlan,
     result: TsUrbSelectConfigResult,
-) -> anyhow::Result<BindingState> {
+) -> ServerResult<BindingState> {
     let ConfigurationSelectionPlan::Configure {
         descriptor: descriptor_bytes,
         active_interfaces,
     } = plan
     else {
-        anyhow::ensure!(
-            result.interface.is_empty(),
-            "usb unconfigure returned {} interface bindings",
-            result.interface.len()
-        );
+        if !result.interface.is_empty() {
+            return Err(ServerError::reason(
+                "usb configuration binding",
+                format!("usb unconfigure returned {} interface bindings", result.interface.len()),
+            ));
+        }
         return Ok(BindingState::Unconfigured);
     };
     // The plan bytes were validated at submission, so a parse failure here is
     // a facade bug rather than caller or client input.
-    let descriptor =
-        ConfigurationDescriptorSet::parse(descriptor_bytes).context("stored usb configuration descriptor")?;
-    anyhow::ensure!(
-        result.interface.len() == active_interfaces.len(),
-        "usb selection result returned {} interfaces, expected {}",
-        result.interface.len(),
-        active_interfaces.len()
-    );
+    let descriptor = ConfigurationDescriptorSet::parse(descriptor_bytes)
+        .map_err(|e| ServerError::custom("stored usb configuration descriptor", e))?;
+    if result.interface.len() != active_interfaces.len() {
+        return Err(ServerError::reason(
+            "usb configuration binding",
+            format!(
+                "usb selection result returned {} interfaces, expected {}",
+                result.interface.len(),
+                active_interfaces.len()
+            ),
+        ));
+    }
 
     let expected = active_interfaces
         .iter()
@@ -867,23 +1019,34 @@ fn configuration_binding_from_result(
         .collect::<BTreeMap<_, _>>();
     let mut interfaces = BTreeMap::new();
     for interface_result in result.interface {
-        let selection = expected.get(&interface_result.interface_number).with_context(|| {
-            format!(
-                "usb selection result returned unexpected interface {}",
-                interface_result.interface_number
+        let selection = expected.get(&interface_result.interface_number).ok_or_else(|| {
+            ServerError::reason(
+                "usb configuration binding",
+                format!(
+                    "usb selection result returned unexpected interface {}",
+                    interface_result.interface_number
+                ),
             )
         })?;
         let interface = descriptor
             .interface(selection.interface, selection.alternate_setting)
-            .context("selected usb interface descriptor is absent")?;
+            .ok_or_else(|| {
+                ServerError::reason(
+                    "usb configuration binding",
+                    "selected usb interface descriptor is absent",
+                )
+            })?;
         let number = interface_result.interface_number;
         let binding = interface_binding_from_result(interface, interface_result)?;
-        anyhow::ensure!(
-            interfaces
-                .insert(number, InterfaceBindingState::Bound(binding))
-                .is_none(),
-            "usb selection result returned duplicate interface {number}"
-        );
+        if interfaces
+            .insert(number, InterfaceBindingState::Bound(binding))
+            .is_some()
+        {
+            return Err(ServerError::reason(
+                "usb configuration binding",
+                format!("usb selection result returned duplicate interface {number}"),
+            ));
+        }
     }
 
     Ok(BindingState::Configured(ConfigurationBinding {
@@ -896,58 +1059,74 @@ fn configuration_binding_from_result(
 fn interface_binding_from_selection_result(
     plan: &InterfaceSelectionPlan,
     result: TsUrbSelectInterfaceResult,
-) -> anyhow::Result<InterfaceBinding> {
+) -> ServerResult<InterfaceBinding> {
     // The plan bytes and selection were validated at submission.
-    let descriptor =
-        ConfigurationDescriptorSet::parse(&plan.descriptor).context("stored usb configuration descriptor")?;
+    let descriptor = ConfigurationDescriptorSet::parse(&plan.descriptor)
+        .map_err(|e| ServerError::custom("stored usb configuration descriptor", e))?;
     let interface = descriptor
         .interface(plan.selection.interface, plan.selection.alternate_setting)
-        .context("selected usb interface descriptor is absent")?;
+        .ok_or_else(|| ServerError::reason("usb interface binding", "selected usb interface descriptor is absent"))?;
     interface_binding_from_result(interface, result.interface)
 }
 
 fn interface_binding_from_result(
     descriptor: InterfaceDescriptor<'_>,
     result: TsUsbdInterfaceInfoResult,
-) -> anyhow::Result<InterfaceBinding> {
-    anyhow::ensure!(
-        result.interface_number == descriptor.number() && result.alternate_setting == descriptor.alternate_setting(),
-        "usb selection result identifies interface {} alternate {}, expected interface {} alternate {}",
-        result.interface_number,
-        result.alternate_setting,
-        descriptor.number(),
-        descriptor.alternate_setting()
-    );
+) -> ServerResult<InterfaceBinding> {
+    if result.interface_number != descriptor.number() || result.alternate_setting != descriptor.alternate_setting() {
+        return Err(ServerError::reason(
+            "usb interface binding",
+            format!(
+                "usb selection result identifies interface {} alternate {}, expected interface {} alternate {}",
+                result.interface_number,
+                result.alternate_setting,
+                descriptor.number(),
+                descriptor.alternate_setting()
+            ),
+        ));
+    }
     let endpoint_count = descriptor.endpoints().count();
-    anyhow::ensure!(
-        result.pipes.len() == endpoint_count,
-        "usb selection result returned {} pipes, expected {endpoint_count}",
-        result.pipes.len()
-    );
+    if result.pipes.len() != endpoint_count {
+        return Err(ServerError::reason(
+            "usb interface binding",
+            format!(
+                "usb selection result returned {} pipes, expected {endpoint_count}",
+                result.pipes.len()
+            ),
+        ));
+    }
 
     let mut pipes = BTreeMap::new();
     for result_pipe in result.pipes {
         let endpoint = EndpointAddress::from_raw(result_pipe.endpoint_address)
-            .context("usb selection result contains an invalid endpoint")?;
-        let endpoint_descriptor = descriptor.endpoint(endpoint).with_context(|| {
-            format!(
-                "usb selection result returned unexpected endpoint {:#04x}",
-                endpoint.raw()
+            .map_err(|e| ServerError::custom("usb selection result contains an invalid endpoint", e))?;
+        let endpoint_descriptor = descriptor.endpoint(endpoint).ok_or_else(|| {
+            ServerError::reason(
+                "usb interface binding",
+                format!(
+                    "usb selection result returned unexpected endpoint {:#04x}",
+                    endpoint.raw()
+                ),
             )
         })?;
-        anyhow::ensure!(
-            pipes
-                .insert(
-                    endpoint,
-                    PipeBinding {
-                        handle: result_pipe.pipe_handle,
-                        transfer_type: endpoint_descriptor.transfer_type(),
-                    },
-                )
-                .is_none(),
-            "usb selection result returned duplicate endpoint {:#04x}",
-            endpoint.raw()
-        );
+        if pipes
+            .insert(
+                endpoint,
+                PipeBinding {
+                    handle: result_pipe.pipe_handle,
+                    transfer_type: endpoint_descriptor.transfer_type(),
+                },
+            )
+            .is_some()
+        {
+            return Err(ServerError::reason(
+                "usb interface binding",
+                format!(
+                    "usb selection result returned duplicate endpoint {:#04x}",
+                    endpoint.raw()
+                ),
+            ));
+        }
     }
 
     Ok(InterfaceBinding {
@@ -1014,7 +1193,7 @@ impl PendingRequest {
     pub fn pending_handle(&self) -> PendingHandle {
         PendingHandle {
             usb_handle: self.inner.handle.clone(),
-            req_id: self.inner.id,
+            req_id: self.inner.io.id,
         }
     }
 
@@ -1040,31 +1219,32 @@ impl Drop for PendingRequest {
 impl PendingOperation {
     /// Translates a raw RDPEUSB completion into this operation's typed
     /// completion, committing binding state for stateful operations.
-    fn finish(self, handle: &UsbDeviceHandle, completion: CompletionData) -> anyhow::Result<UsbRequestCompletion> {
+    fn finish(self, handle: &UsbDeviceHandle, completion: CompletionData) -> ServerResult<UsbRequestCompletion> {
         match self {
             Self::GetDescriptor => Ok(UsbRequestCompletion::Descriptor(
                 ironrdp_rdpeusb::usb::get_descriptor_completion(completion)
-                    .context("malformed usb get descriptor completion")?,
+                    .map_err(|e| ServerError::custom("malformed usb get descriptor completion", e))?,
             )),
             Self::Transfer => Ok(UsbRequestCompletion::Transfer(
-                ironrdp_rdpeusb::usb::transfer_completion(completion).context("malformed usb transfer completion")?,
+                ironrdp_rdpeusb::usb::transfer_completion(completion)
+                    .map_err(|e| ServerError::custom("malformed usb transfer completion", e))?,
             )),
             Self::Isochronous { packet_lengths } => Ok(UsbRequestCompletion::Isochronous(
                 ironrdp_rdpeusb::usb::isochronous_completion(completion, &packet_lengths)
-                    .context("malformed usb isochronous completion")?,
+                    .map_err(|e| ServerError::custom("malformed usb isochronous completion", e))?,
             )),
             Self::GetConfiguration => Ok(UsbRequestCompletion::Value(
                 ironrdp_rdpeusb::usb::get_configuration_completion(completion)
-                    .context("malformed usb get configuration completion")?,
+                    .map_err(|e| ServerError::custom("malformed usb get configuration completion", e))?,
             )),
             Self::GetInterface => Ok(UsbRequestCompletion::Value(
                 ironrdp_rdpeusb::usb::get_interface_completion(completion)
-                    .context("malformed usb get interface completion")?,
+                    .map_err(|e| ServerError::custom("malformed usb get interface completion", e))?,
             )),
             Self::SelectConfiguration { transition, plan } => {
-                let mut finish = TransitionGuard::finish_on_drop(handle, transition);
+                let finish = TransitionGuard::finish_on_drop(handle, transition);
                 let completion = ironrdp_rdpeusb::usb::select_configuration_completion(completion)
-                    .context("malformed usb select configuration completion")?;
+                    .map_err(|e| ServerError::custom("malformed usb select configuration completion", e))?;
                 let result = match completion {
                     Ok(result) => result,
                     Err(usb_error) => return Ok(UsbRequestCompletion::Unit(Err(usb_error))),
@@ -1075,9 +1255,9 @@ impl PendingOperation {
                 Ok(UsbRequestCompletion::Unit(Ok(())))
             }
             Self::SelectInterface { transition, plan } => {
-                let mut finish = TransitionGuard::finish_on_drop(handle, transition);
+                let finish = TransitionGuard::finish_on_drop(handle, transition);
                 let completion = ironrdp_rdpeusb::usb::select_interface_completion(completion)
-                    .context("malformed usb select interface completion")?;
+                    .map_err(|e| ServerError::custom("malformed usb select interface completion", e))?;
                 let result = match completion {
                     Ok(result) => result,
                     Err(usb_error) => return Ok(UsbRequestCompletion::Unit(Err(usb_error))),
@@ -1091,15 +1271,15 @@ impl PendingOperation {
             }
             Self::ClearHalt => Ok(UsbRequestCompletion::Unit(
                 ironrdp_rdpeusb::usb::pipe_request_completion(completion)
-                    .context("malformed usb clear halt completion")?,
+                    .map_err(|e| ServerError::custom("malformed usb clear halt completion", e))?,
             )),
             Self::ResetDevice {
                 transition,
                 previous_binding,
             } => {
-                let mut finish = TransitionGuard::finish_on_drop(handle, transition);
+                let finish = TransitionGuard::finish_on_drop(handle, transition);
                 let completion = ironrdp_rdpeusb::usb::reset_device_completion(completion)
-                    .context("malformed usb reset device completion")?;
+                    .map_err(|e| ServerError::custom("malformed usb reset device completion", e))?;
                 if let Err(usb_error) = completion {
                     return Ok(UsbRequestCompletion::Unit(Err(usb_error)));
                 }
@@ -1109,7 +1289,7 @@ impl PendingOperation {
             }
             Self::CurrentFrameNumber => Ok(UsbRequestCompletion::FrameNumber(
                 ironrdp_rdpeusb::usb::current_frame_number_completion(completion)
-                    .context("malformed usb current frame number completion")?,
+                    .map_err(|e| ServerError::custom("malformed usb current frame number completion", e))?,
             )),
         }
     }
@@ -1169,16 +1349,19 @@ pub struct CompletionFut {
 }
 
 impl Future for CompletionFut {
-    type Output = anyhow::Result<UsbRequestCompletion>;
+    type Output = ServerResult<UsbRequestCompletion>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         // Taking the operation up front guarantees the request resolves at
         // most once; it is restored while the completion is not ready.
         let Some(operation) = this.pending.operation.take() else {
-            return Poll::Ready(Err(anyhow::anyhow!("usb pending request already completed")));
+            return Poll::Ready(Err(ServerError::reason(
+                "usb pending request",
+                "usb pending request already completed",
+            )));
         };
-        match Pin::new(&mut this.pending.inner.rx).poll(cx) {
+        match Pin::new(&mut this.pending.inner.io.rx).poll(cx) {
             Poll::Pending => {
                 this.pending.operation = Some(operation);
                 Poll::Pending
@@ -1195,44 +1378,43 @@ impl Future for CompletionFut {
 }
 
 #[derive(Debug)]
-pub struct RawPending {
+struct RawPending {
+    handle: UsbDeviceHandle,
+    io: PendingIo,
+}
+
+/// Identity and completion channel of one in-flight I/O request.
+#[derive(Debug)]
+pub(crate) struct PendingIo {
     pub(super) rx: oneshot::Receiver<CompletionData>,
     pub(super) id: RequestId,
-    pub(super) handle: UsbDeviceHandle,
 }
 
 impl Drop for RawPending {
     fn drop(&mut self) {
-        if matches!(self.rx.try_recv(), Err(TryRecvError::Empty)) && self.handle.lifecycle.is_open() {
-            let _ = self.handle.cancel_request(self.id);
+        if matches!(self.io.rx.try_recv(), Err(TryRecvError::Empty)) && self.handle.device.is_open() {
+            let _ = self.handle.cancel_request(self.io.id);
         }
     }
 }
 
 impl RawPending {
+    pub(crate) fn new(handle: UsbDeviceHandle, io: PendingIo) -> Self {
+        Self { handle, io }
+    }
+
     /// Explains a completion channel that ended without delivering a value.
     ///
     /// The sender was dropped without a completion: either a local cancel won
     /// the race against it, or the device channel was torn down. The
     /// distinction is currently observable only through the message text; a
     /// typed server error is planned to restore it.
-    fn channel_error(&self) -> anyhow::Error {
-        if self.handle.lifecycle.is_open() {
-            anyhow::anyhow!("usb request was cancelled before a completion")
+    fn channel_error(&self) -> ServerError {
+        if self.handle.device.is_open() {
+            ServerError::reason("usb pending request", "usb request was cancelled before a completion")
         } else {
-            anyhow::anyhow!("usb device channel is closing or closed")
+            ServerError::reason("usb pending request", "usb device channel is closing or closed")
         }
-    }
-
-    pub async fn wait(mut self) -> anyhow::Result<CompletionData> {
-        match (&mut self.rx).await {
-            Ok(completion) => Ok(completion),
-            Err(_) => Err(self.channel_error()),
-        }
-    }
-
-    pub fn cancel(self) {
-        drop(self);
     }
 }
 
@@ -1317,17 +1499,14 @@ impl UsbRedirServer {
         Self { handle, device }
     }
 
-    fn send_io_completion(&self, request_id: RequestId, completion: CompletionData) -> PduResult<()> {
-        self.handle
-            .send_device_message(UrbdrcDeviceServerMessage::IoComp { request_id, completion })
-            .map_err(|_| pdu_other_err!("failed to send usb I/O completion"))
+    fn io_completed(&self, request_id: RequestId, completion: CompletionData) -> PduResult<()> {
+        self.handle.device.complete_pending(request_id, completion);
+        Ok(())
     }
 }
 
 impl UrbdrcDeviceServerBackend for UsbRedirServer {
     fn add_device(&mut self, device: DeviceAnnounce) -> PduResult<()> {
-        self.handle
-            .initialize_usb_capabilities(device.usb_device_caps.device_speed);
         self.device.device_added(RdpUsbDeviceAnnounceInfo {
             announce: device,
             usb_handle: self.handle.clone(),
@@ -1345,7 +1524,7 @@ impl UrbdrcDeviceServerBackend for UsbRedirServer {
         request_id: RequestId,
         completion: IoControlCompletionResult,
     ) -> PduResult<()> {
-        self.send_io_completion(request_id, CompletionData::IoControl(completion))
+        self.io_completed(request_id, CompletionData::IoControl(completion))
     }
 
     fn internal_io_control_completed(
@@ -1354,7 +1533,7 @@ impl UrbdrcDeviceServerBackend for UsbRedirServer {
         request_id: RequestId,
         completion: IoControlCompletionResult,
     ) -> PduResult<()> {
-        self.send_io_completion(request_id, CompletionData::InternalIoControl(completion))
+        self.io_completed(request_id, CompletionData::InternalIoControl(completion))
     }
 
     fn transfer_in_completed(
@@ -1363,7 +1542,7 @@ impl UrbdrcDeviceServerBackend for UsbRedirServer {
         request_id: RequestId,
         completion: TransferInCompletionResult,
     ) -> PduResult<()> {
-        self.send_io_completion(request_id, CompletionData::TransferIn(completion))
+        self.io_completed(request_id, CompletionData::TransferIn(completion))
     }
 
     fn transfer_out_completed(
@@ -1372,11 +1551,18 @@ impl UrbdrcDeviceServerBackend for UsbRedirServer {
         request_id: RequestId,
         completion: TransferOutCompletionResult,
     ) -> PduResult<()> {
-        self.send_io_completion(request_id, CompletionData::TransferOut(completion))
+        self.io_completed(request_id, CompletionData::TransferOut(completion))
     }
 
     fn close(&mut self, channel_id: u32) {
-        self.handle.lifecycle.mark_closed();
+        // Mark first: the event loop's authoritative check then rejects every
+        // queued request, so the drain below cannot race a late insert.
+        self.handle.device.mark_closed();
+        let pending_requests = self.handle.device.drain_pending();
+        if pending_requests != 0 {
+            tracing::debug!(channel_id, pending_requests, "Failed pending USB requests on close");
+        }
+
         let _ = self
             .handle
             .sender

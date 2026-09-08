@@ -27,6 +27,15 @@ RDP_HOSTNAME=<HOSTNAME> RDP_USERNAME=<USERNAME> RDP_PASSWORD=<PASSWORD> ironrdp-
 On Windows, pass `--smartcard` (or set `ironrdp_smartcard:i:1` in a `.rdp` file) to redirect local smart cards through WinSCard.
 RPC mode (`--rpc`) enables smartcard the same way via agent connect properties (`ironrdp_smartcard` / sandbox `SmartCardRedirection`).
 
+To open the basic console of a local Hyper-V VM with the current Windows account:
+
+```powershell
+ironrdp-viewer localhost --vmconnect <VM_ID> --vmconnect-basic --vmconnect-current-user
+```
+
+List VM IDs with `Get-VM | Select-Object Name, Id`.
+On local Windows VMConnect connections, the viewer accepts Hyper-V's private frame-buffer DVC and renders its shared-memory DIB.
+
 ## Agent RPC host
 
 The viewer can host the same local RPC protocol used by `ironrdp-agent`, while keeping its visible
@@ -66,6 +75,9 @@ Currently supported properties:
 - `shell working directory:s:<value>`
 - `redirectclipboard:i:<0|1>`
 - `ironrdp_smartcard:i:<0|1>` (Windows WinSCard smartcard redirection)
+- `ironrdp_vmconnect:s:<VM_ID>`
+- `ironrdp_vmconnect_basic:i:<0|1>`
+- `ironrdp_vmconnect_current_user:i:<0|1>` (Windows current-account host authentication)
 - `audiomode:i:<0|1|2>`
 - `desktopwidth:i:<value>`
 - `desktopheight:i:<value>`

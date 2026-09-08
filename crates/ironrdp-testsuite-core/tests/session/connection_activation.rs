@@ -16,6 +16,8 @@ use ironrdp_pdu::rdp::headers::{
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::X224;
+use ironrdp_session::x224::{Processor, ProcessorOutput};
+use ironrdp_svc::StaticChannelSet;
 
 use ironrdp_testsuite_core::capsets::SERVER_DEMAND_ACTIVE;
 
@@ -62,6 +64,7 @@ fn test_config() -> ironrdp_connector::Config {
         enable_server_pointer: false,
         pointer_software_rendering: false,
         multitransport_flags: None,
+        support_dyn_vc_gfx_protocol: false,
         performance_flags: Default::default(),
         timezone_info: Default::default(),
         alternate_shell: String::new(),
@@ -404,6 +407,28 @@ fn multitransport_request_is_surfaced_without_waiting_for_another_pdu() {
 }
 
 #[test]
+fn active_processor_surfaces_multitransport_request_on_message_channel() {
+    let request = multitransport_request(42, RequestedProtocol::UdpFecR);
+    let frame = encode_server_multitransport_request(&request, MESSAGE_CHANNEL_ID);
+    let mut processor = Processor::new(
+        StaticChannelSet::new(),
+        USER_CHANNEL_ID,
+        IO_CHANNEL_ID,
+        Some(MESSAGE_CHANNEL_ID),
+        SHARE_ID,
+    );
+
+    let outputs = processor
+        .process(&frame, &mut None)
+        .expect("active processor should surface multitransport request");
+
+    assert!(matches!(
+        outputs.as_slice(),
+        [ProcessorOutput::MultitransportRequest(decoded)] if decoded == &request
+    ));
+}
+
+#[test]
 fn responding_returns_to_bootstrapping_for_the_next_request() {
     // Two requests are permitted, and the second only arrives after the first
     // has been answered, so the connector has to go back to reading rather than
@@ -480,6 +505,10 @@ fn should_perform_multitransport_reflects_pending_state() {
     let connector = multitransport_pending_connector(true, multitransport_request(1, RequestedProtocol::UdpFecR));
     assert!(connector.should_perform_multitransport());
     assert_eq!(connector.multitransport_request().unwrap().request_id, 1);
+    assert_eq!(connector.multitransport_soft_sync_negotiated(), Some(true));
+
+    let connector = multitransport_pending_connector(false, multitransport_request(2, RequestedProtocol::UdpFecR));
+    assert_eq!(connector.multitransport_soft_sync_negotiated(), Some(false));
 }
 
 #[test]
@@ -553,7 +582,9 @@ fn skip_multitransport_declines_with_e_abort_under_soft_sync() {
     // MS-RDPBCGR 3.2.5.15.1 requires a response to every request once Soft-Sync
     // is mutually negotiated, whatever the outcome. Both the async and blocking
     // drivers skip automatically, so a silent skip leaves a compliant server
-    // waiting on a response it is entitled to.
+    // The blocking driver and the async compatibility entry point skip
+    // automatically, so a silent skip leaves a compliant server waiting on a
+    // response it is entitled to.
     let mut connector = multitransport_pending_connector(true, multitransport_request(1, RequestedProtocol::UdpFecR));
     let mut output = WriteBuf::new();
 

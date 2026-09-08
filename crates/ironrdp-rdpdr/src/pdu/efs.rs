@@ -286,6 +286,13 @@ impl CoreCapability {
         }
     }
 
+    /// Returns whether this capability set advertises printer redirection.
+    pub fn supports_printer(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability.header.cap_type == CapabilityType::Printer)
+    }
+
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
         dst.write_u16(cast_length!(
@@ -1094,10 +1101,22 @@ impl Devices {
 
     /// Announce a virtual printer device with an explicit server-side driver.
     pub fn add_printer_with_driver(&mut self, device_id: u32, print_name: String, driver_name: String) {
-        self.push(DeviceAnnounceHeader::new_printer_with_driver(
+        self.add_printer_with_driver_and_network(device_id, print_name, driver_name, true);
+    }
+
+    /// Announce a printer with an explicit driver and network-queue classification.
+    pub fn add_printer_with_driver_and_network(
+        &mut self,
+        device_id: u32,
+        print_name: String,
+        driver_name: String,
+        network: bool,
+    ) {
+        self.push(DeviceAnnounceHeader::new_printer_with_driver_and_network(
             device_id,
             print_name,
             driver_name,
+            network,
         ));
     }
 
@@ -1219,6 +1238,20 @@ impl DeviceAnnounceHeader {
     /// `u32::MAX` bytes. Real printer names are well under 200 bytes,
     /// so this is unreachable in practice.
     pub fn new_printer_with_driver(device_id: u32, print_name: String, driver_name: String) -> Self {
+        Self::new_printer_with_driver_and_network(device_id, print_name, driver_name, true)
+    }
+
+    /// Construct a printer announce with an explicit driver and network-queue classification.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either UTF-16 name exceeds `u32::MAX` encoded bytes.
+    pub fn new_printer_with_driver_and_network(
+        device_id: u32,
+        print_name: String,
+        driver_name: String,
+        network: bool,
+    ) -> Self {
         // [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE device_data layout:
         //   Flags            u32 LE
         //   CodePage         u32 LE   (reserved; MUST be ignored)
@@ -1240,16 +1273,20 @@ impl DeviceAnnounceHeader {
         let driver_name_bytes = utf16le_with_nul(&driver_name);
         let print_name_bytes = utf16le_with_nul(&print_name);
 
-        // [MS-RDPEPC 2.2.2.3] Flags. We match FreeRDP's PostScript
-        // redirection behavior: mark the queue as the session default and as
-        // a network printer. We intentionally leave the others off:
+        // [MS-RDPEPC 2.2.2.3] Flags. Mark the single configured queue as the
+        // session default and preserve its network classification. We intentionally leave the others off:
         //  - XPSFORMAT (0x10): advertises *client* XPS-consumption support;
         //    our driver is PostScript so this is irrelevant and could nudge
         //    mixed-driver hosts toward the XPS path.
         //  - TSPRINTER (0x08): "printer is from a previous terminal server
         //    session" (i.e. nested-hop re-redirection). We're a first-hop
         //    client, so setting it would be a lie.
-        let flags: u32 = RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER | RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER;
+        let flags: u32 = RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER
+            | if network {
+                RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER
+            } else {
+                0
+            };
         let code_page: u32 = 0;
         let pnp_name_len: u32 = 0;
         let cached_fields_len: u32 = 0;
@@ -2557,10 +2594,10 @@ impl Information {
 
 /// [2.2.3.3.8] Server Drive Query Information Request (DR_DRIVE_QUERY_INFORMATION_REQ)
 ///
-/// Note that Length, Padding, and QueryBuffer fields are all ignored in keeping with the [analogous code in FreeRDP].
+/// `Length` bounds the consumed `QueryBuffer`; the padding and buffer contents are ignored like the [analogous FreeRDP code].
 ///
 /// [2.2.3.3.8]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/e43dcd68-2980-40a9-9238-344b6cf94946
-/// [analogous code in FreeRDP]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L384
+/// [analogous FreeRDP code]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L384
 #[derive(Debug, PartialEq, Clone)]
 pub struct ServerDriveQueryInformationRequest {
     pub device_io_request: DeviceIoRequest,
@@ -2569,11 +2606,16 @@ pub struct ServerDriveQueryInformationRequest {
 
 impl ServerDriveQueryInformationRequest {
     const NAME: &'static str = "ServerDriveQueryInformationRequest";
-    const FIXED_PART_SIZE: usize = 4; // FsInformationClass
+    const PADDING_SIZE: usize = 24;
+    const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + Self::PADDING_SIZE /* Padding */;
 
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        ensure_size!(ctx: Self::NAME, in: src, size: 4);
+        ensure_size!(ctx: Self::NAME, in: src, size: Self::FIXED_PART_SIZE);
         let file_info_class_lvl = FileInformationClassLevel::from(src.read_u32());
+        let query_buffer_length = cast_length!(Self::NAME, "Length", src.read_u32(), in: src)?;
+        read_padding!(src, Self::PADDING_SIZE);
+        ensure_size!(ctx: Self::NAME, in: src, size: query_buffer_length);
+        src.advance(query_buffer_length);
 
         Ok(Self {
             device_io_request: dev_io_req,
@@ -2581,10 +2623,13 @@ impl ServerDriveQueryInformationRequest {
         })
     }
 
+    /// Encodes an empty `QueryBuffer` because this representation retains only the information class.
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(ctx: Self::NAME, in: dst, size: self.size());
         self.device_io_request.encode(dst)?;
         dst.write_u32(self.file_info_class_lvl.clone().into());
+        dst.write_u32(0); // Length
+        write_padding!(dst, Self::PADDING_SIZE);
         Ok(())
     }
 

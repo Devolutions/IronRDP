@@ -16,6 +16,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, PhysicalSize};
 use winit::event::{self, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 use winit::window::{CursorIcon, CustomCursor, Window, WindowAttributes};
 
@@ -286,27 +287,57 @@ impl RpcApp {
             // TODO(#376): Implement unicode input in native client
             // }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let Some(scancode) = event.physical_key.to_scancode() {
-                    let scancode = match u16::try_from(scancode) {
-                        Ok(scancode) => scancode,
-                        Err(_) => {
-                            warn!("Unsupported scancode: `{scancode:#X}`; ignored");
-                            return;
-                        }
-                    };
-                    let scancode = ironrdp::input::Scancode::from_u16(scancode);
+                // `winit` scan codes are platform-specific, but RDP expects PC/AT set-1 scan codes.
+                // Override the navigation keys reported in #535 before using the existing fallback.
+                let mapped_scancode = match event.physical_key {
+                    // `ModifiersChanged` is authoritative for these keys.
+                    PhysicalKey::Code(
+                        KeyCode::ShiftLeft
+                        | KeyCode::ShiftRight
+                        | KeyCode::ControlLeft
+                        | KeyCode::ControlRight
+                        | KeyCode::AltLeft
+                        | KeyCode::AltRight
+                        | KeyCode::SuperLeft
+                        | KeyCode::SuperRight,
+                    ) => return,
+                    PhysicalKey::Code(KeyCode::Home) => Some(ironrdp::input::Scancode::from_u8(true, 0x47)),
+                    PhysicalKey::Code(KeyCode::ArrowUp) => Some(ironrdp::input::Scancode::from_u8(true, 0x48)),
+                    PhysicalKey::Code(KeyCode::PageUp) => Some(ironrdp::input::Scancode::from_u8(true, 0x49)),
+                    PhysicalKey::Code(KeyCode::ArrowLeft) => Some(ironrdp::input::Scancode::from_u8(true, 0x4B)),
+                    PhysicalKey::Code(KeyCode::ArrowRight) => Some(ironrdp::input::Scancode::from_u8(true, 0x4D)),
+                    PhysicalKey::Code(KeyCode::End) => Some(ironrdp::input::Scancode::from_u8(true, 0x4F)),
+                    PhysicalKey::Code(KeyCode::ArrowDown) => Some(ironrdp::input::Scancode::from_u8(true, 0x50)),
+                    PhysicalKey::Code(KeyCode::PageDown) => Some(ironrdp::input::Scancode::from_u8(true, 0x51)),
+                    PhysicalKey::Code(KeyCode::Insert) => Some(ironrdp::input::Scancode::from_u8(true, 0x52)),
+                    PhysicalKey::Code(KeyCode::Delete) => Some(ironrdp::input::Scancode::from_u8(true, 0x53)),
+                    _ => None,
+                };
 
-                    let operation = match event.state {
-                        event::ElementState::Pressed => ironrdp::input::Operation::KeyPressed(scancode),
-                        event::ElementState::Released => ironrdp::input::Operation::KeyReleased(scancode),
+                let scancode = if let Some(scancode) = mapped_scancode {
+                    scancode
+                } else {
+                    let Some(scancode) = event.physical_key.to_scancode() else {
+                        return;
+                    };
+                    let Ok(scancode) = u16::try_from(scancode) else {
+                        warn!("Unsupported scancode: `{scancode:#X}`; ignored");
+                        return;
                     };
 
-                    apply_and_send_fast_path_events(
-                        &self.input_target,
-                        &mut self.input_database,
-                        core::iter::once(operation),
-                    );
-                }
+                    ironrdp::input::Scancode::from_u16(scancode)
+                };
+
+                let operation = match event.state {
+                    event::ElementState::Pressed => ironrdp::input::Operation::KeyPressed(scancode),
+                    event::ElementState::Released => ironrdp::input::Operation::KeyReleased(scancode),
+                };
+
+                apply_and_send_fast_path_events(
+                    &self.input_target,
+                    &mut self.input_database,
+                    core::iter::once(operation),
+                );
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 const SHIFT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x2A);

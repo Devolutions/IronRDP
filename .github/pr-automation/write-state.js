@@ -1,9 +1,22 @@
 "use strict";
 
 const { encodeCheckState } = require("./validate-classifier");
+const { provenancePrefix } = require("./validate-final-review");
+const { reviewPolicyEligible } = require("./routing");
+
+const SEVERITY_EMOJI = {
+  critical: ":purple_circle:",
+  high: ":red_circle:",
+  medium: ":orange_circle:",
+  low: ":yellow_circle:",
+};
 
 class StaleHeadError extends Error {
   constructor() { super("pull request head is no longer current"); this.name = "StaleHeadError"; }
+}
+
+class StalePolicyError extends Error {
+  constructor() { super("pull request review policy changed"); this.name = "StalePolicyError"; }
 }
 
 // Model output is treated as hostile, so it is neutralized before it reaches a bot-authored
@@ -16,6 +29,11 @@ function escapeMarkdown(value) {
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/`/g, "&#96;")
     .replace(/@(?=[\w-])/g, "`@`").replace(/(?<!&)#(?=\d)/g, "`#`")
     .replace(/[[\]()!*_~|]/g, "\\$&");
+}
+
+function findingIndicator(finding) {
+  return `${finding.severity} ${SEVERITY_EMOJI[finding.severity]}` +
+    `${finding.question ? " :question:" : ""}`;
 }
 
 async function assertCurrentHead(github, owner, repo, prNumber, expectedSha) {
@@ -40,17 +58,20 @@ function markerBody(comment, owner, repo) {
   if (comment.kind === "duplicate") {
     return `${comment.marker}\n\nPotential duplicate detected: ${escapeMarkdown(comment.url)}.\n\n${escapeMarkdown(comment.rationale)}\n\nMaintainer review is required.`;
   }
-  if (comment.kind === "oversized") {
-    return `${comment.marker}\n\nThis pull request is \`size/XXL\`, so automated review is disabled for it: a change this large is hard to review well in one piece, whether by a human or a model.\n\nPlease split it into focused pull requests that can each be reviewed on their own. When the parts build on each other, [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs) let you open each one on top of the last without waiting for the one below to merge. Stacks require every branch to live in this repository, so from a fork, please open separate pull requests instead.\n\nAutomated review resumes once the change is below the \`size/XXL\` threshold.`;
-  }
   if (comment.kind === "legitimacy") {
     return `${comment.marker}\n\nAutomated review stopped because commit \`${escapeMarkdown(comment.sha)}\` has strong indicators requiring maintainer triage.\n\n${escapeMarkdown(comment.reason)}\n\nThis comment remains as an audit record if later classifications differ. Maintainer review is required.`;
   }
-  if (comment.kind === "fork-quota") {
-    return `${comment.marker}\n\nAutomated classification and review capacity is unavailable because this fork account has reached its daily UTC quota of ${comment.quota} pull requests.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Maintainer review is required.`;
-  }
   if (comment.kind === "global-quota") {
     return `${comment.marker}\n\nAutomated classification and review capacity for fork pull requests has reached its daily UTC limit.\n\nSee the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md). Maintainer review is required.`;
+  }
+  if (comment.kind === "evidence-limit") {
+    const guidance = comment.limitMiB === 1
+      ? "A maintainer can add `ai-review/allow-oversized` to retry with the runtime maximum of 4 MiB. Otherwise, split the change into focused pull requests or reduce generated content."
+      : "The 4 MiB limit is the model runtime maximum. Please split the change into focused pull requests or reduce generated content.";
+    return `${comment.marker}\n\nAutomated model analysis stopped because this pull request's diff exceeds the ${comment.limitMiB} MiB evidence limit. No model was invoked with partial evidence.\n\n${guidance} Maintainer review is required.`;
+  }
+  if (comment.kind === "contributor-ineligible") {
+    return `${comment.marker}\n\nAutomated review will not run because this contributor is not yet eligible under the [automation policy](https://github.com/${owner}/${repo}/blob/master/.github/PR_AUTOMATION.md).\n\nContributors become eligible after one qualifying IronRDP pull request is merged into \`master\`. Maintainer review is required.`;
   }
   throw new Error("unsupported issue comment");
 }
@@ -83,12 +104,12 @@ async function deleteMarkedComment(github, owner, repo, prNumber, expectedSha, b
 
 function reviewBody(marker, review) {
   const findings = review.findings.filter((finding) => finding.start_line === null).map((finding, index) => {
-    return `${index + 1}. **${finding.classification}** / ${finding.severity} — ${escapeMarkdown(finding.path)}\n   ${escapeMarkdown(finding.rationale)}`;
+    return `${index + 1}. **${provenancePrefix(finding.sources)} ${escapeMarkdown(finding.title)}** — ` +
+      `${findingIndicator(finding)} — ${escapeMarkdown(finding.path)}\n` +
+      `   ${escapeMarkdown(finding.rationale)}`;
   }).join("\n");
-  const handoff = review.protocol_handoff.received
-    ? `\n\nProtocol analysis: ${review.protocol_handoff.disposition} — ${escapeMarkdown(review.protocol_handoff.rationale)}`
-    : "";
-  return `${marker}\n\n${escapeMarkdown(review.summary)}${handoff}${findings ? `\n\n${findings}` : ""}`;
+  const clean = review.findings.length === 0 ? ":green_circle: " : "";
+  return `${marker}\n\n${clean}${escapeMarkdown(review.summary)}${findings ? `\n\n${findings}` : ""}`;
 }
 
 async function reviews(github, owner, repo, prNumber) {
@@ -99,19 +120,39 @@ async function reviews(github, owner, repo, prNumber) {
   return result;
 }
 
-async function publishReview(github, owner, repo, prNumber, expectedSha, botLogin, comment) {
+function assertReviewPolicy(labels, state) {
+  const currentReviewCount = labels.has("ai-reviewed/2") ? "ai-reviewed/2"
+    : labels.has("ai-reviewed/1") ? "ai-reviewed/1"
+    : null;
+  if (currentReviewCount !== state.expectedReviewCount ||
+      (!state.forced && !reviewPolicyEligible({
+        labels: [...labels],
+      }))) {
+    throw new StalePolicyError();
+  }
+}
+
+async function publishReview(github, owner, repo, prNumber, state, botLogin, comment) {
   if (!botLogin || typeof botLogin !== "string") throw new Error("botLogin is required for review ownership");
   if ((await reviews(github, owner, repo, prNumber)).some((review) =>
     review.user?.login === botLogin && typeof review.body === "string" && review.body.includes(comment.marker))) return false;
   const review = comment.review;
-  const inline = review.findings.filter((finding) => finding.start_line !== null).map((finding) => ({
-    path: finding.path, line: finding.end_line, side: "RIGHT",
-    body: `**${finding.classification}** / ${finding.severity}: ${escapeMarkdown(finding.rationale)}`,
-  }));
-  await issueLabels(github, owner, repo, prNumber);
-  await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
+  const inline = review.findings.filter((finding) => finding.start_line !== null).map((finding) => {
+    const comment = {
+      path: finding.path, line: finding.end_line, side: "RIGHT",
+      body: `**${provenancePrefix(finding.sources)} ${escapeMarkdown(finding.title)}** — ` +
+        `${findingIndicator(finding)} — ${escapeMarkdown(finding.rationale)}`,
+    };
+    if (finding.start_line !== finding.end_line) {
+      comment.start_line = finding.start_line;
+      comment.start_side = "RIGHT";
+    }
+    return comment;
+  });
+  await assertCurrentHead(github, owner, repo, prNumber, state.expectedSha);
+  assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
   await github.rest.pulls.createReview({
-    owner, repo, pull_number: prNumber, commit_id: expectedSha, event: "COMMENT",
+    owner, repo, pull_number: prNumber, commit_id: state.expectedSha, event: "COMMENT",
     body: reviewBody(comment.marker, review), comments: inline,
   });
   return true;
@@ -149,14 +190,16 @@ async function ensureClassificationCheck(github, owner, repo, prNumber, expected
   return true;
 }
 
-async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, check) {
+async function ensureReviewCheck(github, owner, repo, prNumber, expectedSha, check, state) {
   const conclusion = check.conclusion ?? "success";
   const title = check.title ?? "Automated review complete";
   const summary = check.summary ?? "Validated automated review is bound to this commit.";
   const existing = await findCheck(github, owner, repo, expectedSha, check);
   if (existing?.conclusion === conclusion && existing.output?.title === title &&
       existing.output?.summary === summary) return false;
-  await issueLabels(github, owner, repo, prNumber);
+  if (state.failed !== true) {
+    assertReviewPolicy(await issueLabels(github, owner, repo, prNumber), state);
+  }
   await assertCurrentHead(github, owner, repo, prNumber, expectedSha);
   const payload = {
     owner, repo, name: check.name, head_sha: expectedSha, external_id: check.externalId,
@@ -180,8 +223,8 @@ async function dispatchClassificationComplete(github, owner, repo, prNumber, exp
 
 // Computes the whole label delta from a single read, so a state with two label sets plus additions
 // and removals costs one issue read instead of one per candidate label.
-async function applyLabels(github, owner, repo, prNumber, state) {
-  const current = await issueLabels(github, owner, repo, prNumber);
+async function applyLabels(github, owner, repo, prNumber, state, currentLabels) {
+  const current = currentLabels ?? await issueLabels(github, owner, repo, prNumber);
   const add = new Set();
   const remove = new Set();
   for (const { owned, desired } of state.labelSets || []) {
@@ -207,25 +250,33 @@ async function applyLabels(github, owner, repo, prNumber, state) {
   return true;
 }
 
-async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
+async function writeState({ github, owner, repo, prNumber, state, botLogin, reviewRequested = false }) {
   if (!state?.ok || !["classification", "review"].includes(state.mode) ||
       typeof state.expectedSha !== "string" || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
     throw new Error("invalid normalized state");
   }
   await assertCurrentHead(github, owner, repo, prNumber, state.expectedSha);
-  // Labels come first in both modes: they are the durable record of the outcome, and a later
-  // comment or review failure must not leave the pull request without its maintainer-required triage.
-  await applyLabels(github, owner, repo, prNumber, state);
   if (state.mode === "review") {
-    for (const comment of state.comments || []) {
-      if (comment.kind === "review") {
-        await publishReview(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
-      } else {
-        await upsertMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
-      }
+    const comments = state.comments || [];
+    for (const comment of comments.filter((comment) => comment.kind === "review")) {
+      await publishReview(github, owner, repo, prNumber, state, botLogin, comment);
     }
-    if (state.check) await ensureReviewCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
+    if (state.check) {
+      await ensureReviewCheck(github, owner, repo, prNumber, state.expectedSha, state.check, state);
+    }
+    const latestLabels = state.failed === true
+      ? undefined
+      : await issueLabels(github, owner, repo, prNumber);
+    if (latestLabels) assertReviewPolicy(latestLabels, state);
+    await applyLabels(github, owner, repo, prNumber, state, latestLabels);
+    for (const comment of comments.filter((comment) => comment.kind !== "review")) {
+      await upsertMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
+    }
+    for (const marker of new Set(state.removeCommentMarkers || [])) {
+      await deleteMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, marker);
+    }
   } else {
+    await applyLabels(github, owner, repo, prNumber, state);
     for (const comment of state.comments || []) await upsertMarkedComment(
       github, owner, repo, prNumber, state.expectedSha, botLogin, comment);
     for (const comment of state.auditComments || []) await upsertMarkedComment(
@@ -234,8 +285,10 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
       await deleteMarkedComment(github, owner, repo, prNumber, state.expectedSha, botLogin, marker);
     }
     if (state.check) {
-      const created = await ensureClassificationCheck(github, owner, repo, prNumber, state.expectedSha, state.check);
-      if (created && state.check.title === "Classification complete" && state.dispatchReview !== false) {
+      const changed = await ensureClassificationCheck(
+        github, owner, repo, prNumber, state.expectedSha, state.check);
+      if ((changed || reviewRequested) && state.check.title === "Classification complete" &&
+          state.dispatchReview !== false) {
         await dispatchClassificationComplete(github, owner, repo, prNumber, state.expectedSha);
       }
     }
@@ -244,6 +297,6 @@ async function writeState({ github, owner, repo, prNumber, state, botLogin }) {
 }
 
 module.exports = {
-  StaleHeadError, applyLabels, assertCurrentHead, deleteMarkedComment, dispatchClassificationComplete,
+  StaleHeadError, StalePolicyError, applyLabels, assertCurrentHead, deleteMarkedComment, dispatchClassificationComplete,
   escapeMarkdown, markerBody, upsertMarkedComment, writeState,
 };

@@ -48,6 +48,35 @@ impl fmt::Debug for ExtensionRegistry {
 
 // ── Public configuration types ────────────────────────────────────────────────
 
+/// RDPSND quality policy sent to servers that support audio protocol version 6 or newer.
+#[cfg(any(feature = "sound", feature = "rdpdr"))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AudioQualityMode {
+    Dynamic,
+    Medium,
+    #[default]
+    High,
+}
+
+#[cfg(any(feature = "sound", feature = "rdpdr"))]
+impl AudioQualityMode {
+    pub(crate) fn into_rdpsnd(self) -> ironrdp_rdpsnd::pdu::QualityMode {
+        match self {
+            Self::Dynamic => ironrdp_rdpsnd::pdu::QualityMode::Dynamic,
+            Self::Medium => ironrdp_rdpsnd::pdu::QualityMode::Medium,
+            Self::High => ironrdp_rdpsnd::pdu::QualityMode::High,
+        }
+    }
+
+    fn as_u32(self) -> u32 {
+        match self {
+            Self::Dynamic => 0,
+            Self::Medium => 1,
+            Self::High => 2,
+        }
+    }
+}
+
 /// Fully resolved client configuration.
 ///
 /// This is the typed surface consumed by [`crate::rdp::RdpClient`]. Build it with
@@ -62,6 +91,8 @@ pub struct Config {
     pub(crate) connector: ironrdp_connector::Config,
     pub(crate) destination: Destination,
     pub(crate) transport: Transport,
+    #[cfg(feature = "udp")]
+    pub(crate) udp_transport_enabled: bool,
     pub(crate) certificate_validation: ironrdp_tls::CertificateValidation,
     pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
 
@@ -70,9 +101,17 @@ pub struct Config {
     pub(crate) vm_id: Option<String>,
     #[cfg(feature = "vmconnect")]
     pub(crate) vmconnect_mode: VmConnectMode,
+    #[cfg(all(windows, feature = "vmconnect"))]
+    pub(crate) vmconnect_current_user: bool,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
+    pub(crate) input_send_interval: Option<Duration>,
+    pub(crate) input_keepalive_interval: Option<Duration>,
     pub(crate) fake_events_interval: Option<Duration>,
     pub(crate) channels: ChannelConfig,
+    pub(crate) administrative_session: bool,
+    pub(crate) load_balance_info: Option<String>,
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    pub(crate) audio_quality_mode: AudioQualityMode,
     pub(crate) rail_client_status_flags: Option<u32>,
     /// Initial RemoteApp launch queued after the RAIL handshake.
     pub(crate) rail_initial_execute: Option<ExecutePdu>,
@@ -119,6 +158,12 @@ impl Config {
         &self.transport
     }
 
+    /// Whether reliable RDP-UDP2 is enabled for eligible direct connections.
+    #[cfg(feature = "udp")]
+    pub fn udp_transport_enabled(&self) -> bool {
+        self.udp_transport_enabled
+    }
+
     /// TLS peer-certificate validation policy.
     pub fn certificate_validation(&self) -> ironrdp_tls::CertificateValidation {
         self.certificate_validation
@@ -141,9 +186,33 @@ impl Config {
         self.vm_id.as_ref().map(|_| self.vmconnect_mode)
     }
 
+    #[cfg(all(windows, feature = "vmconnect"))]
+    /// Whether VMConnect host authentication uses the caller's current Windows logon token.
+    pub fn vmconnect_current_user(&self) -> bool {
+        self.vm_id.is_some() && self.vmconnect_current_user
+    }
+
+    #[cfg(all(windows, feature = "vmconnect"))]
+    /// Whether this local VMConnect session accepts Hyper-V frame-buffer redirection.
+    pub fn vmconnect_framebuffer_redirection(&self) -> bool {
+        self.vm_id.is_some()
+            && matches!(&self.transport, Transport::Direct)
+            && is_loopback_host(self.destination.name())
+    }
+
     /// Optional Kerberos/KDC proxy configuration.
     pub fn kerberos_config(&self) -> Option<&ironrdp_connector::credssp::KerberosConfig> {
         self.kerberos_config.as_ref()
+    }
+
+    /// Minimum interval between non-forced input batches.
+    pub fn input_send_interval(&self) -> Option<Duration> {
+        self.input_send_interval
+    }
+
+    /// Interval between synthetic input keepalive events.
+    pub fn input_keepalive_interval(&self) -> Option<Duration> {
+        self.input_keepalive_interval
     }
 
     /// Idle anti-lock fake-events interval, if enabled.
@@ -154,6 +223,22 @@ impl Config {
     /// Channel/codec runtime toggles.
     pub fn channels(&self) -> &ChannelConfig {
         &self.channels
+    }
+
+    /// Whether GCC requests the server's administrative session.
+    pub fn administrative_session(&self) -> bool {
+        self.administrative_session
+    }
+
+    /// Opaque load-balancing data sent in the initial X.224 Connection Request.
+    pub fn load_balance_info(&self) -> Option<&str> {
+        self.load_balance_info.as_deref()
+    }
+
+    /// RDPSND quality policy sent during audio format negotiation.
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    pub fn audio_quality_mode(&self) -> AudioQualityMode {
+        self.audio_quality_mode
     }
 
     /// DVC named-pipe proxy mappings.
@@ -186,6 +271,8 @@ impl fmt::Debug for Config {
         s.field("connector", &self.connector);
         s.field("destination", &self.destination);
         s.field("transport", &self.transport);
+        #[cfg(feature = "udp")]
+        s.field("udp_transport_enabled", &self.udp_transport_enabled);
         s.field("certificate_validation", &self.certificate_validation);
         s.field(
             "certificate_validation_callback",
@@ -195,10 +282,23 @@ impl fmt::Debug for Config {
         {
             s.field("vm_id", &self.vm_id);
             s.field("vmconnect_mode", &self.vmconnect_mode);
+            #[cfg(windows)]
+            s.field("vmconnect_current_user", &self.vmconnect_current_user);
+            #[cfg(windows)]
+            s.field(
+                "vmconnect_framebuffer_redirection",
+                &self.vmconnect_framebuffer_redirection(),
+            );
         }
         s.field("kerberos_config", &self.kerberos_config);
+        s.field("input_send_interval", &self.input_send_interval);
+        s.field("input_keepalive_interval", &self.input_keepalive_interval);
         s.field("fake_events_interval", &self.fake_events_interval);
         s.field("channels", &self.channels);
+        s.field("administrative_session", &self.administrative_session);
+        s.field("load_balance_info", &self.load_balance_info);
+        #[cfg(any(feature = "sound", feature = "rdpdr"))]
+        s.field("audio_quality_mode", &self.audio_quality_mode);
         s.field("rail_client_status_flags", &self.rail_client_status_flags);
         #[cfg(feature = "dvc-pipe-proxy")]
         s.field("dvc_pipe_proxies", &self.dvc_pipe_proxies);
@@ -270,6 +370,10 @@ pub struct ChannelConfig {
     /// Enable native MS-RDPEWA WebAuthn redirection.
     #[cfg(feature = "webauthn")]
     pub webauthn: bool,
+
+    /// Enable the MS-RDPEL location dynamic virtual channel.
+    #[cfg(feature = "location")]
+    pub location: bool,
 }
 
 #[cfg_attr(
@@ -302,6 +406,8 @@ impl Default for ChannelConfig {
             qoiz: true,
             #[cfg(feature = "webauthn")]
             webauthn: true,
+            #[cfg(feature = "location")]
+            location: false,
         }
     }
 }
@@ -666,6 +772,8 @@ pub struct ConfigBuilder {
     enable_audio_capture: Option<bool>,
     compression_type: Option<ironrdp_pdu::rdp::client_info::CompressionType>,
     compression_enabled: Option<bool>,
+    load_balance_info: Option<String>,
+    administrative_session: bool,
     alternate_shell: Option<String>,
     work_dir: Option<String>,
     remote_application_mode: Option<bool>,
@@ -674,14 +782,22 @@ pub struct ConfigBuilder {
     rail_client_status_flags: Option<u32>,
 
     transport: TransportKind,
+    #[cfg(feature = "udp")]
+    udp_transport_enabled: bool,
     #[cfg(feature = "vmconnect")]
     vm_id: Option<String>,
     #[cfg(feature = "vmconnect")]
     vmconnect_mode: VmConnectMode,
+    #[cfg(all(windows, feature = "vmconnect"))]
+    vmconnect_current_user: bool,
     rdcleanpath_token: Option<String>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
+    input_send_interval: Option<Duration>,
+    input_keepalive_interval: Option<Duration>,
     fake_events_interval: Option<Duration>,
     channels: ChannelConfig,
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    audio_quality_mode: Option<AudioQualityMode>,
     #[cfg(feature = "dvc-pipe-proxy")]
     dvc_pipe_proxies: Vec<DvcProxyInfo>,
     #[cfg(all(windows, feature = "dvc-com-plugin"))]
@@ -902,6 +1018,32 @@ impl ConfigBuilder {
     pub fn with_autologon(mut self, enabled: bool) -> Self {
         self.autologon = Some(enabled);
         self.properties.set_autologon(enabled);
+        self
+    }
+
+    /// Set or clear the opaque load-balance routing token carried by the X.224 Connection Request PDU.
+    ///
+    /// A nonempty token must contain 1–238 printable ASCII bytes, excluding an optional trailing CRLF.
+    /// An empty value clears the token, and [`Self::build`] rejects other values.
+    #[must_use]
+    pub fn with_load_balance_info(mut self, value: impl Into<String>) -> Self {
+        let value = value.into();
+        let normalized = value.strip_suffix("\r\n").unwrap_or(&value);
+        if normalized.is_empty() {
+            self.load_balance_info = None;
+            self.properties.remove("loadbalanceinfo");
+        } else {
+            self.properties.insert("loadbalanceinfo", value.clone());
+            self.load_balance_info = Some(normalized.to_owned());
+        }
+        self
+    }
+
+    /// Request the server's administrative session through GCC Client Cluster Data.
+    #[must_use]
+    pub fn with_administrative_session(mut self, enabled: bool) -> Self {
+        self.administrative_session = enabled;
+        self.properties.insert("administrative session", enabled);
         self
     }
 
@@ -1128,7 +1270,17 @@ impl ConfigBuilder {
         self
     }
 
-    #[cfg(feature = "vmconnect")]
+    /// Enables reliable RDP-UDP2 for eligible direct connections.
+    ///
+    /// Unsupported carriers remain TCP-only, and a failed UDP bootstrap falls
+    /// back to the main TCP connection.
+    #[cfg(feature = "udp")]
+    #[must_use]
+    pub fn with_udp_transport(mut self, enabled: bool) -> Self {
+        self.udp_transport_enabled = enabled;
+        self
+    }
+
     /// Connect to a Hyper-V VM console by VM GUID. Destination must use port
     /// [`ironrdp_vmconnect::PORT`] (2179) unless the caller explicitly selects another port.
     /// A destination with no explicit port defaults to 2179 instead of the ordinary RDP port.
@@ -1137,20 +1289,39 @@ impl ConfigBuilder {
     /// embedder (error if disabled). Works over Direct, RDCleanPath, and RDS Gateway (the
     /// destination port, typically 2179, is forwarded in the MS-TSGU channel-create packet,
     /// then the VMConnect PCB / `connect_front` handshake runs on the tunneled stream).
+    #[cfg(feature = "vmconnect")]
     #[must_use]
     pub fn with_vmconnect(mut self, vm_id: impl Into<String>) -> Self {
-        self.vm_id = Some(vm_id.into());
+        let vm_id = vm_id.into();
+        self.properties.set_vmconnect_id(vm_id.clone());
+        self.properties.set_vmconnect_basic(false);
+        self.vm_id = Some(vm_id);
+        self.vmconnect_mode = VmConnectMode::Enhanced;
         self
     }
 
-    #[cfg(feature = "vmconnect")]
     /// Connect to a Hyper-V VM console using the selected mode.
     ///
     /// See [`with_vmconnect`](Self::with_vmconnect) for transport notes.
+    #[cfg(feature = "vmconnect")]
     #[must_use]
     pub fn with_vmconnect_mode(mut self, vm_id: impl Into<String>, mode: VmConnectMode) -> Self {
-        self.vm_id = Some(vm_id.into());
+        let vm_id = vm_id.into();
+        self.properties.set_vmconnect_id(vm_id.clone());
+        self.properties.set_vmconnect_basic(mode == VmConnectMode::Basic);
+        self.vm_id = Some(vm_id);
         self.vmconnect_mode = mode;
+        self
+    }
+
+    /// Use the caller's current Windows logon token for VMConnect host authentication.
+    ///
+    /// This is the native VMConnect behavior for local Hyper-V connections and avoids handling a reusable host password.
+    #[cfg(all(windows, feature = "vmconnect"))]
+    #[must_use]
+    pub fn with_vmconnect_current_user(mut self, enabled: bool) -> Self {
+        self.properties.set_vmconnect_current_user(enabled);
+        self.vmconnect_current_user = enabled;
         self
     }
 
@@ -1175,6 +1346,26 @@ impl ConfigBuilder {
             self.properties.clear_kdc_proxy_url();
         }
         self.kerberos_config = Some(cfg);
+        self
+    }
+
+    /// Set the minimum interval between non-forced input batches.
+    ///
+    /// Mouse movement is batched until this interval elapses.
+    /// Keyboard, button, wheel, synchronization, and QoE events remain immediate.
+    #[must_use]
+    pub fn with_input_send_interval(mut self, interval: Duration) -> Self {
+        self.input_send_interval = Some(interval);
+        self
+    }
+
+    /// Set the interval between synthetic input keepalive events.
+    ///
+    /// Unlike [`with_fake_events_interval`](Self::with_fake_events_interval), this does not write the minute-based `ironrdp_fakeeventsinterval` compatibility property.
+    /// When both intervals are configured, the shorter interval controls synthetic input.
+    #[must_use]
+    pub fn with_input_keepalive_interval(mut self, interval: Duration) -> Self {
+        self.input_keepalive_interval = Some(interval);
         self
     }
 
@@ -1222,6 +1413,15 @@ impl ConfigBuilder {
         } else {
             ironrdp_cfg::AudioCaptureMode::Disabled
         });
+        self
+    }
+
+    /// Set the RDPSND quality policy sent to servers supporting audio protocol version 6 or newer.
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    #[must_use]
+    pub fn with_audio_quality_mode(mut self, mode: AudioQualityMode) -> Self {
+        self.audio_quality_mode = Some(mode);
+        self.properties.insert("audioqualitymode", mode.as_u32());
         self
     }
 
@@ -1277,6 +1477,14 @@ impl ConfigBuilder {
     pub fn with_webauthn(mut self, enabled: bool) -> Self {
         self.channels.webauthn = enabled;
         self.properties.set_redirect_webauthn(enabled);
+        self
+    }
+
+    /// Enable or disable explicit caller-supplied location redirection.
+    #[cfg(feature = "location")]
+    #[must_use]
+    pub fn with_location_redirection(mut self, enabled: bool) -> Self {
+        self.channels.location = enabled;
         self
     }
 
@@ -1385,28 +1593,40 @@ impl ConfigBuilder {
     /// because [`build`](Self::build) resolves them from the RDP server account.
     pub fn missing(&self) -> Vec<MissingField> {
         let mut missing = Vec::new();
-        if self.destination.is_none() {
-            missing.push(MissingField::ServerAddress);
-        }
-        if self.username.is_none() {
-            missing.push(MissingField::Username);
-        }
-        if self.password.is_none() {
-            missing.push(MissingField::Password);
-        }
+        #[cfg(all(windows, feature = "vmconnect"))]
+        let uses_current_vmconnect_credentials = self.vm_id.is_some() && self.vmconnect_current_user;
+        #[cfg(not(all(windows, feature = "vmconnect")))]
+        let uses_current_vmconnect_credentials = false;
         #[cfg(feature = "gateway")]
-        if matches!(self.transport, TransportKind::Gateway { .. }) {
-            let uses_server_credentials = matches!(
+        let gateway_uses_server_credentials = matches!(self.transport, TransportKind::Gateway { .. })
+            && matches!(
                 self.properties.gateway_credentials_source(),
                 Ok(Some(ironrdp_cfg::GatewayCredentialsSource::UseServerCredentials))
             );
-            if !uses_server_credentials {
-                if self.gateway_username.is_none() {
-                    missing.push(MissingField::GatewayUsername);
-                }
-                if self.gateway_password.is_none() {
-                    missing.push(MissingField::GatewayPassword);
-                }
+        #[cfg(not(feature = "gateway"))]
+        let gateway_uses_server_credentials = false;
+        if self.destination.is_none() {
+            missing.push(MissingField::ServerAddress);
+        }
+        if self.username.is_none()
+            && (!uses_current_vmconnect_credentials
+                || (gateway_uses_server_credentials && self.gateway_username.is_none()))
+        {
+            missing.push(MissingField::Username);
+        }
+        if self.password.is_none()
+            && (!uses_current_vmconnect_credentials
+                || (gateway_uses_server_credentials && self.gateway_password.is_none()))
+        {
+            missing.push(MissingField::Password);
+        }
+        #[cfg(feature = "gateway")]
+        if matches!(self.transport, TransportKind::Gateway { .. }) && !gateway_uses_server_credentials {
+            if self.gateway_username.is_none() {
+                missing.push(MissingField::GatewayUsername);
+            }
+            if self.gateway_password.is_none() {
+                missing.push(MissingField::GatewayPassword);
             }
         }
         if matches!(self.transport, TransportKind::RDCleanPath { .. }) && self.rdcleanpath_token.is_none() {
@@ -1439,6 +1659,18 @@ impl ConfigBuilder {
     pub fn build(mut self) -> anyhow::Result<Config> {
         use ironrdp_pdu::rdp::capability_sets::client_codecs_capabilities;
         use ironrdp_pdu::rdp::client_info::TimezoneInfo;
+
+        if let Some(load_balance_info) = &self.load_balance_info {
+            anyhow::ensure!(
+                load_balance_info.len() <= ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH
+                    && !load_balance_info.is_empty()
+                    && load_balance_info
+                        .as_bytes()
+                        .iter()
+                        .all(|byte| (0x20..=0x7E).contains(byte)),
+                "invalid load-balance routing token"
+            );
+        }
 
         #[cfg(feature = "gateway")]
         if matches!(self.transport, TransportKind::Gateway { .. }) {
@@ -1503,6 +1735,43 @@ impl ConfigBuilder {
         #[cfg(feature = "vmconnect")]
         if let Some(vm_id) = &self.vm_id {
             anyhow::ensure!(!vm_id.trim().is_empty(), "vmconnect VM ID is empty");
+        }
+
+        #[cfg(feature = "vmconnect")]
+        if self.vm_id.is_some()
+            && let Some(destination) = self.destination.as_mut()
+            && destination.name == "."
+        {
+            destination.name = "localhost".to_owned();
+            self.properties.set_full_address(&ironrdp_cfg::TargetAddr {
+                host: ironrdp_cfg::TargetHost::Domain(destination.name.clone()),
+                port: destination.port,
+            });
+            self.properties.clear_alternate_full_address();
+        }
+
+        #[cfg(all(windows, feature = "vmconnect"))]
+        if self.vm_id.is_some()
+            && self.vmconnect_current_user
+            && matches!(self.transport, TransportKind::RDCleanPath { .. })
+        {
+            anyhow::bail!("vmconnect current-user authentication is not supported with RDCleanPath");
+        }
+
+        #[cfg(all(windows, feature = "vmconnect"))]
+        let vmconnect_framebuffer_redirection = self.vm_id.is_some()
+            && matches!(&self.transport, TransportKind::Direct)
+            && self
+                .destination
+                .as_ref()
+                .is_some_and(|destination| is_loopback_host(destination.name()));
+
+        #[cfg(all(windows, feature = "vmconnect"))]
+        if vmconnect_framebuffer_redirection && self.dig_product_id.as_deref().is_none_or(str::is_empty) {
+            self.dig_product_id = Some(
+                ironrdp_vmconnect::local_instance_id()
+                    .context("read local RDP InstanceID for VMConnect frame-buffer redirection")?,
+            );
         }
 
         #[cfg(feature = "vmconnect")]
@@ -1678,6 +1947,7 @@ impl ConfigBuilder {
             request_data: None,
             pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
             multitransport_flags: None,
+            support_dyn_vc_gfx_protocol: false,
             compression_type,
             performance_flags: self.performance_flags.unwrap_or_default(),
             timezone_info: TimezoneInfo::default(),
@@ -1710,15 +1980,25 @@ impl ConfigBuilder {
             connector,
             destination: self.destination.context("server address is required")?,
             transport,
+            #[cfg(feature = "udp")]
+            udp_transport_enabled: self.udp_transport_enabled,
             certificate_validation,
             certificate_validation_callback: self.certificate_validation_callback,
             #[cfg(feature = "vmconnect")]
             vm_id: self.vm_id,
             #[cfg(feature = "vmconnect")]
             vmconnect_mode: self.vmconnect_mode,
+            #[cfg(all(windows, feature = "vmconnect"))]
+            vmconnect_current_user: self.vmconnect_current_user,
             kerberos_config,
+            input_send_interval: self.input_send_interval,
+            input_keepalive_interval: self.input_keepalive_interval,
             fake_events_interval: self.fake_events_interval,
             channels: self.channels,
+            administrative_session: self.administrative_session,
+            load_balance_info: self.load_balance_info,
+            #[cfg(any(feature = "sound", feature = "rdpdr"))]
+            audio_quality_mode: self.audio_quality_mode.unwrap_or_default(),
             rail_client_status_flags: self.rail_client_status_flags,
             rail_initial_execute,
             #[cfg(feature = "dvc-pipe-proxy")]
@@ -1784,6 +2064,17 @@ impl ConfigBuilder {
         if let Some(autologon) = ps.autologon() {
             self.autologon = Some(autologon);
         }
+        if let Some(administrative_session) = ps.get::<bool>("administrative session") {
+            self.administrative_session = administrative_session;
+        }
+        if let Some(load_balance_info) = ps.get::<&str>("loadbalanceinfo") {
+            let normalized = load_balance_info.strip_suffix("\r\n").unwrap_or(load_balance_info);
+            self.load_balance_info = if normalized.is_empty() {
+                None
+            } else {
+                Some(normalized.to_owned())
+            };
+        }
         if let Some(scale) = ps.desktop_scale_factor().ok().flatten() {
             self.desktop_scale_factor = Some(scale);
         }
@@ -1799,6 +2090,22 @@ impl ConfigBuilder {
         if let Some(dir) = ps.shell_working_directory() {
             self.work_dir = Some(dir.to_owned());
         }
+        #[cfg(feature = "vmconnect")]
+        if let Some(vm_id) = ps.vmconnect_id() {
+            self.vm_id = Some(vm_id.to_owned());
+        }
+        #[cfg(feature = "vmconnect")]
+        if let Some(basic) = ps.vmconnect_basic() {
+            self.vmconnect_mode = if basic {
+                VmConnectMode::Basic
+            } else {
+                VmConnectMode::Enhanced
+            };
+        }
+        #[cfg(all(windows, feature = "vmconnect"))]
+        if let Some(current_user) = ps.vmconnect_current_user() {
+            self.vmconnect_current_user = current_user;
+        }
         if let Some(remote_application_mode) = ps.remote_application_mode() {
             self.remote_application_mode = Some(remote_application_mode);
         }
@@ -1807,6 +2114,15 @@ impl ConfigBuilder {
         }
         if let Some(minutes) = ps.fake_events_interval() {
             self.fake_events_interval = Some(Duration::from_secs(u64::from(minutes) * 60));
+        }
+        if let Some(milliseconds) = ps.get::<u32>("mininputsendinterval") {
+            if milliseconds > 2_000 {
+                anyhow::bail!("invalid minimum input send interval: valid values are 0 through 2000 milliseconds");
+            }
+            self.input_send_interval = Some(Duration::from_millis(u64::from(milliseconds)));
+        }
+        if let Some(seconds) = ps.get::<u32>("keepaliveinterval") {
+            self.input_keepalive_interval = (seconds != 0).then(|| Duration::from_secs(u64::from(seconds)));
         }
         if let Some(level) = ps.compression_level() {
             self.compression_type = Some(compression_type_from_level(level)?);
@@ -1852,6 +2168,15 @@ impl ConfigBuilder {
             Ok(Some(AudioCaptureMode::CaptureFromClient)) => self.enable_audio_capture = Some(true),
             Ok(Some(AudioCaptureMode::Disabled)) => self.enable_audio_capture = Some(false),
             _ => {}
+        }
+        #[cfg(any(feature = "sound", feature = "rdpdr"))]
+        if let Some(audio_quality_mode) = ps.get::<i64>("audioqualitymode") {
+            self.audio_quality_mode = Some(match audio_quality_mode {
+                0 => AudioQualityMode::Dynamic,
+                1 => AudioQualityMode::Medium,
+                2 => AudioQualityMode::High,
+                _ => anyhow::bail!("invalid 'audioqualitymode': {audio_quality_mode}"),
+            });
         }
 
         // Transport: NamedPipe > RDCleanPath > Gateway > Direct.
@@ -2016,6 +2341,14 @@ fn compression_type_from_level(level: u32) -> anyhow::Result<ironrdp_pdu::rdp::c
     }
 }
 
+#[cfg(all(windows, feature = "vmconnect"))]
+fn is_loopback_host(host: &str) -> bool {
+    host.trim_end_matches('.').eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<core::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
 fn level_from_compression_type(ty: ironrdp_pdu::rdp::client_info::CompressionType) -> u32 {
     use ironrdp_pdu::rdp::client_info::CompressionType;
 
@@ -2055,6 +2388,8 @@ fn kerberos_config_from_properties(
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
+
     use ironrdp_cfg::PropertySetExt as _;
     use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 
@@ -2071,6 +2406,57 @@ mod tests {
             .with_client_dir("C:\\")
             .with_platform(MajorPlatformType::WINDOWS)
             .with_client_name("client")
+    }
+
+    #[test]
+    fn load_balance_info_enforces_x224_length_limit() {
+        let maximum = "x".repeat(ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH);
+        assert!(complete_builder().with_load_balance_info(maximum).build().is_ok());
+
+        let oversized = "x".repeat(ironrdp_pdu::nego::MAX_ROUTING_TOKEN_LENGTH + 1);
+        assert!(complete_builder().with_load_balance_info(oversized).build().is_err());
+
+        let cleared = complete_builder()
+            .with_load_balance_info("\r\n")
+            .build()
+            .expect("terminator-only load-balance info clears the token");
+        assert!(cleared.load_balance_info().is_none());
+    }
+
+    #[test]
+    fn input_timing_configuration_preserves_subminute_precision() {
+        let config = complete_builder()
+            .with_input_send_interval(Duration::from_millis(100))
+            .with_input_keepalive_interval(Duration::from_secs(5))
+            .build()
+            .expect("valid input timing configuration");
+
+        assert_eq!(config.input_send_interval(), Some(Duration::from_millis(100)));
+        assert_eq!(config.input_keepalive_interval(), Some(Duration::from_secs(5)));
+        assert_eq!(config.fake_events_interval(), None);
+        assert_eq!(config.properties.get::<u32>("ironrdp_fakeeventsinterval"), None);
+
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.insert("mininputsendinterval", 2_000u32);
+        properties.insert("keepaliveinterval", 30u32);
+        let config = complete_builder()
+            .with_property_set(&properties)
+            .expect("valid input timing properties")
+            .build()
+            .expect("valid input timing configuration");
+        assert_eq!(config.input_send_interval(), Some(Duration::from_secs(2)));
+        assert_eq!(config.input_keepalive_interval(), Some(Duration::from_secs(30)));
+
+        properties.insert("mininputsendinterval", 2_001u32);
+        assert!(complete_builder().with_property_set(&properties).is_err());
+    }
+
+    #[cfg(any(feature = "sound", feature = "rdpdr"))]
+    #[test]
+    fn property_set_rejects_out_of_range_audio_quality() {
+        let mut properties = ironrdp_propertyset::PropertySet::new();
+        properties.insert("audioqualitymode", -1i64);
+        assert!(ConfigBuilder::from_property_set(&properties).is_err());
     }
 
     #[cfg(feature = "gateway")]

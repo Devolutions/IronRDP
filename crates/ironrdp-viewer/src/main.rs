@@ -2,6 +2,7 @@
 
 use anyhow::Context as _;
 use core::sync::atomic::{AtomicBool, Ordering};
+use ironrdp::client::output_channel::output_channel;
 use ironrdp::client::rdp::{RdpClient, RdpOutputEvent};
 use ironrdp_daemon::daemon::{self, Daemon};
 use ironrdp_propertyset::PropertySet;
@@ -37,7 +38,7 @@ fn main() -> anyhow::Result<()> {
     debug!("Initialize App");
     let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
     let event_loop_proxy = event_loop.create_proxy();
-    let (output_event_sender, mut output_event_receiver) = mpsc::channel::<RdpOutputEvent>(64);
+    let (output_event_sender, mut output_event_receiver) = output_channel(64);
     let initial_window_size = PhysicalSize::new(
         u32::from(config.connector().desktop_size.width),
         u32::from(config.connector().desktop_size.height),
@@ -58,10 +59,13 @@ fn main() -> anyhow::Result<()> {
         .build()
         .context("unable to create tokio runtime")?;
 
-    // Forward output events from the library's mpsc channel to winit's `EventLoopProxy`.
+    // Forward output events from the library's output channel to winit's `EventLoopProxy`.
     //
-    // The library is winit-agnostic: it just emits `RdpOutputEvent`s on a plain
-    // `tokio::sync::mpsc` channel. Bridging onto the GUI event loop is the binary's job.
+    // The library is winit-agnostic: it just emits `RdpOutputEvent`s on
+    // `output_channel`'s `OutputEventSender`/`OutputEventReceiver` pair (a plain
+    // `mpsc` channel for correctness-sensitive events, `watch` channels underneath
+    // for high-frequency display state; see `RdpOutputEvent::drop_policy`).
+    // Bridging onto the GUI event loop is the binary's job.
     rt.spawn(async move {
         while let Some(event) = output_event_receiver.recv().await {
             if event_loop_proxy.send_event(event).is_err() {

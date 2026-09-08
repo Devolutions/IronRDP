@@ -21,7 +21,7 @@ use ironrdp_rdpeusb::{
     },
 };
 use ironrdp_usb::{
-    Direction, InterfaceSelection, UsbSpeed,
+    Direction, InterfaceSelection,
     control::{GetDescriptorRequest, Recipient, RequestKind, RequestType, SetupPacket, standard_request},
     descriptor::{ConfigurationDescriptorSet, descriptor_type},
     endpoint::EndpointAddress,
@@ -804,7 +804,7 @@ fn select_configuration_carries_full_descriptor_and_selected_interfaces() {
         .unwrap();
     let selections = [selection(0, 0), selection(1, 1)];
 
-    let request = select_configuration(descriptor, &selections, UsbSpeed::High).unwrap();
+    let request = select_configuration(descriptor, &selections).unwrap();
     assert_eq!(request.output_buffer_size, 0);
     assert_eq!(request.ts_urb.func, UrbFunction::URB_FUNCTION_SELECT_CONFIGURATION);
     let TsUrbInKind::SelectConfig(urb) = request.ts_urb.kind else {
@@ -817,8 +817,8 @@ fn select_configuration_carries_full_descriptor_and_selected_interfaces() {
     assert_eq!(urb.usbd_ifaces[0].interface_number, 0);
     assert_eq!(urb.usbd_ifaces[0].alternate_setting, 0);
     assert_eq!(urb.usbd_ifaces[0].ts_usbd_pipe_info.len(), 2);
-    assert_eq!(urb.usbd_ifaces[0].ts_usbd_pipe_info[0].max_packet_size, 192);
-    assert_eq!(urb.usbd_ifaces[0].ts_usbd_pipe_info[1].max_packet_size, 512);
+    assert_eq!(urb.usbd_ifaces[0].ts_usbd_pipe_info[0].max_packet_size, 0);
+    assert_eq!(urb.usbd_ifaces[0].ts_usbd_pipe_info[1].max_packet_size, 0);
     assert_eq!(urb.usbd_ifaces[1].interface_number, 1);
     assert_eq!(urb.usbd_ifaces[1].alternate_setting, 1);
 }
@@ -830,7 +830,7 @@ fn select_interface_uses_the_selected_alternate_setting() {
         .validate()
         .unwrap();
 
-    let request = select_interface(42, descriptor, selection(1, 1), UsbSpeed::High).unwrap();
+    let request = select_interface(42, descriptor, selection(1, 1)).unwrap();
     assert_eq!(request.output_buffer_size, 0);
     assert_eq!(request.ts_urb.func, UrbFunction::URB_FUNCTION_SELECT_INTERFACE);
     let TsUrbInKind::SelectIface(urb) = request.ts_urb.kind else {
@@ -839,7 +839,7 @@ fn select_interface_uses_the_selected_alternate_setting() {
     assert_eq!(urb.config_handle, 42);
     assert_eq!(urb.usbd_iface.interface_number, 1);
     assert_eq!(urb.usbd_iface.alternate_setting, 1);
-    assert_eq!(urb.usbd_iface.ts_usbd_pipe_info[0].max_packet_size, 32);
+    assert_eq!(urb.usbd_iface.ts_usbd_pipe_info[0].max_packet_size, 0);
 }
 
 #[test]
@@ -938,16 +938,16 @@ fn selection_rejects_inconsistent_interface_sets() {
         .validate()
         .unwrap();
     assert_eq!(
-        select_configuration(descriptor, &[selection(0, 0), selection(0, 0)], UsbSpeed::High).unwrap_err(),
+        select_configuration(descriptor, &[selection(0, 0), selection(0, 0)]).unwrap_err(),
         ConversionError::DuplicateInterface { interface: 0 }
     );
     assert_eq!(
-        select_configuration(descriptor, &[selection(0, 0)], UsbSpeed::High).unwrap_err(),
+        select_configuration(descriptor, &[selection(0, 0)]).unwrap_err(),
         ConversionError::MissingInterfaceSelection { interface: 1 }
     );
     let missing = selection(7, 0);
     assert_eq!(
-        select_configuration(descriptor, &[missing], UsbSpeed::Full).unwrap_err(),
+        select_configuration(descriptor, &[missing]).unwrap_err(),
         ConversionError::InterfaceNotFound { selection: missing }
     );
 }
@@ -964,66 +964,6 @@ fn unconfigure_has_an_empty_transfer_in_request() {
 }
 
 #[test]
-fn selection_rejects_high_bandwidth_bits_at_other_speeds() {
-    let mut bytes = CONFIGURATION;
-    bytes[22] = 0x40;
-    bytes[23] = 0x08;
-    let descriptor = ConfigurationDescriptorSet::parse(&bytes).unwrap().validate().unwrap();
-
-    assert_eq!(
-        select_configuration(descriptor, &[selection(0, 0), selection(1, 1)], UsbSpeed::Full).unwrap_err(),
-        ConversionError::InvalidMaximumPacketSize {
-            selection: selection(0, 0),
-            raw: 0x0840
-        }
-    );
-}
-
-#[test]
-fn selection_enforces_usb2_speed_dependent_packet_sizes() {
-    let mut full_speed_bulk = CONFIGURATION;
-    full_speed_bulk[22] = 64;
-    full_speed_bulk[23] = 0;
-    full_speed_bulk[29] = 64;
-    full_speed_bulk[30] = 0;
-    let descriptor = ConfigurationDescriptorSet::parse(&full_speed_bulk)
-        .unwrap()
-        .validate()
-        .unwrap();
-    select_configuration(descriptor, &[selection(0, 0), selection(1, 1)], UsbSpeed::Full).unwrap();
-
-    let mut invalid_full_speed_bulk = full_speed_bulk;
-    invalid_full_speed_bulk[29] = 0;
-    invalid_full_speed_bulk[30] = 2;
-    let descriptor = ConfigurationDescriptorSet::parse(&invalid_full_speed_bulk)
-        .unwrap()
-        .validate()
-        .unwrap();
-    assert_eq!(
-        select_configuration(descriptor, &[selection(0, 0), selection(1, 1)], UsbSpeed::Full).unwrap_err(),
-        ConversionError::InvalidMaximumPacketSize {
-            selection: selection(0, 0),
-            raw: 512
-        }
-    );
-
-    let mut invalid_high_speed_bulk = CONFIGURATION;
-    invalid_high_speed_bulk[29] = 64;
-    invalid_high_speed_bulk[30] = 0;
-    let descriptor = ConfigurationDescriptorSet::parse(&invalid_high_speed_bulk)
-        .unwrap()
-        .validate()
-        .unwrap();
-    assert_eq!(
-        select_configuration(descriptor, &[selection(0, 0), selection(1, 1)], UsbSpeed::High).unwrap_err(),
-        ConversionError::InvalidMaximumPacketSize {
-            selection: selection(0, 0),
-            raw: 64
-        }
-    );
-}
-
-#[test]
 fn selection_enforces_default_interface_zero_isochronous_bandwidth() {
     let mut zero_bandwidth = CONFIGURATION;
     zero_bandwidth[21] = 1;
@@ -1033,7 +973,7 @@ fn selection_enforces_default_interface_zero_isochronous_bandwidth() {
         .unwrap()
         .validate()
         .unwrap();
-    let request = select_configuration(descriptor, &[selection(0, 0), selection(1, 1)], UsbSpeed::High).unwrap();
+    let request = select_configuration(descriptor, &[selection(0, 0), selection(1, 1)]).unwrap();
     let TsUrbInKind::SelectConfig(urb) = request.ts_urb.kind else {
         panic!("configuration selection used the wrong TS_URB variant");
     };
@@ -1046,7 +986,7 @@ fn selection_enforces_default_interface_zero_isochronous_bandwidth() {
         .validate()
         .unwrap();
     assert_eq!(
-        select_configuration(descriptor, &[selection(0, 0), selection(1, 1)], UsbSpeed::High).unwrap_err(),
+        select_configuration(descriptor, &[selection(0, 0), selection(1, 1)]).unwrap_err(),
         ConversionError::InvalidMaximumPacketSize {
             selection: selection(0, 0),
             raw: 1

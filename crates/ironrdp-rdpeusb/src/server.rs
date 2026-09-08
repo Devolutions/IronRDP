@@ -238,6 +238,8 @@ pub struct UrbdrcDeviceServer {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DeviceState {
+    AwaitingCaps,
+    AwaitingChanCreated,
     AwaitingDevice,
     Ready,
     Retracted,
@@ -303,7 +305,7 @@ impl UrbdrcDeviceServer {
         Ok(Self {
             msg_alloc: IdAllocator::new(),
             request_id_alloc: RequestIdAllocator::new(),
-            state: DeviceState::AwaitingDevice,
+            state: DeviceState::AwaitingCaps,
             udev_iface: None,
             comp_iface,
             no_ack_isoch_write_jitter_buf_size: None,
@@ -455,6 +457,14 @@ impl UrbdrcDeviceServer {
         })
     }
 
+    /// Cancel Request Message ([MS-RDPEUSB] section 2.2.6.1):
+    ///
+    /// Asks the client to stop processing `request_id`. This does not release
+    /// the request: a transmitted request is always answered by a completion,
+    /// and a cancelled one completes with a failure `HRESULT` ([MS-RDPEUSB]
+    /// sections 3.3.5.3.1 and 3.3.5.3.6). That completion is what releases the
+    /// tracking state, so releasing it here would make the completion look
+    /// unsolicited.
     pub fn cancel_request(&mut self, request_id: RequestId) -> PduResult<DvcMessage> {
         let udev_iface = self.usb_device_iface()?;
         Ok(Box::new(CancelRequest {
@@ -462,6 +472,26 @@ impl UrbdrcDeviceServer {
             udev_iface,
             req_id: request_id,
         }))
+    }
+
+    /// Releases a request that was built but never handed to the DVC transport.
+    ///
+    /// Every transmitted request is eventually answered by a completion, and
+    /// handling that completion is what releases the request's tracking state.
+    /// A request that never reached the transport is never answered, so without
+    /// this its state would be held until the channel closes.
+    ///
+    /// `request` MUST NOT have been transmitted. Passing it by value keeps the
+    /// normal path honest, since writing a request moves
+    /// [`ServerIoRequest::message`] out of it. That is a convention rather than
+    /// enforcement: encoding the message through a shared borrow leaves the
+    /// request intact, and abandoning it afterwards makes the completion that
+    /// does arrive look unsolicited.
+    ///
+    /// Use [`Self::cancel_request`] instead to stop a request already in flight.
+    pub fn abandon_unsent(&mut self, request: ServerIoRequest) {
+        // Vacant for a no-ack request, which is tracked nowhere to begin with.
+        self.pending_io.remove(&request.request_id);
     }
 
     pub fn retract_device(&mut self, reason: UsbRetractReason) -> PduResult<DvcMessage> {
@@ -655,9 +685,9 @@ impl DvcProcessor for UrbdrcDeviceServer {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        Ok(vec![Box::new(ChannelCreated {
+        Ok(vec![Box::new(RimExchangeCapabilityRequest {
             msg_id: self.msg_alloc.alloc(),
-            direction: crate::pdu::notify::Direction::ToClient,
+            capability: crate::pdu::caps::Capability::RimCapabilityVersion01,
         })])
     }
 
@@ -675,11 +705,30 @@ impl DvcProcessor for UrbdrcDeviceServer {
 
         use UrbdrcClientDevicePdu::*;
         match pdu {
+            Caps(_caps_response_pdu) => {
+                if self.state != DeviceState::AwaitingCaps {
+                    return Err(pdu_other_err!("invalid state"));
+                }
+                resp.push(Box::new(InterfaceRelease {
+                    iface_id: InterfaceId::CAPABILITIES.with_mask(Mask::None),
+                    msg_id: self.msg_alloc.alloc(),
+                }));
+                resp.push(Box::new(ChannelCreated {
+                    msg_id: self.msg_alloc.alloc(),
+                    direction: crate::pdu::notify::Direction::ToClient,
+                }));
+                self.state = DeviceState::AwaitingChanCreated;
+                Ok(resp)
+            }
             ChanCreated(_channel_created_pdu) => {
+                if self.state != DeviceState::AwaitingChanCreated {
+                    return Err(pdu_other_err!("invalid state"));
+                }
                 resp.push(Box::new(InterfaceRelease {
                     msg_id: self.msg_alloc.alloc(),
                     iface_id: InterfaceId::NOTIFY_CLIENT.with_mask(Mask::Proxy),
                 }));
+                self.state = DeviceState::AwaitingDevice;
                 Ok(resp)
             }
             AddDev(add_dev_pdu) => {

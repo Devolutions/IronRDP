@@ -14,6 +14,16 @@ impl MousePdu {
     const NAME: &'static str = "MousePdu";
 
     const FIXED_PART_SIZE: usize = 2 /* flags */ + 2 /* x */ + 2 /* y */;
+
+    /// `number_of_wheel_rotation_units`'s wire representation is 9-bit two's
+    /// complement (MS-RDPBCGR 2.2.8.1.1.3.1.1.3, WheelRotationMask), narrower
+    /// than `i16`. Callers constructing a wheel event should clamp to this
+    /// range rather than passing an out-of-range value through: [`encode`]
+    /// only debug-asserts it, so a value outside this range panics in debug
+    /// builds and silently wraps (truncating cast) in release builds.
+    ///
+    /// [`encode`]: Self::encode
+    pub const WHEEL_ROTATION_RANGE: core::ops::RangeInclusive<i16> = -256..=255;
 }
 
 impl Encode for MousePdu {
@@ -26,11 +36,10 @@ impl Encode for MousePdu {
             PointerFlags::empty().bits()
         };
 
-        // The wire field is 9-bit two's complement: representable range is
-        // [-256, 255], narrower than i16.
         debug_assert!(
-            (-256..=255).contains(&self.number_of_wheel_rotation_units),
-            "number_of_wheel_rotation_units out of the 9-bit two's-complement range [-256, 255]: {}",
+            Self::WHEEL_ROTATION_RANGE.contains(&self.number_of_wheel_rotation_units),
+            "number_of_wheel_rotation_units out of the 9-bit two's-complement range {:?}: {}",
+            Self::WHEEL_ROTATION_RANGE,
             self.number_of_wheel_rotation_units
         );
 

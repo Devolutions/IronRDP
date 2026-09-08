@@ -52,8 +52,11 @@ impl<'de> Decode<'de> for ClientClusterData {
         let flags_with_version = src.read_u32();
         let redirected_session_id = src.read_u32();
 
-        let flags = RedirectionFlags::from_bits(flags_with_version & !REDIRECTION_VERSION_MASK)
-            .ok_or_else(|| invalid_field_err!("flags", "invalid redirection flags", in: src))?;
+        // [MS-RDPBCGR] 3.3.5.3.3 asks the server to validate only the Client
+        // Network Data bounds among the settings blocks, never this bit set;
+        // retain unknown bits (crate-wide policy since #1144) rather than
+        // refusing the client at GCC.
+        let flags = RedirectionFlags::from_bits_retain(flags_with_version & !REDIRECTION_VERSION_MASK);
         let redirection_version = RedirectionVersion::from_u32((flags_with_version & REDIRECTION_VERSION_MASK) >> 2)
             .ok_or_else(|| invalid_field_err!("redirVersion", "invalid redirection version", in: src))?;
 

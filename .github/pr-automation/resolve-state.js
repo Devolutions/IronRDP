@@ -1,9 +1,8 @@
 "use strict";
 
-const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION } = require("./validate-classifier");
-const { SCHEMA_VERSION: REVIEWER_SCHEMA_VERSION } = require("./validate-reviewer");
-const { validateClassifier } = require("./validate-classifier");
-const { validateReviewer } = require("./validate-reviewer");
+const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
+const { validateNormalizedFinalReview } = require("./validate-final-review");
+const { resolveReviewerRoute, reviewPolicyEligible, validateReviewerRoute } = require("./routing");
 
 const RISK = ["risk/low", "risk/medium", "risk/high", "risk/unknown"];
 const AI_COUNTS = ["ai-reviewed/1", "ai-reviewed/2"];
@@ -15,24 +14,14 @@ const OVERSIZED_MARKER = "<!-- ironrdp-pr-automation:oversized -->";
 const LEGACY_XL_MARKER = "<!-- ironrdp-pr-automation:xl -->";
 const FORK_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-quota -->";
 const GLOBAL_QUOTA_MARKER = "<!-- ironrdp-pr-automation:fork-llm-global-budget -->";
-const ELIGIBLE_MERGED_PRS = 3;
+const EVIDENCE_LIMIT_MARKER = "<!-- ironrdp-pr-automation:evidence-limit -->";
+const CONTRIBUTOR_INELIGIBLE_MARKER = "<!-- ironrdp-pr-automation:contributor-ineligible -->";
+const EVIDENCE_LIMIT_REASON = /^pull request diff exceeds the (1|4) MiB evidence limit$/;
+const ELIGIBLE_MERGED_PRS = 1;
+const ELIGIBLE_ASSOCIATIONS = new Set(["OWNER", "MEMBER"]);
 
 function labelsOf(labels) {
   return new Set((labels || []).map((label) => typeof label === "string" ? label : label?.name).filter(Boolean));
-}
-
-// Shared review policy. The workflow evaluates it before spending an LLM call and the publication
-// path evaluates it again against the labels present at write time, so the rule lives here instead
-// of being restated in the workflow where the two copies could drift apart.
-function reviewPolicyEligible({ labels, legitimacyStopped, protocolRelated } = {}) {
-  const present = labelsOf(labels);
-  const oversized = present.has("size/XXL") && !present.has(OVERSIZED_REVIEW_LABEL);
-  if (present.has("ai-reviewed/2") || present.has("duplicate") || oversized ||
-      present.has(LEGITIMACY_LABEL) || legitimacyStopped === true) return false;
-  // Risk gates the non-protocol route only. Risk measures how much human scrutiny a change needs,
-  // not how much an automated review is worth, so a protocol-related change is always reviewed.
-  if (protocolRelated === true) return true;
-  return !(present.has("risk/low") && !present.has("breaking-change"));
 }
 
 function boundStatus(value, expectedSha, allowed) {
@@ -41,11 +30,15 @@ function boundStatus(value, expectedSha, allowed) {
 
 function quotaComment(rateLimit) {
   if (rateLimit?.status !== "limited") return null;
-  if (rateLimit.scope === "author" && Number.isSafeInteger(rateLimit.quota)) {
-    return { kind: "fork-quota", marker: FORK_QUOTA_MARKER, quota: rateLimit.quota };
-  }
   if (rateLimit.scope === "global") return { kind: "global-quota", marker: GLOBAL_QUOTA_MARKER };
   return null;
+}
+
+function evidenceLimitComment(reason) {
+  const match = typeof reason === "string" ? EVIDENCE_LIMIT_REASON.exec(reason) : null;
+  return match
+    ? { kind: "evidence-limit", marker: EVIDENCE_LIMIT_MARKER, limitMiB: Number(match[1]) }
+    : null;
 }
 
 function deterministicLabelSets(deterministic) {
@@ -57,8 +50,24 @@ function deterministicLabelSets(deterministic) {
   ];
 }
 
+function classificationMachineState({
+  risk = "unknown", protocolRelated = false,
+  automaticReviewEligible = false,
+} = {}) {
+  const route = resolveReviewerRoute({
+    deterministicReviewers: ["code-compressor"], protocolRelated, risk,
+  });
+  if (!route.ok) return null;
+  return {
+    protocolRelated,
+    risk,
+    specialistReviewers: route.reviewers,
+    automaticReviewEligible,
+  };
+}
+
 function failedClassification(expectedSha, deterministic, reason, rateLimit, semverStatus) {
-  const comment = quotaComment(rateLimit);
+  const comments = [quotaComment(rateLimit), evidenceLimitComment(reason)].filter(Boolean);
   return {
     ok: true, mode: "classification", expectedSha, failed: true, reason,
     labelSets: [
@@ -68,48 +77,28 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
         ? [{ owned: ["breaking-change"], desired: ["breaking-change"] }]
         : []),
     ],
-    addLabels: ["maintainer-required"], comments: comment ? [comment] : [],
+    addLabels: ["maintainer-required"], comments,
+    removeCommentMarkers: [
+      ...(comments.some((comment) => comment.kind === "evidence-limit") ? [] : [EVIDENCE_LIMIT_MARKER]),
+      FORK_QUOTA_MARKER,
+      ...(comments.some((comment) => comment.kind === "global-quota") ? [] : [GLOBAL_QUOTA_MARKER]),
+    ],
     check: {
       name: "AI classification",
       externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
       title: "Classification unavailable",
       summary: `Automated classification was unavailable: ${reason}. Maintainer review is required.`,
-      machineState: { protocolRelated: false, automaticReviewEligible: false },
+      machineState: classificationMachineState({
+        risk: semverStatus === "suspected" ? "high" : "unknown",
+      }),
       conclusion: "neutral",
     },
   };
 }
 
-// A size/XXL pull request is excluded from automated review before any model runs, so the classifier
-// is never invoked and no model-derived label can be produced. The deterministic signals are still
-// published together with the split guidance, and the check title is deliberately not
-// "Classification complete" so the review gate refuses to open the review route.
-function oversizedClassification(expectedSha, deterministic, semverStatus) {
-  return {
-    ok: true, mode: "classification", expectedSha, oversized: true,
-    labelSets: [
-      ...deterministicLabelSets(deterministic),
-      ...(semverStatus === "unavailable"
-        ? [] : [{ owned: ["breaking-change"], desired: semverStatus === "suspected" ? ["breaking-change"] : [] }]),
-      { owned: RISK, desired: [semverStatus === "suspected" ? "risk/high" : "risk/unknown"] },
-    ],
-    addLabels: ["maintainer-required"],
-    comments: [{ kind: "oversized", marker: OVERSIZED_MARKER }],
-    // Duplicate and legitimacy verdicts are model-derived. No model ran, so a previously posted
-    // verdict is neither confirmed nor refuted here and is left untouched.
-    removeCommentMarkers: [LEGACY_XL_MARKER],
-    check: {
-      name: "AI classification",
-      externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
-      title: "Deterministic labelling only",
-      summary: "This pull request is too large for automated review, so no model was invoked.",
-      machineState: { protocolRelated: false, automaticReviewEligible: false },
-    },
-  };
-}
-
 function resolveClassificationState({
-  expectedSha, labels, deterministic, classifier, classificationGate, changedPaths, prNumber, semver, rateLimit, force,
+  expectedSha, labels, deterministic, classifier, classificationGate,
+  classifierReason, changedPaths, duplicateCandidates, prNumber, semver, rateLimit, force,
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
@@ -119,13 +108,6 @@ function resolveClassificationState({
     return failedClassification(expectedSha, deterministic, "terminal AI review count", failureRateLimit);
   }
   const semverStatus = boundStatus(semver, expectedSha, ["suspected", "not-suspected"]);
-  // Checked before the classifier is consulted unless a maintainer has opted the pull request into
-  // normal oversized review, avoiding a model call and quota charge for the default exclusion.
-  const oversized = deterministic?.ok && deterministic.sizeLabel === "size/XXL" &&
-    !existing.has(OVERSIZED_REVIEW_LABEL);
-  if (!forced && oversized) {
-    return oversizedClassification(expectedSha, deterministic, semverStatus);
-  }
   if (!forced && rateLimit && rateLimit.status !== "allowed") {
     return failedClassification(expectedSha, deterministic, "fork LLM quota unavailable", failureRateLimit, semverStatus);
   }
@@ -138,10 +120,11 @@ function resolveClassificationState({
     return failedClassification(expectedSha, deterministic, reason, failureRateLimit, semverStatus);
   }
   const classifierResult = validateClassifier(classifier, {
-    expectedSha, changedPaths, documentationOnlyPaths: deterministic.documentationOnlyPaths, prNumber,
+    expectedSha, changedPaths, documentationOnlyPaths: deterministic.documentationOnlyPaths,
+    duplicateCandidates, prNumber,
   });
   if (!classifierResult?.ok || classifierResult.value?.head_sha !== expectedSha) {
-    const reason = classifierResult?.reason || "classifier output unavailable";
+    const reason = classifierReason || classifierResult?.reason || "classifier output unavailable";
     return failedClassification(expectedSha, deterministic, reason, failureRateLimit, semverStatus);
   }
   if (semverStatus === "unavailable") {
@@ -156,6 +139,15 @@ function resolveClassificationState({
   const risk = semverStatus === "suspected" ? "high"
     : model.breaking_change_suspected && model.risk === "low" ? "medium"
     : model.risk;
+  const machineState = classificationMachineState({
+    risk,
+    protocolRelated: model.protocol_related,
+    automaticReviewEligible: !forced,
+  });
+  if (!machineState) {
+    return failedClassification(
+      expectedSha, deterministic, "reviewer routing unavailable", failureRateLimit, semverStatus);
+  }
   const duplicate = model.duplicate.detected && model.duplicate.confidence >= 0.85;
   const optional = [
     ["kind/technical-debt", model.technical_debt],
@@ -180,7 +172,6 @@ function resolveClassificationState({
       kind: "duplicate", marker: DUPLICATE_MARKER,
       url: model.duplicate.similar_pr_url, rationale: model.duplicate.rationale,
     }] : []),
-    ...(oversized && !forced ? [{ kind: "oversized", marker: OVERSIZED_MARKER }] : []),
   ];
   const auditComments = [
     ...(legitimacyStopped ? [{
@@ -195,9 +186,12 @@ function resolveClassificationState({
       // A later push can make a previously reported duplicate or oversized verdict wrong, and stale
       // guidance would then contradict the labels this run just wrote.
       ...(duplicate ? [] : [DUPLICATE_MARKER]),
-      ...(oversized && !forced ? [LEGACY_XL_MARKER] : [OVERSIZED_MARKER, LEGACY_XL_MARKER]),
+      EVIDENCE_LIMIT_MARKER,
+      FORK_QUOTA_MARKER,
+      GLOBAL_QUOTA_MARKER,
+      OVERSIZED_MARKER,
+      LEGACY_XL_MARKER,
     ],
-    legitimacyStopped,
     check: {
       name: "AI classification",
       externalId: `${CLASSIFIER_SCHEMA_VERSION}:${expectedSha}`,
@@ -205,17 +199,9 @@ function resolveClassificationState({
       summary: legitimacyStopped
         ? "Validated human-triage classification is bound to this commit."
         : "Validated AI classification is bound to this commit.",
-      machineState: {
-        protocolRelated: model.protocol_related,
-        automaticReviewEligible: !forced,
-      },
+      machineState,
     },
   };
-}
-
-function isExcludedHistory(pr) {
-  const labels = labelsOf(pr.labels);
-  return labels.has("trivial") || labels.has("reverted") || /^revert\b/i.test(pr.title || "");
 }
 
 function isBot(user) {
@@ -236,8 +222,8 @@ async function qualifyingMergedPrs({ github, owner, repo, authorNodeId, currentP
           (typeof pr.merged_at !== "string" || Number.isNaN(Date.parse(pr.merged_at)))) {
         throw new Error("invalid pull request timestamp");
       }
-      if (pr.number === currentPrNumber || !pr.merged_at || pr.user?.node_id !== authorNodeId ||
-          isBot(pr.user) || isExcludedHistory(pr)) continue;
+      if (pr.number === currentPrNumber || !pr.merged_at || pr.base?.ref !== "master" ||
+          pr.user?.node_id !== authorNodeId || isBot(pr.user)) continue;
       merged += 1;
       if (merged >= stopAt) return merged;
     }
@@ -246,7 +232,13 @@ async function qualifyingMergedPrs({ github, owner, repo, authorNodeId, currentP
 }
 
 async function contributorEligibility({ github, owner, repo, author, currentPrNumber }) {
-  if (!author?.nodeId || author.type === "Bot" || /\[bot\]$/i.test(author.login || "")) {
+  if (author?.type === "Bot" || /\[bot\]$/i.test(author?.login || "")) {
+    return { status: "ineligible", reason: "bot author" };
+  }
+  if (ELIGIBLE_ASSOCIATIONS.has(author?.association)) {
+    return { status: "eligible", association: author.association };
+  }
+  if (!author?.nodeId) {
     return { status: "ineligible", reason: "bot or missing immutable author" };
   }
   try {
@@ -260,18 +252,28 @@ async function contributorEligibility({ github, owner, repo, author, currentPrNu
 }
 
 function resolveReviewState({
-  expectedSha, labels, reviewer, changedPaths, changedLines, gate, contributor,
-  rateLimit, protocolStatus, protocolReason, reviewerReason, evidenceReason, force, reviewMarkerId,
+  expectedSha, labels, reviewer, gate, contributor,
+  rateLimit, reviewerReason, force, reviewMarkerId,
 } = {}) {
   const existing = labelsOf(labels);
   const forced = force === true;
-  const fail = (reason, report = false) => {
-    const comment = forced ? null : quotaComment(rateLimit);
+  const fail = (reason, report = false, contributorComment = null) => {
+    const comments = [
+      forced ? null : quotaComment(rateLimit),
+      evidenceLimitComment(reason),
+      contributorComment,
+    ].filter(Boolean);
     return {
       ok: true, mode: "review", expectedSha, failed: true, reason,
-      labelSets: [], addLabels: ["maintainer-required"], comments: comment ? [comment] : [],
+      labelSets: [], addLabels: ["maintainer-required"], comments,
+      removeCommentMarkers: [
+        ...(comments.some((comment) => comment.kind === "evidence-limit") ? [] : [EVIDENCE_LIMIT_MARKER]),
+        FORK_QUOTA_MARKER,
+        ...(comments.some((comment) => comment.kind === "global-quota") ? [] : [GLOBAL_QUOTA_MARKER]),
+        ...(forced || contributor?.status === "eligible" ? [CONTRIBUTOR_INELIGIBLE_MARKER] : []),
+      ],
       ...(report ? { check: {
-        name: "AI automated review", externalId: `${REVIEWER_SCHEMA_VERSION}:${expectedSha}`,
+        name: "AI automated review", externalId: expectedSha,
         title: "Automated review unavailable",
         summary: `Automated review was unavailable: ${reason}. Maintainer review is required.`,
         conclusion: "neutral",
@@ -292,11 +294,20 @@ function resolveReviewState({
       return fail(reason);
     }
     if (gate.classificationCheck !== true || gate.ciGreen !== true) return fail("review gate unavailable");
+    const route = validateReviewerRoute({
+      reviewers: gate.specialistReviewers,
+      protocolRelated: gate.protocolRelated,
+      risk: gate.risk,
+    });
+    if (!route.ok) return fail("reviewer route unavailable");
     if (contributor?.status === "ineligible") {
       const reason = Number.isSafeInteger(contributor.merged)
         ? `contributor history ineligible (merged: ${contributor.merged}, required: ${ELIGIBLE_MERGED_PRS})`
         : `contributor history ineligible${contributor.reason ? `: ${contributor.reason}` : ""}`;
-      return fail(reason);
+      const comment = Number.isSafeInteger(contributor.merged)
+        ? { kind: "contributor-ineligible", marker: CONTRIBUTOR_INELIGIBLE_MARKER }
+        : null;
+      return fail(reason, false, comment);
     }
     if (contributor?.status !== "eligible") {
       const reason = contributor?.reason
@@ -308,42 +319,48 @@ function resolveReviewState({
       return fail("second review is not eligible");
     }
     if (!reviewPolicyEligible({
-      labels, legitimacyStopped: gate.legitimacyStopped, protocolRelated: gate.protocolRelated,
+      labels, legitimacyStopped: gate.legitimacyStopped,
     })) return fail("review is not eligible");
     if (!gate.ok) return fail("review gate unavailable");
   }
-  if (evidenceReason) return fail(evidenceReason, true);
-  // A protocol-related review is only publishable when the protocol stage produced a validated
-  // handoff; anything else fails closed to humans.
-  if (!["valid", "not_applicable"].includes(protocolStatus)) {
-    return fail(protocolReason || "protocol handoff unavailable", true);
-  }
-  const reviewerResult = validateReviewer(reviewer, {
-    expectedSha, changedPaths, changedLines, protocolReceived: protocolStatus === "valid",
-  });
+  const reviewerResult = validateNormalizedFinalReview(reviewer, expectedSha);
   if (!reviewerResult?.ok || reviewerResult.value?.head_sha !== expectedSha) {
     return fail(reviewerReason || reviewerResult?.reason || "reviewer unavailable", true);
   }
   const nextCount = existing.has("ai-reviewed/2") ? "ai-reviewed/2"
     : existing.has("ai-reviewed/1") ? "ai-reviewed/2"
     : "ai-reviewed/1";
-  const hasFindings = reviewerResult.value.has_findings;
+  const expectedReviewCount = existing.has("ai-reviewed/2") ? "ai-reviewed/2"
+    : existing.has("ai-reviewed/1") ? "ai-reviewed/1"
+    : null;
+  const hasFindings = reviewerResult.value.findings.length > 0;
   const reviewMarker = `<!-- ironrdp-pr-automation:review:${expectedSha}` +
     `${forced ? `:force:${reviewMarkerId}` : ""} -->`;
   return {
     ok: true, mode: "review", expectedSha, labelSets: [{ owned: AI_COUNTS, desired: [nextCount] }],
     addLabels: nextCount === "ai-reviewed/2" || !hasFindings ? ["maintainer-required"] : [],
     removeLabels: nextCount === "ai-reviewed/1" && hasFindings ? ["maintainer-required"] : [],
-    comments: hasFindings ? [{ kind: "review", marker: reviewMarker,
-      review: reviewerResult.value }] : [],
-    check: { name: "AI automated review", externalId: `${REVIEWER_SCHEMA_VERSION}:${expectedSha}` },
-    reviewerSchemaVersion: REVIEWER_SCHEMA_VERSION,
+    comments: [{ kind: "review", marker: reviewMarker, review: reviewerResult.value }],
+    removeCommentMarkers: [
+      EVIDENCE_LIMIT_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER,
+      CONTRIBUTOR_INELIGIBLE_MARKER,
+    ],
+    check: { name: "AI automated review", externalId: expectedSha },
+    expectedReviewCount,
+    forced,
+    protocolRelated: gate.protocolRelated === true,
   };
 }
 
+function reviewOutcome({ reportStatus, state, recovered = false } = {}) {
+  if (reportStatus !== "success" || state?.failed === true) return "unavailable";
+  return recovered ? "recovered" : "complete";
+}
+
 module.exports = {
-  AI_COUNTS, DUPLICATE_MARKER, FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
+  AI_COUNTS, CONTRIBUTOR_INELIGIBLE_MARKER, DUPLICATE_MARKER, EVIDENCE_LIMIT_MARKER,
+  FORK_QUOTA_MARKER, GLOBAL_QUOTA_MARKER, LEGACY_XL_MARKER, LEGITIMACY_LABEL,
   LEGITIMACY_MARKER_PREFIX, OVERSIZED_REVIEW_LABEL, RISK, OVERSIZED_MARKER, ELIGIBLE_MERGED_PRS,
-  contributorEligibility, isExcludedHistory, qualifyingMergedPrs, resolveClassificationState,
-  resolveReviewState, reviewPolicyEligible,
+  contributorEligibility, qualifyingMergedPrs, resolveClassificationState,
+  resolveReviewState, reviewOutcome, reviewPolicyEligible,
 };

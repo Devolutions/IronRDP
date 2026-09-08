@@ -1,11 +1,12 @@
 use core::num::{NonZeroU16, NonZeroUsize};
 
-use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_graphics::diff;
 use ironrdp_pdu::pointer::PointerPositionAttribute;
 use tracing::{debug, warn};
+
+use crate::error::ServerResult;
 
 #[rustfmt::skip]
 pub use ironrdp_acceptor::DesktopSize;
@@ -23,6 +24,12 @@ pub enum DisplayUpdate {
     PointerPosition(PointerPositionAttribute),
     ColorPointer(ColorPointer),
     RGBAPointer(RGBAPointer),
+    /// A pointer shape wider or taller than the 96x96 ceiling `RGBAPointer` can carry
+    /// (MS-RDPBCGR 2.2.7.2.7), up to 384x384. Only usable when the client's negotiated
+    /// Large Pointer Capability Set includes `LARGE_POINTER_FLAG_384x384`; dropped
+    /// otherwise. See [`RGBAPointer`] for shapes up to 96x96 (32x32 without that
+    /// capability set at all).
+    LargePointer(LargePointer),
     HidePointer,
     DefaultPointer,
     CachedPointer(u16),
@@ -42,6 +49,31 @@ impl core::fmt::Debug for RGBAPointer {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("RGBAPointer")
             .field("with", &self.width)
+            .field("height", &self.height)
+            .field("hot_x", &self.hot_x)
+            .field("hot_y", &self.hot_y)
+            .field("data_len", &self.data.len())
+            .finish()
+    }
+}
+
+/// Same shape as [`RGBAPointer`] (32bpp XOR mask, no AND mask), for a pointer image
+/// above the 96x96 ceiling `RGBAPointer` can carry, up to 384x384
+/// (MS-RDPBCGR 2.2.9.1.2.1.11, Fast-Path Large Pointer Update).
+#[derive(Clone)]
+pub struct LargePointer {
+    pub cache_index: u16,
+    pub width: u16,
+    pub height: u16,
+    pub hot_x: u16,
+    pub hot_y: u16,
+    pub data: Vec<u8>,
+}
+
+impl core::fmt::Debug for LargePointer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LargePointer")
+            .field("width", &self.width)
             .field("height", &self.height)
             .field("hot_x", &self.hot_x)
             .field("hot_y", &self.hot_y)
@@ -246,7 +278,7 @@ pub trait RdpServerDisplayUpdates {
     /// This method MUST be cancellation safe because it is used in a
     /// `tokio::select!` statement. If some other branch completes first, it
     /// MUST be guaranteed that no data is lost.
-    async fn next_update(&mut self) -> Result<Option<DisplayUpdate>>;
+    async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>>;
 }
 
 /// Display for an RDP server
@@ -254,8 +286,7 @@ pub trait RdpServerDisplayUpdates {
 /// # Example
 ///
 /// ```
-///# use anyhow::Result;
-/// use ironrdp_server::{DesktopSize, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates};
+/// use ironrdp_server::{DesktopSize, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates, ServerResult};
 ///
 /// pub struct DisplayUpdates {
 ///     receiver: tokio::sync::mpsc::Receiver<DisplayUpdate>,
@@ -263,7 +294,7 @@ pub trait RdpServerDisplayUpdates {
 ///
 /// #[async_trait::async_trait]
 /// impl RdpServerDisplayUpdates for DisplayUpdates {
-///     async fn next_update(&mut self) -> anyhow::Result<Option<DisplayUpdate>> {
+///     async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
 ///         Ok(self.receiver.recv().await)
 ///     }
 /// }
@@ -279,7 +310,7 @@ pub trait RdpServerDisplayUpdates {
 ///         DesktopSize { width: self.width, height: self.height }
 ///     }
 ///
-///     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+///     async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
 ///         Ok(Box::new(DisplayUpdates { receiver: todo!() }))
 ///     }
 /// }
@@ -298,7 +329,7 @@ pub trait RdpServerDisplay: Send {
     }
 
     /// Return a display updates receiver
-    async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>>;
+    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>>;
 
     /// Request a new size for the display
     fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {

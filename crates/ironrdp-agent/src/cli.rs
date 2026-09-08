@@ -13,7 +13,7 @@
 
 use core::fmt;
 use core::str::FromStr;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
@@ -23,9 +23,10 @@ use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
 
 use ironrdp_rpc::ipc::{
-    AgentError, KeyFilter, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent,
-    OperationEventKind, OperationInfo, OperationState, Payload, PenContactRequest, PenFrameRequest, PropValue,
-    RailEvent, RailEventKind, RailExecuteRequest, Request, Response, TouchContactRequest, TouchFrameRequest,
+    AgentError, KeyFilter, MAX_CLIPBOARD_IMAGE_BYTES, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, NowExecutionRequest,
+    NowStream, OperationEvent, OperationEventKind, OperationInfo, OperationState, Payload, PenContactRequest,
+    PenFrameRequest, PropValue, RailEvent, RailEventKind, RailExecuteRequest, Request, Response, TouchContactRequest,
+    TouchFrameRequest,
 };
 use ironrdp_rpc::transport::{self, Endpoint};
 
@@ -108,6 +109,18 @@ enum Command {
         #[arg(long, value_parser = parse_unicode_text)]
         text: String,
     },
+    /// Print the last text received from the remote clipboard, if any.
+    ClipboardGet,
+    /// Set the local clipboard text and advertise it to the remote (`CF_UNICODETEXT` only).
+    ClipboardSet {
+        #[arg(long)]
+        text: String,
+    },
+    /// Write the last image received from the remote clipboard to disk as a PNG, if any.
+    ClipboardGetImage(ClipboardGetImageArgs),
+    /// Set the local clipboard image from a PNG file and advertise it to the remote
+    /// (`CF_DIB`/`CF_DIBV5`).
+    ClipboardSetImage(ClipboardSetImageArgs),
     /// Send one MS-RDPEI touch contact sample (legal flag sets only).
     Touch {
         #[arg(long, default_value_t = 0)]
@@ -509,6 +522,18 @@ struct ConnectArgs {
     #[cfg(windows)]
     #[arg(long, value_name = "PIPE", conflicts_with = "server")]
     sandbox_pipe: Option<String>,
+    /// Connect to a Hyper-V VM console by VM ID. Defaults the Hyper-V host to localhost.
+    #[cfg(windows)]
+    #[arg(long, value_name = "VM_ID", conflicts_with_all = ["sandbox_id", "sandbox_pipe"])]
+    vmconnect: Option<String>,
+    /// Use the Hyper-V basic console instead of Enhanced Session mode.
+    #[cfg(windows)]
+    #[arg(long, requires = "vmconnect")]
+    vmconnect_basic: bool,
+    /// Authenticate the Hyper-V host with the current Windows logon token.
+    #[cfg(windows)]
+    #[arg(long, requires = "vmconnect")]
+    vmconnect_current_user: bool,
 }
 
 #[derive(Args, Debug)]
@@ -567,6 +592,18 @@ struct QueryLogsArgs {
 struct ScreenshotArgs {
     /// Destination PNG path (defaults to `screenshot.png` in the current directory).
     path: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct ClipboardGetImageArgs {
+    /// Destination PNG path (defaults to `clipboard.png` in the current directory).
+    path: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct ClipboardSetImageArgs {
+    /// Source PNG path.
+    path: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -901,6 +938,42 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             let path = args.path.unwrap_or_else(|| PathBuf::from("screenshot.png"));
             return write_screenshot(width, height, &png, &path);
         }
+        Command::ClipboardGetImage(args) => {
+            let response = transport::send_request(&endpoint, &Request::ClipboardGetImage).await?;
+            let payload = match response {
+                Response::Ok(payload) => payload,
+                Response::Err(message) => anyhow::bail!("{message}"),
+            };
+            let Payload::ClipboardImage(png) = payload else {
+                anyhow::bail!("unexpected response to clipboard-get-image request");
+            };
+            let Some(png) = png else {
+                println!("no image on the remote clipboard");
+                return Ok(());
+            };
+            let path = args.path.unwrap_or_else(|| PathBuf::from("clipboard.png"));
+            std::fs::write(&path, &png).with_context(|| format!("write {}", path.display()))?;
+            println!("wrote {} ({} bytes)", path.display(), png.len());
+            return Ok(());
+        }
+        Command::ClipboardSetImage(args) => {
+            let file = std::fs::File::open(&args.path).with_context(|| format!("open {}", args.path.display()))?;
+            let mut png = Vec::new();
+            file.take(
+                u64::try_from(MAX_CLIPBOARD_IMAGE_BYTES)
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(1),
+            )
+            .read_to_end(&mut png)
+            .with_context(|| format!("read {}", args.path.display()))?;
+            if png.len() > MAX_CLIPBOARD_IMAGE_BYTES {
+                anyhow::bail!(
+                    "{} exceeds the {MAX_CLIPBOARD_IMAGE_BYTES}-byte clipboard image limit",
+                    args.path.display(),
+                );
+            }
+            Request::ClipboardSetImage { png }
+        }
         Command::MouseMove { x, y } => Request::MouseMove { x, y },
         Command::MouseButton { button, pressed } => Request::MouseButton {
             button: button.into_button(),
@@ -910,6 +983,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::KeyScancode { scancode, pressed } => Request::KeyScancode { scancode, pressed },
         Command::KeyUnicode { character, pressed } => Request::KeyUnicode { ch: character, pressed },
         Command::TypeUnicode { text } => Request::UnicodeText { text },
+        Command::ClipboardGet => Request::ClipboardGet,
+        Command::ClipboardSet { text } => Request::ClipboardSet { text },
         Command::Touch {
             contact_id,
             x,
@@ -1088,6 +1163,21 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
 
     #[cfg(windows)]
     {
+        if let Some(vm_id) = args.vmconnect {
+            properties.clear_named_pipe();
+            properties.set_vmconnect_id(vm_id);
+            properties.set_vmconnect_basic(args.vmconnect_basic);
+            properties.set_vmconnect_current_user(args.vmconnect_current_user);
+            if properties.full_address().context("invalid 'full address'")?.is_none()
+                && properties
+                    .alternate_full_address()
+                    .context("invalid 'alternate full address'")?
+                    .is_none()
+            {
+                properties.set_full_address(&"localhost".parse().expect("localhost is a valid target address"));
+            }
+        }
+
         // Sandbox defaults are the base; explicit .rdp / --prop / named flags win on conflict.
         // Transport/security invariants from the sandbox path are re-applied last so a file
         // cannot force TLS/CredSSP onto a NamedPipe session.
@@ -2065,6 +2155,12 @@ fn print_payload(payload: Payload) {
         Payload::RailLaunch(launch) => {
             println!("queued RAIL launch {}: {}", launch.launch_id, launch.executable);
         }
+        Payload::ClipboardText(text) => match text {
+            Some(text) => println!("{text}"),
+            None => println!("(empty)"),
+        },
+        // Handled out-of-band by the `ClipboardGetImage` command, never printed here.
+        Payload::ClipboardImage(png) => println!("clipboard image ({} bytes)", png.as_ref().map_or(0, Vec::len)),
     }
 }
 
@@ -2163,10 +2259,16 @@ mod tests {
     use std::path::PathBuf;
 
     use clap::{CommandFactory as _, Parser as _};
+    #[cfg(windows)]
+    use ironrdp_cfg::PropertySetExt as _;
+    #[cfg(windows)]
+    use ironrdp_rpc::ipc::Request;
 
     use super::Command;
     #[cfg(windows)]
     use super::SandboxCommand;
+    #[cfg(windows)]
+    use super::build_connect_request;
     use super::{
         Backend, Cli, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, build_now_execution,
         endpoint_from_arg,
@@ -2245,6 +2347,42 @@ mod tests {
         };
         assert_eq!(id.as_deref(), Some("8825f947-7d05-46e5-9efb-317ca83500ec"));
         assert_eq!(config, Some(PathBuf::from("sandbox.wsb")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn vmconnect_defaults_to_localhost_and_basic_mode_is_explicit() {
+        const VM_ID: &str = "efd1efab-c750-4262-b1bb-af0f7733bdd6";
+        let cli = Cli::try_parse_from([
+            "ironrdp-agent",
+            "connect",
+            "--vmconnect",
+            VM_ID,
+            "--vmconnect-basic",
+            "--vmconnect-current-user",
+            "--prop",
+            r"ironrdp_named_pipe:s:\\.\pipe\lower-precedence",
+        ])
+        .expect("valid VMConnect arguments");
+        let Some(Command::Connect(args)) = cli.command else {
+            panic!("expected connect command");
+        };
+        let Request::Connect { properties, .. } = build_connect_request(args).expect("valid VMConnect request") else {
+            panic!("expected connect request");
+        };
+
+        assert_eq!(properties.vmconnect_id(), Some(VM_ID));
+        assert_eq!(properties.vmconnect_basic(), Some(true));
+        assert_eq!(properties.vmconnect_current_user(), Some(true));
+        assert_eq!(properties.named_pipe(), None);
+        assert_eq!(
+            properties
+                .full_address()
+                .expect("valid full address")
+                .expect("localhost default")
+                .to_string(),
+            "localhost"
+        );
     }
 
     #[test]

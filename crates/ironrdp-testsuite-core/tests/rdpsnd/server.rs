@@ -11,10 +11,11 @@ use std::sync::{Arc, Mutex};
 
 use ironrdp_core::encode_vec;
 use ironrdp_rdpsnd::pdu::{
-    AudioFormat, AudioFormatFlags, ClientAudioFormatPdu, ClientAudioOutputPdu, TrainingConfirmPdu, Version, WaveFormat,
+    AudioFormat, AudioFormatFlags, ClientAudioFormatPdu, ClientAudioOutputPdu, TrainingConfirmPdu, Version,
+    WaveConfirmPdu, WaveFormat,
 };
 use ironrdp_rdpsnd::server::{NegotiatedFormat, RdpsndError, RdpsndServer, RdpsndServerHandler, negotiate_formats};
-use ironrdp_svc::SvcProcessor as _;
+use ironrdp_svc::{StaticVirtualChannel, SvcProcessor as _};
 
 fn fmt(format: WaveFormat, rate: u32) -> AudioFormat {
     AudioFormat {
@@ -136,6 +137,7 @@ struct Recording {
     choose_format_calls: usize,
     start_calls: usize,
     chosen_wformat: Option<u16>,
+    wave_confirms: Vec<(u8, u16)>,
 }
 
 #[derive(Debug)]
@@ -168,6 +170,14 @@ impl RdpsndServerHandler for FakeHandler {
     }
 
     fn stop(&mut self) {}
+
+    fn wave_confirm(&mut self, block_no: u8, timestamp: u16) {
+        self.rec
+            .lock()
+            .expect("poisoned")
+            .wave_confirms
+            .push((block_no, timestamp));
+    }
 }
 
 /// Drive a fresh server through the handshake (server announce → client formats
@@ -259,4 +269,52 @@ fn processor_declines_when_start_fails() {
     // declines, so no audio is streamed — rather than a silent
     // "negotiated, no audio" state with a committed format and no producer.
     assert!(server.wave(vec![0; 4], 0).is_err());
+}
+
+#[test]
+fn wave_carries_the_capture_timestamp_the_client_echoes() {
+    let rec = Arc::new(Mutex::new(Recording::default()));
+    let mut server = RdpsndServer::new(Box::new(FakeHandler {
+        formats: vec![fmt(WaveFormat::PCM, 44100)],
+        rec: Arc::clone(&rec),
+        start_ok: true,
+    }));
+
+    drive_to_ready(&mut server, vec![fmt(WaveFormat::PCM, 44100)]);
+
+    // A capture time past the 16-bit range: the wire field carries its low
+    // bits, which is what the client echoes back in the Wave Confirm PDU.
+    let messages = server.wave(vec![0; 8], 0x0001_2345).expect("wave");
+    let chunks = StaticVirtualChannel::chunkify(messages.into()).expect("chunkify wave");
+    let expected = 0x2345u16.to_le_bytes();
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| chunk.filled().windows(2).any(|w| w == expected)),
+        "wTimeStamp is missing from the encoded wave"
+    );
+}
+
+#[test]
+fn wave_confirm_reaches_the_handler() {
+    let rec = Arc::new(Mutex::new(Recording::default()));
+    let mut server = RdpsndServer::new(Box::new(FakeHandler {
+        formats: vec![fmt(WaveFormat::PCM, 44100)],
+        rec: Arc::clone(&rec),
+        start_ok: true,
+    }));
+
+    drive_to_ready(&mut server, vec![fmt(WaveFormat::PCM, 44100)]);
+
+    let confirm = ClientAudioOutputPdu::WaveConfirm(WaveConfirmPdu {
+        timestamp: 0x2345,
+        block_no: 7,
+    });
+    server
+        .process(&encode_vec(&confirm).expect("encode wave confirm"))
+        .expect("process wave confirm");
+
+    // Without this the server cannot tell how long the client held the data:
+    // the echo is the only latency signal MS-RDPEA gives it.
+    assert_eq!(rec.lock().expect("poisoned").wave_confirms, vec![(7, 0x2345)]);
 }

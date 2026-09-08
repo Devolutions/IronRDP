@@ -59,7 +59,7 @@ function sourceSizeLabel(files) {
 
 function analyzeFiles(files, { labelerRules, authorAssociation } = {}) {
   if (!Array.isArray(files) || files.length > MAX_FILES) return { ok: false, reason: "too many files" };
-  if (!labelerRules || typeof labelerRules !== "object") return { ok: false, reason: "invalid trusted rules" };
+  if (!labelerRules || typeof labelerRules !== "object") return { ok: false, reason: "invalid configured rules" };
   for (const file of files) {
     if (!file || typeof file.filename !== "string" || file.filename.length > MAX_FILENAME ||
         !Number.isSafeInteger(file.additions) || file.additions < 0 ||
@@ -67,7 +67,7 @@ function analyzeFiles(files, { labelerRules, authorAssociation } = {}) {
   }
   const pathLabels = Object.entries(labelerRules).filter(([, patterns]) =>
     Array.isArray(patterns) && files.some((file) => patterns.some((pattern) => pattern.test(file.filename)))).map(([label]) => label);
-  if (pathLabels.length > 100 || Object.keys(labelerRules).length > 100) return { ok: false, reason: "too many trusted labels" };
+  if (pathLabels.length > 100 || Object.keys(labelerRules).length > 100) return { ok: false, reason: "too many configured labels" };
   const size = sourceSizeLabel(files);
   return {
     ok: true, pathLabels, ownedPathLabels: Object.keys(labelerRules), sizeLabel: size.label,

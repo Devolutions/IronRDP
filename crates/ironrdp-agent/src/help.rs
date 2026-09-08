@@ -53,7 +53,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  TLS certificate and hostname validation is strict by default.
                                  `--skip-certificate-check` disables both for this daemon only.
                                  Use it only for an explicitly authorized test endpoint because it accepts any certificate and is vulnerable to on-path attacks.
-- `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
+- `connect [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--vmconnect VM_ID] [--vmconnect-basic] [--vmconnect-current-user] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. Precedence (low to high): .rdp file -> `--prop`
                                  overrides -> named flags (`--server`/`-u`/`-p`/`-d`). When those
@@ -75,6 +75,12 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  them, except NamedPipe TLS/CredSSP stay forced off. Prefer
                                  `--sandbox-id` over `--sandbox-pipe`; the pipe escape hatch needs
                                  `-u`/`-p` (guest password from `sandbox config`).
+                                 On Windows, `--vmconnect VM_ID` routes the session through the
+                                 Hyper-V host on port 2179. `--vmconnect-basic` selects the basic
+                                 console. `--vmconnect-current-user` uses native SSPI with the
+                                 caller's logon token, needs no username or password, and defaults
+                                 an omitted server to localhost. Local VMConnect accepts the private
+                                 frame-buffer DVC and reads its shared-memory DIB.
 - `gw-forward --gateway HOST[:PORT] (--socks5 | --target HOST:PORT) [--listen ADDR]`
                                  Forward TCP through an RD Gateway without an RDP session.
                                  `--socks5` serves SOCKS5 CONNECT (no auth); `--target` is an
@@ -146,6 +152,24 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 - `dismiss-hovering [--contact-id N]`            Dismiss a hovering touch contact.
 - `resize --width W --height H`                  Resize the remote desktop.
 
+## Clipboard
+
+Text (`CF_UNICODETEXT`) and images (`CF_DIB`/`CF_DIBV5`, as PNG files); no files, no HTML. Local
+content is a single logical item: setting an image replaces a previously set text, and vice versa.
+A remote copy is requested as image over text when the remote offers both.
+
+- `clipboard-get`                    Print the last text received from the remote clipboard, or
+                                      `(empty)` if none has arrived yet. Requires an active session.
+- `clipboard-set --text TEXT`        Set the local clipboard text and advertise it to the remote.
+                                      Works before a session connects too: the text is remembered
+                                      and advertised as soon as the clipboard channel initializes.
+- `clipboard-get-image [PATH]`       Write the last image received from the remote clipboard to
+                                      `PATH` (default `clipboard.png`) as a PNG, or print a
+                                      no-image message if none has arrived yet.
+- `clipboard-set-image PATH`         Set the local clipboard image from the PNG at `PATH` and
+                                      advertise it to the remote. Same before-connect behavior as
+                                      `clipboard-set`.
+
 ## NOW remote execution (requires an active, connected RDP session)
 
 The daemon allocates one private `Devolutions::Now::Agent` DVC endpoint for each RDP session. It
@@ -209,7 +233,7 @@ On retail builds that permit one active sandbox, stop that initial sandbox befor
                                  Low-level NamedPipe connect when you already have the guest password.
 
 Default product transport is NamedPipe.
-Local (VMConnect :2179 + PCB) and guest TCP are not the primary path.
+VMConnect is available for Hyper-V VMs; NamedPipe remains the Windows Sandbox default.
 
 ## Errors
 

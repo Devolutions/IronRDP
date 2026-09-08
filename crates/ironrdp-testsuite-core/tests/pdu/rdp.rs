@@ -1,4 +1,5 @@
 use ironrdp_core::{Encode as _, decode, encode_vec};
+use ironrdp_pdu::rdp::client_info::ClientInfo;
 use ironrdp_testsuite_core::capsets::*;
 use ironrdp_testsuite_core::client_info::*;
 use ironrdp_testsuite_core::rdp::*;
@@ -76,6 +77,45 @@ fn from_header_only_buffer_defaults_rdp_pdu_server_font_map() {
     let buf = &SERVER_FONT_MAP_BUFFER[..18];
 
     assert_eq!(SERVER_FONT_MAP.clone(), decode(buf).unwrap());
+}
+
+/// VirtualBox's VRDP declares `totalLength` as the size of the two headers (18) and does not
+/// count the 8-byte Font Map body that follows it, so the PDU is complete but under-declared.
+#[test]
+fn from_buffer_with_under_declared_total_length_parses_rdp_pdu_server_font_map() {
+    let mut buf = SERVER_FONT_MAP_BUFFER;
+    buf[0] = 18;
+
+    assert_eq!(SERVER_FONT_MAP.clone(), decode(buf.as_ref()).unwrap());
+}
+
+/// A header-only Server Font Map that declares its own length honestly: 18 bytes sent, 18
+/// declared. The decoder supports this compatibility encoding by substituting default Font Map
+/// fields when the body is absent.
+///
+/// It is pinned separately because `ShareDataPdu::from_type` defaults a `FontPdu` in when the
+/// cursor is empty, so the re-encoded size is 26 and comparing 18 against it rejected the PDU.
+/// Anyone reinstating a comparison against the re-encoded size will fail here. The neighbouring
+/// `from_header_only_buffer_defaults` test does not cover it — its fixture still declares 26.
+#[test]
+fn from_header_only_buffer_with_matching_total_length_parses_rdp_pdu_server_font_map() {
+    let mut buf = SERVER_FONT_MAP_BUFFER[..18].to_vec();
+    buf[0] = 18;
+
+    assert_eq!(SERVER_FONT_MAP.clone(), decode(buf.as_slice()).unwrap());
+}
+
+#[test]
+fn from_buffer_rejects_other_under_declared_total_lengths_for_server_font_map() {
+    for total_length in (0u16..26).filter(|length| *length != 18) {
+        let mut buf = SERVER_FONT_MAP_BUFFER;
+        buf[..2].copy_from_slice(&total_length.to_le_bytes());
+
+        assert!(
+            decode::<ironrdp_pdu::rdp::headers::ShareControlHeader>(buf.as_ref()).is_err(),
+            "accepted Server Font Map with totalLength {total_length}"
+        );
+    }
 }
 
 #[test]
@@ -306,6 +346,26 @@ fn from_buffer_correct_parses_client_info_pdu_unicode() {
         CLIENT_INFO_UNICODE.clone(),
         decode(CLIENT_INFO_BUFFER_UNICODE.as_ref()).unwrap()
     );
+}
+
+#[test]
+fn client_info_with_undefined_flag_bits_decodes_and_retains_them() {
+    // [MS-RDPBCGR] 2.2.1.11.1.1's INFO_* list keeps growing; a client setting
+    // a bit this library does not know yet must not be refused at the login
+    // step (3.3.5.3.11 mandates no validation of this field). The unknown bit
+    // is retained rather than dropped so re-encoding preserves the wire value.
+    const UNDEFINED_BIT: u32 = 0x0000_0004; // undefined in 2.2.1.11.1.1
+
+    let mut buffer = CLIENT_INFO_BUFFER_UNICODE.to_vec();
+    let flags = u32::from_le_bytes(buffer[4..8].try_into().unwrap()) | UNDEFINED_BIT;
+    buffer[4..8].copy_from_slice(&flags.to_le_bytes());
+
+    let client_info: ClientInfo = decode(buffer.as_slice()).expect("undefined INFO bits are not fatal");
+
+    assert_ne!(client_info.flags.bits() & UNDEFINED_BIT, 0);
+
+    let reencoded = encode_vec(&client_info).unwrap();
+    assert_eq!(reencoded, buffer);
 }
 
 #[test]

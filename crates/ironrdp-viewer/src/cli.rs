@@ -119,6 +119,11 @@ struct Args {
     #[clap(long, requires = "vmconnect")]
     vmconnect_basic: bool,
 
+    /// Authenticate the Hyper-V host with the current Windows logon token.
+    #[cfg(windows)]
+    #[clap(long, requires = "vmconnect")]
+    vmconnect_current_user: bool,
+
     /// The keyboard type
     #[clap(long, value_enum, default_value_t = KeyboardType::IbmEnhanced)]
     keyboard_type: KeyboardType,
@@ -445,6 +450,10 @@ fn apply_cli_to_builder(
             VmConnectMode::Enhanced
         };
         builder = builder.with_vmconnect_mode(vm_id, mode);
+    }
+    #[cfg(windows)]
+    if args.vmconnect_current_user {
+        builder = builder.with_vmconnect_current_user(true);
     }
 
     if let Some(url) = args.rdcleanpath_url {

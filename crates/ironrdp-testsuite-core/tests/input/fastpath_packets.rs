@@ -328,3 +328,85 @@ fn wheel_rotations() {
 
     assert_eq!(actual_inputs.as_slice(), expected_inputs.as_slice());
 }
+
+#[rstest]
+#[case(300, 255)]
+#[case(-300, -256)]
+#[case(i16::MAX, 255)]
+#[case(i16::MIN, -256)]
+#[case(255, 255)]
+#[case(-256, -256)]
+fn wheel_rotations_out_of_range_is_clamped(#[case] rotation_units: i16, #[case] expected: i16) {
+    // A single OS scroll event (fast trackpad fling, etc.) can report a delta beyond
+    // the wire's 9-bit two's-complement range (MS-RDPBCGR 2.2.8.1.1.3.1.1.3,
+    // WheelRotationMask, representable range [-256, 255]). `Database::apply` must
+    // clamp rather than pass it through: `MousePdu::encode` only debug_asserts the
+    // range, so an out-of-range value panics in debug builds and silently wraps
+    // (via a truncating cast) in release builds.
+    let mut db = Database::default();
+
+    let packets = db.apply(core::iter::once(Operation::WheelRotations(WheelRotations {
+        is_vertical: true,
+        rotation_units,
+    })));
+    let packet = packets.into_iter().next().expect("one input event");
+
+    assert_eq!(
+        packet,
+        FastPathInputEvent::MouseEvent(MousePdu {
+            flags: PointerFlags::VERTICAL_WHEEL,
+            number_of_wheel_rotation_units: expected,
+            x_position: 0,
+            y_position: 0,
+        })
+    );
+}
+
+#[test]
+fn fastpath_keyboard_event_with_undefined_flag_bits_decodes_and_retains_them() {
+    // The 5-bit fast-path eventFlags field defines RELEASE, EXTENDED and
+    // EXTENDED1 for keyboard events ([MS-RDPBCGR] 2.2.8.1.2.2.1); an unknown
+    // bit must not kill a live session, and the slow-path decoder for the
+    // same keystroke already tolerates it. The bit is retained so
+    // re-encoding preserves the wire value.
+    const UNDEFINED_BIT: u8 = 0x10;
+
+    // eventCode = FASTPATH_INPUT_EVENT_SCANCODE (0) in bits 5..8,
+    // eventFlags = RELEASE | UNDEFINED_BIT in bits 0..5, then the scancode.
+    let buffer = [0x01 | UNDEFINED_BIT, 0x1d];
+
+    let event: FastPathInputEvent = ironrdp_core::decode(&buffer).expect("undefined flag bits are not fatal");
+
+    let FastPathInputEvent::KeyboardEvent(flags, code) = event else {
+        panic!("expected a keyboard event");
+    };
+    assert_eq!(code, 0x1d);
+    assert!(flags.contains(KeyboardFlags::RELEASE));
+    assert_ne!(flags.bits() & UNDEFINED_BIT, 0);
+    assert_eq!(
+        ironrdp_core::encode_vec(&FastPathInputEvent::KeyboardEvent(flags, code)).unwrap(),
+        buffer
+    );
+}
+
+#[test]
+fn fastpath_sync_event_with_undefined_flag_bits_decodes_and_retains_them() {
+    // [MS-RDPBCGR] 2.2.8.1.2.2.5 defines the four lock flags; bit 0x10 of
+    // the 5-bit eventFlags field is undefined and must not be fatal.
+    const UNDEFINED_BIT: u8 = 0x10;
+
+    // eventCode = FASTPATH_INPUT_EVENT_SYNC (3) in bits 5..8.
+    let buffer = [(3 << 5) | 0x01 | UNDEFINED_BIT];
+
+    let event: FastPathInputEvent = ironrdp_core::decode(&buffer).expect("undefined flag bits are not fatal");
+
+    let FastPathInputEvent::SyncEvent(flags) = event else {
+        panic!("expected a sync event");
+    };
+    assert!(flags.contains(SynchronizeFlags::SCROLL_LOCK));
+    assert_ne!(flags.bits() & UNDEFINED_BIT, 0);
+    assert_eq!(
+        ironrdp_core::encode_vec(&FastPathInputEvent::SyncEvent(flags)).unwrap(),
+        buffer
+    );
+}

@@ -360,6 +360,18 @@ impl RdpdrBackend for WasmPrinterBackend {
             }
         }
     }
+
+    fn reject_printer_write(&mut self, req: ironrdp::rdpdr::pdu::efs::DeviceIoRequest) -> PduResult<Vec<SvcMessage>> {
+        if self.open_files.remove(&req.file_id).is_some() {
+            self.proxy.send_job_aborted(req.file_id);
+        }
+        Ok(vec![SvcMessage::from(RdpdrPdu::DeviceWriteResponse(
+            DeviceWriteResponse {
+                device_io_reply: DeviceIoResponse::new(req, NtStatus::INVALID_PARAMETER),
+                length: 0,
+            },
+        ))])
+    }
 }
 
 /// Event-loop-side companion to [`WasmPrinterBackend`]. Owns the

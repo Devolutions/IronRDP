@@ -64,6 +64,7 @@ pub(crate) struct Driver {
     /// here to retry once the send queue has room again instead of being
     /// dropped or treated as a fatal error.
     pending_write: Option<Vec<u8>>,
+    stream_released: bool,
 }
 
 impl Driver {
@@ -82,6 +83,7 @@ impl Driver {
             recv_buf: vec![0u8; RECV_BUF_SIZE],
             clock: Clock::new(),
             pending_write: None,
+            stream_released: false,
         }
     }
 
@@ -99,7 +101,7 @@ impl Driver {
     }
 
     /// Mark the shared state closed and wake everything waiting on it.
-    fn release_stream(&self, error: Option<&DriverError>) {
+    fn release_stream(&mut self, error: Option<&DriverError>) {
         let Ok(mut shared) = self.shared.lock() else {
             // A poisoned lock means the stream side already panicked, and
             // there is nothing left to wake.
@@ -116,6 +118,7 @@ impl Driver {
         }
 
         shared.close();
+        self.stream_released = true;
     }
 
     async fn run_to_completion(&mut self) -> Result<(), DriverError> {
@@ -162,6 +165,7 @@ impl Driver {
                         Err(error) if is_droppable(&error) => {
                             tracing::debug!(%error, "dropping an unusable datagram");
                         }
+
                         Err(error) => return Err(DriverError::rdpeudp("handle datagram", error)),
                     }
 
@@ -329,6 +333,19 @@ impl Driver {
                     }
                 }
             }
+        }
+    }
+}
+
+impl Drop for Driver {
+    fn drop(&mut self) {
+        if self.stream_released {
+            return;
+        }
+
+        if let Ok(mut shared) = self.shared.lock() {
+            shared.error.get_or_insert(io::ErrorKind::ConnectionAborted);
+            shared.close();
         }
     }
 }
@@ -623,7 +640,7 @@ mod tests {
             guard.read_waker = Some(futures_waker(Arc::clone(&woken)));
         }
 
-        let driver = Driver::new(socket, conn, Arc::clone(&shared), Arc::new(Notify::new()));
+        let mut driver = Driver::new(socket, conn, Arc::clone(&shared), Arc::new(Notify::new()));
         driver.release_stream(Some(&DriverError::connection_closed("test")));
 
         assert!(
@@ -631,6 +648,29 @@ mod tests {
             "the reader was left parked"
         );
 
+        let guard = shared.lock().expect("lock");
+        assert!(guard.closed);
+        assert_eq!(guard.error, Some(io::ErrorKind::ConnectionAborted));
+    }
+
+    #[tokio::test]
+    async fn dropping_driver_wakes_a_parked_reader() {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+        let conn = RdpeudpConnection::connect(test_connection_config(), Clock::new().now()).expect("connect");
+        let shared = Arc::new(Mutex::new(SharedIo::new()));
+        let woken = Arc::new(core::sync::atomic::AtomicBool::new(false));
+
+        {
+            let mut guard = shared.lock().expect("lock");
+            guard.read_waker = Some(futures_waker(Arc::clone(&woken)));
+        }
+
+        drop(Driver::new(socket, conn, Arc::clone(&shared), Arc::new(Notify::new())));
+
+        assert!(
+            woken.load(core::sync::atomic::Ordering::SeqCst),
+            "the reader was left parked"
+        );
         let guard = shared.lock().expect("lock");
         assert!(guard.closed);
         assert_eq!(guard.error, Some(io::ErrorKind::ConnectionAborted));

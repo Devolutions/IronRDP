@@ -503,6 +503,10 @@ fn validate_v5_header(header: &BitmapV5Header) -> Result<(), BitmapError> {
         return Err(BitmapError::Unsupported("not supported color space"));
     }
 
+    if header.profile_data != 0 || header.profile_size != 0 {
+        return Err(BitmapError::Unsupported("embedded color profile is not supported"));
+    }
+
     Ok(())
 }
 
@@ -538,6 +542,57 @@ fn rgb_bmp_stride(width: u16, bit_count: u16) -> usize {
     {
         (((usize::from(width) * usize::from(bit_count)) + 31) & !31) >> 3
     }
+}
+
+fn bitmap_data<'a>(header: &BitmapInfoHeader, header_size: usize, input: &'a [u8]) -> Result<&'a [u8], BitmapError> {
+    let image_size = rgb_bmp_stride(header.width(), header.bit_count)
+        .checked_mul(usize::from(header.height()))
+        .ok_or(BitmapError::BufferTooBig)?;
+    let declared_size = usize::try_from(header.size_image).map_err(|_| BitmapError::InvalidSize)?;
+    if declared_size != 0 && declared_size != image_size {
+        return Err(BitmapError::InvalidSize);
+    }
+    let total_size = header_size.checked_add(image_size).ok_or(BitmapError::BufferTooBig)?;
+    if total_size > MAX_BUFFER_SIZE {
+        return Err(BitmapError::BufferTooBig);
+    }
+
+    input.get(..image_size).ok_or(BitmapError::InvalidSize)
+}
+
+fn decode_dib(input: &[u8]) -> Result<(BitmapInfoHeader, &[u8]), BitmapError> {
+    let mut src = ReadCursor::new(input);
+    let header = BitmapInfoHeader::decode(&mut src).map_err(BitmapError::Decode)?;
+    validate_v1_header(&header)?;
+    if header.compression != BitmapCompression::RGB {
+        return Err(BitmapError::Unsupported("unsupported compression"));
+    }
+    let bitmap = bitmap_data(&header, BitmapInfoHeader::FIXED_PART_SIZE, src.remaining())?;
+    Ok((header, bitmap))
+}
+
+fn decode_dibv5(input: &[u8]) -> Result<(BitmapV5Header, &[u8]), BitmapError> {
+    let mut src = ReadCursor::new(input);
+    let header = BitmapV5Header::decode(&mut src).map_err(BitmapError::Decode)?;
+    validate_v5_header(&header)?;
+    let bitmap = bitmap_data(&header.v1, BitmapV5Header::FIXED_PART_SIZE, src.remaining())?;
+    Ok((header, bitmap))
+}
+
+/// Validates a `CF_DIB` payload without allocating and returns its logical byte length.
+pub fn validate_dib(input: &[u8]) -> Result<usize, BitmapError> {
+    let (_, bitmap) = decode_dib(input)?;
+    BitmapInfoHeader::FIXED_PART_SIZE
+        .checked_add(bitmap.len())
+        .ok_or(BitmapError::BufferTooBig)
+}
+
+/// Validates a `CF_DIBV5` payload without allocating and returns its logical byte length.
+pub fn validate_dibv5(input: &[u8]) -> Result<usize, BitmapError> {
+    let (_, bitmap) = decode_dibv5(input)?;
+    BitmapV5Header::FIXED_PART_SIZE
+        .checked_add(bitmap.len())
+        .ok_or(BitmapError::BufferTooBig)
 }
 
 fn bgra_to_top_down_rgba(
@@ -645,32 +700,15 @@ fn encode_png(ctx: &PngEncoderContext) -> Result<Vec<u8>, BitmapError> {
 
 /// Converts `CF_DIB` to PNG.
 pub fn dib_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
-    let mut src = ReadCursor::new(input);
-    let header = BitmapInfoHeader::decode(&mut src).map_err(BitmapError::Decode)?;
-
-    validate_v1_header(&header)?;
-
-    // We support only uncompressed DIB bitmaps as it is the most common case for clipboard-copied bitmaps.
-    // However, for DIBv1 specifically, BitmapCompression::BITFIELDS is not supported even when the order is BGRA,
-    // because there is an additional variable-sized header holding the color masks that we don’t support yet.
-    const DIBV1_SUPPORTED_COMPRESSION: &[BitmapCompression] = &[BitmapCompression::RGB];
-
-    if !DIBV1_SUPPORTED_COMPRESSION.contains(&header.compression) {
-        return Err(BitmapError::Unsupported("unsupported compression"));
-    }
-
-    let png_ctx = bgra_to_top_down_rgba(&header, src.remaining(), false)?;
+    let (header, bitmap) = decode_dib(input)?;
+    let png_ctx = bgra_to_top_down_rgba(&header, bitmap, false)?;
     encode_png(&png_ctx)
 }
 
-/// Converts `CF_DIB` to PNG.
+/// Converts `CF_DIBV5` to PNG.
 pub fn dibv5_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
-    let mut src = ReadCursor::new(input);
-    let header = BitmapV5Header::decode(&mut src).map_err(BitmapError::Decode)?;
-
-    validate_v5_header(&header)?;
-
-    let png_ctx = bgra_to_top_down_rgba(&header.v1, src.remaining(), true)?;
+    let (header, bitmap) = decode_dibv5(input)?;
+    let png_ctx = bgra_to_top_down_rgba(&header.v1, bitmap, true)?;
     encode_png(&png_ctx)
 }
 
@@ -738,7 +776,18 @@ fn decode_png(mut input: &[u8]) -> Result<(png::OutputInfo, Vec<u8>), BitmapErro
     let mut decoder = png::Decoder::new(Cursor::new(&mut input));
 
     // We need to produce 32-bit DIB, so we should expand the palette to 32-bit RGBA.
-    decoder.set_transformations(png::Transformations::ALPHA | png::Transformations::EXPAND);
+    //
+    // `STRIP_16` normalizes 16-bit-per-channel samples to 8-bit; without it, a 16-bit source stays
+    // 16-bit, but `top_down_rgba_to_bottom_up_bgra` below always consumes four one-byte samples per
+    // pixel, silently misreading such a buffer.
+    //
+    // `EXPAND | ALPHA` guarantees an alpha channel and 8-bit samples for indexed and RGB inputs,
+    // but this crate version's `output_color_type()` has no path from Grayscale/GrayscaleAlpha to
+    // Rgba (it declares a `GRAY_TO_RGB` flag but never implements it), so a grayscale source comes
+    // out as `GrayscaleAlpha` (2 channels), not `Rgba` (4). Handled explicitly below.
+    decoder.set_transformations(
+        png::Transformations::ALPHA | png::Transformations::EXPAND | png::Transformations::STRIP_16,
+    );
 
     let mut reader = decoder.read_info()?;
     let Some(output_buffer_len) = reader.output_buffer_size() else {
@@ -749,8 +798,22 @@ fn decode_png(mut input: &[u8]) -> Result<(png::OutputInfo, Vec<u8>), BitmapErro
     ensure(output_buffer_len <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
 
     let mut buffer = vec![0; output_buffer_len];
-    let info = reader.next_frame(&mut buffer)?;
+    let mut info = reader.next_frame(&mut buffer)?;
     buffer.truncate(info.buffer_size());
+
+    // The transformations above guarantee 8-bit samples but, per the comment above, cannot convert
+    // grayscale to RGB in this crate version. Expand it by hand so every caller of this function
+    // can assume `Rgba`.
+    if info.color_type == png::ColorType::GrayscaleAlpha {
+        // This doubles the buffer (2 channels -> 4), so the `MAX_BUFFER_SIZE` check above, which
+        // ran against the pre-expansion size, no longer covers the buffer this function returns.
+        ensure(buffer.len().saturating_mul(2) <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
+        buffer = buffer
+            .chunks_exact(2)
+            .flat_map(|ga| [ga[0], ga[0], ga[0], ga[1]])
+            .collect();
+        info.color_type = png::ColorType::Rgba;
+    }
 
     Ok((info, buffer))
 }

@@ -166,10 +166,6 @@ pub(crate) struct HandshakeRespPkt {
     pub ver_major: u8,
     pub ver_minor: u8,
     pub server_version: u16,
-    #[expect(
-        dead_code,
-        reason = "authentication flow does not negotiate extended authentication yet"
-    )]
     pub extended_auth: HttpExtendedAuth,
 }
 
@@ -347,13 +343,6 @@ impl Decode<'_> for TunnelRespPkt {
 }
 
 /// 2.2.10.7 HTTP_EXTENDED_AUTH_PACKET Structure
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "authentication flow does not process extended authentication yet"
-    )
-)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExtendedAuthPkt {
     pub(crate) error_code: u32,

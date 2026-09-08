@@ -137,6 +137,8 @@ Do not modify them unless specifically working on fixing their compilation.
 ### Key Style Conventions (from `STYLE.md`)
 
 - **Error messages:** lowercase, no trailing punctuation, use `crate_name::Result` (e.g., `anyhow::Result`) not bare `Result`.
+- **Error construction:** use the `*_err!` macros with `in: src` so byte offsets are captured; reserve the offset-less `Other` kind for non-stream failures. No `thiserror` in core-tier crates.
+- **Unknown wire values:** retain unknown advertisement bits (`from_bits_retain`); stay strict only for negotiation outputs the receiver must implement and for structural discriminants. See STYLE.md "Decoding unknown values".
 - **Log messages:** capitalize first letter, no trailing period, use structured tracing fields (`info!(%server_addr, "Looked up server address")`).
 - **Size constants:** annotate each addend with an inline comment naming the field (e.g., `1 /* Version */ + 2 /* Length */`).
 - **Invariants:** define with `INVARIANT:` prefix in comments; state positively; prefer `<`/`<=` over `>`/`>=`.

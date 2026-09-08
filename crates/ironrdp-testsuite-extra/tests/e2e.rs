@@ -6,7 +6,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
-use anyhow::Result;
 use ironrdp::connector;
 use ironrdp::core::{Encode as _, encode_vec, impl_as_any};
 use ironrdp::dvc::DrdynvcClient;
@@ -20,7 +19,7 @@ use ironrdp::pdu::rdp::headers::CompressionFlags;
 use ironrdp::pdu::{self, gcc};
 use ironrdp::server::{
     self, Acceptor, DesktopSize, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer, RdpServerDisplay,
-    RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, StaticChannelFactory, TlsIdentityCtx,
+    RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerResult, StaticChannelFactory, TlsIdentityCtx,
 };
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput};
@@ -57,6 +56,21 @@ const RDPDR_READ_LENGTH: u32 = 32 * 1024;
 async fn test_client_server() {
     client_server(
         default_client_config(),
+        |stage, _activation_factory, framed, _display_tx| async { (stage, framed) },
+    )
+    .await
+}
+
+/// Advertising the Graphics Pipeline early-capability bit must not disturb connection establishment.
+///
+/// The core testsuite separately decodes the emitted Connect Initial PDU and verifies the capability flag.
+#[tokio::test]
+async fn test_client_server_advertising_dyn_vc_gfx_protocol() {
+    client_server(
+        connector::Config {
+            support_dyn_vc_gfx_protocol: true,
+            ..default_client_config()
+        },
         |stage, _activation_factory, framed, _display_tx| async { (stage, framed) },
     )
     .await
@@ -436,7 +450,7 @@ struct TestDisplayUpdates {
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for TestDisplayUpdates {
-    async fn next_update(&mut self) -> Result<Option<DisplayUpdate>> {
+    async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
         let mut rx = self.rx.lock().await;
 
         Ok(rx.recv().await)
@@ -456,7 +470,7 @@ impl RdpServerDisplay for TestDisplay {
         }
     }
 
-    async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(TestDisplayUpdates {
             rx: Arc::clone(&self.rx),
         }))
@@ -1012,7 +1026,7 @@ async fn client_server_with_connector<F, Fut, C>(
         .await;
 }
 
-fn default_client_config() -> connector::Config {
+pub(super) fn default_client_config() -> connector::Config {
     connector::Config {
         desktop_size: DesktopSize {
             width: DESKTOP_WIDTH,
@@ -1073,6 +1087,7 @@ fn default_client_config() -> connector::Config {
         enable_server_pointer: true,
         pointer_software_rendering: true,
         multitransport_flags: None,
+        support_dyn_vc_gfx_protocol: false,
         performance_flags: Default::default(),
         timezone_info: Default::default(),
         alternate_shell: String::new(),

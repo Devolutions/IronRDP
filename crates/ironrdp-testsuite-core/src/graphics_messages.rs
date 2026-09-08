@@ -9,7 +9,7 @@ use ironrdp_egfx::pdu::{
     SurfaceToSurfacePdu, Timestamp, WireToSurface1Pdu, WireToSurface2Pdu,
 };
 use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
-use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle};
+use ironrdp_pdu::geometry::ExclusiveRectangle;
 
 pub const WIRE_TO_SURFACE_1_BUFFER: [u8; 218] = [
     0x00, 0x00, 0x08, 0x00, 0x20, 0xa5, 0x03, 0xde, 0x02, 0xab, 0x03, 0xe7, 0x02, 0xc9, 0x00, 0x00, 0x00, 0x01, 0x0e,
@@ -438,7 +438,7 @@ pub static CACHE_IMPORT_REPLY: LazyLock<CacheImportReplyPdu> = LazyLock::new(|| 
 pub static AVC_444_BITMAP: LazyLock<Avc444BitmapStream<'static>> = LazyLock::new(|| Avc444BitmapStream {
     encoding: Encoding::CHROMA,
     stream1: Avc420BitmapStream {
-        rectangles: vec![InclusiveRectangle {
+        rectangles: vec![ExclusiveRectangle {
             left: 1792,
             top: 1056,
             right: 1808,

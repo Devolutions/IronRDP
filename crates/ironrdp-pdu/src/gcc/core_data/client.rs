@@ -436,10 +436,17 @@ impl<'de> Decode<'de> for ClientCoreOptionalData {
 
         try_or_return!(src.try_read_u8(), optional_data);
 
-        optional_data.server_selected_protocol = Some(
-            SecurityProtocol::from_bits(try_or_return!(src.try_read_u32(), optional_data))
-                .ok_or_else(|| invalid_field_err!("serverSelectedProtocol", "invalid security protocol", in: src))?,
-        );
+        // Echo of the selectedProtocol from the X.224 RDP Negotiation
+        // Response, which nego.rs already decodes with from_bits_retain; the
+        // echo must not be stricter than the original. [MS-RDPBCGR]
+        // 3.3.5.3.3's mandated handling is a value comparison against what
+        // the server actually sent (SHOULD drop on mismatch), which needs
+        // the value to survive decode. The protocol list has grown three
+        // times (RDSTLS, HYBRID_EX, RDSAAD).
+        optional_data.server_selected_protocol = Some(SecurityProtocol::from_bits_retain(try_or_return!(
+            src.try_read_u32(),
+            optional_data
+        )));
 
         optional_data.desktop_physical_width = Some(try_or_return!(src.try_read_u32(), optional_data));
         // physical height must be present, if the physical width is present

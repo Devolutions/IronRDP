@@ -14,11 +14,13 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context as _;
 use ironrdp_cfg::PropertySetExt as _;
 use ironrdp_client::config::{ConfigBuilder, MissingField};
+use ironrdp_client::output_channel::{OutputEventReceiver, output_channel};
 use ironrdp_client::rail::RailControlEvent;
 use ironrdp_client::rdp::{
     RailExecuteFailureReason as ClientRailExecuteFailureReason, RdpClient, RdpInputEvent, RdpInputSender,
     RdpOutputEvent,
 };
+use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_input::{Database, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_propertyset::{PropertySet, Value};
@@ -253,6 +255,10 @@ pub struct Daemon {
     smartcard_default: bool,
     #[cfg(windows)]
     rdpdr_backend_factory: Option<WindowsRdpdrBackendFactory>,
+    /// Clipboard text, daemon-lifetime so it survives a reconnect. Read and written by
+    /// `Request::ClipboardGet` / `Request::ClipboardSet`; read and written by the `CLIPRDR`
+    /// backend built fresh for each session (see `crate::clipboard`).
+    clipboard: Arc<Mutex<crate::clipboard::ClipboardState>>,
     /// Notifies an optional GUI frontend whenever retained live state changes.
     notification: Option<mpsc::Sender<()>>,
     shutdown: tokio::sync::watch::Sender<()>,
@@ -505,6 +511,7 @@ impl Daemon {
             smartcard_default,
             #[cfg(windows)]
             rdpdr_backend_factory,
+            clipboard: Arc::new(Mutex::new(crate::clipboard::ClipboardState::default())),
             notification: None,
             shutdown,
         })
@@ -569,6 +576,10 @@ impl Daemon {
                 DaemonResponse::Single(self.query_logs(substring.as_deref(), last))
             }
             Request::Screenshot => DaemonResponse::Single(self.screenshot()),
+            Request::ClipboardGet => DaemonResponse::Single(self.clipboard_get()),
+            Request::ClipboardSet { text } => DaemonResponse::Single(self.clipboard_set(text)),
+            Request::ClipboardGetImage => DaemonResponse::Single(self.clipboard_get_image()),
+            Request::ClipboardSetImage { png } => DaemonResponse::Single(self.clipboard_set_image(png)),
             Request::MouseMove { x, y } => {
                 DaemonResponse::Single(self.input(Operation::MouseMove(MousePosition { x, y })))
             }
@@ -768,7 +779,7 @@ impl Daemon {
             None
         };
 
-        let (output_tx, output_rx) = mpsc::channel(16);
+        let (output_tx, output_rx) = output_channel(16);
         let client = RdpClient::new(config, output_tx);
         #[cfg(windows)]
         let client = match rdpdr_factory {
@@ -776,6 +787,10 @@ impl Daemon {
             None => client,
         };
         let input_tx = client.input_sender();
+        let client = client.with_cliprdr_backend_factory(Box::new(crate::clipboard::AgentCliprdrBackendFactory::new(
+            Arc::clone(&self.clipboard),
+            input_tx.clone(),
+        )));
 
         let rail_notify = Arc::new(tokio::sync::Notify::new());
         let live = Arc::new(Mutex::new(Live {
@@ -1086,6 +1101,98 @@ impl Daemon {
                 crate::ipc::AgentErrorCategory::Internal,
                 format!("failed to encode screenshot: {error:#}"),
             ),
+        }
+    }
+
+    /// Returns the last text received from the remote clipboard, if any.
+    ///
+    /// `None` both when nothing has been received yet and when the last remote copy was an image,
+    /// not text; the two are indistinguishable from this call alone. Use `clipboard_get_image` for
+    /// the image case.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_get(&self) -> Response {
+        let text = match self.clipboard.lock().expect("clipboard state poisoned").remote.clone() {
+            Some(crate::clipboard::ClipboardContent::Text(text)) => Some(text),
+            Some(crate::clipboard::ClipboardContent::Image(_)) | None => None,
+        };
+        Response::Ok(Payload::ClipboardText(text))
+    }
+
+    /// Sets the local clipboard text and, if a session is connected, advertises it to the remote.
+    ///
+    /// Replaces any image previously set with `clipboard_set_image`: local content is a single
+    /// logical item, not a per-format set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_set(&self, text: String) -> Response {
+        self.set_local_and_advertise(crate::clipboard::ClipboardContent::Text(text));
+        Response::ok()
+    }
+
+    /// Returns the last image received from the remote clipboard as PNG bytes, if any.
+    ///
+    /// `None` both when nothing has been received yet and when the last remote copy was text, not
+    /// an image. Use `clipboard_get` for the text case.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_get_image(&self) -> Response {
+        let png = match self.clipboard.lock().expect("clipboard state poisoned").remote.clone() {
+            Some(crate::clipboard::ClipboardContent::Image(png)) => Some(png),
+            Some(crate::clipboard::ClipboardContent::Text(_)) | None => None,
+        };
+        Response::Ok(Payload::ClipboardImage(png))
+    }
+
+    /// Sets the local clipboard image (PNG bytes) and, if a session is connected, advertises it
+    /// to the remote as `CF_DIB`/`CF_DIBV5`.
+    ///
+    /// Rejects `png` up front if it is not decodable, so a bad set fails immediately rather than
+    /// only once the remote actually asks for it. Replaces any text previously set with
+    /// `clipboard_set`: local content is a single logical item, not a per-format set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn clipboard_set_image(&self, png: Vec<u8>) -> Response {
+        if let Err(error) = ironrdp_cliprdr_format::bitmap::png_to_cf_dib(&png) {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                format!("not a decodable PNG: {error}"),
+            );
+        }
+        self.set_local_and_advertise(crate::clipboard::ClipboardContent::Image(png));
+        Response::ok()
+    }
+
+    /// Sets `local` to `content` and, if a session is connected, advertises it to the remote, as
+    /// one atomic step under the clipboard mutex.
+    ///
+    /// Held across both the write and the advertise call so concurrent `clipboard_set*` calls from
+    /// different IPC connections cannot interleave their state write and their advertisement: Each
+    /// caller's write and send happen together, so the last one to acquire the lock is consistently
+    /// both the final `local` value and the last thing advertised.
+    ///
+    /// Only a connected session can advertise the change immediately; an unconnected daemon still
+    /// remembers it and advertises it once `CLIPRDR` initializes on the next connect (see
+    /// `AgentCliprdrBackend::on_request_format_list`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the clipboard state mutex is poisoned.
+    fn set_local_and_advertise(&self, content: crate::clipboard::ClipboardContent) {
+        let mut clipboard = self.clipboard.lock().expect("clipboard state poisoned");
+        clipboard.local = Some(content.clone());
+        if let Some(session) = self.state.lock().expect("daemon state poisoned").as_ref() {
+            let _ = session.input_tx.send_clipboard(ClipboardMessage::SendInitiateCopy(
+                crate::clipboard::advertised_formats(&content),
+            ));
         }
     }
 
@@ -1412,7 +1519,7 @@ impl Daemon {
 
 /// Consumes the bounded output-event stream, keeping the live state current.
 async fn consume_output(
-    mut output_rx: mpsc::Receiver<RdpOutputEvent>,
+    mut output_rx: OutputEventReceiver,
     live: Arc<Mutex<Live>>,
     notification: Option<mpsc::Sender<()>>,
     rail_notify: Arc<tokio::sync::Notify>,
@@ -1549,7 +1656,8 @@ async fn consume_output(
             }
             RdpOutputEvent::ConnectionFailure(error) => {
                 guard.state = ConnState::Failed;
-                guard.error = Some(format!("{error}"));
+                let error = error.report();
+                guard.error = Some(error.to_string());
                 let rail_changed = guard.rail.fail_pending_launches();
                 error!(%error, "Session connection failed");
                 rail_changed
@@ -1563,7 +1671,8 @@ async fn consume_output(
             }
             RdpOutputEvent::Terminated(Err(error)) => {
                 guard.state = ConnState::Failed;
-                guard.error = Some(format!("{error}"));
+                let error = error.report();
+                guard.error = Some(error.to_string());
                 let rail_changed = guard.rail.fail_pending_launches();
                 warn!(%error, "Session terminated with an error");
                 rail_changed
@@ -1778,8 +1887,10 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
+    use ironrdp_cfg::{GatewayUsageMethod, PropertySetExt as _};
     use tokio::sync::mpsc;
 
+    use ironrdp_client::output_channel::output_channel;
     use ironrdp_client::rdp::{RdpInputEvent, RdpInputSender};
     use ironrdp_input::{Database, Operation};
     use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
@@ -1917,7 +2028,7 @@ mod tests {
                 .expect("queue a dynamic launch");
         }
 
-        let (output_tx, output_rx) = mpsc::channel(1);
+        let (output_tx, output_rx) = output_channel(1);
         let rail_notify = Arc::new(tokio::sync::Notify::new());
         let consumer = tokio::spawn(consume_output(
             output_rx,
@@ -1981,7 +2092,7 @@ mod tests {
     async fn rail_wait_ignores_non_rail_output_until_evidence_arrives() {
         let (daemon, _, live, rail_notify) = active_rail_session(true);
 
-        let (output_tx, output_rx) = mpsc::channel(1);
+        let (output_tx, output_rx) = output_channel(1);
         let consumer = tokio::spawn(consume_output(
             output_rx,
             live,
@@ -2100,7 +2211,7 @@ mod tests {
     #[tokio::test]
     async fn local_rail_execute_failure_resolves_pending_launch_without_terminating() {
         let (daemon, mut input_rx, live, rail_notify) = active_rail_session(true);
-        let (output_tx, output_rx) = mpsc::channel(1);
+        let (output_tx, output_rx) = output_channel(1);
         let consumer = tokio::spawn(consume_output(
             output_rx,
             Arc::clone(&live),
@@ -2169,7 +2280,7 @@ mod tests {
     #[tokio::test]
     async fn connection_failure_discards_pending_rail_launches() {
         let (daemon, mut input_rx, live, rail_notify) = active_rail_session(true);
-        let (output_tx, output_rx) = mpsc::channel(1);
+        let (output_tx, output_rx) = output_channel(1);
         let consumer = tokio::spawn(consume_output(
             output_rx,
             Arc::clone(&live),
@@ -2225,6 +2336,77 @@ mod tests {
 
         drop(output_tx);
         consumer.await.expect("consume output");
+    }
+
+    #[tokio::test]
+    async fn connection_failure_status_preserves_gateway_error_sources() {
+        let (daemon, _, live, rail_notify) = active_rail_session(false);
+        let (output_tx, output_rx) = output_channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::ConnectionFailure(
+                ironrdp_connector::custom_err!(
+                    "GW connect",
+                    ironrdp_connector::custom_err!(
+                        "send rdg authentication request",
+                        std::io::Error::other("connection reset")
+                    )
+                ),
+            ))
+            .await
+            .expect("send connection failure");
+        drop(output_tx);
+        consumer.await.expect("consume output");
+
+        let Response::Ok(Payload::Status(status)) = daemon.status() else {
+            panic!("expected status response");
+        };
+        let message = status.message.expect("connection failure message");
+
+        assert_eq!(
+            message,
+            "[GW connect] custom error, caused by: [send rdg authentication request] custom error, caused by: connection reset"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminated_error_status_preserves_session_error_sources() {
+        let (daemon, _, live, rail_notify) = active_rail_session(false);
+        let (output_tx, output_rx) = output_channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::Terminated(Err(
+                ironrdp_session::custom_err!(
+                    "read frame",
+                    ironrdp_session::custom_err!("decode transport", std::io::Error::other("connection reset"))
+                ),
+            )))
+            .await
+            .expect("send terminated error");
+        drop(output_tx);
+        consumer.await.expect("consume output");
+
+        let Response::Ok(Payload::Status(status)) = daemon.status() else {
+            panic!("expected status response");
+        };
+        let message = status.message.expect("terminated error message");
+
+        assert_eq!(
+            message,
+            "[read frame] custom error, caused by: [decode transport] custom error, caused by: connection reset"
+        );
     }
 
     #[test]
@@ -2306,6 +2488,21 @@ mod tests {
             insecure.certificate_validation(),
             CertificateValidation::DangerouslyAcceptInvalidCertificate
         );
+    }
+
+    #[test]
+    fn gateway_property_set_requires_gateway_credentials() {
+        let daemon = Daemon::with_overlay(PropertySet::new());
+        let mut properties = PropertySet::new();
+        properties.set_gateway_hostname("gateway.example:443");
+        properties.set_gateway_usage_method(GatewayUsageMethod::UseAlways);
+
+        assert!(matches!(
+            daemon.connect(properties, None),
+            Response::Err(error)
+                if error.message
+                    == "missing required fields: server address, username, password, gateway username, gateway password"
+        ));
     }
 
     #[test]

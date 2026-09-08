@@ -166,7 +166,13 @@ fn capability_exchange_sequence() {
 }
 
 // Ref: [New Device Sequence][1.3.1.2]
+//
+// A per-device channel runs the same [Channel Setup Sequence][1.3.1.1] as the control channel:
+// the capability exchange precedes CHANNEL_CREATED, and only then does the Device Sink
+// interface carry ADD_DEVICE (section 3.2.5.2.2).
+//
 // [1.3.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/7e3da218-9cdc-4ebd-bb76-e70202c7f264
+// [1.3.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/55bb34fc-7fd0-4aca-8739-5fb6759b66fc
 #[test]
 fn new_device_sequence() {
     let udev_iface = InterfaceId::try_from(4).expect("valid device interface id");
@@ -179,7 +185,29 @@ fn new_device_sequence() {
 
     let resp = server.start(11).expect("start should succeed");
     assert_eq!(resp.len(), 1);
-    let UrbdrcServerDevicePdu::ChanCreated(channel_created_request) = decode_device_msg(&resp[0]) else {
+    let UrbdrcServerDevicePdu::Caps(request) = decode_device_msg(&resp[0]) else {
+        panic!("expected capability request");
+    };
+    assert_eq!(request.capability, Capability::RimCapabilityVersion01);
+
+    let resp = server
+        .process(
+            11,
+            &encode_pdu(&UrbdrcClientDevicePdu::Caps(RimExchangeCapabilityResponse {
+                msg_id: request.msg_id,
+                capability: Capability::RimCapabilityVersion01,
+                result: 0,
+            })),
+        )
+        .expect("capability response should succeed");
+    assert_eq!(resp.len(), 2);
+
+    let UrbdrcServerDevicePdu::IfaceRelease(release) = decode_device_msg(&resp[0]) else {
+        panic!("expected capabilities interface release");
+    };
+    assert_eq!(release.iface_id, u32::from(InterfaceId::CAPABILITIES));
+
+    let UrbdrcServerDevicePdu::ChanCreated(channel_created_request) = decode_device_msg(&resp[1]) else {
         panic!("expected channel-created request");
     };
     assert_eq!(channel_created_request.direction, Direction::ToClient);
@@ -222,5 +250,49 @@ fn new_device_sequence() {
     assert!(
         matches!(announcement_rx.try_recv(), Err(TryRecvError::Empty)),
         "device should be announced exactly once"
+    );
+}
+
+// The server starts processing Device Sink interface messages only after the per-device channel
+// handshake completes (section 3.2.5.2.2), so an earlier ADD_DEVICE is out of sequence and is
+// ignored (section 3.1.5).
+#[test]
+fn add_device_before_the_channel_handshake_is_ignored() {
+    let udev_iface = InterfaceId::try_from(4).expect("valid device interface id");
+    let completion_iface = InterfaceId::try_from(5).expect("valid completion interface id");
+    let (device_announced, announcement_rx) = mpsc::channel();
+    let backend = Box::new(TestDeviceBackend { device_announced });
+    let mut server = UrbdrcDeviceServer::new(backend, completion_iface).expect("device server should be created");
+
+    let add_device = add_device_from_info(udev_iface, &simple_device_info()).expect("ADD_DEVICE should be generated");
+    let resp = server
+        .process(11, &encode_pdu(&UrbdrcClientDevicePdu::AddDev(add_device)))
+        .expect("add device before the capability exchange should be ignored");
+    assert!(resp.is_empty());
+
+    let resp = server.start(11).expect("start should succeed");
+    let UrbdrcServerDevicePdu::Caps(request) = decode_device_msg(&resp[0]) else {
+        panic!("expected capability request");
+    };
+    server
+        .process(
+            11,
+            &encode_pdu(&UrbdrcClientDevicePdu::Caps(RimExchangeCapabilityResponse {
+                msg_id: request.msg_id,
+                capability: Capability::RimCapabilityVersion01,
+                result: 0,
+            })),
+        )
+        .expect("capability response should succeed");
+
+    let add_device = add_device_from_info(udev_iface, &simple_device_info()).expect("ADD_DEVICE should be generated");
+    let resp = server
+        .process(11, &encode_pdu(&UrbdrcClientDevicePdu::AddDev(add_device)))
+        .expect("add device before CHANNEL_CREATED should be ignored");
+    assert!(resp.is_empty());
+
+    assert!(
+        matches!(announcement_rx.try_recv(), Err(TryRecvError::Empty)),
+        "no device should be announced before the handshake completes"
     );
 }

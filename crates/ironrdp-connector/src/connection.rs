@@ -112,6 +112,30 @@ pub enum MultitransportResult {
     Failure(u32),
 }
 
+impl MultitransportResult {
+    const fn response_required(&self, soft_sync: bool) -> bool {
+        soft_sync || matches!(self, Self::Failure(_))
+    }
+
+    /// Builds the required response PDU for this outcome and request.
+    ///
+    /// Successful initiation without Soft-Sync does not require a response.
+    pub fn response_pdu(
+        &self,
+        request_id: u32,
+        soft_sync: bool,
+    ) -> Option<rdp::multitransport::MultitransportResponsePdu> {
+        if !self.response_required(soft_sync) {
+            return None;
+        }
+
+        Some(match self {
+            Self::Success => rdp::multitransport::MultitransportResponsePdu::success(request_id),
+            Self::Failure(hr) => multitransport_response(request_id, *hr),
+        })
+    }
+}
+
 /// Why a runtime-defined static virtual channel could not be registered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DynamicStaticChannelAttachError {
@@ -162,6 +186,13 @@ pub struct ConnectionResult {
     pub activation_factory: ConnectionActivationFactory,
     /// The bulk compression type that was negotiated, if any.
     pub compression_type: Option<rdp::client_info::CompressionType>,
+}
+
+impl ConnectionResult {
+    /// Whether both peers advertised Soft-Sync support for multitransport.
+    pub fn multitransport_soft_sync(&self) -> bool {
+        self.activation_factory.multitransport_soft_sync()
+    }
 }
 
 #[derive(Default, Debug)]
@@ -317,6 +348,8 @@ pub struct ClientConnector {
     pub static_channels: StaticChannelSet,
     /// MCS message channel ID assigned by the server, once negotiated.
     pub message_channel_id: Option<u16>,
+    cluster_data: Option<gcc::ClientClusterData>,
+    load_balance_info: Option<String>,
     /// X.224 negotiation flags supplied by the server.
     response_flags: nego::ResponseFlags,
     /// Multitransport flags the server advertised in its GCC
@@ -351,6 +384,8 @@ impl ClientConnector {
             client_addr,
             static_channels: StaticChannelSet::new(),
             message_channel_id: None,
+            cluster_data: None,
+            load_balance_info: None,
             response_flags: nego::ResponseFlags::empty(),
             server_multitransport_flags: None,
             auto_reconnect_cookie: None,
@@ -375,6 +410,20 @@ impl ClientConnector {
     #[must_use]
     pub fn with_auto_reconnect_cookie(mut self, cookie: ServerAutoReconnect) -> Self {
         self.auto_reconnect_cookie = Some(cookie);
+        self
+    }
+
+    /// Add GCC Client Cluster Data to advertise or request server-session redirection.
+    #[must_use]
+    pub fn with_cluster_data(mut self, cluster_data: gcc::ClientClusterData) -> Self {
+        self.cluster_data = Some(cluster_data);
+        self
+    }
+
+    /// Set opaque load-balancing data for the initial X.224 Connection Request.
+    #[must_use]
+    pub fn with_load_balance_info(mut self, load_balance_info: String) -> Self {
+        self.load_balance_info = Some(load_balance_info);
         self
     }
 
@@ -434,12 +483,16 @@ impl ClientConnector {
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
         let connection_request = nego::ConnectionRequest {
-            nego_data: self.config.request_data.clone().or_else(|| {
-                self.config
-                    .credentials
-                    .username()
-                    .map(|username| nego::NegoRequestData::cookie(username.to_owned()))
-            }),
+            nego_data: if self.load_balance_info.is_none() {
+                self.config.request_data.clone().or_else(|| {
+                    self.config
+                        .credentials
+                        .username()
+                        .map(|username| nego::NegoRequestData::cookie(username.to_owned()))
+                })
+            } else {
+                None
+            },
             flags: nego::RequestFlags::empty(),
             protocol: security_protocol,
             correlation_info: None,
@@ -447,7 +500,16 @@ impl ClientConnector {
 
         debug!(message = ?connection_request, "Send");
 
-        let written = ironrdp_core::encode_buf(&X224(connection_request), output).map_err(ConnectorError::encode)?;
+        let written = if let Some(load_balance_info) = &self.load_balance_info {
+            let request = nego::ConnectionRequestWithOpaqueRoutingToken {
+                request: connection_request,
+                routing_token: nego::OpaqueRoutingToken(load_balance_info.clone()),
+            };
+            ironrdp_core::encode_buf(&X224(request), output)
+        } else {
+            ironrdp_core::encode_buf(&X224(connection_request), output)
+        }
+        .map_err(ConnectorError::encode)?;
         self.state = ClientConnectorState::ConnectionInitiationWaitConfirm {
             requested_protocol: security_protocol,
         };
@@ -615,6 +677,16 @@ impl ClientConnector {
         }
     }
 
+    /// Returns whether both peers advertised Soft-Sync for the pending request.
+    ///
+    /// `None` means no multitransport request is pending.
+    pub fn multitransport_soft_sync_negotiated(&self) -> Option<bool> {
+        match &self.state {
+            ClientConnectorState::MultitransportPending { soft_sync, .. } => Some(*soft_sync),
+            _ => None,
+        }
+    }
+
     /// Report the outcome of the multitransport request currently surfaced by
     /// [`multitransport_request()`](Self::multitransport_request).
     ///
@@ -679,27 +751,26 @@ impl ClientConnector {
             return Ok(None);
         };
 
-        match (*soft_sync, result) {
+        if !result.response_required(*soft_sync) {
+            return Ok(None);
+        }
+
+        match *soft_sync {
             // Soft-Sync obliges a response either way, and presupposes the
             // message channel. Falling back to the I/O channel would put the
             // response somewhere the server is not reading, so its absence is an
             // error rather than a reason to improvise.
-            (true, _) => message_channel_id
+            true => message_channel_id
                 .ok_or_else(|| {
                     general_err!("Soft-Sync was negotiated but the server never offered an MCS message channel")
                 })
                 .map(Some),
-            // `S_OK` is the one value 2.2.15.2 forbids here, so success and only
-            // success is withheld. The outcome is still consumed and the
-            // handshake proceeds, so a caller that established the transport does
-            // not have to know which mode is in play.
-            (false, MultitransportResult::Success) => Ok(None),
             // A failure is still reported: 3.2.5.15.1 asks for it whenever the
             // client could not initiate the channel, with no Soft-Sync condition.
             // It is a SHOULD, so a missing message channel means staying silent
             // rather than failing a connection over an optional report. In
             // practice one exists, since 2.2.15.1 puts the request on it.
-            (false, MultitransportResult::Failure(_)) => Ok(*message_channel_id),
+            false => Ok(*message_channel_id),
         }
     }
 
@@ -725,7 +796,7 @@ impl ClientConnector {
             message_channel_id,
             request,
             requests_seen,
-            ..
+            soft_sync,
         } = &self.state
         else {
             return Err(reason_err!(
@@ -733,8 +804,13 @@ impl ClientConnector {
                 "{caller} called outside MultitransportPending state",
             ));
         };
-        let (io_channel_id, user_channel_id, message_channel_id, requests_seen) =
-            (*io_channel_id, *user_channel_id, *message_channel_id, *requests_seen);
+        let (io_channel_id, user_channel_id, message_channel_id, requests_seen, soft_sync) = (
+            *io_channel_id,
+            *user_channel_id,
+            *message_channel_id,
+            *requests_seen,
+            *soft_sync,
+        );
         let request_id = request.request_id;
 
         let response_channel = self.multitransport_response_channel(&result)?;
@@ -744,10 +820,9 @@ impl ClientConnector {
         // Soft-Sync. Either way the outcome is consumed and the handshake
         // proceeds.
         let total_written = if let Some(response_channel) = response_channel {
-            let response = match result {
-                MultitransportResult::Success => rdp::multitransport::MultitransportResponsePdu::success(request_id),
-                MultitransportResult::Failure(hr) => multitransport_response(request_id, hr),
-            };
+            let response = result
+                .response_pdu(request_id, soft_sync)
+                .ok_or_else(|| general_err!("multitransport response channel selected without a required response"))?;
 
             encode_send_data_request(user_channel_id, response_channel, &response, output)?
         } else {
@@ -1099,6 +1174,7 @@ impl Sequence for ClientConnector {
 
                 let client_gcc_blocks = create_gcc_blocks(
                     &self.config,
+                    self.cluster_data.as_ref(),
                     selected_protocol,
                     self.response_flags
                         .contains(nego::ResponseFlags::EXTENDED_CLIENT_DATA_SUPPORTED),
@@ -1524,7 +1600,8 @@ impl Sequence for ClientConnector {
                                         self.config.clone(),
                                         connection_activation.io_channel_id(),
                                         connection_activation.user_channel_id(),
-                                    ),
+                                    )
+                                    .with_multitransport_soft_sync(self.soft_sync_negotiated()),
                                     compression_type: self.config.compression_type,
                                 },
                             }
@@ -1569,6 +1646,7 @@ pub fn encode_send_data_request<T: Encode>(
 #[expect(single_use_lifetimes)] // anonymous lifetimes in `impl Trait` are unstable
 fn create_gcc_blocks<'a>(
     config: &Config,
+    cluster_data: Option<&gcc::ClientClusterData>,
     selected_protocol: nego::SecurityProtocol,
     extended_client_data_supported: bool,
     static_channels: impl Iterator<Item = &'a StaticVirtualChannel>,
@@ -1643,6 +1721,10 @@ fn create_gcc_blocks<'a>(
                         early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU;
                     }
 
+                    if config.support_dyn_vc_gfx_protocol {
+                        early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
+                    }
+
                     Some(early_capability_flags)
                 },
                 dig_product_id: Some(config.dig_product_id.clone()),
@@ -1672,8 +1754,7 @@ fn create_gcc_blocks<'a>(
         } else {
             Some(ClientNetworkData { channels })
         },
-        // TODO(#139): support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
-        cluster: None,
+        cluster: cluster_data.cloned(),
         monitor: extended_client_data_supported
             .then(|| config.monitor_layout.clone())
             .flatten(),
@@ -1852,6 +1933,7 @@ mod tests {
             enable_server_pointer: false,
             pointer_software_rendering: false,
             multitransport_flags: None,
+            support_dyn_vc_gfx_protocol: false,
         };
 
         let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
@@ -1907,6 +1989,7 @@ mod tests {
             enable_server_pointer: false,
             pointer_software_rendering: false,
             multitransport_flags: None,
+            support_dyn_vc_gfx_protocol: false,
         };
 
         let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None).client_info;
@@ -1971,10 +2054,17 @@ mod tests {
             enable_server_pointer: false,
             pointer_software_rendering: false,
             multitransport_flags: None,
+            support_dyn_vc_gfx_protocol: false,
         };
 
-        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), true, core::iter::empty())
-            .expect("valid GCC Client Monitor Data");
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC Client Monitor Data");
 
         assert_eq!(blocks.monitor, config.monitor_layout);
         assert!(
@@ -1987,8 +2077,14 @@ mod tests {
         );
 
         config.monitor_layout = None;
-        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), true, core::iter::empty())
-            .expect("valid GCC Client Monitor Data");
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC Client Monitor Data");
 
         assert!(blocks.monitor.is_none());
         assert!(
@@ -2000,8 +2096,14 @@ mod tests {
                 .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
         );
 
-        let blocks = create_gcc_blocks(&config, nego::SecurityProtocol::empty(), false, core::iter::empty())
-            .expect("valid GCC Client Monitor Data");
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            false,
+            core::iter::empty(),
+        )
+        .expect("valid GCC Client Monitor Data");
 
         assert!(blocks.monitor.is_none());
         assert!(blocks.message_channel.is_none());
@@ -2014,5 +2116,20 @@ mod tests {
                 .expect("early capability flags are present")
                 .contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU)
         );
+
+        let cluster_data = gcc::ClientClusterData {
+            flags: gcc::RedirectionFlags::REDIRECTION_SUPPORTED | gcc::RedirectionFlags::REDIRECTED_SESSION_FIELD_VALID,
+            redirection_version: gcc::RedirectionVersion::V6,
+            redirected_session_id: 0,
+        };
+        let blocks = create_gcc_blocks(
+            &config,
+            Some(&cluster_data),
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC Client Cluster Data");
+        assert_eq!(blocks.cluster, Some(cluster_data));
     }
 }

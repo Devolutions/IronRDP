@@ -13,8 +13,10 @@ use pdu::DrdynvcDataPdu;
 // Re-export ironrdp_pdu crate for convenience
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu;
-use ironrdp_core::{AsAny, Encode, EncodeResult, assert_obj_safe, cast_length, encode_vec, other_err};
-use ironrdp_pdu::PduResult;
+use ironrdp_core::{
+    AsAny, Decode as _, Encode, EncodeResult, ReadCursor, assert_obj_safe, cast_length, encode_vec, other_err,
+};
+use ironrdp_pdu::{PduResult, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::SvcMessage;
 
 mod complete_data;
@@ -33,6 +35,59 @@ pub mod pdu;
 /// (being split into multiple of such PDUs if necessary).
 pub trait DvcEncode: Encode + Send {}
 pub type DvcMessage = Box<dyn DvcEncode>;
+
+/// A batch of outgoing DRDYNVC data messages, all addressed to the same dynamic channel.
+///
+/// Carrying the channel ID alongside the messages lets a caller route the batch onto the
+/// multitransport tunnel (or the main connection) selected for that channel by Soft-Sync,
+/// without re-parsing the encoded messages.
+#[derive(Debug)]
+pub struct DvcMessageBatch {
+    channel_id: DynamicChannelId,
+    messages: Vec<SvcMessage>,
+}
+
+impl DvcMessageBatch {
+    /// Creates a batch, trusting the caller that every message already carries `channel_id`.
+    ///
+    /// Crate-private: callers outside this crate cannot vouch for that invariant and must go
+    /// through [`Self::try_new`] instead, which verifies it.
+    pub(crate) fn new(channel_id: DynamicChannelId, messages: Vec<SvcMessage>) -> Self {
+        Self { channel_id, messages }
+    }
+
+    /// Creates a batch after verifying that every message is DVC data addressed to `channel_id`.
+    ///
+    /// Use this for messages obtained from outside this crate, where the channel ID has not
+    /// already been established by construction (e.g. [`Self::new`]).
+    pub fn try_new(channel_id: DynamicChannelId, messages: Vec<SvcMessage>) -> PduResult<Self> {
+        for message in &messages {
+            let encoded = message.encode_unframed_pdu().map_err(|error| encode_err!(error))?;
+            let pdu =
+                pdu::DrdynvcClientPdu::decode(&mut ReadCursor::new(&encoded)).map_err(|error| decode_err!(error))?;
+            match pdu {
+                pdu::DrdynvcClientPdu::Data(data) if data.channel_id() == channel_id => {}
+                pdu::DrdynvcClientPdu::Data(_) => {
+                    return Err(pdu_other_err!("DVC message channel ID does not match its batch"));
+                }
+                _ => return Err(pdu_other_err!("DVC message batch contains a non-data PDU")),
+            }
+        }
+        Ok(Self::new(channel_id, messages))
+    }
+
+    pub fn channel_id(&self) -> DynamicChannelId {
+        self.channel_id
+    }
+
+    pub fn messages(&self) -> &[SvcMessage] {
+        &self.messages
+    }
+
+    pub fn into_messages(self) -> Vec<SvcMessage> {
+        self.messages
+    }
+}
 
 /// A type that is a Dynamic Virtual Channel (DVC)
 ///

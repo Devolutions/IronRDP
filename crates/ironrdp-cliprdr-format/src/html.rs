@@ -40,6 +40,164 @@ impl From<core::num::ParseIntError> for HtmlError {
     }
 }
 
+struct CfHtml<'a> {
+    fragment: &'a str,
+    payload_len: usize,
+}
+
+#[derive(Default)]
+struct CfHtmlHeaders<'a> {
+    version: Option<&'a str>,
+    start_html: Option<i64>,
+    end_html: Option<i64>,
+    start_fragment: Option<i64>,
+    end_fragment: Option<i64>,
+    start_selection: Option<i64>,
+    end_selection: Option<i64>,
+}
+
+impl CfHtmlHeaders<'_> {
+    fn has_required_fields(&self) -> bool {
+        self.version.is_some()
+            && self.start_html.is_some()
+            && self.end_html.is_some()
+            && self.start_fragment.is_some()
+            && self.end_fragment.is_some()
+    }
+}
+
+fn parse_cf_html(input: &[u8]) -> Result<CfHtml<'_>, HtmlError> {
+    const EOL_CONTROL_CHARS: &[u8] = b"\r\n";
+    const START_FRAGMENT_MARKER: &[u8] = b"<!--StartFragment-->";
+    const END_FRAGMENT_MARKER: &[u8] = b"<!--EndFragment-->";
+
+    let mut headers = CfHtmlHeaders::default();
+    let mut header_len = 0;
+    while !headers.has_required_fields() {
+        header_len = parse_header_line(input, header_len, &mut headers)?;
+    }
+
+    if !matches!(headers.version, Some("0.9" | "1.0")) {
+        return Err(HtmlError::InvalidFormat);
+    }
+
+    let start_fragment = positive_offset(headers.start_fragment)?;
+    let end_fragment = positive_offset(headers.end_fragment)?;
+    if !(header_len <= start_fragment && start_fragment < end_fragment && end_fragment <= input.len()) {
+        return Err(HtmlError::InvalidFormat);
+    }
+
+    let marker_start = start_fragment
+        .checked_sub(START_FRAGMENT_MARKER.len())
+        .ok_or(HtmlError::InvalidFormat)?;
+    let header_boundary = match headers.start_html {
+        Some(-1) => marker_start,
+        Some(start) => usize::try_from(start).map_err(|_| HtmlError::InvalidConversion)?,
+        None => return Err(HtmlError::InvalidFormat),
+    };
+    while header_len < header_boundary {
+        header_len = parse_header_line(input, header_len, &mut headers)?;
+    }
+    if header_len != header_boundary {
+        return Err(HtmlError::InvalidFormat);
+    }
+
+    if input.get(marker_start..start_fragment) != Some(START_FRAGMENT_MARKER) {
+        return Err(HtmlError::InvalidFormat);
+    }
+    let marker_end = end_fragment
+        .checked_add(END_FRAGMENT_MARKER.len())
+        .ok_or(HtmlError::InvalidFormat)?;
+    if input.get(end_fragment..marker_end) != Some(END_FRAGMENT_MARKER) {
+        return Err(HtmlError::InvalidFormat);
+    }
+
+    let payload_len = match (headers.start_html, headers.end_html) {
+        (Some(-1), Some(-1)) => marker_end,
+        (Some(start), Some(end)) if 0 <= start && 0 <= end => {
+            let start = usize::try_from(start).map_err(|_| HtmlError::InvalidConversion)?;
+            let end = usize::try_from(end).map_err(|_| HtmlError::InvalidConversion)?;
+            if !(header_len == start && start <= marker_start && marker_end <= end && end <= input.len()) {
+                return Err(HtmlError::InvalidFormat);
+            }
+            end
+        }
+        _ => return Err(HtmlError::InvalidFormat),
+    };
+
+    match (headers.start_selection, headers.end_selection) {
+        (None, None) => {}
+        (Some(start), Some(end)) => {
+            let start = usize::try_from(start).map_err(|_| HtmlError::InvalidConversion)?;
+            let end = usize::try_from(end).map_err(|_| HtmlError::InvalidConversion)?;
+            if !(start_fragment <= start && start <= end && end <= end_fragment) {
+                return Err(HtmlError::InvalidFormat);
+            }
+        }
+        _ => return Err(HtmlError::InvalidFormat),
+    }
+
+    core::str::from_utf8(&input[..payload_len])?;
+    let fragment = core::str::from_utf8(&input[start_fragment..end_fragment])?;
+
+    fn parse_header_line<'a>(
+        input: &'a [u8],
+        offset: usize,
+        headers: &mut CfHtmlHeaders<'a>,
+    ) -> Result<usize, HtmlError> {
+        let rest = input.get(offset..).ok_or(HtmlError::InvalidFormat)?;
+        let eol_pos = rest
+            .iter()
+            .position(|byte| EOL_CONTROL_CHARS.contains(byte))
+            .ok_or(HtmlError::InvalidFormat)?;
+        let line = core::str::from_utf8(&rest[..eol_pos])?;
+        let (key, value) = line.split_once(':').ok_or(HtmlError::InvalidFormat)?;
+        match key {
+            "Version" if headers.version.replace(value).is_some() => return Err(HtmlError::InvalidFormat),
+            "StartHTML" if headers.start_html.replace(parse_offset(value)?).is_some() => {
+                return Err(HtmlError::InvalidFormat);
+            }
+            "EndHTML" if headers.end_html.replace(parse_offset(value)?).is_some() => {
+                return Err(HtmlError::InvalidFormat);
+            }
+            "StartFragment" if headers.start_fragment.replace(parse_offset(value)?).is_some() => {
+                return Err(HtmlError::InvalidFormat);
+            }
+            "EndFragment" if headers.end_fragment.replace(parse_offset(value)?).is_some() => {
+                return Err(HtmlError::InvalidFormat);
+            }
+            "StartSelection" if headers.start_selection.replace(parse_offset(value)?).is_some() => {
+                return Err(HtmlError::InvalidFormat);
+            }
+            "EndSelection" if headers.end_selection.replace(parse_offset(value)?).is_some() => {
+                return Err(HtmlError::InvalidFormat);
+            }
+            _ => {}
+        }
+
+        let mut next = offset.checked_add(eol_pos).ok_or(HtmlError::InvalidConversion)?;
+        while matches!(input.get(next), Some(b'\n' | b'\r')) {
+            next = next.checked_add(1).ok_or(HtmlError::InvalidConversion)?;
+        }
+        Ok(next)
+    }
+
+    fn parse_offset(value: &str) -> Result<i64, HtmlError> {
+        Ok(value.trim().parse()?)
+    }
+
+    fn positive_offset(value: Option<i64>) -> Result<usize, HtmlError> {
+        usize::try_from(value.ok_or(HtmlError::InvalidFormat)?).map_err(|_| HtmlError::InvalidConversion)
+    }
+
+    Ok(CfHtml { fragment, payload_len })
+}
+
+/// Validates a `CF_HTML` payload and returns its logical byte length.
+pub fn validate_cf_html(input: &[u8]) -> Result<usize, HtmlError> {
+    Ok(parse_cf_html(input)?.payload_len)
+}
+
 /// Converts `CF_HTML` format to plain HTML text.
 ///
 /// Note that the `CF_HTML` format is using UTF-8, and the input is expected to be valid UTF-8.
@@ -50,70 +208,7 @@ impl From<core::num::ParseIntError> for HtmlError {
 /// Because of that, this function takes the input as a byte slice and finds the end of the payload itself.
 /// This is expected to be more convenient at the callsite.
 pub fn cf_html_to_plain_html(input: &[u8]) -> Result<&str, HtmlError> {
-    const EOL_CONTROL_CHARS: &[u8] = b"\r\n";
-
-    let mut start_fragment = None;
-    let mut end_fragment = None;
-
-    // We’ll move the lower bound of this slice until all headers are read.
-    let mut cursor = input;
-
-    loop {
-        let line = {
-            // We use a custom logic for splitting lines, instead of something like `str::lines`.
-            // That’s because `str::lines` does not split at carriage return (`\r`) not followed by line feed (`\n`).
-            // In `CF_HTML` format, the line ending could be represented using `\r` alone.
-            let eol_pos = cursor
-                .iter()
-                .position(|byte| EOL_CONTROL_CHARS.contains(byte))
-                .ok_or(HtmlError::InvalidFormat)?;
-            core::str::from_utf8(&cursor[..eol_pos])?
-        };
-
-        match line.split_once(':') {
-            Some((key, value)) => match key {
-                "StartFragment" => {
-                    start_fragment = Some(header_value_to_u32(value)?);
-                }
-                "EndFragment" => {
-                    end_fragment = Some(header_value_to_u32(value)?);
-                }
-                _ => {
-                    // We are not interested in other headers.
-                }
-            },
-            None => {
-                // At this point, we reached the end of the headers.
-                if let (Some(start), Some(end)) = (start_fragment, end_fragment) {
-                    let start = usize::try_from(start).map_err(|_| HtmlError::InvalidConversion)?;
-                    let end = usize::try_from(end).map_err(|_| HtmlError::InvalidConversion)?;
-
-                    // Ensure start and end values are properly bounded.
-                    if !(start < end && end < input.len()) {
-                        return Err(HtmlError::InvalidFormat);
-                    }
-
-                    // Extract the fragment from the original buffer.
-                    let fragment = core::str::from_utf8(&input[start..end])?;
-
-                    return Ok(fragment);
-                } else {
-                    // If required headers were not found, the input is considered invalid.
-                    return Err(HtmlError::InvalidFormat);
-                }
-            }
-        };
-
-        // Skip EOL control characters and prepare for next line.
-        cursor = &cursor[line.len()..];
-        while let Some(b'\n' | b'\r') = cursor.first() {
-            cursor = &cursor[1..];
-        }
-    }
-
-    fn header_value_to_u32(value: &str) -> Result<u32, core::num::ParseIntError> {
-        value.trim_start_matches('0').parse::<u32>()
-    }
+    Ok(parse_cf_html(input)?.fragment)
 }
 
 /// Converts plain HTML text to `CF_HTML` format.

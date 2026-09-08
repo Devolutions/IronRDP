@@ -29,15 +29,4 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9" } # public
 ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.7" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.8" } # public
 tracing = { version = "0.1", features = ["log"] }
-windows = { version = "0.62", features = [
-    "Wdk_Foundation",
-    "Wdk_Storage_FileSystem",
-    "Wdk_System_SystemServices",
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Security_Authorization",
-    "Win32_Security_Credentials",
-    "Win32_Storage_FileSystem",
-    "Win32_System_IO",
-    "Win32_System_Threading",
-] }
+windows = { version = "0.62", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Wdk_System_SystemServices", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_Printing", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading"] }

@@ -2,7 +2,6 @@ use core::net::SocketAddr;
 use core::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::Arc;
 
-use anyhow::Result;
 use ironrdp_pdu::codecs::rfx::Quant;
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, EntropyBits, server_codecs_capabilities};
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
@@ -16,9 +15,10 @@ use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{
     ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity, StaticChannelFactory,
 };
+use crate::error::ServerResult;
 #[cfg(feature = "usb")]
 use crate::urbdrc::DeviceFactory;
-use crate::{DisplayUpdate, RdpServerDisplayUpdates, RdpeiServerFactory, SoundServerFactory};
+use crate::{DisplayUpdate, RdpServerDisplayUpdates, RdpdrServerFactory, RdpeiServerFactory, SoundServerFactory};
 
 pub struct WantsAddr {}
 pub struct WantsSecurity {
@@ -44,6 +44,7 @@ pub struct BuilderDone {
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
+    rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     #[cfg(feature = "egfx")]
@@ -53,8 +54,10 @@ pub struct BuilderDone {
     display_suppressed: Option<Arc<AtomicBool>>,
     autodetect_rtt: Option<Arc<AtomicU32>>,
     autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
+    autodetect_bandwidth: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
+    preempt_existing_session: bool,
     remotefx_quant: Quant,
     remotefx_entropy_coder: Option<EntropyBits>,
 }
@@ -151,6 +154,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 sound_factory: None,
                 cliprdr_factory: None,
                 rdpei_factory: None,
+                rdpdr_factory: None,
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
@@ -162,7 +166,9 @@ impl RdpServerBuilder<WantsDisplay> {
                 display_suppressed: None,
                 autodetect_rtt: None,
                 autodetect_baseline_rtt: None,
+                autodetect_bandwidth: None,
                 honor_client_desktop_size: None,
+                preempt_existing_session: false,
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
@@ -181,6 +187,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 sound_factory: None,
                 cliprdr_factory: None,
                 rdpei_factory: None,
+                rdpdr_factory: None,
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
@@ -192,7 +199,9 @@ impl RdpServerBuilder<WantsDisplay> {
                 display_suppressed: None,
                 autodetect_rtt: None,
                 autodetect_baseline_rtt: None,
+                autodetect_bandwidth: None,
                 honor_client_desktop_size: None,
+                preempt_existing_session: false,
                 auto_reconnect_cookie: None,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
@@ -221,6 +230,11 @@ impl RdpServerBuilder<BuilderDone> {
     /// Configure MS-RDPEI (multitouch and pen input over a dynamic channel).
     pub fn with_rdpei_factory(mut self, rdpei_factory: Option<Box<dyn RdpeiServerFactory>>) -> Self {
         self.state.rdpei_factory = rdpei_factory;
+        self
+    }
+
+    pub fn with_rdpdr_factory(mut self, rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>) -> Self {
+        self.state.rdpdr_factory = rdpdr_factory;
         self
     }
 
@@ -319,6 +333,30 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// When `true`, a new connection accepted while [`RdpServer::run`] is
+    /// already serving another one takes over: once the newcomer has
+    /// **completed authentication**, the existing session is dropped (after
+    /// being told why) and the newcomer is served in its place, instead of
+    /// waiting in the TCP listen backlog until the current session ends.
+    ///
+    /// Off by default: a second connection queues behind the live one, which
+    /// is `ironrdp-server`'s pre-existing behaviour, so an embedder that
+    /// already relies on it is not surprised by upgrading. Turn this on for a
+    /// server backing a single specific session (e.g. one that mirrors one
+    /// desktop), where a newly connecting client should replace a stale one
+    /// rather than hang behind it.
+    ///
+    /// **The strength of that bar depends on the security mode.** Only
+    /// [`RdpServerSecurity::Hybrid`] authenticates the client before a
+    /// candidate could evict anything; under `Tls` or `None` any peer that can
+    /// complete the handshake can take the session over, and a warning is
+    /// logged at startup. See
+    /// [`RdpServerOptions::preempt_existing_session`] for the per-mode table.
+    pub fn with_preempt_existing_session(mut self, preempt: bool) -> Self {
+        self.state.preempt_existing_session = preempt;
+        self
+    }
+
     /// Set a credential validator for TLS-mode connections.
     ///
     /// When set, credentials received from the client during
@@ -360,6 +398,18 @@ impl RdpServerBuilder<BuilderDone> {
     /// [`RdpServer::enable_autodetect`].
     pub fn with_autodetect_baseline_rtt_handle(mut self, handle: Arc<AtomicU32>) -> Self {
         self.state.autodetect_baseline_rtt = Some(handle);
+        self
+    }
+
+    /// Inject a shared NetworkAutoDetect bandwidth handle (kilobits per
+    /// second, `u32::MAX` until the first measurement completes). The server
+    /// writes the latest measured bandwidth to the same instance the backend
+    /// reads. When not called, the server allocates its own (still readable
+    /// via [`RdpServer::autodetect_bandwidth_handle`]). The value stays
+    /// `u32::MAX` unless auto-detect is enabled via
+    /// [`RdpServer::enable_autodetect`].
+    pub fn with_autodetect_bandwidth_handle(mut self, handle: Arc<AtomicU32>) -> Self {
+        self.state.autodetect_bandwidth = Some(handle);
         self
     }
 
@@ -417,6 +467,7 @@ impl RdpServerBuilder<BuilderDone> {
                 codecs: self.state.codecs,
                 max_request_size: self.state.max_request_size,
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
+                preempt_existing_session: self.state.preempt_existing_session,
                 remotefx_quant: self.state.remotefx_quant,
                 remotefx_entropy_coder: self.state.remotefx_entropy_coder,
             },
@@ -426,6 +477,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.sound_factory,
             self.state.cliprdr_factory,
             self.state.rdpei_factory,
+            self.state.rdpdr_factory,
             self.state.connection_handler,
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,
@@ -434,6 +486,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.usb_factory,
             self.state.autodetect_rtt,
             self.state.autodetect_baseline_rtt,
+            self.state.autodetect_bandwidth,
         );
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);
@@ -452,7 +505,7 @@ struct NoopDisplayUpdates;
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for NoopDisplayUpdates {
-    async fn next_update(&mut self) -> Result<Option<DisplayUpdate>> {
+    async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
         let () = core::future::pending().await;
         unreachable!()
     }
@@ -466,7 +519,7 @@ impl RdpServerDisplay for NoopDisplay {
         DesktopSize { width: 0, height: 0 }
     }
 
-    async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(NoopDisplayUpdates {}))
     }
 }
