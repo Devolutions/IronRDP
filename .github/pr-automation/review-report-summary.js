@@ -2,7 +2,8 @@
 
 const { REVIEWER_ORDER } = require("./routing");
 
-const MAX_STAGES = REVIEWER_ORDER.length + 4;
+const MAX_CHECK_STAGES = REVIEWER_ORDER.length + 4;
+const MAX_WORKFLOW_STAGES = 64;
 const MAX_TEXT_LENGTH = 300;
 
 function escapeMarkdown(value) {
@@ -45,22 +46,12 @@ function failureAttempts(stages) {
   });
 }
 
-function renderReviewReport({ report, outcome, detail, summaryUrl }) {
-  const stages = report.stages.slice(0, MAX_STAGES);
+function diagnostics(report, outcome, maxStages) {
+  const stages = report.stages.slice(0, maxStages);
   const omittedStages = report.stages.length - stages.length;
   const attempts = failureAttempts(stages);
   if (omittedStages > 0) attempts.push(["additional stages", "unknown", `${omittedStages} omitted to bound output`]);
   const metrics = report.metrics;
-  const heading = {
-    complete: "Automated review complete",
-    recovered: "Automated review recovered",
-    unavailable: "Automated review unavailable",
-  }[outcome];
-  const outcomeText = outcome === "complete"
-    ? "Validated automated review is bound to this commit."
-    : outcome === "recovered"
-      ? "Validated automated review was produced after stage recovery."
-      : `Automated review is unavailable: ${text(detail || "review unavailable")}. Maintainer review is required.`;
   const failedAttempts = attempts.length === 0
     ? "No stage failure was reported."
     : table(["Stage", "Attempt", "Reason"], attempts);
@@ -71,15 +62,20 @@ function renderReviewReport({ report, outcome, detail, summaryUrl }) {
     ["Output repairs", metric(metrics.output_repairs)],
     ["Stage retries", metric(metrics.stage_retries)],
   ]);
+  const stageRows = stages.map((stage) => [
+    stage.id, stage.status, stage.attempts, tokens(stage.metrics.tokens),
+    metric(stage.metrics.elapsed_ms), metric(stage.metrics.request_retries),
+    metric(stage.metrics.output_repairs),
+  ]);
+  if (omittedStages > 0) {
+    stageRows.push(["additional stages", "unknown", "unknown", "unknown", "unknown", "unknown",
+      `${omittedStages} omitted to bound output`]);
+  }
   const stageMetrics = table(
     ["Stage", "Status", "Attempts", "Tokens", "Elapsed (ms)", "Request retries", "Output repairs"],
-    stages.map((stage) => [
-      stage.id, stage.status, stage.attempts, tokens(stage.metrics.tokens),
-      metric(stage.metrics.elapsed_ms), metric(stage.metrics.request_retries),
-      metric(stage.metrics.output_repairs),
-    ]),
+    stageRows,
   );
-  const diagnostics = [
+  return [
     `Review outcome: **${outcome}**.`,
     "",
     "### Failed stage attempts",
@@ -91,10 +87,25 @@ function renderReviewReport({ report, outcome, detail, summaryUrl }) {
     "### Per-stage metrics",
     stageMetrics,
   ].join("\n");
+}
+
+function renderReviewReport({ report, outcome, detail, summaryUrl }) {
+  const checkDiagnostics = diagnostics(report, outcome, MAX_CHECK_STAGES);
+  const workflowDiagnostics = diagnostics(report, outcome, MAX_WORKFLOW_STAGES);
+  const heading = {
+    complete: "Automated review complete",
+    recovered: "Automated review recovered",
+    unavailable: "Automated review unavailable",
+  }[outcome];
+  const outcomeText = outcome === "complete"
+    ? "Validated automated review is bound to this commit."
+    : outcome === "recovered"
+      ? "Validated automated review was produced after stage recovery."
+      : `Automated review is unavailable: ${text(detail || "review unavailable")}. Maintainer review is required.`;
   return {
     title: heading,
-    checkSummary: `${outcomeText}\n\n${diagnostics}\n\n[View the workflow summary](${summaryUrl})`,
-    workflowSummary: `# Automated review\n\n${diagnostics}`,
+    checkSummary: `${outcomeText}\n\n${checkDiagnostics}\n\n[View the workflow summary](${summaryUrl})`,
+    workflowSummary: `# Automated review\n\n${workflowDiagnostics}`,
   };
 }
 

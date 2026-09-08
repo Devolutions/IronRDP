@@ -352,6 +352,9 @@ test("resolve review state renders bounded recovery diagnostics in the check and
     summaryUrl: "https://github.example/actions/runs/123",
   });
   assert.ok(Buffer.byteLength(bounded.checkSummary) < 24 * 1024);
+  assert.match(bounded.checkSummary, /9 omitted to bound output/);
+  assert.doesNotMatch(bounded.checkSummary, /stage-15-/);
+  assert.match(bounded.workflowSummary, /stage-15-/);
 });
 
 test("review skip summary explains gate and quota failures", () => {
