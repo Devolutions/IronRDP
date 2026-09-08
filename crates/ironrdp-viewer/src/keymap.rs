@@ -17,8 +17,7 @@ pub(crate) fn is_modifier(key_code: KeyCode) -> bool {
 
 /// Translates portable physical key positions to RDP's PC/AT set-1 scancodes.
 ///
-/// `Pause` deliberately has no mapping because [MS-RDPBCGR] 2.2.8.1.2.2.1 requires
-/// four events, including `EXTENDED1`, while `Scancode` represents one ordinary event.
+/// `Pause` deliberately has no mapping because [MS-RDPBCGR] 2.2.8.1.2.2.1 requires four events, including `EXTENDED1`, while `Scancode` represents one ordinary event.
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/5073f4ed-1e93-45e1-b039-6e30c385867c
 pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
@@ -179,12 +178,25 @@ pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
     Some(Scancode::from_u8(scancode.0, scancode.1))
 }
 
+#[cfg(windows)]
+pub(crate) const fn requires_native_layout_mapping(key_code: KeyCode) -> bool {
+    matches!(key_code, KeyCode::Lang1 | KeyCode::Lang2)
+}
+
+#[cfg(windows)]
+pub(crate) fn map_native_layout_scancode(scancode: u32) -> Option<Scancode> {
+    let scancode = u16::try_from(scancode).ok()?;
+    Some(Scancode::from_u16(scancode))
+}
+
 #[cfg(test)]
 mod tests {
     use ironrdp::input::{Database, Operation};
     use ironrdp::pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
 
     use super::{is_modifier, map_key_code};
+    #[cfg(windows)]
+    use super::{map_native_layout_scancode, requires_native_layout_mapping};
     use winit::keyboard::KeyCode;
 
     #[test]
@@ -302,5 +314,29 @@ mod tests {
         assert!(!is_modifier(KeyCode::KeyA));
         assert_eq!(map_key_code(KeyCode::Pause), None);
         assert_eq!(map_key_code(KeyCode::F35), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn preserves_korean_language_key_mappings() {
+        let cases = [
+            (KeyCode::Lang1, (false, 0x72), 0xE0F2, (true, 0xF2)),
+            (KeyCode::Lang2, (false, 0x71), 0xE0F1, (true, 0xF1)),
+        ];
+
+        for (key_code, portable_mapping, korean_scancode, korean_mapping) in cases {
+            assert!(requires_native_layout_mapping(key_code));
+            assert_eq!(
+                map_key_code(key_code).map(|scancode| scancode.as_u8()),
+                Some(portable_mapping)
+            );
+            assert_eq!(
+                map_native_layout_scancode(korean_scancode).map(|scancode| scancode.as_u8()),
+                Some(korean_mapping)
+            );
+        }
+
+        assert!(!requires_native_layout_mapping(KeyCode::KeyA));
+        assert_eq!(map_native_layout_scancode(u32::from(u16::MAX) + 1), None);
     }
 }
