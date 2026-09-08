@@ -13,7 +13,6 @@
 // - A thrown `VALIDATOR_TERMINAL` error means a trusted input is stale or unavailable. Repair cannot
 //   fix that, so the stage fails instead of burning repair attempts.
 
-const crypto = require("node:crypto");
 const fs = require("node:fs");
 
 const { REVIEWER_ORDER } = require("./routing");
@@ -23,7 +22,6 @@ const { validateFinalReview } = require("./validate-final-review");
 
 const TERMINAL_CODE = "VALIDATOR_TERMINAL";
 const SHA = /^[0-9a-f]{40}$/;
-const DIGEST = /^[0-9a-f]{64}$/;
 const MAXIMUM_TRUSTED_BYTES = 8 * 1024 * 1024;
 
 function terminal(reason) {
@@ -44,7 +42,10 @@ function requireString(metadata, key, pattern) {
   return value;
 }
 
-function readTrustedJson(file, digest, label) {
+// The pipeline produces these files earlier in the same run, so they are authoritative by origin
+// and need no separate integrity check. What they still have to survive is being missing,
+// truncated, or replaced by something that is not a readable regular file.
+function readTrustedJson(file, label) {
   let raw;
   try {
     const metadata = fs.lstatSync(file);
@@ -55,9 +56,6 @@ function readTrustedJson(file, digest, label) {
   } catch {
     throw terminal(`${label} is unavailable`);
   }
-  if (crypto.createHash("sha256").update(raw).digest("hex") !== digest) {
-    throw terminal(`${label} does not match the expected digest`);
-  }
   try {
     return JSON.parse(raw.toString("utf8"));
   } catch {
@@ -67,8 +65,7 @@ function readTrustedJson(file, digest, label) {
 
 function loadValidationContext(metadata) {
   const file = requireString(metadata, "validation_context_file");
-  const digest = requireString(metadata, "validation_context_digest", DIGEST);
-  const context = readTrustedJson(file, digest, "the changed-file manifest");
+  const context = readTrustedJson(file, "the changed-file manifest");
   if (!Array.isArray(context?.changed_paths) || context.changed_paths.length === 0 ||
       context.changed_lines === null || typeof context.changed_lines !== "object") {
     throw terminal("the changed-file manifest is unusable");
@@ -202,7 +199,6 @@ function validateGeneral(review, { metadata, previousCandidate } = {}) {
   const context = loadValidationContext(metadata);
   const aggregate = readTrustedJson(
     requireString(metadata, "aggregate_file"),
-    requireString(metadata, "aggregate_digest", DIGEST),
     "the validated specialist findings",
   );
 

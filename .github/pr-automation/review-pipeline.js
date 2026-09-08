@@ -6,6 +6,7 @@ const {
   REVIEWER_ORDER: SPECIALIST_ORDER, normalizeReviewerIds, resolveReviewerRoute,
 } = require("./routing");
 const { SHA, exactKeys, invalid, normalizeText } = require("./validation");
+const { normalizeStageMetrics } = require("./review-report");
 
 function validateSpecialistRun(raw, {
   reviewer, expectedSha, changedPaths, changedLines, corpus, expectedCorpusSha, failureReason,
@@ -126,151 +127,67 @@ function buildSpecialistAggregate({
   };
 }
 
-// Every provider failure the runtime reports is either worth another attempt later or is settled.
-// Exhausted output repair is settled: the runtime already corrected inside the same conversation.
+// A transient provider failure is worth one more attempt after a delay. Everything else is
+// settled, including exhausted output repair: the runtime already corrected inside the same
+// conversation, so repeating the request cannot help.
 const RETRYABLE_CATEGORIES = new Set([
   "provider-timeout", "provider-connection", "provider-unavailable", "provider-transient",
 ]);
-
-const REUSE_RECORD_VERSION = 1;
 
 function isRetryableFailure(category) {
   return RETRYABLE_CATEGORIES.has(category);
 }
 
-function normalizeMetrics(metrics = {}) {
+// The runtime reports measurements in one canonical diagnostics object, freshly built per
+// invocation. A stage that cannot read it reports every measurement as unavailable, never as zero.
+function parseDiagnostics(raw) {
+  const parsed = (() => {
+    if (raw === null || raw === undefined || raw === "") return null;
+    if (typeof raw !== "string") return raw;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  })();
+  const source = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed
+    : {};
   const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
   return {
-    tokens: normalizeTokenUsage(metrics.tokens),
-    elapsed_ms: count(metrics.elapsed_ms),
-    request_retries: count(metrics.request_retries),
-    output_repairs: count(metrics.output_repairs),
-    stage_recoveries: count(metrics.stage_recoveries) ?? 0,
+    elapsed_ms: count(source.durationMs),
+    request_retries: count(source.requestRetryCount),
+    output_repairs: count(source.outputRepairCount),
+    tokens: normalizeStageMetrics({ tokens: source.tokenUsage }).tokens,
   };
 }
 
-// Providers report usage under several spellings, and the runtime marks whether every attempt was
-// accounted for. A stage whose usage is partial must never look like a complete measurement.
-function normalizeTokenUsage(tokens) {
-  if (tokens === null || typeof tokens !== "object" || Array.isArray(tokens)) return null;
-  const pick = (...keys) => {
-    for (const key of keys) {
-      const value = tokens[key];
-      if (Number.isSafeInteger(value) && value >= 0) return value;
-    }
-    return null;
-  };
-  const input = pick("inputTokens", "input", "input_tokens", "prompt_tokens");
-  const output = pick("outputTokens", "output", "output_tokens", "completion_tokens");
-  const total = pick("totalTokens", "total", "total_tokens");
-  if (input === null && output === null && total === null) return null;
+// Diagnostics are per invocation, so a retried stage spent both attempts. Summing keeps the cost
+// honest, and one unmeasured attempt must not silently disappear into the other's number.
+function mergeDiagnostics(first, second) {
+  if (!second) return first;
+  if (!first) return second;
+  const add = (left, right) => left === null || right === null ? null : left + right;
+  const tokens = (() => {
+    if (!first.tokens && !second.tokens) return null;
+    if (!first.tokens || !second.tokens) return { ...(first.tokens ?? second.tokens), complete: false };
+    return {
+      input: add(first.tokens.input, second.tokens.input),
+      output: add(first.tokens.output, second.tokens.output),
+      total: add(first.tokens.total, second.tokens.total),
+      complete: first.tokens.complete && second.tokens.complete,
+    };
+  })();
   return {
-    input,
-    output,
-    total: total ?? (input === null || output === null ? null : input + output),
-    complete: tokens.complete === true && input !== null && output !== null && total !== null,
+    elapsed_ms: add(first.elapsed_ms, second.elapsed_ms),
+    request_retries: add(first.request_retries, second.request_retries),
+    output_repairs: add(first.output_repairs, second.output_repairs),
+    tokens,
   };
-}
-
-function stageRecord({
-  id, status, required = false, reason = "", failureCategory = "", retryable = false,
-  reused = false, reusedFromRunId = null, reuseReason = "", provider = false, metrics = {},
-} = {}) {
-  return {
-    id,
-    status,
-    required: required === true,
-    provider: provider === true,
-    reason: normalizeText(reason, 300) || "",
-    failure_category: normalizeText(failureCategory, 60) || "",
-    retryable: status === "failed" && retryable === true,
-    reused: reused === true,
-    reused_from_run_id: reused === true ? reusedFromRunId : null,
-    // A discarded or missing cached result must be visible, never a silent rerun.
-    reuse_reason: normalizeText(reuseReason, 200) || "",
-    metrics: reused === true
-      ? { ...normalizeMetrics(metrics), tokens: null }
-      : normalizeMetrics(metrics),
-  };
-}
-
-function summarizeStages(stages) {
-  const totals = {
-    tokens: { input: 0, output: 0, total: 0 },
-    tokens_complete: true,
-    elapsed_ms: 0,
-    request_retries: 0,
-    output_repairs: 0,
-    stage_recoveries: 0,
-    reused_stages: 0,
-    failed_stages: 0,
-  };
-  for (const stage of stages) {
-    const metrics = normalizeMetrics(stage.metrics ?? {});
-    if (stage.reused) totals.reused_stages += 1;
-    if (stage.status === "failed") totals.failed_stages += 1;
-    if (metrics.tokens) {
-      totals.tokens.input += metrics.tokens.input ?? 0;
-      totals.tokens.output += metrics.tokens.output ?? 0;
-      totals.tokens.total += metrics.tokens.total ?? 0;
-      if (!metrics.tokens.complete) totals.tokens_complete = false;
-    } else if (stage.provider && !stage.reused && stage.status !== "skipped") {
-      // Reused work is known to cost nothing new, so it never makes the total incomplete.
-      totals.tokens_complete = false;
-    }
-    for (const key of ["elapsed_ms", "request_retries", "output_repairs", "stage_recoveries"]) {
-      if (metrics[key] !== null) totals[key] += metrics[key];
-    }
-  }
-  const failed = stages.filter((stage) => stage.status === "failed");
-  const published = stages.some((stage) => stage.id === "validate" && stage.status === "success");
-  return {
-    metrics: totals,
-    // Dependency-skipped stages are not failures, and an optional terminal failure never blocks a
-    // recovery that a required transient failure could still fix.
-    recoverable: !published && failed.some((stage) => stage.retryable) &&
-      !failed.some((stage) => stage.required && !stage.retryable),
-    failures: failed.map(({ id, reason, failure_category: category, required, retryable }) =>
-      ({ id, reason, failure_category: category, required, retryable })),
-  };
-}
-
-function reusableRecord({ stage, stageKey, runId, attemptId, output, metrics }) {
-  return {
-    v: REUSE_RECORD_VERSION,
-    stage,
-    stage_key: stageKey,
-    run_id: String(runId),
-    attempt_id: attemptId,
-    created_at: new Date().toISOString(),
-    output,
-    metrics: normalizeMetrics(metrics),
-  };
-}
-
-// A restored result is only a candidate. It still has to prove it belongs to this exact review, and
-// it is revalidated by the current rules before anything downstream may depend on it.
-function acceptReusableRecord(record, { stage, expectedStageKey } = {}) {
-  if (record === null || typeof record !== "object" || Array.isArray(record)) {
-    return { ok: false, reason: "cached result is unreadable" };
-  }
-  if (record.v !== REUSE_RECORD_VERSION) {
-    return { ok: false, reason: "cached result uses an unsupported record version" };
-  }
-  if (record.stage !== stage) {
-    return { ok: false, reason: "cached result belongs to a different stage" };
-  }
-  if (typeof record.stage_key !== "string" || record.stage_key !== expectedStageKey) {
-    return { ok: false, reason: "cached result does not match the current review inputs" };
-  }
-  if (typeof record.output !== "string" || record.output === "") {
-    return { ok: false, reason: "cached result carries no model output" };
-  }
-  return { ok: true, value: record };
 }
 
 module.exports = {
-  RETRYABLE_CATEGORIES, REUSE_RECORD_VERSION, SPECIALIST_ORDER,
-  acceptReusableRecord, buildSpecialistAggregate, failedRun, isRetryableFailure, normalizeMetrics,
-  resolveRequiredReviewers, reusableRecord, stageRecord, summarizeStages, validateSpecialistRun,
+  RETRYABLE_CATEGORIES, SPECIALIST_ORDER,
+  buildSpecialistAggregate, failedRun, isRetryableFailure, mergeDiagnostics, parseDiagnostics,
+  resolveRequiredReviewers, validateSpecialistRun,
 };

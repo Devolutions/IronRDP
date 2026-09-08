@@ -12,5 +12,7 @@
   ],
   "max_output_bytes": 65536,
   "max_turns": 30,
-  "max_tool_calls": 120
+  "max_tool_calls": 120,
+  "max_request_retries": 4,
+  "max_output_repair_attempts": 2
 }

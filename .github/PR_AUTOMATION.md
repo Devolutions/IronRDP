@@ -50,8 +50,8 @@ Only the validated general-review result can be published.
 Every reviewer invocation retries four provider requests after the initial attempt.
 
 `.github/pr-automation/agent-validator.js` is the trusted review validator the model runtime calls.
-The runtime validates JSON and the output schema, then hands the parsed candidate to this module together with bounded metadata naming the stage, the reviewer, the expected SHAs, and the digests of the trusted context files.
-The validator reads the changed-file manifest, the protocol corpus, and the specialist aggregate itself, and refuses any file whose digest does not match.
+The runtime validates JSON and the output schema, then hands the parsed candidate to this module together with bounded metadata naming the stage, the reviewer, the expected SHAs, and the trusted context files.
+The validator reads the changed-file manifest, the protocol corpus, and the specialist aggregate itself, from paths only the trusted workflow can write.
 
 The validator distinguishes two outcomes.
 A wrong head SHA, an unchanged path, a malformed line range, an unverifiable protocol citation, or a missing candidate disposition is correctable, so the runtime repairs the output inside the same conversation, at most twice.
@@ -60,33 +60,28 @@ Repair may correct a finding but may never drop one, and a stage fails when it c
 
 Repair happens inside one invocation, so the pipeline never restarts a reviewer to fix its output and keeps no checkpoints of its own.
 
-## Stage recovery and result reuse
+## Stage recovery
 
-A recovery attempt repeats only the stages that are missing or failed and restores everything that already succeeded.
-Given the previous attempt's `provenance` output as `prior-results`, the pipeline restores the pinned evidence and every completed stage result, revalidates them under the current rules, and reruns the rest.
+A transient provider failure costs one extra invocation of that stage, not a replay of the review.
 
-Reuse is content-addressed.
-A stage result is reusable only when the base and head commits, the exact evidence bytes, the reviewer policy, the pinned protocol corpus commit, and, for the general stage, the specialist aggregate it reviews are all identical.
-The reviewer policy digest covers the agent configurations, prompts, schemas, methodologies, validators, and the pipeline itself, so changing any of them invalidates cached results without invalidating them on every unrelated base-branch commit.
+A reviewer stage that fails transiently waits for `retry-delay-seconds` (120 by default), re-proves that the pull request is still open at the reviewed head, and runs exactly once more inside the same job.
+Every stage that already succeeded keeps its result, so a recovered review repeats only the work that failed.
+Recovery is bounded to one delayed retry per stage, so a stage reports at most two attempts and the pipeline cannot loop.
 
-A matching digest proves an artifact is self-consistent, not that a trusted job produced it.
-Because any run in this repository can publish an artifact under any name, the producing run is authenticated first: same repository, a trusted triggering event, the same caller workflow file, and this pipeline referenced from a trusted ref.
-`pull_request` is deliberately not a trusted event, since it executes contributor-controlled workflow content.
-A run still in progress is accepted, because a recovery round can happen inside the run that produced the results it recovers.
+Only `provider-timeout`, `provider-connection`, `provider-unavailable`, and `provider-transient` are retryable.
+Exhausted output repair is settled: the runtime already corrected inside the same conversation, so repeating the request cannot help.
+A moved head, a closed pull request, or an unreachable API means the retry is not attempted, because the review it would finish can no longer be published.
 
-Untrusted or malformed evidence provenance fails the attempt closed rather than quietly refetching.
-A cached stage result that does not authenticate is discarded and rerun instead, and the reason appears in that stage's record.
+Evidence is prepared once and every stage, including a delayed retry, reads those exact bytes.
+Artifacts stay inside the pipeline execution, and a later caller run starts fresh rather than inheriting results across runs.
 
-Artifact names are scoped to `<head-sha>-r<recovery-attempt>-a<run-attempt>-<run-id>`, so a recovery never overwrites the results it depends on.
-Artifacts are retained for one day, which bounds the recovery window.
+The pipeline returns every failed stage with its reason and failure category, not just the first failure.
+It also returns per-stage token usage, elapsed time, request-retry count, output-repair count, the number of recovered stages, and, for a recovered stage, the failure its first attempt reported.
+Unmeasured metrics are reported as missing rather than as zero, and a retried stage is charged for both of its attempts.
+The aggregate marks itself incomplete whenever a stage that called a provider could not account for its usage.
 
-The pipeline returns every failed stage with its reason, failure category, and retryability, not just the first failure.
-It also returns per-stage token usage, elapsed time, request-retry count, output-repair count, stage-recovery count, and a reuse indicator.
-Unmeasured metrics are reported as missing rather than as zero.
-Reused output reports no tokens, because it costs nothing new, and the aggregate marks itself incomplete whenever a stage that called a provider could not account for its usage.
-
-`recoverable` tells the caller whether another attempt could still produce a review.
-A stage skipped because a dependency failed is not itself a failure, an optional terminal failure never blocks recovery, and a required terminal failure ends it.
+`.github/pr-automation/review-report.js` defines the one report schema the pipeline writes and the caller reads, so the two sides cannot drift.
+The caller parses it with `parseReport`, which never throws and never reads a malformed or unsupported report as success.
 
 ## Visible finding format and sources
 

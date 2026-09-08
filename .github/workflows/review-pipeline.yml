@@ -1,12 +1,5 @@
 name: Automated review pipeline
 
-# Reusable reviewer pipeline. `workflow_call` is the only trigger so the caller can hold one global
-# concurrency lock over the whole pipeline while specialists still run in parallel inside it.
-#
-# The pipeline is recovery-aware: given a previous attempt's provenance it restores the pinned
-# evidence and every completed stage result, revalidates them under the current rules, and reruns
-# only what is missing or failed.
-
 on:
   workflow_call:
     inputs:
@@ -31,25 +24,20 @@ on:
         required: true
         type: string
       required-reviewers:
-        description: Canonically ordered specialist reviewer IDs that must succeed
+        description: Specialist reviewer IDs the caller requires to succeed
         required: false
-        default: ""
         type: string
+        default: ""
       gate:
-        description: Legacy validated review gate state, used only without required-reviewers
+        description: Validated review gate state, used only when required-reviewers is absent
         required: false
+        type: string
         default: ""
-        type: string
-      prior-results:
-        description: Provenance object of a previous attempt whose results may be reused
+      retry-delay-seconds:
+        description: Delay before the single retry of a transiently failed reviewer stage
         required: false
-        default: ""
         type: string
-      recovery-attempt:
-        description: Caller-owned stage recovery attempt counter
-        required: false
-        default: "0"
-        type: string
+        default: "120"
     outputs:
       output:
         description: Validated final review JSON
@@ -57,71 +45,35 @@ on:
       failure-reason:
         description: Bounded failure reason when no valid review was produced
         value: ${{ jobs.validate.outputs.reason }}
-      stages:
-        description: Per-stage status, reason, retryability, reuse, and metrics
-        value: ${{ jobs.report.outputs.stages }}
-      metrics:
-        description: Stage metric totals with a token completeness flag
-        value: ${{ jobs.report.outputs.metrics }}
-      provenance:
-        description: Identity and artifact names to pass back as prior-results
-        value: ${{ jobs.report.outputs.provenance }}
-      recoverable:
-        description: Whether a later stage recovery could still produce a review
-        value: ${{ jobs.report.outputs.recoverable }}
+      report:
+        description: Canonical per-stage outcome and metric report
+        value: ${{ jobs.report.outputs.report }}
 
 permissions: {}
 
 jobs:
-  identity:
-    name: Resolve attempt identity
+  evidence:
+    name: Prepare review evidence
     runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      pull-requests: read
     outputs:
-      attempt-id: ${{ steps.attempt.outputs.id }}
+      failure-reason: ${{ steps.record.outputs.failure-reason }}
+      stage: ${{ steps.record.outputs.stage }}
+      openspecs-sha: ${{ steps.protocol-sources.outputs.openspecs-sha }}
     steps:
-      # Artifact names are attempt-scoped so an initial pass and a recovery inside the same run can
-      # never collide, and a recovery never overwrites the results it is recovering from.
-      - id: attempt
+      - id: evidence
+        name: Prepare SHA-bound pull request evidence
         shell: bash
         env:
           HEAD_SHA: ${{ inputs.head-sha }}
-          RECOVERY_ATTEMPT: ${{ inputs.recovery-attempt }}
-        run: |
-          set -euo pipefail
-          if ! printf '%s' "$HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
-            echo "error: invalid head SHA" >&2
-            exit 1
-          fi
-          if ! printf '%s' "$RECOVERY_ATTEMPT" | grep -Eq '^[0-9]{1,3}$'; then
-            echo "error: invalid recovery attempt" >&2
-            exit 1
-          fi
-          echo "id=$HEAD_SHA-r$RECOVERY_ATTEMPT-a$GITHUB_RUN_ATTEMPT-$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
-
-  evidence:
-    name: Prepare review evidence
-    needs: identity
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      issues: read
-      pull-requests: read
-    env:
-      ATTEMPT_ID: ${{ needs.identity.outputs.attempt-id }}
-    outputs:
-      failure-reason: ${{ steps.record.outputs.failure-reason }}
-      openspecs-sha: ${{ steps.identity.outputs.corpus-sha }}
-      evidence-digest: ${{ steps.identity.outputs.evidence-digest }}
-      policy-digest: ${{ steps.identity.outputs.policy-digest }}
-      validation-digest: ${{ steps.identity.outputs.validation-digest }}
-      reused: ${{ steps.plan.outputs.reuse }}
-    steps:
-      - name: Check out the trusted automation sources
-        shell: bash
-        env:
+          BASE_SHA: ${{ inputs.base-sha }}
+          EVIDENCE_MAX_BYTES: ${{ inputs.evidence-max-bytes }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
+          echo "EVIDENCE_STARTED_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
           export GIT_CONFIG_NOSYSTEM=1
           export GIT_CONFIG_GLOBAL=/dev/null
           git init .
@@ -129,81 +81,6 @@ jobs:
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           git fetch --no-tags origin "+$WORKFLOW_SHA:refs/remotes/origin/automation"
           git checkout --detach origin/automation
-
-      - id: plan
-        name: Authenticate reusable prior results
-        uses: actions/github-script@v8
-        env:
-          PRIOR_RESULTS: ${{ inputs.prior-results }}
-          HEAD_SHA: ${{ inputs.head-sha }}
-          BASE_SHA: ${{ inputs.base-sha }}
-        with:
-          script: |
-            const {
-              authenticatePriorRun, parseProvenance, resolveTrustedArtifact,
-            } = require("./.github/pr-automation/review-reuse");
-            const publish = (reuse, reason, prior) => {
-              core.setOutput("reuse", String(reuse));
-              core.setOutput("reason", reason);
-              core.setOutput("prior-run-id", prior?.run_id ?? "");
-              core.setOutput("prior-results", prior ? JSON.stringify(prior) : "");
-              core.setOutput("evidence-artifact", prior?.artifacts?.evidence ?? "");
-              core.setOutput("corpus-artifact", prior?.artifacts?.corpus ?? "");
-              core.info(JSON.stringify({ event: "pr-automation.reuse-plan", reuse, reason }));
-            };
-            const raw = process.env.PRIOR_RESULTS || "";
-            if (raw === "") return publish(false, "no prior results were supplied", null);
-            const parsed = parseProvenance(raw);
-            // Untrusted or malformed evidence provenance fails closed instead of quietly refetching.
-            if (!parsed.ok) throw new Error(`prior results rejected: ${parsed.reason}`);
-            const prior = parsed.value;
-            if (prior.head_sha !== process.env.HEAD_SHA || prior.base_sha !== process.env.BASE_SHA) {
-              throw new Error("prior results rejected: they describe different commits");
-            }
-            const authenticated = await authenticatePriorRun({
-              github, owner: context.repo.owner, repo: context.repo.repo,
-              runId: prior.run_id, currentRunId: context.runId,
-              repository: `${context.repo.owner}/${context.repo.repo}`,
-              workflowRef: process.env.GITHUB_WORKFLOW_REF,
-            });
-            if (!authenticated.ok) throw new Error(`prior results rejected: ${authenticated.reason}`);
-            const evidence = await resolveTrustedArtifact({
-              github, owner: context.repo.owner, repo: context.repo.repo,
-              runId: prior.run_id, name: prior.artifacts.evidence,
-            });
-            if (!evidence.ok) throw new Error(`prior results rejected: ${evidence.reason}`);
-            publish(true, `restored from run ${prior.run_id}`, prior);
-
-      - name: Restore pinned review evidence
-        if: steps.plan.outputs.reuse == 'true'
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ steps.plan.outputs.evidence-artifact }}
-          run-id: ${{ steps.plan.outputs.prior-run-id }}
-          github-token: ${{ github.token }}
-          path: .
-
-      - name: Restore pinned protocol corpus
-        if: steps.plan.outputs.reuse == 'true' && steps.plan.outputs.corpus-artifact != ''
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ steps.plan.outputs.corpus-artifact }}
-          run-id: ${{ steps.plan.outputs.prior-run-id }}
-          github-token: ${{ github.token }}
-          path: review-sources
-
-      - id: evidence
-        name: Prepare SHA-bound pull request evidence
-        if: steps.plan.outputs.reuse != 'true'
-        shell: bash
-        env:
-          HEAD_SHA: ${{ inputs.head-sha }}
-          BASE_SHA: ${{ inputs.base-sha }}
-          EVIDENCE_MAX_BYTES: ${{ inputs.evidence-max-bytes }}
-        run: |
-          set -euo pipefail
-          export GIT_CONFIG_NOSYSTEM=1
-          export GIT_CONFIG_GLOBAL=/dev/null
           if ! bash ./.github/pr-automation/fetch-pr-evidence.sh \
             "$HEAD_SHA" "$BASE_SHA" "$EVIDENCE_MAX_BYTES"; then
             reason="pull request evidence unavailable"
@@ -215,7 +92,6 @@ jobs:
           fi
 
       - name: Fetch bounded review and location context
-        if: steps.plan.outputs.reuse != 'true'
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ inputs.head-sha }}
@@ -225,16 +101,13 @@ jobs:
             const fs = require("node:fs");
             const { addedLinesByPath, listPrFiles } = require("./.github/pr-automation/deterministic-analysis");
             const { fetchReviewContext } = require("./.github/pr-automation/fetch-review-context");
+            const { assertCurrentHead } = require("./.github/pr-automation/review-retry");
             const pullNumber = Number(process.env.PULL_REQUEST_NUMBER);
             const expectedSha = process.env.HEAD_SHA;
-            const assertHead = async () => {
-              const { data } = await github.rest.pulls.get({
-                owner: context.repo.owner, repo: context.repo.repo, pull_number: pullNumber,
-              });
-              if (data.state !== "open" || data.head?.sha !== expectedSha) {
-                throw new Error("pull request head is no longer current");
-              }
-            };
+            const assertHead = () => assertCurrentHead({
+              github, owner: context.repo.owner, repo: context.repo.repo,
+              pullNumber, expectedHeadSha: expectedSha,
+            });
             await assertHead();
             const reviewContext = await fetchReviewContext({
               github, owner: context.repo.owner, repo: context.repo.repo,
@@ -262,7 +135,7 @@ jobs:
 
       - name: Fetch and sanitize the latest protocol corpus
         id: protocol-sources
-        if: steps.plan.outputs.reuse != 'true' && contains(fromJSON(inputs.specialist-reviewers), 'protocol')
+        if: contains(fromJSON(inputs.specialist-reviewers), 'protocol')
         shell: bash
         run: |
           set -euo pipefail
@@ -277,106 +150,17 @@ jobs:
           bash ./.github/pr-automation/prepare-review-sources.sh \
             "$RUNNER_TEMP/openspecs" "$openspecs_sha"
           echo "openspecs-sha=$openspecs_sha" >> "$GITHUB_OUTPUT"
+          echo "Protocol corpus: \`awakecoding/openspecs@$openspecs_sha\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove Git metadata from the untrusted head
-        if: steps.plan.outputs.reuse != 'true'
         shell: bash
         run: rm -rf pr-head/.git
 
-      - id: identity
-        name: Verify the review identity
-        uses: actions/github-script@v8
-        env:
-          HEAD_SHA: ${{ inputs.head-sha }}
-          PULL_REQUEST_NUMBER: ${{ inputs.pr-number }}
-          REUSE: ${{ steps.plan.outputs.reuse }}
-          PRIOR_RESULTS: ${{ steps.plan.outputs.prior-results }}
-          FETCHED_CORPUS_SHA: ${{ steps.protocol-sources.outputs.openspecs-sha }}
-          SPECIALIST_REVIEWERS: ${{ inputs.specialist-reviewers }}
-        with:
-          script: |
-            const {
-              evidenceDigest, fileDigest, policyDigest,
-            } = require("./.github/pr-automation/review-identity");
-            const reuse = process.env.REUSE === "true";
-            const prior = reuse ? JSON.parse(process.env.PRIOR_RESULTS) : null;
-            // Restored evidence stays SHA-bound, so the head must not have moved underneath it.
-            const { data } = await github.rest.pulls.get({
-              owner: context.repo.owner, repo: context.repo.repo,
-              pull_number: Number(process.env.PULL_REQUEST_NUMBER),
-            });
-            if (data.state !== "open" || data.head?.sha !== process.env.HEAD_SHA) {
-              throw new Error("pull request head is no longer current");
-            }
-            const evidence = evidenceDigest(process.cwd());
-            const policy = policyDigest(process.cwd());
-            const validation = fileDigest(process.cwd(), "pr-evidence/validation-context.json");
-            const corpusSha = reuse ? prior.corpus_sha : (process.env.FETCHED_CORPUS_SHA || null);
-            if (reuse) {
-              if (evidence !== prior.evidence_digest) {
-                throw new Error("prior results rejected: restored evidence does not match its digest");
-              }
-              if (JSON.parse(process.env.SPECIALIST_REVIEWERS).includes("protocol") && !corpusSha) {
-                throw new Error("prior results rejected: the pinned protocol corpus is missing");
-              }
-            }
-            core.setOutput("evidence-digest", evidence);
-            core.setOutput("policy-digest", policy);
-            core.setOutput("validation-digest", validation);
-            core.setOutput("corpus-sha", corpusSha || "");
-            if (corpusSha) {
-              await core.summary
-                .addRaw(`Protocol corpus: \`awakecoding/openspecs@${corpusSha}\``, true)
-                .write();
-            }
-
-      - id: record
-        name: Record the evidence stage
-        if: always()
-        uses: actions/github-script@v8
-        env:
-          EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
-          EVIDENCE_REASON: ${{ steps.evidence.outputs.failure-reason }}
-          IDENTITY_OUTCOME: ${{ steps.identity.outcome }}
-          REUSE: ${{ steps.plan.outputs.reuse }}
-          REUSE_REASON: ${{ steps.plan.outputs.reason }}
-          PRIOR_RUN_ID: ${{ steps.plan.outputs.prior-run-id }}
-          RECOVERY_ATTEMPT: ${{ inputs.recovery-attempt }}
-        with:
-          script: |
-            const fs = require("node:fs");
-            const { stageRecord } = require("./.github/pr-automation/review-pipeline");
-            const reused = process.env.REUSE === "true";
-            const ok = process.env.IDENTITY_OUTCOME === "success" &&
-              (reused || process.env.EVIDENCE_OUTCOME === "success");
-            const reason = ok ? "" : process.env.EVIDENCE_REASON || "pull request evidence unavailable";
-            core.setOutput("failure-reason", reason);
-            fs.mkdirSync("stage-records", { recursive: true });
-            fs.writeFileSync("stage-records/evidence.json", JSON.stringify(stageRecord({
-              id: "evidence",
-              status: ok ? "success" : "failed",
-              required: true,
-              reason,
-              failureCategory: ok ? "" : "evidence-unavailable",
-              reused,
-              reusedFromRunId: reused ? process.env.PRIOR_RUN_ID : null,
-              reuseReason: process.env.REUSE_REASON,
-              metrics: { stage_recoveries: Number(process.env.RECOVERY_ATTEMPT) || 0 },
-            }), null, 2));
-
-      - name: Upload the evidence stage record
-        if: always() && steps.record.outcome == 'success'
-        uses: actions/upload-artifact@v7
-        with:
-          name: review-stage-${{ env.ATTEMPT_ID }}-evidence
-          path: stage-records/evidence.json
-          if-no-files-found: error
-          retention-days: 1
-
+      # Evidence is prepared once. Every stage, including a delayed retry, reads these exact bytes.
       - name: Upload review evidence
         uses: actions/upload-artifact@v7
         with:
-          name: review-evidence-${{ env.ATTEMPT_ID }}
+          name: review-evidence-${{ inputs.head-sha }}
           path: |
             pr-automation-context.json
             pr-evidence
@@ -384,36 +168,67 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 1
+          overwrite: true
 
       - name: Upload validation context
         uses: actions/upload-artifact@v7
         with:
-          name: review-validation-${{ env.ATTEMPT_ID }}
+          name: review-validation-${{ inputs.head-sha }}
           path: pr-evidence/validation-context.json
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
       - name: Upload protocol corpus
-        if: steps.identity.outputs.corpus-sha != ''
+        if: contains(fromJSON(inputs.specialist-reviewers), 'protocol')
         uses: actions/upload-artifact@v7
         with:
-          name: review-corpus-${{ env.ATTEMPT_ID }}
+          name: review-corpus-${{ inputs.head-sha }}
           path: review-sources
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 1
+          overwrite: true
+
+      # One record, so a failure in any evidence step reaches the report, not just the diff fetch.
+      - id: record
+        name: Record the evidence stage outcome
+        if: always()
+        uses: actions/github-script@v8
+        env:
+          EVIDENCE_STATUS: ${{ job.status }}
+          EVIDENCE_REASON: ${{ steps.evidence.outputs.failure-reason }}
+        with:
+          script: |
+            const { stageOutcome } = require("./.github/pr-automation/review-report");
+            const ok = process.env.EVIDENCE_STATUS === "success";
+            const started = Number(process.env.EVIDENCE_STARTED_MS);
+            const reason = ok
+              ? ""
+              : process.env.EVIDENCE_REASON || "pull request evidence unavailable";
+            core.setOutput("failure-reason", reason);
+            core.setOutput("stage", JSON.stringify(stageOutcome({
+              id: "evidence",
+              status: ok ? "success" : "failed",
+              required: true,
+              reason,
+              category: ok ? "" : "evidence-unavailable",
+              metrics: {
+                elapsed_ms: Number.isFinite(started) ? Date.now() - started : null,
+              },
+            })));
 
   specialists:
     name: Review with ${{ matrix.reviewer }}
-    needs: [identity, evidence]
+    needs: evidence
     if: needs.evidence.result == 'success'
     runs-on: ubuntu-latest
     permissions:
-      actions: read
       contents: read
+      # Read-only, and used for one thing: confirming the head still matches before a delayed retry
+      # spends a second provider request.
+      pull-requests: read
     environment: llm-providers
-    env:
-      ATTEMPT_ID: ${{ needs.identity.outputs.attempt-id }}
     strategy:
       fail-fast: false
       # Provider allocation, not a reviewer cap: more selected IDs simply run in further batches.
@@ -429,133 +244,82 @@ jobs:
       - name: Download review evidence
         uses: actions/download-artifact@v8
         with:
-          name: review-evidence-${{ env.ATTEMPT_ID }}
+          name: review-evidence-${{ inputs.head-sha }}
           path: .
 
       - name: Download protocol corpus
         if: matrix.reviewer == 'protocol'
         uses: actions/download-artifact@v8
         with:
-          name: review-corpus-${{ env.ATTEMPT_ID }}
+          name: review-corpus-${{ inputs.head-sha }}
           path: review-sources
 
       - id: plan
-        name: Resolve the specialist stage identity
+        name: Build the validator metadata
         uses: actions/github-script@v8
         env:
           REVIEWER: ${{ matrix.reviewer }}
           HEAD_SHA: ${{ inputs.head-sha }}
-          BASE_SHA: ${{ inputs.base-sha }}
-          EVIDENCE_DIGEST: ${{ needs.evidence.outputs.evidence-digest }}
-          POLICY_DIGEST: ${{ needs.evidence.outputs.policy-digest }}
-          VALIDATION_DIGEST: ${{ needs.evidence.outputs.validation-digest }}
           CORPUS_SHA: ${{ needs.evidence.outputs.openspecs-sha }}
-          PRIOR_RESULTS: ${{ inputs.prior-results }}
         with:
           script: |
-            const { stageKey } = require("./.github/pr-automation/review-identity");
-            const {
-              parseProvenance, resolveTrustedArtifact,
-            } = require("./.github/pr-automation/review-reuse");
             const reviewer = process.env.REVIEWER;
             const corpusSha = reviewer === "protocol" ? process.env.CORPUS_SHA : "";
-            core.setOutput("stage-key", stageKey({
-              stage: `specialist:${reviewer}`,
-              baseSha: process.env.BASE_SHA,
-              headSha: process.env.HEAD_SHA,
-              evidenceDigest: process.env.EVIDENCE_DIGEST,
-              policyDigest: process.env.POLICY_DIGEST,
-              corpusSha: corpusSha || null,
-            }));
             core.setOutput("metadata", JSON.stringify({
               stage: "specialist",
               reviewer,
               expected_sha: process.env.HEAD_SHA,
-              base_sha: process.env.BASE_SHA,
               validation_context_file: "pr-evidence/validation-context.json",
-              validation_context_digest: process.env.VALIDATION_DIGEST,
               ...(corpusSha
                 ? { corpus_dir: "review-sources/windows-protocols", corpus_sha: corpusSha }
                 : {}),
             }));
-            const parsed = parseProvenance(process.env.PRIOR_RESULTS || "");
-            const name = parsed.ok ? parsed.value.artifacts.specialists?.[reviewer] : null;
-            if (!name) {
-              core.setOutput("restore", "false");
-              core.setOutput("reuse-reason", parsed.ok
-                ? "no cached result for this reviewer"
-                : "no prior results were supplied");
-              return;
-            }
-            const artifact = await resolveTrustedArtifact({
-              github, owner: context.repo.owner, repo: context.repo.repo,
-              runId: parsed.value.run_id, name,
-            });
-            core.setOutput("restore", String(artifact.ok));
-            core.setOutput("artifact", artifact.ok ? name : "");
-            core.setOutput("prior-run-id", parsed.value.run_id);
-            core.setOutput("reuse-reason", artifact.ok ? "" : artifact.reason);
-
-      - id: restore
-        name: Restore the cached specialist result
-        if: steps.plan.outputs.restore == 'true'
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ steps.plan.outputs.artifact }}
-          run-id: ${{ steps.plan.outputs.prior-run-id }}
-          github-token: ${{ github.token }}
-          path: cached-result
-
-      - id: reuse
-        name: Accept the cached specialist result
-        if: steps.restore.outcome == 'success'
-        uses: actions/github-script@v8
-        env:
-          REVIEWER: ${{ matrix.reviewer }}
-          STAGE_KEY: ${{ steps.plan.outputs.stage-key }}
-        with:
-          script: |
-            const fs = require("node:fs");
-            const { acceptReusableRecord } = require("./.github/pr-automation/review-pipeline");
-            let record = null;
-            try {
-              record = JSON.parse(fs.readFileSync(
-                `cached-result/${process.env.REVIEWER}.json`, "utf8",
-              ));
-            } catch (error) {
-              core.setOutput("reused", "false");
-              core.setOutput("reason", `cached result is unreadable: ${error.message}`);
-              return;
-            }
-            const accepted = acceptReusableRecord(record, {
-              stage: `specialist:${process.env.REVIEWER}`,
-              expectedStageKey: process.env.STAGE_KEY,
-            });
-            core.setOutput("reused", String(accepted.ok));
-            core.setOutput("reason", accepted.ok ? "" : accepted.reason);
-            if (accepted.ok) {
-              fs.writeFileSync("cached-output.json", accepted.value.output);
-              core.setOutput("prior-run-id", accepted.value.run_id);
-            }
-
-      - id: started
-        name: Start the stage clock
-        if: steps.reuse.outputs.reused != 'true'
-        shell: bash
-        run: echo "at=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
 
       - id: agent
         name: Run ${{ matrix.reviewer }} specialist
-        if: steps.reuse.outputs.reused != 'true'
         continue-on-error: true
         uses: ./.github/actions/openai-agent
         with:
           api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
           base-url: https://api.helmcode.com/v1
           config-file: .github/pr-automation/agents/${{ matrix.reviewer }}.json
-          max-request-retries: "4"
-          max-output-repairs: "2"
+          validator: .github/pr-automation/agent-validator.js#validateSpecialist
+          validator-metadata: ${{ steps.plan.outputs.metadata }}
+
+      - id: retry-gate
+        name: Decide on a delayed retry
+        if: steps.agent.outputs.retryable == 'true'
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ inputs.head-sha }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pr-number }}
+          FAILURE_CATEGORY: ${{ steps.agent.outputs.failure-category }}
+          RETRY_DELAY_SECONDS: ${{ inputs.retry-delay-seconds }}
+        with:
+          script: |
+            const { delayedRetryGate } = require("./.github/pr-automation/review-retry");
+            const decision = await delayedRetryGate({
+              github, owner: context.repo.owner, repo: context.repo.repo,
+              pullNumber: Number(process.env.PULL_REQUEST_NUMBER),
+              expectedHeadSha: process.env.HEAD_SHA,
+              failureCategory: process.env.FAILURE_CATEGORY,
+              delaySeconds: Number(process.env.RETRY_DELAY_SECONDS),
+            });
+            core.setOutput("retry", String(decision.retry));
+            core.setOutput("reason", decision.reason);
+            core.info(JSON.stringify({
+              event: "pr-automation.retry-gate", stage: "specialist", ...decision,
+            }));
+
+      - id: agent-retry
+        name: Retry ${{ matrix.reviewer }} specialist
+        if: steps.retry-gate.outputs.retry == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/openai-agent
+        with:
+          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
+          base-url: https://api.helmcode.com/v1
+          config-file: .github/pr-automation/agents/${{ matrix.reviewer }}.json
           validator: .github/pr-automation/agent-validator.js#validateSpecialist
           validator-metadata: ${{ steps.plan.outputs.metadata }}
 
@@ -567,48 +331,29 @@ jobs:
           HEAD_SHA: ${{ inputs.head-sha }}
           REVIEWER: ${{ matrix.reviewer }}
           OPENSPECS_SHA: ${{ needs.evidence.outputs.openspecs-sha }}
-          STAGE_KEY: ${{ steps.plan.outputs.stage-key }}
-          RECOVERY_ATTEMPT: ${{ inputs.recovery-attempt }}
           REQUIRED_REVIEWERS: ${{ inputs.required-reviewers }}
-          REUSED: ${{ steps.reuse.outputs.reused }}
-          REUSE_REASON: ${{ steps.reuse.outputs.reason || steps.plan.outputs.reuse-reason }}
-          REUSED_RUN_ID: ${{ steps.reuse.outputs.prior-run-id }}
-          RAW_OUTPUT: ${{ steps.agent.outputs.structured-output }}
-          MODEL_REASON: ${{ steps.agent.outputs.failure-reason }}
-          FAILURE_CATEGORY: ${{ steps.agent.outputs.failure-category }}
-          RETRYABLE: ${{ steps.agent.outputs.retryable }}
-          REQUEST_RETRIES: ${{ steps.agent.outputs.request-retry-count }}
-          OUTPUT_REPAIRS: ${{ steps.agent.outputs.output-repair-count }}
-          TOKEN_USAGE: ${{ steps.agent.outputs.token-usage }}
-          DURATION_MS: ${{ steps.agent.outputs.duration-ms }}
-          STARTED_AT: ${{ steps.started.outputs.at }}
+          RAW_OUTPUT: ${{ steps.agent-retry.outputs.structured-output || steps.agent.outputs.structured-output }}
+          MODEL_REASON: ${{ steps.agent-retry.outputs.failure-reason || steps.agent.outputs.failure-reason }}
+          FAILURE_CATEGORY: ${{ steps.agent-retry.outputs.failure-category || steps.agent.outputs.failure-category }}
+          DIAGNOSTICS: ${{ steps.agent.outputs.diagnostics }}
+          RETRY_DIAGNOSTICS: ${{ steps.agent-retry.outputs.diagnostics }}
+          RETRIED: ${{ steps.retry-gate.outputs.retry }}
+          PREVIOUS_REASON: ${{ steps.agent.outputs.failure-reason }}
         with:
           script: |
             const fs = require("node:fs");
             const path = require("node:path");
             const {
-              isRetryableFailure, reusableRecord, stageRecord, validateSpecialistRun,
+              mergeDiagnostics, parseDiagnostics, validateSpecialistRun,
             } = require("./.github/pr-automation/review-pipeline");
+            const { stageOutcome } = require("./.github/pr-automation/review-report");
             const {
               corpusFromDirectory,
             } = require("./.github/pr-automation/validate-protocol-review");
             const reviewer = process.env.REVIEWER;
-            const reused = process.env.REUSED === "true";
-            const number = (value) => {
-              const parsed = Number(value);
-              return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
-            };
-            const tokens = (() => {
-              try { return JSON.parse(process.env.TOKEN_USAGE || "null"); } catch { return null; }
-            })();
-            const elapsed = number(process.env.DURATION_MS) ??
-              (process.env.STARTED_AT ? Date.now() - Number(process.env.STARTED_AT) : null);
-            const raw = reused
-              ? fs.readFileSync("cached-output.json", "utf8")
-              : process.env.RAW_OUTPUT || "";
-
-            let run = { reviewer, status: "failed", reason: "specialist validation unavailable" };
-            let validationFailed = true;
+            const retried = process.env.RETRIED === "true";
+            const failed = (reason) => ({ reviewer, status: "failed", reason });
+            let run = failed("specialist validation unavailable");
             try {
               const validation = JSON.parse(fs.readFileSync(
                 "pr-evidence/validation-context.json", "utf8",
@@ -618,8 +363,7 @@ jobs:
                   expectedCorpusSha: process.env.OPENSPECS_SHA,
                 })
                 : undefined;
-              // Restored output is revalidated under the current rules before anything trusts it.
-              const result = validateSpecialistRun(raw, {
+              const result = validateSpecialistRun(process.env.RAW_OUTPUT || "", {
                 reviewer,
                 expectedSha: process.env.HEAD_SHA,
                 changedPaths: validation.changed_paths,
@@ -628,115 +372,78 @@ jobs:
                 expectedCorpusSha: process.env.OPENSPECS_SHA,
                 failureReason: process.env.MODEL_REASON,
               });
-              run = result.value ?? { reviewer, status: "failed", reason: result.reason };
-              validationFailed = false;
+              run = result.value ?? failed(result.reason || "specialist validation unavailable");
             } catch (error) {
               core.warning(`Specialist validation unavailable: ${error.message}`);
             }
-            const valid = run.status === "valid";
-            const required = (() => {
-              try {
-                return JSON.parse(process.env.REQUIRED_REVIEWERS || "[]").includes(reviewer);
-              } catch { return false; }
-            })();
-            const category = valid
-              ? ""
-              : validationFailed
-                ? "validation-unavailable"
-                : process.env.FAILURE_CATEGORY || "invalid-output";
-
             fs.mkdirSync("specialist-results", { recursive: true });
             fs.writeFileSync(
               path.join("specialist-results", `${reviewer}.json`),
               JSON.stringify(run, null, 2),
             );
-            fs.mkdirSync("stage-records", { recursive: true });
+            const required = (() => {
+              try {
+                return JSON.parse(process.env.REQUIRED_REVIEWERS || "[]");
+              } catch {
+                return [];
+              }
+            })();
+            fs.mkdirSync("stage-reports", { recursive: true });
             fs.writeFileSync(
-              path.join("stage-records", `specialist-${reviewer}.json`),
-              JSON.stringify(stageRecord({
+              path.join("stage-reports", `specialist-${reviewer}.json`),
+              JSON.stringify(stageOutcome({
                 id: `specialist:${reviewer}`,
-                status: valid ? "success" : "failed",
-                required,
+                status: run.status === "valid" ? "success" : "failed",
+                required: Array.isArray(required) && required.includes(reviewer),
+                reason: run.status === "valid" ? "" : run.reason,
+                category: run.status === "valid" ? "" : process.env.FAILURE_CATEGORY || "invalid-output",
+                attempts: retried ? 2 : 1,
+                previousReason: retried ? process.env.PREVIOUS_REASON : "",
                 provider: true,
-                reason: valid ? "" : run.reason,
-                failureCategory: category,
-                retryable: !valid && process.env.RETRYABLE === "true" && isRetryableFailure(category),
-                reused: reused && valid,
-                reusedFromRunId: reused ? process.env.REUSED_RUN_ID : null,
-                reuseReason: process.env.REUSE_REASON,
-                metrics: {
-                  tokens,
-                  elapsed_ms: elapsed,
-                  request_retries: number(process.env.REQUEST_RETRIES),
-                  output_repairs: number(process.env.OUTPUT_REPAIRS),
-                  stage_recoveries: reused ? 0 : Number(process.env.RECOVERY_ATTEMPT) || 0,
-                },
+                metrics: mergeDiagnostics(
+                  parseDiagnostics(process.env.DIAGNOSTICS),
+                  retried ? parseDiagnostics(process.env.RETRY_DIAGNOSTICS) : null,
+                ),
               }), null, 2),
             );
-            if (valid) {
-              fs.mkdirSync("reusable-results", { recursive: true });
-              fs.writeFileSync(
-                path.join("reusable-results", `${reviewer}.json`),
-                JSON.stringify(reusableRecord({
-                  stage: `specialist:${reviewer}`,
-                  stageKey: process.env.STAGE_KEY,
-                  runId: context.runId,
-                  attemptId: process.env.ATTEMPT_ID,
-                  output: raw,
-                  metrics: {
-                    tokens,
-                    elapsed_ms: elapsed,
-                    request_retries: number(process.env.REQUEST_RETRIES),
-                    output_repairs: number(process.env.OUTPUT_REPAIRS),
-                  },
-                })),
-              );
-            }
             core.info(JSON.stringify({
               event: "pr-automation.specialist",
-              reviewer, status: run.status, reused: reused && valid,
+              reviewer,
+              status: run.status,
+              attempts: retried ? 2 : 1,
             }));
 
       - name: Upload validated specialist result
         if: always() && steps.validate.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
-          name: review-specialist-${{ env.ATTEMPT_ID }}-${{ matrix.reviewer }}
+          name: review-specialist-${{ inputs.head-sha }}-${{ matrix.reviewer }}
           path: specialist-results/${{ matrix.reviewer }}.json
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
-      - name: Upload the specialist stage record
+      # Matrix legs cannot share job outputs, so only this stage report travels as an artifact.
+      - name: Upload the specialist stage report
         if: always() && steps.validate.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
-          name: review-stage-${{ env.ATTEMPT_ID }}-specialist-${{ matrix.reviewer }}
-          path: stage-records/specialist-${{ matrix.reviewer }}.json
+          name: review-stage-${{ inputs.head-sha }}-${{ matrix.reviewer }}
+          path: stage-reports/specialist-${{ matrix.reviewer }}.json
           if-no-files-found: error
           retention-days: 1
-
-      - name: Upload the reusable specialist result
-        if: always() && hashFiles(format('reusable-results/{0}.json', matrix.reviewer)) != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: review-reusable-${{ env.ATTEMPT_ID }}-${{ matrix.reviewer }}
-          path: reusable-results/${{ matrix.reviewer }}.json
-          if-no-files-found: error
-          retention-days: 1
+          overwrite: true
 
   aggregate:
     name: Aggregate specialist findings
-    needs: [identity, evidence, specialists]
+    needs: [evidence, specialists]
     if: always() && !cancelled() && needs.evidence.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    env:
-      ATTEMPT_ID: ${{ needs.identity.outputs.attempt-id }}
     outputs:
       ready: ${{ steps.aggregate.outputs.ready }}
       reason: ${{ steps.aggregate.outputs.reason }}
-      aggregate-digest: ${{ steps.aggregate.outputs.digest }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -747,7 +454,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
-          pattern: review-specialist-${{ env.ATTEMPT_ID }}-*
+          pattern: review-specialist-${{ inputs.head-sha }}-*
           path: specialist-results
           merge-multiple: true
 
@@ -759,20 +466,18 @@ jobs:
           SPECIALIST_REVIEWERS: ${{ inputs.specialist-reviewers }}
           REQUIRED_REVIEWERS: ${{ inputs.required-reviewers }}
           GATE: ${{ inputs.gate }}
-          RECOVERY_ATTEMPT: ${{ inputs.recovery-attempt }}
         with:
           script: |
-            const crypto = require("node:crypto");
             const fs = require("node:fs");
             const path = require("node:path");
             const {
-              buildSpecialistAggregate, failedRun, stageRecord,
+              buildSpecialistAggregate, failedRun,
             } = require("./.github/pr-automation/review-pipeline");
-            const parse = (value, fallback) => {
-              try { return JSON.parse(value || ""); } catch { return fallback; }
-            };
             const selected = JSON.parse(process.env.SPECIALIST_REVIEWERS);
-            const gate = parse(process.env.GATE, {});
+            const gate = process.env.GATE ? JSON.parse(process.env.GATE) : {};
+            const requiredReviewers = process.env.REQUIRED_REVIEWERS
+              ? JSON.parse(process.env.REQUIRED_REVIEWERS)
+              : [];
             const runs = selected.map((reviewer) => {
               try {
                 return JSON.parse(fs.readFileSync(
@@ -787,338 +492,190 @@ jobs:
               expectedSha: process.env.HEAD_SHA,
               selectedReviewers: selected,
               runs,
-              requiredReviewers: parse(process.env.REQUIRED_REVIEWERS, []),
+              requiredReviewers,
               protocolRelated: gate.protocolRelated,
               risk: gate.risk,
             });
-            fs.mkdirSync("stage-records", { recursive: true });
-            const record = (status, reason) => fs.writeFileSync(
-              "stage-records/aggregate.json",
-              JSON.stringify(stageRecord({
-                id: "aggregate",
-                status,
-                required: true,
-                reason,
-                failureCategory: status === "failed" ? "aggregate-invalid" : "",
-                metrics: { stage_recoveries: Number(process.env.RECOVERY_ATTEMPT) || 0 },
-              }), null, 2),
+            if (!result.ok) throw new Error(result.reason);
+            fs.writeFileSync(
+              "validated-specialist-findings.json",
+              JSON.stringify(result.value, null, 2),
             );
-            if (!result.ok) {
-              record("failed", result.reason);
-              core.setOutput("ready", "false");
-              core.setOutput("reason", result.reason);
-              throw new Error(result.reason);
-            }
-            const serialized = JSON.stringify(result.value, null, 2);
-            fs.writeFileSync("validated-specialist-findings.json", serialized);
-            record("success", "");
-            core.setOutput("digest", crypto.createHash("sha256").update(serialized).digest("hex"));
             core.setOutput("ready", result.mandatoryFailure === "");
             core.setOutput("reason", result.mandatoryFailure);
             core.info(JSON.stringify({
               event: "pr-automation.specialists",
               reviewers: result.value.reviewers.map(({ reviewer, status }) => ({ reviewer, status })),
-              required: result.requiredReviewers,
               mandatoryFailure: result.mandatoryFailure !== "",
             }));
 
       - name: Upload specialist aggregate
-        if: always() && hashFiles('validated-specialist-findings.json') != ''
         uses: actions/upload-artifact@v7
         with:
-          name: review-aggregate-${{ env.ATTEMPT_ID }}
+          name: review-aggregate-${{ inputs.head-sha }}
           path: validated-specialist-findings.json
           if-no-files-found: error
           retention-days: 1
-
-      - name: Upload the aggregate stage record
-        if: always() && hashFiles('stage-records/aggregate.json') != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: review-stage-${{ env.ATTEMPT_ID }}-aggregate
-          path: stage-records/aggregate.json
-          if-no-files-found: error
-          retention-days: 1
+          overwrite: true
 
   general:
     name: Run independent general reviewer
-    needs: [identity, evidence, aggregate]
-    if: always() && !cancelled() && needs.aggregate.result == 'success'
+    needs: [evidence, aggregate]
+    if: needs.aggregate.result == 'success' && needs.aggregate.outputs.ready == 'true'
     runs-on: ubuntu-latest
     permissions:
-      actions: read
       contents: read
+      pull-requests: read
     environment: llm-providers
-    env:
-      ATTEMPT_ID: ${{ needs.identity.outputs.attempt-id }}
+    outputs:
+      stage: ${{ steps.persist.outputs.stage }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
-      - name: Record a dependency-skipped general stage
-        if: needs.aggregate.outputs.ready != 'true'
-        uses: actions/github-script@v8
-        env:
-          REASON: ${{ needs.aggregate.outputs.reason }}
-        with:
-          script: |
-            const fs = require("node:fs");
-            const { stageRecord } = require("./.github/pr-automation/review-pipeline");
-            fs.mkdirSync("stage-records", { recursive: true });
-            // A stage skipped because a required specialist failed is not itself a failure.
-            fs.writeFileSync("stage-records/general.json", JSON.stringify(stageRecord({
-              id: "general",
-              status: "skipped",
-              required: true,
-              provider: true,
-              reason: process.env.REASON || "a required specialist did not succeed",
-            }), null, 2));
-
       - name: Download review evidence
-        if: needs.aggregate.outputs.ready == 'true'
         uses: actions/download-artifact@v8
         with:
-          name: review-evidence-${{ env.ATTEMPT_ID }}
+          name: review-evidence-${{ inputs.head-sha }}
           path: .
 
       - name: Download specialist aggregate
-        if: needs.aggregate.outputs.ready == 'true'
         uses: actions/download-artifact@v8
         with:
-          name: review-aggregate-${{ env.ATTEMPT_ID }}
+          name: review-aggregate-${{ inputs.head-sha }}
           path: .
 
       - id: plan
-        name: Resolve the general stage identity
-        if: needs.aggregate.outputs.ready == 'true'
+        name: Build the validator metadata
         uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ inputs.head-sha }}
-          BASE_SHA: ${{ inputs.base-sha }}
-          EVIDENCE_DIGEST: ${{ needs.evidence.outputs.evidence-digest }}
-          POLICY_DIGEST: ${{ needs.evidence.outputs.policy-digest }}
-          VALIDATION_DIGEST: ${{ needs.evidence.outputs.validation-digest }}
-          AGGREGATE_DIGEST: ${{ needs.aggregate.outputs.aggregate-digest }}
-          PRIOR_RESULTS: ${{ inputs.prior-results }}
         with:
           script: |
-            const { stageKey } = require("./.github/pr-automation/review-identity");
-            const {
-              parseProvenance, resolveTrustedArtifact,
-            } = require("./.github/pr-automation/review-reuse");
-            core.setOutput("stage-key", stageKey({
-              stage: "general",
-              baseSha: process.env.BASE_SHA,
-              headSha: process.env.HEAD_SHA,
-              evidenceDigest: process.env.EVIDENCE_DIGEST,
-              policyDigest: process.env.POLICY_DIGEST,
-              aggregateDigest: process.env.AGGREGATE_DIGEST,
-            }));
             core.setOutput("metadata", JSON.stringify({
               stage: "general",
               expected_sha: process.env.HEAD_SHA,
-              base_sha: process.env.BASE_SHA,
               validation_context_file: "pr-evidence/validation-context.json",
-              validation_context_digest: process.env.VALIDATION_DIGEST,
               aggregate_file: "validated-specialist-findings.json",
-              aggregate_digest: process.env.AGGREGATE_DIGEST,
             }));
-            const parsed = parseProvenance(process.env.PRIOR_RESULTS || "");
-            const name = parsed.ok ? parsed.value.artifacts.general : null;
-            if (!name) {
-              core.setOutput("restore", "false");
-              core.setOutput("reuse-reason", parsed.ok
-                ? "no cached general review"
-                : "no prior results were supplied");
-              return;
-            }
-            const artifact = await resolveTrustedArtifact({
-              github, owner: context.repo.owner, repo: context.repo.repo,
-              runId: parsed.value.run_id, name,
-            });
-            core.setOutput("restore", String(artifact.ok));
-            core.setOutput("artifact", artifact.ok ? name : "");
-            core.setOutput("prior-run-id", parsed.value.run_id);
-            core.setOutput("reuse-reason", artifact.ok ? "" : artifact.reason);
-
-      - id: restore
-        name: Restore the cached general review
-        if: steps.plan.outputs.restore == 'true'
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ steps.plan.outputs.artifact }}
-          run-id: ${{ steps.plan.outputs.prior-run-id }}
-          github-token: ${{ github.token }}
-          path: cached-result
-
-      - id: reuse
-        name: Accept the cached general review
-        if: steps.restore.outcome == 'success'
-        uses: actions/github-script@v8
-        env:
-          STAGE_KEY: ${{ steps.plan.outputs.stage-key }}
-        with:
-          script: |
-            const fs = require("node:fs");
-            const { acceptReusableRecord } = require("./.github/pr-automation/review-pipeline");
-            let record = null;
-            try {
-              record = JSON.parse(fs.readFileSync("cached-result/general.json", "utf8"));
-            } catch (error) {
-              core.setOutput("reused", "false");
-              core.setOutput("reason", `cached result is unreadable: ${error.message}`);
-              return;
-            }
-            const accepted = acceptReusableRecord(record, {
-              stage: "general", expectedStageKey: process.env.STAGE_KEY,
-            });
-            core.setOutput("reused", String(accepted.ok));
-            core.setOutput("reason", accepted.ok ? "" : accepted.reason);
-            if (accepted.ok) {
-              fs.writeFileSync("cached-output.json", accepted.value.output);
-              core.setOutput("prior-run-id", accepted.value.run_id);
-            }
-
-      - id: started
-        name: Start the stage clock
-        if: needs.aggregate.outputs.ready == 'true' && steps.reuse.outputs.reused != 'true'
-        shell: bash
-        run: echo "at=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
 
       - id: agent
         name: Run general reviewer
-        if: needs.aggregate.outputs.ready == 'true' && steps.reuse.outputs.reused != 'true'
         continue-on-error: true
         uses: ./.github/actions/openai-agent
         with:
           api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
           base-url: https://api.helmcode.com/v1
           config-file: .github/pr-automation/agents/general-reviewer.json
-          max-request-retries: "4"
-          max-output-repairs: "2"
+          validator: .github/pr-automation/agent-validator.js#validateGeneral
+          validator-metadata: ${{ steps.plan.outputs.metadata }}
+
+      - id: retry-gate
+        name: Decide on a delayed retry
+        if: steps.agent.outputs.retryable == 'true'
+        uses: actions/github-script@v8
+        env:
+          HEAD_SHA: ${{ inputs.head-sha }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pr-number }}
+          FAILURE_CATEGORY: ${{ steps.agent.outputs.failure-category }}
+          RETRY_DELAY_SECONDS: ${{ inputs.retry-delay-seconds }}
+        with:
+          script: |
+            const { delayedRetryGate } = require("./.github/pr-automation/review-retry");
+            const decision = await delayedRetryGate({
+              github, owner: context.repo.owner, repo: context.repo.repo,
+              pullNumber: Number(process.env.PULL_REQUEST_NUMBER),
+              expectedHeadSha: process.env.HEAD_SHA,
+              failureCategory: process.env.FAILURE_CATEGORY,
+              delaySeconds: Number(process.env.RETRY_DELAY_SECONDS),
+            });
+            core.setOutput("retry", String(decision.retry));
+            core.setOutput("reason", decision.reason);
+            core.info(JSON.stringify({
+              event: "pr-automation.retry-gate", stage: "general", ...decision,
+            }));
+
+      - id: agent-retry
+        name: Retry general reviewer
+        if: steps.retry-gate.outputs.retry == 'true'
+        continue-on-error: true
+        uses: ./.github/actions/openai-agent
+        with:
+          api-key: ${{ secrets.HELMCODE_GLM_API_KEY }}
+          base-url: https://api.helmcode.com/v1
+          config-file: .github/pr-automation/agents/general-reviewer.json
           validator: .github/pr-automation/agent-validator.js#validateGeneral
           validator-metadata: ${{ steps.plan.outputs.metadata }}
 
       - id: persist
         name: Persist general review result
-        if: needs.aggregate.outputs.ready == 'true'
+        if: always()
         uses: actions/github-script@v8
         env:
-          STAGE_KEY: ${{ steps.plan.outputs.stage-key }}
-          RECOVERY_ATTEMPT: ${{ inputs.recovery-attempt }}
-          REUSED: ${{ steps.reuse.outputs.reused }}
-          REUSE_REASON: ${{ steps.reuse.outputs.reason || steps.plan.outputs.reuse-reason }}
-          REUSED_RUN_ID: ${{ steps.reuse.outputs.prior-run-id }}
-          RAW_OUTPUT: ${{ steps.agent.outputs.structured-output }}
-          MODEL_REASON: ${{ steps.agent.outputs.failure-reason }}
-          FAILURE_CATEGORY: ${{ steps.agent.outputs.failure-category }}
-          RETRYABLE: ${{ steps.agent.outputs.retryable }}
-          REQUEST_RETRIES: ${{ steps.agent.outputs.request-retry-count }}
-          OUTPUT_REPAIRS: ${{ steps.agent.outputs.output-repair-count }}
-          TOKEN_USAGE: ${{ steps.agent.outputs.token-usage }}
-          DURATION_MS: ${{ steps.agent.outputs.duration-ms }}
-          STARTED_AT: ${{ steps.started.outputs.at }}
+          RAW_OUTPUT: ${{ steps.agent-retry.outputs.structured-output || steps.agent.outputs.structured-output }}
+          MODEL_REASON: ${{ steps.agent-retry.outputs.failure-reason || steps.agent.outputs.failure-reason }}
+          FAILURE_CATEGORY: ${{ steps.agent-retry.outputs.failure-category || steps.agent.outputs.failure-category }}
+          DIAGNOSTICS: ${{ steps.agent.outputs.diagnostics }}
+          RETRY_DIAGNOSTICS: ${{ steps.agent-retry.outputs.diagnostics }}
+          RETRIED: ${{ steps.retry-gate.outputs.retry }}
+          PREVIOUS_REASON: ${{ steps.agent.outputs.failure-reason }}
         with:
           script: |
             const fs = require("node:fs");
             const {
-              isRetryableFailure, reusableRecord, stageRecord,
+              mergeDiagnostics, parseDiagnostics,
             } = require("./.github/pr-automation/review-pipeline");
-            const reused = process.env.REUSED === "true";
-            const output = reused
-              ? fs.readFileSync("cached-output.json", "utf8")
-              : process.env.RAW_OUTPUT || "";
+            const { stageOutcome } = require("./.github/pr-automation/review-report");
+            const retried = process.env.RETRIED === "true";
+            const output = process.env.RAW_OUTPUT || "";
             const reason = output === ""
               ? process.env.MODEL_REASON || "general reviewer unavailable"
               : "";
-            const number = (value) => {
-              const parsed = Number(value);
-              return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
-            };
-            const tokens = (() => {
-              try { return JSON.parse(process.env.TOKEN_USAGE || "null"); } catch { return null; }
-            })();
-            const elapsed = number(process.env.DURATION_MS) ??
-              (process.env.STARTED_AT ? Date.now() - Number(process.env.STARTED_AT) : null);
-            const category = output === "" ? process.env.FAILURE_CATEGORY || "invalid-output" : "";
-            const metrics = {
-              tokens,
-              elapsed_ms: elapsed,
-              request_retries: number(process.env.REQUEST_RETRIES),
-              output_repairs: number(process.env.OUTPUT_REPAIRS),
-              stage_recoveries: reused ? 0 : Number(process.env.RECOVERY_ATTEMPT) || 0,
-            };
             fs.mkdirSync("general-review", { recursive: true });
-            fs.writeFileSync("general-review/result.json", JSON.stringify({ output, reason }));
-            fs.mkdirSync("stage-records", { recursive: true });
-            fs.writeFileSync("stage-records/general.json", JSON.stringify(stageRecord({
+            fs.writeFileSync(
+              "general-review/result.json",
+              JSON.stringify({ output, reason }),
+            );
+            core.setOutput("stage", JSON.stringify(stageOutcome({
               id: "general",
               status: output === "" ? "failed" : "success",
               required: true,
-              provider: true,
               reason,
-              failureCategory: category,
-              retryable: output === "" && process.env.RETRYABLE === "true" &&
-                isRetryableFailure(category),
-              reused: reused && output !== "",
-              reusedFromRunId: reused ? process.env.REUSED_RUN_ID : null,
-              reuseReason: process.env.REUSE_REASON,
-              metrics,
-            }), null, 2));
-            if (output !== "") {
-              fs.mkdirSync("reusable-results", { recursive: true });
-              fs.writeFileSync("reusable-results/general.json", JSON.stringify(reusableRecord({
-                stage: "general",
-                stageKey: process.env.STAGE_KEY,
-                runId: context.runId,
-                attemptId: process.env.ATTEMPT_ID,
-                output,
-                metrics,
-              })));
-            }
+              category: output === ""
+                ? process.env.FAILURE_CATEGORY || "invalid-output"
+                : "",
+              attempts: retried ? 2 : 1,
+              previousReason: retried ? process.env.PREVIOUS_REASON : "",
+              provider: true,
+              metrics: mergeDiagnostics(
+                parseDiagnostics(process.env.DIAGNOSTICS),
+                retried ? parseDiagnostics(process.env.RETRY_DIAGNOSTICS) : null,
+              ),
+            })));
 
       - name: Upload general review result
-        if: needs.aggregate.outputs.ready == 'true' && steps.persist.outcome == 'success'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: review-general-result-${{ env.ATTEMPT_ID }}
+          name: review-general-${{ inputs.head-sha }}
           path: general-review/result.json
           if-no-files-found: error
           retention-days: 1
-
-      - name: Upload the general stage record
-        if: always() && hashFiles('stage-records/general.json') != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: review-stage-${{ env.ATTEMPT_ID }}-general
-          path: stage-records/general.json
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Upload the reusable general review
-        if: always() && hashFiles('reusable-results/general.json') != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: review-general-${{ env.ATTEMPT_ID }}
-          path: reusable-results/general.json
-          if-no-files-found: error
-          retention-days: 1
+          overwrite: true
 
   validate:
     name: Validate final review
-    needs: [identity, evidence, aggregate, general]
+    needs: [evidence, aggregate, general]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    env:
-      ATTEMPT_ID: ${{ needs.identity.outputs.attempt-id }}
     outputs:
       output: ${{ steps.final.outputs.output }}
       reason: ${{ steps.final.outputs.reason }}
+      stage: ${{ steps.final.outputs.stage }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -1126,24 +683,24 @@ jobs:
           persist-credentials: false
 
       - name: Download validation context
-        if: needs.general.result == 'success' && needs.aggregate.outputs.ready == 'true'
+        if: needs.general.result == 'success'
         uses: actions/download-artifact@v8
         with:
-          name: review-validation-${{ env.ATTEMPT_ID }}
+          name: review-validation-${{ inputs.head-sha }}
           path: pr-evidence
 
       - name: Download specialist aggregate
-        if: needs.general.result == 'success' && needs.aggregate.outputs.ready == 'true'
+        if: needs.general.result == 'success'
         uses: actions/download-artifact@v8
         with:
-          name: review-aggregate-${{ env.ATTEMPT_ID }}
+          name: review-aggregate-${{ inputs.head-sha }}
           path: .
 
       - name: Download general review result
-        if: needs.general.result == 'success' && needs.aggregate.outputs.ready == 'true'
+        if: needs.general.result == 'success'
         uses: actions/download-artifact@v8
         with:
-          name: review-general-result-${{ env.ATTEMPT_ID }}
+          name: review-general-${{ inputs.head-sha }}
           path: general-review
 
       - id: final
@@ -1157,24 +714,21 @@ jobs:
           AGGREGATE_READY: ${{ needs.aggregate.outputs.ready }}
           AGGREGATE_REASON: ${{ needs.aggregate.outputs.reason }}
           GENERAL_RESULT: ${{ needs.general.result }}
-          RECOVERY_ATTEMPT: ${{ inputs.recovery-attempt }}
         with:
           script: |
             const fs = require("node:fs");
             const { validateFinalReview } = require("./.github/pr-automation/validate-final-review");
-            const { stageRecord } = require("./.github/pr-automation/review-pipeline");
-            const finish = (output, reason, status = output === "" ? "skipped" : "success") => {
+            const { stageOutcome } = require("./.github/pr-automation/review-report");
+            const finish = (output, reason, category) => {
               core.setOutput("output", output);
               core.setOutput("reason", reason);
-              fs.mkdirSync("stage-records", { recursive: true });
-              fs.writeFileSync("stage-records/validate.json", JSON.stringify(stageRecord({
+              core.setOutput("stage", JSON.stringify(stageOutcome({
                 id: "validate",
-                status,
+                status: output === "" ? "failed" : "success",
                 required: true,
                 reason: output === "" ? reason : "",
-                failureCategory: status === "failed" ? "invalid-final-review" : "",
-                metrics: { stage_recoveries: Number(process.env.RECOVERY_ATTEMPT) || 0 },
-              }), null, 2));
+                category: output === "" ? category : "",
+              })));
               core.info(JSON.stringify({
                 event: "pr-automation.final-review",
                 valid: output !== "",
@@ -1182,173 +736,185 @@ jobs:
               }));
             };
             if (process.env.EVIDENCE_RESULT !== "success") {
-              return finish("", process.env.EVIDENCE_REASON || "pull request evidence unavailable");
+              return finish(
+                "",
+                process.env.EVIDENCE_REASON || "pull request evidence unavailable",
+                "evidence-unavailable",
+              );
             }
             if (process.env.AGGREGATE_RESULT !== "success") {
-              return finish("", "specialist validation unavailable");
+              return finish("", "specialist validation unavailable", "aggregate-invalid");
             }
             if (process.env.AGGREGATE_READY !== "true") {
-              return finish("", process.env.AGGREGATE_REASON || "specialist validation unavailable");
+              return finish(
+                "",
+                process.env.AGGREGATE_REASON || "a required specialist review failed",
+                "required-specialist-failed",
+              );
             }
             if (process.env.GENERAL_RESULT !== "success") {
-              return finish("", "general reviewer unavailable");
+              return finish("", "general review unavailable", "general-unavailable");
             }
+            let persisted;
+            let validation;
+            let aggregate;
             try {
-              const validation = JSON.parse(fs.readFileSync(
+              persisted = JSON.parse(fs.readFileSync("general-review/result.json", "utf8"));
+              validation = JSON.parse(fs.readFileSync(
                 "pr-evidence/validation-context.json", "utf8",
               ));
-              const aggregate = JSON.parse(fs.readFileSync(
+              aggregate = JSON.parse(fs.readFileSync(
                 "validated-specialist-findings.json", "utf8",
               ));
-              const general = JSON.parse(fs.readFileSync("general-review/result.json", "utf8"));
-              if (!general.output) {
-                return finish("", general.reason || "general reviewer unavailable");
-              }
-              const result = validateFinalReview(general.output, {
-                expectedSha: process.env.HEAD_SHA,
-                changedPaths: validation.changed_paths,
-                changedLines: validation.changed_lines,
-                specialistAggregate: aggregate,
-              });
-              return finish(
-                result.ok ? JSON.stringify(result.value) : "",
-                result.ok ? "" : result.reason,
-                result.ok ? "success" : "failed",
-              );
             } catch (error) {
-              core.warning(`Final review validation unavailable: ${error.message}`);
-              return finish("", "final review validation unavailable", "failed");
+              core.warning(`Final review inputs unavailable: ${error.message}`);
+              return finish("", "general review unavailable", "general-unavailable");
             }
-
-      - name: Upload the validate stage record
-        if: always() && hashFiles('stage-records/validate.json') != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: review-stage-${{ env.ATTEMPT_ID }}-validate
-          path: stage-records/validate.json
-          if-no-files-found: error
-          retention-days: 1
+            if (!persisted.output) {
+              return finish(
+                "",
+                persisted.reason || "general review unavailable",
+                "general-unavailable",
+              );
+            }
+            const result = validateFinalReview(persisted.output, {
+              expectedSha: process.env.HEAD_SHA,
+              changedPaths: validation.changed_paths,
+              changedLines: validation.changed_lines,
+              specialistAggregate: aggregate,
+            });
+            if (!result.ok) return finish("", result.reason, "invalid-final-review");
+            return finish(JSON.stringify(result.value), "", "");
 
   report:
     name: Report stage outcomes
-    needs: [identity, evidence, specialists, aggregate, general, validate]
+    needs: [evidence, specialists, aggregate, general, validate]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    env:
-      ATTEMPT_ID: ${{ needs.identity.outputs.attempt-id }}
     outputs:
-      stages: ${{ steps.report.outputs.stages }}
-      metrics: ${{ steps.report.outputs.metrics }}
-      provenance: ${{ steps.report.outputs.provenance }}
-      recoverable: ${{ steps.report.outputs.recoverable }}
+      report: ${{ steps.report.outputs.report }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
-      - name: Download stage records
+      - name: Download specialist stage reports
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
-          pattern: review-stage-${{ env.ATTEMPT_ID }}-*
-          path: stage-records
+          pattern: review-stage-${{ inputs.head-sha }}-*
+          path: stage-reports
           merge-multiple: true
 
       - id: report
-        name: Build stage outcomes and provenance
+        name: Build the canonical report
         uses: actions/github-script@v8
         env:
-          HEAD_SHA: ${{ inputs.head-sha }}
-          BASE_SHA: ${{ inputs.base-sha }}
           SPECIALIST_REVIEWERS: ${{ inputs.specialist-reviewers }}
           REQUIRED_REVIEWERS: ${{ inputs.required-reviewers }}
-          RECOVERY_ATTEMPT: ${{ inputs.recovery-attempt }}
-          EVIDENCE_DIGEST: ${{ needs.evidence.outputs.evidence-digest }}
-          POLICY_DIGEST: ${{ needs.evidence.outputs.policy-digest }}
-          CORPUS_SHA: ${{ needs.evidence.outputs.openspecs-sha }}
           EVIDENCE_RESULT: ${{ needs.evidence.result }}
           EVIDENCE_REASON: ${{ needs.evidence.outputs.failure-reason }}
+          EVIDENCE_STAGE: ${{ needs.evidence.outputs.stage }}
+          SPECIALISTS_RESULT: ${{ needs.specialists.result }}
+          AGGREGATE_RESULT: ${{ needs.aggregate.result }}
+          AGGREGATE_READY: ${{ needs.aggregate.outputs.ready }}
+          AGGREGATE_REASON: ${{ needs.aggregate.outputs.reason }}
+          GENERAL_RESULT: ${{ needs.general.result }}
+          GENERAL_STAGE: ${{ needs.general.outputs.stage }}
+          VALIDATE_STAGE: ${{ needs.validate.outputs.stage }}
         with:
           script: |
             const fs = require("node:fs");
             const path = require("node:path");
-            const {
-              stageRecord, summarizeStages,
-            } = require("./.github/pr-automation/review-pipeline");
-            const attemptId = process.env.ATTEMPT_ID;
-            const parse = (value, fallback) => {
-              try { return JSON.parse(value || ""); } catch { return fallback; }
-            };
-            const selected = parse(process.env.SPECIALIST_REVIEWERS, []);
-            const required = parse(process.env.REQUIRED_REVIEWERS, []);
-            const read = (file) => {
+            const { buildReport, stageOutcome } = require("./.github/pr-automation/review-report");
+            const json = (raw) => {
               try {
-                return JSON.parse(fs.readFileSync(path.join("stage-records", file), "utf8"));
-              } catch { return null; }
-            };
-            const missing = (id, reason, isRequired) => stageRecord({
-              id, status: "skipped", required: isRequired, reason,
-            });
-            const stages = [];
-            stages.push(read("evidence.json") ?? stageRecord({
-              id: "evidence",
-              status: process.env.EVIDENCE_RESULT === "success" ? "success" : "failed",
-              required: true,
-              reason: process.env.EVIDENCE_REASON || "pull request evidence unavailable",
-              failureCategory: "evidence-unavailable",
-            }));
-            for (const reviewer of selected) {
-              stages.push(read(`specialist-${reviewer}.json`) ?? missing(
-                `specialist:${reviewer}`,
-                "the specialist stage did not report a result",
-                required.includes(reviewer),
-              ));
-            }
-            stages.push(read("aggregate.json") ??
-              missing("aggregate", "specialist validation did not report a result", true));
-            stages.push(read("general.json") ??
-              missing("general", "the general reviewer did not run", true));
-            stages.push(read("validate.json") ??
-              missing("validate", "final validation did not run", true));
-
-            const summary = summarizeStages(stages);
-            const specialists = {};
-            for (const reviewer of selected) {
-              const stage = stages.find((entry) => entry.id === `specialist:${reviewer}`);
-              if (stage?.status === "success") {
-                specialists[reviewer] = `review-reusable-${attemptId}-${reviewer}`;
+                return raw ? JSON.parse(raw) : null;
+              } catch {
+                return null;
               }
+            };
+            const selected = json(process.env.SPECIALIST_REVIEWERS) ?? [];
+            const required = json(process.env.REQUIRED_REVIEWERS) ?? [];
+            const isRequired = (reviewer) =>
+              Array.isArray(required) && required.includes(reviewer);
+            const evidenceOk = process.env.EVIDENCE_RESULT === "success";
+            const evidenceStage = json(process.env.EVIDENCE_STAGE);
+            const stages = [evidenceStage ? stageOutcome(evidenceStage) : stageOutcome({
+              id: "evidence",
+              status: evidenceOk ? "success" : "failed",
+              required: true,
+              reason: evidenceOk
+                ? ""
+                : process.env.EVIDENCE_REASON || "pull request evidence unavailable",
+              category: evidenceOk ? "" : "evidence-unavailable",
+            })];
+            for (const reviewer of selected) {
+              const file = path.join("stage-reports", `specialist-${reviewer}.json`);
+              const recorded = (() => {
+                try {
+                  return JSON.parse(fs.readFileSync(file, "utf8"));
+                } catch {
+                  return null;
+                }
+              })();
+              // A specialist that never reported is only a failure when the stage actually ran.
+              stages.push(recorded ? stageOutcome({ ...recorded, provider: true }) : stageOutcome({
+                id: `specialist:${reviewer}`,
+                status: evidenceOk ? "failed" : "skipped",
+                required: isRequired(reviewer),
+                reason: evidenceOk ? "specialist result unavailable" : "",
+                category: evidenceOk ? "specialist-unavailable" : "",
+                provider: true,
+              }));
             }
-            const general = stages.find((entry) => entry.id === "general");
-            core.setOutput("stages", JSON.stringify(stages));
-            core.setOutput("metrics", JSON.stringify(summary.metrics));
-            core.setOutput("recoverable", String(summary.recoverable));
-            core.setOutput("provenance", JSON.stringify({
-              v: 1,
-              run_id: String(context.runId),
-              run_attempt: String(process.env.GITHUB_RUN_ATTEMPT || "1"),
-              recovery_attempt: String(process.env.RECOVERY_ATTEMPT || "0"),
-              attempt_id: attemptId,
-              base_sha: process.env.BASE_SHA,
-              head_sha: process.env.HEAD_SHA,
-              evidence_digest: process.env.EVIDENCE_DIGEST || "",
-              policy_digest: process.env.POLICY_DIGEST || "",
-              corpus_sha: process.env.CORPUS_SHA || null,
-              artifacts: {
-                evidence: `review-evidence-${attemptId}`,
-                validation: `review-validation-${attemptId}`,
-                corpus: process.env.CORPUS_SHA ? `review-corpus-${attemptId}` : null,
-                aggregate: `review-aggregate-${attemptId}`,
-                general: general?.status === "success" ? `review-general-${attemptId}` : null,
-                specialists,
-              },
+            const aggregateOk = process.env.AGGREGATE_RESULT === "success";
+            const aggregateReady = process.env.AGGREGATE_READY === "true";
+            stages.push(stageOutcome({
+              id: "aggregate",
+              status: !evidenceOk
+                ? "skipped"
+                : aggregateOk && aggregateReady ? "success" : "failed",
+              required: true,
+              reason: !evidenceOk || (aggregateOk && aggregateReady)
+                ? ""
+                : process.env.AGGREGATE_REASON || "specialist validation unavailable",
+              category: !evidenceOk || (aggregateOk && aggregateReady)
+                ? ""
+                : aggregateOk ? "required-specialist-failed" : "aggregate-invalid",
             }));
+            const generalStage = json(process.env.GENERAL_STAGE);
+            stages.push(generalStage ? stageOutcome({ ...generalStage, provider: true }) : stageOutcome({
+              id: "general",
+              // The general reviewer is skipped by a failed dependency, which is not its failure.
+              status: process.env.GENERAL_RESULT === "skipped" ? "skipped" : "failed",
+              required: true,
+              reason: process.env.GENERAL_RESULT === "skipped"
+                ? ""
+                : "general review unavailable",
+              category: process.env.GENERAL_RESULT === "skipped"
+                ? ""
+                : "general-unavailable",
+              provider: true,
+            }));
+            const validateStage = json(process.env.VALIDATE_STAGE);
+            stages.push(validateStage ? stageOutcome(validateStage) : stageOutcome({
+              id: "validate",
+              status: "failed",
+              required: true,
+              reason: "final review validation did not run",
+              category: "validation-unavailable",
+            }));
+            const report = buildReport(stages);
+            core.setOutput("report", JSON.stringify(report));
             core.info(JSON.stringify({
-              event: "pr-automation.review-stages",
-              failures: summary.failures,
-              recoverable: summary.recoverable,
-              reused: summary.metrics.reused_stages,
+              event: "pr-automation.review-report",
+              status: report.status,
+              failed: report.stages
+                .filter((stage) => stage.status === "failed")
+                .map((stage) => stage.id),
+              stage_retries: report.metrics.stage_retries,
             }));
