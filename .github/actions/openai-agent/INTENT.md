@@ -6,7 +6,7 @@
 - Output schema.
 - Read-only access rules.
 - Execution limits.
-- Optional validation feedback for output repair.
+- Optional caller-supplied validation errors for repairing a previous result.
 
 ## Outputs
 
@@ -36,9 +36,12 @@ For retryable `429` responses:
 
 Prefer the OpenAI SDK for `Retry-After` handling and request retries (`maxRetries`).
 
-## Validated output
+## Output validation and repair
 
 - Use provider-enforced schema output where supported, otherwise JSON mode where supported.
-- Local schema validation is the real acceptance boundary.
-- Use schema errors or caller-supplied validation errors for bounded output repair.
-- Reuse investigation context and permit only necessary read-only evidence lookup.
+- Validate JSON and schema locally before returning success.
+- Repair JSON and schema errors internally.
+- Let callers request repair of a previous result using their task-specific validation errors.
+- Preserve the original investigation context for both repair paths.
+- Permit only necessary read-only evidence lookup during repair.
+- Bound repair across follow-up requests and return failure when valid output cannot be produced within those limits.
