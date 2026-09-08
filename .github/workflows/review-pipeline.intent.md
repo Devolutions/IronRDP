@@ -27,12 +27,15 @@ Run selected specialists in a multi-job matrix, with at most three running at on
 
 ### Stage recovery
 
-Stage recovery repeats failed or missing stages while reusing successful results.
+Stage recovery happens within one workflow invocation and keeps the results of stages that already succeeded.
 
-- Keep validated results throughout stage recovery.
-- Reuse only trusted workflow results for unchanged review inputs and rules, and validate them again.
+- Retry a stage once, after a delay, when the provider fails transiently.
+- Recheck the head and review prerequisites before a delayed retry.
 - Supply a review-specific validator and let the action handle bounded output repair.
 - Never discard findings during output repair; fail the stage if repair cannot produce valid output.
+
+Reusing results across workflow runs is not required.
+A later run starts fresh.
 
 ### Outputs
 
@@ -46,6 +49,6 @@ Return per-stage metrics, including failed attempts and marking unavailable data
 - Request-retry count.
 - Output-repair count.
 - Stage-recovery count.
-- Whether results were reused.
+- Which stages repeated during recovery.
 
-Do not count reused results as new token usage.
+Count each provider attempt only once.
