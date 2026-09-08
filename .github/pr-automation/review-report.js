@@ -111,16 +111,16 @@ function aggregateMetrics(outcomes) {
 }
 
 // A report is successful only when its shape proves it: every mandatory stage present exactly once
-// and marked required, no required stage left unfinished, and an independent validation that
-// actually succeeded. A mandatory stage that arrives without its required flag is malformed, not an
-// optional stage, so it can never be waved through.
+// and successful, no required stage left unfinished, and an independent validation that actually
+// succeeded. A mandatory stage is judged by its outcome rather than by its required flag, which a
+// failed stage could simply omit.
 function buildReport(stages = []) {
   const outcomes = (Array.isArray(stages) ? stages : []).map(stageOutcome);
   const ids = outcomes.map((stage) => stage.id);
   const byId = new Map(outcomes.map((stage) => [stage.id, stage]));
   const wellFormed = ids.every((id) => id !== "") &&
     new Set(ids).size === ids.length &&
-    MANDATORY_STAGES.every((id) => byId.get(id)?.required === true);
+    MANDATORY_STAGES.every((id) => byId.get(id)?.status === "success");
   const published = outcomes.some((stage) =>
     stage.id === "validate" && stage.status === "success");
   const requiredUnfinished = outcomes.some((stage) =>

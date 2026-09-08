@@ -2887,13 +2887,20 @@ test("the caller reads exactly what the pipeline wrote, and never reads garbage 
     assert.equal(parseReport(JSON.stringify({ ...clean, status })).status, "failed");
   }
 
-  // A mandatory stage that arrives without its required flag is malformed, not optional, so it can
-  // never be waved through as an unrequired success.
+  // A mandatory stage is judged by what it did, so one that failed cannot escape by omitting the
+  // required flag. A caller that reports a successful mandatory stage without the flag is still
+  // understood.
   const unmarked = ["evidence", "aggregate", "general", "validate"]
     .map((id) => ({ id, status: "success" }));
-  assert.equal(buildReport(unmarked).status, "failed");
+  assert.equal(buildReport(unmarked).status, "success");
   assert.equal(parseReport(JSON.stringify({ v: 1, status: "success", stages: unmarked })).status,
-    "failed");
+    "success");
+  for (const failed of ["evidence", "aggregate", "general", "validate"]) {
+    const stages = unmarked.map((stage) =>
+      stage.id === failed ? { ...stage, status: "failed" } : stage);
+    assert.equal(buildReport(stages).status, "failed", `${failed} must not be waved through`);
+    assert.equal(parseReport(JSON.stringify({ v: 1, status: "success", stages })).status, "failed");
+  }
 });
 
 test("the reusable pipeline stays caller-driven and reports every stage back", () => {
