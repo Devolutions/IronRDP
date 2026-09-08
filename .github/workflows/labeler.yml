@@ -655,6 +655,7 @@ jobs:
       queue: max
     permissions:
       actions: read
+      checks: read
       contents: read
       issues: read
       pull-requests: read
@@ -760,6 +761,7 @@ jobs:
                  .write();
              } else {
                const metrics = report.metrics;
+               const formatMetric = (value) => value === null ? "unavailable" : String(value);
                const outcome = reviewOutcome({
                  reportStatus: report.status, state, recovered: recovered.length > 0,
                });
@@ -792,11 +794,12 @@ jobs:
                  .addTable([
                    [{ data: "Metric", header: true }, { data: "Total", header: true }],
                    [{ data: "Tokens" }, {
-                     data: `${metrics.tokens.input} input, ${metrics.tokens.output} output, ${metrics.tokens.total} total` +
-                       (metrics.tokens_complete ? "" : " (incomplete)"),
+                     data: metrics.tokens === null ? "unavailable"
+                       : `${formatMetric(metrics.tokens.input)} input, ${formatMetric(metrics.tokens.output)} output, ` +
+                         `${formatMetric(metrics.tokens.total)} total${metrics.tokens_complete ? "" : " (incomplete)"}`,
                    }],
                    ...["elapsed_ms", "request_retries", "output_repairs", "stage_retries"].map((name) => [
-                     { data: name }, { data: String(metrics[name]) },
+                     { data: name }, { data: formatMetric(metrics[name]) },
                    ]),
                  ])
                  .addHeading("Per-stage metrics")

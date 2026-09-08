@@ -131,6 +131,7 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewGate, /required-reviewers: \$\{\{ steps\.gate\.outputs\.required-reviewers \}\}/);
   assert.match(reviewPipeline, /required-reviewers: \$\{\{ needs\.review-gate\.outputs\.required-reviewers \}\}/);
   assert.match(reviewPipeline, /actions: read/);
+  assert.match(reviewPipeline, /checks: read/);
   for (const retiredJob of [
     "review-attempt-claim", "resolve-stage-recovery", "write-stage-recovery-pending",
     "stage-recovery-delay", "review-recovery-preflight", "review-recovery-claim", "review-pipeline-recovery",
@@ -139,6 +140,7 @@ test("automatic review requires exact-head CI and only reruns after a later push
   assert.match(reviewState, /REVIEW_REPORT: \$\{\{ needs\.review-pipeline\.outputs\.report \}\}/);
   assert.match(reviewState, /parseReport\(process\.env\.REVIEW_REPORT\)/);
   assert.match(reviewState, /report\.status === "success" \? parse\(process\.env\.RAW_OUTPUT, null\) : null/);
+  assert.match(reviewState, /value === null \? "unavailable" : String\(value\)/);
   assert.match(reviewState, /REVIEW_GATE_RESULT: \$\{\{ needs\.review-gate\.result \}\}/);
   assert.match(reviewState, /FORK_RATE_LIMIT_RESULT: \$\{\{ needs\.fork-rate-limit\.result \}\}/);
   assert.match(reviewState, /REVIEW_PIPELINE_RESULT: \$\{\{ needs\.review-pipeline\.result \}\}/);
