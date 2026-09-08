@@ -29,7 +29,6 @@ Keep diagnostic output bounded:
 - Account for SDK retries within these bounds.
 - On retryable `429`, read the provider's `Retry-After` header.
 - Wait that duration, or fall back to backoff if absent.
-- Retry the same request while preserving agent state.
 - Fail closed after three consecutive `429` responses.
 
 ## Validated output
