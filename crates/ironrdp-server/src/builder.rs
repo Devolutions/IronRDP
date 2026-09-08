@@ -339,11 +339,12 @@ impl RdpServerBuilder<BuilderDone> {
     /// being told why) and the newcomer is served in its place, instead of
     /// waiting in the TCP listen backlog until the current session ends.
     ///
-    /// Off by default, so a second connection queues behind the live one — the
-    /// historical behaviour, appropriate for a server expecting many
-    /// short-lived connections. Turn this on for a server backing a single
-    /// specific session (e.g. one that mirrors one desktop), where a newly
-    /// connecting client should replace a stale one rather than hang behind it.
+    /// Off by default: a second connection queues behind the live one, which
+    /// is `ironrdp-server`'s pre-existing behaviour, so an embedder that
+    /// already relies on it is not surprised by upgrading. Turn this on for a
+    /// server backing a single specific session (e.g. one that mirrors one
+    /// desktop), where a newly connecting client should replace a stale one
+    /// rather than hang behind it.
     ///
     /// **The strength of that bar depends on the security mode.** Only
     /// [`RdpServerSecurity::Hybrid`] authenticates the client before a

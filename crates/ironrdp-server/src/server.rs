@@ -324,10 +324,11 @@ pub struct RdpServerOptions {
     /// [`RdpServer`] serves one connection at a time. By default a second
     /// connection accepted while one is live is left unserved in the OS listen
     /// backlog — from that client's point of view, a silent hang until the
-    /// first session ends. That queue-behind behaviour suits a server expecting
-    /// many short-lived connections, but not one backing a single specific
-    /// session (e.g. mirroring one desktop), where a newly connecting client
-    /// should replace a stale or abandoned one.
+    /// first session ends. That is `ironrdp-server`'s pre-existing behaviour,
+    /// kept as the default so an embedder that already relies on it is not
+    /// surprised by upgrading; it does not suit a server backing a single
+    /// specific session (e.g. mirroring one desktop), where a newly connecting
+    /// client should replace a stale or abandoned one.
     ///
     /// # Security — what a candidate must clear, per mode
     ///
