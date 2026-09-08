@@ -42,19 +42,19 @@ async function retryStillPermitted({
   if (expectedBaseSha && pull.base?.sha !== expectedBaseSha) {
     return decline("pull request base moved away from the reviewed evidence");
   }
-  if (pull.user?.type === "Bot") return decline("pull request author is a bot");
 
   const labels = labelNames(pull.labels);
 
-  // A withdrawn oversized allowance shrinks the cap the evidence was fetched under.
-  if (diffBytes !== null) {
-    const cap = labels.includes(OVERSIZED_REVIEW_LABEL) ? 4 * MIB : MIB;
-    if (diffBytes > cap) return decline("pull request evidence exceeds the current evidence limit");
-  }
+  // A withdrawn oversized allowance shrinks the cap the evidence was fetched under. Evidence that
+  // cannot be measured cannot be shown to fit, so it does not get a second request.
+  if (diffBytes === null) return decline("pull request evidence is unavailable");
+  const cap = labels.includes(OVERSIZED_REVIEW_LABEL) ? 4 * MIB : MIB;
+  if (diffBytes > cap) return decline("pull request evidence exceeds the current evidence limit");
 
   // A trusted caller's force bypasses policy and CI, and nothing else.
   if (force) return { retry: true, reason: "" };
 
+  if (pull.user?.type === "Bot") return decline("pull request author is a bot");
   if (pull.draft === true) return decline("pull request is a draft");
   if (!reviewPolicyEligible({ labels })) return decline("review is no longer policy eligible");
 

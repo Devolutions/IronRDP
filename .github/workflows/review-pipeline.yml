@@ -525,7 +525,7 @@ jobs:
             const gate = process.env.GATE ? JSON.parse(process.env.GATE) : {};
             const requiredReviewers = process.env.REQUIRED_REVIEWERS
               ? JSON.parse(process.env.REQUIRED_REVIEWERS)
-              : [];
+              : undefined;
             const runs = selected.map((reviewer) => {
               try {
                 return JSON.parse(fs.readFileSync(

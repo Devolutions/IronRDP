@@ -137,7 +137,8 @@ function isRetryableFailure(retryable) {
 
 // The runtime reports measurements in one canonical diagnostics object, freshly built per
 // invocation. A stage that cannot read it reports every measurement as unavailable, never as zero.
-function parseDiagnostics(raw) {  const parsed = (() => {
+function parseDiagnostics(raw) {
+  const parsed = (() => {
     if (raw === null || raw === undefined || raw === "") return null;
     if (typeof raw !== "string") return raw;
     try {

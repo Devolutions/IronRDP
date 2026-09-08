@@ -649,6 +649,8 @@ jobs:
       cancel-in-progress: false
       queue: max
     permissions:
+      actions: read
+      checks: read
       contents: read
       issues: read
       pull-requests: read

@@ -2541,6 +2541,8 @@ test("a retry re-decides review eligibility against the pull request as it is af
     "pull request is a draft": { draft: true },
     "review is no longer policy eligible": { labels: ["triage/legitimacy"] },
     "pull request evidence exceeds the current evidence limit": { diffBytes: 2 * 1024 * 1024 },
+    // Evidence that cannot be measured cannot be shown to fit, so it fails closed.
+    "pull request evidence is unavailable": { diffBytes: null },
     "classification is no longer valid for this head": { classificationConclusion: "failure" },
     "classification no longer authorizes an automatic review": { automaticReviewEligible: false },
     "classification now selects a different reviewer set": { classifiedReviewers: ["protocol", "skeptical"] },
@@ -2576,16 +2578,16 @@ test("the caller's force bypasses review policy, and nothing that makes a review
 
   for (const state of [
     { draft: true }, { labels: ["triage/legitimacy"] }, { ciConclusion: "failure" },
-    { classificationConclusion: "failure" }, { alreadyReviewed: true },
+    { classificationConclusion: "failure" }, { alreadyReviewed: true }, { authorType: "Bot" },
   ]) {
     assert.equal((await gate(state)).retry, true, JSON.stringify(state));
   }
 
-  // Safety is not policy: a moved head, a closed pull request, and evidence over the current cap
-  // stay fatal under force.
+  // Safety is not policy: a moved head, a closed pull request, and evidence that does not fit the
+  // cap now in force stay fatal under force.
   for (const state of [
     { state: "closed" }, { headSha: OTHER_SHA }, { baseSha: OTHER_SHA },
-    { diffBytes: 2 * 1024 * 1024 }, { authorType: "Bot" },
+    { diffBytes: 2 * 1024 * 1024 }, { diffBytes: null },
   ]) {
     assert.equal((await gate(state)).retry, false, JSON.stringify(state));
   }
@@ -2804,6 +2806,95 @@ test("stage recovery costs one extra invocation and re-proves the review first",
   for (const name of ["specialists", "report"]) {
     assert.match(workflowJob(workflow.slice(workflow.indexOf("\njobs:")), name),
       /resolveRequiredReviewers/, `${name} must resolve required reviewers`);
+  }
+});
+
+test("the aggregate job enforces the gate fallback when the caller sends no required list", async () => {
+  const nodeRequire = require;
+  const os = require("node:os");
+  const vm = require("node:vm");
+  const repoRoot = path.resolve(__dirname, "..", "..");
+  const aggregate = workflowJob(readReviewWorkflow(), "aggregate");
+  const script = (() => {
+    const body = aggregate.slice(aggregate.indexOf("script: |") + "script: |\n".length);
+    const lines = [];
+    for (const line of body.split("\n")) {
+      if (line.trim() !== "" && !line.startsWith("            ")) break;
+      lines.push(line.slice(12));
+    }
+    return lines.join("\n");
+  })();
+  assert.match(script, /buildSpecialistAggregate/);
+
+  // The real step script decides mandatory coverage, so an old caller that sends only the gate has
+  // to keep reaching the fallback rather than an empty required list.
+  const runStep = async (env) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "review-aggregate-"));
+    fs.mkdirSync(path.join(directory, "specialist-results"));
+    const previous = process.cwd();
+    const outputs = {};
+    try {
+      process.chdir(directory);
+      await vm.runInNewContext(`(async () => {\n${script}\n})()`, {
+        require: (id) => nodeRequire(id.startsWith(".") ? path.resolve(repoRoot, id) : id),
+        process: { env },
+        core: {
+          setOutput: (key, value) => { outputs[key] = value; },
+          info: () => {}, warning: () => {},
+        },
+      });
+    } finally {
+      process.chdir(previous);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+    return outputs;
+  };
+
+  const base = {
+    HEAD_SHA: SHA,
+    SPECIALIST_REVIEWERS: JSON.stringify(REVIEWABLE_REVIEWERS),
+    GATE: JSON.stringify({ protocolRelated: true, risk: "medium" }),
+  };
+
+  // No specialist reported, so the protocol and skeptical reviewers the gate makes mandatory are
+  // both missing and the general review must not run.
+  const fallback = await runStep(base);
+  assert.equal(fallback.ready, false);
+  assert.match(fallback.reason, /protocol/);
+  assert.match(fallback.reason, /skeptical/);
+
+  // An explicit empty list is the caller saying nothing is mandatory, and only the caller can.
+  const explicit = await runStep({ ...base, REQUIRED_REVIEWERS: "[]" });
+  assert.equal(explicit.ready, true);
+  assert.equal(explicit.reason, "");
+
+  // An explicit list is honoured as given.
+  const named = await runStep({ ...base, REQUIRED_REVIEWERS: JSON.stringify(["protocol"]) });
+  assert.equal(named.ready, false);
+  assert.match(named.reason, /protocol/);
+  assert.doesNotMatch(named.reason, /skeptical/);
+});
+
+test("the reviewer jobs cannot ask for more than the caller grants them", () => {
+  const scopes = (workflow, job) => {
+    const body = workflowJob(workflow.slice(workflow.indexOf("\njobs:")), job);
+    const block = body.slice(body.indexOf("permissions:"));
+    const end = block.search(/\n {4}[a-z]/);
+    return new Set((end === -1 ? block : block.slice(0, end))
+      .split("\n").slice(1).map((line) => line.trim()).filter((line) => /^[a-z-]+: \w+$/.test(line)));
+  };
+
+  const reviewWorkflow = readReviewWorkflow();
+  const granted = scopes(readWorkflow(), "review-pipeline");
+  // A called workflow inherits the caller's token, so anything the reviewer jobs need must be
+  // granted at the call site or every eligibility recheck fails closed.
+  for (const job of ["specialists", "general"]) {
+    for (const scope of scopes(reviewWorkflow, job)) {
+      assert.ok(granted.has(scope), `review-pipeline caller must grant ${scope} for ${job}`);
+    }
+  }
+  for (const scope of granted) {
+    assert.match(scope, /: read$/, "the reviewer call site stays read-only");
   }
 });
 
