@@ -131,6 +131,7 @@ pub(crate) const fn map_key_code(key_code: KeyCode) -> Option<Scancode> {
         KeyCode::Undo => (true, 0x08),
         KeyCode::Paste => (true, 0x0A),
         KeyCode::MediaTrackPrevious => (true, 0x10),
+        KeyCode::MediaTrackNext => (true, 0x19),
         KeyCode::NumpadEnter => (true, 0x1C),
         KeyCode::ControlRight => (true, 0x1D),
         KeyCode::Cut => (true, 0x17),
@@ -255,27 +256,43 @@ mod tests {
     }
 
     #[test]
-    fn mapped_media_and_browser_keys_emit_extended_events() {
-        let volume_mute = map_key_code(KeyCode::AudioVolumeMute).expect("media key");
-        let browser_back = map_key_code(KeyCode::BrowserBack).expect("browser key");
-        let mut database = Database::new();
+    fn mapped_extended_keys_emit_extended_events() {
+        let cases = [
+            (KeyCode::MediaTrackPrevious, 0x10),
+            (KeyCode::MediaTrackNext, 0x19),
+            (KeyCode::MediaPlayPause, 0x22),
+            (KeyCode::MediaStop, 0x24),
+            (KeyCode::MediaSelect, 0x6D),
+            (KeyCode::AudioVolumeMute, 0x20),
+            (KeyCode::AudioVolumeDown, 0x2E),
+            (KeyCode::AudioVolumeUp, 0x30),
+            (KeyCode::BrowserHome, 0x32),
+            (KeyCode::BrowserSearch, 0x65),
+            (KeyCode::BrowserFavorites, 0x66),
+            (KeyCode::BrowserRefresh, 0x67),
+            (KeyCode::BrowserStop, 0x68),
+            (KeyCode::BrowserForward, 0x69),
+            (KeyCode::BrowserBack, 0x6A),
+            (KeyCode::LaunchApp1, 0x6B),
+            (KeyCode::LaunchMail, 0x6C),
+            (KeyCode::LaunchApp2, 0x21),
+        ];
 
-        let events = database.apply([
-            Operation::KeyPressed(volume_mute),
-            Operation::KeyReleased(volume_mute),
-            Operation::KeyPressed(browser_back),
-            Operation::KeyReleased(browser_back),
-        ]);
+        for (key_code, code) in cases {
+            let scancode = map_key_code(key_code).expect("supported extended key");
+            assert_eq!(scancode.as_u8(), (true, code));
 
-        assert_eq!(
-            events.as_slice(),
-            [
-                FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 0x20),
-                FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED | KeyboardFlags::RELEASE, 0x20),
-                FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 0x6A),
-                FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED | KeyboardFlags::RELEASE, 0x6A),
-            ]
-        );
+            let mut database = Database::new();
+            let events = database.apply([Operation::KeyPressed(scancode), Operation::KeyReleased(scancode)]);
+
+            assert_eq!(
+                events.as_slice(),
+                [
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, code),
+                    FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED | KeyboardFlags::RELEASE, code),
+                ]
+            );
+        }
     }
 
     #[test]
